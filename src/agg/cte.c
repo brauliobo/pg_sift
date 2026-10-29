@@ -289,7 +289,52 @@ typedef struct SharedCteWalk
 	bool		inline_them;
 	List	   *names;
 	int			hoisted;
+	bool		bounded;		/* the copies of the table's reads would pass INLINE_READS_MAX: only the CTEs that read it themselves are copied */
 } SharedCteWalk;
+
+/*
+ * PostgreSQL copies an inlined CTE into every query that reads it, so a chain of CTEs that read each other, each read several times, multiplies the reads of the
+ * table: a statement of the corpus (the price-series) with nine of them inlines to a plan of many times the lines of the shared one, which costs
+ * as many times the instructions to plan and to start, for the same scans. Above this many reads, only the CTEs that read the table themselves (or through a CTE read once,
+ * which PostgreSQL inlines anyway) are copied; the ones above them are computed once, as written.
+ */
+#define INLINE_READS_MAX	8
+
+/* the reads of tables with a column index in the query once every CTE it reads is copied into its readers (saturates) */
+static double
+inlined_reads(Query *q, List *siblings, int depth, int level)
+{
+	double		n = 0;
+
+	foreach_node(RangeTblEntry, rte, q->rtable)
+	{
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
+			n++;
+		if (depth <= 0)
+			continue;
+		if (rte->rtekind == RTE_SUBQUERY)
+			n += inlined_reads(rte->subquery, siblings, depth - 1, level + 1);
+		else if (rte->rtekind == RTE_CTE && rte->ctelevelsup == level)
+			foreach_node(CommonTableExpr, sib, siblings)
+				if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query))
+					n += inlined_reads(castNode(Query, sib->ctequery), siblings, depth - 1, 1);
+		if (n > 1e6)
+			return n;
+	}
+	return n;
+}
+
+/* the CTEs of a WITH that one query reads: PostgreSQL inlines them, so they add no copy */
+static List *
+single_readers(List *ctes)
+{
+	List	   *single = NIL;
+
+	foreach_node(CommonTableExpr, cte, ctes)
+		if (cte->cterefcount < 2)
+			single = lappend(single, cte);
+	return single;
+}
 
 /* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With inline_them the walk goes on (it is of a copy of the query) */
 static bool
@@ -309,6 +354,11 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 		{
 			if (!w->inline_them)
 				return true;
+			if (w->bounded && !reads_indexed_table(body, single_readers(((Query *) n)->cteList), 4, 1))
+			{
+				ctes = lappend(ctes, cte);
+				continue;
+			}
 			cte->ctematerialized = CTEMaterializeNever;
 			w->names = lappend(w->names, cte->ctename);
 			/* ahead of the CTE: the WITH is read in order */
@@ -320,6 +370,14 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 	if (w->inline_them)
 		((Query *) n)->cteList = ctes;
 	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
+}
+
+/* the shared CTEs of the query written NOT MATERIALIZED (a copy of the statement), their names in w->names */
+static void
+inline_shared_ctes(Query *q, SharedCteWalk *w)
+{
+	w->bounded = inlined_reads(q, q->cteList, 8, 0) > INLINE_READS_MAX;
+	shared_cte_walker((Node *) q, w);
 }
 
 static bool
@@ -960,7 +1018,7 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 		const char *outer_variant = agg_variant_push("inline");
 		Query	   *inline_parse = copyObject(parse);
 
-		shared_cte_walker((Node *) inline_parse, &(SharedCteWalk) {true, NIL});
+		inline_shared_ctes(inline_parse, &(SharedCteWalk) {true, NIL});
 
 		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
 		agg_variant = outer_variant;
@@ -1027,7 +1085,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		return plan_cte(SIFT_PLANNER_ARGS(again), cx);
 	}
 	inline_parse = copyObject(parse);
-	shared_cte_walker((Node *) inline_parse, &walk);
+	inline_shared_ctes(inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
 	{
 		pristine = copyObject(parse);

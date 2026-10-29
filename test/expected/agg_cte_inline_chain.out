@@ -1,0 +1,62 @@
+-- A shared CTE over a column index is planned inline too (agg_cte_inline_upper): the scans of the table are then in the plan of each of its readers.
+-- PostgreSQL copies an inlined CTE into every query that reads it, so a chain of CTEs that read each other, each read twice, multiplies: the inline plan of a
+-- statement of three levels has the scan of the table 8 or 27 times and a plan of many times the lines of the normal one, to plan and to start. Only the CTEs that read
+-- the table themselves (or through a CTE read once, which PostgreSQL inlines anyway) are copied; the ones above them are computed once, as written.
+-- The rows are the same with the scan on and off, and the table is scanned in as few places as the readers of the CTE that reads it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ic_events (id int PRIMARY KEY, grp int NOT NULL, ts date NOT NULL, score float8) WITH (autovacuum_enabled = false);
+INSERT INTO ic_events SELECT g, 1 + g % 40, date '2025-01-01' + g % 300, CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 7919) % 100 END FROM generate_series(1, 40000) g;
+CREATE INDEX ic_events_col ON ic_events USING sift_col (id, grp, ts, score) WITH (key_cut = grp);
+VACUUM (FREEZE, ANALYZE) ic_events;
+-- base is read three times by up, up three times by top, top three times by the outer query: 27 reads of the table if every level is copied into its readers
+SELECT $q$WITH base AS (SELECT grp, count(*) n, sum(score) s, avg(score) a FROM ic_events WHERE ts >= date '2025-03-01' GROUP BY grp),
+  up AS (SELECT x.grp, x.n + y.n + z.n AS n, x.s - y.s + z.s AS s FROM base x JOIN base y ON y.grp = x.grp % 40 + 1 JOIN base z ON z.grp = y.grp % 40 + 1),
+  top AS (SELECT x.grp, x.n + y.n + z.n AS n, x.s + y.s - z.s AS s FROM up x JOIN up y ON y.grp = x.grp % 40 + 1 JOIN up z ON z.grp = y.grp % 40 + 1)
+SELECT x.grp, x.n, round((x.s + y.s + z.s)::numeric, 6) AS s FROM top x JOIN top y ON y.grp = x.grp % 40 + 1 JOIN top z ON z.grp = y.grp % 40 + 1 ORDER BY x.grp$q$ AS q \gset
+-- the lines of the plan, and the places that read the table
+CREATE FUNCTION plan_reads(q text, OUT plan_lines int, OUT table_reads int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	plan_lines := 0; table_reads := 0;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		plan_lines := plan_lines + 1;
+		IF l ~ 'ic_events|SiftAgg' THEN table_reads := table_reads + 1; END IF;
+	END LOOP;
+END $$;
+-- forced, so that the inline plan is the one that is kept
+SET sift.agg_force = on;
+SELECT table_reads <= 6 AS the_table_is_read_by_the_readers_of_base_only, plan_lines < 150 AS the_plan_is_not_a_copy_of_every_level FROM plan_reads(:'q');
+ the_table_is_read_by_the_readers_of_base_only | the_plan_is_not_a_copy_of_every_level 
+-----------------------------------------------+---------------------------------------
+ t                                             | t
+(1 row)
+
+RESET sift.agg_force;
+-- the same rows, scan on and off
+CREATE FUNCTION rows_of(q text, agg bool) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE r jsonb;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'') FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+SELECT rows_of(:'q', true) = rows_of(:'q', false) AS same_rows, jsonb_array_length(rows_of(:'q', true)) AS n_rows;
+ same_rows | n_rows 
+-----------+--------
+ t         |     40
+(1 row)
+
+-- after a change of the table
+DELETE FROM ic_events WHERE id % 7 = 0;
+UPDATE ic_events SET score = score + 1 WHERE id % 5 = 0;
+INSERT INTO ic_events SELECT g, 1 + g % 41, date '2025-06-01' + g % 100, g % 90 FROM generate_series(40001, 41000) g;
+SELECT rows_of(:'q', true) = rows_of(:'q', false) AS same_rows_after_changes;
+ same_rows_after_changes 
+-------------------------
+ t
+(1 row)
+
+DROP FUNCTION plan_reads(text), rows_of(text, bool);
+DROP TABLE ic_events;
+DROP EXTENSION pg_sift CASCADE;
