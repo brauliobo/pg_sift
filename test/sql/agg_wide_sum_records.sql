@@ -3,6 +3,8 @@
 -- NaN, infinities, negatives, zeros of every scale, values of one number spelled with several scales, more than 16 decimals, values of 38 digits and of more, sums that leave the
 -- 128-bit integer, a FILTER, groups, a filter on another column, and for the leaf read by anything else too (the dictionary).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
