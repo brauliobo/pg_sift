@@ -471,6 +471,7 @@ extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, 
  * MVCC snapshot sees no row of are skipped; plain: no tombstone and no unfrozen row can concern the rows of its unit (every snapshot sees
  * them); tuple: the row as a HeapTuple (t_self set), palloc'd.
  */
+extern void sift_tbl_gscan_want(SiftTblGroupScan *g, Bitmapset *want);
 extern bool sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull);
 extern uint32 sift_tbl_gscan_cursor(const SiftTblGroupScan *g, ItemPointer tid, uint32 *pos);
 extern void sift_tbl_gscan_ref(SiftTblGroupScan *g);

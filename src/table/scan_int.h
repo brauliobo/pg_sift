@@ -46,6 +46,7 @@ typedef struct SiftTblScan
 	const SiftTblRec *rec;		/* the write buffer record of the version last returned */
 	SiftDirSnapshot *dir;		/* the directory the scan reads (its own copy, or the leader's) */
 	SiftTblGroupScan *g;
+	Bitmapset  *want;			/* the attributes the reader of an index build uses (sift_tbl_gscan_want) */
 	bool		in_groups;		/* the versions come from g */
 	bool		groups_done;
 	SiftTblParallel *par;
@@ -89,6 +90,7 @@ scan_gscan(SiftTblScan *s, Snapshot snapshot)
 	SiftTblGroupScan *g = sift_tbl_gscan_begin(s->base.rs_rd, s->desc, s->st, s->dir, snapshot);
 
 	MemoryContextSwitchTo(old);
+	sift_tbl_gscan_want(g, s->want);
 	return g;
 }
 

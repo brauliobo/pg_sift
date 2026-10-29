@@ -24,6 +24,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "optimizer/optimizer.h"
 #include "col/kern.h"
 #include "table/table.h"
 #include "core/visibility.h"
@@ -283,6 +284,29 @@ build_verdict(Relation rel, SiftTblRel *st, const SiftTblRowVer *rv, Transaction
 	}
 }
 
+/*
+ * The columns an index build reads: the key and included columns, and those of the expressions and the predicate. The rows of a column group
+ * are decoded column by column, so the others are not decoded at all (a BM25 index on the ninth column of a table decoded eight others).
+ * NULL (every column) when an expression reads the whole row.
+ */
+static Bitmapset *
+index_build_attrs(IndexInfo *indexInfo)
+{
+	Bitmapset  *attrs = NULL;
+
+	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+		if (indexInfo->ii_IndexAttrNumbers[i] != 0)
+			attrs = bms_add_member(attrs, indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
+	pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &attrs);
+	pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &attrs);
+	if (bms_is_member(0 - FirstLowInvalidHeapAttributeNumber, attrs))
+	{
+		bms_free(attrs);
+		return NULL;
+	}
+	return attrs;
+}
+
 double
 sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInfo *indexInfo, bool allow_sync,
 								bool anyvisible, bool progress, BlockNumber start_blockno, BlockNumber numblocks,
@@ -301,8 +325,10 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 	bool		isnull[INDEX_MAX_KEYS];
 	ItemPointerData tid;
 	BlockNumber end = numblocks == InvalidBlockNumber ? InvalidBlockNumber : start_blockno + numblocks;
+	Bitmapset  *index_attrs;
 
 	econtext->ecxt_scantuple = slot;
+	index_attrs = index_build_attrs(indexInfo);
 	indexInfo->ii_PredicateState = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 	if (scan == NULL)
 	{
@@ -325,6 +351,9 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 	}
 	mvcc = IsMVCCSnapshot(snapshot);
 	s = (SiftTblScan *) scan;
+	s->want = index_attrs;
+	if (s->g)
+		sift_tbl_gscan_want(s->g, index_attrs);
 	for (;;)
 	{
 		SiftTblRowVer rv;

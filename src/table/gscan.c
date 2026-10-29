@@ -129,6 +129,7 @@ struct SiftTblGroupScan
 	/* readers of the current unit that outlive the call that found the row: a slot holds a reference and its token */
 	int			refs;
 	bool		ended;
+	Bitmapset  *want;			/* the attributes a reader asks for (offset by FirstLowInvalidHeapAttributeNumber, as pull_varattnos makes them); NULL: all; the others come back NULL */
 	bool		park_fill;		/* the fetch scan: the pages a fill pinned are released at once (nothing ends it before the transaction does) */
 	uint32		token;		/* changes whenever another unit becomes the current one: vec, ord and unit are then not the slot's */
 };
@@ -549,13 +550,25 @@ fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
 		*value = value_out(&gs->schema->cols[leaf], att, vec, pos);
 }
 
+void
+sift_tbl_gscan_want(SiftTblGroupScan *g, Bitmapset *want)
+{
+	g->want = want;
+}
+
 bool
 sift_tbl_gscan_fill(SiftTblGroupScan *g, uint32 token, uint32 pos, int from, int to, Datum *values, bool *isnull)
 {
 	if (g->token != token)
 		return false;
 	for (int a = from + 1; a <= to; a++)
-		fill_attr(g, pos, a, &values[a - 1], &isnull[a - 1]);
+		if (g->want == NULL || bms_is_member(a - FirstLowInvalidHeapAttributeNumber, g->want))
+			fill_attr(g, pos, a, &values[a - 1], &isnull[a - 1]);
+		else
+		{
+			values[a - 1] = (Datum) 0;
+			isnull[a - 1] = true;
+		}
 	if (g->park_fill)
 		gscan_park(g);
 	return true;
