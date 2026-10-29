@@ -30,3 +30,4 @@ packaging/pg_sift/
 *.pkg.tar.*
 dist/
 src/*/build_id.h
+__pycache__/
