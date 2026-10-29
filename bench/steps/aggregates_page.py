@@ -280,8 +280,10 @@ def readme_shapes(results):
         ms_ = lambda path: {f['case'].id: f['native'] / f['sift'] for f in cases_render.collect(extras.read(path)[1], reg) if f['metric'] == 'ms' and f['native'] and f['sift'] and not f['kept']}
         a, b = ms_(os.path.join(results, 'cases.tsv')), ms_(os.path.join(results, 'cases-wm4g.tsv'))
         both = [i for i in b if i in a]
-        out += [f'The application-shaped cases of the table above again at a large `work_mem` ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
-                f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
+        wm, now = extras.read(os.path.join(results, 'cases-wm4g.tsv'))[0], extras.read(os.path.join(results, 'cases.tsv'))[0]
+        old = f' The 4GB run is of pg_sift {wm["pg_sift"]} and was not repeated for {now["pg_sift"]}.' if wm.get('pg_sift') != now.get('pg_sift') else ''
+        out += [f'The application-shaped cases of the table above again at a large `work_mem` ({wm.get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
+                f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.{old}', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
     return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#shapes-of-real-queries); raw results [bench/results/analytics.json](bench/results/analytics.json).']
 
 
