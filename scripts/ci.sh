@@ -692,19 +692,35 @@ tidy() {
 
 # claim: sets CLAIMED to the first job of the queue that nobody has claimed and whose estimate fits the budget with the ones
 # running (the first job always fits); returns 1 when the queue is empty, 2 when nothing fits yet. The lock is a directory: macOS has no flock
+# A lane that dies holding the lock would hang the others in this loop until the job timeout, so the lock names its owner (pid) and a waiter removes a lock whose owner is
+# gone, or that has no owner after 60 s (a lane killed between the mkdir and the write of the pid)
 claim() {
-	local rc
+	local rc spin=0 owner stale=''
 	until mkdir "$BASE/claim.lock" 2>/dev/null; do
 		[[ -d $BASE ]] || { echo "ci: $BASE is gone, the lane stops" >&2; exit 1; }
+		if (( ++spin % 50 == 0 )); then
+			owner=$(cat "$BASE/claim.lock/pid" 2>/dev/null)
+			if [[ -n $owner ]]; then kill -0 "$owner" 2>/dev/null || stale=1; else (( spin < 3000 )) || stale=1; fi
+			if [[ -n $stale ]]; then
+				echo "ci: $LANE removes the claim lock of ${owner:-no owner}, which is gone" >&2
+				rm -rf "$BASE/claim.lock"
+				stale=
+			fi
+		fi
 		sleep 0.02
 	done
+	echo "$BASHPID" >"$BASE/claim.lock/pid"
 	claim_locked && rc=0 || rc=$?
-	rmdir "$BASE/claim.lock"
+	rm -rf "$BASE/claim.lock"
 	return $rc
 }
 claim_locked() {
-	local id est used=0 left=0 f
-	for f in "$BASE"/running/*; do [[ ! -e $f ]] || used=$((used + $(<"$f"))); done
+	local id est used=0 left=0 f v
+	# a lane removes its file from running/ without the lock, at any moment: a file that is gone (or empty) counts for nothing, and no error may leave this function with the lock held
+	for f in "$BASE"/running/*; do
+		v=0; { read -r v; } 2>/dev/null <"$f" || v=0
+		used=$((used + ${v:-0}))
+	done
 	for id in "${J_ID[@]}"; do
 		[[ ! -d $BASE/claims/$id && ! -v J_AFTER[$id] ]] || continue
 		left=1
@@ -781,7 +797,7 @@ heartbeat() {
 			id=${f##*/}
 			[[ -f $BASE/claims/$id/start ]] || continue
 			s=$(<"$BASE/claims/$id/start")
-			(( SECONDS - s >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - s))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
+			(( SECONDS - ${s:-$SECONDS} >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - ${s:-$SECONDS}))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
 		done
 	done
 }
