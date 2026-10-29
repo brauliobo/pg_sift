@@ -630,7 +630,7 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 	if (p->kind != SAP_ANY_ELEM || p->nchild != 1 || p->op)
 		return false;
 	t = p->child[0];
-	if (t->leaf >= nbase)
+	if (t->leaf < 0 || t->leaf >= nbase)	/* an AND of element tests has no leaf of its own */
 		return false;
 	lf = &lay->leaf[t->leaf];
 	if (lf->kind != SCL_SCALAR || lf->parent < 0 || lf->lossy)
