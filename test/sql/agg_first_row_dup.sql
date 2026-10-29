@@ -62,8 +62,9 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT name, (fd_check(q)).differences FROM fd_cases ORDER BY name;
--- without the cache of the backend the table is read when the child has run for enough keys, and not before
-RESET max_parallel_workers_per_gather;
+-- without the cache of the backend the table is read when the child has run for enough keys, and not before: in one process, as the keys a worker or the leader
+-- takes of a scan depend on the timing
+SET max_parallel_workers_per_gather = 0;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
 SELECT name, (fd_check(q)).* FROM fd_cases ORDER BY name;
