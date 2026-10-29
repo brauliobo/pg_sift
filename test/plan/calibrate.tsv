@@ -29,3 +29,5 @@ min_max	agg
 mean_of_counts	agg
 two_distincts	agg
 running_total	agg
+arms_union	agg
+arms_per_parent_metrics	agg
