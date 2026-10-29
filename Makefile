@@ -69,7 +69,7 @@ TESTING_REGRESS += col_text_scanwrap
 TESTING_REGRESS += col_ioss_columns col_dict_shared col_dict_shared_stale
 TESTING_REGRESS += col_point_auto
 TESTING_REGRESS += col_ioss_columns col_dict_shared col_dict_shared_stale agg_explain_why_scan
-TESTING_REGRESS += col_topn_offset
+TESTING_REGRESS += col_topn_offset agg_child_warm
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
