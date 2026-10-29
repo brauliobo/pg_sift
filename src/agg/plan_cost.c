@@ -3112,10 +3112,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 	{
-		double		scan = (k.scan_cost - k.open_cost) * c->topn_frac + k.open_cost;
+		double		open = k.open_cost * AGG_SCAN_SPEED,
+					scan = (k.scan_cost - open) * c->topn_frac + open;
 
 		/* through the sorted runs, a unit costs a seek and the rows wanted, never more than its rows scanned */
-		k.scan_cost = c->topn_runs ? Min(scan, k.open_cost + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW)) : scan;
+		k.scan_cost = c->topn_runs ? Min(scan, open + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW)) : scan;
 	}
 	k.scan_cost *= cpu_operator_cost;
 	/*

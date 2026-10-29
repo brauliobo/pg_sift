@@ -33,8 +33,14 @@
 #include "bm25/planner.h"
 #include "agg/search.h"
 
-/* What the match set costs, in operator costs: a posting decoded and combined, a page of matches merged and copied, a term looked up */
-#define SEARCH_POSTING		0.25
+/*
+ * What the match set costs, in operator costs: a posting decoded and combined, a matching row decoded and aggregated by the scan, a page of matches
+ * merged and copied, a term looked up. A posting is 48 instructions measured (a top-N over 20 words opens 470,000 of them in 22.7 M), a matching row
+ * of a counted scan 196 more (244 a match in all: a count over a word in 62,500 of 250,000 rows is 15.25 M instructions, 6.1 M of 25,000 at 100,000
+ * rows); an instruction is 0.19 operators
+ */
+#define SEARCH_POSTING		9.0
+#define SEARCH_MATCH		37.0
 #define SEARCH_PAGE			12.0
 #define SEARCH_TERM			400.0
 #define SEARCH_BIND			20000.0	/* binding the queries: the directory, the analyzer, the dictionaries (about 60 us) */
@@ -204,7 +210,7 @@ sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *
 	*units = Max(nunits * (1.0 - exp(-docs / Max(nunits, 1.0))), Min(docs, 1.0));
 	/* the rows read: the matches by position, or the whole unit when they are many */
 	*rows = Min(nrows * (*units / Max(nunits, 1.0)), docs * SEARCH_SPARSE);
-	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE;
+	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE + docs * SEARCH_MATCH;
 }
 
 /* "orders_title @@> 'a' AND orders_title @@> 'b' OR orders_title @@> 'c'": the operands of an arm ANDed, the arms ORed */

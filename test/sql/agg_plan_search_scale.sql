@@ -1,0 +1,20 @@
+-- The scan prices a search by the matches it reads: each posting of the word costs the operators of the instructions it takes (244 measured), so a word
+-- in a quarter of the rows costs the scan far more than a word in one row. With a flat price the scan of a search stayed cheap as the table grew and won
+-- against the plans that read less.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE docs (id int PRIMARY KEY, grp int NOT NULL, amount float8 NOT NULL, memo text NOT NULL);
+INSERT INTO docs SELECT g, g % 50, g % 17, (ARRAY['cable', 'wire', 'plug', 'switch'])[1 + g % 4] || ' ' || CASE WHEN g = 1 THEN 'rareword' ELSE 'relay' END FROM generate_series(1, 20000) g;
+CREATE INDEX docs_col ON docs USING sift_col (id, grp, amount);
+CREATE INDEX docs_memo ON docs USING sift (memo);
+VACUUM (FREEZE, ANALYZE) docs;
+
+CREATE FUNCTION scan_cost(word text) RETURNS numeric LANGUAGE sql AS
+$$ SELECT e.scan_cost::numeric FROM sift.explain_why(format('SELECT grp, count(*), sum(amount) FROM docs WHERE memo @@> %L GROUP BY grp', word)) e LIMIT 1 $$;
+
+-- 5,000 postings against one: the difference is the price of reading them, about 110 units
+SELECT scan_cost('cable') - scan_cost('rareword') BETWEEN 80 AND 160 AS price_follows_matches;
+
+DROP FUNCTION scan_cost(text);
+DROP TABLE docs;
+DROP EXTENSION pg_sift;

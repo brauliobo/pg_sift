@@ -389,7 +389,7 @@ SELECT kind, parent_id, total FROM (SELECT kind, parent_id, total, row_number() 
 	FROM (SELECT kind, parent_id, sum(amount) AS total FROM events WHERE deleted_at IS NULL GROUP BY 1, 2) s) w WHERE rn <= 3 ORDER BY 1, 3 DESC, 2;
 
 -- name: search_group
--- expect: scan 0.093 0.37
+-- expect: scan 0.093 0.50
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE memo @@> 'cable wire' AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: search_count
@@ -401,11 +401,11 @@ SELECT count(*) AS n FROM events WHERE memo @@> 'cable';
 SELECT kind, count(*) AS n FROM events WHERE memo @@> 'switch' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: search_latest_rows
--- expect: scan 0.095 0.37
+-- expect: scan 0.095 0.50
 SELECT id, ts, amount FROM events WHERE memo @@> 'cable wire' AND deleted_at IS NULL ORDER BY ts DESC, id DESC LIMIT 8;
 
 -- name: search_or_by_month
--- expect: scan 0.10 0.34
+-- expect: scan 0.10 0.45
 SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE memo @@> 'cable OR relay' AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: search_join
