@@ -240,6 +240,13 @@ SELECT loads = 0 AS rare_stays_in_stream FROM sift._test_col_dict_cache(false);
  t
 (1 row)
 
+-- a ring that threw out more than it found, as the tests before this one leave it, skips the next writes: the common dictionary below would stay in the private cache
+SELECT sift._test_col_dict_shared_hold(0) IS NOT NULL AS ring_open;
+ ring_open 
+-----------
+ t
+(1 row)
+
 SELECT count(*) FROM tgh WHERE s LIKE '%.example/item/%';
  count 
 -------

@@ -424,3 +424,6 @@ DO $$ BEGIN
 		ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD OPERATOR 3 sift.=== (int4, float4);
 	END IF;
 END $$;
+
+CREATE FUNCTION sift._test_col_dict_shared_hold(int4) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_hold' LANGUAGE C STRICT;

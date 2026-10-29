@@ -96,6 +96,8 @@ SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT count(*) FROM tgh WHERE s LIKE '%' || substr(md5('77'), 3, 12) || '%';
 SELECT count(*) FROM tgh WHERE s LIKE '%' || substr(md5('78'), 3, 12) || '%';
 SELECT loads = 0 AS rare_stays_in_stream FROM sift._test_col_dict_cache(false);
+-- a ring that threw out more than it found, as the tests before this one leave it, skips the next writes: the common dictionary below would stay in the private cache
+SELECT sift._test_col_dict_shared_hold(0) IS NOT NULL AS ring_open;
 SELECT count(*) FROM tgh WHERE s LIKE '%.example/item/%';
 SELECT count(*) FROM tgh WHERE s LIKE '%.example/item/%';
 SELECT loads > 0 AS common_parsed FROM sift._test_col_dict_cache(false);
