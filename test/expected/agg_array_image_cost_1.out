@@ -1,0 +1,46 @@
+-- The planner prices the dictionary entry of an array image at its real cost: the unit hashes, interns and inflates every new array before a
+-- test reads it, so a scan whose conjuncts all read a column of long arrays keeps the heap plan, which reads the same arrays and tests them for less,
+-- while the same scan of a column of short arrays stays on the index.
+-- (the index keeps no lengths here: with the lanes a presence or length test of long arrays reads two integer columns and stays on the index, test col_array_lengths)
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE items (id int PRIMARY KEY, kind int, short_tags text[], long_tags text[]);
+INSERT INTO items
+SELECT i, i % 7,
+       ARRAY['t' || i % 400, 't' || (i * 7) % 400, 't' || (i * 13) % 400],
+       ARRAY(SELECT 'amenity_' || (hashint8extended(i * 20 + j, 3) & 8388607) FROM generate_series(1, 12) j)
+FROM generate_series(1, 100000) i;
+CREATE INDEX items_col ON items USING sift_col (kind, short_tags, long_tags) WITH (array_lengths = off);
+NOTICE:  sift_col index items_col: compression of the text of 1 column chosen by the formula (lz4 for 1, zstd kept for 0)
+DETAIL:  long_tags (long strings): lz4; a test reads 12.1 M instructions a MB of text with zstd and 4.3 M with lz4 (2.8 times fewer), lz4 takes 3.4 MB more (+56%): benefit 21 against cost 19.
+HINT:  ALTER INDEX items_col SET (compression = 'auto; long_tags=zstd') and REINDEX keeps zstd for a column, 'auto; long_tags=lz4' takes lz4.
+VACUUM (FREEZE, ANALYZE) items;
+SELECT attname, avg_width < 64 AS under_knee, avg_width > 100 AS over_knee FROM pg_stats WHERE tablename = 'items' AND attname LIKE '%tags' ORDER BY attname;
+  attname   | under_knee | over_knee 
+------------+------------+-----------
+ long_tags  | f          | t
+ short_tags | t          | f
+(2 rows)
+
+CREATE FUNCTION on_index(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT used FROM sift.explain_why(q) $$;
+SELECT col, shape, on_index(format('SELECT count(*) FROM items WHERE %s', replace(shape, 'COL', col))) AS on_index
+FROM unnest(ARRAY['short_tags', 'long_tags']) col,
+     unnest(ARRAY['cardinality(COL) > 0', 'COL && ARRAY[''amenity_1'', ''t5'']', '''t5'' = ANY(COL)', 'COL @> ARRAY[''t5'', ''t6'']', 'COL IS NOT NULL']) shape
+ORDER BY col, shape;
+    col     |              shape              | on_index 
+------------+---------------------------------+----------
+ long_tags  | 't5' = ANY(COL)                 | f
+ long_tags  | COL && ARRAY['amenity_1', 't5'] | f
+ long_tags  | COL @> ARRAY['t5', 't6']        | f
+ long_tags  | COL IS NOT NULL                 | f
+ long_tags  | cardinality(COL) > 0            | f
+ short_tags | 't5' = ANY(COL)                 | t
+ short_tags | COL && ARRAY['amenity_1', 't5'] | t
+ short_tags | COL @> ARRAY['t5', 't6']        | t
+ short_tags | COL IS NOT NULL                 | t
+ short_tags | cardinality(COL) > 0            | t
+(10 rows)
+
+DROP FUNCTION on_index(text);
+DROP TABLE items;
+DROP EXTENSION pg_sift;
