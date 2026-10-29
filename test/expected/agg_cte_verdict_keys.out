@@ -6,6 +6,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
 SET random_page_cost = 4;
+-- every row is read by ANALYZE, so the 'key of the mean' does not move with the sample (1 in 600 ANALYZEs of the 30,000-row default sample flipped list n1)
+SET default_statistics_target = 10000;
 CREATE TABLE sites (id int PRIMARY KEY);
 INSERT INTO sites SELECT g FROM generate_series(1, 5000) g;
 CREATE TABLE grants (site_id int NOT NULL);
