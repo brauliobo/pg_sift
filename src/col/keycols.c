@@ -628,7 +628,14 @@ col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32
 	return true;
 }
 
-/* about how many bytes a row of the index takes, from the statistics of its columns: the bits of their distinct values, and the strings of a dictionary, at most their width */
+/* about how many bytes a row of the index takes for a column, from its statistics: the bits of its distinct values, and the strings of a dictionary, at most its width */
+static double
+est_col_bytes(Relation heap, const FormData_pg_attribute *att, double d, int32 width)
+{
+	return Min(width, log2(Max(d, 2)) / 8 + (att->attbyval ? 0 : width * d / Max(heap->rd_rel->reltuples, 1)));
+}
+
+/* ... and of the whole index */
 static double
 est_index_bytes(Relation heap, Relation index)
 {
@@ -643,11 +650,9 @@ est_index_bytes(Relation heap, Relation index)
 		int32		width;
 
 		if (hatt == 0 || !col_stats(heap, hatt, &d, &corr, &width))
-		{
 			bytes += att->attlen > 0 ? att->attlen : 32;
-			continue;
-		}
-		bytes += Min(width, log2(Max(d, 2)) / 8 + (att->attbyval ? 0 : width * d / Max(heap->rd_rel->reltuples, 1)));
+		else
+			bytes += est_col_bytes(heap, att, d, width);
 	}
 	return bytes;
 }
@@ -741,9 +746,9 @@ int_range_bits(Relation heap, AttrNumber hatt, Form_pg_attribute att)
 	return bits;
 }
 
-/* about how many bytes a row of the index takes without the directory: an integer that follows the heap takes a byte or two, one that does not takes the bits of its range, the other columns about half their width */
+/* about how many bytes a row of the index takes without the directory: an integer that follows the heap takes a byte or two, one that does not takes the bits of its range, the other columns what est_col_bytes says, a jsonb column with paths a byte for each (the index stores their values, not the documents: 5 leaves of 4 columns took 2.3 of the 16 bytes a row) */
 static double
-point_base_bytes(Relation heap, Relation index)
+point_base_bytes(Relation heap, Relation index, const SiftColSchema *schema)
 {
 	double		bytes = POINT_AUTO_OVERHEAD;
 
@@ -754,13 +759,18 @@ point_base_bytes(Relation heap, Relation index)
 		double		d,
 					corr;
 		int32		width;
+		int			paths = 0;
 
-		if (hatt == 0 || !col_stats(heap, hatt, &d, &corr, &width))
+		for (int c = 0; att->atttypid == JSONBOID && c < schema->ncols; c++)
+			paths += schema->cols[c].attno == i + 1 && sift_col_def_has_kinds(&schema->cols[c]);
+		if (paths > 0)
+			bytes += paths;
+		else if (hatt == 0 || !col_stats(heap, hatt, &d, &corr, &width))
 			bytes += att->attlen > 0 ? att->attlen : 16;
 		else if (att->attbyval && att->attlen > 0 && att->atttypid != FLOAT4OID && att->atttypid != FLOAT8OID)
 			bytes += corr >= 0.9 ? 1.5 : Min(int_range_bits(heap, hatt, att) / 8, att->attlen);
 		else
-			bytes += Max(1.0, width * 0.5);
+			bytes += Max(1.0, est_col_bytes(heap, att, d, width));
 	}
 	return bytes;
 }
@@ -815,7 +825,7 @@ sift_col_auto_point(Relation heap, Relation index)
 		return;
 	rows = heap->rd_rel->reltuples;
 	initStringInfo(&list);
-	base = point_base_bytes(heap, index);
+	base = point_base_bytes(heap, index, rel->schema);
 	for (int c = 0; c < rel->schema->ncols && rows > 0; c++)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
@@ -827,8 +837,9 @@ sift_col_auto_point(Relation heap, Relation index)
 					C,
 					G;
 		int32		width;
+		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
-		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || in_list(ordopt, leaf_name(index, d)) || !sift_cset_leaf_ok(rel->schema, d) || strchr(leaf_name(index, d), ',') != NULL)
+		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || in_list(ordopt, leaf_name(index, d)) || !sift_cset_leaf_ok(rel->schema, d) || strchr(leaf_name(index, d), ',') != NULL)
 			continue;
 		if (!col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || corr >= 0.9)
 			continue;

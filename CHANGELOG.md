@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: the default `point_tid_columns` of `CREATE INDEX` and `REINDEX` no longer lists a date or a timestamp column (an equality on one is rare, its reads are ranges and an order) and predicts the growth of the index from the values it stores, not from the width of the documents of a jsonb column: a 13-column index with paths of a table of 1,000,000 rows said +12% and +11% for two columns and grew 3.0 times (16 to 48 MB, 3.5.3 to 3.6.0), it now lists the id alone and says +44% (33 MB, the id's 13.8 MB); 400,000 rows of three columns, the directory of a nearly unique timestamp and an int8 said +10% and +9%, grew the index 4.7 to 18.8 MB, and now lists the int8 and says +106% (measured +180%); a `REINDEX` decides again, `ALTER INDEX .. SET (point_tid_columns = 'rid')` names a column by hand
+
 ## 3.6.0 - 2026-10-29
 
 - Added: pg_sift: `sift.col_dict_shared_cache_kb` sets the size of the ring of parsed dictionaries that backends share (a `sift_col` dictionary of 128 kB or more that one backend parsed is read in place by the others), and 0 turns the sharing off: no segment is made or attached and each backend parses and keeps its own dictionaries, with the same rows. It replaces the size taken from `shared_buffers` (64 MB to 512 MB with no setting): the default is 64 MB for every server, 4 GB at most, and with posix shared memory at most a quarter of `/dev/shm` (the log says when the size is cut). The size is recorded in the shared directory by the backend that makes it, so a backend with another setting uses the ring as it is, and a change takes effect at the next start of the server. The ring is made when the first dictionary is kept, not on the first read of one: a server with no dictionary to share takes a directory of about 50 kB. This memory is in addition to `shared_buffers`, is not reclaimable like the page cache, counts in `/dev/shm` and the shared memory of a container, and gets no huge pages.

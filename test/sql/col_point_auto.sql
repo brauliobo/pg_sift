@@ -57,6 +57,18 @@ DROP INDEX pa_rid;
 SELECT count(*), min(id) FROM pa WHERE rid = :k;
 SELECT count(*) FROM pa WHERE rid IN (:k, 1, 2, (SELECT rid FROM pa WHERE id = 777));
 
+-- a timestamp of nearly unique values is not a lookup key (its reads are ranges and an order), and the growth the NOTICE predicts counts the values of the paths of a jsonb column, not its documents
+CREATE TABLE pj AS SELECT g AS id, hashint8extended(g, 9) & 4611686018427387903 AS rid, TIMESTAMP '2025-01-01' + (hashint8extended(g, 3) & 8388607) * interval '1 second' AS ts,
+	jsonb_build_object('a', g % 7, 't', 't' || g % 40, 'text', repeat(md5(g::text), 8)) AS doc FROM generate_series(1, 400000) g;
+VACUUM (FREEZE, ANALYZE) pj;
+SET client_min_messages = notice;
+CREATE INDEX pj_auto ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext');
+SET client_min_messages = warning;
+CREATE INDEX pj_off ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext', point_tid_columns = 'off');
+SELECT popt('pj_auto') AS pj_point_tid_columns,
+	round(100.0 * (pg_relation_size('pj_auto') - pg_relation_size('pj_off')) / pg_relation_size('pj_off'), -1) AS measured_growth_pct;
+DROP TABLE pj;
+
 DROP FUNCTION popt(regclass);
 DROP TABLE pa, pas;
 DROP EXTENSION pg_sift;
