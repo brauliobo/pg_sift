@@ -77,12 +77,21 @@ reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
 	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
 	OuterRef	oref = {c->root, e->rtekind == RTE_SUBQUERY ? 0 : -1, skip};
 	Node	   *expr = e->rtekind == RTE_VALUES ? (Node *) e->values_lists : (Node *) e->functions;
+	bool		r;
 
-	if (e->rtekind == RTE_SUBQUERY)
-		return query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
-	if (e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION)
+	if (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION)
 		return false;
-	return outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
+	if (walk_memo_get(e, c->root, skip, &r))
+		return r;
+#ifdef SIFT_TESTING
+	sift_agg_outer_walks++;
+#endif
+	if (e->rtekind == RTE_SUBQUERY)
+		r = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+	else
+		r = outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
+	walk_memo_put(e, c->root, skip, r);
+	return r;
 }
 
 /*

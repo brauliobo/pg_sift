@@ -76,6 +76,61 @@ typedef struct LeafWalk
 } LeafWalk;
 
 /*
+ * The answers of the walks that look for the references to a query above (cte_owner_correlated, reads_outer) in the plan being made. The inline variant of a
+ * statement repeats a CTE body at each of its references, and each of those walks goes through all of it again, once for each join of each arm, and into the
+ * owner of every CTE it meets: the same answer 950 times over a plan of 14 G instructions. The answers hold while one planner run lasts (the nodes they are
+ * keyed by are not freed before it ends); sift_agg_walks_forget drops them when a run starts and ends, as their addresses are used again afterwards.
+ */
+#define WALK_MEMO_MAX	4096
+
+typedef struct WalkMemo
+{
+	const void *a,
+			   *b;
+	int			skip;
+	bool		r;
+} WalkMemo;
+
+static WalkMemo *walk_memo;
+static int	walk_memo_n;
+
+#ifdef SIFT_TESTING
+int64		sift_agg_outer_walks;	/* the walks made, not found in the memo */
+int64		sift_agg_outer_asks;	/* the questions asked */
+#endif
+
+void
+sift_agg_walks_forget(void)
+{
+	walk_memo_n = 0;
+}
+
+bool
+walk_memo_get(const void *a, const void *b, int skip, bool *r)
+{
+#ifdef SIFT_TESTING
+	sift_agg_outer_asks++;
+#endif
+	for (int i = 0; i < walk_memo_n; i++)
+		if (walk_memo[i].a == a && walk_memo[i].b == b && walk_memo[i].skip == skip)
+		{
+			*r = walk_memo[i].r;
+			return true;
+		}
+	return false;
+}
+
+void
+walk_memo_put(const void *a, const void *b, int skip, bool r)
+{
+	if (walk_memo_n >= WALK_MEMO_MAX)
+		return;
+	if (walk_memo == NULL)
+		walk_memo = MemoryContextAlloc(TopMemoryContext, WALK_MEMO_MAX * sizeof(WalkMemo));
+	walk_memo[walk_memo_n++] = (WalkMemo) {a, b, skip, r};
+}
+
+/*
  * Does a CTE of this query level change with the rows of a query above it? One of the top level never does; one of a sub-select that reads
  * nothing of the queries around it (a WITH inside a derived table) does not either, but a lateral or correlated one does.
  */
@@ -83,8 +138,18 @@ bool
 cte_owner_correlated(PlannerInfo *owner)
 {
 	OuterRef	oref = {owner, 0, 0};
+	bool		r;
 
-	return owner->parent_root != NULL && query_tree_walker(owner->parse, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+	if (owner->parent_root == NULL)
+		return false;
+	if (walk_memo_get(owner, NULL, 0, &r))
+		return r;
+#ifdef SIFT_TESTING
+	sift_agg_outer_walks++;
+#endif
+	r = query_tree_walker(owner->parse, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+	walk_memo_put(owner, NULL, 0, r);
+	return r;
 }
 
 /*

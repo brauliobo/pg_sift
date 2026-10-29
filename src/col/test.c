@@ -15,6 +15,7 @@
 #include "miscadmin.h"
 #include "storage/lock.h"
 #include "lib/stringinfo.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/numeric.h"
 #include "utils/selfuncs.h"
@@ -26,6 +27,7 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
+#include "agg/agg.h"
 #include "col/am.h"
 #include "col/dictshm.h"
 #include "agg/colsrc.h"
@@ -47,6 +49,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
+PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
@@ -1898,6 +1901,18 @@ sift_test_key_sorts(PG_FUNCTION_ARGS)
 	if (PG_GETARG_BOOL(0))
 		sift_col_key_sorts = 0;
 	PG_RETURN_INT64(n);
+}
+
+/* {the questions, the walks made to answer them} about references to a query above that the planner asked since the last read; the argument true resets the counts */
+Datum
+sift_test_agg_outer_walks(PG_FUNCTION_ARGS)
+{
+	Datum		d[2] = {Int64GetDatum(sift_agg_outer_asks), Int64GetDatum(sift_agg_outer_walks)};
+	ArrayType  *a = construct_array_builtin(d, 2, INT8OID);
+
+	if (PG_GETARG_BOOL(0))
+		sift_agg_outer_asks = sift_agg_outer_walks = 0;
+	PG_RETURN_ARRAYTYPE_P(a);
 }
 
 #endif							/* SIFT_TESTING */

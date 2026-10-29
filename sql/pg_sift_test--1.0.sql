@@ -413,6 +413,8 @@ CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel_calls' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_agg_outer_walks(reset bool) RETURNS int8[]
+	AS 'MODULE_PATHNAME', 'sift_test_agg_outer_walks' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
 -- sift_col exists from pg_sift 3.0 on; extension_lifecycle creates this extension on 1.0
 DO $$ BEGIN

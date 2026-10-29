@@ -18,6 +18,9 @@ extern PGDLLIMPORT bool sift_agg_force;
  * agg/plan_cost.c: does probing the keys of a dependent lookup in a btree of the table cost less than reading its pages (the loader's rule and the price's), and the rows a key has
  * (the table's rows over the distinct values of the column by its statistics; 0: unknown)
  */
+extern void sift_agg_walks_forget(void);
+extern int64 sift_agg_outer_asks;
+extern int64 sift_agg_outer_walks;	/* SIFT_TESTING: the walks for references to a query above that the plan made */
 extern bool sift_agg_probe_pays(double keys, double rows, double pages);
 extern double sift_agg_rows_per_key(unsigned int relid, int att, double tuples);
 extern PGDLLIMPORT double sift_plan_scale;
