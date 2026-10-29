@@ -566,6 +566,8 @@ A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stor
 
 ### The choice for a shared CTE is kept per backend
 
+A CTE written `MATERIALIZED` takes part in the choice like any other: the keyword fixes where PostgreSQL computes the rows, not which rows there are, so sift may replace the shared copy by scans of the index, one for each aggregate that reads it, when they cost less than the copy (a CTE with a volatile function or a write is never replaced).
+
 Choosing between a shared CTE and its inline plan takes PostgreSQL's planner several runs of the statement (the shared plan, the inline plan, the larger sizes of `sift.agg_scale_horizon`, the flattened form and the form as written). A backend therefore keeps the choice for up to 4,096 statements (under 1 MB), keyed by the statement without its constants, the size class of each table it reads (half an octave of its pages) and the settings that move a plan (the planner's, `work_mem` and the `sift.*` ones), and plans only the chosen variant when it sees the statement again.
 
 - The entry is dropped when a table it reads is invalidated (DDL, an index created or dropped, `ANALYZE`, `VACUUM`) and is checked again by a plan in full at every eighth hit. A stale verdict (the constants select other rows than the ones it was made for) costs the other plan, never other rows: both variants plan the same query.

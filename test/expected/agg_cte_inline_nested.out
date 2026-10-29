@@ -1,7 +1,7 @@
 -- A CTE that several aggregates read is planned inline when that puts the aggregates in the scan (agg_cte_inline_upper). The CTE the arms read need not
 -- select from the table itself: here it unnests the rows of another CTE of the same WITH (which PostgreSQL inlines, one query reads it), and that one
 -- selects from the table. The shared CTE is still a shared CTE over the table, so the arms are scans and the rows are the normal plan's. An explicit
--- MATERIALIZED is planned both ways like the default (agg_cte_materialized): the keyword fixes where the rows are computed, not which rows there are.
+-- MATERIALIZED is planned both ways like the default (agg_cte_materialized): sift may compute a MATERIALIZED CTE as scans of the index, once for each aggregate that reads it, when they cost less than the shared copy; the rows are the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, payload jsonb) WITH (autovacuum_enabled = false);
