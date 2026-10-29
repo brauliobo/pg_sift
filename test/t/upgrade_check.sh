@@ -107,10 +107,10 @@ check "to 3.3: an index with a global order (format 30) is a blocker" test -n "$
 check "to 3.5: the same index is a blocker that says to turn order_array_columns off" grep -q -E "^blocker +facts_gord .*ALTER INDEX facts_gord SET \(order_array_columns = 'off'\), then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
 check "to 3.6: the same index is ok" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
 q clean "DROP INDEX facts_gord" >/dev/null
-# the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15
-q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad FROM generate_series(1, 20000) i" \
-	"CREATE INDEX facts_ktab ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, superunit = 0, key_columns = 'k')" \
-	"CREATE INDEX facts_ktab_off ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, superunit = 0, key_columns = 'k', key_table = off)" >/dev/null
+# the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15; fat repeats below 1,024 strings, so no dictionary hash (column format 25) hides the 22
+q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad, md5((i % 500)::text) || md5((i % 500)::text || 'a') AS fat FROM generate_series(1, 20000) i" \
+	"CREATE INDEX facts_ktab ON key_facts USING sift_col (id, k, fat) WITH (cube_minmax = false, superunit = 0, key_columns = 'k')" \
+	"CREATE INDEX facts_ktab_off ON key_facts USING sift_col (id, k, fat) WITH (cube_minmax = false, superunit = 0, key_columns = 'k', key_table = off)" >/dev/null
 check "an index with key tables is column format 22" grep -q -E '^ok +facts_ktab +index +format 1\.[0-9]+, column format 22' <<<"$(uc clean)"
 check "to 3.4: an index with key tables is a blocker that says to turn key_table off" grep -q -E '^blocker +facts_ktab .*ALTER INDEX facts_ktab SET \(key_table = off\), then REINDEX INDEX facts_ktab' <<<"$(uc --to 3.4 clean)"
 check "to 3.4: the same index with key_table = off is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_ktab_off)"
