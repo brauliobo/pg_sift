@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: a wrong result since 3.5.0: a `sift_col` index with `key_cut` (set, or chosen by `auto`) and a global order array (`order_array_columns`, `auto` gives one for dates and timestamps) lost rows through a Bitmap Index Scan and a plain Index Scan when the statement had a range or an equality on the array's column that matched at most 16,384 rows (`d BETWEEN a AND b`, `d >= x AND deleted_at IS NULL`, `d = x`, alone or with other predicates): the range handed the heap the addresses of its rows and named each row's unit by the superblock of its heap page, which a key-cut unit is not, so the units that hold the rows were left unread (35% to 55% of the rows missing in the tests, 25% in a 450,000-row table); `Custom Scan (SiftAgg)`, index-only scans, `ORDER BY .. LIMIT`, a range of more than 16,384 rows and indexes without `key_cut` or without the array were exact. The range now reads the units of a key-cut segment; no format change, no `REINDEX`: install the library and reconnect. Interim: `SET sift.enable_col_scan = off` (PostgreSQL 17 and 18). Test `col_gorder_keyed`
+
 ## 3.6.1 - 2026-10-29
 
 - Fixed: pg_sift: a statement with a flattened lateral and shared CTEs that the verdict cache holds for another size of request no longer ends the backend: after the plan of the form that won was checked against the verdict of its size band, the planner discarded the context of the form the band's verdict named, which is never planned when the band names the other form (a wild pointer in `plan_flat`, found by the differential corpus of the analytic statements; SIGSEGV in the planner hook on `MemoryContextDelete`).
