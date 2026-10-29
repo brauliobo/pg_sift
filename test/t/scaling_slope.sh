@@ -32,8 +32,9 @@ grep ': psql:' "$(dir sg)/scaling.err" | cut -c1-300 | sed 's/^/# /' >&2	# a cas
 
 lines=$(grep '^SLOPE .* sift ' <<<"$out")
 n=$(grep -c . <<<"$lines")
-plan $((n + 4))
+plan $((n + 5))
 check "the answers of the scan, of the point directory, of an IN list and of the point keys of an aggregate are the heap's (4 checks)" test "$(grep -c "^CHECK .* ok" <<<"$out")" == 4
+check "a slope that fails is measured again, and a growth every pass shows still fails (bench/scaling/test_retry.py)" python3 -B "$REPO/bench/scaling/test_retry.py"
 check "no check mismatched" test "$(grep -c '^CHECK .*MISMATCH' <<<"$out")" == 0
 check "no case failed to build or to measure" test "$(grep -c ',,,,,,,,ERROR' <<<"$out")" == 0
 check "every class of the gate ran (at least 17 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 17
