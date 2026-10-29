@@ -58,6 +58,13 @@
 /* ... and where an ordinary plan still reads the table, the inline plan may total this many times the shared one at most (priced 1.06 to 1.22 times above it, run 1.2 to 1.5 times faster) */
 #define CTE_INLINE_TOTALS	1.25
 
+/*
+ * The share of a flat plan's cost that its ordinary reads of tables with a column index must reach for the plan to be set against the one as written: the
+ * lookups of a CTE of keys (the members of a group) are a few probes of the rows the scan reads in bulk, and the estimates of the plan as written
+ * (the rows of the CTE, of each key) are low by two orders of magnitude where the keys are few and their tables large
+ */
+#define PLAIN_READER_SHARE	0.25
+
 static planner_hook_type prev_planner_hook;
 static ExecutorStart_hook_type prev_executor_start;
 
@@ -608,36 +615,39 @@ shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, double lift, 
 	return w.cost + *charged;
 }
 
-/* does the plan read a table that has a column index other than through a SiftAgg node? */
-static bool
-plain_reader(PlannedStmt *stmt, Plan *plan)
+/*
+ * The ordinary reads of tables that have a column index in the plan, other than through a SiftAgg node, as work: the cost of the scan times the rows
+ * of the outer side of the nested loops it is the inner side of.
+ */
+static double
+plain_reader(PlannedStmt *stmt, Plan *plan, double loops)
 {
-	if (plan == NULL)
-		return false;
-	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
-		return false;
+	double		work = 0;
+
+	if (plan == NULL || (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods))
+		return 0;
 	if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
 	{
 		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
 
 		if (rte->rtekind == RTE_RELATION && has_column_source(rte->relid))
-			return true;
+			work += plan->total_cost * loops;
 	}
 	foreach_ptr(Plan, p, child_plans(plan))
-		if (plain_reader(stmt, p))
-			return true;
-	return plain_reader(stmt, plan->lefttree) || plain_reader(stmt, plan->righttree);
+		work += plain_reader(stmt, p, loops);
+	work += plain_reader(stmt, plan->lefttree, loops);
+	return work + plain_reader(stmt, plan->righttree, IsA(plan, NestLoop) ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops);
 }
 
+/* does the plan read a table that has a column index other than through a SiftAgg node, for more than the share of its cost? */
 static bool
-plain_reader_stmt(PlannedStmt *stmt)
+plain_reader_stmt(PlannedStmt *stmt, double share)
 {
-	if (plain_reader(stmt, stmt->planTree))
-		return true;
+	double		work = plain_reader(stmt, stmt->planTree, 1.0);
+
 	foreach_ptr(Plan, p, stmt->subplans)
-		if (plain_reader(stmt, p))
-			return true;
-	return false;
+		work += plain_reader(stmt, p, 1.0);
+	return work > share * stmt->planTree->total_cost;
 }
 
 /*
@@ -763,7 +773,7 @@ inline_wins(const CteVariants *v, double vet, double shared_vet)
 				plain_cost = v->plain_cost - shared_vet,
 				work = v->work - shared_vet;
 
-	return v->scans.n > 0 && (sift_agg_force || (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
+	return v->scans.n > 0 && (sift_agg_force || (!plain_reader_stmt(v->inlined, 0) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
 							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
 							  scans < plain_cost - inline_cost));
 }
@@ -1036,7 +1046,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 * A flat plan that reads every table that has a column index in a scan is the plan: the first one would only be set against it. Not a
 		 * table grouped in place of an index lookup for each row of the outer query: the lookups cost less for a few rows.
 		 */
-		if (!by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
+		if (!by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan, PLAIN_READER_SHARE))
 		{
 			verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
 			return flatplan;
@@ -1046,7 +1056,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
 	planning_second = false;
 	/* the flat plan runs more of the statement in the scan only where an ordinary plan still reads a table that has a column index */
-	if (flatplan == NULL || !plain_reader_stmt(plain))
+	if (flatplan == NULL || !plain_reader_stmt(plain, 0))
 	{
 		if (flatplan != NULL)
 		{
