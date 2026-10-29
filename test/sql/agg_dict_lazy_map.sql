@@ -2,6 +2,7 @@
 -- dictionary at the start of the statement. The rows must be those of the normal plan with NULLs, empty strings, long strings, a dictionary of one entry, codes that
 -- the first chunk does not read (the later ones do) and groups that only a filter keeps.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

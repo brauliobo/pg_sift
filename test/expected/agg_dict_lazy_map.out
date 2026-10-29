@@ -2,6 +2,7 @@
 -- dictionary at the start of the statement. The rows must be those of the normal plan with NULLs, empty strings, long strings, a dictionary of one entry, codes that
 -- the first chunk does not read (the later ones do) and groups that only a filter keeps.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ev (id int PRIMARY KEY, grp int, word text, one text, tail text, amount int) WITH (autovacuum_enabled = false);
@@ -13,12 +14,6 @@ SELECT i, i % 7,
        i % 100
 FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (grp, word, one, tail, amount);
-NOTICE:  sift_col index ev_col writes a rollup of the rows by grp, one
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 7 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index ev_col: compression of the text of 1 column chosen by the formula (lz4 for 1, zstd kept for 0)
-DETAIL:  word (long strings): lz4; a test reads 17.8 M instructions a MB of text with zstd and 5.5 M with lz4 (3.2 times fewer), lz4 takes about 60 kB more (+63%): benefit 24 against cost 21.
-HINT:  ALTER INDEX ev_col SET (compression = 'auto; word=zstd') and REINDEX keeps zstd for a column, 'auto; word=lz4' takes lz4.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN

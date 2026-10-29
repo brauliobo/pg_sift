@@ -3,6 +3,7 @@
 -- while the same scan of a column of short arrays stays on the index.
 -- (the index keeps no lengths here: with the lanes a presence or length test of long arrays reads two integer columns and stays on the index, test col_array_lengths)
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE items (id int PRIMARY KEY, kind int, short_tags text[], long_tags text[]);
