@@ -32,6 +32,7 @@
 	X(VERDICT_SHARED, "verdict_cache_shared_hits", "of the hits, those on a verdict that another backend made (sift.verdict_cache_kb)") \
 	X(LEAF_BUILT, "leaf_stats_built", "indexes whose leaf statistics this backend folded from the zones of the units (the first plan over an index, or after it changed)") \
 	X(LEAF_SHARED, "leaf_stats_shared", "indexes whose leaf statistics this backend took from another backend (sift.col_leaf_cache_kb)") \
+	X(LEAF_CHECKED, "leaf_stats_checked", "indexes whose leaf statistics this backend validated against the directory of the index (once for each index in a planning)") \
 	X(DICT_SHARED_HITS, "dict_shared_hits", "segment dictionaries this backend copied from shared memory, parsed by another backend") \
 	X(DICT_SHARED_MISSES, "dict_shared_misses", "segment dictionaries big enough to share that this backend parsed from the segment because no other backend had (EXPLAIN (ANALYZE, VERBOSE): Shared Dictionaries)") \
 	X(DICT_SHARED_HELD, "dict_shared_held", "of those, the dictionaries not kept for other backends because the shared memory was throwing out more than other backends found in it")

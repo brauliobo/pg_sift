@@ -301,4 +301,8 @@ extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	((void) 0)
 #endif
 
+/* the planner hook opens a planning, within which the statistics of an index are validated once (col/am.c leaf_cache_entry); true when this call opened it */
+extern bool sift_col_plan_begin(void);
+extern void sift_col_plan_end(bool started);
+
 #endif							/* SIFT_COL_AM_H */

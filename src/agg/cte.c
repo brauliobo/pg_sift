@@ -1080,6 +1080,7 @@ static PlannedStmt *
 sift_planner(SIFT_PLANNER_PARAMS)
 {
 	MemoryContext memo = sift_agg_memo_begin();
+	bool		col_plan = sift_col_plan_begin();
 	PlannedStmt *stmt;
 
 	hook_ran = true;
@@ -1103,6 +1104,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PG_FINALLY();
 	{
 		sift_agg_memo_end(memo);
+		sift_col_plan_end(col_plan);
 	}
 	PG_END_TRY();
 	delete_discarded();

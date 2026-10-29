@@ -1,0 +1,79 @@
+-- The statistics of a column index are validated against its directory once in a planning, not at every call: the cost estimate of each partition's index asks
+-- for them three times and the source another, and each validation reads the metapage and the directory page under share locks (leaf_stats_checked). A group by over
+-- 12 partitions validates each index once or twice (the first plan of a backend may build them), and the plan after a write sees it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pv (id int NOT NULL, kind text NOT NULL, amount float8 NOT NULL, ts date NOT NULL, deleted_at timestamptz) PARTITION BY RANGE (ts);
+SELECT format('CREATE TABLE pv_%1$s PARTITION OF pv FOR VALUES FROM (%2$L) TO (%3$L)', i, date '2024-01-01' + i, date '2024-01-02' + i) FROM generate_series(0, 11) i \gexec
+CREATE TABLE pv_0 PARTITION OF pv FOR VALUES FROM ('01-01-2024') TO ('01-02-2024')
+CREATE TABLE pv_1 PARTITION OF pv FOR VALUES FROM ('01-02-2024') TO ('01-03-2024')
+CREATE TABLE pv_2 PARTITION OF pv FOR VALUES FROM ('01-03-2024') TO ('01-04-2024')
+CREATE TABLE pv_3 PARTITION OF pv FOR VALUES FROM ('01-04-2024') TO ('01-05-2024')
+CREATE TABLE pv_4 PARTITION OF pv FOR VALUES FROM ('01-05-2024') TO ('01-06-2024')
+CREATE TABLE pv_5 PARTITION OF pv FOR VALUES FROM ('01-06-2024') TO ('01-07-2024')
+CREATE TABLE pv_6 PARTITION OF pv FOR VALUES FROM ('01-07-2024') TO ('01-08-2024')
+CREATE TABLE pv_7 PARTITION OF pv FOR VALUES FROM ('01-08-2024') TO ('01-09-2024')
+CREATE TABLE pv_8 PARTITION OF pv FOR VALUES FROM ('01-09-2024') TO ('01-10-2024')
+CREATE TABLE pv_9 PARTITION OF pv FOR VALUES FROM ('01-10-2024') TO ('01-11-2024')
+CREATE TABLE pv_10 PARTITION OF pv FOR VALUES FROM ('01-11-2024') TO ('01-12-2024')
+CREATE TABLE pv_11 PARTITION OF pv FOR VALUES FROM ('01-12-2024') TO ('01-13-2024')
+INSERT INTO pv SELECT i, 'cat_' || (i % 4), i % 17, date '2024-01-01' + i % 12 FROM generate_series(1, 6000) i;
+SELECT format('CREATE INDEX ON pv_%s USING sift_col (id, kind, amount, ts, deleted_at)', i) FROM generate_series(0, 11) i \gexec
+CREATE INDEX ON pv_0 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_1 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_2 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_3 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_4 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_5 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_6 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_7 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_8 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_9 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_10 USING sift_col (id, kind, amount, ts, deleted_at)
+CREATE INDEX ON pv_11 USING sift_col (id, kind, amount, ts, deleted_at)
+VACUUM (FREEZE, ANALYZE) pv;
+CREATE FUNCTION checked(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM sift.stats_reset();
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP NULL; END LOOP;
+	RETURN (SELECT value FROM sift.stats() WHERE name = 'leaf_stats_checked');
+END $$;
+-- the first plan builds the statistics
+SELECT checked('SELECT kind, count(*), sum(amount) FROM pv WHERE deleted_at IS NULL GROUP BY 1') > 0 AS first_plan;
+ first_plan 
+------------
+ t
+(1 row)
+
+SELECT checked('SELECT kind, count(*), sum(amount) FROM pv WHERE deleted_at IS NULL GROUP BY 1') <= 12 * 2 AS once_a_planning;
+ once_a_planning 
+-----------------
+ t
+(1 row)
+
+SELECT checked('SELECT count(*) FROM pv WHERE deleted_at IS NULL') <= 12 * 2 AS count_once_a_planning;
+ count_once_a_planning 
+-----------------------
+ t
+(1 row)
+
+-- a write and a VACUUM change the directory: the next planning validates again and sees them
+INSERT INTO pv SELECT i, 'cat_new', 1, date '2024-01-01' + i % 12 FROM generate_series(6001, 7200) i;
+VACUUM pv;
+SELECT count(*) AS new_kind_groups FROM (SELECT kind FROM pv WHERE deleted_at IS NULL GROUP BY 1) g WHERE kind = 'cat_new';
+ new_kind_groups 
+-----------------
+               1
+(1 row)
+
+SELECT checked('SELECT kind, count(*), sum(amount) FROM pv WHERE deleted_at IS NULL GROUP BY 1') BETWEEN 12 AND 12 * 2 AS validated_again;
+ validated_again 
+-----------------
+ t
+(1 row)
+
+DROP FUNCTION checked(text);
+DROP TABLE pv;
+DROP EXTENSION pg_sift;

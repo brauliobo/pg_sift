@@ -969,6 +969,7 @@ typedef struct LeafEntry
 {
 	Oid			index;			/* hash key */
 	uint64		stamp;
+	uint64		checked;		/* the planning (leaf_plan) that validated the stamp */
 	int			ncols;
 	SiftColLeafStats *st;
 	SiftColZones *zones;
@@ -976,6 +977,30 @@ typedef struct LeafEntry
 }			LeafEntry;
 
 static HTAB *leaf_cache;
+
+/*
+ * The planner asks one index for its statistics, its zones and its pre-aggregates several times (the cost estimate alone three, the source another) and what the
+ * first call validates, by reading the metapage and the directory under share locks, holds for the whole planning: the planner hook opens a planning
+ * (sift_col_plan_begin) and an entry validated in it is returned as it is. A build or a maintenance call outside a planning always validates.
+ */
+static uint64 leaf_plan;
+static uint64 leaf_plan_seq;
+
+bool
+sift_col_plan_begin(void)
+{
+	if (leaf_plan != 0)
+		return false;
+	leaf_plan = ++leaf_plan_seq;
+	return true;
+}
+
+void
+sift_col_plan_end(bool started)
+{
+	if (started)
+		leaf_plan = 0;
+}
 
 uint32
 sift_col_pagg_hash(Relation index)
@@ -1041,6 +1066,13 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	Oid			key = RelationGetRelid(index);
 	LeafEntry  *e;
 
+	if (leaf_plan != 0 && dir == NULL && leaf_cache != NULL)
+	{
+		e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
+		if (e != NULL && e->checked == leaf_plan && e->ncols == d->ncols)
+			return e;
+	}
+	sift_stat_add(SIFT_STAT_LEAF_CHECKED, 1);
 	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
 	if (dir == NULL)
 	{
@@ -1057,7 +1089,10 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	}
 	e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
 	if (e != NULL && e->stamp == stamp && e->ncols == d->ncols)
+	{
+		e->checked = leaf_plan;
 		return e;
+	}
 	if (e != NULL)
 	{
 		pfree(e->st);
@@ -1135,6 +1170,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		zones_shrink(zs);
 		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 		e->stamp = stamp;
+		e->checked = leaf_plan;
 		e->ncols = d->ncols;
 		e->st = st;
 		e->zones = zs;
