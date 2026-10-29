@@ -1020,11 +1020,13 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			{
 				/* a verdict holds for the size of the request it was made for: the plan of the form that won is checked against it, else the statement is planned in full */
 				Query	   *again = copyObject(parse);
-				PlannedStmt *stmt = fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
+				MemoryContext cx;
+				PlannedStmt *stmt = fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &cx);
 
+				/* verdict_accept reads the verdict of the band of this size into fv, which may be the other form's */
 				if (verdict_accept(&fv, cte_size(stmt)) == VERDICT_TAKE)
 					return stmt;
-				discard_plan(fv.won ? flat_cx : plain_cx);
+				discard_plan(cx);
 				parse = again;
 				flat = copyObject(parse);
 				by_cost = sift_agg_flatten_laterals(flat);
