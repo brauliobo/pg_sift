@@ -674,6 +674,62 @@ nd_range_cheap(const CcNode *nd)
 	}
 }
 
+#define GATHER_RUN	16
+
+/* The values of the rows idx[0..m) of a node with no run of GATHER_RUN rows: a level at a time, so that the switch of nd_get and its recursion are paid once for the rows, not for each */
+static void
+nd_gather(const CcNode *nd, const uint32 *idx, uint32 m, int64 *dst)
+{
+	switch (nd->tag)
+	{
+		case SIFT_CCN_CONST:
+			for (uint32 k = 0; k < m; k++)
+				dst[k] = nd->base;
+			return;
+		case SIFT_CCN_FORBIT:
+			{
+				const uint32 *w32 = (const uint32 *) nd->words;
+				uint32		W = nd->W,
+							mask = W >= 32 ? 0xFFFFFFFFu : (1u << W) - 1;
+
+				for (uint32 k = 0; k < m; k++)
+				{
+					uint32		i = idx[k],
+								bp = ((i & 1023) >> 5) * W,
+								sh = bp & 31,
+								x;
+					const uint32 *a = w32 + (size_t) (i >> 10) * 32 * W + (size_t) (bp >> 5) * 32 + (i & 31);
+
+					x = sift_cc_ld32(a) >> sh;
+					if (sh + W > 32)
+						x |= sift_cc_ld32(a + 32) << (32 - sh);
+					dst[k] = (int64) ((uint64) nd->base + (x & mask));
+				}
+			}
+			return;
+		case SIFT_CCN_WRAP:
+			nd_gather(nd->a, idx, m, dst);
+			return;
+		case SIFT_CCN_SCALE:
+			nd_gather(nd->a, idx, m, dst);
+			for (uint32 k = 0; k < m; k++)
+				dst[k] = (int64) ((uint64) nd->base + (uint64) nd->mind * (uint64) dst[k]);
+			return;
+		case SIFT_CCN_DICT:
+			nd_gather(nd->b, idx, m, dst);
+			for (uint32 k = 0; k < m; k++)
+			{
+				if (dst[k] < 0 || dst[k] >= (int64) nd->d)
+					CC_CORRUPT("dictionary code out of range");
+				dst[k] = nd->dict[dst[k]];
+			}
+			return;
+		default:
+			for (uint32 k = 0; k < m; k++)
+				dst[k] = nd_get(nd, idx[k]);
+	}
+}
+
 void
 sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 {
@@ -705,6 +761,23 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 		}
 		pfree(all);
 		return;
+	}
+	{
+		bool		runs = false;
+
+		/* a run of rows costs by the rows it asks for in nd_range; the short ones that chance makes in a sparse selection do not */
+		for (uint32 k = 0, len = 1; k + 1 < m && !runs; k++)
+		{
+			len = idx[k + 1] == idx[k] + 1 ? len + 1 : 1;
+			runs = len >= GATHER_RUN;
+		}
+		if (!runs)
+		{
+			for (uint32 k = 0; k < m; k++)
+				SIFT_INVARIANT(idx[k] < c->n, "row %u is past the end of a column chunk of %u rows", idx[k], c->n);
+			nd_gather(c->root, idx, m, dst);
+			return;
+		}
 	}
 	for (uint32 k = 0; k < m;)
 	{

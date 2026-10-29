@@ -277,6 +277,17 @@ chunk_digest(const Chunk *c, const SiftCcPolicy *pol, uint64 *bad)
 			for (uint32 k = 0; k < len; k++)
 				*bad += part[k] != dec[from + k];
 		}
+		/* rows far apart, and a sparse set with chance pairs: the selection is read a level at a time */
+		for (uint32 r = 0; n > 0 && r < 4; r++)
+		{
+			uint32		m = 0;
+
+			for (uint32 i = (r * 7u) % n; i < n && m < 3000; i += r == 0 ? 97 : 1 + (i * 2654435761u >> 7) % (r * 30))
+				idx[m++] = i;
+			sift_cc_decode_sel(cc, idx, m, part);
+			for (uint32 k = 0; k < m; k++)
+				*bad += part[k] != dec[idx[k]];
+		}
 	}
 	h = hash_bytes_extended((unsigned char *) dec, sizeof(int64) * n, h);
 	/* the lanes: the low 32 bits of the keys, and the doubles of the keys (bitwise) */
