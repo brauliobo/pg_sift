@@ -2,6 +2,7 @@
 -- keys of the joined table, built when the scan starts (sift.agg_semi_lut, sift.agg_semi_lut_size; docs/SET-FILTERS.md). Every statement
 -- is run with the table, with sift.agg_semi_lut = off (the generic lookup join) and with sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- page costs that keep the pushed plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement only

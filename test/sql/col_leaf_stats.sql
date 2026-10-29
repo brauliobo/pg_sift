@@ -3,6 +3,7 @@
 -- sift.test_limits lowers the segment size from which the block is written, so a few units reach it. The index keeps the answers, the
 -- block is checked against the zones (sift.col_verify), and a segment too small for it, or an index that was built without it, reads the zones.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 

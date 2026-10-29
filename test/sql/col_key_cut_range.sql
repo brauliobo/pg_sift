@@ -2,6 +2,7 @@
 -- units by the lane when a range of its values reads at least 8 times the units its rows fill (and 64 units), no other leaf follows the order of the table, and the index does
 -- not grow; a containment test then reads the few units whose lane meets it.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

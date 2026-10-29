@@ -2,6 +2,7 @@
 -- addresses of their rows. A lookup or a range of the key reads the units of its range whatever the order of the heap; the rows are those of the normal plan after
 -- rows in a write buffer, a promotion, deletes and updates, VACUUM, a merge, a refresh and a REINDEX; a lowered sift.col_format_minor writes superblock units again.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

@@ -3,6 +3,7 @@
 -- that the filter let through (Join Key Passes), where the byte table of a semi join (Semi Lookup Tables) cannot hold the keys. Every statement is run as it is, with sift.agg_join_filter = off and with sift.enable_agg = off:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- events with an int8 key, a sparse int4 key (a range past 4 million values) and a dense int4 key

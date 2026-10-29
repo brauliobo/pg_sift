@@ -2,6 +2,7 @@
 -- lane starts: the output rows of the lookup start again with them, and so must the ids of the lookup's values that an expression over its columns (the FILTER
 -- below) was given. The rows are the normal plan's, with a worker and with the leader alone.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0;

@@ -2,6 +2,7 @@
 -- (sift.agg_lookup_pushdown): a list that keeps a small share of the table is an index scan, a list that keeps a large share, NOT IN and a table without
 -- an index are read by the heap scan, with the same rows. Every statement is run with the pushdown, without it and with sift.enable_agg = off.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;

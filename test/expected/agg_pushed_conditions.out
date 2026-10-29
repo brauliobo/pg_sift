@@ -1,6 +1,7 @@
 -- A condition over the columns of a joined sub-select that PostgreSQL pushed down into it (the run condition of a ranking window) is enforced by the plan
 -- of the sub-select, which then does not output the column: the scan joins its rows without testing the condition again.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
 INSERT INTO dim_a SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_series(1, 90) i;

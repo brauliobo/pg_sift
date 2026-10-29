@@ -4,6 +4,7 @@
 -- of the rows-of-the-segment form (minor 14), which is read as before and upgraded by REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE pt (id int, k int, s text, u uuid, pad text DEFAULT repeat('x', 400));

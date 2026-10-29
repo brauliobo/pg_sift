@@ -1,5 +1,6 @@
 -- A joined UNION ALL of sub-selects is a plan child: its rows are PostgreSQL's plan of the arms, read once when the scan starts.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;

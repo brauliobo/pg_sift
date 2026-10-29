@@ -1,6 +1,7 @@
 -- Predicate-only joins to child plans keep overlapping and duplicate matches.
 -- Use default planner costs: both parity and natural column aggregation matter.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, day date, metrics jsonb);
 INSERT INTO events

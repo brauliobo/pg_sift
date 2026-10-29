@@ -2,6 +2,7 @@
 -- itself: the answer is the normal plan's, for every kind of key, with the float sums within 1e-9 of it. work_mem 64kB with hash_mem_multiplier 1 puts
 -- the limit at the smallest the settings allow, so that 100,000 rows fill the table several times and a partition is partitioned again.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '60s';
 SET client_min_messages = warning;

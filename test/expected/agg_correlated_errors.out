@@ -1,6 +1,7 @@
 -- A lateral child runs for the rows that reach it. The scan joins one that cannot raise; one that can is joined only when nothing else is (the filters of the
 -- scanned table come before it in both plans), else the normal plan stays: PostgreSQL may run the other joins first, and no statement raises only under the scan.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, code text, payload text);
 INSERT INTO facts SELECT i, i % 40, CASE WHEN i % 40 = 0 THEN 'none' ELSE (i % 9)::text END, repeat('payload', 50) FROM generate_series(1, 40000) i;

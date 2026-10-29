@@ -3,6 +3,7 @@
 -- date spine (a set-returning function in the select list) joined to the rows of two periods with no key the scan can use, and the same
 -- aggregate without it. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE nc_entities (id int PRIMARY KEY, kind text NOT NULL);
 INSERT INTO nc_entities SELECT i, (ARRAY['site', 'cat_c', 'cat_a'])[1 + i % 3] FROM generate_series(1, 400) i;

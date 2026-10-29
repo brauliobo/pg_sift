@@ -3,6 +3,7 @@
 -- the table that the query reads, a LEFT join and a text key keep the generic join, which repeats a tuple per matching row. Every statement is run with the
 -- byte table, with sift.agg_semi_lut = off and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

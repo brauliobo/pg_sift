@@ -2,6 +2,7 @@
 -- the summaries of groups of units, so that a scan that does not use the key reads about the units of the page cut and answers from the same pre-aggregates,
 -- and a lookup of the key still reads a unit or two. Four integer columns, 1,200,000 rows in a random order of the key.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

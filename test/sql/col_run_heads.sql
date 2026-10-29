@@ -2,6 +2,7 @@
 -- n / 128 keys of the run (at most 32) with the heap addresses of their rows, so that ORDER BY .. LIMIT n over a clean unit names its n best rows without reading
 -- the unit. A unit with a dead row, a page that is not all-visible or rows in the write buffer is read as before. The rows are those of the plain plan.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
