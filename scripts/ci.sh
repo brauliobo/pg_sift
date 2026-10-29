@@ -815,6 +815,7 @@ BASE_PORT=${SIFT_PORT:-56130}
 # PostgreSQL::Test::Cluster nodes, which are all WAL tests)
 export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
 reap_stale "$TMPBASE"
+[[ -n ${CI:-} ]] || "$S/pressure.sh" --wait || echo "ci: the box is still under pressure after the wait, starting anyway" >&2   # a shared box: the lanes would stall the others
 rm -rf "$BASE" && mkdir -p "$LOG" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"
 t0=$SECONDS
 
