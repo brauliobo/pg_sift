@@ -20,10 +20,11 @@ import readme  # noqa: E402  (replace_block)
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 RAW = 'release-3.6.0'
-NOT_AGAIN = [  # results files the pass did not write: file, what it holds
-    ('cases-wm4g.tsv', 'the cases at work_mem 4GB (the README chart under the table of cases)'),
-    ('sets.tsv', 'filtering by a set of ids'), ('rollup.tsv', 'element rollups'), ('tablewrites.tsv', 'sift_table loads, updates, deletes and VACUUM'),
-    ('writepath.tsv', 'single-row INSERT loops'), ('bm25size.tsv', 'BM25 index size'), ('fields.tsv', 'field weights and facets'), ('buildcost.tsv', 'build and write cost per operation (the write-cost table)'),
+AFTER = [  # results files written after the pass by its extra stages (extra-status.txt): file, what it holds
+    ('cases-wm4g.tsv', 'the cases at work_mem 4GB (the README chart under the table of cases)'), ('sets.tsv', 'filtering by a set of ids'),
+    ('writepath.tsv', 'single-row INSERT loops'), ('fields.tsv', 'field weights and facets'), ('buildcost.tsv', 'build and write cost per operation: the CPU gate of the 3.6 build against 3.0.2 and 3.1.0 (BENCHMARKS.md, Build and write cost per operation)')]
+NOT_AGAIN = [  # results files that neither the pass nor its extra stages wrote: file, what it holds
+    ('rollup.tsv', 'element rollups'), ('tablewrites.tsv', 'sift_table loads, updates, deletes and VACUUM'), ('bm25size.tsv', 'BM25 index size'),
     ('scaling.tsv', 'aggregates by partitions and parallel workers'), ('table-calendar.tsv', 'sift_table calendar columns')]
 
 
@@ -139,12 +140,25 @@ def disk_lines(results):
         len(rows), max(int(r['data_volume_mb']) for r in rows), max(int(r['root_mb']) for r in rows), notes[1][0].lower() + notes[1][1:])]
 
 
-def not_again_lines(results):
+def files_lines(results, names):
     body = []
-    for name, what in NOT_AGAIN:
+    for name, what in names:
         meta = extras.read(os.path.join(results, name))[0]
-        body.append(['`%s`' % name, what, meta.get('pg_sift', '-'), meta.get('build', '-')[:40], meta.get('date', '-')])
+        body.append(['`%s`' % name, what, meta.get('pg_sift') or meta.get('sift') or '-', meta.get('build', '-')[:40], meta.get('date', '-')])
     return table(['file', 'what it holds', 'pg_sift', 'build', 'measured'], body)
+
+
+def not_again_lines(results):
+    return files_lines(results, NOT_AGAIN)
+
+
+def after_lines(results):
+    return files_lines(results, AFTER)
+
+
+def extra_stage_lines(results):
+    """the stages that ran after the pass: the lines of extra-status.txt, as the driver wrote them"""
+    return ['```'] + [l.rstrip('\n') for l in open(raw(results, 'extra-status.txt'))] + ['```']
 
 
 def big_lines(results, name, before, ratio):
@@ -163,10 +177,15 @@ def big_lines(results, name, before, ratio):
                 load.append('`%s` %s: PostgreSQL %s, pg_sift %s (slope %s and %s)' % (c, m, num(fig(rows, c, 'native', m), 'ms'), num(fig(rows, c, 'sift', m), 'ms'),
                                                                                       num(slope(fig(rows, c, 'native', m), fig(prev, c, 'native', m)), '%.2f'), num(slope(fig(rows, c, 'sift', m), fig(prev, c, 'sift', m)), '%.2f')))
     noisy = sorted({r['case'] for r in rows if 'NOISY' in (r['note'] or '')})
+    slower = ['`%s` %s against %s' % (c, num(fig(rows, c, 'sift', 'ms'), 'ms'), num(fig(rows, c, 'native', 'ms'), 'ms')) for c in dict.fromkeys(r['case'] for r in rows)
+              if fig(rows, c, 'sift', 'ms') and fig(rows, c, 'native', 'ms') and fig(rows, c, 'sift', 'ms') > 1.05 * fig(rows, c, 'native', 'ms')]
+    failed = ['`%s`: %s' % (r['case'], r['note']) for r in rows if r['arm'] == 'sift' and r['metric'] == 'ms' and r['value'] == 'error']
     head = ['case', 'PostgreSQL ms', 'pg_sift ms', 'PostgreSQL MB cold', 'pg_sift MB cold', 'slope PostgreSQL', 'slope pg_sift', 'plan of pg_sift']
     return ['%d headline cases at %s orders, build %s, host %s at the start and %s at the end, rows measured while the host was busy: %s. The slope is log(time / time at %s orders) / log(%g).' % (
         len(body), '{:,}'.format(int(meta['orders'])), meta['build'], meta['host_load_before'], meta['host_load_after'], ', '.join(noisy) or 'none', '{:,}'.format(int(meta['orders']) // ratio), ratio), ''] + table(head, body, ['---'] + ['---:'] * 6 + ['---']) + (
-        [''] + ['CPU time of the load cases: ' + '; '.join(load) + '.'] if load else [])
+        [''] + ['CPU time of the load cases: ' + '; '.join(load) + '.'] if load else []) + (
+        [''] + ['pg_sift slower than PostgreSQL by more than 5%%: %s.' % '; '.join(slower)] if slower else []) + (
+        [''] + ['A case that failed on pg_sift: %s.' % '; '.join(failed)] if failed else [])
 
 
 def big10_lines(results):
@@ -178,7 +197,7 @@ def big30_lines(results):
 
 
 BLOCKS = {'release-host': host_lines, 'release-stages': stage_lines, 'release-cases': case_lines, 'release-triage': triage_lines, 'release-io': io_lines, 'release-load': load_lines,
-          'release-10m': big10_lines, 'release-30m': big30_lines, 'release-disk': disk_lines, 'release-not-again': not_again_lines}
+          'release-10m': big10_lines, 'release-30m': big30_lines, 'release-disk': disk_lines, 'release-extra': extra_stage_lines, 'release-after': after_lines, 'release-not-again': not_again_lines}
 
 
 def main():
