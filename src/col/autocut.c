@@ -31,6 +31,8 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
+#include "catalog/pg_statistic.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
@@ -53,7 +55,13 @@
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
 #define AUTOCUT_DIR_ROWS	256		/* rows of a unit of the cut whose directory is encoded from the sample, at least */
 #define AUTOCUT_OVERHEAD_BYTES	0.17	/* what a row takes in the index besides its leaves and the directory of its unit: the headers of the segment and of the units, the page overhead and the free space of the last pages (0.13 + 0.04); the pre-aggregates, 0.03 to 0.59 a row and changed by the cut either way, are not predicted */
-#define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
+#define AUTOCUT_UNIT_BYTES	2000	/* what a unit takes besides its leaves, its directory and its pre-aggregates: the header, the zones, the key list, the page it ends on (288 units of 3 leaves took 0.7 MB more than the sample's leaves and directories) */
+#define AUTOCUT_PAGG_UNIT	600		/* bytes a unit takes in pre-aggregates for each leaf besides its histograms (the exact sums, the counts: 1,975 bytes a unit of 3 leaves) */
+#define AUTOCUT_PAGG_GROUP	2		/* ... a group of a histogram takes: its key and its count */
+#define AUTOCUT_PAGG_MEASURE	7.5	/* ... and for each measure of the cube (8 at most): the non-NULL count, the sum, the smallest and the largest value (24 bytes a group of 3 leaves) */
+#define AUTOCUT_PAGG_GROUPS	256		/* the groups a histogram of a unit holds at most (docs/COL-PREAGG.md) */
+#define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample, and has no statistics */
+#define AUTOCUT_WIDTH_SHARE	0.7		/* the share of its width a value that is not repeated takes in the index (hexadecimal text of a hash: 45 bytes of 65) */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 /*
  * The default formula decides: B = R * log2(S) / log2(1.05), a gain of 5% being one unit, S the instructions of a lookup
@@ -66,7 +74,7 @@
 #define AUTOCUT_BUILD_BASE	1250	/* instructions a row takes to build the index without the cut, besides the leaves */
 #define AUTOCUT_BUILD_LEAF	520		/* ... for each leaf of the index */
 #define AUTOCUT_BUILD_CUT	1150	/* ... that the cut adds to each row: the sort by the key (3,000,000 rows: +3.5 G instructions for 1 to 3 leaves, +35 to +67% of a build) */
-#define AUTOCUT_SECOND_SLACK 1		/* percent the prediction may exceed the cut by the key alone for the date to be its second key: the sample does not see the runs and addresses a date order shrinks */
+#define AUTOCUT_SECOND_SLACK 5		/* percent the prediction (with the units of 4,096 rows of a key of 8,192 rows or more, 7.9 KB each in measures of 3 leaves and of 4) may exceed the cut by the key alone for the date to be its second key: about 2 units of cost; the sample does not see the runs and addresses a date order shrinks */
 #define AUTOCUT_QUICK_SLACK	4		/* units of cost over the benefit that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points of growth, 2 to 5 units of cost, over the sample's) */
 
 typedef struct Cell
@@ -394,6 +402,99 @@ sort_row_cmp(const SortRow *x, const SortRow *y)
 SIFT_DEFINE_SORT(sort_rows, SortRow, SORT_ROW_LESS)
 
 /*
+ * What a row takes in a leaf the sample does not read: its values dictionary-coded, the distinct ones (of the width the statistics of the column give, a share of it when they do not repeat)
+ * once and a code for each row; AUTOCUT_LEAF_BYTES without statistics, for a leaf inside a document or one that is not a column.
+ */
+static double
+leaf_bytes(Relation heap, const SiftColDef *d, AttrNumber hatt)
+{
+	HeapTuple	tp;
+	double		bytes = AUTOCUT_LEAF_BYTES;
+
+	if (hatt == 0 || d->parent >= 0 || (d->path != NULL && d->path[0] != '\0') || sift_col_def_shape(d) != 0 || heap->rd_rel->reltuples <= 0)
+		return bytes;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_statistic st = (Form_pg_statistic) GETSTRUCT(tp);
+		double		nd = st->stadistinct >= 0 ? st->stadistinct : -st->stadistinct * heap->rd_rel->reltuples;
+
+		if (st->stawidth > 0 && nd >= 1)
+			bytes = Max(AUTOCUT_LEAF_BYTES, Min(nd / heap->rd_rel->reltuples, 1.0) * st->stawidth * AUTOCUT_WIDTH_SHARE + log2(Max(nd, 2)) / 8);
+		ReleaseSysCache(tp);
+	}
+	return bytes;
+}
+
+/* the bytes of the pre-aggregates of a unit of n rows (docs/COL-PREAGG.md): a base for each leaf, and for each integer leaf with at most AUTOCUT_PAGG_GROUPS values in the unit a histogram of its groups with the measures of every leaf */
+static double
+pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nleaves, int64 *tmp)
+{
+	double		bytes = (double) AUTOCUT_PAGG_UNIT * nleaves,
+				per_group = AUTOCUT_PAGG_GROUP + AUTOCUT_PAGG_MEASURE * Min(nleaves, 8);
+
+	for (int t = 0; t < ntr; t++)
+	{
+		uint32		groups = 0;
+
+		if (tr[t].shape != NULL)
+			continue;
+		for (uint32 i = 0; i < n; i++)
+			tmp[i] = tr[t].nl[rows[i]] ? PG_INT64_MIN : tr[t].v[rows[i]];
+		qsort(tmp, n, sizeof(int64), sift_cmp_i64);
+		for (uint32 i = 0; i < n; i++)
+			groups += i == 0 || tmp[i] != tmp[i - 1];
+		if (groups <= AUTOCUT_PAGG_GROUPS)
+			bytes += groups * per_group;
+	}
+	return bytes;
+}
+
+/*
+ * The units of the rows of a sample in the order of the key, as boundaries cuts[0..n]: unit rows each, as the cut of a key-cut segment makes them (col/order.c cut_at); with a second
+ * leaf (small > 0: the rows of a unit of a big key in the sample) a key of at least 2 * small rows is cut into units of small rows, the last one ending with the key, and the
+ * unit before it ends where the key starts.
+ */
+static uint32
+cut_units(const Track *k0, const uint32 *sel, uint32 nsel, uint32 unit, double small, uint32 *cuts)
+{
+	uint32	   *kend = palloc_array(uint32, nsel + 1),
+			   *kbeg = palloc_array(uint32, nsel + 1);
+	uint32		n = 0,
+				pos = 0;
+	bool		split = false;
+
+	for (uint32 i = 0; i < nsel; i++)
+		kbeg[i] = i > 0 && k0->nl[sel[i]] == k0->nl[sel[i - 1]] && k0->v[sel[i]] == k0->v[sel[i - 1]] ? kbeg[i - 1] : i;
+	for (uint32 i = nsel; i-- > 0;)
+		kend[i] = i + 1 < nsel && kbeg[i + 1] == kbeg[i] ? kend[i + 1] : i + 1;
+	cuts[0] = 0;
+	while (pos < nsel)
+	{
+		bool		big = small > 0 && kend[pos] - pos >= 2 * small;
+		uint32		end;
+
+		if (big || (split && small > 0))
+		{
+			split = big;
+			end = big ? pos + (uint32) ceil(small) : kend[pos];
+		}
+		else
+		{
+			split = false;
+			end = Min(pos + unit, nsel);
+			if (small > 0 && end < nsel && kbeg[end] < end && kbeg[end] > pos && kend[kbeg[end]] - kbeg[end] >= 2 * small)
+				end = kbeg[end];
+		}
+		cuts[++n] = end;
+		pos = end;
+	}
+	pfree(kend);
+	pfree(kbeg);
+	return n;
+}
+
+/*
  * The bytes of the integer leaves and of the row directories of the rows of at most AUTOCUT_TRIAL_SBS of the sampled superblocks (every k-th) in the units of the
  * superblock cut (key < 0) or of the cut by the leaf key, per sampled row. The integer leaves are encoded by the codec in units of as many rows as a superblock
  * holds. The row directory is encoded as enc.c writes it: a unit of the cut holds the rows of the whole heap in a range of the key and lists their addresses,
@@ -401,7 +502,7 @@ SIFT_DEFINE_SORT(sort_rows, SortRow, SORT_ROW_LESS)
  * that many rows and the gaps between its blocks, then smaller than the whole heap gives, are widened by the bits of the difference.
  */
 static double
-layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double nsb, double heap_pages, double rows_per_unit)
+layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key, int key2, bool units, double nsb, double heap_pages, double rows_per_unit)
 {
 	const Track *order[2] = {key >= 0 ? &tr[key] : NULL, key2 >= 0 ? &tr[key2] : NULL};
 	StringInfoData buf;
@@ -410,7 +511,9 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 	uint32	   *sel = palloc_array(uint32, s->n + 1);
 	SiftKey    *tid = palloc_array(SiftKey, s->n + 1);	/* by sampled row: its address with the taken superblocks side by side */
 	SiftKey    *keys = palloc_array(SiftKey, s->n + 1);
-	uint32		nsel = 0,
+	uint32	   *cuts = palloc_array(uint32, s->n + 2);
+	uint32		ncut = 0,
+				nsel = 0,
 				stride = (s->nsb + AUTOCUT_TRIAL_SBS - 1) / AUTOCUT_TRIAL_SBS,
 				unit,
 				pages;
@@ -435,10 +538,9 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 	initStringInfo(&buf);
 	if (key >= 0)
 	{
-		uint32		dir_rows = unit;
-		double		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / dir_rows)));
-
 		SortRow    *by = palloc_array(SortRow, nsel);
+		double		wider,
+					small = key2 >= 0 && rows_per_unit >= 2.0 * SIFT_COLK_SECOND_ROWS ? Max(SIFT_COLK_SECOND_ROWS * (double) nsel / nsb / rows_per_unit, AUTOCUT_DIR_ROWS / 4) : 0;
 
 		for (uint32 i = 0; i < nsel; i++)
 		{
@@ -453,9 +555,12 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 		for (uint32 i = 0; i < nsel; i++)
 			sel[i] = by[i].row;
 		pfree(by);
-		for (uint32 from = 0; from < nsel; from += dir_rows)
+		ncut = cut_units(order[0], sel, nsel, unit, small, cuts);
+		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / unit)));
+		for (uint32 u = 0; u < ncut; u++)
 		{
-			uint32		n = Min(dir_rows, nsel - from);
+			uint32		from = cuts[u],
+						n = cuts[u + 1] - from;
 
 			for (uint32 i = 0; i < n; i++)
 				keys[i] = tid[sel[from + i]];
@@ -473,9 +578,10 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 				bytes += (1 + tr[t].image) * encoded_bytes(&tr[t], rows, s->start[u + 1] - s->start[u], &buf, tmp);
 			}
 		else
-			for (uint32 from = 0; from < nsel; from += unit)
+			for (uint32 u = 0; u < ncut; u++)
 			{
-				uint32		n = Min(unit, nsel - from);
+				uint32		from = cuts[u],
+							n = cuts[u + 1] - from;
 				double		b;
 
 				memcpy(rows, sel + from, n * sizeof(uint32));
@@ -486,12 +592,31 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 				bytes += (1 + tr[t].image) * b;
 			}
 	}
+	/* the pre-aggregates and the header of the units: the units of a cut are a share of a unit of the table, so their constants are that share too */
+	if (units)
+		bytes += AUTOCUT_UNIT_BYTES * (key < 0 ? nused : ncut * Min(1.0, (double) unit / rows_per_unit));
+	if (units && key < 0)
+		for (int u = 0; u < s->nsb; u += stride)
+		{
+			for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
+				rows[i - s->start[u]] = i;
+			bytes += pagg_unit_bytes(tr, ntr, rows, s->start[u + 1] - s->start[u], nleaves, tmp);
+		}
+	else if (units)
+		for (uint32 u = 0; u < ncut; u++)
+		{
+			uint32		n = cuts[u + 1] - cuts[u];
+
+			memcpy(rows, sel + cuts[u], n * sizeof(uint32));
+			bytes += Min(1.0, (double) unit / rows_per_unit) * pagg_unit_bytes(tr, ntr, rows, n, nleaves, tmp);
+		}
 	pfree(buf.data);
 	pfree(tmp);
 	pfree(rows);
 	pfree(sel);
 	pfree(tid);
 	pfree(keys);
+	pfree(cuts);
 	return bytes / Max(nsel, 1) + AUTOCUT_OVERHEAD_BYTES;
 }
 
@@ -548,6 +673,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				first = -1,
 				nfire = 0,
 				fire[AUTOCUT_LEAVES];
+	double		untracked_bytes = 0;
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 	double		nsb = ceil((double) nblocks / SIFT_SB_PAGES),
 				rows_per_unit,
@@ -600,10 +726,14 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
 			ncand += d->lane == 1;
 			untracked -= d->lane == 1;
+			untracked_bytes -= (d->lane == 1) * AUTOCUT_LEAF_BYTES;
 			ntr++;
 		}
 		else
+		{
 			untracked++;
+			untracked_bytes += leaf_bytes(heap, d, hatt);
+		}
 	}
 	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : mid_rows(heap, nblocks, nsb);
 	/* a quarter of the heap at most: the sample costs what a build of the share costs; and at least AUTOCUT_MIN_SBS units whatever their rows */
@@ -709,7 +839,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	}
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
-	def_row = layout_bytes(tr, ntr, samp, -1, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+	def_row = layout_bytes(tr, ntr, ntr + untracked, samp, -1, -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
 	for (int pass = 0; pass < 2; pass++)
 		for (int t = 0; t < ntr; t++)
@@ -779,7 +909,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		for (int i = first_open; i < nfire; i++)
 			if (!blocked[i] && tr[fire[i]].time)
 			{
-				double		g = 100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row;
+				double		g = 100.0 * (layout_bytes(tr, ntr, ntr + untracked, samp, fire[i], -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes - def_row) / def_row;
 
 				if (cut_benefit(cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0) + AUTOCUT_QUICK_SLACK < cut_cost(g, ntr + untracked))
 				{
@@ -807,23 +937,29 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 
 		if (blocked[i])
 			continue;
-		kc_row = layout_bytes(tr, ntr, samp, pick, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+		kc_row = layout_bytes(tr, ntr, ntr + untracked, samp, pick, -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes;
 		/*
 		 * The rows of a key are sorted by the first date or timestamp leaf, scattered over the table like every other leaf (or the cut would be blocked): a key
-		 * with more rows than a unit is split by date, and a window of dates skips the units outside it. Taken when the sample predicts an index not larger by more than AUTOCUT_SECOND_SLACK.
+		 * with more rows than a unit is split by date, and a window of dates skips the units outside it. Taken when the sample predicts an index not larger by more than AUTOCUT_SECOND_SLACK, the units of 4,096 rows of a key of 8,192 rows or more counted (layout_bytes).
 		 */
 		sec = -1;
-		for (int t = 0; t < ntr && !tr[pick].time && sec < 0; t++)
-			if (t != pick && (time_type(tr[t].type) || (tr[t].shape != NULL && tr[t].lane == 1)))
-			{
-				double		row2 = layout_bytes(tr, ntr, samp, pick, t, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+		if (!tr[pick].time)
+		{
+			/* the units of a key cut by a second leaf are counted, with their pre-aggregates, against the cut by the key alone: what the two have in common cancels */
+			double		kc_units = layout_bytes(tr, ntr, ntr + untracked, samp, pick, -1, true, nsb, nblocks, rows_per_unit);
 
-				if (row2 <= kc_row * (1 + AUTOCUT_SECOND_SLACK / 100.0))
+			for (int t = 0; t < ntr && sec < 0; t++)
+				if (t != pick && (time_type(tr[t].type) || (tr[t].shape != NULL && tr[t].lane == 1)))
 				{
-					sec = t;
-					kc_row = row2;
+					double		delta = layout_bytes(tr, ntr, ntr + untracked, samp, pick, t, true, nsb, nblocks, rows_per_unit) - kc_units;
+
+					if (delta <= kc_row * AUTOCUT_SECOND_SLACK / 100.0)
+					{
+						sec = t;
+						kc_row += delta;
+					}
 				}
-			}
+		}
 		growth = 100.0 * (kc_row - def_row) / def_row;
 		benefit = cut_benefit(cut_speedup(reads[i], fills[i], rows_per_unit), tr[pick].shape ? 0.5 : 1.0);
 		cost = cut_cost(growth, ntr + untracked);
@@ -900,7 +1036,7 @@ sift_col_auto_cut(Relation heap, Relation index)
 				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
 						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
 						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
-						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to be no larger with units of the rows of a superblock), so a key with more rows than a unit is split by it and a range of its values skips the units outside; a key of 8,192 rows or more is cut into units of 4,096 rows, which makes a narrow index larger.", v.second) : ""),
+						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to grow by at most %d%% more than with the key alone, counting the units of 4,096 rows into which a key of 8,192 rows or more is cut), so a range of its values skips the units outside it.", v.second, AUTOCUT_SECOND_SLACK) : ""),
 				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else
