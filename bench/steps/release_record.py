@@ -8,6 +8,7 @@ the pass produced; the files the pass wrote to bench/results are kept at the tag
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -146,8 +147,38 @@ def not_again_lines(results):
     return table(['file', 'what it holds', 'pg_sift', 'build', 'measured'], body)
 
 
+def big_lines(results, name, before, ratio):
+    """the headline cases at a larger size (`name`), against the size `before`: time, cold IO and the slope of the time between the two"""
+    meta, rows = extras.read(raw(results, name))
+    prev = extras.read(raw(results, before))[1]
+    slope = lambda a, b: None if not a or not b else math.log(a / b) / math.log(ratio)  # noqa: E731
+    body, load = [], []
+    for c in dict.fromkeys(r['case'] for r in rows):
+        n, s, n0, s0 = (fig(r, c, arm, 'ms') for r, arm in ((rows, 'native'), (rows, 'sift'), (prev, 'native'), (prev, 'sift')))
+        plan = (extras.get(rows, case=c, arm='sift', metric='ms') or {'note': ''})['note'].replace(' NOISY', '')
+        body.append(['`%s`' % c, num(n, 'ms'), num(s, 'ms'), num(fig(rows, c, 'native', 'io_cold_read_mb')), num(fig(rows, c, 'sift', 'io_cold_read_mb')), num(slope(n, n0), '%.2f'), num(slope(s, s0), '%.2f'),
+                     '`%s`' % plan[:60].replace('|', '\\|') if plan else '-'])
+        for m in ('cpu_ms', 'minstr'):
+            if fig(rows, c, 'sift', m) is not None:
+                load.append('`%s` %s: PostgreSQL %s, pg_sift %s (slope %s and %s)' % (c, m, num(fig(rows, c, 'native', m), 'ms'), num(fig(rows, c, 'sift', m), 'ms'),
+                                                                                      num(slope(fig(rows, c, 'native', m), fig(prev, c, 'native', m)), '%.2f'), num(slope(fig(rows, c, 'sift', m), fig(prev, c, 'sift', m)), '%.2f')))
+    noisy = sorted({r['case'] for r in rows if 'NOISY' in (r['note'] or '')})
+    head = ['case', 'PostgreSQL ms', 'pg_sift ms', 'PostgreSQL MB cold', 'pg_sift MB cold', 'slope PostgreSQL', 'slope pg_sift', 'plan of pg_sift']
+    return ['%d headline cases at %s orders, build %s, host %s at the start and %s at the end, rows measured while the host was busy: %s. The slope is log(time / time at %s orders) / log(%g).' % (
+        len(body), '{:,}'.format(int(meta['orders'])), meta['build'], meta['host_load_before'], meta['host_load_after'], ', '.join(noisy) or 'none', '{:,}'.format(int(meta['orders']) // ratio), ratio), ''] + table(head, body, ['---'] + ['---:'] * 6 + ['---']) + (
+        [''] + ['CPU time of the load cases: ' + '; '.join(load) + '.'] if load else [])
+
+
+def big10_lines(results):
+    return big_lines(results, 'cases-10M.tsv', 'cases.tsv', 10)
+
+
+def big30_lines(results):
+    return big_lines(results, 'cases-30M.tsv', 'cases-10M.tsv', 3)
+
+
 BLOCKS = {'release-host': host_lines, 'release-stages': stage_lines, 'release-cases': case_lines, 'release-triage': triage_lines, 'release-io': io_lines, 'release-load': load_lines,
-          'release-disk': disk_lines, 'release-not-again': not_again_lines}
+          'release-10m': big10_lines, 'release-30m': big30_lines, 'release-disk': disk_lines, 'release-not-again': not_again_lines}
 
 
 def main():
@@ -159,6 +190,8 @@ def main():
     if not os.path.exists(doc):
         return
     for name, render in BLOCKS.items():
+        if name == 'release-30m' and not os.path.exists(raw(a.results, 'cases-30M.tsv')):
+            continue
         readme.replace_block(doc, name, render(a.results))
 
 

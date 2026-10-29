@@ -17,7 +17,7 @@
 #
 # Builds: a label is a checkout (git worktree of a tag, or this one) and its staged install; `build_prepare` makes what is missing under $EXTRAS_SRC and
 # $EXTRAS_CACHE: v302 (tag v3.0.2), v310 (v3.1.0), v310-vk (v3.1.0 with VULKAN=1), main (HEAD of this checkout). Environment: EXTRAS_SRC, EXTRAS_CACHE, SCRATCH_MEM,
-# ROLLUP_SIZES, TBL_ROWS, WP_ROWS, BM25_ARTICLES (50000), BM25_TITLES (1000000), LT_ROWS (1000000), ORDERS (1000000).
+# ROLLUP_SIZES, TBL_ROWS, WP_ROWS, WP_BUILD and FIELDS_BUILD (a label of the builds above for writepath and fields, default v310), BM25_ARTICLES (50000), BM25_TITLES (1000000), LT_ROWS (1000000), ORDERS (1000000).
 set -euo pipefail
 export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -172,9 +172,10 @@ item_tablewrites() {
 
 item_writepath() {
 	begin_item writepath
-	build_prepare v310
-	local dir tmp="$EXTRAS_CACHE/v310" out
-	dir=$(build_dir v310)
+	local lb=${WP_BUILD:-v310}
+	build_prepare "$lb"
+	local dir tmp="$EXTRAS_CACHE/$lb" out
+	dir=$(build_dir "$lb")
 	[[ -z ${PG:-} ]] || scratch_down
 	echo "writepath: tbl-writepath.sh ${WP_ROWS:-10000000} rows" >&2
 	out=$(WP_SCOPED=1 SIFT_TMP=$tmp KEEP=1 ROWS=${WP_ROWS:-10000000} LOCK_WAIT=172800 "$BENCH/tbl-writepath.sh" 2>&1) || true
@@ -240,7 +241,7 @@ item_leaftypes() {
 
 item_fields() {
 	begin_item fields
-	build_up fields v310
+	build_up fields "${FIELDS_BUILD:-v310}"
 	echo "fields: $VERSION" >&2
 	build_psql -d postgres -c "DROP DATABASE IF EXISTS fq" -c "CREATE DATABASE fq" >/dev/null
 	build_psql -d fq -c "CREATE EXTENSION pg_sift" >/dev/null

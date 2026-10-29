@@ -26,8 +26,14 @@ scratch_up() {
 	local name=$1 port=
 	export SCRATCH_NAME=$name SIFT_TMP=$SCRATCH_ROOT/$name
 	PG=$SIFT_BUILD/scripts/pgtest.sh
-	[[ -n ${SIFT_ROOT:-} ]] || export SIFT_ROOT=$SIFT_TMP/root
+	local own= head=
+	[[ -n ${SIFT_ROOT:-} ]] || { export SIFT_ROOT=$SIFT_TMP/root; own=1; }
+	if [[ -n $own ]]; then   # the install this script made is reused only for the commit it was made from: an older one measures an older library
+		head=$(git -C "$SIFT_BUILD" rev-parse HEAD 2>/dev/null)
+		[[ -n $head && $(cat "$SIFT_ROOT/.build" 2>/dev/null) == "$head" ]] || rm -rf "$SIFT_ROOT"
+	fi
 	[[ -f $SIFT_ROOT/.flavor ]] || SIFT_TESTING= SIFT_TMP=$SIFT_TMP "$PG" install >&2 || return 1
+	[[ -z $own || -z $head ]] || echo "$head" >"$SIFT_ROOT/.build"
 	for _ in $(seq 1 60); do
 		port=$((56150 + RANDOM % 101))
 		ss -ltn 2>/dev/null | grep -q ":$port " || break
