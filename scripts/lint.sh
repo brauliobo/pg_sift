@@ -23,6 +23,7 @@ CHECKS=(
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
+	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'slugs		scripts/check-slugs.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/ci.sh --selftest'
