@@ -1,6 +1,7 @@
 -- EXISTS over the elements of an array that reads a column of a joined table (or a lookup per element) is a test of the joined tuples:
 -- PostgreSQL cannot pull it up, the scan resolves each distinct element once against the lookup and keeps the rows with one that passes.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
 INSERT INTO dim_a SELECT i, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 48) i;

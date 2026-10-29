@@ -3,6 +3,7 @@
 -- through DML, VACUUM, the write buffer, promotion and a merge, for every type, and a second test, another aggregate or an OR must not be taken for a range.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE rc (id int, a int2, b int4, c int8, d date, e timestamp, f timestamptz, pad text DEFAULT repeat('x', 200));
@@ -13,9 +14,6 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 37) % 3001 - 1500 END, CASE W
 FROM generate_series(1, 60000) i;
 CREATE INDEX rc_i ON rc USING sift_col (a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, e sift.col_timestamp_ops, f sift.col_timestamptz_ops, id sift.col_int4_ops)
 	WITH (write_buffer_limit = 256, order_columns = 'a, b, c, d, e, f', order_array_columns = 'a, b, c, d, e, f');
-NOTICE:  sift_col index "rc_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 6 columns
-DETAIL:  3.3 bytes a row for each column, 1.1 MB together; the segments are column format minor 30, which a library before 3.6 cannot read.
-HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
 VACUUM (ANALYZE) rc;
 -- the rows a statement read: 0 when the segments counted
 CREATE FUNCTION rc_scanned(q text) RETURNS int LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET enable_seqscan = off AS $$

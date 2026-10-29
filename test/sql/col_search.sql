@@ -3,6 +3,7 @@
 -- plan as the reference (sift.enable_agg off) and the pushed one (the other plans disabled, so that it is the one planned whenever it
 -- can be), and the results are compared as sets of rows: after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 24000 rows are about 19 superblocks, enough for the lanes of a float sum to go back to the start

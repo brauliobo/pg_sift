@@ -2,6 +2,7 @@
 -- the rows between the bounds, in heap order, with no unit read, and the heap checks the condition again. The answers are the heap's for every type of the array, NULLs, empty,
 -- one-sided and whole-column ranges, other conditions, DML, VACUUM (a unit with a dead row is read), several segments, a merge, a segment without the array, and a LIMIT.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

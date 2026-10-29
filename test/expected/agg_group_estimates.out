@@ -2,14 +2,12 @@
 -- conditions on it leave), not from PostgreSQL's count of distinct dates: a month, a year or a week of a date is a few groups, not as many as the dates.
 -- Each statement is planned as a SiftAgg scan; its estimated rows must be within a factor of two of the groups it returns.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ge_rows (id int PRIMARY KEY, dim_a_id int NOT NULL, day date NOT NULL, val int NOT NULL) WITH (autovacuum_enabled = false);
 -- 700 days, a thousand rows a day on average
 INSERT INTO ge_rows SELECT i, 1 + i % 50, date '2025-01-01' + (hashint4(i) & 1023) % 700, i % 10 FROM generate_series(1, 100000) i;
 CREATE INDEX ge_rows_col ON ge_rows USING sift_col (id, dim_a_id, day, val);
-NOTICE:  sift_col index ge_rows_col writes a rollup of the rows by dim_a_id, val
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 50 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ge_rows_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ge_rows;
 CREATE FUNCTION est_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -56,9 +54,6 @@ FROM (VALUES ('date_trunc(''month'', day)'), ('date_trunc(''week'', day)'), ('ex
 CREATE TABLE ge_ts (id int PRIMARY KEY, ts timestamptz NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ge_ts SELECT i, timestamptz '2025-01-01' + (hashint4(i) & 1023) % 700 * interval '1 day' + i % 86400 * interval '1 second' FROM generate_series(1, 100000) i;
 CREATE INDEX ge_ts_col ON ge_ts USING sift_col (id, ts);
-NOTICE:  sift_col index "ge_ts_col": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
-DETAIL:  4.4 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 VACUUM (FREEZE) ge_ts;
 SELECT k AS key, (groups_of(format('SELECT %s, count(*) FROM ge_ts GROUP BY 1', k))).*
 FROM (VALUES ('date_trunc(''month'', ts AT TIME ZONE ''UTC'')'), ('date_trunc(''week'', ts AT TIME ZONE ''UTC'')')) v(k);

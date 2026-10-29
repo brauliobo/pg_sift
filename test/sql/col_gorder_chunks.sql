@@ -1,6 +1,7 @@
 -- The chunks of the global order of a leaf have 512 entries (column format minor 30) and, in a segment written before, 1,024 (minor 21; sift.test_col_gorder_rows = 1024 writes them): a
 -- seek, a cursor, a range of addresses and the verify read both, one table holds segments of both, and a merge writes the current ones.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

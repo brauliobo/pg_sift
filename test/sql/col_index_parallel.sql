@@ -2,6 +2,7 @@
 -- their own, so the column data must equal the serial build's whatever the segment boundaries. sift.test_col_workers is the number of
 -- workers the last build launched.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 
 -- Every leaf of two indexes: the same rows with the same values

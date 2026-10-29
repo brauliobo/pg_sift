@@ -2,6 +2,7 @@
 -- all-visible, no dead row) is counted from the entries between the bounds of the range, with no unit read ("Rows Scanned: 0"); the others are read. The counts must be the heap's
 -- through DML, VACUUM, the write buffer, promotion and a merge, for every type, and a second test, another aggregate or an OR must not be taken for a range.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

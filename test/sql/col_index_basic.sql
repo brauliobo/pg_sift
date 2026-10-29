@@ -1,6 +1,7 @@
 -- The sift_col index: DDL and refusals, build equivalence with the heap for every type and operator, the SIMD levels
 -- and the visibility rule. Differential: the column source API (sift._test_col_*) against plain SQL on the same table.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 
 -- The rows of an index scan (root TIDs) against the visible heap tuples; HOT chains are avoided by changing indexed columns

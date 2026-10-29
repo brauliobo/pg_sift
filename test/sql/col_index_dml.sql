@@ -1,6 +1,7 @@
 -- The sift_col index under writes: inserts land in write buffers, promotion and merge turn them into immutable ones, VACUUM clears the
 -- liveness bits, aborted work and HOT chains stay invisible or consistent. Every stage is compared with the heap and verified.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 

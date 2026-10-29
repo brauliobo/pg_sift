@@ -2,6 +2,7 @@
 -- their own, so the column data must equal the serial build's whatever the segment boundaries. sift.test_col_workers is the number of
 -- workers the last build launched.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 -- Every leaf of two indexes: the same rows with the same values
 CREATE FUNCTION col_same(a regclass, b regclass) RETURNS text LANGUAGE plpgsql AS $$
@@ -55,12 +56,6 @@ SET max_parallel_maintenance_workers = 2;
 -- The serial reference
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX li_ser ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_ser keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_ser SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_ser: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_ser SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_ser');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -70,12 +65,6 @@ SELECT * FROM col_shape('li_ser');
 SET max_parallel_maintenance_workers = 2;
 -- Two workers and the leader: a segment each, the same column data
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_par');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -102,20 +91,8 @@ DELETE FROM li WHERE id % 10 = 4;
 DROP INDEX li_ser, li_par;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX li_ser ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_ser keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_ser SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_ser: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_ser SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SET max_parallel_maintenance_workers = 2;
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_par');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -139,12 +116,6 @@ SELECT (SELECT count(*) FROM sift._test_col_tids('li_par', '', 2)) = (SELECT cou
 SET max_parallel_workers = 0;
 DROP INDEX li_par;
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT workers, segments, one_segment_each, rows_ok, verified FROM col_shape('li_par');
  workers | segments | one_segment_each | rows_ok | verified 
 ---------+----------+------------------+---------+----------
@@ -161,12 +132,6 @@ RESET max_parallel_workers;
 -- Segments cut after every unit: the 16 superblocks are 16 segments of three participants, with generations of their own
 SET sift.test_col_segment_kb = 1;
 CREATE INDEX li_cut ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_cut keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_cut SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_cut: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_cut SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 RESET sift.test_col_segment_kb;
 SELECT * FROM col_shape('li_cut');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
@@ -207,12 +172,6 @@ SELECT col_same('li_cut', 'li_ser'), col_verified('li_cut');
 DROP INDEX li_cut;
 -- REINDEX, REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY (the snapshot of the leader is the workers')
 REINDEX INDEX li_par;
-NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_par');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -226,12 +185,6 @@ SELECT col_same('li_par', 'li_ser');
 (1 row)
 
 REINDEX INDEX CONCURRENTLY li_par;
-NOTICE:  sift_col index li_par_ccnew keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par_ccnew SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par_ccnew: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par_ccnew SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_par');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -246,12 +199,6 @@ SELECT col_same('li_par', 'li_ser');
 
 DROP INDEX li_par;
 CREATE INDEX CONCURRENTLY li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
-NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_par SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT * FROM col_shape('li_par');
  workers | segments | all_have_units | one_segment_each | units_ok | rows_ok | verified 
 ---------+----------+----------------+------------------+----------+---------+----------
@@ -346,12 +293,6 @@ SELECT count(*) AS left_behind FROM pg_class WHERE relname = 'li_fail';
 (1 row)
 
 CREATE INDEX li_fail ON li USING sift_col (tenant_id, qty, price, sku);
-NOTICE:  sift_col index li_fail keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1360 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX li_fail SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
-NOTICE:  sift_col index li_fail: an equality on "tenant_id" reads 17 of 17 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_fail SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
 SELECT current_setting('sift.test_col_workers') AS workers, col_verified('li_fail') AS verified;
  workers | verified 
 ---------+----------

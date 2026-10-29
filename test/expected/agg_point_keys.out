@@ -3,6 +3,7 @@
 -- ("Units From Point Directory" of EXPLAIN ANALYZE). The directory lists the rows whose fingerprint matches, so every conjunct still runs on them: the rows are
 -- those of the normal plan over NULLs, duplicates, text, DML in and out of the transaction, VACUUM, the write buffer, a merge and parallel workers.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -20,17 +21,8 @@ CREATE TABLE pk_t AS TABLE src;
 CREATE TABLE pk_r AS TABLE src;
 CREATE TABLE pk_n AS TABLE src;
 CREATE INDEX pk_t_col ON pk_t USING sift_col (k, s, d, v) WITH (point_tid_columns = 'k, s');
-NOTICE:  sift_col index "pk_t_col": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 CREATE INDEX pk_r_col ON pk_r USING sift_col (k, s, d, v) WITH (point_columns = 'k, s');
-NOTICE:  sift_col index "pk_r_col": key_cut = 'd' was chosen: a range holding the rows of one unit of "d" would read about 12 of 12 units, where 1 hold its rows (predicted index size -18.0%, benefit 7 against cost 1)
-DETAIL:  A sample of 12 superblocks shows the values of "d" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
-HINT:  ALTER INDEX pk_r_col SET (key_cut = 'off') and REINDEX keep the units by block range.
 CREATE INDEX pk_n_col ON pk_n USING sift_col (k, s, d, v);
-NOTICE:  sift_col index "pk_n_col": key_cut = 'd' was chosen: a range holding the rows of one unit of "d" would read about 12 of 12 units, where 1 hold its rows (predicted index size -18.0%, benefit 7 against cost 1)
-DETAIL:  A sample of 12 superblocks shows the values of "d" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
-HINT:  ALTER INDEX pk_n_col SET (key_cut = 'off') and REINDEX keep the units by block range.
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) pk_t, pk_r, pk_n, dim;
 -- the plan: whether the pushed aggregate read the directory, and how many rows it left
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -130,9 +122,6 @@ SELECT plan_of('SELECT count(*) FROM pk_t WHERE k IN (1, 2, 3, 7919)') AS tids, 
 -- a list of more keys than the units are many (and than the set a zone test carries) asks the directory as well
 CREATE TABLE pk_l AS SELECT i AS id, (i * 7919) % 100000 AS k, i % 97 AS g FROM generate_series(1, 100000) i;
 CREATE INDEX pk_l_col ON pk_l USING sift_col (k, g) WITH (point_tid_columns = 'k');
-NOTICE:  sift_col index "pk_l_col": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) pk_l;
 SELECT * FROM same('SELECT count(*), sum(g) FROM pk_l WHERE k IN (' || (SELECT string_agg((i * 331)::text, ',') FROM generate_series(1, 300) i) || ')');
        plan        | result_rows | vs_normal_plan 

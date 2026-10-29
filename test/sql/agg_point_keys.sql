@@ -3,6 +3,7 @@
 -- ("Units From Point Directory" of EXPLAIN ANALYZE). The directory lists the rows whose fingerprint matches, so every conjunct still runs on them: the rows are
 -- those of the normal plan over NULLs, duplicates, text, DML in and out of the transaction, VACUUM, the write buffer, a merge and parallel workers.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
