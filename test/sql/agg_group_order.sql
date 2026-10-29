@@ -57,6 +57,11 @@ INSERT INTO o_q VALUES
 	(12, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY b, c) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	-- a column of the sub-select that is a constant, a COALESCE of a key (the NULL group sorts as the constant), keys in the window's order
 	(14, 0, 'WITH g AS (SELECT COALESCE(a, ''zz'') AS c1, NULL::date AS c2, e AS c3, c AS c4, count(*) AS n FROM o GROUP BY a, e, c) SELECT c1, c2, c3, c4, n, count(*) OVER (PARTITION BY c2, c3 ORDER BY c1 DESC, c4) AS w FROM g', 'ordered'),
+	-- grouping sets: a key a set leaves out is NULL in its groups, and sorts as NULL (a window in the query that reads them, an ORDER BY of the parent, a COALESCE of a key)
+	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
+	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
+	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
+	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- a CTE read twice or materialized is a scan of its own: the Sort stays
 	(13, 0, 'WITH g AS MATERIALIZED (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2) AS l FROM g', 'sorted above'),
 	-- an order the keys do not decide (an Incremental Sort on the prefix, or a Sort): a Sort stays above

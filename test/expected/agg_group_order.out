@@ -55,6 +55,11 @@ INSERT INTO o_q VALUES
 	(12, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY b, c) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	-- a column of the sub-select that is a constant, a COALESCE of a key (the NULL group sorts as the constant), keys in the window's order
 	(14, 0, 'WITH g AS (SELECT COALESCE(a, ''zz'') AS c1, NULL::date AS c2, e AS c3, c AS c4, count(*) AS n FROM o GROUP BY a, e, c) SELECT c1, c2, c3, c4, n, count(*) OVER (PARTITION BY c2, c3 ORDER BY c1 DESC, c4) AS w FROM g', 'ordered'),
+	-- grouping sets: a key a set leaves out is NULL in its groups, and sorts as NULL (a window in the query that reads them, an ORDER BY of the parent, a COALESCE of a key)
+	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
+	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
+	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
+	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- a CTE read twice or materialized is a scan of its own: the Sort stays
 	(13, 0, 'WITH g AS MATERIALIZED (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2) AS l FROM g', 'sorted above'),
 	-- an order the keys do not decide (an Incremental Sort on the prefix, or a Sort): a Sort stays above
@@ -76,7 +81,11 @@ SELECT n, o_plan(q) = want AS plan FROM o_q ORDER BY n;
  12 | t
  13 | t
  14 | t
-(14 rows)
+ 20 | t
+ 21 | t
+ 22 | t
+ 23 | t
+(18 rows)
 
 -- rows in the normal plan's order (key columns), with no worker and with three
 SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k, true, 3) = o_keys(q, k, false, 0) AS workers FROM o_q WHERE want = 'ordered' ORDER BY n;
@@ -93,7 +102,11 @@ SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k,
  11 | t      | t
  12 | t      | t
  14 | t      | t
-(11 rows)
+ 20 | t      | t
+ 21 | t      | t
+ 22 | t      | t
+ 23 | t      | t
+(15 rows)
 
 -- the groups are the same rows
 CREATE FUNCTION o_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -121,7 +134,11 @@ SELECT n, o_rows(q, true) = o_rows(q, false) AS rows FROM o_q ORDER BY n;
  12 | t
  13 | t
  14 | t
-(14 rows)
+ 20 | t
+ 21 | t
+ 22 | t
+ 23 | t
+(18 rows)
 
 -- adversarial keys: strings that sort differently by collation (case, accents, punctuation, digits, the empty string), numeric with NaN, floats with -0, NaN and infinities,
 -- dates and timestamps with infinity, booleans, negative bigints, NULLs everywhere; every key, both directions, both nulls orders, alone and with a second key that breaks the ties

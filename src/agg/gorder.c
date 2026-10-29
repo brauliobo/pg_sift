@@ -8,6 +8,7 @@
  */
 #include "postgres.h"
 
+#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
 
@@ -32,6 +33,24 @@ typedef struct RankTuples
 	int			nord;
 	const uint32 *rank;			/* per group, nord ranks */
 } RankTuples;
+
+/* the ranks of a group packed into one integer, the first key in the high bits: one compare for the whole tuple */
+typedef struct PackedGroup
+{
+	uint64		key;
+	uint32		group;
+} PackedGroup;
+
+static int
+packed_cmp(const void *a, const void *b)
+{
+	const PackedGroup *x = a,
+			   *y = b;
+
+	if (x->key != y->key)
+		return x->key < y->key ? -1 : 1;
+	return x->group < y->group ? -1 : x->group > y->group;
+}
 
 static int
 tuple_cmp(const void *a, const void *b, void *arg)
@@ -151,10 +170,39 @@ groups_order(AggExec *ex)
 		sorted = tuple_cmp(&(uint32) {i - 1}, &(uint32) {i}, &t) <= 0;
 	if (!sorted)
 	{
-		perm = palloc(n * sizeof(uint32));
+		int			bits = 0;
+		uint32		top[SIFT_AGG_MAX_KEYS] = {0};
+
 		for (uint32 i = 0; i < n; i++)
-			perm[i] = i;
-		qsort_arg(perm, n, sizeof(uint32), tuple_cmp, &t);
+			for (uint32 o = 0; o < nord; o++)
+				top[o] = Max(top[o], tup[(Size) i * nord + o]);
+		for (uint32 o = 0; o < nord; o++)
+			bits += pg_leftmost_one_pos32(top[o] | 1) + 1;
+		perm = palloc(n * sizeof(uint32));
+		if (bits <= 64)
+		{
+			PackedGroup *pk = palloc(n * sizeof(PackedGroup));
+
+			for (uint32 i = 0; i < n; i++)
+			{
+				uint64		k = 0;
+
+				for (uint32 o = 0; o < nord; o++)
+					k = (k << (pg_leftmost_one_pos32(top[o] | 1) + 1)) | tup[(Size) i * nord + o];
+				pk[i].key = k;
+				pk[i].group = i;
+			}
+			qsort(pk, n, sizeof(PackedGroup), packed_cmp);
+			for (uint32 i = 0; i < n; i++)
+				perm[i] = pk[i].group;
+			pfree(pk);
+		}
+		else
+		{
+			for (uint32 i = 0; i < n; i++)
+				perm[i] = i;
+			qsort_arg(perm, n, sizeof(uint32), tuple_cmp, &t);
+		}
 		MemoryContextSwitchTo(old);
 		out = MemoryContextAlloc(ex->cxt, n * sizeof(uint32));
 		for (uint32 i = 0; i < n; i++)

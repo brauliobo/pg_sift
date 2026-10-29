@@ -287,12 +287,13 @@ agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *inpu
 	List	   *seen = NIL;
 
 	/* the groups come out of a table that stays in memory (a spilling scan emits them by partition), and a node that keeps only some of them has nothing to sort */
-	if (s->nsets > 0 || s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden ||
+	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0) ||
 		table > (double) get_hash_memory_limit())
 		return;
-	if (root->sort_pathkeys != NIL)
+	/* grouping sets: a key a set leaves out is NULL in its groups, which the keys of this level (the columns themselves) do not say; the parent's pathkeys, on the columns of the sub-select, do */
+	if (root->sort_pathkeys != NIL && s->nsets == 0)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->sort_pathkeys, nworkers, &seen);
-	if (root->window_pathkeys != NIL)
+	if (root->window_pathkeys != NIL && s->nsets == 0)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->window_pathkeys, nworkers, &seen);
 	ordered_parent(c, s, root, input_rel, output_rel, target, scan_tlist, keys, nworkers, &seen);
 }

@@ -216,4 +216,5 @@ lookup_key_list_twice	counts the restriction of one column once	orders	default	f
 flat_lateral_key_lookup	stays in the scan when the query also reads another table with a column index only through the key lookups of a CTE	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 keycut_second_window	cut into units of 4,096 rows	events	-	[1-9][0-9]* pruned	native	-	ms	faster33	no
 cte_materialized_notes	is planned inline as well as shared	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+groupset_window_order	emits its groups in the order the parent sorts by	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 unit_tab_first	the chunk table of a key-cut unit comes before its directory	orders	default WITH (key_cut = 'customer_id')	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
