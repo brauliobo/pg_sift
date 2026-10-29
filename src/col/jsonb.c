@@ -269,12 +269,6 @@ sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *
 		def->parent += a->attr[attno].base;
 }
 
-bool
-sift_col_shred_is_array(const SiftColShredAdapter *a, int attno)
-{
-	return a->attr[attno].array;
-}
-
 /* does the array attribute keep its image beside its elements */
 bool
 sift_col_shred_keeps_image(const SiftColShredAdapter *a, int attno)

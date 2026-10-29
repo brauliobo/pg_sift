@@ -18,8 +18,6 @@
 
 struct SiftCGOrdBuf;
 
-#define SIFT_COL_SEG_MAGIC_UNIT		0x554C4F43	/* "COLU" */
-
 /* SBDIR entry */
 typedef struct SiftColSBRef
 {
