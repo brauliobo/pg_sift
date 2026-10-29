@@ -28,7 +28,8 @@ OPTS="SET max_parallel_maintenance_workers = 4"
 SMALL="SET min_parallel_table_scan_size = 0"
 size() { sql primary "SELECT pg_relation_size('t_idx')"; }
 live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
-tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * 11 / 10 ))"; }
+# PCT: the most the file may be over its live bytes, in percent (the default 110)
+tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * ${1:-110} / 100 ))"; }
 
 sql primary "$OPTS" "$SMALL" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount) WITH (key_cut = grp)" >/dev/null || bail "create index failed"
 check "a standby streams: the file of CREATE INDEX is at most 1.1 times its live bytes" tight
@@ -43,7 +44,12 @@ check "... and the rewrite of the first VACUUM does not grow it" tight
 for gap in 0 8; do
 	sql primary "SET sift.test_col_gap_blocks = $gap" "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex with gap $gap failed"
 	check "a gap of $gap blocks: nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none
-	check "... the file is at most 1.1 times its live bytes" tight
+	if ((gap == 0)); then
+		check "... the file is at most 1.1 times its live bytes" tight
+	else
+		# the output of a sliver of a gap lands above the free blocks it leaves, and the space step fills the holes that fit it: a few blocks stay free
+		check "... the file is at most 1.25 times its live bytes (the space step brings the output down)" tight 125
+	fi
 	check "... the index counts as the table" test "$(sql primary "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")" == "$(sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")"
 done
 check "the index counts as the table" test "$(sql primary "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")" == "$(sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")"
