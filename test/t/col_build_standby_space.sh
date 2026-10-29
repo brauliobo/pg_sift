@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
-plan 15
+plan 17
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
@@ -41,6 +41,10 @@ sql primary "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex f
 check "REINDEX: the file is at most 1.1 times its live bytes" tight
 sql primary "SELECT sift.col_maintain('t_idx')" "VACUUM t" >/dev/null || bail "rewrite failed"
 check "... and the rewrite of the first VACUUM does not grow it" tight
+# the new index of a concurrent build is not ready, so no query reads it and the cut of its file takes no lock that a standby replays
+sql primary "$OPTS" "$SMALL" "REINDEX INDEX CONCURRENTLY t_idx" >/dev/null || bail "concurrent reindex failed"
+check "REINDEX CONCURRENTLY: the file is at most 1.1 times its live bytes" tight
+check "... nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none
 for gap in 0 8; do
 	sql primary "SET sift.test_col_gap_blocks = $gap" "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex with gap $gap failed"
 	check "a gap of $gap blocks: nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none

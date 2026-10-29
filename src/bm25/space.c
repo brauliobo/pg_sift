@@ -121,16 +121,26 @@ sift_maint_file_is_new(Relation rel)
 	return rel->rd_createSubid != InvalidSubTransactionId || rel->rd_firstRelfilelocatorSubid != InvalidSubTransactionId;
 }
 
-/* The AccessExclusiveLock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
+/*
+ * The new index of a concurrent build is not ready until its build ends: no query reads it and no insert reaches it. Its file is cut under an ExclusiveLock, which a standby
+ * does not replay (it would wait for every query that planned on the table since the index entered the catalog, which hold a lock on it)
+ */
+static LOCKMODE
+cut_lock(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisready ? ExclusiveLock : AccessExclusiveLock;
+}
+
+/* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
 static bool
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
-	if (!sift_maint_file_is_new(rel) && sift_maint_standby_streams())
+	if (cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
 		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
 		return false;
 	}
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	if (!ConditionalLockRelation(rel, cut_lock(rel)))
 	{
 		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
 		return false;
@@ -159,7 +169,7 @@ sift_maint_truncate(Relation index, int elevel)
 	if (!lock_for_cut(index, "index", elevel))
 		return;
 	freed = sift_store_truncate(index);
-	UnlockRelation(index, AccessExclusiveLock);
+	UnlockRelation(index, cut_lock(index));
 	if (freed > 0)
 		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages", RelationGetRelationName(index),
 								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
@@ -472,7 +482,7 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 		sift_store_space_exclusive(rel, false);
 	}
 	PG_END_TRY();
-	UnlockRelation(rel, AccessExclusiveLock);
+	UnlockRelation(rel, cut_lock(rel));
 	if (freed > 0)
 		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
 								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
