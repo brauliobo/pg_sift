@@ -1117,7 +1117,7 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 	double		rows;
 	PlannerInfo *top = root;
 
-	if (!sift_enable_agg || rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
+	if (!sift_enable_agg || agg_stock_rows || rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
 		return;
 	rows = clamp_row_est(rel->rows * rel_filter_ratio(root, rel));
 	if (rows <= rel->rows)
@@ -1127,6 +1127,7 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 	if (!reads_column_index((Node *) top->parse, NULL))
 		return;
 	elog(DEBUG1, "sift: rows of a scan whose filters have no statistics %.0f, not %.0f (of %.0f)", rows, rel->rows, rel->tuples);
+	agg_rows_lifted = true;
 	rel->rows = rows;
 	foreach_ptr(Path, p, rel->pathlist)
 		p->rows = rows;
@@ -1299,6 +1300,7 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 	if (rows <= rel->rows || !reads_column_index((Node *) top->parse, NULL))
 		return;
 	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (the keys of its list own that share of the table)", rows, rel->rows);
+	agg_rows_lifted = true;
 	rel->rows = rows;
 	foreach_ptr(Path, p, rel->pathlist)
 		p->rows = rows;
@@ -1309,6 +1311,10 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
  * shared plan and passes it on, so what is left here after an error or a nested plan is not read.
  */
 double		agg_cte_lift = 1.0;
+
+/* the three lifts of rows (derived_rel_rows, key_list_lift, derived_cte_rows) are off while the plan that is the fallback is made (plan_shared), and say when one was made */
+bool		agg_stock_rows;
+bool		agg_rows_lifted;
 
 /* the number of the plan of a CTE (an index of root->glob->subroots and subplans, from 1), 0 when it has none */
 static int
@@ -1495,7 +1501,7 @@ derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 				rows;
 	bool		reads;
 
-	if (!sift_enable_agg || agg_variant != NULL || rte->self_reference || (plan_id = cte_plan_id(root, rte)) <= 0)
+	if (!sift_enable_agg || agg_stock_rows || agg_variant != NULL || rte->self_reference || (plan_id = cte_plan_id(root, rte)) <= 0)
 		return;
 	leaf = plan_leaf_rows(list_nth(root->glob->subroots, plan_id - 1), list_nth(root->glob->subplans, plan_id - 1), &reads);
 	if (!reads)
@@ -1508,6 +1514,7 @@ derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 		return;
 	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (its body builds %.0f from a table with a column index)", rows, rel->rows, leaf);
 	agg_cte_lift = Max(agg_cte_lift, rows / rel->rows);
+	agg_rows_lifted = true;
 	rel->rows = rows;
 	foreach_ptr(Path, p, rel->pathlist)
 		p->rows = rows;

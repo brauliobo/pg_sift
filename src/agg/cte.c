@@ -755,6 +755,8 @@ typedef struct CteVariants
 			   *inlined;
 	MemoryContext plain_cx,
 				inlined_cx;
+	Query	   *stock_parse;	/* a copy of the statement for the plan that is the fallback, when the shared plan was made with lifted rows (plan_stock) */
+	bool		lifted;			/* the shared plan was made with rows that derived_rel_rows, derived_cte_rows or key_list_lift raised */
 	ScanArms	scans;
 	double		plain_cost,
 				charged,		/* of plain_cost, what the unnesting aggregates are charged for the rows their estimate lost */
@@ -765,15 +767,22 @@ typedef struct CteVariants
 /*
  * The plan that keeps the shared CTEs, and in lift what agg_cte_lift came to while it was planned (the plan is the only one that is priced with it).
  * Memoize over a lookup of a CTE's rows is priced on hits a near-unique key (a jsonb document) does not give, so the shared plan would look cheaper than it is.
+ * stock: the rows of CTEs and sub-selects are PostgreSQL's own (agg_stock_rows): the plan that survives when the scans lose is the one the planner
+ * makes without the library, where the lifted rows (a floor that prices the scans against the work they replace) would have chosen other joins.
+ * lifted says whether a lift changed the rows of this plan.
  */
 static PlannedStmt *
-plan_shared(SIFT_PLANNER_PARAMS, MemoryContext *cx, double *lift)
+plan_shared(SIFT_PLANNER_PARAMS, MemoryContext *cx, double *lift, bool stock, bool *lifted)
 {
 	double		outer_lift = agg_cte_lift;
-	bool		outer_memoize = enable_memoize;
+	bool		outer_memoize = enable_memoize,
+				outer_stock = agg_stock_rows,
+				outer_lifted = agg_rows_lifted;
 	PlannedStmt *stmt;
 
 	agg_cte_lift = 1.0;
+	agg_stock_rows = stock;
+	agg_rows_lifted = false;
 	PG_TRY();
 	{
 		enable_memoize = false;
@@ -782,14 +791,21 @@ plan_shared(SIFT_PLANNER_PARAMS, MemoryContext *cx, double *lift)
 	PG_FINALLY();
 	{
 		enable_memoize = outer_memoize;
+		agg_stock_rows = outer_stock;
 	}
 	PG_END_TRY();
 	*lift = agg_cte_lift;
+	*lifted = agg_rows_lifted;
 	agg_cte_lift = outer_lift;
+	agg_rows_lifted = outer_lifted;
 	return stmt;
 }
 
-/* both queries are consumed by the planner */
+/*
+ * Both queries are consumed by the planner. The inline plan is made first: where it holds no scan the choice is made (the shared plan stays), and that plan
+ * is the one the planner makes without the library (stock rows); where it holds scans the shared plan is made with the lifted rows that price them against the
+ * work they replace, and a copy of the statement is kept for the fallback (plan_stock).
+ */
 static void
 plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants *v)
 {
@@ -800,16 +816,18 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	int			unnesting;
 
 	memset(v, 0, sizeof(*v));
-	v->plain = plan_shared(SIFT_PLANNER_ARGS(parse), &v->plain_cx, &lift);
 	outer_variant = agg_variant_push("inline");
 	agg_read_rows = 0;
 	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
 	read_rows = agg_read_rows;
 	agg_variant = outer_variant;
 	v->read_rows = read_rows;
-	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	sift_agg_arms(v->inlined->planTree, &v->scans);
 	sift_agg_arms_list(v->inlined->subplans, &v->scans);
+	if (v->scans.n > 0)
+		v->stock_parse = copyObject(parse);
+	v->plain = plan_shared(SIFT_PLANNER_ARGS(parse), &v->plain_cx, &lift, v->scans.n == 0, &v->lifted);
+	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	v->work = shared_work_cost(v->plain, names, read_rows, lift, v->scans.n, &charged, &unnesting);
 	/* the shared plan really costs what its aggregates were charged: the totals are compared with it */
 	v->plain_cost += charged;
@@ -952,8 +970,9 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 	else
 	{
 		double		lift;
+		bool		lifted;
 
-		stmt = plan_shared(SIFT_PLANNER_ARGS(parse), cx, &lift);
+		stmt = plan_shared(SIFT_PLANNER_ARGS(parse), cx, &lift, true, &lifted);
 		if (vd->scans > 0)
 			agg_report("cte_inline", AGG_REFUSE_CTE_COST, "from the verdict cached", false, 0, 0);
 	}
@@ -972,6 +991,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
 	CteVerdict	vd;
+	PlannedStmt *priced;
 	bool		same,
 				won,
 				replan = verdict_replan;
@@ -1022,6 +1042,18 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && CTE_INLINE_MARGIN * v.scans.total >= v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
+	priced = v.plain;
+	if (!won && v.lifted)
+	{
+		/* the scans lost: the plan that stays is the one the planner makes without the lifted rows that priced them (its arms are the priced plan's) */
+		bool		quiet = agg_quiet_reports(true),
+					lifted;
+		double		lift;
+
+		discard_plan(v.plain_cx);
+		v.plain = plan_shared(SIFT_PLANNER_ARGS(v.stock_parse), &v.plain_cx, &lift, true, &lifted);
+		agg_quiet_reports(quiet);
+	}
 	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, cte_size(v.plain), v.read_rows);
 	if (!planning_second)
 	{
@@ -1048,8 +1080,8 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		ScanArms	shared = {0};
 		const char *detail = psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work);
 
-		sift_agg_arms(v.plain->planTree, &shared);
-		sift_agg_arms_list(v.plain->subplans, &shared);
+		sift_agg_arms(priced->planTree, &shared);
+		sift_agg_arms_list(priced->subplans, &shared);
 		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
 		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
 			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);

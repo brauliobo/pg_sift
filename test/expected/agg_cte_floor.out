@@ -39,11 +39,12 @@ BEGIN
 	RETURN (jsonb_path_query_first(j, '$.** ? (@."Node Type" == "CTE Scan" && @."CTE Name" == "r")') ->> 'Plan Rows')::float8;
 END $$;
 CREATE FUNCTION verdict(q text) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(DISTINCT used::text, ',') FROM sift.explain_why(q) WHERE arm = 'cte_inline' $$;
--- the floor lifts the rows of the scan of the table with the column index, and the copy without one keeps PostgreSQL's
+-- the floor prices the scans that replace the shared CTE (the next statement); the plan that stays when they are not taken is the one the planner makes without
+-- the library, with PostgreSQL's rows, for the table with the column index as for its copy without one (agg_cte_stock_rows)
 SELECT t, cte_rows(held_query(t)) > 20 AS lifted FROM (VALUES ('events'), ('plain_events')) v(t) ORDER BY t;
       t       | lifted 
 --------------+--------
- events       | t
+ events       | f
  plain_events | f
 (2 rows)
 
@@ -63,7 +64,7 @@ NOTICE:  planning failed
 SELECT cte_rows(held_query('events')) > 20 AS lifted, verdict(series_query('events')) AS inline_used;
  lifted | inline_used 
 --------+-------------
- t      | true
+ f      | true
 (1 row)
 
 -- the cte_inline row prices the scans against the plan the planner makes without the library, not against the shared plan charged for the rows its aggregates lost

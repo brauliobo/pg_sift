@@ -1,0 +1,48 @@
+-- The rows of a shared CTE that reads a table with a column index are raised to a floor (derived_cte_rows) so that the shared plan prices the scans that replace
+-- it. When the scans lose, the plan that stays is the one the planner makes without the library: a small entity does not get the hash join the lifted rows chose.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
+INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 3000) g;
+CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL);
+INSERT INTO events SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360) FROM generate_series(1, 6000) g;
+CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts);
+NOTICE:  sift_col index events_col writes a rollup of the rows by set_id, kind_id
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX events_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE kinds;
+-- the CTE joins the table to a filtered dimension (estimated at a row), two consumers read it, neither is an aggregate the scan takes (an ordered array_agg)
+CREATE FUNCTION held_query(owner int) RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$WITH r AS (SELECT e.* FROM events e INNER JOIN kinds k ON k.id = e.kind_id AND k.enabled IS TRUE WHERE e.set_id = %s)
+	SELECT (SELECT array_agg(k2.id ORDER BY k2.id) FROM r JOIN kinds k2 ON k2.id = r.id) AS a, (SELECT array_agg(r.id ORDER BY r.id) FROM r) AS b$q$, owner) $f$;
+-- the node types of the joins of the plan, in plan order
+CREATE FUNCTION joins(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN jsonb_path_query_array(j, '$.** ? (@."Node Type" like_regex "Join|Nested Loop")."Node Type"')::text;
+END $$;
+CREATE FUNCTION joins_stock(q text) RETURNS text LANGUAGE sql SET sift.enable_agg = off AS $$ SELECT joins(q) $$;
+-- the first plan of a statement is made in full, the next from the verdict it left: both are the stock plan
+SELECT joins(held_query(3)) = joins_stock(held_query(3)) AS miss_is_stock;
+ miss_is_stock 
+---------------
+ t
+(1 row)
+
+SELECT joins(held_query(3)) = joins_stock(held_query(3)) AS hit_is_stock;
+ hit_is_stock 
+--------------
+ t
+(1 row)
+
+SELECT joins(held_query(4)) = joins_stock(held_query(4)) AS other_entity_is_stock;
+ other_entity_is_stock 
+-----------------------
+ t
+(1 row)
+
+DROP FUNCTION joins_stock, joins, held_query;
+DROP TABLE events, kinds;
+DROP EXTENSION pg_sift;
