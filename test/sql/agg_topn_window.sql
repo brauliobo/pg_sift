@@ -43,6 +43,7 @@ BEGIN
 	DROP TABLE IF EXISTS pw_a, pw_b;
 	PERFORM pw_mode(true);
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	FOR line IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP NULL; END LOOP;
 	EXECUTE 'CREATE TEMP TABLE pw_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
 	PERFORM pw_mode(false);
 	EXECUTE 'CREATE TEMP TABLE pw_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
@@ -116,6 +117,17 @@ SELECT count(*) AS differences FROM ((TABLE pw_g1 EXCEPT ALL TABLE pw_g2) UNION 
 RESET plan_cache_mode;
 DROP TABLE pw_g1, pw_g2;
 
+-- EXPLAIN (VERBOSE) prints the window functions the scan computes as the aggregates they are (pw_check runs it for every query above): ruleutils prints a WindowFunc only under a WindowAgg
+CREATE FUNCTION pw_output(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM pw_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF line ~ 'Output:' THEN RETURN NEXT line; END IF;
+	END LOOP;
+END $$;
+SELECT pw_output(replace(q, '{t}', 'pw')) AS output FROM pw_q WHERE tag IN ('count', 'aggregates') ORDER BY tag;
+
 -- writes: the rows of the write buffer, the rows an UPDATE moved, the rows a DELETE left
 UPDATE pw SET n = n + 1000, kind = 'cat_a' WHERE id % 53 = 0;
 UPDATE pw SET amount = amount + 1 WHERE id % 59 = 0 AND amount < 'NaN';
@@ -127,5 +139,5 @@ DELETE FROM pw_t WHERE id % 61 = 0;
 INSERT INTO pw_t (id, kind, grp, ts, amount, score, n, note) SELECT i, 'cat_a', i % 5, timestamp '2026-02-01' + i * interval '1 minute', i / 10.0, i / 4.0, i % 700, 'note_new' FROM generate_series(12001, 12300) i;
 SELECT tag, pw_check(replace(q, '{t}', 'pw')) AS sift_col, pw_check(replace(q, '{t}', 'pw_t')) AS sift_table FROM pw_q ORDER BY tag;
 DROP TABLE pw, pw_q, pw_r, pw_t;
-DROP FUNCTION pw_check(text), pw_mode(boolean), pw_why(text);
+DROP FUNCTION pw_check(text), pw_mode(boolean), pw_why(text), pw_output(text);
 DROP EXTENSION pg_sift;
