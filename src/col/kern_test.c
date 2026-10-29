@@ -555,7 +555,7 @@ test_anc_match(Test *t)
 
 	for (uint32 i = 0; i < n; i++)
 	{
-		int			h = rnd(t, w + 3);
+		int			h = rnd(t, Min(w + 3, 64));	/* a shift by 64 is undefined: 2^64 addresses is no node of the keys */
 		uint64		x = 2 * ((rnd(t, 4) ? c : c2) & ~((UINT64CONST(1) << h) - 1)) + (UINT64CONST(1) << h);
 
 		switch (rnd(t, 8))
