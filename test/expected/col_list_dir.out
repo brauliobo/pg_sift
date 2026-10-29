@@ -59,7 +59,7 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('group', $q$SELECT doc->'tags'->>1 AS u, count(*) AS c FROM %1$I WHERE doc @> '{"tags": ["t7"]}' GROUP BY 1$q$),
 		('int contains', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE doc @> '{"ids": [7]}'$q$),
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE doc @> '{"ids": [7, 2003]}'$q$),
-		('int exists', $q$SELECT count(*) AS c FROM %1$I WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(doc->'ids') e WHERE (e)::int = 2004)$q$),
+		('int exists', $q$SELECT count(*) AS c FROM %1$I WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(doc->'ids') e WHERE CASE WHEN jsonb_typeof(e) = 'number' THEN (e)::int END = 2004)$q$),
 		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE doc @> '{"ids": [1]}'$q$)) s(name, q) $$;
 SELECT * FROM shapes('built', 'ld');
          shape          |   result   
