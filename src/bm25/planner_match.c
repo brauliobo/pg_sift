@@ -326,6 +326,40 @@ scan_limit(PlannerInfo *root, bool ranked)
 }
 
 /*
+ * The rows a ranked scan is asked for so that k of them reach the query through its joins: the other relations
+ * of an inner join keep the fraction their own restrictions leave (a key join passes that fraction of the scan's
+ * rows), and the rows asked for carry three standard deviations of the binomial so that the search seldom comes
+ * up short. Only a hint: a ranked scan that is drained past it searches again, scoring every block again, which
+ * costs about as much as the search itself.
+ */
+int64
+joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k)
+{
+	double		pass = 1.0,
+				mean;
+	int			x = -1;
+
+	if (k <= 0)
+		return k;
+	while ((x = bms_next_member(root->all_baserels, x)) >= 0)
+	{
+		RelOptInfo *other = root->simple_rel_array[x];
+		bool		inner = true;
+
+		if (other == NULL || other == rel || other->tuples <= 0 || bms_is_member(x, rel->top_parent_relids))
+			continue;
+		foreach_node(SpecialJoinInfo, sj, root->join_info_list)
+			inner &= !bms_is_member(x, sj->min_lefthand) && !bms_is_member(x, sj->min_righthand);
+		if (inner)
+			pass *= Min(1.0, other->rows / other->tuples);
+	}
+	if (pass > 0.99)
+		return k;
+	mean = pow((3 + sqrt(9 + 4.0 * k)) / 2, 2);
+	return (int64) Min(ceil(mean / Max(pass, 1.0 / 4096)), 4096);
+}
+
+/*
  * The LIMIT (OFFSET) of a generic plan, which cannot be costed: the Params of a plain ungrouped, non-WITH TIES
  * query (the scan reads them when it starts), NIL for any other
  */

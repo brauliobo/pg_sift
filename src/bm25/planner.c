@@ -360,6 +360,8 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 
 	if (!split_quals(root, rel, ii, ps->only_best, &c))
 		return;
+	if (mode == SIFT_MODE_RANKED)
+		k = joined_limit(root, rel, k);
 	if (mode == SIFT_MODE_RANKED && !ps->filter_looked)
 	{
 		ps->filter = sift_filter_bitmap_path(root, rel);

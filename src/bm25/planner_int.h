@@ -71,6 +71,7 @@ extern List *score_exprs(PlannerInfo *root, RelOptInfo *rel);
 extern bool sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk);
 extern int64 query_limit(PlannerInfo *root);
 extern int64 scan_limit(PlannerInfo *root, bool ranked);
+extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k);
 extern List *param_limits(PlannerInfo *root);
 extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
 
