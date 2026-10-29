@@ -21,8 +21,8 @@ SET client_min_messages = notice;
 -- the text takes LZ4, the hex strings (LZ4 cannot shrink them) keep zstd without a word, mid keeps it and says how close LZ4 came
 CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops, mid sift.col_text_ops);
 NOTICE:  sift_col index sw_idx: compression of the text of 2 columns chosen by the formula (lz4 for 1, zstd kept for 1)
-DETAIL:  txt (long strings): lz4; a test reads 17.1 M instructions a MB of text with zstd and 5.2 M with lz4 (3.3 times fewer), lz4 takes 354.5 kB more (+54%): benefit 24 against cost 18.
-mid (long strings): zstd kept; a test reads 19.7 M instructions a MB of text with zstd and 6.3 M with lz4 (3.1 times fewer), lz4 takes 645.9 kB more (+82%): benefit 23 against cost 27.
+DETAIL:  txt (long strings): lz4; a test reads 17.1 M instructions a MB of text with zstd and 5.2 M with lz4 (3.3 times fewer), lz4 takes about 350 kB more (+54%): benefit 24 against cost 18.
+mid (long strings): zstd kept; a test reads 19.7 M instructions a MB of text with zstd and 6.3 M with lz4 (3.1 times fewer), lz4 takes about 640 kB more (+82%): benefit 23 against cost 27.
 HINT:  ALTER INDEX sw_idx SET (compression = 'auto; txt=zstd') and REINDEX keeps zstd for a column, 'auto; txt=lz4' takes lz4.
 SET client_min_messages = warning;
 VACUUM sw;
@@ -125,7 +125,7 @@ INSERT INTO sw_dict SELECT i, (SELECT string_agg(substr(md5('w' || k), 1, 2 + k 
 SET client_min_messages = notice;
 CREATE INDEX sw_dict_idx ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops);
 NOTICE:  sift_col index sw_dict_idx: compression of the text of 1 column chosen by the formula (lz4 for 1, zstd kept for 0)
-DETAIL:  w (dictionary): lz4; a test reads 17.0 M instructions a MB of text with zstd and 5.3 M with lz4 (3.2 times fewer), lz4 takes 284.5 kB more (+60%): benefit 24 against cost 20.
+DETAIL:  w (dictionary): lz4; a test reads 17.0 M instructions a MB of text with zstd and 5.3 M with lz4 (3.2 times fewer), lz4 takes about 280 kB more (+60%): benefit 24 against cost 20.
 HINT:  ALTER INDEX sw_dict_idx SET (compression = 'auto; w=zstd') and REINDEX keeps zstd for a column, 'auto; w=lz4' takes lz4. SET sift.col_format_minor = 14 before CREATE INDEX writes no LZ4 blocks of dictionaries (they need minor 29), which releases before 3.6 refuse.
 SET client_min_messages = warning;
 VACUUM sw_dict;

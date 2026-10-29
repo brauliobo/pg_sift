@@ -6,6 +6,7 @@
  */
 #include "postgres.h"
 
+#include <math.h>
 
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -606,10 +607,13 @@ sift_colb_scan_watch(ColScanAcc *acc)
 	sift_cenc_scan_hook = acc ? scan_add : NULL;
 }
 
+/* Rounded down to two digits: the sizes the compressors give vary by a few hundred bytes between library versions, and a size just under a round figure must not flip the text */
 static char *
 scan_bytes(double b)
 {
-	return b >= 1e6 ? psprintf("%.1f MB", b / 1e6) : psprintf("%.1f kB", b / 1e3);
+	if (b >= 1e6)
+		return psprintf("%.1f MB", floor(b / 1e5) / 10);
+	return psprintf("about %.0f kB", b >= 1e4 ? floor(b / 1e4) * 10 : floor(b / 1e3));
 }
 
 /*
