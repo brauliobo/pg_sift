@@ -1,4 +1,4 @@
--- two sift_col indexes on a table, the newer cut by a key: a count over a month is answered by the older one, the index cut by block range, not by the newest
+-- two sift_col indexes on a table, the newer cut by a key: a count over a month is answered by the cheaper of the two (at 1,000,000 rows the newer one, whose cut leaves fewer units to read), not by the newest as such
 -- label: `count(*), sum(amount) WHERE created_at` in one month, a `sift_col` index with `key_cut = 'customer_id'` created after the default one
 -- ordered: yes
 --@ setup
