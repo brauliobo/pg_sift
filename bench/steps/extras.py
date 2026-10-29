@@ -21,7 +21,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from readme import replace_block as _replace_block  # noqa: E402
+from mdtable import ms  # noqa: E402,F401  (the milliseconds of a cell; also used as extras.ms)
 from store_charts import picture  # noqa: E402
+import triple  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 COLUMNS = ['version', 'case', 'arm', 'metric', 'value', 'min', 'max', 'n', 'load', 'note']
@@ -76,10 +78,6 @@ def get(rows, **kw):
 def num(rows, **kw):
     r = get(rows, **kw)
     return None if r is None or r['value'] in ('', 'NA') else float(r['value'])
-
-
-def ms(v):
-    return 'n/a' if v is None else '%.2f' % v if v < 10 else '%.1f' % v if v < 100 else '%d' % round(v)
 
 
 def table(head, body, align=None):
@@ -390,6 +388,7 @@ def fold(summary, lines):
     return ['<details><summary>%s</summary>' % summary, ''] + lines + ['', '</details>']
 
 
+UNMEASURED = (triple.NA(triple.NOT_MEASURED),) * 2
 DUCK_ARMS = [('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_heap', 'pg_duckdb heap'), ('duckdb_parquet', 'pg_duckdb Parquet')]
 
 
@@ -399,8 +398,9 @@ def duck_cell(rows, case, arm, metric, best):
         return 'n/a'
     if r['value'] in ('NA', 'error'):
         return 'not supported' if r['value'] == 'NA' else 'error'
-    text = ms(float(r['value'])) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
-    return '**%s**' % text if float(r['value']) <= best * 1.05 else text   # the fastest, and anything within 5% of it, in bold
+    v, ref = float(r['value']), num(rows, case=case, arm='sift', metric=metric)   # pg_duckdb's run has the times only; the factors are against the pg_sift of the same run
+    text = triple.cell((v, *UNMEASURED), None if arm == 'sift' or ref is None else (ref, *UNMEASURED)) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
+    return '**%s**' % text if v <= best * 1.05 else text   # the fastest, and anything within 5% of it, in bold
 
 
 def duck_table(rows, cases, metric):
@@ -409,7 +409,7 @@ def duck_table(rows, cases, metric):
         done = {a: x for a, _ in DUCK_ARMS if (x := num(rows, case=c, arm=a, metric=metric)) is not None}
         best = min(done, key=done.get) if done else None
         body.append([c] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
-    return table(['question (ms)'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---'])
+    return table(['question'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---']) + [''] + triple.legend([(None, *UNMEASURED)])
 
 
 def duck_summary(rows, cases, metric):

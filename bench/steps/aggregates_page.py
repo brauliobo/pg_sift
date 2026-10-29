@@ -203,7 +203,7 @@ def duckdb_scale_lines(results):
     cases = extras.duckdb_cases(rows)
     best = extras.duck_summary(rows, cases, 'warm_ms')
     return ['### Against pg_duckdb at 10,000,000 orders', '',
-            f'{int(meta["orders"]):,} orders of the orders benchmark, one client (`psql` with `\\timing`), median of 3 warm runs in milliseconds, lower is better, the fastest of a row and anything within 5% of it in bold. {extras.footer(meta)} '
+            f'{int(meta["orders"]):,} orders of the orders benchmark, one client (`psql` with `\\timing`), median of 3 warm runs, lower is better, three measures in each cell (the run of pg_duckdb records the time only), the fastest of a row and anything within 5% of its time in bold. {extras.footer(meta)} '
             f'pg_duckdb {meta.get("pg_duckdb", "?").split(",")[0]}, {meta.get("duckdb", "?")}; 3 CPUs and 8g per server.', ''] + extras.duck_table(rows, cases, 'warm_ms') + [
             '', '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', '**Caveats**', '',
             '- ' + best[1][2:],

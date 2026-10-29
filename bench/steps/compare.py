@@ -23,6 +23,7 @@ import extras  # noqa: E402
 import mdtable  # noqa: E402
 import readme  # noqa: E402  (steps/readme.py: the search tier, replace_block)
 import store_charts  # noqa: E402
+import triple  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
@@ -380,19 +381,20 @@ def numbers_block(results):
 
     def table(st, D, tier, qs):
         es = [e for e in est if e in st.engines(tier) or e == 'duckdb' and D]
-        lat = {(e, q): v[0] for e in es for q in qs if (v := bench_charts.lat(st, D, tier, e, q))}
-        best = {q: min(lat[e, q] for e in es if (e, q) in lat) for q in qs}
         name = {bench_charts.SHORT[e] + ('†' if e == 'duckdb' else ''): e for e in es}
-        cell = lambda n, q: (f'**{extras.ms(lat[name[n], q])}**' if lat[name[n], q] <= best[q] * (1 + TIE) else extras.ms(lat[name[n], q])) if (name[n], q) in lat else 'n/a'
-        return mdtable.tables(list(name), [('', [(q, q) for q in qs])], cell, max_cols=7)
+        fig = lambda e, q: bench_charts.fig(st, D, tier, e, q)  # noqa: E731
+        mine = lambda q: triple.best(fig(e, q) for e in MINE)  # noqa: E731
+        # pg_duckdb is its own run: its factors are against the pg_sift of that run (the time only; its run records no CPU and IO)
+        ref = lambda e, q: (D.own(q, 'sift'), *mine(q)[1:]) if e == 'duckdb' and D and D.own(q, 'sift') else mine(q)  # noqa: E731
+        return triple.table(name, [(q, q) for q in qs], fig, ref)
 
     qs = list(S.queries)
-    out = [f'Median of the warm runs in milliseconds on 1,000,000 orders, the fastest of a question and anything within 5% of it in bold; pg_sift is `sift_col` or `sift_table` (the table itself in column format). '
-           '† pg_duckdb is its own run: the better of its heap and Parquet modes, a different PostgreSQL build and a `psql` client, so its sub-millisecond cells differ from the others (conditions above).', '']
+    out = [f'Warm medians on 1,000,000 orders, three measures in each cell, the fastest system of a question and anything within 5% of its time in bold; pg_sift is `sift_col` or `sift_table` (the table itself in column format), '
+           'the factors are against the faster of the two. † pg_duckdb is its own run: the better of its heap and Parquet modes, a different PostgreSQL build and a `psql` client, so its sub-millisecond cells differ from the others and its factors are against the pg_sift of that run (conditions above).', '']
     out += table(S, D1, t1, qs)
     if SS and SS.tier_of(10_000_000, 3):
         t10 = SS.tier_of(10_000_000, 3)
-        out += ['', 'The same questions on 10,000,000 orders (warm medians, ms):', ''] + table(SS, D10, t10, qs)
+        out += ['', 'The same questions on 10,000,000 orders (warm medians):', ''] + table(SS, D10, t10, qs)
     return out
 
 

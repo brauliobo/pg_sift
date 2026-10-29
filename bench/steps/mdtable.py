@@ -9,6 +9,10 @@ import math
 MAX_COLS = 6
 
 
+def ms(v):
+    return 'n/a' if v is None else '%.2f' % v if v < 10 else '%.1f' % v if v < 100 else '%d' % round(v)
+
+
 def tables(rows, groups, cell, max_cols=MAX_COLS, first='system'):
     """lines of one table per group (several when it has more than max_cols columns, chunks of the same size), each under its caption"""
     out = []

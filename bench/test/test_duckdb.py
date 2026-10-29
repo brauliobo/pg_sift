@@ -41,8 +41,8 @@ class Render(unittest.TestCase):
         text = '\n'.join(extras.duckdb_section(META, rows() + [dict(version='v', case='load', arm=a, metric='load_s', value='1') for a in ('pg', 'sift', 'duckdb_parquet')]
                                                 + [dict(version='v', case='load', arm=a, metric='table_mib', value='1') for a in ('pg', 'sift', 'duckdb_parquet')]))
         self.assertIn('| orders-per-country |', text)
-        self.assertIn('**1.00**', text)                              # the fastest of the row in bold
-        self.assertIn('8.00 †', text)                                # the substitute statement is marked
+        self.assertIn('**1.00 · n/a · n/a**', text)                              # the fastest of the row in bold
+        self.assertIn('(4.0x · n/a · n/a) †', text)                                # the substitute statement is marked
         self.assertIn('not supported', text)                         # and what pg_duckdb cannot run is said, not left out
         self.assertIn('pg_sift on 3 (orders-per-country, search-count, search-newest)', text)
         self.assertIn('Not supported by pg_duckdb: search-newest', text)

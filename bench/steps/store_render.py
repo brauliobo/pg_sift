@@ -3,6 +3,7 @@ import benchlib
 import json
 import os
 import re
+import triple
 from store_charts import QUESTIONS, SEARCH, picture
 from store_lib import CHUNK, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, PG_ENGINES, UPDATE_ENGINES, load_queries
 
@@ -52,10 +53,6 @@ def ms(v):
     return f'{v:.3g}' if v < 100 else f'{v:.0f}'
 
 
-def spread(r):
-    return f'{ms(r["value"])} ({ms(r["min"])}-{ms(r["max"])})' if r else 'n/a'
-
-
 def md_table(head, body, align=None):
     align = align or ['---'] + ['---:'] * (len(head) - 1)
     return ['| ' + ' | '.join(head) + ' |', '|' + '|'.join(align) + '|'] + ['| ' + ' | '.join(r) + ' |' for r in body]
@@ -77,16 +74,22 @@ def best_bold(values, cells):
     return [f'**{c}**' if v is not None and v <= best * 1.05 else c for v, c in zip(values, cells)]
 
 
-def bench_table(R, tier, engines, labels, detail=False, variant='warm', search=False):
-    head = ['question' if detail else 'query'] + [labels[e] for e in engines]
+def bench_table(R, tier, engines, labels, variant='warm', search=False):
+    head = ['query'] + [labels[e] for e in engines]
     body = []
     for qid in R.queries(tier, search):
-        title = (QUERY_TITLES if detail else QUERY_LABELS)[qid]
         rs = [R.get(tier, e, qid, variant, 'latency_ms') for e in engines]
         vals = [r['value'] if r else None for r in rs]
-        cells = [spread(r) if detail else ms(r['value'] if r else None) for r in rs]
-        body.append([title] + best_bold(vals, cells))
+        body.append([QUERY_LABELS[qid]] + best_bold(vals, [ms(v) for v in vals]))
     return head, body
+
+
+def triple_table(R, tier, engines, labels, search=False):
+    """the questions of a result set as cells of time, CPU and IO (steps/triple.py), then what each slug stands for"""
+    qs = R.queries(tier, search)
+    fig = lambda e, q: triple.fig(lambda m: R.get(tier, e, q, 'warm', m))  # noqa: E731
+    mine = lambda q: triple.best(fig(e, q) for e in triple.MINE if e in engines)  # noqa: E731
+    return triple.table({labels[e]: e for e in engines}, [(q, q) for q in qs], fig, lambda e, q: mine(q)) + ['', 'The questions: ' + '; '.join(f'`{q}` = {QUERY_TITLES[q]}' for q in qs) + '.']
 
 
 HEAP = ('pg', 'sift')   # the systems whose table is a heap; the others hold the rows in their own format
@@ -398,16 +401,14 @@ def benchmarks_block(R):
     t = R.meta['tiers'][tier]
     s = t['servers']
     engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'es', 'ch', 'citus'])
-    out = [f'{t["rows"]:,} orders and {len(R.queries(tier))} aggregate questions (the {len(R.queries(tier, search=True))} full-text ones are in the search section), {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs in milliseconds with the fastest and slowest run in parentheses; the fastest of a row and anything within 5% of it in bold. '
+    out = [f'{t["rows"]:,} orders and {len(R.queries(tier))} aggregate questions (the {len(R.queries(tier, search=True))} full-text ones are in the search section), {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs, three measures in each cell (the fastest and slowest run of every time are in bench/results/store.json); the fastest system of a question and anything within 5% of its time in bold, the factors are against the faster pg_sift layout. '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")}, PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}'
            + (f', Citus {s["citus_columnar"]}' if 'citus' in engines else '') + f'; seeded data sha256 `{t["data_sha256"][:16]}`; {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared).', '']
-    head, body = bench_table(R, tier, engines, dagger(R, tier, labels), detail=True)
-    out += md_table(head, body + load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
+    out += triple_table(R, tier, engines, dagger(R, tier, labels)) + [''] + md_table(['measure'] + [dagger(R, tier, labels)[e] for e in engines], load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
                                                                    picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]
-    head, body = bench_table(R, tier, engines, dagger(R, tier, labels), detail=True, search=True)
     out += ['', '#### Search with filters', '', 'The three full-text questions of the same set, a text search with filters on the same rows (the search benchmarks proper are in the [README](../README.md#search)); they are not part of the aggregates above.', '']
-    out += md_table(head, body) + ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
+    out += triple_table(R, tier, engines, dagger(R, tier, labels), search=True) + ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
     last = R.tiers[-1]
     t = R.meta['tiers'][last]
     s = t['servers']

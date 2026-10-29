@@ -24,6 +24,7 @@ import cases as cases_mod
 import cases_render
 import extras
 import store_charts as sc
+import triple
 from store_charts import SEARCH, SYSTEMS, THEMES, Canvas, Store, factor_text, ms_text, num, strip_cells, strip_color, tw
 
 SYSTEMS['duckdb'] = ('pg_duckdb', '#eb6834', '#d95926', 'up')
@@ -138,6 +139,14 @@ def lat(S, D, tier, e, q, variant='warm'):
         return (v, v, v) if v else None
     r = S.lat(tier, e, q, variant)
     return (r['value'], r['min'], r['max']) if r else None
+
+
+def fig(S, D, tier, e, q, variant='warm'):
+    """(ms, cpu_ms, mb) of a system on a question (steps/triple.py); pg_duckdb: the faster of its two modes, whose runs record the time only"""
+    if e == 'duckdb':
+        v = lat(S, D, tier, e, q, variant)
+        return v and (v[0], triple.NA(triple.NOT_MEASURED), triple.NA(triple.NOT_MEASURED))
+    return triple.fig(lambda m: S.get(tier, e, q, variant, m))
 
 
 def foot_lines(S, tier, D, what):
