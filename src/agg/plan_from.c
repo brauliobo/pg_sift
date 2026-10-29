@@ -863,6 +863,44 @@ part_rollup_same(const SiftSrcPreagg *x, int i, const SiftSrcPreagg *y, int j)
 		memcmp(x->rollup[i].meas, y->rollup[j].meas, x->rollup[i].nmeas * sizeof(int)) == 0;
 }
 
+/*
+ * The measures a dim holds follow the key columns too: the key table of a key column adds its measures to the dim of the column (agg/pre.c), in the partitions
+ * that keep one. The dims both have (a leaf and its calendar cells are two) with the measures both hold: a key table alone answers whole segments, a dim that
+ * is a cube in one partition is not a key table in all.
+ */
+static void
+part_dims_common(SiftSrcPreagg *a, SiftSrcPreagg *b, const SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
+{
+	int			n = 0;
+
+	for (int i = 0; i < acc->ndims; i++)
+		for (int j = 0; j < pa->ndims; j++)
+		{
+			int			kept = 0;
+
+			if (acc->dim[i].leaf != pa->dim[j].leaf || acc->dim[i].cal != pa->dim[j].cal)
+				continue;
+			a->dim[n] = acc->dim[i];
+			for (int m = 0; m < acc->dim[i].nmeas; m++)
+				for (int k = 0; k < pa->dim[j].nmeas; k++)
+					if (acc->dim[i].meas[m] == pa->dim[j].meas[k])
+					{
+						a->dim[n].meas[kept++] = acc->dim[i].meas[m];
+						break;
+					}
+			memset(a->dim[n].meas + kept, 0, (SIFT_SRC_MAX_MEAS - kept) * sizeof(int));
+			a->dim[n].nmeas = kept;
+			a->dim[n].minmax &= pa->dim[j].minmax;
+			a->dim[n].ktab |= pa->dim[j].ktab;
+			b->dim[n] = a->dim[n];
+			n++;
+			break;
+		}
+	memset(a->dim + n, 0, (SIFT_SRC_MAX_DIMS - n) * sizeof(a->dim[0]));
+	memset(b->dim + n, 0, (SIFT_SRC_MAX_DIMS - n) * sizeof(b->dim[0]));
+	a->ndims = b->ndims = n;
+}
+
 static bool
 part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 {
@@ -883,6 +921,7 @@ part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 			}
 	a.nrollups = b.nrollups = kept;
 	memcpy(b.rollup, a.rollup, sizeof(b.rollup));
+	part_dims_common(&a, &b, acc, pa);
 	a.npres = b.npres = 0;
 	memset(a.pres, 0, sizeof(a.pres));
 	memset(b.pres, 0, sizeof(b.pres));
@@ -898,6 +937,8 @@ part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 	for (int c = 0; c < SIFT_SRC_CAL; c++)
 		acc->hll[c] &= pa->hll[c];
 	acc->npres = n;
+	acc->ndims = a.ndims;
+	memcpy(acc->dim, a.dim, sizeof(acc->dim));
 	acc->nrollups = kept;
 	memcpy(acc->rollup, a.rollup, sizeof(acc->rollup));
 	return true;
