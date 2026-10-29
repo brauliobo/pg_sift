@@ -513,6 +513,25 @@ sift_dictshm_pinned(int64 *records, int64 *pins)
 	SpinLockRelease(&s->mutex);
 }
 
+PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_hold);
+
+/* sift._test_col_dict_shared_hold(n): the writes the ring still skips (a ring that threw out more than was found in it skips DSHM_HOLD of them) set to n; returns what it was */
+Datum
+sift_test_col_dict_shared_hold(PG_FUNCTION_ARGS)
+{
+	Dshm	   *s = dshm_get();
+	uint32		was;
+
+	if (s == NULL)
+		PG_RETURN_NULL();
+	SpinLockAcquire(&s->mutex);
+	was = s->hold;
+	s->hold = PG_GETARG_INT32(0);
+	s->writes = s->thrown = s->found = 0;
+	SpinLockRelease(&s->mutex);
+	PG_RETURN_INT32(was);
+}
+
 PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_stale);
 
 /* 6,000 strings of 64 bytes that start with c: two such dictionaries have the same record size, and the strings tell them apart */

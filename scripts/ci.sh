@@ -23,7 +23,8 @@
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
 # JOB_MB) plus its own fits CI_BUDGET_MB (quick 1200, full 2000; the first job always runs), so the run stays at about 1 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
-# when everything passed (KEEP=1 keeps it; a failure keeps it for the logs); a job that passed leaves it at once. The ports are
+# when everything passed or the run was interrupted (INT, TERM; KEEP=1 keeps it; a failure keeps it for the logs, a day); a job that passed leaves it at once. On exit, and at the start of
+# the next run (the directories of dead pids), every postmaster under the directory is stopped and the directory removed: no run leaves a cluster behind. The ports are
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick 4096; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
@@ -218,6 +219,29 @@ weight_of() {
 	local -n deep_w=JOB_WEIGHT_DEEP$([[ ${3:-${PG_MAJOR:-18}} == 17 ]] && echo 17 || echo 18)
 	if [[ -n ${2:-} ]]; then echo "${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi
 }
+# stop_postmasters DIR: every postmaster whose data directory is under DIR (a fast shutdown, then QUIT, then KILL, two seconds each); the pid is checked to be a postgres process, never matched by name
+stop_postmasters() {
+	local f pid i sig
+	while read -r f; do
+		pid=$(head -n 1 "$f" 2>/dev/null)
+		[[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [[ $(ps -o command= -p "$pid" 2>/dev/null) == *postgres* ]] || continue
+		for sig in INT QUIT KILL; do
+			kill -"$sig" "$pid" 2>/dev/null
+			for (( i = 0; i < 20; i++ )); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+		done
+	done < <(find "$1" -name postmaster.pid 2>/dev/null)
+}
+# reap_stale TMPBASE: the sift-ci-<pid> directories (and their postmasters) of runs that died; a directory a failed run kept for its logs (the file `kept`) stays a day
+reap_stale() {
+	local d pid
+	for d in "$1"/sift-ci-*; do
+		pid=${d##*/sift-ci-}
+		[[ -d $d && $pid =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null || continue
+		[[ ! -e $d/kept || -n $(find "$d/kept" -mmin +1440 2>/dev/null) ]] || continue
+		stop_postmasters "$d"
+		rm -rf "$d"
+	done
+}
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
@@ -411,6 +435,18 @@ if [[ $MODE == --selftest ]]; then
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 	done
 	rm -f "$t"
+	# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
+	t=$(mktemp -d); ( exit 0 ) & dead=$!; wait "$dead"
+	mkdir -p "$t/sift-ci-$dead/lane1/data" "$t/sift-ci-$$/lane1" "$t/sift-ci-1$dead" "$t/sift-ci-1$dead/data"
+	touch "$t/sift-ci-1$dead/kept"
+	( exec -a postgres sleep 60 ) & pm=$!
+	printf '%s\n/x\n' "$pm" >"$t/sift-ci-$dead/lane1/data/postmaster.pid"
+	reap_stale "$t"
+	[[ ! -e $t/sift-ci-$dead ]] || { echo "FAIL: the directory of a dead run is not reaped"; bad=1; }
+	{ wait "$pm"; } 2>/dev/null   # the postmaster is a child of this shell: a stopped one is a zombie until it is waited for
+	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
+	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
+	rm -rf "$t"
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv; the column differential slices are the whole corpus"
 	exit $bad
 fi
@@ -778,6 +814,7 @@ BASE_PORT=${SIFT_PORT:-56130}
 # one initdb per run: every cluster starts as a copy (the shell tests and lane clusters, with 1 MB WAL segments; the
 # PostgreSQL::Test::Cluster nodes, which are all WAL tests)
 export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
+reap_stale "$TMPBASE"
 rm -rf "$BASE" && mkdir -p "$LOG" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"
 t0=$SECONDS
 
@@ -813,11 +850,21 @@ heartbeat &
 HEARTBEAT=$!
 # SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
 [[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
+# descendants PID: the processes below PID, deepest first
+descendants() { local p; for p in $(pgrep -P "$1" 2>/dev/null); do descendants "$p"; echo "$p"; done; }
+# leaves nothing running: the lanes, their jobs and every postmaster under $BASE are stopped. The scratch directory goes when everything passed or the run was interrupted in
+# a directory of its own; a failure keeps it for the logs (and `kept` tells reap_stale), as does an explicit SIFT_CI_TMP that a cancelled job uploads
 cleanup() {
+	trap '' INT TERM
 	kill "$WATCHDOG" "$HEARTBEAT" ${STATS:-} 2>/dev/null
-	if [[ -z ${KEEP:-} && ${failed:-1} == 0 ]]; then rm -rf "$BASE"; else echo "scratch kept: $BASE"; fi
+	local pids; pids=$(descendants $$)
+	[[ -z $pids ]] || kill $pids 2>/dev/null
+	stop_postmasters "$BASE"
+	if [[ -z ${KEEP:-} ]] && { [[ ${failed:-1} == 0 ]] || [[ -n ${interrupted:-} && -z ${SIFT_CI_TMP:-} ]]; }; then rm -rf "$BASE"; else touch "$BASE/kept" 2>/dev/null; echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
+trap 'interrupted=1; exit 130' INT
+trap 'interrupted=1; exit 143' TERM
 
 # lane_cpu ID: the CPU seconds the lane cluster's postmaster has spent on the backends and workers it reaped (a job on the lane cluster
 # runs its queries there; the other jobs start clusters of their own, which scripts/cpu_time.py counts)
