@@ -99,6 +99,10 @@ SELECT loads = 0 AS rare_stays_in_stream FROM sift._test_col_dict_cache(false);
 SELECT count(*) FROM tgh WHERE s LIKE '%.example/item/%';
 SELECT count(*) FROM tgh WHERE s LIKE '%.example/item/%';
 SELECT loads > 0 AS common_parsed FROM sift._test_col_dict_cache(false);
+-- and once parsed it is kept in the shared ring, where the next statement of the session reads it in place (the private cache holds nothing of it)
+SELECT value AS shared_before FROM sift.stats() WHERE name = 'dict_shared_hits' \gset
+SELECT count(*) FROM tgh WHERE s LIKE '%item/a%';
+SELECT value > :shared_before AS common_read_in_place FROM sift.stats() WHERE name = 'dict_shared_hits';
 DROP TABLE tgh;
 
 DROP FUNCTION tg_check(text);

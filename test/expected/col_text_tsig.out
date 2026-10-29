@@ -258,6 +258,20 @@ SELECT loads > 0 AS common_parsed FROM sift._test_col_dict_cache(false);
  t
 (1 row)
 
+-- and once parsed it is kept in the shared ring, where the next statement of the session reads it in place (the private cache holds nothing of it)
+SELECT value AS shared_before FROM sift.stats() WHERE name = 'dict_shared_hits' \gset
+SELECT count(*) FROM tgh WHERE s LIKE '%item/a%';
+ count 
+-------
+  1836
+(1 row)
+
+SELECT value > :shared_before AS common_read_in_place FROM sift.stats() WHERE name = 'dict_shared_hits';
+ common_read_in_place 
+----------------------
+ t
+(1 row)
+
 DROP TABLE tgh;
 DROP FUNCTION tg_check(text);
 DROP TABLE tg_pat, tg;

@@ -348,7 +348,6 @@ dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, Sift
 	DictEnt    *e;
 	Size		size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
 
-	CDICT_STAT(loads);
 	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
 	{
 		ask_ent(seg, col)->nokeep = true;
@@ -440,6 +439,8 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	/* under the scan until it is kept: a dictionary that does not parse leaves nothing behind */
 	cx = dict_cx(seg);
 	d = load(seg, col, cx);
+	/* counted here, not where it is kept: a dictionary that goes to the ring is read in place and never kept */
+	CDICT_STAT(loads);
 	/* the copy in the ring is the one the backends read, this one included */
 	if (sift_dictshm_write(&k, d) && (shared = sift_dictshm_read(&k, seg->mcxt)) != NULL)
 	{
