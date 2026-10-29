@@ -79,18 +79,24 @@ check "a cancel leaves some segments done and some to do ($left of $N left)" tes
 check "after the cancel the index verifies, its rows and answers are the heap's" test "$(verify && echo ok)|$(sql primary "$ROWSUM")|$(answer on)" == "ok|$BASE_ROWS|$WANT"
 check "the call made again does the rest" test "$(refresh | cut -d' ' -f1)|$(stale)" == "$left|0"
 
-# kill -9 at random points of three refreshes
+# kill -9 at random points of three refreshes. A kill that falls after the last segment (a loaded host delays it by a second) has killed nothing: the options are
+# switched again and the refresh is killed once more, up to three times
+OPT=false
 for i in 1 2 3; do
-	if ((i % 2)); then OPT=true; else OPT=false; fi
-	sql primary "ALTER INDEX items_idx SET (cube_minmax = $OPT)" >/dev/null
-	# each segment waits 250 ms between its write and its replacement: the kill falls inside the rewrite of one of them
-	sql primary "SET sift.test_col_refresh_sleep_ms = 250" "SELECT * FROM sift.col_refresh('items_idx')" >/dev/null 2>&1 &
-	BG=$!
-	sleep "0.$((RANDOM % 9 + 1))$((RANDOM % 10))"
-	crash primary
-	wait "$BG" 2>/dev/null || true
-	node_start primary || bail "cycle $i: restart failed"
-	left=$(stale)
+	for try in 1 2 3; do
+		if [[ $OPT == true ]]; then OPT=false; else OPT=true; fi
+		sql primary "ALTER INDEX items_idx SET (cube_minmax = $OPT)" >/dev/null
+		# each segment waits 250 ms between its write and its replacement: the kill falls inside the rewrite of one of them
+		sql primary "SET sift.test_col_refresh_sleep_ms = 250" "SELECT * FROM sift.col_refresh('items_idx')" >/dev/null 2>&1 &
+		BG=$!
+		sleep "0.$((RANDOM % 9 + 1))$((RANDOM % 10))"
+		crash primary
+		wait "$BG" 2>/dev/null || true
+		node_start primary || bail "cycle $i: restart failed"
+		left=$(stale)
+		((left < 1)) || break
+		diag "cycle $i: the refresh finished before the kill (try $try)"
+	done
 	check "cycle $i: the kill fell inside the refresh ($left of $N segments were left to do)" test "$left" -ge 1
 	check "cycle $i: after kill -9 the index verifies, its rows and answers are the heap's" \
 		test "$(verify && echo ok)|$(sql primary "$ROWSUM")|$(answer on)" == "ok|$BASE_ROWS|$WANT"
