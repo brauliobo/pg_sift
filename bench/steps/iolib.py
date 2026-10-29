@@ -134,15 +134,18 @@ def cool(s, tables):
     rels = relations(tables)
     try:
         s.run('CHECKPOINT')   # a dirty buffer would stay in memory
-        probe = "SELECT to_regprocedure('pg_buffercache_evict_relation(regclass)') IS NOT NULL, to_regprocedure('pg_buffercache_evict(integer)') IS NOT NULL"
-        if 't' not in one(s, probe):
-            s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
-        by_relation, by_buffer = (x == 't' for x in one(s, probe))
-        if by_relation:
-            evict = 'SELECT coalesce(sum(r.buffers_evicted), 0), coalesce(sum(r.buffers_skipped), 0) FROM (%s) x(c), LATERAL pg_buffercache_evict_relation(c) r' % rels
-        elif by_buffer:   # PostgreSQL 17: one buffer at a time
-            evict = ("SELECT count(*) FILTER (WHERE e), count(*) FILTER (WHERE NOT e) FROM (SELECT pg_buffercache_evict(bufferid) e FROM pg_buffercache WHERE reldatabase = "
-                     "(SELECT oid FROM pg_database WHERE datname = current_database()) AND relfilenode IN (SELECT pg_relation_filenode(c) FROM (%s) x(c))) y" % rels)
+        where = lambda: {r.split('|')[1]: r.split('|')[0] for r in s.run(   # noqa: E731  the schema each function is in: the search_path of a lane is its case's schema, which is dropped
+            "SELECT n.nspname, p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.proname IN ('pg_buffercache_evict_relation', 'pg_buffercache_evict') AND p.pronargs = 1")[1] if r}
+        found = where()
+        if not found:
+            s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache SCHEMA public')
+            found = where()
+        if 'pg_buffercache_evict_relation' in found:
+            evict = 'SELECT coalesce(sum(r.buffers_evicted), 0), coalesce(sum(r.buffers_skipped), 0) FROM (%s) x(c), LATERAL %s.pg_buffercache_evict_relation(c) r' % (rels, found['pg_buffercache_evict_relation'])
+        elif 'pg_buffercache_evict' in found:   # PostgreSQL 17: one buffer at a time
+            ns = found['pg_buffercache_evict']
+            evict = ("SELECT count(*) FILTER (WHERE e), count(*) FILTER (WHERE NOT e) FROM (SELECT %s.pg_buffercache_evict(bufferid) e FROM %s.pg_buffercache WHERE reldatabase = "
+                     "(SELECT oid FROM pg_database WHERE datname = current_database()) AND relfilenode IN (SELECT pg_relation_filenode(c) FROM (%s) x(c))) y" % (ns, ns, rels))
         else:
             return 'warm: no eviction (pg_buffercache is not installed)'
         _, skipped = one(s, evict)

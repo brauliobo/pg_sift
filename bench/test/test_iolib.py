@@ -124,6 +124,15 @@ class Live(unittest.TestCase):
             self.assertGreater(cold['proc_read_bytes'], 0)   # physical bytes: a compressing file system reads fewer than the blocks say
         self.assertTrue(cold['how'].startswith('evict'), cold['how'])
 
+    def test_cold_finds_pg_buffercache_whatever_the_search_path(self):
+        # a lane's search_path is its case's schema (dropped after the case): the extension must not live there, and a later lane with another path must find it
+        for path in ('lane_one', 'lane_two'):
+            self.s.run('CREATE SCHEMA IF NOT EXISTS %s' % path)
+            self.s.run('SET search_path = %s' % path)
+            how = iolib.cool(self.s, ['public.t'])
+            self.assertTrue(how.startswith('evict'), '%s: %s' % (path, how))
+        self.s.run('RESET search_path')
+
     def test_workers_reads_are_counted(self):
         # a parallel scan: the workers read in other backends, which pg_stat_io names `background worker`; the blocks of the plan and its bytes are one measure
         self.s.run('SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0')
