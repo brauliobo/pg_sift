@@ -206,8 +206,6 @@ SELECT sift.col_verify('tgl_idx', true);
 
 DROP TABLE tgl;
 -- a rare part is searched in the stream test after test (the index is built with a cache of 1 kB, so that it overflows it and is signed; the cache is the default for the searches); a part the signatures hardly help (found in every block) makes the next test parse and keep the dictionary
--- the parse is counted where the backend keeps it: with a shared ring (shared_preload_libraries) the dictionary is read from the ring and no parse is counted
-SET sift.col_dict_shared_cache_kb = 0;
 CREATE TABLE tgh (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO tgh SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text) FROM generate_series(1, 30000) i;
 CREATE INDEX tgh_idx ON tgh USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
