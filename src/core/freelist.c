@@ -154,7 +154,7 @@ sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run)
 }
 
 /*
- * Space mode (sift_store_space_exclusive): the caller holds AccessExclusiveLock on the relation, so no scan, directory copy or write target
+ * Space mode (sift_store_space_exclusive): the caller holds AccessExclusiveLock on the relation (an ExclusiveLock on an index that is not ready), so no scan, directory copy or write target
  * of another backend exists and every released extent is reusable at once, whatever its safexid (P7 reasons the same way for the cut).
  */
 uint64 space_written = 0;
@@ -164,7 +164,7 @@ BlockNumber space_limit = InvalidBlockNumber;
 void
 sift_store_space_exclusive(Relation index, bool on)
 {
-	Assert(!on || CheckRelationLockedByMe(index, AccessExclusiveLock, false));
+	Assert(!on || CheckRelationLockedByMe(index, ExclusiveLock, true));
 	space_exclusive = on;
 	if (!on)
 		space_limit = InvalidBlockNumber;

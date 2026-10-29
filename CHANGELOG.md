@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: `REINDEX INDEX CONCURRENTLY` and `CREATE INDEX CONCURRENTLY` of a `sift_col` index with `key_cut` while a physical standby streams cut the file of the new index behind the segments the build merged, as the non-concurrent build does, where the file stayed with the free blocks of the participants' segments (1,000,000 rows, 4 workers: 7.6 MB for 2.5 MB of live segments, 3.0x, and now 2.5 MB for 2.5 MB): the new index is not ready until its build ends, so no query reads it and the cut takes an `ExclusiveLock`, which a standby does not replay, where an `AccessExclusiveLock` makes the replay wait for every query of the standby that planned on the table since the index entered the catalog; a `VACUUM` of an index that is ready still does not cut the file while a standby streams.
+
 ## 3.6.1 - 2026-10-29
 
 - Fixed: pg_sift: a statement with a flattened lateral and shared CTEs that the verdict cache holds for another size of request no longer ends the backend: after the plan of the form that won was checked against the verdict of its size band, the planner discarded the context of the form the band's verdict named, which is never planned when the band names the other form (a wild pointer in `plan_flat`, found by the differential corpus of the analytic statements; SIGSEGV in the planner hook on `MemoryContextDelete`).
