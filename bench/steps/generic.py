@@ -22,6 +22,8 @@ import cases as cases_mod  # noqa: E402
 import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 from suite_engine import REPO, Unsupported, canon, first_diff, log, same, timed  # noqa: E402
 
+VERSION = next(l.split("'")[1] for l in open(os.path.join(REPO, 'pg_sift.control')) if l.startswith('default_version'))   # the rows carry the version they were measured at
+
 
 def suite_cases(suites):
     """the cases of the suites; of the orders, the headline cases that only read the table (the others have a setup of their own or write)"""
@@ -119,7 +121,7 @@ def main():
             f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')
             f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
             for case, arm, med, lo, hi, load, note in results:
-                f.write('\t'.join([str(x) for x in ('3.4', case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')
+                f.write('\t'.join([str(x) for x in (VERSION, case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')
     sys.exit(1 if failures else 0)
 
 

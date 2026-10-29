@@ -491,12 +491,12 @@ store benchmark, a parallel normal plan can beat the scan on the planner's cost 
 
 ## Release run
 
-The numbers of a release are one pass on the release host, 100 minutes in all. Nothing of it runs before the release commit exists. `bench/bench final --size standard --dry-run` prints the plan and the preconditions and starts nothing; on a host without docker it ends with `MISSING docker works`, and this is what the plan prints today:
+The numbers of a release are one pass on the release host, about 120 minutes in all (the 200 cases are 40 of them). Nothing of it runs before the release commit exists. `bench/bench final --size standard --dry-run` prints the plan and the preconditions and starts nothing; on a host without docker it ends with `MISSING docker works`, and this is what the plan prints today:
 
 ```
 Release pass, size standard (bench/presets.env), stages one after another:
-  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 16, duckdb 6, generic 3 min
-Total about 95 min, budget 96 min.
+  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 40, duckdb 6, generic 14 min
+Total about 119 min, budget 125 min.
 ```
 
 **Ahead, the day before** (nothing is timed, `nice`, the host may be in use; the data and the images do not depend on the commit, they are reused while their hash and the sources match):
@@ -513,7 +513,7 @@ bench/bench final --size standard --dry-run                      # every precond
 
 ```sh
 export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=40G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only: 14 GB at 1,000,000 orders, counted in CASES_MEM
-bench/bench final --size standard --docs --remeasure-all                                      # 95 min: the nine stages; `bench resume` continues an interrupted run
+bench/bench final --size standard --docs --remeasure-all                                      # 119 min: the nine stages; `bench resume` continues an interrupted run
 bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-small                      # 2 min
 bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-big   # 6 min
 ```

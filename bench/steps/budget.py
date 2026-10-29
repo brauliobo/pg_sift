@@ -36,7 +36,7 @@ BASIS = {  # where the minutes of a stage come from
     'updates': 'arithmetic on the stored section of 2026-10-22 (720 s of update phases, 336 s of them ClickHouse\'s DELETE), with the preset\'s repetitions and churn windows',
     'compression': 'estimate', 'stats': 'estimate', 'gap': 'estimate',
     'search': 'arithmetic on the stored runs of 2026-10-22: articles 70 + 207 s, places 78 + 267 s, the cold passes 71 + 21 s and 59 + 46 s',
-    'cases': 'measured on 2026-10-24 (see Cases below); the pg_duckdb lane of the cases is not in the pass, the `duckdb` and `generic` stages cover that engine',
+    'cases': 'estimate for the 200 cases of 2026-10-28 (`bench cases --plan`: 41 min); 91 cases were measured on 2026-10-24 (see Cases below), and the IO runs of every lane add about 0.4 s a case at 1,000,000 orders; the pg_duckdb lane of the cases is not in the pass, the `duckdb` and `generic` stages cover that engine',
     'duckdb': 'estimate from the load and the ten questions of the stored 1M run',
     'generic': 'estimate: pg_duckdb 4 (three generated datasets, CSV export, two lanes), Elasticsearch 3, Citus 2.5, TimescaleDB 1.5, ClickHouse 1, DuckDB 0.5, in all 14 (the orders suite adds about 2: one more table to generate, export and load in every engine, 16 more queries); the loaders and the answers are checked at 20,000 rows (32 s for the six engines), no timing taken',
 }
@@ -93,7 +93,7 @@ def stage_table(p):
     total = sum(minutes(p, s) for s, _, _ in STAGES)
     out = ['| stage | minutes | what it times | engines | basis of the minutes |', '|---|---:|---|---|---|']
     out += ['| `%s` | %d | %s | %s | %s |' % (s, minutes(p, s), what, eng, BASIS[s]) for s, what, eng in STAGES]
-    out += ['| **stages** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 96 minutes | every engine measured, none from the cache | |' % total]
+    out += ['| **stages** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 125 minutes | every engine measured, none from the cache | |' % total]
     return out, total
 
 
