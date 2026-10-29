@@ -1,6 +1,6 @@
--- The head of a unit (its row directory and chunk table) is read in 4 kB and the rest of it when the directory ends beyond: a unit of dense pages fits, a unit whose pages
--- hold the rows of every other offset has a bitmap for each page and does not (256 pages of 140 rows: 9 kB), nor a key-cut unit of many rows. The answers are those of the normal plan in
--- all of them, before and after the changes of a unit.
+-- The head of a unit (its row directory and chunk table) is read in 2 kB and the rest of it when the directory ends beyond: a unit of dense pages fits, a unit whose pages
+-- hold the rows of every other offset has a bitmap for each page and does not (256 pages of 140 rows: 9 kB). A key-cut unit has its chunk table first and reads its directory when a
+-- scan needs the pages or the TIDs. The answers are those of the normal plan in all of them, before and after the changes of a unit.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -46,6 +46,14 @@ INSERT INTO q VALUES
 	('key cut tenant', 'SELECT tenant, count(*), sum(amount) FROM uh_cut GROUP BY 1'),
 	('key cut one tenant', 'SELECT count(*), sum(amount) FROM uh_cut WHERE tenant = 7');
 SELECT name, (same(q)).* FROM q ORDER BY name;
+
+-- a key-cut unit has its chunk table before its directory (column format 34): the scan reads the head only while the pages of the unit are all visible, and the directory when a page is not
+SELECT DISTINCT format FROM sift.col_segments('uh_cut_i') WHERE kind = 'immutable';
+VACUUM uh_cut;
+SELECT name, (same(q)).* FROM q WHERE name LIKE 'key cut%' ORDER BY name;
+UPDATE uh_cut SET amount = amount + 1 WHERE id % 97 = 0;
+SELECT name, (same(q)).* FROM q WHERE name LIKE 'key cut%' ORDER BY name;
+SELECT sift.col_verify('uh_cut_i', true);
 
 -- a unit that changes: new rows in the write buffer, deleted rows, a rewrite of the segments
 INSERT INTO uh_sparse SELECT g, g % 7, (g * 31) % 1000 FROM generate_series(240001, 250000) g;

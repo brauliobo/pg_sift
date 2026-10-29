@@ -26,7 +26,7 @@ SELECT sift.col_verify('kc_idx', true);
 SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
    kind    | format | superblock_units 
 -----------+--------+------------------
- immutable |     17 | t
+ immutable |     34 | t
 (1 row)
 
 SELECT kind, format FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
@@ -194,7 +194,7 @@ SELECT sift.col_verify('kc_idx', true);
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  format 
 --------
-     17
+     34
 (1 row)
 
 -- the setting that rolls a 3.3 index back to a release that cannot read minor 17 writes superblock units again
@@ -222,7 +222,7 @@ REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  format 
 --------
-     17
+     34
 (1 row)
 
 -- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan
@@ -233,7 +233,7 @@ RESET sift.test_col_segment_kb;
 SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  runs | format 
 ------+--------
- t    |     17
+ t    |     34
 (1 row)
 
 SELECT * FROM kchk('runs');
@@ -258,7 +258,7 @@ RESET maintenance_work_mem;
 SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  segments | format 
 ----------+--------
-        1 |     17
+        1 |     34
 (1 row)
 
 SELECT * FROM kchk('runs merged');
@@ -293,7 +293,7 @@ SELECT sift.col_promote('kl_idx');
 SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) AS formats FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
  formats 
 ---------
- 12,17
+ 12,34
 (1 row)
 
 SELECT sift.col_merge('kl_idx', true) >= 0 AS merged;
@@ -305,7 +305,7 @@ SELECT sift.col_merge('kl_idx', true) >= 0 AS merged;
 SELECT string_agg(DISTINCT format::text, ',') AS formats, count(*) AS segments FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
  formats | segments 
 ---------+----------
- 17      |        1
+ 34      |        1
 (1 row)
 
 SELECT sift.col_verify('kl_idx', true);
@@ -345,7 +345,7 @@ SELECT count(*) AS runs, sum(rows) AS rows FROM sift.col_segments('kc_runs') WHE
 SELECT count(*) < 6 AS merged, bool_and(format = 17) AS key_cut_format, sum(rows) AS rows FROM sift.col_segments('kc_big') WHERE kind = 'immutable';
  merged | key_cut_format | rows  
 --------+----------------+-------
- t      | t              | 85741
+ t      | f              | 85741
 (1 row)
 
 SELECT sift.col_verify('kc_big', true);

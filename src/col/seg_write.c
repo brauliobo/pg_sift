@@ -811,7 +811,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	map_dicts(w, b, w->inl);
 	count_rows(w, b);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
 	if (b->keyed)
 	{
@@ -1655,7 +1655,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->anytextord)
 		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
 	if (w->keyed)
-		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
+		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONTAIN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */

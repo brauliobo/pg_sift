@@ -168,7 +168,7 @@ sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols)
 	bw[2] = (head[3] >> 16) & 0xFF;
 	if (head[1] > SIFT_COL_UNIT_MAX_ROWS || head[2] > head[1] || bw[0] > 32 || bw[1] > 32 || bw[2] > 16)
 		return 0;
-	need = ((keyed_dir_bytes(head[1], head[2], bw) + 3) & ~UINT64CONST(3)) + 8 * (uint64) ncols;
+	need = head[3] & COLK_TABFIRST ? 24 + 8 * (uint64) ncols : ((keyed_dir_bytes(head[1], head[2], bw) + 3) & ~UINT64CONST(3)) + 8 * (uint64) ncols;
 	return need > avail && need <= len ? (uint32) need : 0;
 }
 
@@ -179,8 +179,8 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	uint32		nrows = v->nrows,
 				np = v->npages,
 				bw[3] = {v->kwidths & 0xFF, (v->kwidths >> 8) & 0xFF, (v->kwidths >> 16) & 0xFF};
-	const uint8 *p = v->rec + 24;
-	uint64		at = 24;
+	uint64		at = v->kbody_at != 0 ? v->kbody_at : 24;
+	const uint8 *p = v->rec + at;
 	uint32	   *delta = palloc(Max(np, 1) * sizeof(uint32)),
 			   *cnt = palloc(Max(np, 1) * sizeof(uint32)),
 			   *off = palloc(Max(nrows, 1) * sizeof(uint32));
@@ -241,21 +241,34 @@ sift_cunit_keyed_load(const SiftCUnitView *cv)
 
 	if (!v->keyed || v->blocks != NULL)
 		return;
+	if (v->kbody_at != 0 && !v->kbody_here)
+	{
+		/* the unit was read to the end of its chunk table: its directory is read now, where a scan needs the pages or the TIDs */
+		SIFT_INVARIANT(v->fill != NULL, "sift_col: the directory of a key-cut unit is not read");
+		v->fill(v->fill_seg, v->fill_u, v->kbody_at, v->kbody_end - v->kbody_at);
+		v->kbody_here = true;
+	}
 	if (!keyed_decode(v, v->len))
 		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: the TID directory of a key-cut unit does not decode")));
 }
 
-/* The head of a key-cut unit (enc.c unit_put_directory_keyed); pos is where its directory ends. The directory is decoded now when eager */
+/* The head of a key-cut unit (enc.c unit_put_directory_keyed); pos is where its directory ends, or, with the table first, where its head does */
 static bool
-unit_parse_keyed(const uint8 *rec, uint32 avail, const uint32 *head, SiftCUnitView *v, uint64 *pos, bool eager)
+unit_parse_keyed(const uint8 *rec, uint32 avail, const uint32 *head, SiftCUnitView *v, uint64 *pos)
 {
 	uint32		nrows = head[1],
 				np = head[2],
 				bw[3] = {head[3] & 0xFF, (head[3] >> 8) & 0xFF, (head[3] >> 16) & 0xFF};
 
-	if (nrows > SIFT_COL_UNIT_MAX_ROWS || np > nrows || (np == 0) != (nrows == 0) || bw[0] > 32 || bw[1] > 32 || bw[2] > 16 || (head[3] >> 24) != 0 || head[5] < head[4])
+	if (nrows > SIFT_COL_UNIT_MAX_ROWS || np > nrows || (np == 0) != (nrows == 0) || bw[0] > 32 || bw[1] > 32 || bw[2] > 16 ||
+		(head[3] >> 24) > (COLK_TABFIRST >> 24) || head[5] < head[4])
 		return false;
 	*pos = keyed_dir_bytes(nrows, np, bw);
+	if (head[3] & COLK_TABFIRST)
+	{
+		v->kbody_end = (uint32) (*pos - 24);	/* its length until unit_parse_chunks knows where */
+		*pos = 24;
+	}
 	if (*pos > avail)
 		return false;
 	v->keyed = true;
@@ -264,7 +277,7 @@ unit_parse_keyed(const uint8 *rec, uint32 avail, const uint32 *head, SiftCUnitVi
 	v->kwidths = head[3];
 	v->kblk0 = head[4];
 	v->kblk1 = head[5];
-	return !eager || keyed_decode(v, avail);
+	return true;
 }
 
 /* The chunk table and the chunks of a record whose row directory ends at pos (shared by both directory kinds) */
@@ -278,7 +291,15 @@ unit_parse_chunks(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchem
 		return false;
 	v->chunk_off = (const uint32 *) (rec + pos);
 	v->chunk_len = v->chunk_off + schema->ncols;
-	dirend = (pos + 8 * (uint64) schema->ncols + 7) & ~UINT64CONST(7);
+	dirend = pos + 8 * (uint64) schema->ncols;
+	if (v->kwidths & COLK_TABFIRST)
+	{
+		v->kbody_at = (uint32) dirend;
+		dirend += v->kbody_end;
+		v->kbody_end = (uint32) dirend;
+		v->kbody_here = dirend <= avail;
+	}
+	dirend = (dirend + 7) & ~UINT64CONST(7);
 	for (int col = 0; col < schema->ncols; col++)
 	{
 		SiftCChunk	c;
@@ -315,9 +336,9 @@ unit_parse(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *sche
 			v->len = len;
 			v->schema = schema;
 			v->nrows = head[1];
-			if (!unit_parse_keyed(rec, avail, head, v, &pos, chunks))
+			if (!unit_parse_keyed(rec, avail, head, v, &pos) || !unit_parse_chunks(rec, avail, len, schema, v, chunks, pos))
 				return false;
-			return unit_parse_chunks(rec, avail, len, schema, v, chunks, pos);
+			return !chunks || ((v->kbody_at == 0 || v->kbody_here) && keyed_decode(v, avail));
 		}
 	}
 	if (avail < UNIT_HEAD || avail > len || ((uintptr_t) rec & 7) != 0)

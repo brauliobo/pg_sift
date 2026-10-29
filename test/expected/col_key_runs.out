@@ -45,7 +45,7 @@ HINT:  ALTER INDEX kr_i SET (key_columns = 'off'), then REINDEX, turns it off; k
 SELECT kr_option('kr_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr_i');
         option        | minors 
 ----------------------+--------
- key_columns=auto: id | {23}
+ key_columns=auto: id | {34}
 (1 row)
 
 SELECT sift.col_verify('kr_i', true);
@@ -145,7 +145,7 @@ HINT:  ALTER INDEX kr8_i SET (key_columns = 'off'), then REINDEX, turns it off; 
 SELECT kr_option('kr8_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr8_i');
         option        | minors 
 ----------------------+--------
- key_columns=auto: id | {23}
+ key_columns=auto: id | {34}
 (1 row)
 
 SELECT sift.col_verify('kr8_i', true);
@@ -242,7 +242,7 @@ CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buff
 SELECT array_agg(DISTINCT format ORDER BY format)::text AS minors, kr_units('SELECT count(*), sum(val) FROM kr WHERE id = 45050') >= 8 AS reads_every_unit FROM sift._test_col_formats('kr_off');
  minors | reads_every_unit 
 --------+------------------
- {17}   | t
+ {34}   | t
 (1 row)
 
 DROP TABLE kr;

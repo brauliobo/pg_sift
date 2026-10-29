@@ -15,10 +15,10 @@ DDL="ON km USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d')"
 small() { sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_max_segments = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
 good() { test "$(sql km "SELECT indisvalid FROM pg_index WHERE indexrelid = 'km_idx'::regclass")" == t &&
 	test -z "$(sql km "SELECT sift.col_verify('km_idx', true)" 2>&1)" &&
-	test "$(sql km "SELECT count(*) < ${1:-6} AND bool_and(format = 17) FROM sift.col_segments('km_idx') WHERE kind = 'immutable'")" == t; }
+	test "$(sql km "SELECT count(*) < ${1:-6} AND bool_and(format = 34) FROM sift.col_segments('km_idx') WHERE kind = 'immutable'")" == t; }
 
 small "CREATE INDEX km_idx $DDL" >/dev/null
-check "CREATE INDEX merges the runs: valid, verified, fewer segments than the runs, of format 17" good
+check "CREATE INDEX merges the runs: valid, verified, fewer segments than the runs, of format 34" good
 
 sql km "DROP INDEX km_idx" >/dev/null
 small "SET sift.test_col_max_segments = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "CREATE INDEX km_idx $DDL" >/dev/null

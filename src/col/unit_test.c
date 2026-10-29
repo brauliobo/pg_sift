@@ -165,10 +165,59 @@ rows_untagged(const Case *c, const SiftColRow *rows, uint32 n)
 	return out;
 }
 
+typedef struct HeadFill
+{
+	uint8	   *buf;
+	const uint8 *rec;
+} HeadFill;
+
+static void
+head_fill(void *seg, uint32 u, uint32 off, uint32 len)
+{
+	HeadFill   *h = seg;
+
+	memcpy(h->buf + off, h->rec + off, len);
+}
+
+/* A key-cut unit read as a scan reads it: its head only (to the end of the chunk table with the table first), the directory read when the TIDs are asked for */
+static void
+check_head_lazy(TCtx *t, const uint8 *rec, uint32 len, const SiftColSchema *s, const SiftColBatch *b, bool tabfirst)
+{
+	HeadFill	h = {palloc0(len + 8 + SIFT_COL_PAD), rec};
+	uint32		avail = Min(len, SIFT_COL_UNIT_HEAD);
+	SiftKey    *keys = palloc(Max(b->nrows, 1) * sizeof(SiftKey));
+	SiftCUnitView v;
+	uint32		bad = 0;
+
+	h.buf = (uint8 *) TYPEALIGN(8, h.buf);
+	memcpy(h.buf, rec, avail);
+	for (uint32 need; avail < len && (need = sift_cunit_head_need(h.buf, avail, len, s->ncols)) > 0;)
+	{
+		memcpy(h.buf + avail, rec + avail, need - avail);
+		avail = need;
+	}
+	if (!sift_cunit_parse_head(h.buf, avail, len, s, &v))
+	{
+		CHECK(t, false, "the head of a key-cut unit does not parse");
+		return;
+	}
+	CHECK(t, !tabfirst || avail == len || avail <= Max(SIFT_COL_UNIT_HEAD, 24 + 8 * s->ncols), "a unit with the table first read %u bytes of its head", avail);
+	CHECK(t, (v.kbody_at != 0) == tabfirst, "the table is %s", tabfirst ? "not first" : "first");
+	v.fill = head_fill;
+	v.fill_seg = &h;
+	sift_cunit_keys(&v, b->sb, keys);
+	for (uint32 r = 0; r < b->nrows; r++)
+		bad += keys[r] != b->keys[r];
+	CHECK(t, bad == 0, "%u keys differ after the directory was read lazily", bad);
+}
+
 void
-check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows, uint32 n, const SiftCcPolicy *pol)
+check_unit(TCtx *t, const Case *c, const SiftColBatch *b0, const SiftColRow *rows, uint32 n, const SiftCcPolicy *pol)
 {
 	const SiftColSchema *s = c->schema;
+	SiftColBatch kb = *b0;
+	const SiftColBatch *b = &kb;
+	bool		tabfirst;
 	uint32	  **dictmap = NULL;
 	bool		identity = RAND(t, 4) == 0;		/* the segment's dictionaries are the batch's: no map */
 	SiftCDict **dicts = identity ? b->dict : seg_dicts(t, b, &dictmap);
@@ -189,9 +238,11 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 		if (b->dict[col] != NULL && b->col[col].n > 0)
 			check_inline_rule(t, b, col, dicts[col]);
 	}
+	kb.keyed = RAND(t, 3) == 0;
+	tabfirst = kb.keyed && RAND(t, 2) == 0;
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "x");	/* the record starts after a pad: encode aligns it */
-	sift_cunit_encode(b, dictmap, inl, pol, tags, &buf, &start, zones);
+	sift_cunit_encode(b, dictmap, inl, pol, tags, tabfirst, &buf, &start, zones);
 	{
 		static const char zero[SIFT_COL_PAD];
 
@@ -269,6 +320,8 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 		sift_cunit_decode(&v, b->sb, dicts, live, dst);
 		check_batch_rows(t, "unit decode of live rows", c, dst, kept, nk);
 	}
+	if (b->keyed)
+		check_head_lazy(t, rec, buf.len - start, s, b, tabfirst);
 	check_corrupt(t, rec, buf.len - start, s);
 }
 

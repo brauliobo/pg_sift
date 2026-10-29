@@ -425,9 +425,10 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
  * SIFT_COL_PAD zero bytes stay readable after the record in out's buffer (not counted in out->len), so it can be parsed and filtered in place.
  * pol[ncols] (NULL: none) is the compression policy of each leaf: a chunk that is not constant is then a blob of the chunk codec
  * (SIFT_COLENC_CC); without it the chunk is the plain FOR or PACK form (in-memory units that are only scanned).
+ * tabfirst: a key-cut unit has its chunk table before the arrays of its directory (column format minor 34), so that the head of the unit read for a scan ends with the table.
  * tags: every chunk with overflow values gets SIFT_COLC_TAGS and every chunk with kinds SIFT_COLC_KINDS (column format minor 4); without it the chunk is what minor 3 writes.
  */
-extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
+extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, bool tabfirst, StringInfo out,
 							  Size *start, SiftCZone *zones);
 
 /* The bytes of the row directory of the sorted keys of a unit: of superblock sb, or of a key-cut unit (keyed); *pages is the number of heap pages the keys fall in */
@@ -455,6 +456,12 @@ typedef struct SiftCUnitView
 	uint32		kwidths;		/* bit widths of the block distances, the rows of a page and the offsets */
 	uint32		kblk0;			/* the first block */
 	uint32		kblk1;			/* the last block */
+	uint32		kbody_at;		/* with the table first (column format minor 34) the arrays of the directory follow the chunk table, at kbody_at to kbody_end; 0: they follow the head */
+	uint32		kbody_end;
+	bool		kbody_here;		/* the bytes of the record up to kbody_end are present, else sift_cunit_keyed_load reads them by fill */
+	void		(*fill)(void *seg, uint32 u, uint32 off, uint32 len);	/* reads the bytes [off, off + len) of the record of unit u of seg into place (a unit read by its head) */
+	void	   *fill_seg;
+	uint32		fill_u;
 	const uint32 *rowstart;		/* npages + 1 (unaligned access is avoided by the parser copying when needed) */
 	const uint16 *maxoff;
 	const uint8 *sparse;
@@ -476,7 +483,7 @@ extern void sift_cunit_keyed_load(const SiftCUnitView *v);
  * SIFT_COL_UNIT_HEAD covers) are present, len is the full length; the chunks are not looked at. The caller makes the bytes of a chunk
  * present (v->chunk_off[col], v->chunk_len[col]) before sift_cunit_chunk(col).
  */
-#define SIFT_COL_UNIT_HEAD		(4 * 1024)
+#define SIFT_COL_UNIT_HEAD		2048
 extern bool sift_cunit_parse_head(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);
 
 /* The chunk of leaf col; false when the unit has none (all values NULL) */

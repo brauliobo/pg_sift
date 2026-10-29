@@ -131,6 +131,7 @@ extern const uint8 *sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len);
  */
 extern const uint8 *sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail);
 extern void sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len);
+extern bool sift_cseg_unit_view(SiftColSegment *seg, uint32 u, SiftCUnitView *v);
 
 /* The bytes of the unit records at the start of the segment stream, and the range of it sift_cseg_unit_head reads of unit u, for sift_sr_ahead */
 extern uint64 sift_cseg_units_len(const SiftColSegment *seg);

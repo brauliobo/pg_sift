@@ -30,7 +30,7 @@ SELECT kopt('ka_auto');
 SELECT kind, format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
    kind    | format 
 -----------+--------
- immutable |     22
+ immutable |     34
 (1 row)
 
 SELECT sift.col_verify('ka_auto', true);

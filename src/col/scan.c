@@ -1575,14 +1575,10 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 static void
 load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 {
-	uint32		len,
-				avail;
-	const uint8 *rec = sift_cseg_unit_head(seg, u, &len, &avail);
-
 	cu->seg = seg;
 	cu->u = u;
 	cu->sb = seg->sbdir[u].sb;
-	if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &cu->v) || cu->v.nrows != seg->sbdir[u].nrows)
+	if (!sift_cseg_unit_view(seg, u, &cu->v))
 		corrupt("Unit %u of segment %llu does not parse.", u, (unsigned long long) seg->entry.gen);
 	cu->loaded = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols);
 	cu->istr = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols * sizeof(ColInline));
@@ -1595,7 +1591,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 	Size		start;
 
 	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
-	sift_cunit_encode(m->b, NULL, NULL, NULL, true, buf, &start, cu->mzones);
+	sift_cunit_encode(m->b, NULL, NULL, NULL, true, false, buf, &start, cu->mzones);
 	SIFT_INVARIANT(sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v),
 				   "sift_col: an in-memory unit does not parse");
 	cu->batch = m->b;

@@ -11,6 +11,7 @@
 #   scripts/old-lib-check.sh points                     point directories: the older library (SIFT_OLD_REF, default v3.6.0) writes an index with them, this tree reads the same
 #                                                       files as it reads its own (answers, verify, writes, a merge that writes column format 33), and the older
 #                                                       library refuses the merged index with the format error, and reads it again after a REINDEX at the setting 14
+#   scripts/old-lib-check.sh keyed                      the same for the units of a key-cut index (the chunk table after the directory; column format 34)
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -196,57 +197,83 @@ upgrade() {
 	"$PG" stop >/dev/null
 }
 
-# a point directory of the older library (a power of two of slots), then this tree on the same files
-points() {
-	local root log sql new_md5 old_md5 w
+# What the older library (SIFT_OLD_REF, default v3.6.0) writes, then this tree on the same files: the answers of $CY_SQL (with the settings CY_FAST, against the heap's CY_HEAP), verify, writes
+# and a promotion that put a segment of column format $CY_NEW beside the older ones, a merge that writes only it, the refusal of the older library, and its reading after a REINDEX at the setting 14.
+# CY_NAME names the cluster, CY_SETUP (an array of statements) makes the table and the index $CY_IDX of the older library, which writes column format $CY_OLDMIN or more and below $CY_NEW;
+# CY_WHAT says what is read; CY_INSERT is the statement that adds rows
+cycle() {
+	local root log new_md5 old_md5 s
 	OLD_REF=${SIFT_OLD_REF:-v3.6.0}
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-points}
+	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-$CY_NAME}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
 	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
 	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
-	log=$SIFT_TMP/old-lib-points.log
-	# the shapes of the point lookups: a key present, absent, a list, two columns, and a text key
-	w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"
-	sql="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
+	log=$SIFT_TMP/old-lib-$CY_NAME.log
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
-	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g" \
-		-c "CREATE INDEX pk_i ON pk USING sift_col (id, k, s) WITH (key_cut = 'off', point_columns = 'id', point_tid_columns = 'k, s')" >/dev/null ||
-		{ fail "the older library writes the index"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
-	old_md5=$("${OLD_PSQL[@]}" -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
-	[[ $("${OLD_PSQL[@]}" -c "SELECT min(format) >= 16 AND max(format) < 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] && pass "the older library wrote column format 16 or more, below 33" ||
-		fail "the older library wrote column format 16 or more, below 33"
+	for s in "CREATE EXTENSION pg_sift" "${CY_SETUP[@]}"; do
+		"${OLD_PSQL[@]}" -c "$s" >/dev/null || { fail "the older library writes the index"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	done
+	old_md5=$("${OLD_PSQL[@]}" "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
+	[[ $("${OLD_PSQL[@]}" -c "SELECT min(format) >= $CY_OLDMIN AND max(format) < $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
+		pass "the older library wrote column format $CY_OLDMIN or more, below $CY_NEW" || fail "the older library wrote column format $CY_OLDMIN or more, below $CY_NEW"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
-	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
-	[[ $new_md5 == "$old_md5" ]] && pass "this tree reads the point directories of the older library with its answers" || fail "this tree reads the point directories of the older library (got [$new_md5], want [$old_md5])"
-	[[ $(psql_new -c "SET enable_indexscan = off" -c "SET enable_bitmapscan = off" -c "SET sift.enable_col_scan = off" -c "$sql" | tail -1) == "$old_md5" ]] &&
-		pass "... and with the heap's" || fail "... and with the heap's"
-	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('pk_i', true)) z") == 1 ]] && pass "sift.col_verify finds the tables sound" || fail "sift.col_verify finds the tables sound"
-	psql_new -c "INSERT INTO pk SELECT g, (g * 7919) % 100003, 's' || (g * 31) % 6000 FROM generate_series(60001, 90000) g" -c "SELECT sift.col_promote('pk_i'::regclass)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) < 33 AND max(format) = 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] &&
-		pass "a new segment is column format 33 beside the older one" || fail "a new segment is column format 33 beside the older one"
-	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
-	old_md5=$(psql_new -c "SET enable_indexscan = off" -c "SET enable_bitmapscan = off" -c "SET sift.enable_col_scan = off" -c "$sql" | tail -1)
+	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
+	[[ $new_md5 == "$old_md5" ]] && pass "this tree reads the $CY_WHAT of the older library with its answers" || fail "this tree reads the $CY_WHAT of the older library (got [$new_md5], want [$old_md5])"
+	[[ $(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1) == "$old_md5" ]] && pass "... and with the heap's" || fail "... and with the heap's"
+	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the tables sound" || fail "sift.col_verify finds the tables sound"
+	psql_new -c "$CY_INSERT" -c "SELECT sift.col_promote('$CY_IDX'::regclass)" >/dev/null
+	[[ $(psql_new -c "SELECT min(format) < $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
+		pass "a new segment is column format $CY_NEW beside the older one" || fail "a new segment is column format $CY_NEW beside the older one"
+	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
+	old_md5=$(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap (got [$new_md5], want [$old_md5])"
-	psql_new -c "SELECT sift.col_merge('pk_i'::regclass, true)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) = 33 AND max(format) = 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format 33" || fail "a merge writes column format 33"
-	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('pk_i', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
-	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
+	psql_new -c "SELECT sift.col_merge('$CY_IDX'::regclass, true)" >/dev/null
+	[[ $(psql_new -c "SELECT min(format) = $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW" || fail "a merge writes column format $CY_NEW"
+	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
+	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "the merged index answers as the heap" || fail "the merged index answers as the heap"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
-	FORMAT_ERROR='column format 1\.33'
-	expect_refused "the older library refuses column format 33 with the format error" "SET enable_seqscan = off; SELECT count(*) FROM pk WHERE k = 777"
+	FORMAT_ERROR="column format 1\\.$CY_NEW"
+	expect_refused "the older library refuses column format $CY_NEW with the format error" "$CY_REFUSED"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
-	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX pk_i" >/dev/null
+	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
 	"$PG" stop >/dev/null
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the REINDEX"; return; }
-	expect_rows "the older library reads the index again after REINDEX at the setting 14, with the answers of the heap" "SET enable_seqscan = off; SET enable_bitmapscan = off; $sql" "$old_md5"
+	expect_rows "the older library reads the index again after REINDEX at the setting 14, with the answers of the heap" "$(printf '%s; ' "${CY_FAST[@]}")$CY_SQL" "$old_md5"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
+# the point directories of the older library (a power of two of slots)
+points() {
+	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=33 CY_WHAT="point directories"
+	local w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"	# a key present, absent, a list, two columns, and a text key
+	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
+	CY_SETUP=("CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g"
+		"CREATE INDEX pk_i ON pk USING sift_col (id, k, s) WITH (key_cut = 'off', point_columns = 'id', point_tid_columns = 'k, s')")
+	CY_FAST=("SET enable_seqscan = off" "SET enable_bitmapscan = off")
+	CY_HEAP=("SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off")
+	CY_INSERT="INSERT INTO pk SELECT g, (g * 7919) % 100003, 's' || (g * 31) % 6000 FROM generate_series(60001, 90000) g"
+	CY_REFUSED="SET enable_seqscan = off; SELECT count(*) FROM pk WHERE k = 777"
+	cycle
+}
+
+# the units of a key-cut index of the older library (the chunk table after the directory)
+keyed() {
+	CY_NAME=keyed CY_IDX=kk_i CY_OLDMIN=17 CY_NEW=34 CY_WHAT="key-cut units"
+	CY_SQL="SELECT md5(string_agg(tenant::text || ':' || n || ':' || s, ',' ORDER BY tenant)) FROM (SELECT tenant, count(*) n, sum(amount) s FROM kk WHERE amount < 700 OR tenant = 7 GROUP BY tenant) x"
+	CY_SETUP=("CREATE TABLE kk AS SELECT g AS id, g % 60 AS tenant, (g * 31) % 1000 AS amount FROM generate_series(1, 90000) g"
+		"CREATE INDEX kk_i ON kk USING sift_col (id, tenant, amount) WITH (key_cut = 'tenant')")
+	CY_FAST=("SET sift.agg_preagg = off" "SET sift.agg_force = on")
+	CY_HEAP=("SET sift.enable_agg = off")
+	CY_INSERT="INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
+	CY_REFUSED="SET sift.agg_force = on; SELECT count(*) FROM kk WHERE tenant = 7"
+	cycle
 }
 
 case ${1:-} in
@@ -255,5 +282,6 @@ case ${1:-} in
 	run) run; exit $FAILED ;;
 	upgrade) upgrade; exit $FAILED ;;
 	points) points; exit $FAILED ;;
+	keyed) keyed; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

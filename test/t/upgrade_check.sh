@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 71
+plan 70
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -114,14 +114,12 @@ q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || 
 check "an index with key tables is column format 22" grep -q -E '^ok +facts_ktab +index +format 1\.[0-9]+, column format 22' <<<"$(uc clean)"
 check "to 3.4: an index with key tables is a blocker that says to turn key_table off" grep -q -E '^blocker +facts_ktab .*ALTER INDEX facts_ktab SET \(key_table = off\), then REINDEX INDEX facts_ktab' <<<"$(uc --to 3.4 clean)"
 check "to 3.4: the same index with key_table = off is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_ktab_off)"
-# a unit whose ids come in bursts keeps them as runs: column format 23, which 3.4 refuses; the advice turns off the lists and the tables
+# the units of a key-cut index (lists of runs among them) have the table first: column format 34, which 3.4 refuses; the setting 14 writes units by superblock
 q clean "CREATE TABLE run_facts AS SELECT i AS id, 1 + (hashint4(i / 100) & 2147483647) % 400 AS set_id, i % 1000 AS v, repeat('x', 150) AS pad FROM generate_series(1, 90000) i" "ALTER TABLE run_facts ADD PRIMARY KEY (id)" \
-	"CREATE INDEX facts_runs ON run_facts USING sift_col (id, set_id, v, pad) WITH (key_cut = 'set_id')" \
-	"CREATE INDEX facts_runs_off ON run_facts USING sift_col (id, set_id, v, pad) WITH (key_cut = 'set_id', key_columns = 'off', key_table = off)" >/dev/null
-check "an index with lists of runs is column format 23" grep -q -E '^ok +facts_runs +index +format 1\.[0-9]+, column format 23' <<<"$(uc clean)"
-check "to 3.4: an index with lists of runs is a blocker that says to turn key_columns and key_table off" grep -q -E "^blocker +facts_runs .*ALTER INDEX facts_runs SET \(key_columns = 'off', key_table = off\), then REINDEX INDEX facts_runs" <<<"$(uc --to 3.4 clean)"
-check "to 3.4: the same index with the lists off is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs_off)"
-q clean "ALTER INDEX facts_runs SET (key_columns = 'off', key_table = off)" "REINDEX INDEX facts_runs" >/dev/null
+	"CREATE INDEX facts_runs ON run_facts USING sift_col (id, set_id, v, pad) WITH (key_cut = 'set_id')" >/dev/null
+check "an index with key-cut units and lists of runs is column format 34" grep -q -E '^ok +facts_runs +index +format 1\.[0-9]+, column format 34' <<<"$(uc clean)"
+check "to 3.4: an index with key-cut units is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_runs .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_runs" <<<"$(uc --to 3.4 clean)"
+q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_runs" >/dev/null
 check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs)"
 q clean "DROP TABLE run_facts" >/dev/null
 # a text dictionary read in place has row counts (count_columns) and a hash of its strings: column format 25, which 3.5 refuses too

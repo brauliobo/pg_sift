@@ -7,6 +7,7 @@
 #include "col/enc.h"
 
 #define COLU_MAGIC		0x554C4F43	/* "COLU" */
+#define COLK_TABFIRST	(UINT32_C(1) << 24)	/* in the widths word of a COLK head: the chunk table follows the 24-byte head and the arrays of the directory follow the table (column format minor 34) */
 #define COLK_MAGIC		0x4B4C4F43	/* "COLK": the unit of a key-cut segment, explicit TIDs */
 #define CODEC_BLOCK		4096	/* values unpacked at a time (a multiple of 64) */
 

@@ -188,8 +188,8 @@ sift.async_maintenance = off'
 		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [ex]="*, CASE WHEN id % 500 = 0 THEN id END AS z" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ex]="id, g, n, z" [ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
-	# the minor the data stamps beyond the setting: a key_columns leaf also gets the key table of a segment (22)
-	declare -A STAMP=([kp]=22)
+	# the minor the data stamps beyond the setting: a key_columns leaf also gets the key table of a segment (22), a point directory the exact slots (33), a key-cut unit the table first (34)
+	declare -A STAMP=([kp]=22 [pt]=33 [kc]=34)
 	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	refused=" cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	for f in "${formats[@]}"; do
@@ -215,8 +215,8 @@ sift.async_maintenance = off'
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
 		fi
 	done
-	# point_tid_columns (minor 16) and key_cut (minor 17): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
-	for opt in pt:point_tid_columns:16 kc:key_cut:17; do
+	# point_tid_columns (minor 33) and key_cut (minor 34): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
+	for opt in pt:point_tid_columns:33 kc:key_cut:34; do
 		IFS=: read -r fmt option minor <<<"$opt"
 		optfmt() { q "SELECT (max(format) >= $minor) || ':' || (SELECT coalesce(reloptions::text, '') ~ '$option=g' FROM pg_class WHERE relname = 'docs_${fmt}_col') FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'"; }
 		optwant=$(q "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")

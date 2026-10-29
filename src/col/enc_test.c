@@ -231,7 +231,7 @@ sift_test_col_enc_sizes(PG_FUNCTION_ARGS)
 		bool		nulls[4] = {false, false, false, false};
 
 		initStringInfo(&buf);
-		sift_cunit_encode(b, NULL, NULL, NULL, true, &buf, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, NULL, true, false, &buf, &start, NULL);
 		MemoryContextSwitchTo(old);
 		values[0] = CStringGetTextDatum(size_names[shape]);
 		values[1] = Int64GetDatum(b->nrows);

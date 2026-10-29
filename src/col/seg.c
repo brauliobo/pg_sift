@@ -336,6 +336,28 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 	memset(pv->unitbuf + seg->sbdir[u].len, 0, SIFT_COL_PAD);
 }
 
+static void
+unit_view_fill(void *seg, uint32 u, uint32 off, uint32 len)
+{
+	sift_cseg_unit_fill(seg, u, off, len);
+}
+
+/* The head of unit u parsed: false when it does not parse. The offsets of the rows of a key-cut unit are read by sift_cunit_keyed_load when a scan needs the TIDs */
+bool
+sift_cseg_unit_view(SiftColSegment *seg, uint32 u, SiftCUnitView *v)
+{
+	uint32		len,
+				avail;
+	const uint8 *rec = sift_cseg_unit_head(seg, u, &len, &avail);
+
+	if (!sift_cunit_parse_head(rec, avail, len, seg->schema, v) || v->nrows != seg->sbdir[u].nrows)
+		return false;
+	v->fill = unit_view_fill;
+	v->fill_seg = seg;
+	v->fill_u = u;
+	return true;
+}
+
 /*
  * The point directories at the end of the DICT section, found by the footer in its last 16 bytes: the tables of the leaves, read on
  * first use. A section without them ends with its last dictionary. The frame is checked whole, so that no byte of it can change what is read without a
@@ -4763,12 +4785,9 @@ bool
 sift_cseg_page_rows(SiftColSegment *seg, uint32 u, BlockNumber blk, uint32 *first, uint64 *offmask)
 {
 	SiftCUnitView v;
-	uint32		len,
-				avail;
-	const uint8 *rec = sift_cseg_unit_head(seg, u, &len, &avail);
 	uint32		pg = blk % SIFT_SB_PAGES;
 
-	if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &v) || v.nrows != seg->sbdir[u].nrows)
+	if (!sift_cseg_unit_view(seg, u, &v))
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].sb);
 	for (uint32 p = 0; p < v.npages; p++)
 		if (v.page[p] == pg)
