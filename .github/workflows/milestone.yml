@@ -1,0 +1,30 @@
+name: milestone
+
+# A pull request without a milestone gets the one of its branch: base integration/X.Y-batch-N -> X.Y; head release/X.Y[.Z]... into main -> X.Y[.Z]. Other pull requests
+# to main keep the patch milestone that is set by hand. pull_request_target, so the token can write on a fork too: nothing of the pull request is checked out or run, and
+# the branch names reach the shell through the environment only. A failure is a warning, never a red check.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  milestone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    if: github.event.pull_request.milestone == null
+    steps:
+      - name: Set the milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          ms=
+          if [[ $BASE =~ ^integration/([0-9]+\.[0-9]+)-batch-[0-9]+$ ]]; then ms=${BASH_REMATCH[1]}
+          elif [[ $BASE == main && $HEAD =~ ^release/([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then ms=${BASH_REMATCH[1]}; fi
+          [[ -z $ms ]] || gh pr edit "$PR" --milestone "$ms" || echo "::warning::could not set the milestone $ms on #$PR"

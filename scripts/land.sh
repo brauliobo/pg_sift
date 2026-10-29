@@ -153,7 +153,7 @@ worker() {
 	local meta_hits cand state base br head mb before round push=0 W=$WORK/wt dels prot required verdict meta prc tests rows missing merges how opts st sha ms f note=''
 	[[ -n $repo ]] || { echo "cannot tell the GitHub repository (LAND_REPO)"; exit 75; }
 	cd "$CLONE" || exit 1
-	IFS=$'\t' read -r state base br < <(gh pr view "$pr" --repo "$repo" --json state,baseRefName,headRefName -q '[.state,.baseRefName,.headRefName]|@tsv') && [[ -n $br ]] || { echo "cannot read #$pr from GitHub"; exit 75; }
+	IFS=$'\t' read -r state base br have_ms < <(gh pr view "$pr" --repo "$repo" --json state,baseRefName,headRefName,milestone -q '[.state,.baseRefName,.headRefName,.milestone.title // ""]|@tsv') && [[ -n $br ]] || { echo "cannot read #$pr from GitHub"; exit 75; }
 	case $state in MERGED) echo "#$pr is already merged"; exit 0 ;; CLOSED) echo "REFUSED #$pr: the PR is closed"; exit 6 ;; esac
 	dels=$(gh pr view "$pr" --repo "$repo" --json files -q '[.files[]|select(.changeType=="DELETED")|.path]|join(" ")') || exit 75
 	[[ -z $dels || -n ${ALLOW_DELETE:-} ]] || { echo "REFUSED #$pr: the PR deletes files ($dels); check they are its own, then ALLOW_DELETE=1"; exit 5; }
@@ -207,7 +207,8 @@ worker() {
 		git push -q origin "$cand:refs/heads/$br" || { echo "push of $br rejected: the branch moved"; exit 75; }
 		head=$cand
 	fi
-	ms=${base#integration/}; ms=${ms%%-*}; [[ $ms =~ ^3\.[0-9]+(\.[0-9]+)?$ ]] && gh pr edit "$pr" --repo "$repo" --milestone "$ms" >/dev/null 2>&1  # every PR carries the milestone of its base
+	ms=${base#integration/}; ms=${ms%%-*}  # a PR without a milestone gets the one of its integration branch (.github/workflows/milestone.yml does it on opening)
+	if [[ -z $have_ms && $base == integration/* && $ms =~ ^[0-9]+\.[0-9]+$ ]]; then gh pr edit "$pr" --repo "$repo" --milestone "$ms" >/dev/null && echo "milestone $ms set on #$pr"; fi
 
 	wait_checks "$head" "$required"
 	echo "required checks ($required): $verdict"
