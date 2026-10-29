@@ -47,6 +47,7 @@ TABLE_SKIP = {
     'zonekey': 'zkf is read through its sift_col index only',
     'keytable': 'ktf is read through its sift_col index only',
     'dictcount': 'dcf is read through its sift_col index only',
+    'flatkeys': 'the key tables are read through a sift_col index',
     'arrlen': 'the lengths of an array are two lanes of the sift_col index (array_lengths); a sift_table keeps the image alone',
 }
 
@@ -1344,6 +1345,62 @@ def dml_exceptions(r, ctx):
     return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
 
 
+# ---------- group shapes: the events of the keys a CTE picks from a table with a column index (IN-subqueries over links and assignments, COALESCE of a NULL member), grouped by the label a small table maps their metrics to ----------
+FK_MEMBER = ['', '', "AND m.kind = 'k1'", 'AND m.name IS NOT NULL', "AND m.kind <> 'k0'"]
+FK_AGGS = ['count(*)', 'count(DISTINCT {id})', 'count(DISTINCT {pid})', 'count({score})', 'round(avg({score})::numeric, 6)', 'round(sum({score})::numeric, 6)', 'max({score})']
+FK_SCORE = "CASE WHEN jsonb_typeof(r.value) = 'number' THEN (r.value #>> '{}')::float8 END"
+
+
+def gen_flatkeys(r, ctx):
+    spans = [(lo, lo + r.choice([0, 5, 30, 90])) for lo in (r.randrange(380), r.randrange(380))]
+    return dict(form=r.choice(['periods', 'periods', 'total', 'rows']), groups=sorted({r.randrange(7) for _ in range(r.choice([1, 1, 2]))}), sub=r.choice([9, 9, 9, 8, 7]),
+                amax=r.randrange(7), mat=r.choice(['MATERIALIZED ', '', 'NOT MATERIALIZED ']), member=r.choice(FK_MEMBER), spans=spans, outer_map=r.random() < 0.4,
+                aggs=['count(*)'] + r.sample(FK_AGGS[1:], r.randrange(1, 4)))
+
+
+def render_flatkeys(p):
+    picked = (f"picked AS {p['mat']}(SELECT DISTINCT m.id FROM fk_members m WHERE m.id IN (SELECT coalesce(a.dim_b_id, l.dim_b_id) FROM fk_assign a LEFT JOIN fk_links l ON l.grp = a.grp "
+              f"WHERE a.sub = {p['sub']} AND a.grp <= {p['amax']} AND coalesce(a.dim_b_id, l.dim_b_id) IS NOT NULL) "
+              f"AND m.id IN (SELECT dim_b_id FROM fk_links WHERE grp IN ({', '.join(map(str, p['groups']))})) {p['member']})")
+    fill = lambda **k: ', '.join(f'{a.format(**k)} AS a{i}' for i, a in enumerate(p['aggs']))
+    if p['form'] == 'rows':
+        return (f"WITH {picked} SELECT e.kind AS k0, {fill(id='e.id', pid='e.parent_id', score='e.val')} FROM events e JOIN picked ON picked.id = e.parent_id "
+                f"WHERE e.ts >= date '2025-01-01' + {p['spans'][0][0]} AND e.ts <= date '2025-01-01' + {p['spans'][0][1]} GROUP BY 1 ORDER BY 1"), True
+    # the label is mapped inside the lateral sub-select, or after it
+    if p['outer_map']:
+        lat = f"INNER JOIN LATERAL (SELECT r.key, {FK_SCORE} AS score FROM jsonb_each(e.metrics) r) s ON true LEFT JOIN fk_map l ON l.src = e.grp AND l.key = s.key"
+        cat = 'coalesce(l.label, s.key)'
+    else:
+        lat = f"INNER JOIN LATERAL (SELECT coalesce(l.label, r.key) AS category, {FK_SCORE} AS score FROM jsonb_each(e.metrics) r LEFT JOIN fk_map l ON l.src = e.grp AND l.key = r.key) s ON true"
+        cat = 's.category'
+    day = lambda n: f"date '2025-01-01' + {n}"
+    if p['form'] == 'total':
+        lo, hi = p['spans'][0]
+        return (f"WITH {picked} SELECT {cat} AS k0, {fill(id='e.id', pid='e.parent_id', score='s.score')} FROM events e JOIN picked ON picked.id = e.parent_id "
+                f"{lat} WHERE e.ts >= {day(lo)} AND e.ts <= {day(hi)} GROUP BY 1 ORDER BY 1"), True
+    periods = ', '.join(f"('p{i}', daterange({day(a)}, {day(b)}, '[]'))" for i, (a, b) in enumerate(p['spans']))
+    return (f"WITH {picked}, periods AS (SELECT * FROM (VALUES {periods}) p(period, range)), "
+            f"parsed AS (SELECT e.id, e.parent_id, p.period, {cat} AS category, s.score FROM events e JOIN periods p ON e.ts <@ p.range JOIN picked ON picked.id = e.parent_id "
+            f"{lat}) "
+            f"SELECT d.period AS k0, x.category AS k1, {fill(id='x.id', pid='x.parent_id', score='x.score')} FROM periods d LEFT JOIN parsed x ON x.period = d.period "
+            f"GROUP BY 1, 2 ORDER BY 1, 2"), True
+
+
+def dml_flatkeys(r, ctx):
+    """Links, links_a, mappings and dim_b change between runs: a group grows, shrinks, loses its dim_b, gets a NULL member; dim_b are updated, deleted and restored; the index is merged."""
+    g, m = r.randrange(7), r.choice([3, 7, 13, 50])
+    k = r.randrange(m)
+    return r.choice([
+        f'DELETE FROM fk_links WHERE grp = {g} AND dim_b_id % {m} = {k}', f'INSERT INTO fk_links SELECT {g}, i FROM generate_series({k}, {k + r.choice([0, 4, 40, 300])}) i', f'INSERT INTO fk_links VALUES ({g}, NULL)',
+        f'UPDATE fk_links SET dim_b_id = (dim_b_id + {r.randrange(1, 9)}) % 600 WHERE grp = {g}', f'DELETE FROM fk_links WHERE grp = {g}',
+        f'UPDATE fk_assign SET sub = 9 - sub + 8 WHERE grp = {g}', f'DELETE FROM fk_assign WHERE grp = {g} AND sub = {r.choice([7, 8, 9])}', f'INSERT INTO fk_assign VALUES ({g}, {r.choice(["NULL", k])}, {r.choice([7, 8, 9])})',
+        f'UPDATE fk_map SET label = NULL WHERE src % {m} = {k}', f"UPDATE fk_map SET label = 'lab{r.randrange(5)}' WHERE src % {m} = {k}", f'DELETE FROM fk_map WHERE src % {m} = {k}',
+        f"INSERT INTO fk_map SELECT s, 'm{r.randrange(1, 4)}', 'new' FROM generate_series(0, 11) s WHERE s % {m} = {k}",
+        f"UPDATE fk_members SET kind = 'k{r.randrange(4)}' WHERE id % {m} = {k}", f'UPDATE fk_members SET name = NULL WHERE id % {m} = {k}', f'DELETE FROM fk_members WHERE id % {m} = {k}',
+        f"INSERT INTO fk_members SELECT i, 'k1', 'r' || i FROM generate_series(0, 599) i WHERE i % {m} = {k} ON CONFLICT DO NOTHING",
+        'VACUUM fk_members', 'VACUUM fk_links, fk_assign, fk_map', "SELECT sift.col_merge('fk_members_col', true)", "SELECT sift.col_promote('fk_members_col')"])
+
+
 # ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
 GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
 
@@ -1542,7 +1599,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
-    'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
+    'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1904,6 +1961,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     ra = random.Random(seed * 122949829 + 31)
     rg = random.Random(seed * 32452843 + 13)
     rb = random.Random(seed * 122949829 + 31)
+    rf = random.Random(seed * 179424673 + 37)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -1927,6 +1985,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_dictcount(rq2, ctx) for _ in range(rq2.randrange(dmls + 1))]
         if not TABLE and (not only or 'txnmix' in only):
             st += [dml_txn(rb, ctx) for _ in range(rb.randrange(dmls + 1))]
+        if not TABLE and (not only or 'flatkeys' in only):
+            st += [dml_flatkeys(rf, ctx) for _ in range(rf.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:

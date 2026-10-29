@@ -397,4 +397,21 @@ BEGIN
 END $$;
 -- @end
 
+-- the group shapes: the keys of a CTE are picked from a table with a column index through the links of a group (sizes 0, 1, 5, 60, 200 and all 600 members; one NULL member)
+-- and the assignments (a row with a NULL member stands for the links of its group), then the events of those keys are grouped by the label a small table maps
+-- their metrics to (some of them unmapped, some mapped to NULL)
+-- @heap
+CREATE TABLE fk_members (id int PRIMARY KEY, kind text, name text) WITH (autovacuum_enabled = false);
+INSERT INTO fk_members SELECT i, CASE WHEN fz.h(i, 160) % 20 = 0 THEN NULL ELSE 'k' || fz.h(i, 161) % 3 END, CASE WHEN fz.h(i, 162) % 5 = 0 THEN NULL ELSE 'n' || i END FROM generate_series(0, 599) i;
+CREATE INDEX fk_members_col ON fk_members USING sift_col (id, kind, name);
+CREATE TABLE fk_links (grp int, dim_b_id int) WITH (autovacuum_enabled = false);
+INSERT INTO fk_links SELECT g - 1, (i * 7) % 600 FROM unnest(ARRAY[0, 1, 5, 60, 200, 600]) WITH ORDINALITY s(n, g), generate_series(0, 599) i WHERE i < n
+UNION ALL SELECT 1, 11 UNION ALL SELECT 4, NULL;
+CREATE TABLE fk_assign (grp int, dim_b_id int, sub int) WITH (autovacuum_enabled = false);
+INSERT INTO fk_assign SELECT g, NULL, 9 FROM generate_series(0, 6) g UNION ALL SELECT g, fz.h(g, 163) % 600, 8 FROM generate_series(0, 6) g UNION ALL SELECT 2, NULL, 8;
+CREATE TABLE fk_map (src int, key text, label text) WITH (autovacuum_enabled = false);
+INSERT INTO fk_map SELECT s, 'm' || k, CASE WHEN fz.h(s * 4 + k, 164) % 4 = 0 THEN NULL ELSE 'lab' || (fz.h(s * 4 + k, 165) % 3) END FROM generate_series(0, 11) s, generate_series(1, 3) k WHERE fz.h(s * 4 + k, 166) % 3 <> 0;
+VACUUM (FREEZE, ANALYZE) fk_members, fk_links, fk_assign, fk_map;
+-- @end
+
 VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;
