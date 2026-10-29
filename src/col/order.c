@@ -18,7 +18,6 @@
 #include "col/seg.h"
 
 #define ORDER_DEFAULT_ROWS	1024
-#define ORDER_SECOND_ROWS	4096		/* the rows of a unit of a key that fills at least two such units and is sorted by a second leaf (below ~2,000 the per-unit bytes outgrow what a narrower zone saves) */
 #define ORDER_MAX_ROWS		32768		/* the most rows of a unit (key_cut_rows); the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
 
 typedef struct RowRef
@@ -259,25 +258,25 @@ key_start(const OrderCtx *ctx, const RowRef *refs, uint64 end)
 
 /*
  * Where a window of avail rows refs[0, avail) in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes
- * (within slack rows), so that one value of the leading leaf is in as few units as it can be. A key of at least 2 * ORDER_SECOND_ROWS rows is sorted by the second leaf
- * and cut into units of ORDER_SECOND_ROWS, the last one ending with the key (*split: the cut before this one was one of these), and starts its own unit: a unit of the
+ * (within slack rows), so that one value of the leading leaf is in as few units as it can be. A key of at least 2 * SIFT_COLK_SECOND_ROWS rows is sorted by the second leaf
+ * and cut into units of SIFT_COLK_SECOND_ROWS, the last one ending with the key (*split: the cut before this one was one of these), and starts its own unit: a unit of the
  * whole aim spans most of the key's range, and a window of the second leaf could skip none.
  */
 static uint64
 cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, uint64 slack, bool *split)
 {
 	uint64		end = Min(avail, unit_rows);
-	bool		second = ctx->nleaf > 1 && unit_rows >= 2 * ORDER_SECOND_ROWS;
+	bool		second = ctx->nleaf > 1 && unit_rows >= 2 * SIFT_COLK_SECOND_ROWS;
 
 	if (second)
 	{
-		uint64		run = key_run(ctx, refs, Min(avail, 2 * ORDER_SECOND_ROWS));
-		bool		more = run == 2 * ORDER_SECOND_ROWS;
+		uint64		run = key_run(ctx, refs, Min(avail, 2 * SIFT_COLK_SECOND_ROWS));
+		bool		more = run == 2 * SIFT_COLK_SECOND_ROWS;
 
 		if (more || *split)
 		{
 			*split = more;
-			return more ? ORDER_SECOND_ROWS : run;
+			return more ? SIFT_COLK_SECOND_ROWS : run;
 		}
 	}
 	*split = false;
@@ -299,7 +298,7 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
 	{
 		uint64		start = key_start(ctx, refs, end);
 
-		if (start > 0 && key_run(ctx, refs + start, Min(avail - start, 2 * ORDER_SECOND_ROWS)) == 2 * ORDER_SECOND_ROWS)
+		if (start > 0 && key_run(ctx, refs + start, Min(avail - start, 2 * SIFT_COLK_SECOND_ROWS)) == 2 * SIFT_COLK_SECOND_ROWS)
 			end = start;
 	}
 	return end;

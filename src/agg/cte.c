@@ -29,6 +29,7 @@
 #include "rewrite/rewriteManip.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/plancache.h"
 #include "utils/rel.h"
@@ -77,16 +78,66 @@ static bool late_checked;
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
 
+/*
+ * The planner asks it for the same table many times in one planning (a walk of the query for each decision, and the hook plans a statement up to four times:
+ * about 2,000 asks for a statement of 20 CTEs), and each ask opens the table and looks up the access method of every index. The answer holds until the table's
+ * relcache entry is invalidated (CREATE or DROP INDEX, a change of the table's access method), so it is kept per table and all of it dropped on any relcache invalidation.
+ */
+typedef struct SourceEntry
+{
+	Oid			relid;
+	bool		found;
+} SourceEntry;
+
+static HTAB *source_cache;
+
+#ifdef SIFT_TESTING
+int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
+#endif
+
+static void
+source_cache_inval(Datum arg, Oid relid)
+{
+	if (source_cache != NULL)
+	{
+		hash_destroy(source_cache);
+		source_cache = NULL;
+	}
+}
+
 /* a table the aggregate scan reads: a sift_table, or a heap table with a column index */
 bool
 has_column_source(Oid relid)
 {
-	Relation	rel = relation_open(relid, AccessShareLock);
-	bool		found = sift_colsrc_is_table(rel->rd_rel->relam);
+	SourceEntry *e;
+	Relation	rel;
+	bool		found,
+				seen;
 
+	if (source_cache != NULL && (e = hash_search(source_cache, &relid, HASH_FIND, NULL)) != NULL)
+		return e->found;
+#ifdef SIFT_TESTING
+	sift_source_lookups++;
+#endif
+	rel = relation_open(relid, AccessShareLock);
+	found = sift_colsrc_is_table(rel->rd_rel->relam);
 	foreach_oid(ix, RelationGetIndexList(rel))
 		found |= sift_colsrc_is_index(get_rel_relam(ix));
 	relation_close(rel, AccessShareLock);
+	if (source_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(SourceEntry), .hcxt = TopMemoryContext};
+		static bool registered;
+
+		if (!registered)
+		{
+			CacheRegisterRelcacheCallback(source_cache_inval, (Datum) 0);
+			registered = true;
+		}
+		source_cache = hash_create("sift cache column sources", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(source_cache, &relid, HASH_ENTER, &seen);
+	e->found = found;
 	return found;
 }
 
@@ -617,10 +668,11 @@ shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, double lift, 
 
 /*
  * The ordinary reads of tables that have a column index in the plan, other than through a SiftAgg node, as work: the cost of the scan times the rows
- * of the outer side of the nested loops it is the inner side of.
+ * of the outer side of the nested loops it is the inner side of. A scan that is an input of a merge join is read for as much of it as the join needs
+ * (the join is priced for that part): its work is at most what the join costs over its other input, never less than one tuple.
  */
 static double
-plain_reader(PlannedStmt *stmt, Plan *plan, double loops)
+plain_reader(PlannedStmt *stmt, Plan *plan, double loops, double bound)
 {
 	double		work = 0;
 
@@ -631,22 +683,25 @@ plain_reader(PlannedStmt *stmt, Plan *plan, double loops)
 		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
 
 		if (rte->rtekind == RTE_RELATION && has_column_source(rte->relid))
-			work += plan->total_cost * loops;
+			work += Min(plan->total_cost, bound) * loops;
 	}
 	foreach_ptr(Plan, p, child_plans(plan))
-		work += plain_reader(stmt, p, loops);
-	work += plain_reader(stmt, plan->lefttree, loops);
-	return work + plain_reader(stmt, plan->righttree, IsA(plan, NestLoop) ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops);
+		work += plain_reader(stmt, p, loops, HUGE_VAL);
+	if (IsA(plan, MergeJoin))
+		return work + plain_reader(stmt, plan->lefttree, loops, Max(plan->total_cost - plan->righttree->total_cost, cpu_tuple_cost)) +
+			plain_reader(stmt, plan->righttree, loops, Max(plan->total_cost - plan->lefttree->total_cost, cpu_tuple_cost));
+	work += plain_reader(stmt, plan->lefttree, loops, HUGE_VAL);
+	return work + plain_reader(stmt, plan->righttree, IsA(plan, NestLoop) ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops, HUGE_VAL);
 }
 
 /* does the plan read a table that has a column index other than through a SiftAgg node, for more than the share of its cost? */
 static bool
 plain_reader_stmt(PlannedStmt *stmt, double share)
 {
-	double		work = plain_reader(stmt, stmt->planTree, 1.0);
+	double		work = plain_reader(stmt, stmt->planTree, 1.0, HUGE_VAL);
 
 	foreach_ptr(Plan, p, stmt->subplans)
-		work += plain_reader(stmt, p, 1.0);
+		work += plain_reader(stmt, p, 1.0, HUGE_VAL);
 	return work > share * stmt->planTree->total_cost;
 }
 
@@ -700,6 +755,7 @@ typedef struct CteVariants
 				inlined_cx;
 	ScanArms	scans;
 	double		plain_cost,
+				charged,		/* of plain_cost, what the unnesting aggregates are charged for the rows their estimate lost */
 				work,
 				read_rows;		/* the most rows the scans of the inline plan read (agg_read_rows) */
 } CteVariants;
@@ -755,6 +811,7 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	v->work = shared_work_cost(v->plain, names, read_rows, lift, v->scans.n, &charged, &unnesting);
 	/* the shared plan really costs what its aggregates were charged: the totals are compared with it */
 	v->plain_cost += charged;
+	v->charged = charged;
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans, %.0f rows read, %d unnesting aggregates, charged %.2f",
 		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n, read_rows, unnesting, charged);
 }
@@ -773,6 +830,14 @@ inline_wins(const CteVariants *v, double vet, double shared_vet)
 				plain_cost = v->plain_cost - shared_vet,
 				work = v->work - shared_vet;
 
+	/*
+	 * What the scans leave in the inline plan (the copies of the CTE bodies they do not replace, each reference one) is priced by PostgreSQL's own estimates, as the
+	 * shared plan is before its aggregates are charged: the charge makes up for the rows those aggregates lost, not for the rest. An inline plan whose rest costs more
+	 * than the whole shared plan uncharged (by the margin of a totals comparison) repeats work that the shared plan does once, and no charge on the aggregates
+	 * pays for it.
+	 */
+	if (!sift_agg_force && v->inlined->planTree->total_cost - v->scans.total > CTE_INLINE_TOTALS * (v->plain_cost - v->charged))
+		return false;
 	return v->scans.n > 0 && (sift_agg_force || (!plain_reader_stmt(v->inlined, 0) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
 							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
 							  scans < plain_cost - inline_cost));
@@ -833,6 +898,33 @@ static bool planning_second;
 static bool verdict_replan;
 
 /*
+ * The total of the plan the planner makes without the library: the alternative to every plan of the statement that uses it, which the cte_inline row of
+ * explain_why prices it against (the shared plan after its aggregates were charged is the price of a plan nobody runs).
+ */
+static double
+planner_total(SIFT_PLANNER_PARAMS)
+{
+	bool		outer = sift_enable_agg,
+				quiet = agg_quiet_reports(true);
+	MemoryContext cx;
+	double		total;
+
+	PG_TRY();
+	{
+		sift_enable_agg = false;
+		total = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &cx)->planTree->total_cost;
+	}
+	PG_FINALLY();
+	{
+		sift_enable_agg = outer;
+		agg_quiet_reports(quiet);
+	}
+	PG_END_TRY();
+	discard_plan(cx);
+	return total;
+}
+
+/*
  * The statement planned as the verdict kept for it says (verdict.c): the inline plan when the scans won, else the plan that keeps the shared CTEs.
  * The totals are those of the plan in full that made the verdict, a statement of other constants: the cte_inline row reports no costs, since
  * those would be the other statement's (the verdict_cached row says why).
@@ -873,7 +965,8 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 {
 	Query	   *inline_parse,
 			   *pristine = NULL,
-			   *pristine_inline = NULL;
+			   *pristine_inline = NULL,
+			   *bare = NULL;
 	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
 	CteVerdict	vd;
@@ -918,6 +1011,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		pristine = copyObject(parse);
 		pristine_inline = copyObject(inline_parse);
 	}
+	if (sift_explain_refusals)
+		bare = copyObject(parse);
+	agg_variant_hold();
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
 	same = planning_second && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
 		first_plan.scans == v.scans.total && first_plan.work == v.work;
@@ -936,12 +1032,15 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	}
 	if (won)
 	{
-		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, v.inlined->planTree->total_cost, v.plain_cost);
+		agg_variant_settle(true, NULL);
+		if (bare != NULL)
+			agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, v.inlined->planTree->total_cost, planner_total(SIFT_PLANNER_ARGS(bare)));
 		inline_won = true;
 		discard_plan(v.plain_cx);
 		*cx = v.inlined_cx;
 		return v.inlined;
 	}
+	agg_variant_settle(false, "the arm is in the plan with the CTE inlined, which lost: see cte_inline");
 	if (sift_explain_refusals && v.scans.n > 0)
 	{
 		ScanArms	shared = {0};
@@ -952,7 +1051,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
 		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
 			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);
-		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false, v.inlined->planTree->total_cost, v.plain_cost);
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false, v.inlined->planTree->total_cost, planner_total(SIFT_PLANNER_ARGS(bare)));
 	}
 	discard_plan(v.inlined_cx);
 	*cx = v.plain_cx;

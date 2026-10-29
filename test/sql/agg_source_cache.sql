@@ -1,0 +1,42 @@
+-- Whether a table has a column index is asked of the catalog once and kept until the table's relcache entry is invalidated: a planning asks it for the same table
+-- hundreds of times (a walk of the query for each decision). The answer must follow CREATE INDEX, DROP INDEX and a rollback of either.
+-- sift._test_source_lookups (pg_sift_test) counts the asks that went to the catalog.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+CREATE TABLE sc_fact (id int, k int, v int);
+INSERT INTO sc_fact SELECT i, i % 50, i % 7 FROM generate_series(1, 5000) i;
+ANALYZE sc_fact;
+
+-- a statement that reads the table in many places: CTEs read twice, a sub-select, a sublink
+SELECT $q$WITH a AS MATERIALIZED (SELECT k, v, sum(id) s FROM sc_fact WHERE k < 40 GROUP BY k, v),
+  b AS MATERIALIZED (SELECT k, count(*) c FROM sc_fact WHERE v > 1 GROUP BY k)
+SELECT a.k, sum(a.s), sum(b.c) FROM a JOIN b USING (k) JOIN (SELECT k FROM sc_fact WHERE v = 3 GROUP BY k) x ON x.k = a.k
+WHERE a.k IN (SELECT k FROM sc_fact WHERE id > 10) GROUP BY a.k ORDER BY a.k$q$ AS q \gset
+
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+SELECT sift._test_source_lookups(true) AS discard \gset
+\o /dev/null
+EXPLAIN (COSTS OFF) :q;
+\o
+SELECT sift._test_source_lookups(true) <= 4 AS asks_the_catalog_once_per_table;
+
+-- the answer follows the index: a source while it exists, none after it is dropped, and again after a rollback of the drop and of the create
+SELECT count(*) = 0 AS source_with_index FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+DROP INDEX sc_fact_col;
+SELECT count(*) > 0 AS no_source_after_drop FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+BEGIN;
+DROP INDEX sc_fact_col;
+SELECT count(*) > 0 AS no_source_in_the_drop FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+ROLLBACK;
+SELECT count(*) = 0 AS source_after_rollback FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+DROP INDEX sc_fact_col;
+BEGIN;
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+SELECT count(*) = 0 AS source_in_the_create FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+ROLLBACK;
+SELECT count(*) > 0 AS no_source_after_rollback_of_create FROM sift.explain_why(:'q') WHERE slug = 'no_source';
+
+DROP TABLE sc_fact;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

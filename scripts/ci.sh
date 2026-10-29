@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else echo 4; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 4; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then
@@ -202,7 +202,7 @@ declare -A JOB_WEIGHT=(
 	[installcheck-tbl_key_table]=153 [tap-shell-pg_upgrade]=152 [installcheck-col_preagg_elem]=136 [tap-shell-index_random_crash]=135 [isolation]=126
 	[installcheck-col_lazy_filter]=123 [soak-col]=123 [installcheck-col_sorted_run]=118 [installcheck-agg_preagg_elem]=115
 	[tap-shell-col_run_heads_crash]=114 [tap-006_truncate]=113 [installcheck-agg_trunc_zone]=112 [installcheck-tbl_preagg]=112
-	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [installcheck-parallel_pushdown]=108
+	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [plan-gate-calibrate]=374 [plan-gate-calibrate-tuned]=355 [installcheck-parallel_pushdown]=108
 	[installcheck-index_build_postings]=107 [difftest-col-selftest]=107 [installcheck-agg_preagg_dimfilter]=104 [installcheck-agg_par_arms]=100
 	[tap-shell-pg_upgrade_31]=97 [tap-shell-sb_mask_small]=94 [tap-shell-maint_fanin]=90
 )
@@ -347,8 +347,7 @@ if [[ $MODE == --selftest ]]; then
 		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
 		lo='' hi=0
-		pool=$ns; (( pg < 18 )) && [[ -n $deep ]] && pool=$(( ns - 1 ))   # the deep tier on 17 ends with a shard of the jobs that install a flavor
-		for (( k = 1; k <= pool; k++ )); do
+		for (( k = 1; k <= ns; k++ )); do
 			l=0
 			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
@@ -552,7 +551,7 @@ if [[ $MODE == full ]]; then
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 0
-	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, at 30000 rows (docs/AGG.md); skipped without perf
+	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
@@ -563,9 +562,9 @@ if [[ $MODE == full ]]; then
 		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 	elif (( PG_MAJOR >= 18 )); then
-		for k in 1 2; do
-			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
-			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+		for k in 1 2 3 4; do
+			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 		done
 	fi
 	job coverage coverage 1 "$S/coverage.sh" --check
@@ -619,6 +618,9 @@ else
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
+	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
+	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
@@ -658,6 +660,7 @@ shard_loads() {
 	local pool=$1 line id k i
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && LOAD[pool - 1]=$(( LOAD[pool - 1] + $(weight_of "$id" "${SIFT_CI_DEEP:-}") )); done
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
@@ -668,7 +671,8 @@ SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
 	POOL=$NSHARDS
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done   # the last shard is the one of the jobs that run after the pool
+	# the quick tier gives the jobs that run after the pool (flavor installs, serial: minutes long) a shard of their own; in the full tier they are a few lane minutes and end the last shard
+	[[ $MODE == full ]] || for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done
 	[[ $MODE == full && $NSHARDS -gt 1 ]] && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue

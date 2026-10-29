@@ -34,6 +34,13 @@ SELECT sift._test_key_sorts(true) = 1 AS sorted_once_agg_off;
 (1 row)
 
 RESET sift.enable_agg;
+-- the memory the sorts are kept in dies with the planning: no context of it is left in the backend (it would be reported as a leak at its exit)
+SELECT count(*) AS memo_contexts_left FROM pg_backend_memory_contexts WHERE name = 'sift planning memo';
+ memo_contexts_left 
+--------------------
+                  0
+(1 row)
+
 -- the same keys, whatever the order of the list
 SELECT sum(r) AS rows_equal FROM (SELECT count(*) AS r FROM ks_fact WHERE k = ANY (ARRAY[5, 2999, 17, 17, NULL, 0]) UNION ALL SELECT -count(*) FROM ks_fact WHERE k = 5 OR k = 2999 OR k = 17 OR k = 0) s;
  rows_equal 

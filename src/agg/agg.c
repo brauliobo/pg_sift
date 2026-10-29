@@ -248,6 +248,10 @@ sift_agg_init(void)
 							 "Testing: a top-N scan answers a unit of which every row passes from the head of the sorted run of its first sort column (column format minor 18) instead of reading it.",
 							 NULL, &sift_topn_heads, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_child_warm",
+							 "Testing: a correlated child asks the OS for the relations it reads after a few runs, whatever they read and however long they took.",
+							 NULL, &sift_child_warm_test, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_topn_gorder",
 							 "Testing: a top-N scan of one integer or time key reads the global order of the key (column format minor 21) in place of the units.",
 							 NULL, &sift_topn_gorder_on, true,
@@ -1661,6 +1665,7 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		if (hits + misses > 0)
 			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
+	sift_explain_int(&ln, "Child Blocks Prefetched", NULL, "child blocks prefetched", c->child_warmed, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);

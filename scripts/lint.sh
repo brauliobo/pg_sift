@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.." || exit 2
 CHECKS=(
 	'syntax		for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'layout		scripts/restructure-src.sh --check'
+	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
 	'portable	scripts/check-portable.sh'
 	'testing-regress	scripts/check-testing-regress.sh'
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host_stubs.o && make -s -C mariadb OUT=$b $b/host_stubs.o && echo "host_stubs.c compiles for the SQLite and MariaDB hosts"'

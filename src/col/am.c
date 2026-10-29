@@ -1006,10 +1006,13 @@ sift_col_plan_end(bool started)
 		return;
 	leaf_plan = 0;
 	if (plan_memo != NULL)
-		MemoryContextReset(plan_memo);
+	{
+		MemoryContextDelete(plan_memo);
+		plan_memo = NULL;
+	}
 }
 
-/* memory that lives as long as the planning that is open (NULL outside one), and the number of that planning: what a caller keeps in it is stale when the number changes */
+/* memory that lives as long as the planning that is open (NULL outside one; deleted when it ends, a context that stays is a leak at backend exit), and the number of that planning: what a caller keeps in it is stale when the number changes */
 MemoryContext
 sift_col_plan_memo(uint64 *plan)
 {

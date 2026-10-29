@@ -56,6 +56,21 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
 
 -- the same for a shared CTE that two aggregates read: the inlined scans pay the heap check and lose to the shared plan
 SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 12) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+-- the scans of the inline plan that lost are not in the plan of the statement, and its cte_inline row prices the alternative that is: the plan the planner
+-- makes without the library, not the shared CTE plan with the rows its aggregates lost charged
+CREATE FUNCTION plain_total(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+\set q 'WITH r AS (SELECT * FROM ordered WHERE k < 12) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v'
+-- a statement planned from its cached verdict has no arms of the variants
+SET sift.agg_verdict_cache = off;
+SELECT arm, used, slug, CASE WHEN arm = 'cte_inline' THEN round(normal_cost::numeric, 2) = round(plain_total(:'q')::numeric, 2) END AS against_plain
+FROM sift.explain_why(:'q') WHERE arm ~ 'inline' ORDER BY arm, scan_cost;
+RESET sift.agg_verdict_cache;
+DROP FUNCTION plain_total(text);
 -- no way out is promised when the shared plan pays the heap check too: a VACUUM would cut both
 SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');
 

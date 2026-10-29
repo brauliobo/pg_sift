@@ -37,6 +37,7 @@
 #include "optimizer/optimizer.h"
 #include "portability/instr_time.h"
 #include "parser/parse_agg.h"
+#include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/shm_mq.h"
@@ -54,6 +55,7 @@
 #include "utils/numeric.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
+#include "pgstat.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -400,6 +402,121 @@ child_key(EState *estate, ComboSt *cs, const SiftAggJoin *j, char **key)
 	return (uint32) (at - *key);
 }
 
+/*
+ * The relations a correlated child reads (the indexes and heaps of its scans), and what its runs read of each. A child run for each distinct input is a probe at a random
+ * place: when the runs have read a good share of a relation from the OS, and each takes long enough for the reads to be the device's, the whole relation is asked of the OS
+ * in block order, which the device serves in a sequential read (ahead of the probes, which then find the pages in its cache): 25,000 probes of an index of 14,600 pages read
+ * 15,000 of them, one at a time. A relation is asked once, when the runs read at least a sixteenth of its blocks, so at most 16 times the blocks the probes read.
+ */
+#define WARM_MAX_RELS	4
+#define WARM_MIN_RUNS	256			/* a power of two: the check runs every that many runs */
+#define WARM_MIN_READS	1024
+#define WARM_MIN_US		25			/* an average run shorter than this finds its pages in memory */
+#define WARM_SHARE		16
+#define WARM_MAX_BLOCKS	(1 << 20)
+
+bool		sift_child_warm_test = false;	/* sift.test_child_warm */
+
+typedef struct ChildWarm
+{
+	Relation	rel[WARM_MAX_RELS];
+	int64		base[WARM_MAX_RELS];	/* the blocks read of the relation (fetched, not found in the buffers) before the first run */
+	bool		asked[WARM_MAX_RELS];
+	int			nrel;
+	uint64		runs;
+	uint64		us;
+} ChildWarm;
+
+/* the blocks of the relation this backend has read from the OS so far (-1: the statistics are off) */
+static int64
+warm_reads(Relation rel)
+{
+	if (rel->pgstat_info == NULL)
+		return -1;
+	return rel->pgstat_info->counts.blocks_fetched - rel->pgstat_info->counts.blocks_hit;
+}
+
+static void
+warm_add(ChildWarm *w, Relation rel)
+{
+	if (rel == NULL || w->nrel == WARM_MAX_RELS)
+		return;
+	for (int i = 0; i < w->nrel; i++)
+		if (RelationGetRelid(w->rel[i]) == RelationGetRelid(rel))
+			return;
+	w->base[w->nrel] = warm_reads(rel);
+	w->rel[w->nrel++] = rel;
+}
+
+static bool
+warm_walk(PlanState *ps, void *context)
+{
+	ChildWarm  *w = context;
+
+	switch (nodeTag(ps))
+	{
+		case T_IndexScanState:
+			warm_add(w, ((IndexScanState *) ps)->iss_RelationDesc);
+			warm_add(w, ((ScanState *) ps)->ss_currentRelation);
+			break;
+		case T_IndexOnlyScanState:
+			warm_add(w, ((IndexOnlyScanState *) ps)->ioss_RelationDesc);
+			warm_add(w, ((ScanState *) ps)->ss_currentRelation);
+			break;
+		case T_BitmapIndexScanState:
+			warm_add(w, ((BitmapIndexScanState *) ps)->biss_RelationDesc);
+			break;
+		case T_BitmapHeapScanState:
+			warm_add(w, ((ScanState *) ps)->ss_currentRelation);
+			break;
+		default:
+			break;
+	}
+	return planstate_tree_walker(ps, warm_walk, context);
+}
+
+/* the child ran since t0: when its runs are slow and have read a sixteenth of a relation, ask the OS for the rest of it (the blocks counted in ex->child_warmed) */
+static void
+child_warm(AggExec *ex, ComboSt *cs, PlanState *child, instr_time t0)
+{
+	ChildWarm  *w = cs->warm;
+	instr_time	t1;
+	int64		reads = 0;
+	bool		test = sift_child_warm_test;	/* every run counts, whatever it read and however long it took */
+
+	if (w == NULL)
+	{
+		w = cs->warm = MemoryContextAllocZero(ex->cxt, sizeof(ChildWarm));
+		(void) warm_walk(child, w);
+	}
+	if (w->nrel == 0)
+		return;
+	INSTR_TIME_SET_CURRENT(t1);
+	INSTR_TIME_SUBTRACT(t1, t0);
+	w->us += INSTR_TIME_GET_MICROSEC(t1);
+	if (++w->runs % (test ? 4 : WARM_MIN_RUNS) != 0 || (!test && w->us < w->runs * WARM_MIN_US))
+		return;
+	for (int i = 0; i < w->nrel; i++)
+		reads += Max(warm_reads(w->rel[i]) - w->base[i], 0);
+	if (!test && reads < WARM_MIN_READS)
+		return;
+	for (int i = 0; i < w->nrel; i++)
+	{
+		BlockNumber nb;
+
+		if (w->asked[i] || (nb = RelationGetNumberOfBlocks(w->rel[i])) > WARM_MAX_BLOCKS || (!test && (warm_reads(w->rel[i]) - w->base[i]) * WARM_SHARE < nb))
+			continue;
+		w->asked[i] = true;
+		for (BlockNumber b = 0; b < nb; b++)
+		{
+			PrefetchBuffer(w->rel[i], MAIN_FORKNUM, b);
+			if ((b & 1023) == 0)
+				CHECK_FOR_INTERRUPTS();
+		}
+		ex->child_warmed += nb;
+	}
+}
+
 static int
 combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 {
@@ -487,6 +604,7 @@ combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 		MemoryContextSwitchTo(estate->es_query_cxt);
 	}
 	MemoryContextSwitchTo(caller);
+	child_warm(ex, cs, child, t0);
 	if (memo)
 	{
 		memo_put(memo, key, klen, nmt, mts);

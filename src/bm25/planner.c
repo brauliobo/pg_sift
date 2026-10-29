@@ -574,6 +574,8 @@ reads_score(Node *node, void *context)
 static PlannedStmt *
 sift_score_planner(SIFT_PLANNER_PARAMS)
 {
+	PlannedStmt *stmt;
+
 	if ((parse->commandType == CMD_UPDATE || parse->commandType == CMD_DELETE || parse->commandType == CMD_MERGE || parse->rowMarks != NIL) &&
 		sift_enable_scan && sift_catalog()->am != InvalidOid)
 	{
@@ -585,7 +587,17 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 			if (cte->ctematerialized == CTEMaterializeDefault && reads_score(cte->ctequery, NULL))
 				cte->ctematerialized = CTEMaterializeAlways;
 	}
-	return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
+	sift_agg_walks_forget();
+	PG_TRY();
+	{
+		stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
+	}
+	PG_FINALLY();
+	{
+		sift_agg_walks_forget();
+	}
+	PG_END_TRY();
+	return stmt;
 }
 
 void
