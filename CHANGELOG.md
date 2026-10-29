@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.6.2 - 2026-10-29
 
 - Fixed: pg_sift: a wrong result since 3.5.0: a `sift_col` index with `key_cut` (set, or chosen by `auto`) and a global order array (`order_array_columns`, `auto` gives one for dates and timestamps) lost rows through a Bitmap Index Scan and a plain Index Scan when the statement had a range or an equality on the array's column that matched at most 16,384 rows (`d BETWEEN a AND b`, `d >= x AND deleted_at IS NULL`, `d = x`, alone or with other predicates): the range handed the heap the addresses of its rows and named each row's unit by the superblock of its heap page, which a key-cut unit is not, so the units that hold the rows were left unread (35% to 55% of the rows missing in the tests, 25% in a 450,000-row table); `Custom Scan (SiftAgg)`, index-only scans, `ORDER BY .. LIMIT`, a range of more than 16,384 rows and indexes without `key_cut` or without the array were exact. The range now reads the units of a key-cut segment; no format change, no `REINDEX`: install the library and reconnect. Interim: `SET sift.enable_col_scan = off` (PostgreSQL 17 and 18). Test `col_gorder_keyed`
 
