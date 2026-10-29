@@ -825,6 +825,21 @@ window_aggref(WindowFunc *wf)
 }
 
 /*
+ * The output of a top-N that computes its window functions has them as the aggregates the scan computes (the same in the scan tuple and in the node's
+ * target list, which setrefs matches): ruleutils prints a WindowFunc only under a WindowAgg, and EXPLAIN (VERBOSE) of the node failed with "could not
+ * find window clause for winref".
+ */
+Node *
+topn_window_aggs(Node *n, void *context)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, WindowFunc))
+		return (Node *) window_aggref((WindowFunc *) n);
+	return expression_tree_mutator(n, topn_window_aggs, context);
+}
+
+/*
  * The window functions of the output are aggregates over the whole set of rows that pass (`count(*) OVER ()`, the page of a list and its total): the
  * scan computes them as it does an aggregate with no GROUP BY, from every row that passes, not only those of the heap, and the node gives the result
  * after the columns of the heap in every row. A window with PARTITION BY, ORDER BY or a frame that cuts the set, or a function that is not an
@@ -841,7 +856,7 @@ topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tlist)
 			return agg_refuse_f(TOPN_SHAPE, "%s() OVER is not an aggregate: only aggregates over the whole set are computed with the top-N", get_func_name(wf->winfnoid));
 		if (!compile_agg(c, window_aggref(wf), &s->agg[s->naggs], s->naggs))
 			return agg_refuse_f(AGGREGATE, "%s OVER () is not an aggregate the scan computes over its arguments and filter", get_func_name(wf->winfnoid));
-		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(wf), list_length(*scan_tlist) + 1, NULL, false));
+		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) window_aggref(wf), list_length(*scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
 	return true;

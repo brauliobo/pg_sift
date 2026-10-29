@@ -1515,7 +1515,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	SiftAggSpec *spec = sift_aggspec_unpack(pack);
 	GroupPathExtraData *gextra = NULL;
 
-	cs->scan.plan.targetlist = tlist;
+	cs->scan.plan.targetlist = root->parse->hasWindowFuncs ? (List *) topn_window_aggs((Node *) tlist, NULL) : tlist;
 	cs->scan.scanrelid = 0;
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = copyObject(scan_tlist);
