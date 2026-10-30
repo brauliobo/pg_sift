@@ -13,3 +13,4 @@ src/col/keycols/	src/col/keycols_cube.c
 src/col/keycols/	src/col/keycols_gorder.c	
 src/col/keycols/	src/col/keycols_point.c	
 src/col/keycols/	src/col/keycols_stats.c	
+src/agg/expr/	src/agg/plan_expr.c	

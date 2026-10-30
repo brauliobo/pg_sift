@@ -707,7 +707,7 @@ typedef struct SiftAggPaShape
  * rollup_dims): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
  */
 /*
- * Calendar expressions (plan_expr.c): sift_aggexpr_cal classifies a key or a test of a date, timestamp or timestamptz leaf (Param 0) and gives in mask the
+ * Calendar expressions (agg/expr/cal.c): sift_aggexpr_cal classifies a key or a test of a date, timestamp or timestamptz leaf (Param 0) and gives in mask the
  * grains of calendar cells (bit 1 << SIFT_CAL_*) that hold one value of it; SAC_NOT: it is no calendar expression, SAC_ZONE: it depends on the session time
  * zone, SAC_FINE: it changes within a day (hour, minute, the timestamp itself). sift_aggkey_cal does so for a SAK_LUT key that is evaluated for each day
  * of its rows.
