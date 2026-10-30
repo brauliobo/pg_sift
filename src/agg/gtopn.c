@@ -114,7 +114,10 @@ sift_down(const SiftAggSpec *s, GKey *h, int n, int i)
 	}
 }
 
-/* drops the groups of the list that rank after the n-th of the sort key (ties stay) */
+/*
+ * drops the groups of the list that rank after the n-th of the sort key (ties stay). The heap of the n best keys is the scan's (ex->gtop): a spilled scan returns
+ * its partitions one after the other, each holds whole groups, and a group that ranks after the n best of the partitions so far ranks after the n best of all.
+ */
 void
 groups_topn(AggExec *ex)
 {
@@ -128,26 +131,28 @@ groups_topn(AggExec *ex)
 	uint32		w = 0;
 	bool		droppable = false;
 
-	if (k <= 0 || s->gtopn_agg < 0 || n <= 2 * k)
+	if (k <= 0 || s->gtopn_agg < 0 || (n <= 2 * k && !spill_started(ex)))
 		return;
 	a = &s->agg[s->gtopn_agg];
 	acc = &t->acc[s->gtopn_agg];
-	heap = palloc(k * sizeof(GKey));
+	if (t->gtop == NULL)
+		t->gtop = MemoryContextAlloc(t->cxt, k * sizeof(GKey));
+	heap = t->gtop;
 	for (int i = 0; i < n; i++)
 	{
 		GKey		key;
 
 		if (!gkey(t, a, acc, t->glist[i], &key))
-		{
-			pfree(heap);
 			return;
-		}
-		if (i < k)
+		if (t->ngtop < k)
 		{
-			heap[i] = key;
-			if (i == k - 1)
+			heap[t->ngtop++] = key;
+			if (t->ngtop == k)
+			{
 				for (int j = k / 2 - 1; j >= 0; j--)
 					sift_down(s, heap, k, j);
+				droppable = true;	/* the keys before it were not compared with the n-th */
+			}
 		}
 		else if (worse(s, &heap[0], &key))
 		{
@@ -159,11 +164,8 @@ groups_topn(AggExec *ex)
 			droppable = true;
 	}
 	/* no key ranks after the n-th: the second pass would keep every group */
-	if (!droppable)
-	{
-		pfree(heap);
+	if (!droppable || t->ngtop < k)
 		return;
-	}
 	for (int i = 0; i < n; i++)
 	{
 		GKey		key;
@@ -172,7 +174,6 @@ groups_topn(AggExec *ex)
 		if (!worse(s, &key, &heap[0]))
 			t->glist[w++] = t->glist[i];
 	}
-	ex->n_gpruned = n - w;
+	ex->n_gpruned += n - w;
 	t->nglist = w;
-	pfree(heap);
 }

@@ -186,6 +186,33 @@ SELECT 'window' AS what, * FROM same('SELECT g, v, rank() OVER (ORDER BY v DESC 
  window | SiftAgg |          10 |              0
 (1 row)
 
+-- a group table that spilled returns its partitions one after the other: each holds whole groups, and those that rank after the n best of the partitions so far are dropped
+SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
+SELECT 'spill_sum' AS what, * FROM same('SELECT id, sum(n) v FROM gt GROUP BY id ORDER BY v DESC NULLS LAST, id LIMIT 10');
+   what    |  plan   | result_rows | vs_normal_plan 
+-----------+---------+-------------+----------------
+ spill_sum | dropped |          10 |              0
+(1 row)
+
+SELECT 'spill_sum_asc' AS what, * FROM same('SELECT id, sum(n) v FROM gt GROUP BY id ORDER BY v NULLS FIRST, id LIMIT 7 OFFSET 5');
+     what      |  plan   | result_rows | vs_normal_plan 
+---------------+---------+-------------+----------------
+ spill_sum_asc | dropped |           7 |              0
+(1 row)
+
+SELECT 'spill_count' AS what, * FROM same_keys('SELECT id, count(*) v FROM gt GROUP BY id ORDER BY v DESC LIMIT 10', 'v');
+    what     |  plan   | result_rows | vs_normal_plan 
+-------------+---------+-------------+----------------
+ spill_count | SiftAgg |          10 |              0
+(1 row)
+
+SELECT 'spill_avg' AS what, * FROM same_keys('SELECT id, avg(f) v FROM gt WHERE f < ''Infinity'' GROUP BY id ORDER BY v DESC, id LIMIT 10', 'v');
+   what    |  plan   | result_rows | vs_normal_plan 
+-----------+---------+-------------+----------------
+ spill_avg | dropped |          10 |              0
+(1 row)
+
+RESET work_mem; RESET hash_mem_multiplier;
 -- parallel workers merge their groups before the top-N
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 2;
 SELECT * FROM all_same();

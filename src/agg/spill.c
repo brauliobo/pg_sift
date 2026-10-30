@@ -376,6 +376,8 @@ spill_more(AggExec *ex)
 	dist_finish_all(ex);
 	dist_end_all(ex);
 	list_groups(ex);
+	if (ex->spec->gtopn_k > 0)
+		groups_topn(ex);
 	ex->gpos = 0;
 	ex->spill->groups += ex->nglist;
 	ex->n_groups = ex->spill->groups;

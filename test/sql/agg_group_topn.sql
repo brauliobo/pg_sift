@@ -104,6 +104,14 @@ SELECT 'with_ties' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt GROUP
 SELECT 'all_tied' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt WHERE id <= 30000 GROUP BY g ORDER BY v DESC LIMIT 10', 'v');
 SELECT 'window' AS what, * FROM same('SELECT g, v, rank() OVER (ORDER BY v DESC NULLS LAST, g) r FROM (SELECT g, sum(n) v FROM gt GROUP BY g) s ORDER BY r LIMIT 10');
 
+-- a group table that spilled returns its partitions one after the other: each holds whole groups, and those that rank after the n best of the partitions so far are dropped
+SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
+SELECT 'spill_sum' AS what, * FROM same('SELECT id, sum(n) v FROM gt GROUP BY id ORDER BY v DESC NULLS LAST, id LIMIT 10');
+SELECT 'spill_sum_asc' AS what, * FROM same('SELECT id, sum(n) v FROM gt GROUP BY id ORDER BY v NULLS FIRST, id LIMIT 7 OFFSET 5');
+SELECT 'spill_count' AS what, * FROM same_keys('SELECT id, count(*) v FROM gt GROUP BY id ORDER BY v DESC LIMIT 10', 'v');
+SELECT 'spill_avg' AS what, * FROM same_keys('SELECT id, avg(f) v FROM gt WHERE f < ''Infinity'' GROUP BY id ORDER BY v DESC, id LIMIT 10', 'v');
+RESET work_mem; RESET hash_mem_multiplier;
+
 -- parallel workers merge their groups before the top-N
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 2;
 SELECT * FROM all_same();

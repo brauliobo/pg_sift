@@ -140,6 +140,8 @@ typedef struct AggExec
 	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
 	uint32		n_gpruned;		/* groups dropped by the top-N of the aggregate (agg/gtopn.c) */
+	struct GKey *gtop;			/* the n best sort keys of the groups so far (a spilled scan returns its partitions one by one) */
+	int			ngtop;
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
 	uint8	   *fwin;			/* DISTINCT ON: per tuple of the chunk, its row became the best of its group (decided by the first of the aggregates, which the others follow) */
 	AggState   *gas;			/* the AggState their functions are called with */
