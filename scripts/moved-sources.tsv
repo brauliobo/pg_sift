@@ -17,3 +17,4 @@ src/agg/expr/	src/agg/plan_expr.c
 src/agg/plan/	src/agg/plan.c	
 src/agg/order/	src/agg/plan_order.c	
 src/agg/two/	src/agg/plan_two.c	
+src/col/wbuf/	src/col/wbuf.c	wbuf_

@@ -1,6 +1,6 @@
 /*
  * core/lane.h - the lane chains of a write buffer, shared by the doc records of bm25/wbuf.c and the row records
- * of col/wbuf.c: segment creation and sealing, the tail lock, page growth, page walks. What a record looks like is the caller's.
+ * of col/wbuf/wbuf.c: segment creation and sealing, the tail lock, page growth, page walks. What a record looks like is the caller's.
  *
  * The data pages of both start with SiftLanePageHead, at the offsets of SiftWbufPageHeaderData, so the store's walkers
  * (sift_store_referenced_blocks, sift_store_orphans, sift_store_verify) follow `next` of either unchanged. The caller's page header

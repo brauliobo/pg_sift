@@ -90,7 +90,7 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/col/seg_maint.c|per
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/seg_write/seg_write.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/col/shred_spec.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/col/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/col/wbuf/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-integer-division|src/table/src.c|result of integer division used in a floating point context; possible loss of precision

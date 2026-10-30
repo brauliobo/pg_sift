@@ -1,5 +1,5 @@
 /*
- * col/wbuf_test.c - test-only SQL functions sift._test_col_wbuf_* for the write buffer lanes of the column engine (col/wbuf.c),
+ * col/wbuf_test.c - test-only SQL functions sift._test_col_wbuf_* for the write buffer lanes of the column engine (col/wbuf/wbuf.c),
  * compiled only with SIFT_TESTING and registered by pg_sift_test. They run on an index of the BM25 access method created on an empty
  * table, which has the metapage, directory and free list the store layer needs and no segments; sift._test_col_wbuf_prepare gives it
  * the schema hash of the test schema, then rows are appended, sealed, read back, deleted from and verified without the index AM.

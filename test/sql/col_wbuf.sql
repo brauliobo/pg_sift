@@ -1,4 +1,4 @@
--- The write buffer lanes of the column engine (src/col/wbuf.c): row records appended to the lanes of the active segment, sealing, the
+-- The write buffer lanes of the column engine (src/col/wbuf/wbuf.c): row records appended to the lanes of the active segment, sealing, the
 -- reader, the sorted per-superblock batches, VACUUM's flags, torn rows, verification. The index is a sift_col index on an empty table
 -- (a valid metapage and directory for the store layer); the test functions give it the schema hash of an orders table with line items.
 -- Every row is checked in C against a generator, down to the bits of its floats and the bytes of its strings.
