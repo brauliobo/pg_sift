@@ -20,12 +20,12 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `group_nospill_factor` | estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least) | 32 | times hash memory | normal plan (slug group_memory, the detail names the groups and the limit) | `work_mem, hash_mem_multiplier` | `agg/plan/finish.c` `GROUP_NOSPILL_FACTOR` | yes |
 | `group_spill_parts` | partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8) | 128 | partitions | a partition that does not fit is partitioned again | `work_mem, hash_mem_multiplier` | `agg/spill.c` `SPILL_MAX_PARTS` | yes |
 | `group_spill_depth` | levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time) | 8 | levels | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/spill.c` `SPILL_MAX_DEPTH` | yes |
-| `joins` | lookup-joined tables per scan | 32 | tables | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` | yes |
-| `combos` | value combinations per scan | 128 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
+| `joins` | lookup-joined tables per scan | 32 | tables | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JOINS` | yes |
+| `combos` | value combinations per scan | 128 | combinations | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_COMBOS` | yes |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo/int.h` `COMBO_MAX_ENTRIES` | yes |
-| `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
-| `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` | yes |
-| `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |
+| `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JKEYS` |  |
+| `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JCOLS` | yes |
+| `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JIDX` |  |
 | `lookup_kb` | estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine | 262,144 (256 MiB) | kB | normal plan (slug join_child, spine_rows) | `sift.agg_lookup_max_kb` | `agg/plan/finish.c` |  |
 | `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
 | `lookup_shared_slots` | lookup tables shared through DSM at one time | 64 | tables | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/lookshm.c` `LOOKSHM_SLOTS` |  |
@@ -33,21 +33,21 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 8 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
 | `topn_code_entries` | entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time) | 1,048,576 | entries | the rows of its units are compared with the bar as bytes, as before the order code |  | `agg/topn/int.h` `ORD_MAX_ENTRIES` | yes |
 | `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/order/int.h` `FIRST_MAX_KEYS` |  |
-| `first_order_cols` | ORDER BY columns of a first-row lookup child | 8 | columns | the sub-select runs once per key, as a lookup subquery |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` | yes |
-| `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
-| `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |
+| `first_order_cols` | ORDER BY columns of a first-row lookup child | 8 | columns | the sub-select runs once per key, as a lookup subquery |  | `agg/spec/join.h` `SIFT_AGG_MAX_FORD` | yes |
+| `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec/join.h` `SIFT_AGG_MAX_FOUT` |  |
+| `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_KEYS` | yes |
 | `num_in_list` | constants of a numeric IN list compared one by one; a longer list is tested as a hash set | 64 | constants | a hash set of the scaled values |  | `agg/plan_pred.c` `AGG_MAX_NUM_IN` | yes |
 | `bits_set_values` | members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table; a shorter list is a hash table | 1,024 | values | a hash table of the values |  | `agg/pred_in.c` `MIN_BITS_VALUES` | yes |
 | `dist_narrow_words` | words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off | 8 | words | the set is a bitmap, a directory and chunks of 4096 bits a group |  | `agg/dist_int.h` `DIST_NARROW_WORDS` | yes |
-| `arms` | UNION ALL arms of a fused or two-level scan | 16 | arms | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` | yes |
-| `virtual_leaves` | virtual leaves (expressions) per scan | 16 | leaves | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` | yes |
+| `arms` | UNION ALL arms of a fused or two-level scan | 16 | arms | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_ARMS` | yes |
+| `virtual_leaves` | virtual leaves (expressions) per scan | 16 | leaves | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_VLEAVES` | yes |
 | `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc/meta.h` `SIFT_COLSRC_MAX_LEAVES` |  |
 | `scan_filters` | filters of a scan that skip units | 64 | filters | the others do not skip units |  | `agg/colsrc/exec.h` `SIFT_COLSRC_MAX_FILTERS` |  |
-| `wide_conjuncts` | conjuncts on wide leaves per scan | 8 | conjuncts | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_WIDE` |  |
-| `generic_leaves` | leaves one argument of a generic aggregate reads | 4 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GLEAVES` |  |
-| `generic_args` | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | 100 | arguments | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GARGS` |  |
-| `float_ops` | operations of one float8 aggregate argument | 16 | operations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VX` |  |
-| `combo_leaves` | leaves one value combination reads | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_CLEAVES` |  |
+| `wide_conjuncts` | conjuncts on wide leaves per scan | 8 | conjuncts | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_WIDE` |  |
+| `generic_leaves` | leaves one argument of a generic aggregate reads | 4 | leaves | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_GLEAVES` |  |
+| `generic_args` | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | 100 | arguments | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_GARGS` |  |
+| `float_ops` | operations of one float8 aggregate argument | 16 | operations | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_VX` |  |
+| `combo_leaves` | leaves one value combination reads | 8 | leaves | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_CLEAVES` |  |
 | `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` | yes |
 | `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/chunkfilter.h` `COL_MAX_STR_PRUNE` |  |
 | `filter_set` | values of an IN set sent as a zone filter | 8 | values | a larger set is not used as a zone filter |  | `agg/init_filter.c` `FILTER_MAX_SET` |  |

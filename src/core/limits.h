@@ -40,17 +40,17 @@
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill.c", 8, "levels", \
 	  "levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time)", "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 1) \
-	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec.h", SIFT_AGG_MAX_JOINS, "tables", \
+	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec/expr.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan (slug shape_width)", "-", 1) \
-	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec.h", SIFT_AGG_MAX_COMBOS, "combinations", \
+	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec/expr.h", SIFT_AGG_MAX_COMBOS, "combinations", \
 	  "value combinations per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combo_entries, "COMBO_MAX_ENTRIES", "agg/combo/int.h", 16777216, "entries", \
 	  "distinct input tuples of one value-combination cache", "the caches start again (re-evaluates the values they held)", "-", 1) \
-	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec.h", SIFT_AGG_MAX_JKEYS, "columns", \
+	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec/expr.h", SIFT_AGG_MAX_JKEYS, "columns", \
 	  "equality columns of a lookup join", "normal plan", "-", 0) \
-	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec.h", SIFT_AGG_MAX_JCOLS, "columns", \
+	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec/expr.h", SIFT_AGG_MAX_JCOLS, "columns", \
 	  "columns of the joined table that expressions read", "normal plan (slug shape_width)", "-", 1) \
-	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec.h", SIFT_AGG_MAX_JIDX, "equalities", \
+	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec/expr.h", SIFT_AGG_MAX_JIDX, "equalities", \
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
 	X(lookup_kb, "-", "agg/plan/finish.c", 262144, "kB", \
 	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
@@ -66,11 +66,11 @@
 	  "entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time)", "the rows of its units are compared with the bar as bytes, as before the order code", "-", 1) \
 	X(first_keys, "FIRST_MAX_KEYS", "agg/order/int.h", 4, "columns", \
 	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
-	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec.h", SIFT_AGG_MAX_FORD, "columns", \
+	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec/join.h", SIFT_AGG_MAX_FORD, "columns", \
 	  "ORDER BY columns of a first-row lookup child", "the sub-select runs once per key, as a lookup subquery", "-", 1) \
-	X(first_out_cols, "SIFT_AGG_MAX_FOUT", "agg/spec.h", SIFT_AGG_MAX_FOUT, "columns", \
+	X(first_out_cols, "SIFT_AGG_MAX_FOUT", "agg/spec/join.h", SIFT_AGG_MAX_FOUT, "columns", \
 	  "output columns of a first-row lookup child that map to the table", "normal plan", "-", 0) \
-	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec.h", SIFT_AGG_MAX_KEYS, "keys", \
+	X(group_keys, "SIFT_AGG_MAX_KEYS", "agg/spec/expr.h", SIFT_AGG_MAX_KEYS, "keys", \
 	  "group keys (grouping sets count with their keys)", "normal plan (slug too_many_keys)", "-", 1) \
 	X(num_in_list, "AGG_MAX_NUM_IN", "agg/plan_pred.c", 64, "constants", \
 	  "constants of a numeric IN list compared one by one; a longer list is tested as a hash set", "a hash set of the scaled values", "-", 1) \
@@ -78,23 +78,23 @@
 	  "members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table; a shorter list is a hash table", "a hash table of the values", "-", 1) \
 	X(dist_narrow_words, "DIST_NARROW_WORDS", "agg/dist_int.h", 8, "words", \
 	  "words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off", "the set is a bitmap, a directory and chunks of 4096 bits a group", "-", 1) \
-	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec.h", SIFT_AGG_MAX_ARMS, "arms", \
+	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec/expr.h", SIFT_AGG_MAX_ARMS, "arms", \
 	  "UNION ALL arms of a fused or two-level scan", "normal plan (slug shape_width)", "-", 1) \
-	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec.h", SIFT_AGG_MAX_VLEAVES, "leaves", \
+	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec/expr.h", SIFT_AGG_MAX_VLEAVES, "leaves", \
 	  "virtual leaves (expressions) per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "agg/colsrc/meta.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
 	  "leaves of the layout of one scan", "normal plan", "-", 0) \
 	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "agg/colsrc/exec.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
 	  "filters of a scan that skip units", "the others do not skip units", "-", 0) \
-	X(wide_conjuncts, "SIFT_AGG_MAX_WIDE", "agg/spec.h", SIFT_AGG_MAX_WIDE, "conjuncts", \
+	X(wide_conjuncts, "SIFT_AGG_MAX_WIDE", "agg/spec/expr.h", SIFT_AGG_MAX_WIDE, "conjuncts", \
 	  "conjuncts on wide leaves per scan", "normal plan", "-", 0) \
-	X(generic_leaves, "SIFT_AGG_MAX_GLEAVES", "agg/spec.h", SIFT_AGG_MAX_GLEAVES, "leaves", \
+	X(generic_leaves, "SIFT_AGG_MAX_GLEAVES", "agg/spec/expr.h", SIFT_AGG_MAX_GLEAVES, "leaves", \
 	  "leaves one argument of a generic aggregate reads", "normal plan", "-", 0) \
-	X(generic_args, "SIFT_AGG_MAX_GARGS", "agg/spec.h", SIFT_AGG_MAX_GARGS, "arguments", \
+	X(generic_args, "SIFT_AGG_MAX_GARGS", "agg/spec/expr.h", SIFT_AGG_MAX_GARGS, "arguments", \
 	  "arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS)", "normal plan", "-", 0) \
-	X(float_ops, "SIFT_AGG_MAX_VX", "agg/spec.h", SIFT_AGG_MAX_VX, "operations", \
+	X(float_ops, "SIFT_AGG_MAX_VX", "agg/spec/expr.h", SIFT_AGG_MAX_VX, "operations", \
 	  "operations of one float8 aggregate argument", "normal plan", "-", 0) \
-	X(combo_leaves, "SIFT_AGG_MAX_CLEAVES", "agg/spec.h", SIFT_AGG_MAX_CLEAVES, "leaves", \
+	X(combo_leaves, "SIFT_AGG_MAX_CLEAVES", "agg/spec/expr.h", SIFT_AGG_MAX_CLEAVES, "leaves", \
 	  "leaves one value combination reads", "normal plan", "-", 0) \
 	X(rows_shared, "SIFT_ROWS_MAX_SHARED", "agg/rows.h", SIFT_ROWS_MAX_SHARED, "aggregates", \
 	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan (slug rows_shape)", "-", 1) \
