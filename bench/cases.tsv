@@ -222,3 +222,4 @@ unit_tab_first	the chunk table of a key-cut unit comes before its directory	orde
 point_packed	is a packed table of entries by bucket	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no
 array_elements_no_stats	size a table that was never vacuumed or analyzed from its pages	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 union_arms_window_order	emit their groups in the order of the parent, which the parent merges	events	-	Merge Append	native	-	ms	faster33	no
+per_event_arms	the cells of the arms of a two-level grouping	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
