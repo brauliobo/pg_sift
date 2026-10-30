@@ -143,9 +143,11 @@ drop_level(Query *q)
 		return false;
 	foreach_node(CommonTableExpr, cte, q->cteList)
 		changed |= drop_level(castNode(Query, cte->ctequery));
-	foreach_node(RangeTblEntry, rte, q->rtable)
-		if (rte->rtekind == RTE_SUBQUERY && !rte->security_barrier)
-			changed |= drop_level(rte->subquery);
+	/* the arms of a set operation stay alike: the two-level scan joins arms of one shape */
+	if (q->setOperations == NULL)
+		foreach_node(RangeTblEntry, rte, q->rtable)
+			if (rte->rtekind == RTE_SUBQUERY && !rte->security_barrier)
+				changed |= drop_level(rte->subquery);
 	if (q->hasSubLinks)
 		query_tree_walker(q, drop_sublinks, &changed, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
 	q->jointree = (FromExpr *) drop_in(q, (Node *) q->jointree, NULL, &changed);

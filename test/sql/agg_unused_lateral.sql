@@ -1,5 +1,5 @@
 -- A LEFT JOIN LATERAL (.. LIMIT 1) whose columns nothing reads keeps every row of its left side once, so it is not run (agg/flat/unused.c). The shapes where it must stay:
--- a column read, LIMIT 2 (a row more), an INNER join (it drops rows), WITH TIES, a volatile function, a read through a later lateral sub-select or a join alias, a
+-- a column read, LIMIT 2 (a row more), an INNER join (it drops rows), WITH TIES, a volatile function, a read through a later lateral sub-select or a join alias, in a HAVING, window, ORDER BY, join condition or sub-select of the select list, an arm of a set operation (the arms stay alike for the two-level scan), a
 -- DELETE or UPDATE, and the body of a security_barrier view. The fixture has NULL join keys, keys with no row in the map, keys with two rows (duplicates) and an ORDER BY
 -- inside the LIMIT 1; every statement answers as the one planned without the extension's rewrite (sift.enable_agg off).
 CREATE EXTENSION pg_sift;
@@ -57,6 +57,13 @@ INSERT INTO ul_case VALUES
  ('null_key_read', $q$SELECT f.kind IS NULL AS null_key, count(x.label) AS labelled, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY 1$q$),
  ('plain_view',    $q$SELECT dim_a_id, count(*) AS n FROM ul_plain_view GROUP BY dim_a_id$q$),
  ('barrier_view',  $q$SELECT dim_a_id, count(*) AS n FROM ul_barrier_view GROUP BY dim_a_id$q$),
+ ('read_having',   $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY f.dim_a_id HAVING count(x.label) < 1000$q$),
+ ('read_window',   $q$SELECT f.dim_a_id, count(*) OVER (PARTITION BY x.label) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true WHERE f.id <= 300$q$),
+ ('read_sublink',  $q$SELECT f.id, (SELECT length(x.label)) AS len FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true WHERE f.id <= 300$q$),
+ ('read_order',    $q$SELECT f.id FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true WHERE f.id <= 300 ORDER BY x.label, f.id$q$),
+ ('read_join_on',  $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true JOIN ul_fact g ON g.id = f.id AND x.label IS NOT NULL GROUP BY f.dim_a_id$q$),
+ ('union_arms',    $q$SELECT n FROM (SELECT count(x.label) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true UNION ALL SELECT count(*) FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) t$q$),
+ ('union_unread',  $q$SELECT n FROM (SELECT count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true UNION ALL SELECT count(*) FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) t$q$),
  ('volatile',      $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind AND random() < 2 LIMIT 1) x ON true GROUP BY f.dim_a_id$q$);
 
 SELECT name, ul_lines(q) = 0 AS dropped FROM ul_case ORDER BY name;
