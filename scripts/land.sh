@@ -329,8 +329,9 @@ record_landing() {
 	[[ -s $DIR/landings.tsv ]] || printf '#utc\tpr\trc\twall_s\tcpu_s\tattempts\trounds\tdocs_s\tlint_s\tchecks_wait_s\tkind\tmode\n' >>"$DIR/landings.tsv"
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr" "$rc" "$(( $(date +%s) - t0 ))" "$cpu" "${att:-1}" "$rounds" "$docs" "$lint" "$wait" "$kind" "$mode" >>"$DIR/landings.tsv"
 }
-# children_cpu: user + system seconds of the children this shell has waited for (the worker and everything below it), from the `times` builtin
-children_cpu() { times | awk 'NR == 2 { for (i = 1; i <= 2; i++) { split($i, a, /[ms]/); t += a[1] * 60 + a[2] } printf "%.1f", t }'; }
+# children_cpu: user + system seconds of the children this shell has waited for (the worker and everything below it): cutime and cstime of the stat file of this shell, which a
+# `times | awk` cannot read (a pipeline is a subshell and has no children) and a comma locale prints with a comma
+children_cpu() { sed 's/^.*) //' "/proc/$$/stat" | awk -v hz="$(getconf CLK_TCK)" '{ printf "%.1f", ($14 + $15) / hz }'; }
 # stats: per day, the landings by exit code, and the median wall and CPU by kind (the exit 0 ones)
 stats() {
 	local f=$DIR/landings.tsv

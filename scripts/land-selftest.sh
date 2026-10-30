@@ -233,7 +233,7 @@ J H "$N_OK,$(ck lint IN_PROGRESS "" "")" >"$T/gh.json"; rm -f "$T/gh.n"
 
 # 11. no process-table matching, every sleep says what it waits for, the worker runs without the lock descriptor
 launch=("$LAND" "$HERE/land-union.py")
-grep -nE '(^|[^a-z])(ps -|ps aux|pgrep|pkill|pidof|killall)|kill -0|/proc/' "${launch[@]}" && fail "land.sh matches the process table"
+grep -nE '(^|[^a-z])(ps -|ps aux|pgrep|pkill|pidof|killall)|kill -0|/proc/' "${launch[@]}" | grep -v '/proc/\$\$/stat' | grep . && fail "land.sh matches the process table"   # its own cutime and cstime are no match
 grep -nE '^[^#]*\bsleep\b' "${launch[@]}" | grep -v '# wait: ' && fail "a sleep in land.sh does not say what it waits for"
 grep -q '9>&-' "$LAND" || fail "the worker is not started without the lock descriptor"
 grep -qE '^\s*merge_locked gh pr merge' "$LAND" || fail "the merge call is not made under merge_locked"
@@ -270,6 +270,8 @@ settle() { rm -f "$T/gh14.n"; ( . "$LAND"; PATH=$T/fakebin:$PATH; repo=x; LAND_P
 # 15. landings.tsv: a line per landing with its exit code, and --stats counts them per day
 n=$(grep -vc '^#' "$T/state/landings.tsv"); r4=$(awk -F'\t' '$2 == 6 && $3 == 4' "$T/state/landings.tsv" | wc -l)
 (( n >= 5 && r4 == 1 )) || fail "landings.tsv does not hold a line per landing with its exit code ($n lines, $r4 for request 6 with exit 4)"
+cpu=$(LC_ALL=pt_BR.UTF-8 bash -c '. "$1"; python3 -c "sum(range(4 * 10**7))"; children_cpu' _ "$LAND")
+awk -v c="$cpu" 'BEGIN { exit !(c > 0) }' || fail "children_cpu reads $cpu for a child that used the CPU (the CPU of the waited children)"
 "$LAND" --stats | grep -q "rc4=1" || fail "--stats does not count the exit codes per day: $("$LAND" --stats)"
 
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
