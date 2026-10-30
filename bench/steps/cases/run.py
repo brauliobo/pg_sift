@@ -115,6 +115,13 @@ def cmd_run(args):
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results, load_before)
+    if args.budget:
+        from . import budget
+        if args.budget_update:
+            budget.update(args.budget, results, '# case<TAB>ceiling: millions of user instructions of one statement of the sift lane at 300,000 orders, the recorded count + 15% or 0.5 (bench/bench cases --minstr --rows 300000 --budget FILE --budget-update)\n')
+        lines, ok = budget.check(args.budget, results)
+        print('\n'.join(lines))
+        failed += [] if ok else ['a case is over its instruction ceiling (%s)' % args.budget]
     if args.docs and not failed:   # the blocks that quote bench/results/cases.tsv and cases-scale.tsv
         import cases_render
         cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'BENCHMARKS.md'))

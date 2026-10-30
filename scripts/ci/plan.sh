@@ -63,6 +63,8 @@ if [[ $MODE == full ]]; then
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# the instructions to plan the 99 shapes (30000 events: planning does not depend on the rows) against their ceilings (test/plan/planning.tsv); skipped without perf
 	job plan-gate-planning plan-gate-planning 1 "$S/plangate.sh" --planning --rows 30000
+	# the instructions of 20 statement classes (the reads, the writes) at 300000 orders against their ceilings (test/plan/execution.tsv); skipped without perf
+	once_on_18 && job exec-budget exec-budget 1 "$S/exec-budget.sh"   # recorded on PostgreSQL 18: a count differs a little on another major
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)

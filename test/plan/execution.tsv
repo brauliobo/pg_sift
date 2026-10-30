@@ -1,0 +1,20 @@
+# case<TAB>ceiling: millions of user instructions of one statement of the sift lane at 300,000 orders, the recorded count + 15% or 0.5 (bench/bench cases --minstr --rows 300000 --budget FILE --budget-update)
+bulk_copy_wal	6191.6
+calendar_month	3.8
+flat_lateral_key_lookup	424.9
+grouping_sets_report	147.1
+groupset_window_order	6520.1
+key_lookup_units	1.6
+keycut_customer_agg	1.9
+keys_in_few_256	4.6
+keys_in_wide_50k	418.9
+keyset_page	1.0
+lookup_key_list_twice	6.1
+oltp_insert_index	926.5
+oltp_update_index	1561.9
+point_in_100	1.6
+point_in_1000	9.5
+softdel_deleted_list	0.9
+tbl_update_keys	1533.7
+topn_page_totals	28.2
+window_json_report	79.5

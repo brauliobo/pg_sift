@@ -29,6 +29,8 @@ def main(doc):
     ap.add_argument('--io', choices=['cold', 'warm', 'off'], default='cold', help='the IO rows of every lane (steps/iolib.py): cold empties the case\'s tables from the shared buffers and the OS cache first (io_cold_*, then io_warm_*), warm measures the warm run only, '
                     'off writes no io_* rows. A run of a case replaces all of its rows in bench/results, so --io off (or warm) drops the io_cold_* rows the file had')
     ap.add_argument('--minstr', action='store_true', help='the user instructions of every case\'s statement (minstr rows), not only of the cases whose registry metric names them: the ledger and the instruction ceilings')
+    ap.add_argument('--budget', help='fail when a case of this file (test/plan/execution.tsv) ran above its ceiling of millions of instructions (needs --minstr)')
+    ap.add_argument('--budget-update', action='store_true', help='rewrite the ceilings of the cases that ran in the --budget file: the count with 15%% over it')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')
