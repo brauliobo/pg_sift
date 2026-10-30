@@ -52,7 +52,7 @@ while (my $f = <STDIN>) {
 	while ($head =~ m{\bsrc/($areas)/([A-Za-z0-9_.]+(?:/[A-Za-z0-9_.]+)?)}g) {
 		my ($a, $n, $pos) = ($1, $2, $-[0]);
 		next unless $n =~ /\.(?:c|h|comp|py)$/ && $n !~ /\.$/;
-		next if $f =~ m{^scripts/focus(?:-pins)?\.tsv$} && $moved{"src/$a/$n"};	# the rows made for a file that was split into a folder (scripts/moved-sources.tsv)
+		next if $f =~ m{^scripts/(?:focus(?:-pins)?\.tsv|moved-sources\.tsv)$} && $moved{"src/$a/$n"};	# the rows made for a file that was split into a folder (scripts/moved-sources.tsv)
 		report($f, $head, $pos, "no such file src/$a/$n") unless -e "src/$a/$n";
 	}
 	# the old name of a file of a renamed area, written with its folder (bm25/sift_x.c), with src/ too, or alone (sift_x.c)
