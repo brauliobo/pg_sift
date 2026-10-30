@@ -66,6 +66,10 @@ typedef struct SiftScanState
 	ExprState  *cuts;				/* cutoffs of the score, over the scan tuple of a ranked row */
 	Relation	heap;
 	bool		heap_opened;
+	int64		late_rows;			/* > 0: the plan asked the ranker for the hits that this many rows take through the quals (SIFT_PRIV_LATE) */
+	int64		nread;				/* late quals: hits read from the ranker, and those that passed */
+	int64		nkept;
+	bool		late;				/* a ranked scan checks the quals on the rows it hands out, not on every candidate */
 	bool		secure;				/* a policy or security barrier view hides rows: no counter of the index in EXPLAIN ANALYZE */
 	Relation	index;
 	IndexInfo  *iinfo;

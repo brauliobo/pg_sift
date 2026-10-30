@@ -56,6 +56,7 @@ split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, S
 {
 	c->index = ii;
 	c->queries = c->residual = NIL;
+	c->late_k = c->late_rows = 0;
 	if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 		return false;
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
@@ -347,7 +348,8 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	RelOptInfo *rel = ps->rel;
 	ScanCand	c;
 	ScanEst		est;
-	int64		k = cuts_from_above(ps->cuts, rti) ? 0 : scan_limit(root, ps->ranked);
+	int64		k = cuts_from_above(ps->cuts, rti) ? 0 : scan_limit(root, ps->ranked),
+				k0 = k;
 	SiftScanMode mode = ps->only_best ? SIFT_MODE_RANKED : SIFT_MODE_UNORDERED;
 	List	   *pathkeys = ps->ranked ? list_make1(ps->pk) : NIL;
 	/*
@@ -361,13 +363,24 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	if (!split_quals(root, rel, ii, ps->only_best, &c))
 		return;
 	if (mode == SIFT_MODE_RANKED)
-		k = joined_limit(root, rel, k);
+		k = joined_limit(root, rel, k, 1.0);
 	if (mode == SIFT_MODE_RANKED && !ps->filter_looked)
 	{
 		ps->filter = sift_filter_bitmap_path(root, rel);
 		ps->filter_looked = true;
 	}
 	scan_est(root, rel, &c, mode, k, ps->filter, &est);
+	if (mode == SIFT_MODE_RANKED && late_quals(root, rel, &c, &est.sc, k0))
+	{
+		int64		asked = joined_limit(root, rel, k0, est.sc.pass);
+
+		/* asked for a quarter of the matches or more, the search is the same one */
+		if (asked > k && est.sc.docs > 4 * asked)
+		{
+			c.late_k = asked;
+			c.late_rows = k0;
+		}
+	}
 	if (mode == SIFT_MODE_UNORDERED && any_list_too_long(root, &c, &est.sc))
 		return;
 	if (ps->keyed)

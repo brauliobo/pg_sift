@@ -129,7 +129,7 @@ scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 
 	if (!sift_vis_fetch(&ss->vis, tid, ss->heapslot))
 		return false;
-	if (ss->quals)
+	if (ss->quals && !ss->late)
 	{
 		ResetExprContext(econtext);
 		econtext->ecxt_scantuple = fill_scan_slot(ss, 0);
@@ -309,6 +309,8 @@ start_scan(SiftScanState *ss)
 
 	ss->started = true;
 	ss->nsearches++;
+	ss->late = ss->mode == SIFT_MODE_RANKED && ss->nkeys == 0 && ss->quals != NULL && ss->late_rows > 0 && !ss->secure && !ss->par.sh;
+	ss->nread = ss->nkept = 0;
 	if (ss->bitmap && !gated(ss))
 		build_filter(ss);
 	old = MemoryContextSwitchTo(ss->cxt);
@@ -471,15 +473,23 @@ ranked_next(SiftScanState *ss)
 	float4		score;
 	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
 
-	while (sift_rank_next(ss->rank, &tid, &score))
-		if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
+	for (;;)
+	{
+		if (ss->late)
+			sift_rank_feedback(ss->rank, ss->nread, ss->nkept, ss->late_rows - ss->nkept);
+		if (!sift_rank_next(ss->rank, &tid, &score))
+			return NULL;
+		ss->nread++;
+		if (!sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
+			continue;
+		ResetExprContext(econtext);
+		econtext->ecxt_scantuple = fill_scan_slot(ss, score);
+		if (ExecQual(ss->cuts, econtext) && (!ss->late || ExecQual(ss->quals, econtext)))
 		{
-			ResetExprContext(econtext);
-			econtext->ecxt_scantuple = fill_scan_slot(ss, score);
-			if (ExecQual(ss->cuts, econtext))
-				return econtext->ecxt_scantuple;
+			ss->nkept++;
+			return econtext->ecxt_scantuple;
 		}
-	return NULL;
+	}
 }
 
 static TupleTableSlot *
@@ -577,6 +587,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->indexoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_INDEX_OID))->constvalue);
 	ss->mode = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_MODE))->constvalue);
 	ss->k = DatumGetInt64(((Const *) list_nth(cs->custom_private, SIFT_PRIV_K))->constvalue);
+	ss->late_rows = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_LATE))->constvalue);
 	ss->heapoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_HEAP_OID))->constvalue);
 	ss->gate = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE))->constvalue);
 	ss->gate_to = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE_TO))->constvalue);

@@ -326,16 +326,16 @@ scan_limit(PlannerInfo *root, bool ranked)
 }
 
 /*
- * The rows a ranked scan is asked for so that k of them reach the query through its joins: the other relations
- * of an inner join keep the fraction their own restrictions leave (a key join passes that fraction of the scan's
- * rows), and the rows asked for carry three standard deviations of the binomial so that the search seldom comes
- * up short. Only a hint: a ranked scan that is drained past it searches again, scoring every block again, which
- * costs about as much as the search itself.
+ * The rows a ranked scan is asked for so that k of them reach the query: the scan's own quals the index does not
+ * answer keep the fraction `kept` of its rows, and the other relations of an inner join keep the fraction their own
+ * restrictions leave (a key join passes that fraction of the scan's rows). The rows asked for carry three standard
+ * deviations of the binomial so that the search seldom comes up short. Only a hint: a ranked scan that is drained
+ * past it searches again, scoring every block again, which costs about as much as the search itself.
  */
 int64
-joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k)
+joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept)
 {
-	double		pass = 1.0,
+	double		pass = kept,
 				mean;
 	int			x = -1;
 

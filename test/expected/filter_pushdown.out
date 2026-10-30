@@ -207,7 +207,7 @@ EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM fd WHERE body @@> 'common' 
          Index: fd_body
          Query: 'common'::text
          Order: score DESC
-         Limit Hint: 5
+         Limit Hint: 4096
 (6 rows)
 
 RESET sift.filter_pushdown;
@@ -220,7 +220,7 @@ EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM fd WHERE body @@> 'common' 
          Index: fd_body
          Query: 'common'::text
          Order: score DESC
-         Limit Hint: 5
+         Limit Hint: 4096
 (6 rows)
 
 RESET enable_bitmapscan;

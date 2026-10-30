@@ -255,10 +255,11 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 	cp->methods = methods;
 	cp->custom_private = list_make5(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(c->index->indexoid), false, true),
 									makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(mode), false, true),
-									makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(k), false, FLOAT8PASSBYVAL),
+									makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(c->late_k > 0 ? c->late_k : k), false, FLOAT8PASSBYVAL),
 									makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(heapoid), false, true),
 									makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(0), false, FLOAT8PASSBYVAL));
 	cp->custom_private = lappend(cp->custom_private, makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(get_float8_infinity()), false, FLOAT8PASSBYVAL));
+	cp->custom_private = lappend(cp->custom_private, makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(ko || c->late_k <= 0 ? 0 : (int32) Min(c->late_rows, PG_INT32_MAX)), false, true));
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->keyops : NIL);
 	cp->custom_private = lappend(cp->custom_private, c->queries);
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->exprs : NIL);
@@ -324,6 +325,18 @@ rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe,
 	/* a span that covers much of the heap holds the first superblocks of any order with its rows */
 	ties *= 1 - fe->span;
 	return ties * in_heap_order + (1 - ties) * rank_verified(cands, pass, k);
+}
+
+/*
+ * Does a ranked scan check the quals the index does not answer on the rows it hands out, asked for the rows they keep? With bounds
+ * that tie (rank_verified_after) it has no threshold before it holds k rows that pass, and checks every match it meets for them: a
+ * hit that is asked for costs a fetch, a match that is checked costs the same and many more of them are met. Otherwise the threshold
+ * of the hits it holds is as good as one of rows that passed, and a hit more only lowers it.
+ */
+bool
+late_quals(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanCost *sc, int64 k)
+{
+	return k > 0 && c->residual != NIL && sc->idx.known && !rel_secured(root, rel) && bounds_tie(rel, sc->docs) > 0.2;
 }
 
 /* The blocks of SIFT_BLK_PAGES heap pages that hold a match, when matches are spread over the fraction span of the heap */
@@ -404,8 +417,8 @@ static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
 		  BitmapHeapPath *filter, bool push, int nworkers)
 {
-	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, mode, k,
-							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, NULL);
+	ScanCand	plain = *c;
+	CustomPath *cp;
 	ScanCost	sc = est->sc;
 	SiftFilterEst fe = est->fe;
 	double		divisor = parallel_divisor(nworkers),
@@ -417,6 +430,10 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 				startup;
 
 	Assert(!push || nworkers == 0);
+	/* a pushed down filter has the ranker meet only rows that pass, and parallel workers share a threshold of k rows that did */
+	if (push || nworkers > 0)
+		plain.late_k = 0;
+	cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, &plain, mode, k, CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, NULL);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;

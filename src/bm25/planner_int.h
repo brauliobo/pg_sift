@@ -23,6 +23,8 @@ typedef struct ScanCand
 	IndexOptInfo *index;
 	List	   *queries;			/* operands of the sift quals */
 	List	   *residual;			/* RestrictInfos the scan evaluates itself */
+	int64		late_k;				/* > 0: the scan checks them on the rows it hands out, asked for this many hits (SIFT_PRIV_LATE) */
+	int64		late_rows;			/* ... to take this many rows */
 } ScanCand;
 
 typedef struct ScoreRefs
@@ -71,7 +73,8 @@ extern List *score_exprs(PlannerInfo *root, RelOptInfo *rel);
 extern bool sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk);
 extern int64 query_limit(PlannerInfo *root);
 extern int64 scan_limit(PlannerInfo *root, bool ranked);
-extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k);
+extern bool late_quals(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanCost *sc, int64 k);
+extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept);
 extern List *param_limits(PlannerInfo *root);
 extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
 

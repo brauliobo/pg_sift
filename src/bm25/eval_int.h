@@ -313,6 +313,12 @@ struct SiftRanker
 	int64		hitcap;				/* slots of hit */
 	int64		pos;
 	bool		searched;
+	int64		fb_read0;			/* ... and what it had read and kept when the last search ended */
+	int64		fb_kept0;
+	bool		dropping;			/* the consumer drops hits: the next search asks for what its rows take (sift_rank_feedback) */
+	int64		fb_read;
+	int64		fb_kept;
+	int64		fb_want;
 	bool		complete;
 	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
 	bool		par_active;			/* ... and is running now */

@@ -179,6 +179,13 @@ extern void sift_rank_end(SiftRanker *r);
 extern int64 sift_rank_next_k(int64 k);
 
 /*
+ * The consumer drops hits of its own (quals checked on the rows it takes). It tells how many hits it has read, how many it kept and
+ * how many rows it still wants; a search that falls short is followed by one that asks for the hits that many rows take at the rate
+ * it kept (with a margin), not for 16 times as many.
+ */
+extern void sift_rank_feedback(SiftRanker *r, int64 read, int64 kept, int64 want);
+
+/*
  * Makes the ranker one of the participants of a parallel search (call before
  * the first sift_rank_next; k must be known). Its first search scores the
  * units it claims with the shared threshold; the participant that finishes

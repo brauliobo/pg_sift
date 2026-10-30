@@ -765,16 +765,42 @@ sift_rank_next_k(int64 k)
 	return k * (k < RANK_FAST_GROWTH_K ? 16 : 4);
 }
 
+/*
+ * The hits that the rows the consumer still wants take, at the rate it kept in the hits the last search added (the first search: of all),
+ * three standard deviations over, and at least 4 times the last search: the kept rows of a score are seldom spread as evenly as the
+ * rows are, and each search scores the blocks again.
+ */
+static int64
+rank_dropped_k(SiftRanker *r)
+{
+	double		added = Max(r->fb_read - r->fb_read0, 1),
+				rate = Max(r->fb_kept - r->fb_kept0, 0.5) / added,
+				need = Max(r->fb_want, 1) / rate;
+
+	r->fb_read0 = r->fb_read;
+	r->fb_kept0 = r->fb_kept;
+	return Max(r->K * 4, (int64) ceil(r->fb_read + need + 3 * sqrt(need)));
+}
+
 static void
 rank_ensure(SiftRanker *r)
 {
 	if (!r->searched)
 		r->K = r->k > 0 ? r->k : PG_INT64_MAX;
 	else if (r->pos >= r->nhit && !r->complete)
-		r->K = sift_rank_next_k(r->K);
+		r->K = r->dropping ? rank_dropped_k(r) : sift_rank_next_k(r->K);
 	else
 		return;
 	rank_search(r);
+}
+
+void
+sift_rank_feedback(SiftRanker *r, int64 read, int64 kept, int64 want)
+{
+	r->dropping = true;
+	r->fb_read = read;
+	r->fb_kept = kept;
+	r->fb_want = want;
 }
 
 bool
