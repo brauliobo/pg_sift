@@ -224,7 +224,7 @@ extern void sift_col_amendscan(IndexScanDesc scan);
 extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
 									Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages);
 
-/* col/am.c */
+/* col/am/am.c */
 extern void sift_col_init(void);
 extern IndexBuildResult *sift_col_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);
 extern void sift_col_ambuildempty(Relation index);
@@ -250,7 +250,7 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
-/* sift.col_auto_merge* (col/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
+/* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
@@ -308,7 +308,7 @@ extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	((void) 0)
 #endif
 
-/* the planner hook opens a planning, within which the statistics of an index are validated once (col/am.c leaf_cache_entry); true when this call opened it */
+/* the planner hook opens a planning, within which the statistics of an index are validated once (col/am/am.c leaf_cache_entry); true when this call opened it */
 extern bool sift_col_plan_begin(void);
 extern void sift_col_plan_end(bool started);
 extern MemoryContext sift_col_plan_memo(uint64 *plan);

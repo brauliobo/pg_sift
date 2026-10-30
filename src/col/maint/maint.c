@@ -8,7 +8,7 @@
 #include "storage/lock.h"
 #include "col/maint/maint_int.h"
 
-/* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
+/* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
 bool		sift_col_auto_merge = true;
 
 int			sift_col_auto_merge_dirty_pct = 30;

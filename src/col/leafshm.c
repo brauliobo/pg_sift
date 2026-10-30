@@ -3,7 +3,7 @@
  *
  * A backend that plans a statement over a sift_col index for the first time reads the zones of all its units, leaf by leaf (about 36 bytes a unit and
  * leaf, 10,000 units of six leaves: 9 ms and 2,500 buffers; the planning of an index of 63,000 units and some forty leaves is the 100 to 800 ms of a new
- * connection), to fold them into one record for each leaf and a sample of the unit zones (col/am.c leaf_cache_entry). The records depend on the segments
+ * connection), to fold them into one record for each leaf and a sample of the unit zones (col/am/am.c leaf_cache_entry). The records depend on the segments
  * and the options of the index only, so the first backend that has them keeps them here, under the file of the index and a stamp of its segments (their
  * generations and formats) and options, and the others read them: 0.2 ms of copying. A merge, a rewrite or a REINDEX moves the stamp, and the next backend
  * to plan makes the records again.

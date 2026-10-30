@@ -116,7 +116,7 @@
 	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
 	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/col.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
-	X(pre_census_units, "-", "col/am.c", 256, "units", \
+	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
 	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
 	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
