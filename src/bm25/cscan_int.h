@@ -128,4 +128,14 @@ extern TupleTableSlot *next_row(SiftScanState *ss, ItemPointer entry);
 extern void keyed_search(SiftScanState *ss);
 extern TupleTableSlot *keyed_next(SiftScanState *ss);
 
+/* A hint larger than this makes the ranker keep more hits than it is likely to hand out: it grows its search past it */
+#define LIMIT_HINT_MAX	(1 << 20)
+
+extern void init_cols(SiftScanState *ss, CustomScan *cs);
+extern void close_scan(SiftScanState *ss);
+extern SiftPlan * bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared);
+extern bool gated(const SiftScanState *ss);
+extern TupleTableSlot * scan_next(ScanState *node);
+extern bool scan_recheck(ScanState *node, TupleTableSlot *slot);
+
 #endif
