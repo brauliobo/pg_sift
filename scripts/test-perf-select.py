@@ -48,7 +48,7 @@ class SelectionTest(unittest.TestCase):
         for path in ('scripts/pgtest.sh', 'scripts/ci.sh', 'scripts/areas.tsv', 'scripts/areas.sh',
                      'test/t/lib/SiftTest.pm', '.github/workflows/ci.yml',
                      '.github/workflows/performance.yml', 'scripts/perf-select.py', 'scripts/test-perf-select.py',
-                     'bench/steps/perf_gate.py', 'bench/perf/catalog.py', 'bench/perf/test_insert_trajectory.py',
+                     'bench/steps/perf_gate.py', 'bench/steps/perf_gate/run.py', 'bench/perf/catalog.py', 'bench/perf/test_insert_trajectory.py',
                      'bench/steps/store.py', 'Formula/pg_sift.rb',
                      'test/sql/col_search.sql', 'test/sql/count_scan.sql', 'test/expected/count_scan_1.out',
                      'test/col/fixtures/k_keys_9.sql', 'test/isolation/specs/agg_correlated_snapshot.spec',
