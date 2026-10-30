@@ -37,7 +37,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ga_auto';
 SELECT min(format) AS format FROM sift.col_segments('ga_auto') WHERE kind = 'immutable';
  format 
 --------
-     30
+     37
 (1 row)
 
 -- a range of r reads the addresses and no unit

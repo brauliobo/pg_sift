@@ -7,7 +7,7 @@ SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;
 
 -- one table of n rows of the shape per call, one index with the directory of the option (point_tid_columns: addresses, or point_columns: rows of the segment), and what the directory holds:
--- the bytes a row of its block, the layout (packed: the segment is minor 35), the keys of a sample all found with every row of the heap, 300 absent keys listing no more than the chance of a 16 bit fingerprint allows
+-- the bytes a row of its block, the layout (packed: the segment is minor 35, written before the root: minor 37 is col_point_root's), the keys of a sample all found with every row of the heap, 300 absent keys listing no more than the chance of a 16 bit fingerprint allows
 CREATE FUNCTION pk_probe(shape text, n int, opt text, unpacked bool DEFAULT false) RETURNS TABLE (shape_ text, rows int, bytes_a_row text, packed bool, all_found bool, absent_ok bool, verified bool) LANGUAGE plpgsql AS $$
 DECLARE b bigint; step int := greatest(n / 300, 1); lost bigint; extra bigint; fmt int; ix text := 'pk_i';
 BEGIN
@@ -22,8 +22,10 @@ BEGIN
 		WHEN 'down' THEN '-g * 3 - 1000000' END, n);
 	EXECUTE 'ANALYZE pk_t';
 	PERFORM set_config('sift.test_col_point_unpacked', unpacked::text, true);
+	PERFORM set_config('sift.test_col_point_unrooted', 'on', true);
 	EXECUTE format('CREATE INDEX pk_i ON pk_t USING sift_col (k, id) WITH (key_cut = ''off'', %s)', opt);
 	PERFORM set_config('sift.test_col_point_unpacked', 'off', true);
+	PERFORM set_config('sift.test_col_point_unrooted', 'off', true);
 	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pk_i') s WHERE s.section = 'dict_other';
 	SELECT min(c.format) INTO fmt FROM sift.col_segments('pk_i') c WHERE c.kind = 'immutable';
 	SELECT count(*) INTO lost FROM generate_series(1, n, step) g
@@ -60,19 +62,23 @@ SELECT * FROM pk_probe('dense', 40, 'point_tid_columns = ''k''');
 SELECT * FROM pk_probe('sparse', 3, 'point_tid_columns = ''k''');
 SELECT * FROM pk_probe('dense', 1, 'point_tid_columns = ''k''');
 
--- segments of every layout in one index, then merged: the slots of the older minors, the packed table, and the answers are the heap's
+-- segments of every layout in one index, then merged: the slots of the older minors, the packed table, the packed table with its header first (minor 35) and last (minor 37), and the answers are the heap's
 CREATE TABLE pk_m (id int, k int8, s text);
 INSERT INTO pk_m SELECT g, (g * 7919) % 5000, 's' || (g * 13) % 2500 FROM generate_series(1, 12000) g;
 SET sift.col_format_minor = 14;
 CREATE INDEX pk_mi ON pk_m USING sift_col (k, s) WITH (key_cut = 'off', point_tid_columns = 'k, s', count_columns = 'off');
 RESET sift.col_format_minor;
 SET sift.test_col_point_unpacked = on;
+SET sift.test_col_point_unrooted = on;
 INSERT INTO pk_m SELECT g, (g * 7919) % 5000, 's' || (g * 13) % 2500 FROM generate_series(12001, 24000) g;
 SELECT sift.col_promote('pk_mi'::regclass) >= 0 AS promoted;
 RESET sift.test_col_point_unpacked;
 INSERT INTO pk_m SELECT g, (g * 7919) % 5000 + 100000, 's' || (g * 13) % 2500 FROM generate_series(24001, 36000) g;
 SELECT sift.col_promote('pk_mi'::regclass) >= 0 AS promoted;
-SELECT least(format, 15) AS format, format >= 35 AS packed, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2 ORDER BY 1, 2;
+RESET sift.test_col_point_unrooted;
+INSERT INTO pk_m SELECT g, (g * 7919) % 5000 + 200000, 's' || (g * 13) % 2500 FROM generate_series(36001, 48000) g;
+SELECT sift.col_promote('pk_mi'::regclass) >= 0 AS promoted;
+SELECT least(format, 15) AS format, format >= 35 AS packed, format >= 37 AS rooted, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 CREATE FUNCTION pk_idx(w text) RETURNS bigint[] LANGUAGE plpgsql
 	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE r bigint[];
@@ -93,14 +99,14 @@ INSERT INTO pk_w VALUES ('k = 7'), ('k = 4999'), ('k = 5001'), ('k = 100007'), (
 SELECT left(w, 36) AS w, pk_idx(w) = pk_seq(w) AS same_rows, cardinality(pk_seq(w)) AS matches FROM pk_w ORDER BY w;
 SELECT sift.col_verify('pk_mi', true);
 SELECT sift.col_merge('pk_mi'::regclass, true) >= 0 AS merged;
-SELECT least(format, 15) AS format, format >= 35 AS packed, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT least(format, 15) AS format, format >= 35 AS packed, format >= 37 AS rooted, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 SELECT left(w, 36) AS w, pk_idx(w) = pk_seq(w) AS same_rows FROM pk_w ORDER BY w;
 SELECT sift.col_verify('pk_mi', true);
 -- the older layout is what the setting 14 writes again, by a rebuild
 SET sift.col_format_minor = 14;
 REINDEX INDEX pk_mi;
 RESET sift.col_format_minor;
-SELECT least(format, 15) AS format, format >= 35 AS packed, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT least(format, 15) AS format, format >= 35 AS packed, format >= 37 AS rooted, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 SELECT left(w, 36) AS w, pk_idx(w) = pk_seq(w) AS same_rows FROM pk_w ORDER BY w;
 SELECT sift.col_verify('pk_mi', true);
 

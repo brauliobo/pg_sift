@@ -23,7 +23,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
 SELECT min(format) AS format FROM sift.col_segments('nd_i') WHERE kind = 'immutable';
  format 
 --------
-     30
+     37
 (1 row)
 
 SELECT sift.col_verify('nd_i');

@@ -467,6 +467,7 @@ sift_cseg_keyed(const SiftSegEntry *e)
 }
 
 #ifdef SIFT_TESTING
+extern bool sift_test_col_point_unrooted;	/* sift.test_col_point_unrooted: the header and records of the point directories precede the tables (column format minor 35), not follow them */
 extern bool sift_test_col_point_unpacked;	/* sift.test_col_point_unpacked: the point directories are written as tables of slots, not packed tables */
 #endif
 

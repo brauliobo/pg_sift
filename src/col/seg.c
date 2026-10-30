@@ -389,7 +389,13 @@ points_read(SiftColSegment *seg)
 	SegPriv    *pv = PRIV(seg);
 	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
 	uint64		foot[2],
-				next;
+				next,
+				par,
+				rat,
+				hat,
+				first,
+				end;
+	bool		rooted = seg->entry.format >= SIFT_COL_FORMAT_ROOT;
 	int64		prev = -1;
 	uint32		hdr[4],
 				tail[2],
@@ -409,26 +415,29 @@ points_read(SiftColSegment *seg)
 	if (tail[0] != SIFT_CPOINT_MAGIC || !point_version_ok(tail[1]))
 	{
 		/* a footer of another version is no directory; a header of a known version where the offset says is a footer that was damaged */
-		if (foot[0] % 8 == 0 && foot[0] + sizeof(hdr) <= s->len - sizeof(foot))
+		if (rooted || (foot[0] % 8 == 0 && foot[0] + sizeof(hdr) <= s->len - sizeof(foot)))
 		{
-			seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
+			seg_read(seg, s->off + (rooted ? s->len - sizeof(foot) - sizeof(hdr) : foot[0]), sizeof(hdr), hdr);
 			if (hdr[0] == SIFT_CPOINT_MAGIC && point_version_ok(hdr[1]))
 				corrupt(seg, "The footer of the point directories of the DICT section has the magic 0x%08x, version %u.", tail[0], tail[1]);
 		}
 		return NULL;
 	}
-	if (foot[0] % 8 != 0 || foot[0] + sizeof(hdr) > s->len - sizeof(foot))
+	/* the header, the records and the parameters follow the dictionaries and precede the tables (before minor 37), or follow the tables and end at the footer, which
+	 * is then the one page a lookup reads for them (minor 37) */
+	hat = rooted ? s->len - sizeof(foot) - sizeof(hdr) : foot[0];
+	if (foot[0] % 8 != 0 || (rooted ? s->len < sizeof(foot) + sizeof(hdr) || foot[0] > hat : foot[0] + sizeof(hdr) > s->len - sizeof(foot)))
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
-	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
+	seg_read(seg, s->off + hat, sizeof(hdr), hdr);
 	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] > (hdr[1] == SIFT_CPOINT_VERSION_ORD ? 2 * (uint32) seg->schema->ncols : 0) ||
-		foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
+		(rooted ? (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > hat - foot[0] : foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > s->len - sizeof(foot)))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
-	next = foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
+	rat = rooted ? hat - (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN : hat + sizeof(hdr);
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
 	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
-	seg_read(seg, s->off + foot[0] + sizeof(hdr), (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
-	/* the parameters of the packed tables follow the records, one for each, in the order of the leaves */
+	seg_read(seg, s->off + rat, (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
+	/* the parameters of the packed tables are next to the records, one for each, in the order of the leaves */
 	for (uint32 i = 0; i < hdr[2]; i++)
 	{
 		uint32		w5;
@@ -436,14 +445,17 @@ points_read(SiftColSegment *seg)
 		memcpy(&w5, recs + (uint64) i * SIFT_CPOINT_RECLEN + 5 * sizeof(uint32), sizeof(w5));
 		npk += (w5 & SIFT_CPOINT_PACKED) != 0;
 	}
+	par = rooted ? rat - (uint64) npk * SIFT_CPOINT_PK_PAR : rat + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
+	first = rooted ? foot[0] : par + (uint64) npk * SIFT_CPOINT_PK_PAR;
+	end = rooted ? par : s->len - sizeof(foot);
 	if (npk > 0)
 	{
-		if (next + (uint64) npk * SIFT_CPOINT_PK_PAR > s->len - sizeof(foot))
+		if (rooted ? (uint64) npk * SIFT_CPOINT_PK_PAR > rat - foot[0] : first > end)
 			corrupt(seg, "The packed point directories of the DICT section have no room for their parameters.");
 		pars = palloc(npk * sizeof(SiftCPackPar));
-		seg_read(seg, s->off + next, npk * SIFT_CPOINT_PK_PAR, pars);
-		next += (uint64) npk * SIFT_CPOINT_PK_PAR;
+		seg_read(seg, s->off + par, npk * SIFT_CPOINT_PK_PAR, pars);
 	}
+	next = first;
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
 	{
 		uint32		rec[6],
@@ -463,7 +475,7 @@ points_read(SiftColSegment *seg)
 			size = (uint64) rec[4] * 8;
 			if (rec[0] >= 2 * (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] != SIFT_CPOINT_MODE_ORDER || rec[1] == 0 || rec[2] == 0 || rec[2] >= SIFT_CPOINT_SEG_ROWS ||
 				rec[3] > rec[2] || (rec[1] != (rec[2] + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS && rec[1] != (rec[2] + SIFT_CGORD_ROWS_FINE - 1) / SIFT_CGORD_ROWS_FINE) || size < SIFT_CGORD_HDR + (uint64) rec[1] * SIFT_CGORD_DIRENT ||
-				at != next || size > s->len - sizeof(foot) - next)
+				at != next || size > end - next)
 				corrupt(seg, "The global order %u of the DICT section is malformed.", i - hdr[2]);
 			pv->go[rec[0]] = (GOrdLeaf) {s->off + at, size, {rec[2], rec[3], rec[1], rec[1] == (rec[2] + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS ? SIFT_CGORD_ROWS : SIFT_CGORD_ROWS_FINE, 0, -1}, NULL, 0};
 			prev = rec[0];
@@ -483,7 +495,7 @@ points_read(SiftColSegment *seg)
 				pk->dense > 1 || pk->zero0 != 0 || pk->zero1 != 0 || pk->nbuckets == 0 || pk->pbits == 0 || pk->pbits > 48 || pk->rbits > SIFT_CPOINT_PK_RBITS ||
 				(pk->dense ? pk->rbits >= SIFT_CPOINT_PK_RBITS : (pk->rbits != SIFT_CPOINT_PK_RBITS || (pk->nbuckets & (pk->nbuckets - 1)) != 0 || pk->kmin != 0)) ||
 				(mode == SIFT_CPOINT_MODE_ROWS ? (pk->pbase != 0 || pk->pmul != 1 || pk->pbits > 31) : (pk->pmul == 0 || pk->pmul > SIFT_CPOINT_TID_MAXOFF)) ||
-				at != next || size != sift_cpoint_pk_bytes(pk, rec[1]) || size > s->len - sizeof(foot) - next)
+				at != next || size != sift_cpoint_pk_bytes(pk, rec[1]) || size > end - next)
 				corrupt(seg, "The packed point directory %u of the DICT section is malformed.", i);
 			if (mode == SIFT_CPOINT_MODE_TIDS && (hdr[1] == SIFT_CPOINT_VERSION_ROWS || sift_cseg_keyed(&seg->entry)))
 				corrupt(seg, "The point directory of leaf %u lists heap addresses, which this segment cannot; REINDEX the index.", rec[0]);
@@ -495,7 +507,7 @@ points_read(SiftColSegment *seg)
 		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || mode > (hdr[1] == SIFT_CPOINT_VERSION || hdr[1] == SIFT_CPOINT_VERSION_ORD ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) ||
 			rec[1] < 16 || (!exact && (rec[1] & (rec[1] - 1)) != 0) || rec[3] == 0 ||
 			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (mode == SIFT_CPOINT_MODE_TIDS || mode == SIFT_CPOINT_MODE_ZROWS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
-			at != next || size > s->len - sizeof(foot) - next)
+			at != next || size > end - next)
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
 		/* the units of a key-cut segment are not block ranges: an address names no unit, so such a segment lists rows */
 		if (mode == SIFT_CPOINT_MODE_TIDS && sift_cseg_keyed(&seg->entry))
@@ -507,8 +519,8 @@ points_read(SiftColSegment *seg)
 	pfree(recs);
 	if (pars)
 		pfree(pars);
-	if (next != s->len - sizeof(foot))
-		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) (s->len - sizeof(foot)));
+	if (next != end)
+		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) end);
 	pv->dict_end = foot[0];
 	return pv->pt;
 }
@@ -2853,14 +2865,17 @@ sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 *
 	const PointLeaf *pl = points_read(seg);
 	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICT);
 	uint32		hdr[4];
+	uint64		hat;
 
 	if (pl == NULL)
 		return false;
 	*off = s->off + PRIV(seg)->dict_end;
 	*len = s->len - PRIV(seg)->dict_end;
-	seg_read(seg, *off, sizeof(hdr), hdr);
+	hat = seg->entry.format >= SIFT_COL_FORMAT_ROOT ? *len - 2 * sizeof(hdr) : 0;
+	seg_read(seg, *off + hat, sizeof(hdr), hdr);
 	*used = palloc0(*len);
-	memset(*used, 2, sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN);
+	memset(*used + hat, 2, sizeof(hdr));
+	memset(*used + (hat > 0 ? hat - (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN : sizeof(hdr)), 2, (uint64) hdr[2] * SIFT_CPOINT_RECLEN);
 	memset(*used + *len - 16, 2, 16);
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (pl[c].nslots > 0)

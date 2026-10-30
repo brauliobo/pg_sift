@@ -940,7 +940,19 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 
 #ifdef SIFT_TESTING
 bool		sift_test_col_point_unpacked = false;
+bool		sift_test_col_point_unrooted = false;
 #endif
+
+/* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first) */
+static bool
+rooted_ok(const SiftColSegWriter *w)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_point_unrooted)
+		return false;
+#endif
+	return w->setting >= SIFT_COL_FORMAT_PRESENCE;
+}
 
 /* Whether a point directory may be written as a packed table (the setting that allows the exact slot count allows it; a testing build can turn it off to write the slots) */
 static bool
@@ -1023,8 +1035,9 @@ build_points(SiftColSegWriter *w)
 
 /*
  * The point directories after the dictionaries, in the DICT section: a header {u32 magic, u32 version, u32 nleaves, u32 0}, a record
- * {u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} for each leaf, the blocks, and the last 16 bytes of the section
- * {u64 offset of the header, u32 magic, u32 version}.
+ * {u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} for each leaf, the parameters of the packed tables, the blocks, and the
+ * last 16 bytes of the section {u64 offset of the first block, u32 magic, u32 version}. From column format minor 37 (setting 15 or more) the blocks come first and
+ * the parameters, the records and the header end the section, so that a lookup reads them and the footer from one page.
  */
 static void
 write_points(SiftColSegWriter *w, SiftSectionRef *sec)
@@ -1037,6 +1050,9 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	uint64		foot[2];
 	uint32		ftail[2] = {SIFT_CPOINT_MAGIC, ver};
 	uint64		at;
+	bool		rooted = rooted_ok(w);
+	StringInfoData recs,
+				pars;
 
 	if (!w->anypoints && !w->anyord)
 		return;
@@ -1046,8 +1062,9 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		hdr[3] += (w->pt[c].ob[0].nch > 0) + (w->pt[c].ob[1].nch > 0);
 		npacked += w->pt[c].par.pbits > 0;
 	}
-	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN + (uint64) npacked * SIFT_CPOINT_PK_PAR;
-	sift_sw_write(w->sw, hdr, sizeof(hdr));
+	at = rooted ? block : block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN + (uint64) npacked * SIFT_CPOINT_PK_PAR;
+	initStringInfo(&recs);
+	initStringInfo(&pars);
 	for (int c = 0; c < ncols; c++)
 	{
 		const PointAcc *a = &w->pt[c];
@@ -1055,8 +1072,8 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 
 		if (a->nslots == 0)
 			continue;
-		sift_sw_write(w->sw, rec, sizeof(rec));
-		sift_sw_write(w->sw, &at, sizeof(at));
+		appendBinaryStringInfo(&recs, (char *) rec, sizeof(rec));
+		appendBinaryStringInfo(&recs, (char *) &at, sizeof(at));
 		at += a->tab.len;
 	}
 	/* the plain blocks by leaf, then the blocks sorted by group by leaf (the slot ncols + leaf of the reader) */
@@ -1067,19 +1084,33 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 
 		if (o->nch == 0)
 			continue;
-		sift_sw_write(w->sw, rec, sizeof(rec));
-		sift_sw_write(w->sw, &at, sizeof(at));
+		appendBinaryStringInfo(&recs, (char *) rec, sizeof(rec));
+		appendBinaryStringInfo(&recs, (char *) &at, sizeof(at));
 		at += o->tab.len;
 	}
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].par.pbits > 0)
-			sift_sw_write(w->sw, &w->pt[c].par, SIFT_CPOINT_PK_PAR);
+			appendBinaryStringInfo(&pars, (char *) &w->pt[c].par, SIFT_CPOINT_PK_PAR);
+	if (!rooted)
+	{
+		sift_sw_write(w->sw, hdr, sizeof(hdr));
+		sift_sw_write(w->sw, recs.data, recs.len);
+		sift_sw_write(w->sw, pars.data, pars.len);
+	}
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
 	for (int k = 0; k < 2 * ncols; k++)
 		if (w->pt[k % ncols].ob[k / ncols].nch > 0)
 			sift_sw_write(w->sw, w->pt[k % ncols].ob[k / ncols].tab.data, w->pt[k % ncols].ob[k / ncols].tab.len);
+	if (rooted)
+	{
+		sift_sw_write(w->sw, pars.data, pars.len);
+		sift_sw_write(w->sw, recs.data, recs.len);
+		sift_sw_write(w->sw, hdr, sizeof(hdr));
+	}
+	pfree(recs.data);
+	pfree(pars.data);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
 	sift_sw_write(w->sw, foot, sizeof(foot));
@@ -1677,6 +1708,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_EXACTSLOT : w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
 	if (w->anypacked)
 		w->format = Max(w->format, SIFT_COL_FORMAT_PACKED);
+	if ((w->anypoints || w->anyord) && rooted_ok(w))
+		w->format = Max(w->format, SIFT_COL_FORMAT_ROOT);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
 	if (w->anydual)
