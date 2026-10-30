@@ -13,7 +13,7 @@ make check-full                     # full tier: ASan build, long soak and fuzz 
 
 `make check` and its scripts need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only. A host that cannot run a stage says so and skips it: the Perl TAP tests (Homebrew's PostgreSQL has no `src/test/perl`), the compatibility tests that build a release older than 3.2.0 (x86-64 only) and the benchmark generators (Python 3.12).
 
-A pull request that changes a source that starts parallel workers or handles snapshots (the files `scripts/ci.sh` `ASSERT_MARK` matches, e.g. `src/agg/par.c`) runs the regression tests that run those paths on a server built with assertions (`ASSERT_JOBS`, about 27 tests, a few minutes) beside its other checks; the label `assertions` runs the same for any pull request. Say in the pull request text that the family passed on an assertions build (that job or `make pg-assert` locally).
+A pull request that changes a source that starts parallel workers or handles snapshots (the files `ASSERT_MARK` of `scripts/ci/affected.sh` matches, e.g. `src/agg/par.c`) runs the regression tests that run those paths on a server built with assertions (`ASSERT_JOBS`, about 27 tests, a few minutes) beside its other checks; the label `assertions` runs the same for any pull request. Say in the pull request text that the family passed on an assertions build (that job or `make pg-assert` locally).
 
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
 The local gate runs only the PostgreSQL of `pg_config` on `PATH`; GitHub CI also runs 17. PostgreSQL 17 installs sift into the server's own directories (`SIFT_SUDO` when they are not writable), so run it on a private copy of the installation
@@ -23,7 +23,7 @@ runs only the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-00
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown: plain SQL aggregates with `sift.enable_agg` off and on, results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
 The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB at the price of about a quarter more time, as the two big WAL tests then run one after the other). A lane starts a job when
-the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci.sh`), and a job's data goes when it passes.
+the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci/jobs.sh`), and a job's data goes when it passes.
 `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
 you add a heavy test, and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
 crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
@@ -32,7 +32,7 @@ settings, since the WAL is what they test.
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
 The regression tests in `TESTING_REGRESS` (Makefile) need those functions and are skipped by a release build; every other one
-(except the slow ones of `SLOW_REGRESS` in `scripts/ci.sh`) runs against the testing build, and the deep tier runs it against the release library too (`SIFT_TESTING` unset, built in a copy of the tree,
+(except the slow ones of `SLOW_REGRESS` in `scripts/ci/plan.sh`) runs against the testing build, and the deep tier runs it against the release library too (`SIFT_TESTING` unset, built in a copy of the tree,
 job `release-library-regress`, `scripts/release-library-check.sh`; the quick tier runs a smoke of it and the tests that refer to a test-only name behind a guard). Tests of limits, privileges and the planner belong in the second group (do not use
 `sift._test_*` or the `sift.test_*` settings in them), so they run against the library users get. `SIFT_TESTING= scripts/pgtest.sh install`
 builds it by hand.

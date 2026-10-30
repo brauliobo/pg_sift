@@ -12,7 +12,7 @@ name: ci
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
 # of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
-# A pull request of any kind runs one more job, PostgreSQL 18 with assertions (`cassert: true`), on the regression tests that run workers (`ASSERT_JOBS` of scripts/ci.sh), when it
+# A pull request of any kind runs one more job, PostgreSQL 18 with assertions (`cassert: true`), on the regression tests that run workers (`ASSERT_JOBS` of scripts/ci/affected.sh), when it
 # changes a source that starts workers or handles snapshots (`ASSERT_MARK`) or carries the label `assertions`; the push, nightly and dispatch cassert entry runs the family too.
 # No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:

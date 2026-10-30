@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The claim of scripts/ci.sh (claim, claim_locked) survives what other lanes do to its files: a lane removes its entry of running/ without the lock, and a lane that dies
+# The claim of scripts/ci.sh (scripts/ci/claim.sh: claim, claim_locked) survives what other lanes do to its files: a lane removes its entry of running/ without the lock, and a lane that dies
 # holding claim.lock must not hang the others. Seconds, no server.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
@@ -13,7 +13,7 @@ claim_once() {
 	out=$(mktemp "$TMP/out.XXXXXX")
 	"$BASH" -c '
 		set -uo pipefail
-		eval "$(sed -n "/^claim() {/,/^# run_job/p" "$1/scripts/ci.sh" | sed "\$d")"
+		eval "$(sed -n "/^claim() {/,\$p" "$1/scripts/ci/claim.sh")"
 		BASE=$(mktemp -d "$TMP/base.XXXXXX"); mkdir -p "$BASE/claims" "$BASE/running"; LANE=lane1
 		J_ID=(a b); declare -A EST_MB=() J_AFTER=(); BUDGET_MB=100 JOB_MB=70
 		eval "$2"
@@ -29,7 +29,7 @@ claim_once() {
 }
 # the watchdog ends with the run that started it, also when that run was killed without a trap (a loop that outlived its parent once kept a tree of processes alive)
 out=$("$BASH" -c '
-	eval "$(sed -n "/^watchdog() {/,/^}/p" "$1/scripts/ci.sh")"
+	eval "$(sed -n "/^watchdog() {/,/^}/p" "$1/scripts/ci/scratch.sh")"
 	BASE=$(mktemp -d "$TMP/base.XXXXXX") LOG=$BASE MAX_MB=999999999
 	( exit 0 ) & MAIN=$!; wait "$MAIN"
 	watchdog & w=$!

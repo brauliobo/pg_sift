@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.." || exit 2
 [[ -z ${CI:-} || $(git rev-parse --is-shallow-repository) != true ]] || git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" 2>/dev/null || true
 
 CHECKS=(
-	'syntax		for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
+	'syntax		for f in scripts/*.sh scripts/ci/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'layout		scripts/restructure-src.sh --check'
 	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
 	'portable	scripts/lint-cache.sh portable src/portable.list src/portable-col.list $(grep -hvE '\''^[[:space:]]*(#|$)'\'' src/portable.list src/portable-col.list | sed '\''s#^#src/#'\'') src/core/host.h sqlite scripts/check-portable.sh -- scripts/check-portable.sh'
