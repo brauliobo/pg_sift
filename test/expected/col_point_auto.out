@@ -12,7 +12,7 @@ CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((
 -- the column of random values: chosen, with the numbers of the formula
 SET client_min_messages = notice;
 CREATE INDEX pa_rid ON pa USING sift_col (rid, a, b, c, d, e, f);
-NOTICE:  sift_col index "pa_rid": point_tid_columns includes "rid", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 2.2 M instructions against 0.2 M with the directory; predicted index size +73%, benefit 49 against cost 29)
+NOTICE:  sift_col index "pa_rid": point_tid_columns includes "rid", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 2.2 M instructions against 0.2 M with the directory; predicted index size +29%, 4.6 bytes a row, benefit 49 against cost 14)
 HINT:  ALTER INDEX pa_rid SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 SET client_min_messages = warning;
 -- the column in heap order, few values, a one-column index of a table that is small for it: not chosen
@@ -116,7 +116,7 @@ CREATE TABLE pj AS SELECT g AS id, hashint8extended(g, 9) & 4611686018427387903 
 VACUUM (FREEZE, ANALYZE) pj;
 SET client_min_messages = notice;
 CREATE INDEX pj_auto ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext');
-NOTICE:  sift_col index "pj_auto": point_tid_columns includes "rid", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 2.2 M instructions against 0.2 M with the directory; predicted index size +74%, benefit 49 against cost 29)
+NOTICE:  sift_col index "pj_auto": point_tid_columns includes "rid", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 2.2 M instructions against 0.2 M with the directory; predicted index size +29%, 4.6 bytes a row, benefit 49 against cost 14)
 HINT:  ALTER INDEX pj_auto SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 SET client_min_messages = warning;
 CREATE INDEX pj_off ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext', point_tid_columns = 'off');
@@ -124,7 +124,7 @@ SELECT popt('pj_auto') AS pj_point_tid_columns,
 	round(100.0 * (pg_relation_size('pj_auto') - pg_relation_size('pj_off')) / pg_relation_size('pj_off'), -1) AS measured_growth_pct;
  pj_point_tid_columns | measured_growth_pct 
 ----------------------+---------------------
- auto: rid            |                  90
+ auto: rid            |                  40
 (1 row)
 
 DROP TABLE pj;

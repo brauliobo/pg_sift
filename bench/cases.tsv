@@ -218,3 +218,4 @@ keycut_second_window	cut into units of 4,096 rows	events	-	[1-9][0-9]* pruned	na
 cte_materialized_notes	is planned inline as well as shared	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 groupset_window_order	emits its groups in the order the parent sorts by	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 unit_tab_first	the chunk table of a key-cut unit comes before its directory	orders	default WITH (key_cut = 'customer_id')	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+point_packed	is a packed table of entries by bucket	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no

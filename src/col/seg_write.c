@@ -50,6 +50,7 @@ typedef struct PointAcc
 	OrdBlock	ob[2];			/* its blocks once built: the plain order, and (the group of the build's choice) the order sorted by group, which is the second slot of the leaf */
 	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
 	bool		exact;			/* ... with the slot count of SIFT_CPOINT_EXACT */
+	SiftCPackPar par;			/* ... or as a packed table (par.pbits not 0, SIFT_CPOINT_PACKED): nslots is its entries */
 	uint32		nkeys;
 	uint32		words;
 	StringInfoData tab;
@@ -139,6 +140,7 @@ struct SiftColSegWriter
 	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
+	bool		anypacked;		/* ... and one of them is a packed table (column format minor 35) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -932,6 +934,21 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 	w->anyord = ob->nch > 0 || w->anyord;
 }
 
+#ifdef SIFT_TESTING
+bool		sift_test_col_point_unpacked = false;
+#endif
+
+/* Whether a point directory may be written as a packed table (the setting that allows the exact slot count allows it; a testing build can turn it off to write the slots) */
+static bool
+packed_ok(void)
+{
+#ifdef SIFT_TESTING
+	return !sift_test_col_point_unpacked;
+#else
+	return true;
+#endif
+}
+
 /* The blocks of the point directories, built when the last unit is in */
 static void
 build_points(SiftColSegWriter *w)
@@ -957,15 +974,16 @@ build_points(SiftColSegWriter *w)
 			a->exact = w->setting >= SIFT_COL_FORMAT_PRESENCE;
 			if (a->tids)
 			{
-				sift_cpoint_build_tids(a->key, a->tid, a->n, a->exact, &a->tab, &a->nslots, &a->nkeys, &a->words);
+				sift_cpoint_build_tids(a->key, a->tid, a->n, a->exact, a->exact && packed_ok(), &a->par, &a->tab, &a->nslots, &a->nkeys, &a->words);
 				w->anytids = true;
 			}
 			else
 			{
-				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_DENSE_ROWS, (uint32) w->rows / SIFT_CPOINT_DENSE_SHARE) : 0, a->exact, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
+				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_DENSE_ROWS, (uint32) w->rows / SIFT_CPOINT_DENSE_SHARE) : 0, a->exact, a->exact && packed_ok(), &a->par, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
 				w->anytids |= a->nslots > 0 && elem_point(w, c);
 			}
 			w->anypoints |= a->nslots > 0;
+			w->anypacked |= a->par.pbits > 0;
 		}
 		if (a->key)
 		{
@@ -1011,6 +1029,7 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	uint64		block = sift_sw_tell(w->sw) - sec->off;
 	uint32		ver = w->anyord ? SIFT_CPOINT_VERSION_ORD : w->anytids ? SIFT_CPOINT_VERSION : SIFT_CPOINT_VERSION_ROWS;
 	uint32		hdr[4] = {SIFT_CPOINT_MAGIC, ver, 0, 0};
+	uint32		npacked = 0;
 	uint64		foot[2];
 	uint32		ftail[2] = {SIFT_CPOINT_MAGIC, ver};
 	uint64		at;
@@ -1021,13 +1040,14 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	{
 		hdr[2] += w->pt[c].nslots > 0;
 		hdr[3] += (w->pt[c].ob[0].nch > 0) + (w->pt[c].ob[1].nch > 0);
+		npacked += w->pt[c].par.pbits > 0;
 	}
-	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
+	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN + (uint64) npacked * SIFT_CPOINT_PK_PAR;
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
 	for (int c = 0; c < ncols; c++)
 	{
 		const PointAcc *a = &w->pt[c];
-		uint32		rec[6] = {c, a->nslots, a->n, a->nkeys, a->words, (a->tids ? SIFT_CPOINT_MODE_TIDS : elem_point(w, c) ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) | (a->exact ? SIFT_CPOINT_EXACT : 0)};
+		uint32		rec[6] = {c, a->nslots, a->n, a->nkeys, a->words, (a->tids ? SIFT_CPOINT_MODE_TIDS : elem_point(w, c) ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) | (a->exact ? SIFT_CPOINT_EXACT : 0) | (a->par.pbits > 0 ? SIFT_CPOINT_PACKED : 0)};
 
 		if (a->nslots == 0)
 			continue;
@@ -1047,6 +1067,9 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		sift_sw_write(w->sw, &at, sizeof(at));
 		at += o->tab.len;
 	}
+	for (int c = 0; c < ncols; c++)
+		if (w->pt[c].par.pbits > 0)
+			sift_sw_write(w->sw, &w->pt[c].par, SIFT_CPOINT_PK_PAR);
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
@@ -1648,6 +1671,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_EXACTSLOT : w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
+	if (w->anypacked)
+		w->format = Max(w->format, SIFT_COL_FORMAT_PACKED);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
 	if (w->anydual)

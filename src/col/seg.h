@@ -465,6 +465,10 @@ sift_cseg_keyed(const SiftSegEntry *e)
 	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
 }
 
+#ifdef SIFT_TESTING
+extern bool sift_test_col_point_unpacked;	/* sift.test_col_point_unpacked: the point directories are written as tables of slots, not packed tables */
+#endif
+
 /* The superblock of unit u of a segment cut by superblock (a unit of a segment cut by key has none: its id is a sequence number) */
 static inline uint32
 sift_cseg_unit_sb(const SiftColSegment *seg, uint32 u)

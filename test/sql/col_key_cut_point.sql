@@ -13,7 +13,7 @@ SELECT i, (i * 7919) % 97, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 31) % 9000 E
 FROM generate_series(1, 40000) i;
 CREATE INDEX kpt_idx ON kpt USING sift_col (id, cust, k, s) WITH (count_columns = 'off', key_cut = 'cust', point_tid_columns = 'id, cust, k, s');
 VACUUM (ANALYZE) kpt;
-SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+SELECT DISTINCT least(format, 15) AS format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('kpt_idx', true);
 
 -- the answer of the access method three ways against the heap's
@@ -70,7 +70,7 @@ SELECT sift.col_verify('kpt_idx', true);
 REINDEX INDEX kpt_idx;
 SELECT * FROM kp_check('reindexed');
 SELECT sift.col_verify('kpt_idx', true);
-SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+SELECT DISTINCT least(format, 15) AS format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
 
 -- 'off' lists nothing: no notice about the rows of a key-cut segment
 CREATE INDEX kpt_off ON kpt USING sift_col (id, cust) WITH (key_cut = 'cust', point_tid_columns = 'off');

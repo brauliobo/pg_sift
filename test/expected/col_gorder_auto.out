@@ -50,10 +50,10 @@ FROM sift._test_col_counters('ga_auto', '1:ge:2000000;1:le:2004000', 24) p, sift
 
 -- off and a list are the user's
 CREATE INDEX ga_off ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_columns = off);
-NOTICE:  sift_col index "ga_off": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +15%, benefit 28 against cost 9)
+NOTICE:  sift_col index "ga_off": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 3.7 bytes a row, benefit 28 against cost 6)
 HINT:  ALTER INDEX ga_off SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_columns = 'g', order_array_columns = 'g');
-NOTICE:  sift_col index "ga_list": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +15%, benefit 28 against cost 9)
+NOTICE:  sift_col index "ga_list": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 3.7 bytes a row, benefit 28 against cost 6)
 HINT:  ALTER INDEX ga_list SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_list": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 DETAIL:  1.1 bytes a row for each column, 0.1 MB together; the segments are column format minor 30, which a library before 3.6 cannot read.
@@ -74,11 +74,11 @@ SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE object = 'ga_off'
 
 DROP INDEX ga_auto, ga_off, ga_list;
 -- a narrow index of small columns: the arrays would be a third of it
-CREATE INDEX ga_narrow ON ga USING sift_col (id, r, g);
+CREATE INDEX ga_narrow ON ga USING sift_col (id, r, g) WITH (point_tid_columns = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ga_narrow';
- reloptions 
-------------
- 
+       reloptions        
+-------------------------
+ {point_tid_columns=off}
 (1 row)
 
 DROP INDEX ga_narrow;
@@ -86,7 +86,7 @@ DROP INDEX ga_narrow;
 CREATE TABLE gs AS SELECT id, r, g, ts, pad FROM ga WHERE id <= 90000;
 ANALYZE gs;
 CREATE INDEX gs_i ON gs USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "gs_i": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.6 M instructions against 0.2 M with the directory; predicted index size +15%, benefit 23 against cost 9)
+NOTICE:  sift_col index "gs_i": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.6 M instructions against 0.2 M with the directory; predicted index size +5%, 3.8 bytes a row, benefit 23 against cost 6)
 HINT:  ALTER INDEX gs_i SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 SELECT reloptions FROM pg_class WHERE relname = 'gs_i';
           reloptions           

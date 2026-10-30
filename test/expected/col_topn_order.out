@@ -15,6 +15,10 @@ SELECT i % 5, i, (((i / 1500) * 7 + 3) % 20) * 1000 + (hashint4(i) & 2147483647)
 	   CASE WHEN i % 997 = 0 THEN 'NaN'::float8 WHEN i % 37 = 0 THEN NULL ELSE ((hashint4(i + 3) & 2147483647) % 100000) / 7.0 END
 FROM generate_series(1, 30000) i;
 CREATE INDEX ow_col ON ow USING sift_col (id, g, k_clu, k_band, k_rand, k_mix, f) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index "ow_col": point_tid_columns includes "k_band", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.3 M instructions against 0.2 M with the directory; predicted index size +16%, 2.7 bytes a row, benefit 10 against cost 10)
+HINT:  ALTER INDEX ow_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
+NOTICE:  sift_col index "ow_col": point_tid_columns includes "k_rand", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.3 M instructions against 0.2 M with the directory; predicted index size +15%, 3.0 bytes a row, benefit 10 against cost 9)
+HINT:  ALTER INDEX ow_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 VACUUM (ANALYZE) ow;
 CREATE FUNCTION ow_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- one query in both plans: the md5 of its rows in order, and whether the pushed plan is the top-N scan

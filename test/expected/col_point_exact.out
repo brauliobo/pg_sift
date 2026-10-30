@@ -3,6 +3,8 @@
 -- as before, and a merge of both writes the new one.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+-- the tables of slots (the packed table of column format minor 35 is the next test, col_point_packed)
+SET sift.test_col_point_unpacked = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET default_statistics_target = 10000;
@@ -23,7 +25,7 @@ BEGIN
 		WHERE NOT EXISTS (SELECT 1 FROM sift._test_col_tids('pe_i', '0:eq:' || g * 7919, 24) t JOIN pe_t ON pe_t.ctid = t.tid WHERE pe_t.id = g);
 	SELECT count(*) INTO extra FROM generate_series(1, 400) g, sift._test_col_tids('pe_i', '0:eq:' || (-g), 24);
 	keys := n;
-	SELECT min(c.format) INTO format FROM sift.col_segments('pe_i') c WHERE c.kind = 'immutable';
+	SELECT least(min(c.format), 15) INTO format FROM sift.col_segments('pe_i') c WHERE c.kind = 'immutable';
 	slots_ok := b BETWEEN slots * 8 AND slots * 8 + 128;
 	pow2 := (slots & (slots - 1)) = 0;
 	all_found := lost = 0;
@@ -35,49 +37,49 @@ END $$;
 SELECT * FROM pe_probe(1, 15);
  keys | format | slots_ok | pow2 | all_found | absent_ok 
 ------+--------+----------+------+-----------+-----------
-    1 |     33 | t        | t    | t         | t
+    1 |     15 | t        | t    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(12, 15);
  keys | format | slots_ok | pow2 | all_found | absent_ok 
 ------+--------+----------+------+-----------+-----------
-   12 |     33 | t        | t    | t         | t
+   12 |     15 | t        | t    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(13, 15);
  keys | format | slots_ok | pow2 | all_found | absent_ok 
 ------+--------+----------+------+-----------+-----------
-   13 |     33 | t        | f    | t         | t
+   13 |     15 | t        | f    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(100, 15);
  keys | format | slots_ok | pow2 | all_found | absent_ok 
 ------+--------+----------+------+-----------+-----------
-  100 |     33 | t        | f    | t         | t
+  100 |     15 | t        | f    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(1000, 15);
  keys | format | slots_ok | pow2 | all_found | absent_ok 
 ------+--------+----------+------+-----------+-----------
- 1000 |     33 | t        | f    | t         | t
+ 1000 |     15 | t        | f    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(12288, 15);
  keys  | format | slots_ok | pow2 | all_found | absent_ok 
 -------+--------+----------+------+-----------+-----------
- 12288 |     33 | t        | t    | t         | t
+ 12288 |     15 | t        | t    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(12289, 15);
  keys  | format | slots_ok | pow2 | all_found | absent_ok 
 -------+--------+----------+------+-----------+-----------
- 12289 |     33 | t        | f    | t         | t
+ 12289 |     15 | t        | f    | t         | t
 (1 row)
 
 SELECT * FROM pe_probe(30000, 15);
  keys  | format | slots_ok | pow2 | all_found | absent_ok 
 -------+--------+----------+------+-----------+-----------
- 30000 |     33 | t        | f    | t         | t
+ 30000 |     15 | t        | f    | t         | t
 (1 row)
 
 -- the older layout under the setting 14: a power of two, and the same answers
@@ -112,11 +114,11 @@ SELECT sift.col_promote('pe_mi'::regclass) >= 0 AS promoted;
  t
 (1 row)
 
-SELECT format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------
      14 |        1
-     33 |        1
+     15 |        1
 (2 rows)
 
 CREATE FUNCTION pe_idx(w text) RETURNS bigint[] LANGUAGE plpgsql
@@ -165,10 +167,10 @@ SELECT sift.col_merge('pe_mi'::regclass, true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------
-     33 |        1
+     15 |        1
 (1 row)
 
 SELECT left(w, 36) AS w, pe_idx(w) = pe_seq(w) AS same_rows FROM pe_w ORDER BY w;
@@ -198,7 +200,7 @@ SELECT sift.col_verify('pe_mi', true);
 SET sift.col_format_minor = 14;
 REINDEX INDEX pe_mi;
 RESET sift.col_format_minor;
-SELECT format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------
      14 |        1

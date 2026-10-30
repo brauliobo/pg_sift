@@ -251,7 +251,7 @@ cycle() {
 
 # the point directories of the older library (a power of two of slots)
 points() {
-	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=33 CY_WHAT="point directories"
+	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=35 CY_WHAT="point directories"
 	local w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"	# a key present, absent, a list, two columns, and a text key
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
 	CY_SETUP=("CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g"

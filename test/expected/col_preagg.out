@@ -435,9 +435,9 @@ FROM (VALUES ('i2', 'int2', true), ('i4', 'int4', true), ('n', 'numeric', true),
 -- options
 ALTER INDEX pa_off SET (preagg = 'default');
 SELECT reloptions FROM pg_class WHERE relname = 'pa_off';
-          reloptions          
-------------------------------
- {key_cut=off,preagg=default}
+                          reloptions                           
+---------------------------------------------------------------
+ {key_cut=off,"point_tid_columns=auto: i2, i4",preagg=default}
 (1 row)
 
 CREATE INDEX pa_bad1 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(nosuch)');

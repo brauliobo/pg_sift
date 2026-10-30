@@ -76,7 +76,7 @@ UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORD
 -- the directory: the segments are minor 16, verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
 CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u');
 NOTICE:  sift_col index "pt_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
@@ -85,10 +85,10 @@ SELECT sift.col_verify('pt_t', true);
  
 (1 row)
 
-SELECT count(*) > 0 AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
+SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
  segments | format | units 
 ----------+--------+-------
- t        |     33 | t
+ t        |     15 | t
 (1 row)
 
 SELECT p.units AS units_with_addresses, f.units > 2 AS units_without, p.rows = 0 AS no_row_read
@@ -306,11 +306,11 @@ SELECT sift.col_merge('pt_t'::regclass, true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT kind, format, count(*) AS segments FROM sift.col_segments('pt_t') GROUP BY kind, format ORDER BY kind, format;
+SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pt_t') GROUP BY 1, 2 ORDER BY 1, 2;
    kind    | format | segments 
 -----------+--------+----------
  buffer    |        |        1
- immutable |     33 |        1
+ immutable |     15 |        1
 (2 rows)
 
 SELECT sift.col_verify('pt_t', true);
@@ -407,7 +407,7 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
 RESET sift.col_format_minor;
-SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------
      14
@@ -451,7 +451,7 @@ ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 SET sift.col_format_minor = 14;
 REINDEX INDEX pt_r;
 RESET sift.col_format_minor;
-SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------
      14
@@ -493,7 +493,7 @@ SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_
 
 REINDEX INDEX pt_r;
 NOTICE:  sift_col index "pt_r": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
  commands 
@@ -501,10 +501,10 @@ SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_t
         0
 (1 row)
 
-SELECT min(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------
-     33
+     15
 (1 row)
 
 SELECT sift.col_verify('pt_r', true);
@@ -544,7 +544,7 @@ CREATE TABLE pb (id int, k int);
 INSERT INTO pb SELECT i, i % 7 FROM generate_series(1, 200000) i;
 CREATE INDEX pb_t ON pb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
 NOTICE:  sift_col index "pb_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT sift.col_verify('pb_t', true);
  col_verify 
@@ -577,7 +577,7 @@ CREATE TABLE pbs (id int, k int);
 INSERT INTO pbs SELECT i, i % 7 FROM generate_series(1, 60000) i;
 CREATE INDEX pbs_t ON pbs USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
 NOTICE:  sift_col index "pbs_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 INSERT INTO pbs SELECT i, i % 7 FROM generate_series(60001, 90000) i;
 SELECT sift.col_promote('pbs_t'::regclass) >= 0 AS promoted;

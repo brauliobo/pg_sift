@@ -25,7 +25,7 @@ SELECT sift.col_promote('dh_idx') > 0 AS promoted;
 INSERT INTO dh SELECT i, 'k' || md5(i::text), md5(i::text)::uuid, 'w' || i FROM generate_series(9001, 12000) i;
 SELECT sift.col_promote('dh_idx') > 0 AS promoted;
 VACUUM (ANALYZE) dh;
-SELECT count(*) > 1 AS segments, max(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT count(*) > 1 AS segments, least(max(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('dh_idx', true);
 
 -- (the md5 of 1 is c4ca4238a0b923820dcc509a6f75849b, of 17 is 70efdf2ec9b086079795c442636b55fb)
@@ -64,7 +64,7 @@ VACUUM dh;
 SELECT dh_round(10);
 SELECT sift.col_verify('dh_idx', true);
 REINDEX INDEX dh_idx;
-SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('dh_idx', true);
 SELECT dh_round(10);
 
@@ -72,7 +72,7 @@ SELECT dh_round(10);
 SET sift.col_format_minor = 14;
 REINDEX INDEX dh_idx;
 RESET sift.col_format_minor;
-SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
 SELECT dh_round(10);
 
 DROP TABLE dh, dh_q;

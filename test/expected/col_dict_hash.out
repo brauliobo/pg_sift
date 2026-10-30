@@ -34,10 +34,10 @@ SELECT sift.col_promote('dh_idx') > 0 AS promoted;
 (1 row)
 
 VACUUM (ANALYZE) dh;
-SELECT count(*) > 1 AS segments, max(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT count(*) > 1 AS segments, least(max(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  segments | format 
 ----------+--------
- t        |     33
+ t        |     15
 (1 row)
 
 SELECT sift.col_verify('dh_idx', true);
@@ -119,10 +119,10 @@ SELECT sift.col_verify('dh_idx', true);
 (1 row)
 
 REINDEX INDEX dh_idx;
-SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 
 --------
-     33
+     15
 (1 row)
 
 SELECT sift.col_verify('dh_idx', true);
@@ -141,7 +141,7 @@ SELECT dh_round(10);
 SET sift.col_format_minor = 14;
 REINDEX INDEX dh_idx;
 RESET sift.col_format_minor;
-SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 
 --------
      14

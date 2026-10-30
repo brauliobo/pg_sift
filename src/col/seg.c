@@ -392,8 +392,11 @@ points_read(SiftColSegment *seg)
 				next;
 	int64		prev = -1;
 	uint32		hdr[4],
-				tail[2];
+				tail[2],
+				npk = 0,
+				ipk = 0;
 	char	   *recs;
+	SiftCPackPar *pars = NULL;
 
 	if (pv->pt_checked)
 		return pv->pt;
@@ -425,11 +428,28 @@ points_read(SiftColSegment *seg)
 	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
 	seg_read(seg, s->off + foot[0] + sizeof(hdr), (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
+	/* the parameters of the packed tables follow the records, one for each, in the order of the leaves */
+	for (uint32 i = 0; i < hdr[2]; i++)
+	{
+		uint32		w5;
+
+		memcpy(&w5, recs + (uint64) i * SIFT_CPOINT_RECLEN + 5 * sizeof(uint32), sizeof(w5));
+		npk += (w5 & SIFT_CPOINT_PACKED) != 0;
+	}
+	if (npk > 0)
+	{
+		if (next + (uint64) npk * SIFT_CPOINT_PK_PAR > s->len - sizeof(foot))
+			corrupt(seg, "The packed point directories of the DICT section have no room for their parameters.");
+		pars = palloc(npk * sizeof(SiftCPackPar));
+		seg_read(seg, s->off + next, npk * SIFT_CPOINT_PK_PAR, pars);
+		next += (uint64) npk * SIFT_CPOINT_PK_PAR;
+	}
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
 	{
 		uint32		rec[6],
 					mode;
-		bool		exact;
+		bool		exact,
+					packed;
 		uint64		at;
 		uint64		size;
 
@@ -450,9 +470,28 @@ points_read(SiftColSegment *seg)
 			next += size;
 			continue;
 		}
-		size = ALIGN8((uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32));
-		mode = rec[5] & ~SIFT_CPOINT_EXACT;
+		packed = (rec[5] & SIFT_CPOINT_PACKED) != 0;
+		size = packed ? (uint64) rec[4] * sizeof(uint32) : ALIGN8((uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32));
+		mode = rec[5] & ~(SIFT_CPOINT_EXACT | SIFT_CPOINT_PACKED);
 		exact = (rec[5] & SIFT_CPOINT_EXACT) != 0;
+		if (packed)
+		{
+			const SiftCPackPar *pk = &pars[ipk++];
+
+			if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || (mode != SIFT_CPOINT_MODE_ROWS && mode != SIFT_CPOINT_MODE_TIDS) || !exact ||
+				seg->entry.format < SIFT_COL_FORMAT_PACKED || rec[1] != rec[2] || rec[3] == 0 || rec[3] > rec[2] || rec[2] >= SIFT_CPOINT_SEG_ROWS ||
+				pk->dense > 1 || pk->zero0 != 0 || pk->zero1 != 0 || pk->nbuckets == 0 || pk->pbits == 0 || pk->pbits > 48 || pk->rbits > SIFT_CPOINT_PK_RBITS ||
+				(pk->dense ? pk->rbits >= SIFT_CPOINT_PK_RBITS : (pk->rbits != SIFT_CPOINT_PK_RBITS || (pk->nbuckets & (pk->nbuckets - 1)) != 0 || pk->kmin != 0)) ||
+				(mode == SIFT_CPOINT_MODE_ROWS ? (pk->pbase != 0 || pk->pmul != 1 || pk->pbits > 31) : (pk->pmul == 0 || pk->pmul > SIFT_CPOINT_TID_MAXOFF)) ||
+				at != next || size != sift_cpoint_pk_bytes(pk, rec[1]) || size > s->len - sizeof(foot) - next)
+				corrupt(seg, "The packed point directory %u of the DICT section is malformed.", i);
+			if (mode == SIFT_CPOINT_MODE_TIDS && (hdr[1] == SIFT_CPOINT_VERSION_ROWS || sift_cseg_keyed(&seg->entry)))
+				corrupt(seg, "The point directory of leaf %u lists heap addresses, which this segment cannot; REINDEX the index.", rec[0]);
+			pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4], mode == SIFT_CPOINT_MODE_TIDS, false, true, 0, true, *pk};
+			prev = rec[0];
+			next += size;
+			continue;
+		}
 		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || mode > (hdr[1] == SIFT_CPOINT_VERSION || hdr[1] == SIFT_CPOINT_VERSION_ORD ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) ||
 			rec[1] < 16 || (!exact && (rec[1] & (rec[1] - 1)) != 0) || rec[3] == 0 ||
 			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (mode == SIFT_CPOINT_MODE_TIDS || mode == SIFT_CPOINT_MODE_ZROWS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
@@ -466,6 +505,8 @@ points_read(SiftColSegment *seg)
 		next += size;
 	}
 	pfree(recs);
+	if (pars)
+		pfree(pars);
 	if (next != s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) (s->len - sizeof(foot)));
 	pv->dict_end = foot[0];
@@ -2823,7 +2864,7 @@ sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 *
 	memset(*used + *len - 16, 2, 16);
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (pl[c].nslots > 0)
-			memset(*used + (pl[c].at - *off), 1, (uint64) pl[c].nslots * sizeof(uint64) + (uint64) pl[c].words * sizeof(uint32));
+			memset(*used + (pl[c].at - *off), 1, pl[c].packed ? (uint64) pl[c].words * sizeof(uint32) : (uint64) pl[c].nslots * sizeof(uint64) + (uint64) pl[c].words * sizeof(uint32));
 	return true;
 }
 #endif
@@ -3079,12 +3120,62 @@ point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off)
 	return cnt;
 }
 
+/*
+ * The entries of the packed table of leaf pl that may hold key: those of its bucket with its remainder. fn gets them as the slot of a table of the same mode
+ * would have (the fingerprint over the row, or over the address) and the index of the entry as the position.
+ */
+static void
+point_probe_packed(SiftColSegment *seg, int col, const PointLeaf *pl, int64 key, uint64 h, void (*fn) (void *, uint64, uint32), void *arg)
+{
+	const SiftCPackPar *par = &pl->pk;
+	uint32		bucket,
+				se[2],
+				width = par->rbits + par->pbits,
+				nent;
+	uint64		rem,
+				first;
+	uint8	   *buf;
+	uint64		dir = ((uint64) (par->nbuckets + 1) * 4 + 7) & ~UINT64CONST(7);
+
+	if (!sift_cpoint_pk_locate(par, key, h, &bucket, &rem))
+		return;
+	seg_read(seg, pl->at + (uint64) bucket * sizeof(uint32), sizeof(se), se);
+	if (se[0] > se[1] || se[1] > pl->nslots)
+		corrupt(seg, "The packed point directory of leaf %d has the bucket %u from entry %u to %u of %u.", col, bucket, se[0], se[1], pl->nslots);
+	if ((nent = se[1] - se[0]) == 0)
+		return;
+	first = (uint64) se[0] * width / 8;
+	buf = palloc((uint64) (((uint64) se[1] * width + 7) / 8 - first) + 8);
+	memset(buf + (((uint64) se[1] * width + 7) / 8 - first), 0, 8);
+	seg_read(seg, pl->at + dir + first, ((uint64) se[1] * width + 7) / 8 - first, buf);
+	for (uint32 j = 0; j < nent; j++)
+	{
+		uint64		at = (uint64) (se[0] + j) * width - first * 8;
+
+		if (sift_cpoint_pk_get(buf, at, par->rbits) != rem)
+			continue;
+		{
+			uint64		code = sift_cpoint_pk_get(buf, at + par->rbits, par->pbits);
+
+			fn(arg, pl->tids ? (h & 0xFFFF) << 48 | sift_cpoint_pk_tid(par, code) : (h & 0xFFFFFFFF) << 32 | code, se[0] + j);
+		}
+	}
+	pfree(buf);
+}
+
 /* Calls fn(slot payload) for each slot of leaf pl whose fingerprint is that of key's hash: the slots from the position of the hash to the first empty one */
 static void
-point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*fn) (void *, uint64, uint32), void *arg)
+point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, int64 key, void (*fn) (void *, uint64, uint32), void *arg)
 {
-	uint32		p = sift_cpoint_pos(h, pl->nslots, pl->exact);
+	uint64		h = sift_cpoint_hash(key);
+	uint32		p;
 
+	if (pl->packed)
+	{
+		point_probe_packed(seg, col, pl, key, h, fn, arg);
+		return;
+	}
+	p = sift_cpoint_pos(h, pl->nslots, pl->exact);
 	for (uint32 steps = 0;; steps++)
 	{
 		uint64		win[8];
@@ -3177,7 +3268,7 @@ sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys,
 	pr.total = seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows;
 	pr.r = palloc(pr.cap * sizeof(uint32));
 	for (int k = 0; k < nkeys && !pr.over; k++)
-		point_probe(seg, col, pr.pl, sift_cpoint_hash(keys[k]), point_add_rows, &pr);
+		point_probe(seg, col, pr.pl, keys[k], point_add_rows, &pr);
 	if (pr.over)
 	{
 		pfree(pr.r);
@@ -3269,7 +3360,7 @@ sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 row, bool *d
 	if (pl == NULL || pl[col].nslots == 0 || pl[col].tids)
 		return false;
 	ph.pl = pl + col;
-	point_probe(seg, col, ph.pl, sift_cpoint_hash(key), point_find_row, &ph);
+	point_probe(seg, col, ph.pl, key, point_find_row, &ph);
 	*dense = ph.dense;
 	return ph.found;
 }
@@ -3415,7 +3506,7 @@ point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uin
 		return true;
 	}
 	for (int k = 0; k < nkeys && !a.over; k++)
-		point_probe(seg, col, a.pl, sift_cpoint_hash(keys[k]), point_add_tids, &a);
+		point_probe(seg, col, a.pl, keys[k], point_add_tids, &a);
 	if (a.over)
 	{
 		if (a.t)
@@ -3625,7 +3716,7 @@ sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int
 	s->seg = seg;
 	s->col = col;
 	for (int k = 0; k < nkeys && s->nlists <= TCUR_MAX; k++)
-		point_probe(seg, col, pl + col, sift_cpoint_hash(keys[k]), stream_slot, s);
+		point_probe(seg, col, pl + col, keys[k], stream_slot, s);
 	/* more lists than the stream merges are decoded whole (sift_cseg_point_tids) */
 	if (s->nlists > TCUR_MAX)
 		return NULL;
@@ -3797,7 +3888,7 @@ sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const
 
 		for (j = i; j < m && e[j].key == e[i].key; j++)
 			;
-		point_probe(seg, col, a.pl, sift_cpoint_hash(e[i].key), point_add_tids, &a);
+		point_probe(seg, col, a.pl, e[i].key, point_add_tids, &a);
 		if (a.n > 0)
 			sift_sort_u64(a.t, a.n);
 		for (uint32 r = i; r < j && ok; r++)
@@ -4308,6 +4399,70 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	}
 }
 
+/*
+ * The entries of a packed table: the directory ascends from 0 to the entries, the remainders ascend in a bucket and the codes in a run of
+ * one remainder, a row is a row of the segment and an address is in a unit of it. Returns the distinct k.
+ */
+static uint32
+verify_packed(SiftColSegment *seg, int c, const PointLeaf *pl, uint32 total)
+{
+	const SiftCPackPar *par = &pl->pk;
+	uint32		width = par->rbits + par->pbits,
+				keys = 0,
+				chunk = 4096;
+	uint64		dir = ((uint64) (par->nbuckets + 1) * 4 + 7) & ~UINT64CONST(7),
+				prem = 0,
+				pcode = 0;
+	uint32	   *starts = palloc((uint64) (par->nbuckets + 1) * sizeof(uint32));
+	uint8	   *buf = palloc((uint64) chunk * width / 8 + 24);
+	uint32		b = 0;
+
+	seg_read(seg, pl->at, (uint64) (par->nbuckets + 1) * sizeof(uint32), starts);
+	if (starts[0] != 0 || starts[par->nbuckets] != pl->nslots)
+		corrupt(seg, "The packed point directory of leaf %d starts at entry %u and ends at %u of %u.", c, starts[0], starts[par->nbuckets], pl->nslots);
+	for (uint32 i = 0; i < par->nbuckets; i++)
+		if (starts[i] > starts[i + 1])
+			corrupt(seg, "The packed point directory of leaf %d has the bucket %u from entry %u to %u.", c, i, starts[i], starts[i + 1]);
+	for (uint32 e = 0; e < pl->nslots; e += chunk)
+	{
+		uint32		m = Min(chunk, pl->nslots - e);
+		uint64		first = (uint64) e * width / 8,
+					last = ((uint64) (e + m) * width + 7) / 8;
+
+		memset(buf, 0, last - first + 8);
+		seg_read(seg, pl->at + dir + first, last - first, buf);
+		for (uint32 j = 0; j < m; j++)
+		{
+			uint64		at = (uint64) (e + j) * width - first * 8,
+						rem = sift_cpoint_pk_get(buf, at, par->rbits),
+						code = sift_cpoint_pk_get(buf, at + par->rbits, par->pbits);
+
+			while (starts[b + 1] <= e + j)
+				b++;
+			if (e + j != starts[b] && rem < prem + (code <= pcode && rem == prem))
+				corrupt(seg, "The packed point directory of leaf %d has entry %u out of order.", c, e + j);
+			keys += e + j == starts[b] || rem != prem;
+			prem = rem;
+			pcode = code;
+			if (pl->tids)
+			{
+				uint64		key = sift_cpoint_pk_tid(par, code);
+				uint32		sb = (uint32) (key >> 16) >> SIFT_SB_SHIFT,
+							u = sift_cseg_unit_of_sb(seg, sb);
+
+				if ((key >> 16) > UINT32_MAX || u >= seg->nsb || (key & 0xFFFF) == 0 || (key & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+					corrupt(seg, "The packed point directory of leaf %d lists the address %llx, which is in no unit of the segment.", c, (unsigned long long) key);
+			}
+			else if (code >= total)
+				corrupt(seg, "The packed point directory of leaf %d lists row %llu of %u.", c, (unsigned long long) code, total);
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+	pfree(starts);
+	pfree(buf);
+	return keys;
+}
+
 void
 sift_cseg_verify_points(SiftColSegment *seg)
 {
@@ -4325,6 +4480,12 @@ sift_cseg_verify_points(SiftColSegment *seg)
 
 		if (pl[c].nslots == 0)
 			continue;
+		if (pl[c].packed)
+		{
+			if (verify_packed(seg, c, &pl[c], total) != pl[c].nkeys)
+				corrupt(seg, "The packed point directory of leaf %d has a different number of distinct keys than its record %u.", c, pl[c].nkeys);
+			continue;
+		}
 		if (pl[c].exact && seg->entry.format < SIFT_COL_FORMAT_EXACTSLOT)
 			corrupt(seg, "The point directory of leaf %d has an exact slot count in a segment of column format 1.%d.", c, seg->entry.format);
 		((PointLeaf *) pl)[c].ndense = 0;

@@ -34,7 +34,7 @@ SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE object = 'ga_off'
 DROP INDEX ga_auto, ga_off, ga_list;
 
 -- a narrow index of small columns: the arrays would be a third of it
-CREATE INDEX ga_narrow ON ga USING sift_col (id, r, g);
+CREATE INDEX ga_narrow ON ga USING sift_col (id, r, g) WITH (point_tid_columns = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ga_narrow';
 DROP INDEX ga_narrow;
 

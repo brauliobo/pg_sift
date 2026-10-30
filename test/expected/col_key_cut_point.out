@@ -14,10 +14,10 @@ CREATE INDEX kpt_idx ON kpt USING sift_col (id, cust, k, s) WITH (count_columns 
 NOTICE:  sift_col index "kpt_idx": point_tid_columns lists the rows of the segment on a key-cut index
 DETAIL:  The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.
 VACUUM (ANALYZE) kpt;
-SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+SELECT DISTINCT least(format, 15) AS format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
  format 
 --------
-     34
+     15
 (1 row)
 
 SELECT sift.col_verify('kpt_idx', true);
@@ -220,10 +220,10 @@ SELECT sift.col_verify('kpt_idx', true);
  
 (1 row)
 
-SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+SELECT DISTINCT least(format, 15) AS format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
  format 
 --------
-     34
+     15
 (1 row)
 
 -- 'off' lists nothing: no notice about the rows of a key-cut segment

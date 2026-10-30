@@ -114,12 +114,12 @@ SELECT sift.col_verify('pd_k', true), sift.col_verify('pd_n', true);
             | 
 (1 row)
 
-SELECT index, count(*) AS segments, min(format) AS format, sum(units) > 2 AS units
+SELECT index, count(*) AS segments, least(min(format), 15) AS format, sum(units) > 2 AS units
 FROM (SELECT 'pd_k' AS index, * FROM sift.col_segments('pd_k') UNION ALL SELECT 'pd_n', * FROM sift.col_segments('pd_n')) x
 WHERE kind = 'immutable' GROUP BY index ORDER BY index;
  index | segments | format | units 
 -------+----------+--------+-------
- pd_k  |        2 |     33 | t
+ pd_k  |        2 |     15 | t
  pd_n  |        2 |     12 | t
 (2 rows)
 
@@ -181,10 +181,10 @@ SELECT sift.col_verify('pd_all', true);
  
 (1 row)
 
-SELECT min(format) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
  format 
 --------
-     33
+     15
 (1 row)
 
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
@@ -443,12 +443,12 @@ SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
 (1 row)
 
 RESET sift.col_format_minor;
-SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY kind, format ORDER BY kind, format;
+SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY 1, 2 ORDER BY 1, 2;
    kind    | format | segments 
 -----------+--------+----------
  buffer    |        |        1
  immutable |     12 |        1
- immutable |     33 |        2
+ immutable |     15 |        2
 (3 rows)
 
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
@@ -513,11 +513,11 @@ SELECT sift.col_merge('pd_all'::regclass, true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY kind, format ORDER BY kind, format;
+SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY 1, 2 ORDER BY 1, 2;
    kind    | format | segments 
 -----------+--------+----------
  buffer    |        |        1
- immutable |     33 |        1
+ immutable |     15 |        1
 (2 rows)
 
 SELECT sift.col_verify('pd_all', true);

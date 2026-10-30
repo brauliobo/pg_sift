@@ -54,7 +54,8 @@ struct SiftCGOrdBuf;
 #define SIFT_COL_FORMAT_TEXTORD	32		/* 3.6: the global order of a text leaf: the keys are the ranks of the segment's strings under the leaf's collation, and the strings end the block (order_array_columns names the text column) */
 #define SIFT_COL_FORMAT_EXACTSLOT	33	/* 3.7: the tables of the point directories (minor 14, 16) have ceil(keys * 4 / 3) slots, not the next power of two: 30% less for a directory; written under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_TABFIRST	34	/* 3.7: the chunk table of a key-cut unit precedes the offsets of its rows, so that the first bytes of the unit hold it and a scan that needs no TID reads no more of the directory; written under sift.col_format_minor 15 or more */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_TABFIRST	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_PACKED	35	/* 3.7: a point directory of nearly unique keys is a packed table of entries by bucket, a third to a half of the slots */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_PACKED	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

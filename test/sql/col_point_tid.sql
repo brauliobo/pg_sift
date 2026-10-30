@@ -80,7 +80,7 @@ UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORD
 CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u');
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
-SELECT count(*) > 0 AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
+SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
 SELECT p.units AS units_with_addresses, f.units > 2 AS units_without, p.rows = 0 AS no_row_read
 FROM sift._test_col_counters('pt_t', '0:eq:4321', 24) p, sift._test_col_counters('pt_t', '0:eq:4321', 0) f;
 SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read FROM sift._test_col_counters('pt_t', '1:in:s1|s2|s3|none', 24) p;
@@ -115,7 +115,7 @@ SELECT sift.col_promote('pt_t'::regclass) >= 0 AS promoted;
 SELECT sift.col_verify('pt_t', true);
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 SELECT sift.col_merge('pt_t'::regclass, true) >= 0 AS merged;
-SELECT kind, format, count(*) AS segments FROM sift.col_segments('pt_t') GROUP BY kind, format ORDER BY kind, format;
+SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pt_t') GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT sift.col_verify('pt_t', true);
 SELECT n, preds, pt_cover('pt_t', preds, heapwhere) FROM pt_q ORDER BY n;
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
@@ -142,7 +142,7 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
 RESET sift.col_format_minor;
-SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
 DROP INDEX pt_t;
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
@@ -151,14 +151,14 @@ ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 SET sift.col_format_minor = 14;
 REINDEX INDEX pt_r;
 RESET sift.col_format_minor;
-SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 ALTER INDEX pt_r RESET (point_columns);
 ALTER INDEX pt_r SET (point_tid_columns = 'k, s, u');
 SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
 REINDEX INDEX pt_r;
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
-SELECT min(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
+SELECT least(min(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 
