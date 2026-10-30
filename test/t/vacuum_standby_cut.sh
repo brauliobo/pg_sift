@@ -14,7 +14,7 @@ max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off"
 node_start primary || bail "primary start failed"
-sql primary "CREATE EXTENSION pg_sift" \
+sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE t (id int, key int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \
 	"INSERT INTO t SELECT g, g % 1000, g % 997, md5(g::text) FROM generate_series(1, $ROWS) g" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, key, amount)" "VACUUM t" >/dev/null || bail "setup failed"
@@ -55,7 +55,11 @@ sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null || bail "va
 LSN=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 sleep 3
 check "a standby streams: the replay of VACUUM does not wait for its long query" test "$(sql standby "SELECT pg_last_wal_replay_lsn() >= '$LSN'")" == t
-check "a standby streams: VACUUM leaves the free end of the file (the snapshot of the standby may read it)" test "$(size)" -ge "$grown"
+# the free blocks at the end of the file that were released before the standby's snapshot began are behind the horizon and are cut (25 of 256 blocks at the quick size); what the
+# rewrite released after it is held by the feedback of the standby, and no cut may take it: every held record is still inside the file
+held_in_file() { test "$(sql primary "SELECT coalesce(sum(nblocks), 0) > 0 AND coalesce(max(start + nblocks), 0) <= (SELECT relation_blocks FROM sift.col_index_info('t_idx')) FROM sift._test_freelist('t_idx') WHERE pending")" == t; }
+echo "# held after the VACUUM: $(sql primary "SELECT coalesce(sum(nblocks), 0) || ' blocks, last ends at ' || coalesce(max(start + nblocks), 0) || ', file ' || (SELECT relation_blocks FROM sift.col_index_info('t_idx')) || ', before the VACUUM ' || $((grown / 8192)) FROM sift._test_freelist('t_idx') WHERE pending")" >&2
+check "a standby streams: VACUUM keeps the blocks the standby's snapshot may read (held records stay inside the file)" held_in_file
 touch "$D/release"
 wait "$HOLDER"
 check "the long query is not cancelled" test -z "$(grep -i 'conflict with recovery' "$D/query.out")"
