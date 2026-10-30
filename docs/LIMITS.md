@@ -32,7 +32,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `topn_rows` | LIMIT + OFFSET a top-N scan keeps in a heap | 100,000 | rows | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` | yes |
 | `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 8 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
 | `topn_code_entries` | entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time) | 1,048,576 | entries | the rows of its units are compared with the bar as bytes, as before the order code |  | `agg/topn.c` `ORD_MAX_ENTRIES` | yes |
-| `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/plan_order.c` `FIRST_MAX_KEYS` |  |
+| `first_keys` | sort columns after the DISTINCT ON columns | 4 | columns | normal plan |  | `agg/order/int.h` `FIRST_MAX_KEYS` |  |
 | `first_order_cols` | ORDER BY columns of a first-row lookup child | 8 | columns | the sub-select runs once per key, as a lookup subquery |  | `agg/spec.h` `SIFT_AGG_MAX_FORD` | yes |
 | `first_out_cols` | output columns of a first-row lookup child that map to the table | 16 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_FOUT` |  |
 | `group_keys` | group keys (grouping sets count with their keys) | 32 | keys | normal plan (slug too_many_keys) |  | `agg/spec.h` `SIFT_AGG_MAX_KEYS` | yes |

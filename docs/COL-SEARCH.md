@@ -74,7 +74,7 @@ bind (20000) + terms * 400 + postings * 0.25 + matching pages * 12
 | `wireless headphones` (7k) | 7.0 ms | 2.7 ms |
 | `cookware` (9k) | 6.6 ms | 1.4 ms |
 
-**Top-N.** `WHERE col @@> q [AND filters] ORDER BY <columns> [ASC|DESC] LIMIT n [OFFSET m]` is a SiftAgg path too (`sift.enable_topn`, default on, needs `sift.enable_agg`). The planner adds it at `UPPERREL_ORDERED` (`topn_paths`, `src/agg/plan_order.c`) when the query has no groups, aggregates, windows, `DISTINCT`, joins or row marks, `LIMIT`/`OFFSET` are constants or statement parameters, and every sort expression is a column of the `sift_col` index or one of the expressions below.
+**Top-N.** `WHERE col @@> q [AND filters] ORDER BY <columns> [ASC|DESC] LIMIT n [OFFSET m]` is a SiftAgg path too (`sift.enable_topn`, default on, needs `sift.enable_agg`). The planner adds it at `UPPERREL_ORDERED` (`topn_paths`, `src/agg/order/paths.c`) when the query has no groups, aggregates, windows, `DISTINCT`, joins or row marks, `LIMIT`/`OFFSET` are constants or statement parameters, and every sort expression is a column of the `sift_col` index or one of the expressions below.
 
 Sort keys:
 
@@ -188,6 +188,6 @@ The gain grows with the match count: the heap plan pays a heap fetch per match, 
 - `src/agg/spec.[ch]`: `Node *search` in `SiftAggSpec`, packed last in `custom_private` (`put_node`/`get_node`).
 - `src/agg/agg.c`: open/close of the match set in `engine_open/close`, EXPLAIN lines; `src/agg/par.c`: chunking in `scan_range`, worker counters.
 - `src/agg/colsrc.h`, `src/agg/colsrc.c`, `src/agg/col.c`, `src/agg/col_read.c`: the optional `select` provider callback, and for top-N the `tids`, `zone` and `read_rows` ops (`SiftSrcZone`).
-- Top-N: `src/agg/plan/`, `plan_order.c`, `cost/model.c` (`spec_finish` split out of `agg_finish`, `topn_paths`, the `UPPERREL_ORDERED` dispatch, heap-fetch and correlation terms in `agg_cost`), `src/agg/spec.[ch]` (`topn`, `desc_topn`), `src/agg/agg.c` (`topn_run`/`topn_next`, `engine_open/close`, EXPLAIN, GUC `sift.enable_topn`), `src/agg/unit.c` (`topn_unit`, hooks in `process_unit`), `src/col/codec.c` (`sift_cc_decode_sel` goes dense earlier for delta-coded nodes), `src/col/enc.[ch]`, `src/col/scan*.c`, `src/col/col.h` (`sift_cunit_row_keys`, `sift_col_row_tids`).
+- Top-N: `src/agg/plan/`, `order/`, `cost/model.c` (`spec_finish` split out of `agg_finish`, `topn_paths`, the `UPPERREL_ORDERED` dispatch, heap-fetch and correlation terms in `agg_cost`), `src/agg/spec.[ch]` (`topn`, `desc_topn`), `src/agg/agg.c` (`topn_run`/`topn_next`, `engine_open/close`, EXPLAIN, GUC `sift.enable_topn`), `src/agg/unit.c` (`topn_unit`, hooks in `process_unit`), `src/col/codec.c` (`sift_cc_decode_sel` goes dense earlier for delta-coded nodes), `src/col/enc.[ch]`, `src/col/scan*.c`, `src/col/col.h` (`sift_cunit_row_keys`, `sift_col_row_tids`).
 - `src/col/scan*.c`, `enc.[ch]`, `col.h`: `sift_col_filter_tids` (match-driven), `sift_col_read_idx`, `sift_col_unit_allvisible`, sparse page masks, a faster `sift_col_vet`; `src/core/filter.[ch]`: `sift_filter_create/reset/add_page`.
 - BM25 side: only the existing iterator entry points (`sift_plan_bind`, `sift_iter_*`, `sift_plan_recheck`, `sift_vis_fetch`, `sift_estimate_cached`); `bm25/cscan.c`, `bm25/eval.c` and `bm25/segment.c` (BM25 segment format 2 of 3.0) are unchanged.
