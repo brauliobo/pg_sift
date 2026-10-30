@@ -4,9 +4,12 @@
  * what a test asks a segment
  */
 #include "postgres.h"
+
 #ifdef SIFT_TESTING
 #include "access/table.h"
 #include "funcapi.h"
+#include "storage/lock.h"
+#include "utils/timestamp.h"
 #include "utils/uuid.h"
 #include "utils/float.h"
 #include "col/am.h"
