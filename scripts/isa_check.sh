@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 [[ $(uname -m) == x86_64 ]] || { echo "isa_check: skipped, the POPCNT baseline is an x86-64 rule (NEON is part of the AArch64 baseline)"; exit 0; }
 
 bad=0 checked=0 skipped=0
-for o in src/*/*.o; do
+for o in src/*/*.o src/*/*/*.o; do
 	case $o in *_avx2.o | *_avx512.o) skipped=$((skipped + 1)); continue ;; esac
 	checked=$((checked + 1))
 	insns=$(objdump -d "$o" | grep -cw popcnt || true)

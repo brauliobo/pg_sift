@@ -392,7 +392,7 @@ Two terms keep selective queries on the normal plan (the scan reads every unit, 
 
 **Returned rows.** The node's returned rows are bounded by the groups its tuples can make (`rows_out` in `agg_cost`: the sets times the unnested rows it expects to aggregate), so the plan above is not priced for PostgreSQL's group estimate of an unnest (200 distinct values times 100 rows per call).
 
-**JIT.** A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/cte.c`): its cost, standing for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of nodes above (a window, a union) takes 3.5 to 5 ms (13 to 17 percent of the queries measured).
+**JIT.** A plan with a SiftAgg node is not JIT compiled (`sift_planner`, `src/agg/cte/hook.c`): its cost, standing for 15 to 40 ms of scanning, is above `jit_above_cost`, and compiling the projections of nodes above (a window, a union) takes 3.5 to 5 ms (13 to 17 percent of the queries measured).
 
 ## Stays on the normal plan
 

@@ -3,7 +3,7 @@ MODULE_big = pg_sift
 SIFT_MK := $(lastword $(MAKEFILE_LIST))
 SRC = src
 include $(SRC)/areas.mk
-OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c))
+OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c))
 DATA = $(wildcard sql/pg_sift--*.sql)
 PGFILEDESC = "pg_sift - CTID-bitmap full-text search index"
 
@@ -13,7 +13,7 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
-# -MMD records header dependencies (src/*/*.d) so a header edit rebuilds its users.
+# -MMD records header dependencies (src/*/*.d, src/*/*/*.d) so a header edit rebuilds its users.
 PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS))
 PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement $(SIFT_BASE_ISA)
 # PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
@@ -32,7 +32,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = src/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
+EXTRA_CLEAN = src/*/*.d src/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -137,7 +137,7 @@ else
 include $(PGXS)
 endif
 
--include $(wildcard src/*/*.d)
+-include $(wildcard src/*/*.d src/*/*/*.d)
 
 # The module version the library reports (scripts/build-id.sh); build_id.h is rewritten only when the id changes, so that handler.o is rebuilt then and no other file.
 SIFT_BUILD_ID ?= $(shell $(srcdir)/scripts/build-id.sh $(or $(srcdir),.))

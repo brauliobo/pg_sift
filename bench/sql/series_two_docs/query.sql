@@ -1,5 +1,5 @@
 -- Two series of buckets (a spine of weeks of two periods LEFT JOINed to the rows of each document by a jsonb array of keys) combined by a FULL JOIN on a jsonb array and a lag window.
--- The events CTE (base) is read by both series: PostgreSQL keeps it materialized; sift plans it inline (src/agg/cte.c). Run with sift.enable_agg on and off; 100k rows: about 2.3 s normal, 60 ms with both series as scans.
+-- The events CTE (base) is read by both series: PostgreSQL keeps it materialized; sift plans it inline (src/agg/cte/variants.c). Run with sift.enable_agg on and off; 100k rows: about 2.3 s normal, 60 ms with both series as scans.
 WITH periods AS (
   SELECT * FROM (VALUES ('cur', daterange(current_date - 364, current_date, '[]'), interval '0 day'),
                         ('prev', daterange(current_date - 729, current_date - 365, '[]'), interval '1 year')) p(period, range, shift)),

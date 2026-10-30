@@ -88,7 +88,7 @@ focus_regex() {
 	local t f rest=() star=() sel names
 	for t; do
 		f=${t%%:*}
-		[[ $f =~ ^src/(agg|col|table|bm25)/[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }
+		[[ $f =~ ^src/(agg|col|table|bm25)/([^/]+/)?[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }
 		[[ $t != *:'*' ]] || star+=("$f")
 	done
 	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
@@ -321,7 +321,7 @@ if [[ $MODE == --selftest ]]; then
 	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
 	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1] }' "$REPO/scripts/focus.tsv")
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
-	[[ $(focus_regex src/agg/cte.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
+	[[ $(focus_regex src/agg/cte/hook.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
 	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }

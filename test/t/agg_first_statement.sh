@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The first statement of a session that has not preloaded the library loads it while the planner opens the column index, after planner() went
 # without sift_planner: its CTE is not planned inline and the aggregates over it run the ordinary plan. The executor start plans that statement
-# again through the hook (agg/cte.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
+# again through the hook (agg/cte/hook.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
 # is loaded before the statement under test, and sift.stats() reads the scans that backend ran.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)

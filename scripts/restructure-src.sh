@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The layout checker of src/. The move of the files into one folder per area (core/, bm25/, col/, agg/, table/) and
-# the rename of every file to its short name (x.c in bm25/, not sift_x.c) are done; this script keeps the layout from drifting.
+# the rename of every file to its short name (x.c in bm25/, not sift_x.c) are done; this script keeps the layout from drifting. A big context of an
+# area is a folder of its own, one level down (agg/topn/run.c); a source includes it by its path from src/ (#include "agg/topn/run.h").
 #
 #   scripts/restructure-src.sh --check    exit 1 and list: a file of src/ outside the area folders, a file of a renamed area that still has the
 #                                         sift_ prefix, a reference to a file of src/ that does not exist, a
@@ -23,8 +24,8 @@ check_layout() {
 	local f dir area name rc=0
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
-		if [[ $dir != */* || $name == */* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS)"; rc=1; continue; fi
-		if grep -qw -- "$area" <<<"$RENAMED" && [[ $name == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
+		if [[ $dir != */* || $name == */*/* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/"; rc=1; continue; fi
+		if grep -qw -- "$area" <<<"$RENAMED" && [[ ${name##*/} == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
@@ -46,7 +47,7 @@ while (my $f = <STDIN>) {
 	close $in;
 	my $head = $text;
 	$head = $1 if $f =~ /CHANGELOG\.md$/ && $text =~ /^(.*?)(?=\n## [0-9])/s;
-	while ($head =~ m{\bsrc/($areas)/([A-Za-z0-9_.]+)}g) {
+	while ($head =~ m{\bsrc/($areas)/([A-Za-z0-9_.]+(?:/[A-Za-z0-9_.]+)?)}g) {
 		my ($a, $n, $pos) = ($1, $2, $-[0]);
 		next unless $n =~ /\.(?:c|h|comp|py)$/ && $n !~ /\.$/;
 		report($f, $head, $pos, "no such file src/$a/$n") unless -e "src/$a/$n";

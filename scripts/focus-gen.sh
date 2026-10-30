@@ -23,7 +23,7 @@ trap 'scripts/pgtest.sh stop >/dev/null 2>&1 || true; [[ -n ${KEEP:-} ]] || rm -
 scripts/pgtest.sh install >"$WORK/build.log" 2>&1 || { tail -n 20 "$WORK/build.log" >&2; exit 1; }
 scripts/pgtest.sh start >/dev/null
 
-# the functions run since the counters were reset, as JSON on stdout: {"src/agg/cte.c": ["cte_floor", ...]}
+# the functions run since the counters were reset, as JSON on stdout: {"src/agg/cte/hook.c": ["cte_floor", ...]}
 executed() {
 	local f
 	f=$(find src -name '*.gcda')

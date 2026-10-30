@@ -51,7 +51,7 @@ CORE     = col/codec col/codec_policy col/codec_write col/codec_parse col/codec_
            bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/kernels_neon bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/pos bm25/bitmap bm25/blob bm25/topk bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/bitmap_neon core/span
 OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
-HDR      = $(wildcard $(SRC)/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
+HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
 DRIVER   = $(OUT)/fz_driver.o
 endif

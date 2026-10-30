@@ -31,7 +31,7 @@ trap 'rm -rf "$WORK"' EXIT
 PGINC=$(pg_config --includedir-server)
 INC=(-I"$REPO/src")
 CFLAGS=(-std=gnu11 "${INC[@]}" -isystem "$PGINC" -isystem "$(pg_config --includedir-internal 2>/dev/null || echo "$PGINC")" -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD -D_GNU_SOURCE -march=x86-64)
-[[ -n $FILES ]] || FILES=$(cd "$REPO" && ls src/*/*.c | grep -v -E '_test\.c$')
+[[ -n $FILES ]] || FILES=$(cd "$REPO" && ls src/*/*.c src/*/*/*.c | grep -v -E '_test\.c$')
 mapfile -t SRCS < <(tr ' ' '\n' <<<"$FILES" | sed '/^$/d')
 
 # the checks of clang-tidy: the analyzer's core, security and unix families, and the bugprone and cert checks that find overflow,
