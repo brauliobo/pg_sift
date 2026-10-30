@@ -55,7 +55,7 @@ sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null || bail "va
 LSN=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 sleep 3
 check "a standby streams: the replay of VACUUM does not wait for its long query" test "$(sql standby "SELECT pg_last_wal_replay_lsn() >= '$LSN'")" == t
-# the free blocks at the end of the file that were released before the standby's snapshot began are behind the horizon and are cut (25 of 256 blocks at the quick size); what the
+# the free blocks at the end of the file that were released before the standby's snapshot began are behind the horizon and are cut when they are over a sixteenth of the file (25 of 256 blocks at the quick size; 12 of 441 at the full size, which stay); what the
 # rewrite released after it is held by the feedback of the standby, and no cut may take it: every held record is still inside the file
 held_in_file() { test "$(sql primary "SELECT coalesce(sum(nblocks), 0) > 0 AND coalesce(max(start + nblocks), 0) <= (SELECT relation_blocks FROM sift.col_index_info('t_idx')) FROM sift._test_freelist('t_idx') WHERE pending")" == t; }
 echo "# held after the VACUUM: $(sql primary "SELECT coalesce(sum(nblocks), 0) || ' blocks, last ends at ' || coalesce(max(start + nblocks), 0) || ', file ' || (SELECT relation_blocks FROM sift.col_index_info('t_idx')) || ', before the VACUUM ' || $((grown / 8192)) FROM sift._test_freelist('t_idx') WHERE pending")" >&2
