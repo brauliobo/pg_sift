@@ -155,6 +155,12 @@ BEGIN
 		NULL;
 	END LOOP;
 END $$;
+-- by price: at the default page costs the normal plan and the scans of the arms cost less than the two-level scan did when each arm tuple was priced 330 operations (a measured 70 ns),
+-- and the planner kept a plan that runs ten times slower; the scan is chosen with no force
+RESET sift.agg_force;
+RESET seq_page_cost;
+RESET random_page_cost;
+SELECT pushed(report()) AS chosen_by_price;
 DROP TABLE events, lookup;
 DROP FUNCTION pushed(text), report(text,text,text), same(text,boolean,boolean), spined(text), unlike();
 DROP EXTENSION pg_sift_helpers;

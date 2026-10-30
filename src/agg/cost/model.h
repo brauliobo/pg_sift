@@ -58,8 +58,8 @@
 #define AGG_START_PLAIN		40000.0	/* the same for an aggregate with no groups */
 #define AGG_RESTART_COST	60000.0	/* a scan an enclosing query restarts for each value: PostgreSQL's nested loop charges the price of the inner path for every row of the outer. A probe takes 74 us (1,000,000 rows) to 120 us (100,000) where a btree's takes 6 us, which PostgreSQL prices at about 12: the restart is priced at 150 so that a btree on the key and the order wins where there is one (the start over itself is 4.5 us) */
 #define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
-#define AGG_ARM_TUPLE		150.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured) */
-#define AGG_ARM_HIDDEN		330.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
+#define AGG_ARM_TUPLE		36.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured; 150 priced the scan at 334 units a million instructions against the 90 of the others and the planner kept a plan 10 times slower, PLANNING.md B2) */
+#define AGG_ARM_HIDDEN		80.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_MERGE_KEY		25.0	/* ... and, when the workers are priced, each key of it: 35 ns with one key over 30,000 groups and 85 ns with three over 100,000 per table measured (the CPU two workers add beyond their 3.35 ms start) */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
