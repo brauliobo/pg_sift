@@ -43,8 +43,8 @@ BEGIN
 END $$;
 CREATE FUNCTION verdict(q text) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(DISTINCT used::text, ',') FROM sift.explain_why(q) WHERE arm = 'cte_inline' $$;
 
--- the floor prices the scans that replace the shared CTE (the next statement); the plan that stays when they are not taken is the one the planner makes without
--- the library, with PostgreSQL's rows, for the table with the column index as for its copy without one (agg_cte_stock_rows)
+-- the join of the table with the column index with the list of ranges is estimated from the statistics of its column (agg_range_join_rows), the rows of the CTE
+-- are not a row or two; the copy without the column index keeps PostgreSQL's (the plan that stays when the scans lose has no lifted rows: agg_cte_stock_rows)
 SELECT t, cte_rows(held_query(t)) > 20 AS lifted FROM (VALUES ('events'), ('plain_events')) v(t) ORDER BY t;
 -- the scans take the shared CTE (used: t); the normal plan priced from one row had kept it
 SELECT verdict(series_query('events')) AS inline_used;

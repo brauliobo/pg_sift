@@ -438,6 +438,7 @@ extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel,
 extern double filter_rows_ratio(AggCtx *c);
 extern void derived_rel_rows(PlannerInfo *root, RelOptInfo *rel);
 extern void derived_cte_rows(PlannerInfo *root, RelOptInfo *rel);
+extern void agg_range_join_rows(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte);
 extern double agg_cte_lift;
 extern bool agg_stock_rows;
 extern bool agg_rows_lifted;
