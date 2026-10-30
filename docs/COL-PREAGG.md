@@ -4,7 +4,7 @@ Each stored unit of a column index carries sums, histograms (the *cube*) and per
 
 Versions: pre-aggregates 3.0 (column format minor 2; 3.0 writes minor 3); element rollups minor 4 (sections 2, 6, 7); on-demand rollup refresh by a worker 3.1 (section 7); `rollup_dims` minor 9 (sections 2, 6).
 
-Files: `src/col/preagg.[ch]`, `src/col/preagg_opt.c`, `src/col/preagg_read.c` (formats, option, compute, verify; portable), `src/col/seg_write.c`, `src/col/seg.c`, `src/col/pagg.[ch]` (through the column source), `src/col/rollup.c` (on-demand refresh), `src/agg/colsrc.h` (`unit_exact`, `unit_agg`, `unit_hist`, `unit_rollup`, `preagg`), `src/agg/spec.c` (`sift_aggspec_preagg`), `src/agg/unit.c` (`preagg_*`). Tests: the table in section 6.
+Files: `src/col/preagg.[ch]`, `src/col/preagg_opt.c`, `src/col/preagg_read.c` (formats, option, compute, verify; portable), `src/col/seg_write/seg_write.c`, `src/col/seg.c`, `src/col/pagg.[ch]` (through the column source), `src/col/rollup.c` (on-demand refresh), `src/agg/colsrc.h` (`unit_exact`, `unit_agg`, `unit_hist`, `unit_rollup`, `preagg`), `src/agg/spec.c` (`sift_aggspec_preagg`), `src/agg/unit.c` (`preagg_*`). Tests: the table in section 6.
 
 ## 1. What other engines precompute, and what is taken
 

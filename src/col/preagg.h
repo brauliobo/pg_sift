@@ -126,7 +126,7 @@ typedef struct SiftCPaggSpec
 	bool		gorderauto;				/* order_array_columns is the choice of the build ('auto: a, b'): the leaves of it get their sorted run too */
 	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
 	bool		gorder_group_auto;	/* order_array_group is the choice of the build ('auto: g'): only the blocks of dates and timestamps are grouped, a range of another leaf keeps its plain order */
-	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write.c) */
+	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write/seg_write.c) */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
 	int			ndims;

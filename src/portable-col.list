@@ -25,7 +25,11 @@ col/codec_avx512.c
 col/codec_neon.c
 col/compress.c
 col/seg.c
-col/seg_write.c
+col/seg_write/seg_write.c
+col/seg_write/add.c
+col/seg_write/dict.c
+col/seg_write/points.c
+col/seg_write/summary.c
 col/seg_maint.c
 col/ver.c
 col/preagg.c
@@ -63,6 +67,7 @@ col/enc.h
 col/enc_int.h
 col/seg.h
 col/seg_int.h
+col/seg_write/seg_write_int.h
 col/gorder.h
 col/point.h
 col/runs.h

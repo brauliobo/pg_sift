@@ -1,5 +1,5 @@
 /*
- * col/seg_int.h - shared between the files of the column segment writer and reader (col/seg.c, col/seg_write.c, col/seg_maint.c).
+ * col/seg_int.h - shared between the files of the column segment writer and reader (col/seg.c, col/seg_write/seg_write.c, col/seg_maint.c).
  */
 #ifndef SIFT_COL_SEG_INT_H
 #define SIFT_COL_SEG_INT_H
