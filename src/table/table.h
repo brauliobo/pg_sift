@@ -9,7 +9,7 @@
  *   table/scan.c    sequential, TID range and parallel scans
  *   table/fetch.c   TID fetches, bitmap scans, TABLESAMPLE
  *   table/analyze.c ANALYZE sampling, index build
- *   table/vacuum.c  VACUUM, promotion, rewrites
+ *   table/vacuum.c  VACUUM (vacuum_maint.c: the maintenance passes and workers; vacuum_copy.c: VACUUM FULL / CLUSTER, promotion, rewrites)
  *   table/seg.c     the column groups: the layout of a table, datum <-> leaf values, the engine glue
  *   table/gscan.c   the group scan: rows of the column groups in order (gscan_row.c: their values; gscan_cache.c: a vblock, TID fetches)
  *   table/vers.c    versions of the rows of the groups with unfrozen rows
