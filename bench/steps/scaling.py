@@ -93,8 +93,9 @@ def time_cells(db, cs, reps, rows):
     cpus, mbs, pid = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): read_mb(db, c[2], c[3]) for c in cs}, server_pid(db)
     idle = idle_cpu(db, pid)
     with open(LOCK, 'a') as lock:
-        print('scaling: waiting for %s' % LOCK, file=sys.stderr)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not os.environ.get('PERF_LOCK_HELD'):   # a pass that holds the lock (steps/lib.sh perf_hold) would wait for itself
+            print('scaling: waiting for %s' % LOCK, file=sys.stderr)
+            fcntl.flock(lock, fcntl.LOCK_EX)
         print('scaling: timing %d cells x %d reps, %s' % (len(cs), reps, extras.host_load()), file=sys.stderr)
         for rep in range(reps + 1):
             order = cs[:]
