@@ -7,6 +7,7 @@
 #include "nodes/extensible.h"
 
 #include "agg/colsrc.h"
+#include "agg/cost_model.h"
 #include "agg/refuse.h"
 #include "core/limits.h"
 #include "agg/search.h"
@@ -238,19 +239,6 @@ typedef struct ComboWalk
 	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
 } ComboWalk;
 
-#define AGG_LIFT_GROUPS		1024.0	/* the groups the lift of a lookup's rows (spec_finish) adds to the plan's own: a plan above hashes or materializes a node of a thousand rows more than it expects, and a join of two lifted nodes (their rows multiplied by a default join selectivity) priced the scans above the plan that keeps one of them normal */
-#define AGG_GEN_ROW			1.0	/* a transition function call through fmgr (the function's own procost and the leaf's Datum, 2 operators, come on top): 32 to 88 ns a row measured for bool_and, min(text), variance, array_agg, string_agg and corr over 1,000,000 rows, about 3 to 7 operators by the cost of the normal plan's own rows (it was 4: a scan 10 to 50% faster than PostgreSQL's plan lost the choice) */
-#define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
-#define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */
-#define AGG_GEN_FIRST		1.0		/* a row of a DISTINCT ON column: the compare of its sort keys with the best row of the group, the value read when it wins */
-#define AGG_GEN_FIRST_KEY	1.2		/* ... and each sort key's compare */
-#define AGG_GEN_FOLLOW		0.3		/* a row of the other DISTINCT ON columns: the answer of the first one */
-#define AGG_GEN_HYP			200.0	/* a row of a hypothetical-set aggregate: sorted by the scan for its groups, then again by the aggregate (no gain over the normal plan) */
-#define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
-#define AGG_GEN_GROUP		150.0	/* the sort of an ordered-set or sorted group */
-#define AGG_GEN_STATE		20.0	/* a group's state and final function of any other generic aggregate: 40 to 200 ns a group measured for min(text), bool_and, max(timestamptz), variance and array_agg over 100,000 to 620,000 groups (it was priced with the sort, 1.8 us) */
-#define AGG_GROUP_KEY_BYTES	40.0	/* a group key's share of the table: its id maps and the ids of the group (agg/group.c), without the value's own bytes */
-#define AGG_GROUP_SLACK		1.3		/* the group arrays grow by doubling: on average a third is room, measured 185 bytes a group for 5 aggregates and one key */
 
 typedef struct LeftJoin
 {
@@ -286,7 +274,6 @@ typedef struct OutWalk
 	bool		bad;
 } OutWalk;
 
-#define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 
 extern const CustomPathMethods agg_path_methods;
 extern int	agg_index_pick;		/* the column index of the scanned table the stage plans on: the nth of those it has, ... */
@@ -301,19 +288,6 @@ extern bool level_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
-#define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
-#define AGG_PLAN_ROW		11.0	/* a row of a plan (a UNION ALL of two tables of 500,000 rows) made the lookup table: the tuple copied into the table and its key hashed, 380 instructions a row measured with a count(*) over it; each numeric column of it adds AGG_LOAD_NUMERIC */
-#define TOPN_HEADS_UNITS	16.0	/* the units a top-N walk may read for the heads of their runs to beat the order array (topn_heads_win) */
-#define AGG_ORDER_MIN_COST	1000.0	/* the cost of the normal join under which the other tables of an inner join are not tried as the scanned one: the order saves less than the 60 to 90 us the extra paths take to plan (about 2 ms of the normal plan) */
-#define AGG_LOAD_ROW		20.0	/* ... of a table read whole from its heap, not kept from an earlier query: the visibility test, the key hashed and the row stored (66 ns a row measured on a 500,000-row read, 100 ns with the first touches), beyond the pages */
-#define AGG_LOAD_KEY		10.0	/* ... of a table kept as the keys of its rows (lookup_keys_only: no dictionary of the keys, no chains): 453 instructions and 29 ns a row measured on a 550,000-row read, the pages apart */
-#define AGG_LOAD_ROW_COLS	8.0	/* ... of a table read whole from the leaves of a column index that holds its columns (map_load_cols): the units are decoded a unit at a time and a tuple of the columns is made for the rows that are visible (65 ns a row against 160 ns from the heap, measured); AGG_LOAD_BIG scales it past the rows the cache holds */
-#define AGG_LOAD_BIG		250000.0	/* the rows of a table whose map stays in the cache: past them a load from the leaves costs the 0.4 power of the rows more (61 ns a row for 1,500,000 rows of 100,000 keys, 74 to 88 ns for 6,000,000 rows of 10,000 to 200,000 keys, 127 ns for 1,500,000 keys: the key dictionary outgrows the cache) */
-#define AGG_LOAD_NUMERIC	32.0	/* ... more for each numeric column of such a load: the value is built and allocated for each row (260 ns a row and column measured on 2,750,000 rows of a fact table, against 15 ns for an integer one) */
-#define AGG_FIRST_ROW		0.1		/* a row of a table read as the first-row lookup of a child (agg/first.c): 0.3 us to load and hash (33 ms for 108,000 rows), a model unit being 2.9 us */
-#define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
-#define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
-#define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
 
 extern Node *strip_relabel(Node *n);
 extern Oid func_of(Node *n);
