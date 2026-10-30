@@ -196,7 +196,6 @@ typedef struct SiftTblRel
 	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
 	uint32		caprecent;
-	int8		chain_ok;		/* 0 not known yet, 1: every index of the table is read by fetching its TIDs (a HOT chain is followed), -1: one is not */
 	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;
@@ -301,9 +300,14 @@ extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vbloc
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
 /* Clears the bits of offmask (bit i: offset i + 1, SIFT_OFFMASK_WORDS words of 64) whose row is not visible to snapshot; returns the bits left */
+/* Does the table have HOT chains (as the log this backend has read tells) */
+extern bool sift_tbl_has_chains(Relation rel);
+typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
+/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members */
+extern void sift_tbl_chain_members(Relation rel, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
-extern int	sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask);
+extern int	sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain);
 extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
 extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
 /* As sift_tbl_fetch_row, but a row of a column group comes without its tuple (rv->tuple NULL) and costs no decoding: for callers that
@@ -373,7 +377,6 @@ typedef struct SiftTblDel
 	bool		self_locked;	/* the current transaction holds a lock entry */
 } SiftTblDel;
 
-extern bool sift_tbl_index_follows_chains(Relation index);
 /* The version the HOT update of key (the last one the log tells of, aborted ones left out) led to: false when it has none */
 extern bool sift_tbl_hot_next(const SiftTblRel *st, uint64 key, uint64 *succ);
 /* The deletion state of key by the log as it is now (no snapshot: the writers' view) */

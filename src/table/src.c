@@ -224,7 +224,7 @@ tbl_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	TblSource  *t = arg;
 
-	return sift_tbl_filter_page_vers(t->rel, t->snapshot, t->vers, blk, offmask);
+	return sift_tbl_filter_page_vers(t->rel, t->snapshot, t->vers, blk, offmask, false);
 }
 
 /* The leaf of schema that holds leaf `want` of the layout: of the table's column (a store of another kind is a column the table changed the type of) or of a declared path (its def has to be the same) */

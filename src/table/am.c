@@ -41,8 +41,6 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
-#include "col/pg.h"
-#include "core/sift.h"
 #include "bm25/merge.h"
 #include "table/table.h"
 
@@ -442,37 +440,11 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 	return result;
 }
 
-/* Does the index hand its TIDs to a fetch (a chain is followed there): not the sift indexes, which check the visibility of a page of TIDs themselves, so they have an entry for every version */
-bool
-sift_tbl_index_follows_chains(Relation index)
-{
-	return index->rd_rel->relam != sift_catalog()->am && index->rd_rel->relam != sift_col_am_oid();
-}
-
-static bool
-indexes_follow_chains(Relation rel, SiftTblRel *st)
-{
-	if (st->chain_ok == 0)
-	{
-		ListCell   *lc;
-
-		st->chain_ok = 1;
-		foreach(lc, RelationGetIndexList(rel))
-		{
-			Relation	index = index_open(lfirst_oid(lc), NoLock);
-
-			if (!sift_tbl_index_follows_chains(index))
-				st->chain_ok = -1;
-			index_close(index, NoLock);
-		}
-	}
-	return st->chain_ok > 0;
-}
-
 /*
  * Does the new version keep every column an index reads, as binary datums (the heap's test): then no index gets an entry for it, its tombstone is a HOT
  * one and the old version's entries lead to it. Not with a summarizing index, which wants the new
- * version's block, nor on a table without index (nothing to save).
+ * version's block, nor on a table without index (nothing to save). The sift indexes are no exception: they read the columns they name, and the visibility
+ * of their TIDs follows the chain (sift_tbl_filter_page).
  */
 static bool
 index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple mtup)
@@ -483,7 +455,7 @@ index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple 
 	SiftTblRowVer rv;
 	bool		same = true;
 
-	if (!sift_tbl_hot_update || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) || !indexes_follow_chains(rel, st) ||
+	if (!sift_tbl_hot_update || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
 		!sift_tbl_fetch_row(rel, st, otid, &rv))
 		return false;
 	for (int attr = -1; same && (attr = bms_next_member(attrs, attr)) >= 0;)

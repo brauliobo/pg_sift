@@ -23,6 +23,7 @@
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
@@ -274,6 +275,7 @@ struct SiftSearch
 	IndexInfo  *iinfo;
 	MemoryContext tmpcx;
 	int64		matches;
+	bool		chains_done;	/* the table has HOT chains: the filter of every unit was made at the first call */
 };
 
 static bool
@@ -469,12 +471,87 @@ union_page(SiftSearch *s, BlockNumber *blk, uint64 *mask)
 	return true;
 }
 
+/* A page of the match set of a table with HOT chains, with the members of the chains of the matches added (see search_with_chains) */
+typedef struct HotPage
+{
+	BlockNumber blk;
+	uint64		mask[SIFT_OFFMASK_WORDS];
+} HotPage;
+
+static void
+hot_member(void *arg, SiftKey key)
+{
+	BlockNumber blk = key >> 16;
+	uint32		off = (key & 0xFFFF) - 1;
+	bool		found;
+	HotPage    *p = hash_search((HTAB *) arg, &blk, HASH_ENTER, &found);
+
+	if (!found)
+		memset(p->mask, 0, sizeof(p->mask));
+	p->mask[off / 64] |= UINT64CONST(1) << (off % 64);
+}
+
+static int
+hot_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const HotPage *) a)->blk, ((const HotPage *) b)->blk);
+}
+
+/*
+ * The match set of every unit, with the members of the HOT chains of the matches: the index has an entry for the first version of a chain
+ * and the scans of the table see the version the snapshot sees, wherever it is, and the members hold the text the root does. Made on the
+ * first call; the rows the table does not keep for the snapshot leave through its own visibility.
+ */
+static const SiftFilter *
+search_with_chains(SiftSearch *s)
+{
+	HASHCTL		ctl = {.keysize = sizeof(BlockNumber),.entrysize = sizeof(HotPage),.hcxt = CurrentMemoryContext};
+	HTAB	   *pages = hash_create("sift search pages of chains", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	HASH_SEQ_STATUS seq;
+	HotPage    *p,
+			   *sorted;
+	int			n = 0;
+	BlockNumber blk;
+	uint64		mask[SIFT_OFFMASK_WORDS];
+
+	sift_filter_reset(s->filter);
+	s->want_lo = 0;
+	s->want_hi = PG_UINT32_MAX;
+	for (int i = 0; i < s->narms; i++)
+		arm_start(&s->arm[i]);
+	while (union_page(s, &blk, mask))
+	{
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		{
+			s->matches += pg_popcount64(mask[k]);
+			for (uint64 m = mask[k]; m; m &= m - 1)
+				hot_member(pages, ((uint64) blk << 16) | (k * 64 + pg_rightmost_one_pos64(m) + 1));
+		}
+		sift_vis_chain_members(s->heap, blk, mask, hot_member, pages);
+	}
+	sorted = palloc(hash_get_num_entries(pages) * sizeof(HotPage));
+	hash_seq_init(&seq, pages);
+	while ((p = hash_seq_search(&seq)) != NULL)
+		sorted[n++] = *p;
+	qsort(sorted, n, sizeof(HotPage), hot_cmp);
+	for (int i = 0; i < n; i++)
+		sift_filter_add_page(s->filter, sorted[i].blk, sorted[i].mask);
+	pfree(sorted);
+	hash_destroy(pages);
+	s->chains_done = true;
+	return s->filter;
+}
+
 const SiftFilter *
 sift_search_range(SiftSearch *s, uint32 lo, uint32 hi)
 {
 	BlockNumber blk;
 	uint64		mask[SIFT_OFFMASK_WORDS];
 
+	if (s->chains_done)
+		return s->filter;
+	if (sift_vis_has_chains(s->heap))
+		return search_with_chains(s);
 	sift_filter_reset(s->filter);
 	s->want_lo = lo;
 	s->want_hi = hi;

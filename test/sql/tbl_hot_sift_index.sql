@@ -1,0 +1,130 @@
+-- A sift_table with a BM25 index gets HOT updates when an UPDATE changes none of the columns the indexes read: the index entries are
+-- those of the first version of the chain, and the visibility of a TID the BM25 index hands out is that of the chain (sift_tbl_filter_page). The table must answer
+-- as a heap twin with the same indexes does through the BM25 scans (index, bitmap, count pushdown), across HOT and other updates,
+-- rollback, VACUUM, an index built over chains and REINDEX.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, grp int, price int, body text, v int, note text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE h (id int PRIMARY KEY, grp int, price int, body text, v int, note text) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT g, g % 20, g % 500, CASE WHEN g % 2 = 0 THEN 'order express shipping ' ELSE 'order standard shipping ' END || 'n' || g, g, 'x' FROM generate_series(1, 10000) g;
+INSERT INTO h SELECT * FROM t;
+CREATE INDEX t_grp ON t (grp, price);
+CREATE INDEX t_bm25 ON t USING sift (body);
+CREATE INDEX h_grp ON h (grp, price);
+CREATE INDEX h_bm25 ON h USING sift (body);
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
+ANALYZE t, h;
+
+-- the same answer from t as from the heap twin read sequentially, whatever scan the indexes give (# stands for the table)
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS
+$$
+DECLARE
+	modes text[] := ARRAY['enable_seqscan=on enable_indexscan=on enable_bitmapscan=on',
+						  'enable_seqscan=off enable_indexscan=on enable_bitmapscan=off',
+						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on',
+						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on sift.enable_agg=off sift.enable_count=off'];
+	m text;
+	kv text;
+	a text;
+	ref text;
+BEGIN
+	PERFORM set_config('enable_seqscan', 'on', false);
+	PERFORM set_config('enable_indexscan', 'off', false);
+	PERFORM set_config('enable_bitmapscan', 'off', false);
+	PERFORM set_config('sift.enable_scan', 'off', false);
+	PERFORM set_config('sift.enable_count', 'off', false);
+	PERFORM set_config('sift.enable_agg', 'off', false);
+	EXECUTE format('SELECT coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''') FROM (%s) x', replace(q, '#', 'h')) INTO ref;
+	PERFORM set_config('sift.enable_scan', 'on', false);
+	PERFORM set_config('sift.enable_count', 'on', false);
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	FOREACH m IN ARRAY modes LOOP
+		FOREACH kv IN ARRAY string_to_array(m, ' ') LOOP
+			PERFORM set_config(split_part(kv, '=', 1), split_part(kv, '=', 2), false);
+		END LOOP;
+		EXECUTE format('SELECT coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''') FROM (%s) x', replace(q, '#', 't')) INTO a;
+		IF a IS DISTINCT FROM ref THEN
+			RAISE NOTICE 'differs under %: % bytes against %', m, length(a), length(ref);
+			RETURN false;
+		END IF;
+	END LOOP;
+	RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET sift.enable_scan; RESET sift.enable_count; RESET sift.enable_agg;
+	RETURN true;
+END
+$$;
+CREATE FUNCTION same_all() RETURNS boolean LANGUAGE sql AS
+$$ SELECT same('SELECT id, v, note FROM # WHERE grp = 7')
+      AND same('SELECT id, price FROM # WHERE grp < 5 AND price > 300')
+      AND same('SELECT count(*), sum(price) FROM # WHERE grp = 3')
+      AND same('SELECT grp, count(*), sum(price) FROM # GROUP BY grp')
+      AND same('SELECT id, v FROM # WHERE body @@> ''express''')
+      AND same('SELECT id, note FROM # WHERE body @@> ''standard'' AND grp = 2')
+      AND same('SELECT count(*) FROM # WHERE body @@> ''shipping''')
+      AND same('SELECT grp, count(*), sum(price) FROM # WHERE body @@> ''express'' GROUP BY grp')
+      AND same('SELECT id FROM # WHERE body @@> ''n77''') $$;
+SELECT same_all() AS before_updates;
+
+-- updates that keep every indexed column (v, note): HOT, although two sift indexes exist
+BEGIN;
+UPDATE t SET v = v + 1 WHERE id % 5 = 0;
+UPDATE h SET v = v + 1 WHERE id % 5 = 0;
+SELECT pg_stat_get_xact_tuples_hot_updated('t'::regclass) AS hot_updates, pg_stat_get_xact_tuples_updated('t'::regclass) AS updates;
+UPDATE t SET v = v + 1, note = 'y' WHERE id % 5 = 0 AND id < 5000;
+UPDATE h SET v = v + 1, note = 'y' WHERE id % 5 = 0 AND id < 5000;
+COMMIT;
+SELECT same_all() AS after_hot_round;
+-- the btree columns, then the BM25 column change: not HOT
+UPDATE t SET price = price + 1 WHERE id % 7 = 0;
+UPDATE h SET price = price + 1 WHERE id % 7 = 0;
+SELECT same_all() AS after_column_change;
+UPDATE t SET body = 'refund processed n' || id WHERE id % 11 = 0;
+UPDATE h SET body = 'refund processed n' || id WHERE id % 11 = 0;
+SELECT same_all() AS after_text_change;
+SELECT same('SELECT id FROM # WHERE body @@> ''refund''') AS refunds;
+
+-- a rolled-back HOT update leaves the old version live
+BEGIN;
+UPDATE t SET v = -1 WHERE id % 13 = 0;
+UPDATE h SET v = -1 WHERE id % 13 = 0;
+SELECT same('SELECT id, v FROM # WHERE grp = 4') AS inside_transaction;
+ROLLBACK;
+SELECT same_all() AS after_rollback;
+
+-- the same row updated again and again
+DO $$ BEGIN FOR i IN 1..25 LOOP UPDATE t SET v = v + 1 WHERE id = 42; UPDATE h SET v = v + 1 WHERE id = 42; END LOOP; END $$;
+SELECT same('SELECT * FROM # WHERE id = 42') AS by_key;
+SELECT same('SELECT id, v FROM # WHERE grp = 2 AND body @@> ''n42''') AS by_bm25_and_btree;
+
+-- VACUUM: the chains collapse, then go with the last version
+VACUUM t, h;
+SELECT same_all() AS after_vacuum;
+UPDATE t SET v = v + 1 WHERE id % 3 = 0;
+UPDATE h SET v = v + 1 WHERE id % 3 = 0;
+DELETE FROM t WHERE id % 17 = 0;
+DELETE FROM h WHERE id % 17 = 0;
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained_again;
+VACUUM t, h;
+SELECT same_all() AS after_second_vacuum;
+
+-- indexes built over rows that have chains, and rebuilt
+UPDATE t SET v = v + 1 WHERE id % 2 = 0;
+UPDATE h SET v = v + 1 WHERE id % 2 = 0;
+CREATE INDEX t_v ON t (v);
+CREATE INDEX h_v ON h (v);
+SELECT same('SELECT id, v FROM # WHERE v BETWEEN 5000 AND 5100') AS new_btree_over_chains;
+CREATE INDEX t_bm25b ON t USING sift (body);
+CREATE INDEX h_bm25b ON h USING sift (body);
+SELECT same('SELECT id, v FROM # WHERE body @@> ''express'' AND grp = 4') AS new_bm25_over_chains;
+UPDATE t SET note = 'z' WHERE id % 4 = 0;
+UPDATE h SET note = 'z' WHERE id % 4 = 0;
+REINDEX INDEX t_bm25;
+REINDEX INDEX h_bm25;
+REINDEX INDEX t_grp;
+REINDEX INDEX h_grp;
+SELECT same_all() AS after_reindex;
+SELECT (SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM h) x) = 0
+   AND (SELECT count(*) FROM (SELECT * FROM h EXCEPT ALL SELECT * FROM t) y) = 0 AS tables_equal;
+DROP FUNCTION same_all();
+DROP FUNCTION same(text);
+DROP TABLE t, h;
+DROP EXTENSION pg_sift;

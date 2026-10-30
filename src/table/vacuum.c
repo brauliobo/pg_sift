@@ -1107,7 +1107,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 		CHECK_FOR_INTERRUPTS();
 		state->htups += 1;
 		/* the entries of a chain are at its root, where the other indexes have them */
-		while (sift_tbl_index_follows_chains(index_rel) && sift_tbl_hot_pred(st, key, &pred))
+		while (sift_tbl_hot_pred(st, key, &pred))
 			key = pred;
 		sift_key_to_tid(key, &tid);
 		if (tid_has(&tid, &have))

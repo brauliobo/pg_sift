@@ -155,7 +155,32 @@ typedef struct VblockTest
 	Page		copy;			/* the write buffer page, NULL when the vblock is in a column group (the tombstones decide, and the insertion of a row with a version) */
 	uint64		gen;
 	SiftTblVerPage vp;			/* the versions of the rows of the page of a unit with unfrozen rows */
+	bool		chain;			/* a TID stands for the versions of its HOT chain (the TIDs an index hands out), not for its own version alone */
 } VblockTest;
+
+/* Is the version of key, or one a HOT update of it led to, visible to the snapshot: what an index entry of the TID stands for */
+static bool
+chain_visible(VblockTest *t, uint64 key)
+{
+	uint64		succ;
+
+	while (t->chain && t->st->hotm != NULL && sift_tbl_hot_next(t->st, key, &succ))
+	{
+		ItemPointerData tid;
+		SiftTblRowVer rv;
+		bool		vis;
+
+		sift_key_to_tid(succ, &tid);
+		key = succ;
+		if (!sift_tbl_fetch_lazy(t->rel, t->st, &tid, &rv))
+			continue;
+		vis = sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
+		sift_tbl_free_row(&rv);
+		if (vis)
+			return true;
+	}
+	return false;
+}
 
 static bool
 vblock_tid_visible(void *arg, ItemPointer tid)
@@ -166,22 +191,25 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 
 	if (t->copy)
 	{
-		if ((rec = sift_tbl_page_rec(t->copy, t->gen, ItemPointerGetOffsetNumber(tid))) == NULL)
-			return false;
-		sift_tbl_rowver(&rv, tid, rec);
-		return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
+		if ((rec = sift_tbl_page_rec(t->copy, t->gen, ItemPointerGetOffsetNumber(tid))) != NULL)
+		{
+			sift_tbl_rowver(&rv, tid, rec);
+			if (sift_tbl_visible(t->rel, t->st, t->snapshot, &rv))
+				return true;
+		}
+		return chain_visible(t, sift_key_from_tid(tid));
 	}
 	rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false};
 	sift_tbl_vers_rowver(&t->vp, ItemPointerGetOffsetNumber(tid), &rv.xmin, &rv.cmin);
-	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
+	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv) || chain_visible(t, rv.key);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot; the write buffer page is read once; a unit the snapshot sees no insertion of is no row at all */
+/* Keeps the offsets of vblock whose row is visible to snapshot (chain: or whose HOT chain has a version that is: the TIDs of an index); the write buffer page is read once; a unit the snapshot sees no insertion of is no row at all */
 int
-sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask)
+sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain)
 {
 	PGAlignedBlock copy;
-	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data};
+	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data,.chain = chain};
 
 	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
 	{
@@ -214,7 +242,37 @@ sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64
 		st->curvers_version = st->dir.version;
 		st->curvers_rel = rel;
 	}
-	return sift_tbl_filter_page_vers(rel, snapshot, st->curvers, vblock, offmask);
+	return sift_tbl_filter_page_vers(rel, snapshot, st->curvers, vblock, offmask, true);
+}
+
+bool
+sift_tbl_has_chains(Relation rel)
+{
+	SiftTblRel *st = sift_tbl_rel(rel);
+
+	sift_tbl_tomb_sync(rel, st);
+	return st->hotm != NULL;
+}
+
+void
+sift_tbl_chain_members(Relation rel, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg)
+{
+	SiftTblRel *st = sift_tbl_rel(rel);
+	uint64		roots[SIFT_OFFMASK_WORDS] = {0};
+
+	sift_tbl_hot_offsets(st, blk, roots);
+	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+		for (uint64 m = roots[wd] & offmask[wd]; m; m &= m - 1)
+		{
+			uint64		key = ((uint64) blk << 16) | (wd * 64 + pg_rightmost_one_pos64(m) + 1),
+						succ;
+
+			while (sift_tbl_hot_next(st, key, &succ))
+			{
+				fn(arg, succ);
+				key = succ;
+			}
+		}
 }
 
 bool

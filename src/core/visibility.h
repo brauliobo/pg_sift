@@ -79,6 +79,10 @@ extern void sift_test_wait(int key);
  * under the snapshot; reads the heap page once. Returns the remaining count.
  */
 extern int	sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask);
+/* A sift_table with HOT chains: the TIDs an index hands out are those of the first version of a chain, and the table's own scans see the later ones */
+extern bool sift_vis_has_chains(Relation heap);
+typedef void (*SiftVisKeyFn) (void *arg, SiftKey key);
+extern void sift_vis_chain_members(Relation heap, BlockNumber blk, const uint64 *offmask, SiftVisKeyFn fn, void *arg);
 
 /* The offset loop of a page filter: test says whether the tuple at tid is visible (the heap checks its HOT chain, a sift_table its row version) */
 typedef bool (*SiftTidTest) (void *arg, ItemPointer tid);

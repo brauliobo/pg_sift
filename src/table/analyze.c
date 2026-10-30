@@ -440,8 +440,7 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 		if (rv.key >> 16 < start_blockno || rv.key >> 16 >= end)
 			continue;
 		CHECK_FOR_INTERRUPTS();
-		chain = sift_tbl_index_follows_chains(index_rel) ?
-			build_chain(table_rel, s, &rv, oldest, anyvisible, mvcc, snapshot, indexInfo, &root, &last, &v) : CHAIN_NONE;
+		chain = build_chain(table_rel, s, &rv, oldest, anyvisible, mvcc, snapshot, indexInfo, &root, &last, &v);
 		if (chain == CHAIN_SKIP)
 			continue;
 		if (chain == CHAIN_ENTRY)

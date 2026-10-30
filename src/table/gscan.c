@@ -170,7 +170,7 @@ vis_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	VisArg	   *v = arg;
 
-	return sift_tbl_filter_page_vers(v->rel, v->snapshot, v->vers, blk, offmask);
+	return sift_tbl_filter_page_vers(v->rel, v->snapshot, v->vers, blk, offmask, false);
 }
 
 SiftTblGroupScan *

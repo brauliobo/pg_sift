@@ -22,14 +22,24 @@ my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
 $standby->start;
 
+# the same rows in a table with a btree on g and a BM25 index on body: the updates below change neither
+$primary->safe_psql('postgres', 'CREATE TABLE r2 (id int PRIMARY KEY, g int, v int, note text, body text) USING sift_table WITH (autovacuum_enabled = false);'
+	. ' INSERT INTO r2 SELECT i, i % 5, i, $$n$$, CASE WHEN i % 2 = 0 THEN $$even number$$ ELSE $$odd number$$ END || i FROM generate_series(1, 5000) i;'
+	. ' CREATE INDEX r2_g ON r2 (g); CREATE INDEX r2_bm25 ON r2 USING sift (body); VACUUM r2');
+
 # the rows of g = 3 and the id lookups, by the table and by the indexes
 sub answers
 {
 	my ($node) = @_;
+	my $q2 = 'SELECT count(*), sum(v), sum(length(note)) FROM r2 WHERE g = 3; SELECT count(*), sum(v) FROM r2 WHERE body @@> $$even$$; SELECT v FROM r2 WHERE id IN (8, 13, 4998)';
+	my $off = 'SET sift.enable_scan = off; SET sift.enable_count = off; SET sift.enable_agg = off; SET enable_indexscan = off; SET enable_bitmapscan = off;';
+	my $seq2 = $node->safe_psql('postgres', "$off $q2");
+	is($node->safe_psql('postgres', "SET enable_seqscan = off; $q2"), $seq2, 'the indexes of the second table read the rows a sequential scan does');
+	is($node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_indexscan = off; $q2"), $seq2, 'a bitmap scan of them reads the same');
 	my $q = 'SELECT count(*), sum(v), sum(length(note)) FROM r WHERE g = 3; SELECT v FROM r WHERE id = 8; SELECT v FROM r WHERE id IN (13, 4998)';
-	my $seq = $node->safe_psql('postgres', "SET enable_indexscan = off; SET enable_bitmapscan = off; $q");
-	my $idx = $node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_bitmapscan = off; $q");
-	my $bmp = $node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_indexscan = off; $q");
+	my $seq = $node->safe_psql('postgres', "SET enable_indexscan = off; SET enable_bitmapscan = off; $q") . $seq2;
+	my $idx = $node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_bitmapscan = off; $q") . $seq2;
+	my $bmp = $node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_indexscan = off; $q") . $seq2;
 	is($idx, $seq, 'an index scan reads the rows a sequential scan does');
 	is($bmp, $seq, 'a bitmap scan reads the rows a sequential scan does');
 	return $seq;
@@ -40,44 +50,44 @@ subtest 'a snapshot older than the updates keeps its versions across VACUUM' => 
 	$old->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
 	my $q = 'SELECT count(*), sum(v) FROM r WHERE g = 3';
 	my $before = $old->query_safe("SET enable_seqscan = off; SET enable_bitmapscan = off; $q");
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1000, note = $$m$$ WHERE g = 3; UPDATE r SET v = v + 1 WHERE g = 3; VACUUM r');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1000, note = $$m$$ WHERE g = 3; UPDATE r SET v = v + 1 WHERE g = 3; UPDATE r2 SET v = v + 1000, note = $$m$$ WHERE g = 3; UPDATE r2 SET v = v + 1 WHERE g = 3; VACUUM r, r2');
 	is($old->query_safe($q), $before, 'the old snapshot reads its versions through the index');
 	$old->query_safe('COMMIT');
 	$old->quit;
 	my $now = answers($primary);
 	like($now, qr/^1000\|/, 'the new snapshot reads the updated rows');
-	$primary->safe_psql('postgres', 'VACUUM r');
+	$primary->safe_psql('postgres', 'VACUUM r, r2');
 	is(answers($primary), $now, 'the chains collapse and go with the old versions without a change of the answers');
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1 WHERE g = 3; DELETE FROM r WHERE id % 50 = 3; VACUUM r');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1 WHERE g = 3; DELETE FROM r WHERE id % 50 = 3; UPDATE r2 SET v = v + 1 WHERE g = 3; DELETE FROM r2 WHERE id % 50 = 3; VACUUM r, r2');
 	answers($primary);
 };
 
 subtest 'an immediate shutdown after HOT updates and VACUUM' => sub {
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 5 WHERE g = 3; UPDATE r SET v = v + 5, note = $$q$$ WHERE g = 3 AND id % 2 = 0');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 5 WHERE g = 3; UPDATE r SET v = v + 5, note = $$q$$ WHERE g = 3 AND id % 2 = 0; UPDATE r2 SET v = v + 5 WHERE g = 3; UPDATE r2 SET v = v + 5, note = $$q$$ WHERE g = 3 AND id % 2 = 0');
 	my $bg = $primary->background_psql('postgres');
-	$bg->query_safe('BEGIN; UPDATE r SET v = -1 WHERE g = 3');
+	$bg->query_safe('BEGIN; UPDATE r SET v = -1 WHERE g = 3; UPDATE r2 SET v = -1 WHERE g = 3');
 	my $before = $primary->safe_psql('postgres', 'SELECT count(*), sum(v) FROM r');
 	$primary->stop('immediate');
 	$bg->quit;
 	$primary->start;
 	is($primary->safe_psql('postgres', 'SELECT count(*), sum(v) FROM r'), $before, 'the committed updates are back and the in-flight one is gone');
 	answers($primary);
-	$primary->safe_psql('postgres', 'VACUUM r');
+	$primary->safe_psql('postgres', 'VACUUM r, r2');
 	answers($primary);
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1 WHERE g = 3');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 1 WHERE g = 3; UPDATE r2 SET v = v + 1 WHERE g = 3');
 	$primary->stop('immediate');
 	$primary->start;
 	answers($primary);
 };
 
 subtest 'a hot standby follows the chains, their collapse and their removal' => sub {
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 2 WHERE g = 3');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 2 WHERE g = 3; UPDATE r2 SET v = v + 2 WHERE g = 3');
 	$primary->wait_for_catchup($standby);
 	is(answers($standby), answers($primary), 'the standby reads the chains');
-	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 2 WHERE g = 3; VACUUM r');
+	$primary->safe_psql('postgres', 'UPDATE r SET v = v + 2 WHERE g = 3; UPDATE r2 SET v = v + 2 WHERE g = 3; VACUUM r, r2');
 	$primary->wait_for_catchup($standby);
 	is(answers($standby), answers($primary), 'the standby reads the collapsed chains');
-	$primary->safe_psql('postgres', 'DELETE FROM r WHERE g = 3; VACUUM r; VACUUM r');
+	$primary->safe_psql('postgres', 'DELETE FROM r WHERE g = 3; DELETE FROM r2 WHERE g = 3; VACUUM r, r2; VACUUM r, r2');
 	$primary->wait_for_catchup($standby);
 	is($standby->safe_psql('postgres', 'SET enable_seqscan = off; SELECT count(*) FROM r WHERE g = 3'), 0, 'a chain that ended in a delete is gone for the standby too');
 	is($standby->safe_psql('postgres', 'SELECT count(*) FROM r'), $primary->safe_psql('postgres', 'SELECT count(*) FROM r'), 'the same rows');

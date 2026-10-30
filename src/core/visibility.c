@@ -446,6 +446,18 @@ page_cache_entry(SiftVis *v, BlockNumber blk, bool *found)
 	return hash_search(v->pagevis, &blk, HASH_ENTER, found);
 }
 
+bool
+sift_vis_has_chains(Relation heap)
+{
+	return sift_tbl_is_table(heap) && sift_tbl_has_chains(heap);
+}
+
+void
+sift_vis_chain_members(Relation heap, BlockNumber blk, const uint64 *offmask, SiftVisKeyFn fn, void *arg)
+{
+	sift_tbl_chain_members(heap, blk, offmask, fn, arg);
+}
+
 int
 sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 {
