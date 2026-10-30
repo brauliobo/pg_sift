@@ -1,6 +1,6 @@
 /*
  * vtab.h - the state of a virtual table and of its cursors, shared by vtab.c (the module, with content.c, cursor.c and write.c:
- * see vtab_int.h), auxfn.c (snippets, facets) and pscan.c (parallel scans).
+ * see vtab_int.h), auxfn.c (snippets) and auxfn_facets.c (facets) and pscan.c (parallel scans).
  */
 #ifndef SQVTAB_H
 #define SQVTAB_H
@@ -100,8 +100,9 @@ extern SiftAnalyzer *sq_vt_analyzer(SqVtab *vt);
 /* The text of column col (-1: all columns joined by a space) of the document, NULL when the table keeps none */
 extern char *sq_vt_doc_text(SqVtab *vt, int64_t rowid, int col, int *len);
 
-/* auxfn.c */
+/* auxfn.c, auxfn_facets.c */
 extern int	sq_aux_init(sqlite3 *db, SqConn *conn);
+extern int	sq_facets_init(sqlite3 *db, SqConn *conn);
 extern int	sq_aux_find_function(sqlite3_vtab *pVtab, int nArg, const char *zName,
 								 void (**pxFunc) (sqlite3_context *, int, sqlite3_value **), void **ppArg);
 
