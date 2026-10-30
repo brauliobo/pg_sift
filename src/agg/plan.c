@@ -1294,6 +1294,7 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 		s->naggs++;
 	}
 	group_topn(root, s, ow.aggs, groupClause, gextra);
+	c->having_sel = gextra && gextra->havingQual ? Max(clauselist_selectivity(root, (List *) gextra->havingQual, 0, JOIN_INNER, NULL), 1e-9) : 0;
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
 }
 
