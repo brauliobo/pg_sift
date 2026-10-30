@@ -7,6 +7,8 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+-- every row is analyzed: for the small entity the scan costs 491 and the normal plan 473 with all the rows, 473 to 483 over the samples of 30,000 of the 130,000 rows that the default target takes
+SET default_statistics_target = 10000;
 
 CREATE TABLE hk_dim_c (id int PRIMARY KEY, enabled boolean);
 INSERT INTO hk_dim_c SELECT g, g % 5 <> 0 FROM generate_series(1, 4740) g;
