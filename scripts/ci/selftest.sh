@@ -48,7 +48,7 @@ if [[ $MODE == --selftest ]]; then
 	[[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
 	# the table of rows that areas_invalid must flag (a path, a jobs expression) and the ones it must not (a group, a capture)
 	t=$ST/areas.tsv
-	printf '=g\tinstallcheck-a\nsrc/x/(.*)\t{g}|\\1\nsrc/(\t.\nsrc/y\t(\nsrc/z\t-\nsrc/w\tfast:{g}\n' >"$t"
+	printf '=g\tinstallcheck-a\nsrc/x/(.*)\t{g}|x\\1\nsrc/(\t.\nsrc/y\t(\nsrc/z\t-\nsrc/w\tfast:{g}\n' >"$t"
 	areas_load "$t"
 	[[ $(areas_invalid | grep -c 'invalid ERE') == 2 ]] || { echo "FAIL: areas_invalid does not flag exactly the two invalid rows: $(areas_invalid)"; bad=1; }
 	printf 'src/x/.*\t.\nsrc/y\t-\n' >"$t"
@@ -88,7 +88,7 @@ if [[ $MODE == --selftest ]]; then
 	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus.tsv has rows for $(echo $focus_stale), which are not tests"; bad=1; }
 	read -r focus_t focus_tok _ < <(awk -F'\t' '!/^[#=]/ && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO/scripts/focus.tsv")
 	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
-	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1] }' "$REPO/scripts/focus.tsv")
+	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus.tsv")
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	# a function of a file split into a folder (scripts/moved-sources.tsv) selects the tests of the row made for the old file, with and without the prefix a split gave it
 	read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")

@@ -19,12 +19,12 @@ int			sift_max_expansions = 512;
 /* ---------- engine: once per process ---------- */
 
 /* bm25/prefix.c keeps one process-wide cache of wide-prefix unions: its entry point (renamed by the Makefile) runs under a lock */
-extern const uint8 *sq_real_sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen,
+extern const uint8 *sq_real_sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen,
 											  const SiftScoreRef *ref, bool scoring, MemoryContext mcxt, SiftTermInfo *info);
 static pthread_mutex_t prefix_lock = PTHREAD_MUTEX_INITIALIZER;
 
 const uint8 *
-sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
+sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
 				  bool scoring, MemoryContext mcxt, SiftTermInfo *info)
 {
 	const uint8 *blob = NULL;

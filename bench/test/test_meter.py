@@ -68,12 +68,14 @@ class Live(unittest.TestCase):
         self.assertGreater(mb, self.pages * 8 / 1024 * 0.9)   # every query scans the table: at least its pages
         self.assertLess(mb, self.pages * 8 / 1024 * 3)
 
+    @unittest.skipUnless(os.path.exists('/proc/self/schedstat'), 'the CPU of a cell is read from /proc (Linux)')
     def test_pgbench_cell(self):
         out = subprocess.run([sys.executable, '-I', os.path.join(STEPS, 'cell.py'), 'qps', '--max-time', '1', '--tmp', self.dir, '--server', self.data, '--db', 'postgres', '--',
                               '-n', '-c', '2', '-f', os.path.join(self.dir, 'q.pgb'), 'postgres'], env=self.env, capture_output=True, text=True).stdout.split('\t')
         self.assertEqual(len(out), 6, out)
         self.check(out)
 
+    @unittest.skipUnless(os.path.exists('/proc/self/schedstat'), 'the CPU of a cell is read from /proc (Linux)')
     def test_batch_cell(self):
         plan, res = os.path.join(self.dir, 'plan'), os.path.join(self.dir, 'out')
         with open(plan, 'w') as f:

@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "core/ops.h"
+#include "storage/lock.h"
 #include "col/maint/maint_int.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
