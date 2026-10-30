@@ -22,7 +22,7 @@ having	group
 sum_by_parent	group
 join_tier	join
 in_active_parents	join
-join_two_lookups	join
+join_two_lookups	known
 exists_in_table	join
 float_metric	agg
 min_max	agg
