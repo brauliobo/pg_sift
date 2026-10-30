@@ -471,4 +471,8 @@ extern const SetsLeaf *	seg_set_leaf(SiftColSegment *seg, int col);
 extern bool	seg_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len);
 extern const RunsLeaf *	seg_run_leaf(SiftColSegment *seg, int col);
 
+extern bool	seg_within(uint64 room, uint64 off, uint64 a, uint64 b);
+extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len);
+extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
+
 #endif

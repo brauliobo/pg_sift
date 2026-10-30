@@ -7,7 +7,6 @@
 #include "col/hll.h"
 #include "col/ktab.h"
 #include "col/setsum.h"
-#include "core/popcount.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
 
@@ -376,8 +375,6 @@ point_version_ok(uint32 v)
 	return v == SIFT_CPOINT_VERSION_ROWS || v == SIFT_CPOINT_VERSION || v == SIFT_CPOINT_VERSION_ORD;
 }
 
-static GOrdLeaf *gord_leaf(SiftColSegment *seg, int col);
-
 const PointLeaf *
 seg_points_read(SiftColSegment *seg)
 {
@@ -520,1003 +517,6 @@ seg_points_read(SiftColSegment *seg)
 	return pv->pt;
 }
 
-/* The smallest minimum and largest maximum of each word of 64 units, and the words with a unit whose zone does not describe its values (overflow, inline strings) */
-static void
-zone_words(MemoryContext cx, ZoneArrays *z, uint32 nsb)
-{
-	uint32		nw = (nsb + 63) / 64;
-	int64	   *wmin = MemoryContextAlloc(cx, 2 * nw * sizeof(int64)),
-			   *wmax = wmin + nw;
-	uint64	   *wbad = MemoryContextAllocZero(cx, ((nw + 63) / 64) * sizeof(uint64));
-
-	for (uint32 w = 0; w < nw; w++)
-	{
-		int64		mn = PG_INT64_MAX,
-					mx = PG_INT64_MIN;
-
-		for (uint32 u = w * 64; u < Min(nsb, (w + 1) * 64); u++)
-		{
-			mn = Min(mn, z->min[u]);
-			mx = Max(mx, z->max[u]);
-			if (z->flags[u] & (SIFT_COLZ_OVERFLOW | SIFT_COLZ_INLINE))
-				wbad[w / 64] |= UINT64CONST(1) << (w % 64);
-		}
-		wmin[w] = mn;
-		wmax[w] = mx;
-	}
-	z->wmin = wmin;
-	z->wmax = wmax;
-	z->wbad = wbad;
-}
-
-const ZoneArrays *
-zone_arrays(SiftColSegment *seg, int col)
-{
-	SegPriv    *pv = PRIV(seg);
-	const SiftSectionRef *s = seg_sec(seg, SIFT_SEC_DICTIDX);
-
-	if (pv->zones[col] == NULL && HEAD_CACHED())
-		pv->zones[col] = sift_cseg_zones_find(seg, col);
-	if (pv->zones[col] == NULL)
-	{
-		const SiftColDef *def = &seg->schema->cols[col];
-		uint32		hdr[2];
-		uint64		tab[SIFT_COL_MAX_COLS],
-					off;
-		Size		sz = zone_block_size(def, seg->nsb);
-		char	   *blk;
-		MemoryContext cx = AllocSetContextCreate(seg->mcxt, "sift cache segment zones", ALLOCSET_SMALL_SIZES);
-		ZoneArrays *z = MemoryContextAllocZero(cx, sizeof(ZoneArrays));
-
-		seg_seg_read(seg, s->off, sizeof(hdr), hdr);
-		if (hdr[0] != ZONES_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
-			corrupt(seg, "ZONES section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-		seg_seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
-		off = tab[col];
-		if (off % 8 != 0 || off + sz > s->len)
-			corrupt(seg, "The zones of leaf %d (%llu, %zu bytes) lie outside the section.", col, ULL(off), sz);
-		blk = MemoryContextAlloc(cx, sz);
-		seg_seg_read(seg, s->off + off, sz, blk);
-		z->min = (const int64 *) blk;
-		z->max = z->min + seg->nsb;
-		z->sum = z->max + seg->nsb;
-		z->nnull = (const uint32 *) (z->sum + seg->nsb);
-		z->nvals = z->nnull + seg->nsb;
-		z->flags = z->nvals + seg->nsb;
-		if (def->store == SIFT_COLS_STR)
-			z->set = (const uint64 (*)[4]) (blk + ALIGN8(seg->nsb * (3 * sizeof(uint64) + 3 * sizeof(uint32))));
-		for (uint32 u = 0; u < seg->nsb; u++)
-			z->any_ovf |= (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0, z->any_inl |= (z->flags[u] & SIFT_COLZ_INLINE) != 0;
-		if (def->store != SIFT_COLS_STR && seg->nsb > 64)
-			zone_words(cx, z, seg->nsb);
-		pv->zones[col] = z;
-		if (HEAD_CACHED())
-			sift_cseg_zones_keep(seg, col, cx, z);
-	}
-	return pv->zones[col];
-}
-
-void
-sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *out)
-{
-	const ZoneArrays *z = zone_arrays(seg, col);
-	const SiftColDef *def = &seg->schema->cols[col];
-
-	memset(out, 0, sizeof(SiftCZone));
-	out->min = z->min[u];
-	out->max = z->max[u];
-	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)
-		memcpy(&out->sum_f, &z->sum[u], sizeof(double));
-	else
-		out->sum_i = z->sum[u];
-	out->nnull = z->nnull[u];
-	out->nvals = z->nvals[u];
-	out->flags = z->flags[u];
-	if (z->set)
-		memcpy(out->set, z->set[u], 4 * sizeof(uint64));
-}
-
-/* The entries of the segment's dictionary of leaf col: the count in its header (after the form), without parsing the dictionary */
-static uint32
-dict_count(SiftColSegment *seg, int col)
-{
-	const SiftSectionRef *s = seg_sec(seg, SIFT_SEC_DICT);
-	uint32		hdr[2],
-				n;
-	uint64		tab[SIFT_COL_MAX_COLS];
-
-	seg_seg_read(seg, s->off, sizeof(hdr), hdr);
-	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
-		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-	seg_seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
-	if (tab[col] == 0 || tab[col] + 2 * sizeof(n) > s->len)
-		corrupt(seg, "Leaf %d has no dictionary.", col);
-	seg_seg_read(seg, s->off + tab[col] + sizeof(n), sizeof(n), &n);
-	return n;
-}
-
-void
-sift_col_leaf_stats_init(SiftColLeafStats *acc)
-{
-	memset(acc, 0, sizeof(*acc));
-	acc->min = PG_INT64_MAX;
-	acc->max = PG_INT64_MIN;
-	acc->has_range = acc->has_sum = true;
-}
-
-/* The kinds of a leaf in a unit of this segment that has nnull NULL slots among nvals: complete in a segment of format SIFT_COL_FORMAT_KINDS, and where nothing needs them */
-static bool
-kinds_exact_at(int format, const SiftColDef *def, uint32 nnull, uint32 nvals)
-{
-	if (format >= SIFT_COL_FORMAT_KINDS || !sift_col_def_has_kinds(def))
-		return true;
-	return nnull == 0 && !((def->flags & SIFT_COLD_ASTEXT) && nvals > 0);
-}
-
-static bool
-leaf_kinds_exact(const SiftColSegment *seg, const SiftColDef *def, uint32 nnull, uint32 nvals)
-{
-	return kinds_exact_at(seg->entry.format, def, nnull, nvals);
-}
-
-bool
-sift_cseg_kinds_exact(SiftColSegment *seg)
-{
-	if (seg->entry.format >= SIFT_COL_FORMAT_KINDS)
-		return true;
-	for (int c = 0; c < seg->schema->ncols; c++)
-	{
-		const SiftColDef *def = &seg->schema->cols[c];
-		const ZoneArrays *z;
-
-		if (!sift_col_def_has_kinds(def))
-			continue;
-		z = zone_arrays(seg, c);
-		for (uint32 u = 0; u < seg->nsb; u++)
-			if (!leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]))
-				return false;
-	}
-	return true;
-}
-
-#define SET_STATS_UNITS	64				/* units of a segment the planner's statistics look at for a leaf's summaries */
-
-#define OVF_STATS_UNITS	4				/* units flagged with an overflow value of a leaf, of a segment, whose overflow slots the statistics count */
-
-/*
- * The overflow slots among those of an even sample of the units the zones flag (a dead row's value counts until the segment is rewritten): the rows
- * a scan that reads them again from the heap has to fetch. One chunk of each unit is read, once for the statistics the planner keeps.
- */
-static void
-sample_overflow(SiftColSegment *seg, int col, const ZoneArrays *z, SiftColLeafStats *acc)
-{
-	uint32		flagged = 0,
-				stride,
-				k = 0;
-
-	for (uint32 u = 0; u < seg->nsb; u++)
-		flagged += (z->flags[u] & SIFT_COLZ_OVERFLOW) != 0;
-	stride = Max(flagged / OVF_STATS_UNITS, 1);
-	for (uint32 u = 0; u < seg->nsb; u++)
-	{
-		SiftCUnitView v;
-		SiftCChunk	c;
-		const uint8 *rec;
-		uint32		len,
-					avail;
-
-		if (!(z->flags[u] & SIFT_COLZ_OVERFLOW) || k++ % stride != 0)
-			continue;
-		rec = sift_cseg_unit_head(seg, u, &len, &avail);
-		if (!sift_cunit_parse_head(rec, avail, len, seg->schema, &v) || v.chunk_len[col] == 0)
-			continue;
-		sift_cseg_unit_fill(seg, u, v.chunk_off[col], v.chunk_len[col]);
-		if (!sift_cunit_chunk(&v, col, &c))
-			continue;
-		acc->ovf_vals += c.n;
-		for (uint32 i = 0; c.ovf != NULL && i < (c.n + 63) / 64; i++)
-			acc->ovf_slots += sift_pc64(i == c.n / 64 ? c.ovf[i] & ((UINT64CONST(1) << (c.n % 64)) - 1) : c.ovf[i]);
-	}
-}
-
-/* What the zones of the units of one leaf add to acc: the statistics the planner reads, one unit after the other (the writer keeps them per segment, LstLeaf) */
-static void
-zone_stats(const SiftColDef *def, int format, uint32 nsb, const ZoneArrays *z, SiftColLeafStats *acc)
-{
-	for (uint32 u = 0; u < nsb; u++)
-	{
-		bool		any = z->nnull[u] < z->nvals[u];
-
-		acc->nunits++;
-		acc->nvals += z->nvals[u];
-		acc->nnull += z->nnull[u];
-		acc->nokinds |= !kinds_exact_at(format, def, z->nnull[u], z->nvals[u]);
-		acc->has_jnull |= (z->flags[u] & SIFT_COLZ_JNULL) != 0;
-		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
-		{
-			acc->has_range = acc->has_sum = false;
-			acc->has_ovf = true;
-			acc->novf++;
-		}
-		if (def->kind == SIFT_COLK_GROUP)
-			acc->has_sum &= !(z->flags[u] & SIFT_COLZ_NOSUM);
-		else if (def->store == SIFT_COLS_INT && any)
-		{
-			acc->min = Min(acc->min, z->min[u]);
-			acc->max = Max(acc->max, z->max[u]);
-			acc->span += (double) z->max[u] - (double) z->min[u] + 1.0;
-			acc->nzone++;
-		}
-		else if (def->store != SIFT_COLS_INT)
-			acc->has_range = false;
-		if (def->kind == SIFT_COLK_GROUP)
-			acc->sum += (double) z->sum[u];
-	}
-}
-
-/* The leaves whose zones the sample holds: the integer scalars (SiftColZones, zones_new) */
-bool
-sift_lst_sampled(const SiftColDef *def)
-{
-	return def->store == SIFT_COLS_INT && def->kind != SIFT_COLK_GROUP;
-}
-
-/* The zone of unit u of a sampled leaf as the sample holds it: an overflowed one is the whole range, one without a value the empty range */
-static void
-sample_zone(const ZoneArrays *z, uint32 u, int64 *lo, int64 *hi)
-{
-	if (z->flags[u] & SIFT_COLZ_OVERFLOW)
-		*lo = PG_INT64_MIN, *hi = PG_INT64_MAX;
-	else if (z->nnull[u] >= z->nvals[u])
-		*lo = PG_INT64_MAX, *hi = PG_INT64_MIN;
-	else
-		*lo = z->min[u], *hi = z->max[u];
-}
-
-/* A segment of up to SIFT_COL_ZONE_SAMPLE units samples all of them (what the zones gave before the block); a larger one every stride-th */
-static uint32
-lst_stride(uint32 nsb)
-{
-	return Max(1, (nsb + SIFT_COL_ZONE_SAMPLE - 1) / SIFT_COL_ZONE_SAMPLE);
-}
-
-uint32
-sift_lst_nsample(uint32 nsb)
-{
-	return (nsb + lst_stride(nsb) - 1) / lst_stride(nsb);
-}
-
-void
-sift_lst_leaf(const SiftColDef *def, int format, uint32 nsb, const ZoneArrays *z, LstLeaf *out, int64 *lo, int64 *hi)
-{
-	SiftColLeafStats a;
-
-	sift_col_leaf_stats_init(&a);
-	zone_stats(def, format, nsb, z, &a);
-	memset(out, 0, sizeof(*out));
-	out->nvals = a.nvals;
-	out->nnull = a.nnull;
-	out->sum = a.sum;
-	out->span = a.span;
-	out->nzone = a.nzone;
-	out->novf = a.novf;
-	out->min = a.min;
-	out->max = a.max;
-	out->flags = (a.has_range ? LST_HAS_RANGE : 0) | (a.has_sum ? LST_HAS_SUM : 0) | (a.has_ovf ? LST_HAS_OVF : 0) | (a.has_jnull ? LST_HAS_JNULL : 0) |
-		(a.nokinds ? LST_NOKINDS : 0) | (z->any_inl ? LST_ANY_INL : 0) | (z->any_ovf ? LST_ANY_OVF : 0);
-	if (lo != NULL)
-		for (uint32 k = 0; k < sift_lst_nsample(nsb); k++)
-			sample_zone(z, k * lst_stride(nsb), &lo[k], &hi[k]);
-}
-
-/*
- * The leaf statistics block of the segment, or NULL: a segment of 64 units or more, written by 3.5, has after its DOCMAP section what a plan
- * adds up over the zones of every unit of every leaf, so that the first plan of a backend reads a few pages for the segment, not
- * its zone arrays. An older segment, or a shorter one, has none (the flag of its directory entry) and is read as before.
- */
-static const uint8 *
-lst_block(SiftColSegment *seg)
-{
-	SegPriv    *pv = PRIV(seg);
-
-	if (!pv->lst_read)
-	{
-		const SiftSectionRef *d = seg_sec(seg, SIFT_SEC_DOCMAP);
-		uint64		at = ALIGN8(d->off + d->len),
-					size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
-		LstHeader	h;
-
-		pv->lst_read = true;
-		if (seg->entry.flags & SIFT_SEG_LSTATS)
-		{
-			uint8	   *blk;
-
-			if (at + sizeof(h) > size)
-				corrupt(seg, "The directory entry says the segment has leaf statistics, the stream ends at %llu.", ULL(size));
-			seg_seg_read(seg, at, sizeof(h), &h);
-			if (h.magic != LST_MAGIC || h.ncols != (uint32) seg->schema->ncols || h.nsb != seg->nsb || h.nsample != sift_lst_nsample(seg->nsb) ||
-				h.len < sizeof(h) + h.ncols * sizeof(LstLeaf) || at + h.len > size)
-				corrupt(seg, "The leaf statistics (0x%08x, %u leaves, %u units, %llu bytes) do not fit the segment.", h.magic, h.ncols, h.nsb, ULL(h.len));
-			blk = MemoryContextAlloc(seg->mcxt, h.len);
-			seg_seg_read(seg, at, h.len, blk);
-			pv->lst = blk;
-		}
-	}
-	return pv->lst;
-}
-
-static const LstLeaf *
-lst_leaf(const uint8 *blk, int col)
-{
-	return (const LstLeaf *) (blk + sizeof(LstHeader)) + col;
-}
-
-/* The sample of the leaf: nsample lows, then nsample highs (NULL: the leaf has none, or the block is damaged) */
-static const int64 *
-lst_sample(const uint8 *blk, int col)
-{
-	const LstHeader *h = (const LstHeader *) blk;
-	uint64		off = lst_leaf(blk, col)->sample_off;
-
-	if (off == 0 || off % 8 != 0 || off + 2 * (uint64) h->nsample * sizeof(int64) > h->len)
-		return NULL;
-	return (const int64 *) (blk + off);
-}
-
-/* The statistics block of the segment is what its zone arrays add up to (sift.col_verify) */
-void
-sift_cseg_verify_lst(SiftColSegment *seg)
-{
-	const uint8 *blk = lst_block(seg);
-
-	if (blk == NULL)
-		return;
-	for (int c = 0; c < seg->schema->ncols; c++)
-	{
-		const SiftColDef *def = &seg->schema->cols[c];
-		const LstLeaf *have = lst_leaf(blk, c);
-		const int64 *smp = lst_sample(blk, c);
-		uint32		ns = ((const LstHeader *) blk)->nsample;
-		LstLeaf		want;
-		int64	   *lo = NULL;
-
-		if (sift_lst_sampled(def) != (have->sample_off != 0) || (have->sample_off != 0 && smp == NULL))
-			corrupt(seg, "The leaf statistics of leaf %d have %s sample.", c, have->sample_off != 0 ? "a" : "no");
-		if (smp != NULL)
-			lo = palloc(2 * (Size) ns * sizeof(int64));
-		sift_lst_leaf(def, seg->entry.format, seg->nsb, zone_arrays(seg, c), &want, lo, lo != NULL ? lo + ns : NULL);
-		want.sample_off = have->sample_off;
-		if (memcmp(&want, have, sizeof(want)) != 0 || (lo != NULL && memcmp(lo, smp, 2 * (Size) ns * sizeof(int64)) != 0))
-			corrupt(seg, "The leaf statistics of leaf %d differ from the zones of its units.", c);
-		if (lo != NULL)
-			pfree(lo);
-	}
-}
-
-void
-sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
-{
-	const SiftColDef *def = &seg->schema->cols[col];
-	const uint8 *blk = lst_block(seg);
-	const LstLeaf *l = blk != NULL ? lst_leaf(blk, col) : NULL;
-	const ZoneArrays *z = NULL;
-	bool		inl;
-
-	if (l != NULL && !(l->flags & LST_ANY_OVF))
-	{
-		/* the sum of the segments' sums is the sum of the units': counts are whole numbers, the spans the estimate they are */
-		acc->nunits += seg->nsb;
-		acc->nvals += l->nvals;
-		acc->nnull += l->nnull;
-		acc->nokinds |= (l->flags & LST_NOKINDS) != 0;
-		acc->has_jnull |= (l->flags & LST_HAS_JNULL) != 0;
-		acc->has_range &= (l->flags & LST_HAS_RANGE) != 0;
-		acc->has_sum &= (l->flags & LST_HAS_SUM) != 0;
-		acc->has_ovf |= (l->flags & LST_HAS_OVF) != 0;
-		acc->novf += l->novf;
-		acc->min = Min(acc->min, l->min);
-		acc->max = Max(acc->max, l->max);
-		acc->span += l->span;
-		acc->nzone += l->nzone;
-		acc->sum += l->sum;
-		inl = (l->flags & LST_ANY_INL) != 0;
-	}
-	else
-	{
-		z = zone_arrays(seg, col);
-		zone_stats(def, seg->entry.format, seg->nsb, z, acc);
-		if (z->any_ovf)
-			sample_overflow(seg, col, z, acc);
-		inl = z->any_inl;
-	}
-	if (def->store == SIFT_COLS_STR)
-	{
-		acc->inl |= inl;
-		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
-	}
-	{
-		const PointLeaf *pl = seg_points_read(seg);
-
-		if (pl != NULL && pl[col].nslots != 0)
-		{
-			acc->point_units += seg->nsb;
-			if (pl[col].tids)
-				acc->point_tid_units += seg->nsb;
-			acc->point_keys += pl[col].nkeys;
-			acc->point_rows += pl[col].count;
-		}
-	}
-	if (seg->entry.format >= SIFT_COL_FORMAT_HEADS && sift_cseg_run_kinds(seg, col) != 0)
-	{
-		/* a unit has the head of its run or not (a key-cut segment's, a unit with a NULL or an overflowed row): the share of an even sample */
-		uint32		stride = Max(seg->nsb / SET_STATS_UNITS, 1),
-					seen = 0,
-					with = 0;
-		SiftCRun	r;
-		uint64		at;
-
-		for (uint32 u = 0; u < seg->nsb; u += stride, seen++)
-			with += sift_cseg_run(seg, col, u, &r, &at) && r.heads > 0;
-		acc->head_units += (double) seg->nsb * with / Max(seen, 1);
-	}
-	{
-		for (int k = 0; k < 2; k++)
-		{
-			const GOrdLeaf *g = gord_leaf(seg, col + k * seg->schema->ncols);
-
-			if (g != NULL)
-			{
-				acc->gord_rows += g->hdr.entries;
-				acc->gord_bytes += g->bytes;
-				if (g->hdr.strbytes != 0)
-					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;
-				if (g->hdr.gcol >= 0)
-				{
-					acc->gord_grp_rows += g->hdr.entries;
-					acc->gord_gcol = g->hdr.gcol;
-				}
-			}
-		}
-	}
-	if (seg_set_leaf(seg, col) != NULL)
-	{
-		uint32		stride = Max(seg->nsb / SET_STATS_UNITS, 1);
-
-		for (uint32 u = 0; u < seg->nsb; u += stride)
-		{
-			uint32		len,
-						n;
-			const uint8 *blob = sift_cseg_set(seg, col, u, &len);
-
-			acc->set_sampled++;
-			if (blob != NULL && len >= SIFT_CSET_HDR)
-			{
-				memcpy(&n, blob + 4, sizeof(n));
-				acc->set_units++;
-				acc->set_keys += n;
-			}
-		}
-	}
-	else
-		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
-}
-
-/* The next candidate of the sample: kept when it is the stride's turn, the sample thinned to every other entry (and the stride doubled) when it is full */
-static bool
-sample_offer(SiftColZones *zs)
-{
-	uint64		at = zs->seen++;
-
-	if (at % zs->stride != 0)
-		return false;
-	if (zs->n == SIFT_COL_ZONE_SAMPLE)
-	{
-		/* the units kept are the even ones: every other sample goes, and one candidate in twice as many is sampled from here on */
-		for (int c = 0; c < zs->ncols; c++)
-			if (zs->lo[c] != NULL)
-				for (uint32 k = 0; k < SIFT_COL_ZONE_SAMPLE / 2; k++)
-				{
-					zs->lo[c][k] = zs->lo[c][2 * k];
-					zs->hi[c][k] = zs->hi[c][2 * k];
-				}
-		zs->n /= 2;
-		zs->stride *= 2;
-		if (at % zs->stride != 0)
-			return false;
-	}
-	return true;
-}
-
-void
-sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs)
-{
-	const ZoneArrays *z[SIFT_COL_MAX_COLS] = {NULL};
-	const uint8 *blk = lst_block(seg);
-	const int64 *smp[SIFT_COL_MAX_COLS] = {NULL};
-	bool		fast = blk != NULL;
-
-	for (int c = 0; c < seg->schema->ncols && c < zs->ncols; c++)
-		if (zs->lo[c] != NULL)
-		{
-			if (fast && (smp[c] = lst_sample(blk, c)) == NULL)
-				fast = false;
-		}
-	if (fast)
-	{
-		/* the sampled units, from the block: the zone arrays of the leaves are not read */
-		uint32		ns = ((const LstHeader *) blk)->nsample;
-
-		for (uint32 k = 0; k < ns; k++)
-		{
-			if (!sample_offer(zs))
-				continue;
-			for (int c = 0; c < zs->ncols; c++)
-				if (smp[c] != NULL)
-				{
-					zs->lo[c][zs->n] = smp[c][k];
-					zs->hi[c][zs->n] = smp[c][ns + k];
-				}
-			zs->n++;
-		}
-		zs->units += seg->nsb;
-		return;
-	}
-	for (int c = 0; c < seg->schema->ncols && c < zs->ncols; c++)
-		if (zs->lo[c] != NULL)
-			z[c] = zone_arrays(seg, c);
-	for (uint32 u = 0; u < seg->nsb; u++)
-	{
-		if (!sample_offer(zs))
-			continue;
-		for (int c = 0; c < zs->ncols; c++)
-			if (z[c] != NULL)
-				sample_zone(z[c], u, &zs->lo[c][zs->n], &zs->hi[c][zs->n]);
-		zs->n++;
-	}
-	zs->units += seg->nsb;
-}
-
-/* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
-
-/* Where the sidecar starts: after the zone blocks, which are laid out back to back */
-static Size
-zones_end(const SiftColSegment *seg)
-{
-	Size		at = ALIGN8(sizeof(uint32) * 2 + seg->schema->ncols * sizeof(uint64));
-
-	for (int c = 0; c < seg->schema->ncols; c++)
-		at += zone_block_size(&seg->schema->cols[c], seg->nsb);
-	return at;
-}
-
-/* Do off, then a bytes, then b bytes lie inside room bytes: the stored offsets and sizes are 64 bit, their sum may wrap */
-static bool
-within(uint64 room, uint64 off, uint64 a, uint64 b)
-{
-	return off <= room && a <= room - off && b <= room - off - a;
-}
-
-const PaggHeader *
-seg_pagg_header(SiftColSegment *seg)
-{
-	SegPriv    *pv = PRIV(seg);
-
-	if (pv->pagg == NULL)
-	{
-		const SiftSectionRef *s = seg_sec(seg, SIFT_SEC_DICTIDX);
-		int			ncols = seg->schema->ncols;
-		int			ver = PAGG_VERSION(seg->entry.format);
-		Size		end = zones_end(seg),
-					hsz = PAGG_HDR_SIZE(ver, ncols);
-		PaggHeader *h;
-
-		if (end + hsz > s->len)
-			corrupt(seg, "The ZONES section holds %llu bytes, no room for the pre-aggregates after %zu.", ULL(s->len), end);
-		h = MemoryContextAlloc(seg->mcxt, hsz);
-		seg_seg_read(seg, s->off + end, hsz, h);
-		if (h->magic != PAGG_MAGIC || h->version != ver || h->ncols != (uint32) ncols || h->nsb != seg->nsb)
-			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units; a segment of column format 1.%d has version %d.",
-					h->magic, h->version, h->ncols, h->nsb, seg->entry.format, ver);
-		for (int c = 0; c < ncols; c++)
-			if (h->lagg_off[c] % 8 != 0 || (h->lagg_off[c] && !within(s->len - end, h->lagg_off[c], lagg_block_size(seg->nsb), 0)))
-				corrupt(seg, "The sums of leaf %d lie outside the section.", c);
-		if (h->cubedir_off && (h->cubedir_off % 8 != 0 || !within(s->len - end, h->cubedir_off, (seg->nsb + 1) * sizeof(uint64), h->cube_bytes)))
-			corrupt(seg, "The cubes (%llu bytes at %llu) lie outside the section.", ULL(h->cube_bytes), ULL(h->cubedir_off));
-		if (ver > 1 && PAGG_ECUBEDIR(h) &&
-			(PAGG_ECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_ECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_ECUBE_BYTES(h))))
-			corrupt(seg, "The element cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_ECUBE_BYTES(h)), ULL(PAGG_ECUBEDIR(h)));
-		if (ver > 2 && PAGG_SETS(h) &&
-			(PAGG_SETS(h) % 8 != 0 || PAGG_SETS_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_SETS(h), PAGG_SETS_BYTES(h), 0)))
-			corrupt(seg, "The small-set summaries (%llu bytes at %llu) lie outside the section.", ULL(PAGG_SETS_BYTES(h)), ULL(PAGG_SETS(h)));
-		if (ver > 3 && PAGG_SUPERDIR(h) &&
-			(PAGG_SUPERDIR(h) % 8 != 0 || !within(s->len - end, PAGG_SUPERDIR(h), PAGG_SUPER_BYTES(h), 0) || PAGG_SUPER_BYTES(h) < sizeof(SuperHeader)))
-			corrupt(seg, "The superunit block (%llu bytes at %llu) lies outside the section.", ULL(PAGG_SUPER_BYTES(h)), ULL(PAGG_SUPERDIR(h)));
-		if (ver > 3 && !PAGG_SUPERDIR(h) && PAGG_SUPER_BYTES(h))
-			corrupt(seg, "The superunit block has %llu bytes and no offset.", ULL(PAGG_SUPER_BYTES(h)));
-		if (ver > 4 && PAGG_RUNS(h) &&
-			(PAGG_RUNS(h) % 8 != 0 || PAGG_RUNS_BYTES(h) < sizeof(RunsHeader) + sizeof(RunsLeaf) || !within(s->len - end, PAGG_RUNS(h), PAGG_RUNS_BYTES(h), 0)))
-			corrupt(seg, "The sorted runs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_RUNS_BYTES(h)), ULL(PAGG_RUNS(h)));
-		if (ver > 5 && PAGG_XCUBEDIR(h) &&
-			(PAGG_XCUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_XCUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_XCUBE_BYTES(h))))
-			corrupt(seg, "The exception cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_XCUBE_BYTES(h)), ULL(PAGG_XCUBEDIR(h)));
-		if (ver > 5 && PAGG_XECUBEDIR(h) &&
-			(PAGG_XECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_XECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_XECUBE_BYTES(h))))
-			corrupt(seg, "The exception element blobs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_XECUBE_BYTES(h)), ULL(PAGG_XECUBEDIR(h)));
-		if (ver > 6 && PAGG_HLL(h) &&
-			(PAGG_HLL(h) % 8 != 0 || PAGG_HLL_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_HLL(h), PAGG_HLL_BYTES(h), 0)))
-			corrupt(seg, "The sketches (%llu bytes at %llu) lie outside the section.", ULL(PAGG_HLL_BYTES(h)), ULL(PAGG_HLL(h)));
-		if (ver > 7 && PAGG_KTAB(h) &&
-			(PAGG_KTAB(h) % 8 != 0 || PAGG_KTAB_BYTES(h) < 8 || !within(s->len - end, PAGG_KTAB(h), PAGG_KTAB_BYTES(h), 0)))
-			corrupt(seg, "The key tables (%llu bytes at %llu) lie outside the section.", ULL(PAGG_KTAB_BYTES(h)), ULL(PAGG_KTAB(h)));
-		pv->pagg_end = end;
-		pv->pagg = h;
-		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
-	}
-	return pv->pagg;
-}
-
-void
-sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a)
-{
-	SegPriv    *pv = PRIV(seg);
-	const PaggHeader *h = seg_pagg_header(seg);
-	SiftCZone	z;
-
-	sift_cseg_zone(seg, col, u, &z);
-	memset(a, 0, sizeof(*a));
-	a->nvals = z.nvals;
-	a->nnull = z.nnull;
-	a->min = z.min;
-	a->max = z.max;
-	a->sum_f = z.sum_f;
-	a->zflags = z.flags;
-	if (h->lagg_off[col])
-	{
-		const uint64 *b = pv->lagg[col];
-
-		if (b == NULL)
-		{
-			uint64	   *blk = MemoryContextAlloc(seg->mcxt, lagg_block_size(seg->nsb));
-
-			seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->lagg_off[col], lagg_block_size(seg->nsb), blk);
-			pv->lagg[col] = b = blk;
-		}
-		a->sum = (SiftCI128) (((unsigned __int128) b[seg->nsb + u] << 64) | b[u]);
-		a->sumsq = (SiftCI128) (((unsigned __int128) b[3 * seg->nsb + u] << 64) | b[2 * seg->nsb + u]);
-		a->flags = ((const uint32 *) (b + 4 * seg->nsb))[u];
-		a->has_sums = true;
-	}
-}
-
-/* The blob of unit u from the directory at dir_off (nsb + 1 offsets, then the blobs) of the sidecar; NULL when the unit has none */
-static const uint8 *
-unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len)
-{
-	uint64		at = seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + dir_off,
-				b0,
-				b1;
-
-	*len = 0;
-	if (!dir_off)
-		return NULL;
-	if (*dir == NULL)
-	{
-		*dir = MemoryContextAlloc(seg->mcxt, (n + 1) * sizeof(uint64));
-		seg_seg_read(seg, at, (n + 1) * sizeof(uint64), *dir);
-		for (uint32 i = 0; i < n; i++)
-			if ((*dir)[i] > (*dir)[i + 1] || (*dir)[i + 1] > bytes)
-				corrupt(seg, "The cube directory is out of order at unit %u.", i);
-	}
-	b0 = (*dir)[u];
-	b1 = (*dir)[u + 1];
-	if (b1 == b0)
-		return NULL;
-	if (b1 - b0 > *cap)
-	{
-		*cap = Max(b1 - b0, 2 * *cap);
-		*buf = *buf ? repalloc(*buf, *cap) : MemoryContextAlloc(seg->mcxt, *cap);
-	}
-	seg_seg_read(seg, at + (n + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
-	*len = b1 - b0;
-	return *buf;
-}
-
-const uint8 *
-sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len)
-{
-	SegPriv    *pv = PRIV(seg);
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	return unit_blob(seg, seg->nsb, u, h->cubedir_off, h->cube_bytes, &pv->cubedir, &pv->cubebuf, &pv->cubecap, len);
-}
-
-const uint8 *
-sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len)
-{
-	SegPriv    *pv = PRIV(seg);
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	if (h->version < 2)
-	{
-		*len = 0;
-		return NULL;
-	}
-	return unit_blob(seg, seg->nsb, u, PAGG_ECUBEDIR(h), PAGG_ECUBE_BYTES(h), &pv->ecubedir, &pv->ecubebuf, &pv->ecubecap, len);
-}
-
-/* The exception cube of unit u (docs/COL-PREAGG.md 11): the cube of the rows where the unit's exception leaf is not NULL, with the dims of the unit's own cube */
-const uint8 *
-sift_cseg_xcube(SiftColSegment *seg, uint32 u, uint32 *len)
-{
-	SegPriv    *pv = PRIV(seg);
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	if (h->version < 6)
-	{
-		*len = 0;
-		return NULL;
-	}
-	return unit_blob(seg, seg->nsb, u, PAGG_XCUBEDIR(h), PAGG_XCUBE_BYTES(h), &pv->xcubedir, &pv->xcubebuf, &pv->xcubecap, len);
-}
-
-/* The same for the element blob */
-const uint8 *
-sift_cseg_xecube(SiftColSegment *seg, uint32 u, uint32 *len)
-{
-	SegPriv    *pv = PRIV(seg);
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	if (h->version < 6)
-	{
-		*len = 0;
-		return NULL;
-	}
-	return unit_blob(seg, seg->nsb, u, PAGG_XECUBEDIR(h), PAGG_XECUBE_BYTES(h), &pv->xecubedir, &pv->xecubebuf, &pv->xecubecap, len);
-}
-
-const uint8 *
-sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len)
-{
-	const uint8 *e;
-	uint32		elen;
-
-	e = sift_cseg_ecube(seg, u, &elen);
-	if (e == NULL)
-	{
-		*len = 0;
-		return NULL;
-	}
-	e = sift_cpagg_elem_cube(seg->schema, e, elen, list, len);
-	if (*len == UINT32_MAX)
-		corrupt(seg, "The rollups of unit %u do not decode.", u);
-	return e;
-}
-
-const uint8 *
-sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
-{
-	int			list = seg->schema->cols[dim].parent;
-
-	return list < 0 ? sift_cseg_cube(seg, u, len) : sift_cseg_rollup(seg, u, list, len);
-}
-
-/* The superunit block's header, checked against the segment; NULL when the segment has none */
-static const SuperHeader *
-super_header(SiftColSegment *seg)
-{
-	SegPriv    *pv = PRIV(seg);
-
-	if (!pv->super_checked)
-	{
-		const PaggHeader *ph = seg_pagg_header(seg);
-
-		if (ph->version > 3 && PAGG_SUPERDIR(ph))
-		{
-			SuperHeader *h = MemoryContextAlloc(seg->mcxt, sizeof(SuperHeader));
-			uint64		bytes = PAGG_SUPER_BYTES(ph),
-						need;
-			uint32		nleaf = 0;
-
-			seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(ph), sizeof(SuperHeader), h);
-			for (int c = 0; c < seg->schema->ncols; c++)
-				nleaf += super_leaf_ok(&seg->schema->cols[c]);
-			if (h->magic != SUPER_MAGIC || h->fan < SIFT_SUPER_MIN_FAN || h->fan > SIFT_SUPER_MAX_FAN || h->nsu != (seg->nsb + h->fan - 1) / h->fan ||
-				(h->nsu == 1 && h->fan != seg->nsb) || h->nleaf != nleaf)
-				corrupt(seg, "The superunit block starts with 0x%08x, groups of %u units, %u groups and %u leaves for %u units and %u leaves.", h->magic,
-						h->fan, h->nsu, h->nleaf, seg->nsb, nleaf);
-			need = sizeof(SuperHeader) + (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) nleaf * h->nsu * sizeof(SiftCSuperLeaf);
-			if (h->cubedir_off == 0 ? (h->cube_bytes != 0 || bytes != need) :
-				(h->cubedir_off != need || h->cube_bytes > bytes || bytes != need + (h->nsu + 1) * sizeof(uint64) + h->cube_bytes))
-				corrupt(seg, "The superunit block holds %llu bytes, its sections say %llu and a cube of %llu bytes at %llu.", ULL(bytes), ULL(need),
-						ULL(h->cube_bytes), ULL(h->cubedir_off));
-			pv->super = h;
-			pv->sleaf = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(SiftCSuperLeaf *));
-		}
-		pv->super_checked = true;
-	}
-	return pv->super;
-}
-
-uint32
-sift_cseg_super_fan(SiftColSegment *seg)
-{
-	const SuperHeader *h = super_header(seg);
-
-	return h ? h->fan : 0;
-}
-
-void
-sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm)
-{
-	const SuperHeader *h = super_header(seg);
-
-	if (h == NULL || k >= h->nsu || n > h->fan || (uint64) k * h->fan + n > seg->nsb)
-		corrupt(seg, "The page masks of superunit %u were asked for %u units.", k, n);
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
-			 (uint64) k * h->fan * SIFT_PAGEMASK_WORDS * sizeof(uint64), (Size) n * SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
-}
-
-/* The pages the rows of unit u are on, from the superunit summary (4 words), without reading the unit; false when the segment has no summary */
-bool
-sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm)
-{
-	const SuperHeader *h = super_header(seg);
-
-	if (h == NULL || u >= seg->nsb)
-		return false;
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
-			 (uint64) u * SIFT_PAGEMASK_WORDS * sizeof(uint64), SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
-	return true;
-}
-
-static int
-sb_span_cmp(const void *a, const void *b)
-{
-	uint32		x = ((const SiftCSbSpan *) a)->lo,
-				y = ((const SiftCSbSpan *) b)->lo;
-
-	return x < y ? -1 : x > y;
-}
-
-uint32
-sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans)
-{
-	SegPriv    *pv = PRIV(seg);
-
-	if (pv->spans == NULL)
-	{
-		SiftCSbSpan *r = MemoryContextAlloc(seg->mcxt, Max(seg->nsb, 1) * sizeof(SiftCSbSpan));
-		bool		keyed = sift_cseg_keyed(&seg->entry);
-		uint32		n = 0;
-
-		for (uint32 u = 0; u < seg->nsb; u++)
-		{
-			uint64		pm[SIFT_PAGEMASK_WORDS];
-
-			if (!keyed)
-				r[u] = (SiftCSbSpan) {sift_cseg_unit_sb(seg, u), sift_cseg_unit_sb(seg, u)};
-			else if (sift_cseg_unit_pagemask(seg, u, pm))
-				r[u] = (SiftCSbSpan) {(uint32) pm[0] / SIFT_SB_PAGES, (uint32) (pm[0] >> 32) / SIFT_SB_PAGES};
-			else
-				r[u] = (SiftCSbSpan) {0, PG_UINT32_MAX};
-		}
-		if (keyed)
-			qsort(r, seg->nsb, sizeof(SiftCSbSpan), sb_span_cmp);
-		for (uint32 u = 0; u < seg->nsb; u++)
-			if (n > 0 && r[u].lo <= (uint64) r[n - 1].hi + 1)
-				r[n - 1].hi = Max(r[n - 1].hi, r[u].hi);
-			else
-				r[n++] = r[u];
-		pv->spans = r;
-		pv->nspans = n;
-	}
-	*spans = pv->spans;
-	return pv->nspans;
-}
-
-bool
-sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb)
-{
-	const SiftCSbSpan *r;
-	uint32		lo = 0,
-				hi = sift_cseg_sb_spans(seg, &r),
-				n = hi;
-
-	SIFT_BISECT(uint32, mid, lo, hi, r[mid].hi < sb);
-	return lo < n && r[lo].lo <= sb;
-}
-
-bool
-sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
-{
-	SegPriv    *pv = PRIV(seg);
-	const SuperHeader *h = super_header(seg);
-	const SiftCSuperLeaf *r;
-	int			slot = 0;
-
-	if (h == NULL || k >= h->nsu || !super_leaf_ok(&seg->schema->cols[col]))
-		return false;
-	if (pv->sleaf[col] == NULL)
-	{
-		SiftCSuperLeaf *blk = MemoryContextAlloc(seg->mcxt, (Size) h->nsu * sizeof(SiftCSuperLeaf));
-
-		for (int c = 0; c < col; c++)
-			slot += super_leaf_ok(&seg->schema->cols[c]);
-		seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(pv->pagg) + sizeof(SuperHeader) +
-				 (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) slot * h->nsu * sizeof(SiftCSuperLeaf),
-				 (Size) h->nsu * sizeof(SiftCSuperLeaf), blk);
-		for (uint32 i = 0; i < h->nsu; i++)
-		{
-			const SiftCSuperLeaf *l = &blk[i];
-
-			if ((l->flags & ~(SIFT_CAGG_SUMSQ_OVF | SIFT_SUPER_LEAF_OK)) || (l->zflags & ~SIFT_COLZ_CONST) ||
-				((l->flags & SIFT_SUPER_LEAF_OK) ? (l->nnull > l->nvals || (l->nnull < l->nvals && l->min > l->max) ||
-													((l->flags & SIFT_CAGG_SUMSQ_OVF) && (l->sumsq_lo || l->sumsq_hi)) ||
-													(seg->schema->cols[col].store == SIFT_COLS_STR && (l->sum_lo || l->sum_hi || l->sumsq_lo || l->sumsq_hi || l->flags != SIFT_SUPER_LEAF_OK))) :
-				 (l->flags || l->zflags || l->nvals || l->nnull || l->sum_lo || l->sum_hi)))
-				corrupt(seg, "The summary of leaf %d in superunit %u is malformed.", col, i);
-		}
-		pv->sleaf[col] = blk;
-	}
-	r = &pv->sleaf[col][k];
-	if (!(r->flags & SIFT_SUPER_LEAF_OK))
-		return false;
-	memset(a, 0, sizeof(*a));
-	a->nvals = r->nvals;
-	a->nnull = r->nnull;
-	a->min = r->min;
-	a->max = r->max;
-	a->zflags = r->zflags;
-	a->flags = r->flags & SIFT_CAGG_SUMSQ_OVF;
-	a->sum = (SiftCI128) (((unsigned __int128) r->sum_hi << 64) | r->sum_lo);
-	a->sumsq = (SiftCI128) (((unsigned __int128) r->sumsq_hi << 64) | r->sumsq_lo);
-	a->has_sums = seg->schema->cols[col].store == SIFT_COLS_INT;
-	return true;
-}
-
-const uint8 *
-sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len)
-{
-	SegPriv    *pv = PRIV(seg);
-	const SuperHeader *h = super_header(seg);
-
-	*len = 0;
-	if (h == NULL || h->cubedir_off == 0 || k >= h->nsu)
-		return NULL;
-	return unit_blob(seg, h->nsu, k, PAGG_SUPERDIR(pv->pagg) + h->cubedir_off, h->cube_bytes, &pv->supdir, &pv->supbuf, &pv->supcap, len);
-}
-
-uint64
-sift_cseg_set_bytes(SiftColSegment *seg)
-{
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	return h->version > 2 ? PAGG_SETS_BYTES(h) : 0;
-}
-
-uint64
-sift_cseg_run_bytes(SiftColSegment *seg)
-{
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	return h->version > 4 ? PAGG_RUNS_BYTES(h) : 0;
-}
-
-uint64
-sift_cseg_hll_bytes(SiftColSegment *seg)
-{
-	const PaggHeader *h = seg_pagg_header(seg);
-
-	return h->version > 6 ? PAGG_HLL_BYTES(h) : 0;
-}
-
-uint64
-sift_cseg_preagg_bytes(SiftColSegment *seg)
-{
-	seg_pagg_header(seg);
-	return seg_sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg) - sift_cseg_run_bytes(seg) - sift_cseg_hll_bytes(seg);
-}
-
 /* ---------- small-set summaries ---------- */
 
 /*
@@ -1552,7 +552,7 @@ blob_records(SiftColSegment *seg, const char *what, uint32 magic, uint64 off, ui
 		if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~flags_ok) || !leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
 			corrupt(seg, "The %s record %u names leaf %u, which cannot have one.", what, i, r->leaf);
 		if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
-			!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
+			!seg_within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
 			corrupt(seg, "The %s of leaf %u (%llu bytes at %llu) lie outside the section.", what, r->leaf, ULL(r->bytes), ULL(r->dir_off));
 		lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
 		prev = r->leaf;
@@ -1595,7 +595,7 @@ sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 	*len = 0;
 	if (sl == NULL)
 		return NULL;
-	blob = unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len);
+	blob = seg_unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->setdir[col], &pv->setbuf, &pv->setcap, len);
 	/* the blobs of a leaf end where its record says: a smaller end would drop the last unit's blob unnoticed */
 	if (pv->setdir[col] != NULL && pv->setdir[col][seg->nsb] != sl->bytes)
 		corrupt(seg, "The directory of the small-set summaries of leaf %d ends at %llu, not at %llu.", col, (unsigned long long) pv->setdir[col][seg->nsb], (unsigned long long) sl->bytes);
@@ -1660,7 +660,7 @@ sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 	*len = 0;
 	if (sl == NULL)
 		return NULL;
-	blob = unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->hlldir[col], &pv->hllbuf, &pv->hllcap, len);
+	blob = seg_unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->hlldir[col], &pv->hllbuf, &pv->hllcap, len);
 	if (pv->hlldir[col][seg->nsb] != sl->bytes)
 		corrupt(seg, "The directory of the sketches of leaf %d ends at %llu, not at %llu.", col, ULL(pv->hlldir[col][seg->nsb]), ULL(sl->bytes));
 	if (blob != NULL && !sift_hll_check(blob, *len))
@@ -2853,8 +1853,8 @@ sift_cseg_point_nkeys(SiftColSegment *seg, int col)
 /* ---- the global order of a leaf (col/gorder.h) ---- */
 
 /* The block of leaf col with its header read (the directory entries are read and checked when they are used, the whole directory by verify), NULL when the segment has none */
-static GOrdLeaf *
-gord_leaf(SiftColSegment *seg, int col)
+GOrdLeaf *
+seg_gord_leaf(SiftColSegment *seg, int col)
 {
 	SegPriv    *pv = PRIV(seg);
 	GOrdLeaf   *g;
@@ -2928,7 +1928,7 @@ gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c)
 uint32
 sift_cseg_gorder_collation(SiftColSegment *seg, int col)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	return g == NULL ? 0 : g->hdr.collid;
 }
@@ -2956,7 +1956,7 @@ gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col)
 const char *
 sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		b = r / SIFT_CGORD_STR_BLK;
 	uint32		off[2];
 	uint64		seg_sec;
@@ -2999,7 +1999,7 @@ gord_str_vs(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r, const char *s, 
 uint32
 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 slen, bool after)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		lo = 0,
 				hi;
 
@@ -3015,18 +2015,18 @@ sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 sle
 int
 sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 {
-	const GOrdLeaf *g = grouped ? gord_leaf(seg, seg->schema->ncols + col) : NULL;
+	const GOrdLeaf *g = grouped ? seg_gord_leaf(seg, seg->schema->ncols + col) : NULL;
 
 	if (g != NULL)
 		return seg->schema->ncols + col;
-	g = gord_leaf(seg, col);
+	g = seg_gord_leaf(seg, col);
 	return g != NULL && (g->hdr.gcol >= 0) == grouped ? col : -1;
 }
 
 bool
 sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	if (g == NULL)
 		return false;
@@ -3039,7 +2039,7 @@ sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 uint32
 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	SiftCGOrdDir d;
 	uint32		m;
 	uint8	   *buf;
@@ -3060,7 +2060,7 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 void
 sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, SiftCGOrdBuf *buf)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		c;
 
 	if (g == NULL)
@@ -3081,7 +2081,7 @@ sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint6
 int
 sift_cseg_gorder_group(SiftColSegment *seg, int col)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	return g == NULL ? -1 : g->hdr.gcol;
 }
@@ -3093,7 +2093,7 @@ sift_cseg_gorder_group(SiftColSegment *seg, int col)
 void
 sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		lo = 0,
 				hi;
 
@@ -3141,7 +2141,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 static uint32
 gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 {
-	uint32		at = c * gord_leaf(seg, col)->hdr.crows;
+	uint32		at = c * seg_gord_leaf(seg, col)->hdr.crows;
 
 	if (memo->at != at)
 		sift_cseg_gorder_fill(seg, col, at, UINT32_MAX, memo);
@@ -3155,7 +2155,7 @@ gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 static uint32
 gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		c0,
 				lo,
 				hi,
@@ -3198,7 +2198,7 @@ sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 
 static bool
 gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 *b, SiftCGOrdBuf *memo)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	/* the keys of a text block are ranks of the segment's strings, not the codes of its dictionary that a range of the scan is in */
 	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0)
@@ -3237,7 +2237,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 	memo.at = UINT32_MAX;
 	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
-	crows = gord_leaf(seg, col)->hdr.crows;
+	crows = seg_gord_leaf(seg, col)->hdr.crows;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
 	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)
 	{
@@ -3259,7 +2259,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 static void
 verify_gorder(SiftColSegment *seg, int col, uint32 total)
 {
-	GOrdLeaf   *g = gord_leaf(seg, col);
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	int64		key[SIFT_CGORD_CAP];
 	uint64		addr[SIFT_CGORD_CAP];
 	uint32		have = UINT32_MAX;
