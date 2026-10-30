@@ -97,7 +97,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		 * where it is far from what the verdict was made for, the statement is planned again from the tree that is left (the inline plan) or from a copy made
 		 * for it (the shared plan).
 		 */
-		Query	   *again = copyObject(parse);
+		Query	   *again = vd.won ? parse : copyObject(parse);
 		PlannedStmt *stmt;
 		double		size;
 		int			r;
