@@ -174,6 +174,49 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 }
 
 /*
+ * A standby streams: an AccessExclusiveLock would make its replay wait for every query that holds the index. The free end that the horizon
+ * (held back by the feedback of the standby) says no snapshot can read any more is cut under an ExclusiveLock instead, which a standby
+ * does not replay: nothing reads those blocks, as nothing reads a block that a rewrite reuses. Nothing is moved.
+ */
+static BlockNumber
+online_cut(Relation index, int elevel)
+{
+	BlockNumber freed = 0;
+	BlockNumber tail;
+
+	sift_store_cut_online(true);
+	PG_TRY();
+	{
+		tail = sift_store_tail_blocks(index);
+		if (tail > 0 && (tail >= TRUNCATE_MIN_BLOCKS || tail >= RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
+		{
+			if (ConditionalLockRelation(index, ExclusiveLock))
+			{
+				freed = sift_store_truncate(index);
+				UnlockRelation(index, ExclusiveLock);
+			}
+			else
+				ereport(elevel, (errmsg("index \"%s\": stopping truncate due to conflicting lock request", RelationGetRelationName(index))));
+		}
+	}
+	PG_FINALLY();
+	{
+		sift_store_cut_online(false);
+	}
+	PG_END_TRY();
+	if (freed > 0)
+		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages online", RelationGetRelationName(index),
+								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
+	return freed;
+}
+
+static bool
+online_cut_wanted(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX && cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams();
+}
+
+/*
  * Gives the free blocks at the end of the file back to the operating system, like VACUUM does for a
  * heap: when they are worth an exclusive lock, and only if AccessExclusiveLock on the index is free
  * right now (any scan, insert or step of the worker holds a lock on it), released as soon as the file
@@ -188,6 +231,11 @@ sift_maint_truncate(Relation index, int elevel)
 	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
 	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
 		return;
+	if (online_cut_wanted(index))
+	{
+		(void) online_cut(index, elevel);
+		return;
+	}
 	tail = sift_store_tail_blocks(index);
 	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
 		return;
@@ -481,6 +529,8 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
 		return 0;
 	space_copied = 0;
+	if (online_cut_wanted(rel))
+		return online_cut(rel, elevel);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	/*
 	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the

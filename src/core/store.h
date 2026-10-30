@@ -51,6 +51,17 @@
  *    the truncation and cancels what holds the index there, and the relcache
  *    entries (the write buffer appenders' cached lane tails) are invalidated before
  *    the lock is released.
+ * P7a Online truncation. A VACUUM while a physical standby streams does not take that
+ *    lock (the standby would stall every record behind it for as long as its longest
+ *    query on the index runs): it takes an ExclusiveLock, which is not WAL-logged and
+ *    keeps the writers out and not the readers, and gives back the free run only if
+ *    every record in it is reusable by the horizon (the oldest snapshot of the server,
+ *    the feedback of a standby included), the same test a rewrite applies before it
+ *    reuses a block. A scan reads only the blocks its directory copy lists, which no
+ *    snapshot that could hold a copy of it lists any more, so nothing reads the cut run.
+ *    Records released after the oldest snapshot stay until it ends. The records cleared
+ *    by the horizon are logged as a recovery conflict (sift.standby_conflicts), as for a
+ *    reuse, for a standby that sends no feedback.
  *
  * Store records are not transactional and nothing here flushes WAL: a change
  * is durable once WAL is flushed past it, by the commit of a transaction that
@@ -175,6 +186,7 @@ extern bool sift_store_removable(Relation index, FullTransactionId xid);
  * The caller turns it off again before it releases the lock, also on error.
  */
 extern void sift_store_space_exclusive(Relation index, bool on);
+extern void sift_store_cut_online(bool on);
 
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_space_crash;

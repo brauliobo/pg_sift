@@ -690,9 +690,26 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
  * What the cut of the file counts as reusable (InvalidFullTransactionId: what the horizon says). A lazy VACUUM releases with the next xid
  * (xid_safexid) and cuts under AccessExclusiveLock, which keeps every reader out, so for it every record is reusable.
  */
+/*
+ * The online cut (P7a): while a standby streams, the free end of the file goes under an ExclusiveLock, which a standby does not replay, and no reader is kept
+ * out. It is safe only for blocks that no snapshot can read any more: the cut counts as reusable what the horizon says (the oldest snapshot of the server, with
+ * the feedback of a standby when hot_standby_feedback is on) and not every record, which the AccessExclusiveLock cut of a VACUUM may do because it keeps every
+ * reader out. A record released after the oldest snapshot stays in the file until that snapshot ends. With sift.standby_conflicts the records the cut clears
+ * are logged as a recovery conflict (rewrite_chain), so a standby without feedback waits for or cancels the snapshots that may still read them.
+ */
+static bool cut_online = false;
+
+void
+sift_store_cut_online(bool on)
+{
+	cut_online = on;
+}
+
 static FullTransactionId
 cut_horizon(void)
 {
+	if (cut_online)
+		return InvalidFullTransactionId;
 	return (MyProc->statusFlags & PROC_IN_VACUUM) ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
 }
 
@@ -773,7 +790,7 @@ sift_store_truncate(Relation index)
 		newhwm = hwm;
 	if ((nblocks = RelationGetNumberOfBlocks(index)) <= newhwm)
 		return 0;
-	if (space_exclusive)
+	if (space_exclusive || cut_online)
 		SIFT_SPACE_TEST_POINT(3);
 	RelationTruncate(index, newhwm);
 	/*
