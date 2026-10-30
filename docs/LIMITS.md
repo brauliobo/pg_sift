@@ -22,7 +22,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `group_spill_depth` | levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time) | 8 | levels | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/spill.c` `SPILL_MAX_DEPTH` | yes |
 | `joins` | lookup-joined tables per scan | 32 | tables | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JOINS` | yes |
 | `combos` | value combinations per scan | 128 | combinations | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_COMBOS` | yes |
-| `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo.c` `COMBO_MAX_ENTRIES` | yes |
+| `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo/int.h` `COMBO_MAX_ENTRIES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JKEYS` |  |
 | `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_JCOLS` | yes |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_JIDX` |  |

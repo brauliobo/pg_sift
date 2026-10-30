@@ -202,7 +202,7 @@ blob_key_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 	pfree(pv);
 }
 
-/* the table of the values a combo slot gives ids to for aggregate ai (combo.c slot_ot) */
+/* the table of the values a combo slot gives ids to for aggregate ai (combo/out.c slot_ot) */
 OutTable *
 mset_table(AggExec *ex, int ai)
 {

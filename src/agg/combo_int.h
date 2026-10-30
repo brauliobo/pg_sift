@@ -1,5 +1,5 @@
 /*
- * agg/combo_int.h - combos: expressions evaluated over combinations of values (agg/combo.c)
+ * agg/combo_int.h - combos: expressions evaluated over combinations of values (agg/combo/)
  */
 #ifndef SIFT_AGG_COMBO_INT_H
 #define SIFT_AGG_COMBO_INT_H
@@ -80,7 +80,7 @@ typedef struct ComboSt
 	uint32	   *fruns;			/* the child runs for the keys while the table is not read, over the arms that read it */
 	uint32		fthresh;		/* ... after which it is */
 	ExprState  *fpq;			/* ... and the child's condition on its parameters, over the combo's leaves */
-	struct ChildWarm *warm;		/* the relations the correlated child reads and what its runs read of them (combo.c child_warm) */
+	struct ChildWarm *warm;		/* the relations the correlated child reads and what its runs read of them (combo/child.c child_warm) */
 	uint32	   *kmemo[SIFT_AGG_MAX_JKEYS];	/* per text key of the join: the id of the table's value of each interned value of the leaf (COMBO_UNEVAL: not looked up yet, 0: no row has it) */
 	uint32		nmemo[SIFT_AGG_MAX_JKEYS];
 	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */
@@ -131,7 +131,7 @@ typedef struct ComboSt
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* combo.c */
+/* combo/ */
 void combo_bind_leaves(AggExec *ex, int ci, const uint64 *v);
 uint32 combo_eval_slot(AggExec *ex, int ci, uint32 row, int sl);
 void combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint32 nout);
