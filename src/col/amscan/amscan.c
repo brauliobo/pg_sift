@@ -273,9 +273,12 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
 	sat = scan_preds(scan, &keys, so->preds);
-	/* an equality or IN on a plain leaf finds the rows of the write buffers in their records, which costs a few instructions a row where their batches cost thousands */
-	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys && wl < 0; i++)
-		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]))
+	/*
+	 * an equality or IN on a plain leaf finds the rows of the write buffers in their records, which costs a few instructions a row where their batches cost thousands:
+	 * the one with the fewest values (of an IN list of the scope and an equality on the same key, the equality), since the heap checks the rows it finds against all
+	 */
+	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys; i++)
+		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
 	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt,
 							SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));

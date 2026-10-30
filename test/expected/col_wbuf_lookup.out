@@ -203,6 +203,31 @@ SELECT count(*) AS batches FROM wl2_check();
 
 DROP TABLE wl2;
 DROP FUNCTION wl2_check();
+-- of two conditions on a key, an IN list of the scope and an equality, the buffer is looked up by the one with the fewest values: the rows it finds are the heap's to
+-- check, and the list of 300 keys finds 170 of the 500 buffered rows where the equality finds the one
+CREATE FUNCTION wl_candidates(w text) RETURNS int LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_indexscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text; n int;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM wl WHERE %s', w) LOOP
+		IF l ~ 'Bitmap Index Scan on wl_i' THEN n := substring(l from 'actual rows=(\d+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT wl_candidates('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100') <= 20 AS equality_looks_up,
+       wl_candidates('k = 100 AND k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g))') <= 20 AS in_either_order;
+ equality_looks_up | in_either_order 
+-------------------+-----------------
+ t                 | t
+(1 row)
+
+INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100');
+:check;
+ n | w | idx | bmp 
+---+---+-----+-----
+(0 rows)
+
+DROP FUNCTION wl_candidates(text);
 DROP TABLE wl CASCADE;
 DROP FUNCTION wl_idx(text);
 DROP FUNCTION wl_bmp(text);
