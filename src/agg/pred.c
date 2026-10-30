@@ -529,19 +529,33 @@ rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
 			for (uint64 bits = eb[w]; bits; bits &= bits - 1)
 			{
 				uint32		p = w * 64 + pg_rightmost_one_pos64(bits);
-				int			hi = nrow;
 
 				if (p >= m)
 					return;
-				/* the row r with offs[r] <= p < offs[r + 1]; a row of no element is never found */
-				while (r + 1 < hi)
+				/* the elements come in order: most are in the row of the one before, the next row or a few after it, which the steps of a doubling search find */
+				if (p >= offs[r + 1])
 				{
-					int			mid = (r + hi) / 2;
+					int			lo = r,
+								step = 1,
+								hi;
 
-					if (offs[mid] <= p)
-						r = mid;
-					else
-						hi = mid;
+					while (lo + step < nrow && offs[lo + step] <= p)
+					{
+						lo += step;
+						step <<= 1;
+					}
+					hi = Min(lo + step, nrow);
+					/* the row r with offs[r] <= p < offs[r + 1]; a row of no element is never found */
+					while (lo + 1 < hi)
+					{
+						int			mid = (lo + hi) / 2;
+
+						if (offs[mid] <= p)
+							lo = mid;
+						else
+							hi = mid;
+					}
+					r = lo;
 				}
 				out[r >> 6] |= UINT64CONST(1) << (r & 63);
 			}
