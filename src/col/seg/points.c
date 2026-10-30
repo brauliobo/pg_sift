@@ -639,7 +639,7 @@ stream_chunk(SiftPointStream *s)
 			DictLook   *l = seg_dict_look(s->seg, s->col);
 			uint32	   *codes = palloc(k * sizeof(uint32));
 
-			seg_read(s->seg, l->perm_at + ((uint64) s->pfrom + s->kpos) * sizeof(uint32), k * sizeof(uint32), codes);
+			sift_cseg_dict_perm_read(l, s->pfrom + s->kpos, k, codes);
 			/* in the order of the codes, which follows that of the rows: the addresses of the keys come nearly in order of the heap, and the sort of them finds it so */
 			sort_u32(codes, k);
 			places = palloc(k * sizeof(int64));
@@ -784,7 +784,7 @@ sift_cseg_dict_codes(SiftColSegment *seg, int col, uint32 from, uint32 to, int64
 	DictLook   *l = seg_dict_look(seg, col);
 	uint32	   *codes = palloc((Size) (to - from) * sizeof(uint32));
 
-	seg_read(seg, l->perm_at + (uint64) from * sizeof(uint32), (Size) (to - from) * sizeof(uint32), codes);
+	sift_cseg_dict_perm_read(l, from, to - from, codes);
 	for (uint32 i = 0; i < to - from; i++)
 		keys[i] = codes[i];
 	pfree(codes);

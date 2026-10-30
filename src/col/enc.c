@@ -505,7 +505,7 @@ unit_put_directory(StringInfo out, const SiftKey *keys, uint32 nrows, uint32 sb)
 }
 
 /* Appends the n values of v, bits each, LSB first, padded to a byte */
-static void
+void
 put_packed(StringInfo out, const uint32 *v, uint32 n, int bits)
 {
 	uint64		acc = 0;

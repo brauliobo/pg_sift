@@ -269,6 +269,7 @@ typedef struct DictLookHead
 	uint64		blk_at;
 	uint64		blk_len;
 	uint64		perm_at;
+	uint32		perm_bits;		/* the bits of a code of the order (DICT_PERM_PACKED), 0: u32 */
 	uint64		cum_at;			/* the row counts of the places in byte order, by block (DICT_LOOKUP_COUNT, col/enc.h), 0: none */
 	uint64		hash_at;		/* the hash of the strings to their codes (DICT_HASHED, col/enc.h), 0: none */
 	uint64		sig_at;			/* the trigram signatures of the blocks (DICT_TSIG_MAGIC), 0: none */
@@ -299,6 +300,7 @@ typedef struct DictLook
 	uint64		blk_at;
 	uint64		blk_len;
 	uint64		perm_at;
+	uint32		perm_bits;
 	uint64		cum_at;			/* form 4: the row counts by block after code[n] (col/enc.h); 0: none */
 	uint64		hash_at;		/* DICT_HASHED: the hash after all of the above; 0: none */
 	uint64		sig_at;			/* the trigram signatures of the blocks, 2^sig_lg bits each (col/enc.h); 0: none */
@@ -466,6 +468,7 @@ extern void	seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst);
 extern const SiftSectionRef *	seg_sec(const SiftColSegment *seg, SiftSection s);
 extern const PointLeaf *	seg_points_read(SiftColSegment *seg);
 extern DictLook *	seg_dict_look(SiftColSegment *seg, int col);
+extern void sift_cseg_dict_perm_read(const DictLook *l, uint32 from, uint32 k, uint32 *codes);
 extern const PaggHeader *	seg_pagg_header(SiftColSegment *seg);
 extern const SetsLeaf *	seg_set_leaf(SiftColSegment *seg, int col);
 extern bool	seg_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len);

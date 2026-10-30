@@ -11,6 +11,9 @@
 #define COLK_MAGIC		0x4B4C4F43	/* "COLK": the unit of a key-cut segment, explicit TIDs */
 #define CODEC_BLOCK		4096	/* values unpacked at a time (a multiple of 64) */
 
+/* Appends the n values of v, bits each, LSB first, padded to a byte */
+extern void put_packed(StringInfo out, const uint32 *v, uint32 n, int bits);
+
 static inline uint32
 words_of(uint32 n)
 {

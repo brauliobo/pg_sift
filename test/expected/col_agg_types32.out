@@ -194,7 +194,7 @@ SELECT kind, format, count(*) FROM sift.table_segments('tt') GROUP BY 1, 2 ORDER
     kind    | format | count 
 ------------+--------+-------
  buffer     |        |     1
- columns    |     25 |     1
+ columns    |     39 |     1
  tombstones |        |     1
 (3 rows)
 

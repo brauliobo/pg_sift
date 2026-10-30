@@ -190,6 +190,26 @@ look_slot(const DictLook *l, uint32 pos)
 	return l->bc ? &l->bc->slot[(pos * 0x9E3779B1u) >> 8 & l->bc->mask] : NULL;
 }
 
+/* The k codes at places [from, from + k) of the byte order (u32 each, or perm_bits wide in a dictionary of column format minor 39) */
+void
+sift_cseg_dict_perm_read(const DictLook *l, uint32 from, uint32 k, uint32 *codes)
+{
+	uint64		bit = (uint64) from * l->perm_bits;
+	Size		nb = (Size) (((bit & 7) + (uint64) k * l->perm_bits + 7) / 8);
+	uint8	   *buf;
+
+	if (l->perm_bits == 0)
+	{
+		seg_read(l->seg, l->perm_at + (uint64) from * sizeof(uint32), (Size) k * sizeof(uint32), codes);
+		return;
+	}
+	buf = palloc(nb);
+	seg_read(l->seg, l->perm_at + (bit >> 3), nb, buf);
+	for (uint32 i = 0; i < k; i++)
+		codes[i] = sift_ckeyed_get(buf, nb, (bit & 7) + (uint64) i * l->perm_bits, l->perm_bits);
+	pfree(buf);
+}
+
 static uint32
 look_perm(const DictLook *l, uint32 pos)
 {
@@ -200,7 +220,7 @@ look_perm(const DictLook *l, uint32 pos)
 		return s->code;
 	if (l->bc != NULL)
 		l->bc->spent += DICT_READ_COST;
-	seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), sizeof(code), &code);
+	sift_cseg_dict_perm_read(l, pos, 1, &code);
 	if (code >= l->n)
 		corrupt(l->seg, "The order of the dictionary of leaf %d names code %u of %u.", l->col, code, l->n);
 	return code;
@@ -410,7 +430,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int n
 		uint32		codes[1024],
 					k = Min(to - pos, lengthof(codes));
 
-		seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), k * sizeof(uint32), codes);
+		sift_cseg_dict_perm_read(l, pos, k, codes);
 		for (uint32 i = 0; i < k; i++)
 		{
 			if (codes[i] >= l->n)
@@ -477,6 +497,7 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->blk_at = bc->head.blk_at;
 	l->blk_len = bc->head.blk_len;
 	l->perm_at = bc->head.perm_at;
+	l->perm_bits = bc->head.perm_bits;
 	l->cum_at = bc->head.cum_at;
 	l->hash_at = bc->head.hash_at;
 	l->blocked = true;
@@ -505,7 +526,9 @@ seg_dict_look(SiftColSegment *seg, int col)
 	uint32		blen;
 	uint64		end = 0;
 	SiftCBisect *bc;
-	bool		hashed;
+	bool		hashed,
+				packed;
+	uint64		perm_len;
 
 	if (pv->look_checked[col])
 		return pv->look[col];
@@ -518,7 +541,8 @@ seg_dict_look(SiftColSegment *seg, int col)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	seg_read(seg, off, DICT_HEAD, head);
 	hashed = (head[0] & DICT_HASHED) != 0;
-	head[0] &= ~DICT_HASHED;
+	packed = (head[0] & DICT_PERM_PACKED) != 0;
+	head[0] &= ~DICT_FLAGS;
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = look_alloc(seg);
@@ -540,7 +564,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 		if (len < DICT_HEAD_LOOKUP)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, off, DICT_HEAD_LOOKUP, head);
-		head[0] &= ~DICT_HASHED;
+		head[0] &= ~DICT_FLAGS;
 		l->fixed = head[2];
 		l->nbytes = head[3];
 		l->blocked = true;
@@ -557,14 +581,16 @@ seg_dict_look(SiftColSegment *seg, int col)
 		if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT)
 		{
 			l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
-			if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
+			l->perm_bits = packed ? sift_cdict_perm_bits(l->n) : 0;
+			perm_len = sift_cdict_perm_bytes(l->n, l->perm_bits);
+			if (l->perm_at + perm_len > off + len)
 				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-			end = l->perm_at + (uint64) l->n * sizeof(uint32);
+			end = l->perm_at + perm_len;
 			if (head[0] == DICT_LOOKUP_COUNT)
 			{
 				uint32		last;
 
-				l->cum_at = l->perm_at + (uint64) l->n * sizeof(uint32);
+				l->cum_at = l->perm_at + perm_len;
 				if (l->cum_at + DICT_COUNT_HEAD(l->n) > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 				seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
@@ -574,7 +600,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 			}
 			if (hashed)
 			{
-				l->hash_at = head[0] == DICT_LOOKUP_COUNT ? l->cum_at + DICT_COUNT_HEAD(l->n) + (uint64) 0 : l->perm_at + (uint64) l->n * sizeof(uint32);
+				l->hash_at = head[0] == DICT_LOOKUP_COUNT ? l->cum_at + DICT_COUNT_HEAD(l->n) + (uint64) 0 : l->perm_at + perm_len;
 				if (head[0] == DICT_LOOKUP_COUNT)
 				{
 					uint32		last;
@@ -593,7 +619,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 			l->searchable = true;
 			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
 			{
-				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at, l->hash_at, l->sig_at, l->sig_lg};
+				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->perm_bits, l->cum_at, l->hash_at, l->sig_at, l->sig_lg};
 				bc->have_head = true;
 				l->bc = bc;
 				l->bc_tried = true;
@@ -744,7 +770,7 @@ sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows)
 		count_block(l, b, &base, vals);
 		if (base != cum)
 			corrupt(seg, "The row counts of the dictionary of leaf %d start block %u at %u rows, not the %u before it.", col, b, base, cum);
-		seg_read(seg, l->perm_at + (uint64) lo * sizeof(uint32), k * sizeof(uint32), codes);
+		sift_cseg_dict_perm_read(l, lo, k, codes);
 		for (uint32 i = 0; i < DICT_BLOCK; i++)
 		{
 			if (i >= k)

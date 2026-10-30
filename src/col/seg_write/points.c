@@ -94,6 +94,8 @@ bool		sift_test_col_point_unpacked = false;
 bool		sift_test_col_point_unrooted = false;
 
 bool		sift_test_col_gorder_unpacked = false;
+
+bool		sift_test_col_dict_unpacked = false;
 #endif
 
 /* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first). A segment with only global orders

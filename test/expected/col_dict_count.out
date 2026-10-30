@@ -12,7 +12,7 @@ VACUUM dc;
 SELECT format FROM sift._test_col_formats('dc_idx'::regclass) ORDER BY gen;
  format 
 --------
-     25
+     39
 (1 row)
 
 SELECT bool_and(counted) AS every_segment_counts, sum(rows) AS rows_of_prefix FROM sift._test_col_dict_count('dc_idx'::regclass, 1, 'prefix', 'key 0');

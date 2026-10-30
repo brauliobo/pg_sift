@@ -468,6 +468,7 @@ sift_cseg_keyed(const SiftSegEntry *e)
 
 #ifdef SIFT_TESTING
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */
+extern bool sift_test_col_dict_unpacked;	/* sift.test_col_dict_unpacked: the order of a dictionary searched in place takes 32 bits a code (as before column format minor 39) */
 extern bool sift_test_col_point_unrooted;	/* sift.test_col_point_unrooted: the header and records of the point directories precede the tables (column format minor 35), not follow them */
 extern bool sift_test_col_point_unpacked;	/* sift.test_col_point_unpacked: the point directories are written as tables of slots, not packed tables */
 #endif

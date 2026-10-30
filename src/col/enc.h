@@ -63,6 +63,7 @@ typedef struct SiftCDict
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg/seg.c) */
 	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
 	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
+	bool		packperm;		/* writer only: serialize the order packed (DICT_PERM_PACKED) */
 	int			leaf1;			/* writer only: 1 + the leaf of the dictionary (0: unknown), for the hook of the formula */
 	bool		scan;			/* writer only: the parsed dictionary does not fit the cache, every test that reads it unwraps the strings again (wrap_choose_scan) */
 	bool		lz4_blocks;		/* writer only: set by the serializer when a block of the blocks form took LZ4 (the segment is then of minor SIFT_COL_FORMAT_TSIG) */
@@ -124,6 +125,24 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
 #define DICT_HASHED		0x10		/* or'ed into form 2, 3 or 4: after everything of the form (4-aligned), a hash of the strings to their codes */
+#define DICT_PERM_PACKED	0x20		/* or'ed into form 2 or 4: code[] holds its n codes in sift_cdict_perm_bits(n) bits each, lowest first, the bytes padded to 4 (column format minor 39) */
+#define DICT_FLAGS		(DICT_HASHED | DICT_PERM_PACKED)
+/* The bits of a code of a dictionary of n strings (0..n - 1) */
+static inline uint32
+sift_cdict_perm_bits(uint32 n)
+{
+	uint32		b = 1;
+
+	while (((uint64) 1 << b) < n)
+		b++;
+	return b;
+}
+/* The bytes of code[n]: bits wide (0: u32 each), padded to 4 */
+static inline uint64
+sift_cdict_perm_bytes(uint32 n, uint32 bits)
+{
+	return bits == 0 ? (uint64) n * sizeof(uint32) : (((uint64) n * bits + 7) / 8 + 3) / 4 * 4;
+}
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 #define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
@@ -134,7 +153,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
  * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. form: 0 for these, or the form that
  * is read in place: u32 form 3 (DICT_BLOCKS), u32 n, u32 length of every string (0: they differ), u32 bytes of the strings,
  * u32 boff[blocks + 1], the blocks of DICT_BLOCK strings each in code order (a length byte for each string unless they have one length, then the strings,
- * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned),
+ * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned; with DICT_PERM_PACKED sift_cdict_perm_bits(n) bits each),
  * which the search of a string reads; form 4 (DICT_LOOKUP_COUNT, d->rows set) adds after code[], for nb = n / DICT_BLOCK rounded up: {u32 base, u32 off}[nb + 1]
  * (the rows of the codes at the places below the block, and where its packed bytes start; the last entry is the total and the bytes in all), u8 cmin[nb] (padded to 4),
  * and the packed bytes: the rows of the codes of block b, less cmin[b] (the smaller of their least count and 255), as DICT_BLOCK values of w bits each, w = (off[b + 1] - off[b]) / 8,

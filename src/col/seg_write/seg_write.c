@@ -431,6 +431,13 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 				{
 					w->dict[c]->hashed = true;
 					w->format = Max(w->format, SIFT_COL_FORMAT_HASH);
+#ifdef SIFT_TESTING
+					if (!sift_test_col_dict_unpacked && !sift_test_col_point_unrooted)	/* a reader takes the minor of the segment for the layout of its point directories too */
+#endif
+					{
+						w->dict[c]->packperm = true;
+						w->format = Max(w->format, SIFT_COL_FORMAT_DICTPACK);
+					}
 				}
 				if (w->cnt != NULL && w->pagg.count[c] && !w->cnt[c].bad && w->cnt[c].cap >= w->dict[c]->n)
 				{

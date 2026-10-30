@@ -19,7 +19,7 @@ VACUUM tf;
 SELECT kind, min(format) AS format, sum(rows) AS rows FROM sift.table_segments('tf') WHERE kind = 'columns' GROUP BY kind;
   kind   | format | rows 
 ---------+--------+------
- columns |     25 | 6020
+ columns |     39 | 6020
 (1 row)
 
 -- a new backend's first reads: no dictionary loaded
@@ -180,7 +180,7 @@ SELECT t, min(format) AS format FROM (SELECT 'compact' AS t, format FROM sift.ta
 ---------+--------
  blocks  |     14
  compact |      7
- order   |     25
+ order   |     39
 (3 rows)
 
 SELECT (SELECT sum(bytes) FROM sift.table_segments('tf_o') WHERE kind = 'columns') > (SELECT sum(bytes) FROM sift.table_segments('tf_b') WHERE kind = 'columns') AS order_costs_bytes;
