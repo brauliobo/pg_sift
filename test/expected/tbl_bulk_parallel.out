@@ -78,7 +78,25 @@ SELECT same_rows('mv', 'twin');
  t
 (1 row)
 
+-- values stored out of line are read in by the backend, the workers have no snapshot to read the toast table with
+CREATE TABLE wide (id int, doc text);
+ALTER TABLE wide ALTER doc SET STORAGE EXTERNAL;
+INSERT INTO wide SELECT g, (SELECT string_agg(md5(g::text || i), '') FROM generate_series(1, 250) i) FROM generate_series(1, 2500) g;
+SET sift.test_par_workers = 0;
+CREATE TABLE wide_par USING sift_table AS SELECT * FROM wide;
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       2
+(1 row)
+
+SELECT same_rows('wide_par', 'wide');
+ same_rows 
+-----------
+ t
+(1 row)
+
 DROP MATERIALIZED VIEW mv;
-DROP TABLE twin, par, alone;
+DROP TABLE twin, par, alone, wide, wide_par;
 DROP FUNCTION same_rows(regclass, regclass);
 DROP EXTENSION pg_sift;
