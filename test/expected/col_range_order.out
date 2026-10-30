@@ -24,7 +24,7 @@ SELECT sift.col_verify('rg_t', true);
 SELECT count(*) > 0 AS segments, min(format) AS format, sum(units) > 4 AS units FROM sift.col_segments('rg_t') WHERE kind = 'immutable';
  segments | format | units 
 ----------+--------+-------
- t        |     37 | t
+ t        |     30 | t
 (1 row)
 
 -- the answer by an index scan, by a bitmap scan, and of the heap

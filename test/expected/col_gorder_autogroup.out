@@ -27,7 +27,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 SELECT min(format) AS format FROM sift.col_segments('ag_i') WHERE kind = 'immutable';
  format 
 --------
-     37
+     31
 (1 row)
 
 SELECT sift.col_verify('ag_i');

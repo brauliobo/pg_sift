@@ -393,7 +393,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_EXACTSLOT : w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
 	if (w->anypacked)
 		w->format = Max(w->format, SIFT_COL_FORMAT_PACKED);
-	if ((w->anypoints || w->anyord) && segw_rooted_ok(w))
+	if (segw_rooted_ok(w))
 		w->format = Max(w->format, SIFT_COL_FORMAT_ROOT);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);

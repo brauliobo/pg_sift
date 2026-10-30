@@ -81,7 +81,8 @@ bool		sift_test_col_point_unpacked = false;
 bool		sift_test_col_point_unrooted = false;
 #endif
 
-/* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first) */
+/* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first). A segment with only global orders
+ * keeps them first: no lookup reads them, and its minor stays one that 3.6 reads */
 bool
 segw_rooted_ok(const SiftColSegWriter *w)
 {
@@ -89,7 +90,7 @@ segw_rooted_ok(const SiftColSegWriter *w)
 	if (sift_test_col_point_unrooted)
 		return false;
 #endif
-	return w->setting >= SIFT_COL_FORMAT_PRESENCE;
+	return w->anypoints && w->setting >= SIFT_COL_FORMAT_PRESENCE;
 }
 
 /* Whether a point directory may be written as a packed table (the setting that allows the exact slot count allows it; a testing build can turn it off to write the slots) */
