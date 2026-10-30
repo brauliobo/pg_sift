@@ -70,6 +70,28 @@ $q$);
  t      |           0
 (1 row)
 
+-- the other side of the quarter (PLAIN_READER_SHARE, cte/hook.c): the same statement over so few entries that the ordinary read of the members is over a quarter of the flat plan. The two plans are then
+-- weighed by their total costs, and the normal plan, cheaper for a few hundred rows, wins (not pushed); the rows are the same either way
+CREATE TABLE entries_few (LIKE entries INCLUDING DEFAULTS);
+INSERT INTO entries_few SELECT * FROM entries WHERE dim_b_id <= 100 AND id % 200 = 0;
+CREATE INDEX entries_few_col ON entries_few USING sift_col (id, dim_b_id, foreign_id, day, metrics_a) WITH (key_cut = 'dim_b_id', paths = 'metrics_a.* float8');
+CREATE INDEX entries_few_member ON entries_few (dim_b_id);
+VACUUM (FREEZE, ANALYZE) entries_few;
+SELECT * FROM check_query($q$
+ WITH picked AS MATERIALIZED (SELECT DISTINCT m.id FROM dim_b m
+   WHERE m.id IN (SELECT coalesce(a.dim_b_id, l.dim_b_id) FROM assigns a LEFT JOIN links l ON l.grp = a.grp WHERE a.sub = 9 AND coalesce(a.dim_b_id, l.dim_b_id) IS NOT NULL)
+     AND m.id IN (SELECT dim_b_id FROM links WHERE grp IN (1)) AND m.kind = 'a')
+ SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, count(*) AS n, sum(CAST(r.value AS float)) AS total
+ FROM entries_few e JOIN picked ON picked.id = e.dim_b_id
+ INNER JOIN LATERAL (SELECT key, value FROM jsonb_each(e.metrics_a)) r ON true
+ LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key
+ GROUP BY 1
+$q$);
+ pushed | differences 
+--------+-------------
+ f      |           0
+(1 row)
+
 DROP FUNCTION check_query(text);
-DROP TABLE entries, assigns, links, dim_b, labels, sources;
+DROP TABLE entries_few, entries, assigns, links, dim_b, labels, sources;
 DROP EXTENSION pg_sift;
