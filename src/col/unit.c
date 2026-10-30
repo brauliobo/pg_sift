@@ -5,6 +5,7 @@
 
 #include "col/enc.h"
 #include "col/enc_int.h"
+#include "col/kern.h"
 #include "core/popcount.h"
 
 /* ---------------------------------------------------------------------------
@@ -78,7 +79,10 @@ chunk_fits_leaf(const SiftColDef *def, const SiftCChunk *c)
 	return (c->enc == SIFT_COLENC_STRS) == (def->store == SIFT_COLS_VAR) && (c->enc != SIFT_COLENC_ISTR || leaf_is_str(def));
 }
 
-/* Reads n values of bits each (LSB first) from p, which holds avail bytes; false on a short buffer. Eight bytes at a time while they are there. */
+/*
+ * Reads n values of bits each (LSB first) from p, which holds avail bytes; false on a short buffer. The groups of 8 values that lie SIFT_COL_PAD bytes from the end of the
+ * buffer go to the unpack kernel (the stream is the one of the column codec, the kernel reads that far past a group), then eight bytes at a time while they are there.
+ */
 static bool
 get_packed(const uint8 *p, uint64 avail, uint32 n, int bits, uint32 *out)
 {
@@ -89,6 +93,12 @@ get_packed(const uint8 *p, uint64 avail, uint32 n, int bits, uint32 *out)
 
 	if (((uint64) n * bits + 7) / 8 > avail)
 		return false;
+	if (bits >= 1 && bits <= 31 && avail >= SIFT_COL_PAD + (uint64) bits)
+	{
+		i = Min(n / 8, (avail - SIFT_COL_PAD) / bits) * 8;
+		sift_colk->unpack(p, bits, i, out);
+		bitpos = (uint64) i * bits;
+	}
 	for (; i < n && (bitpos >> 3) + 8 <= avail; i++, bitpos += bits)
 	{
 		uint64		w;
