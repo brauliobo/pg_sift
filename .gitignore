@@ -29,6 +29,7 @@ packaging/pkg/
 packaging/pg_sift/
 *.pkg.tar.*
 dist/
+!/src/agg/dist/
 src/*/build_id.h
 __pycache__/
 *.pyc

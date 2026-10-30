@@ -613,7 +613,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 }
 
 /*
- * Does the set of a count(DISTINCT) of a leaf stay in the words of a group (agg/dist.c DD_WORDS)? The values of the leaf fall in a window of
+ * Does the set of a count(DISTINCT) of a leaf stay in the words of a group (agg/dist/ DD_WORDS)? The values of the leaf fall in a window of
  * dist_narrow_words words aligned to 64: from the range of its zones, or, for a text leaf, the codes of its dictionary (0 to nd - 1). A
  * leaf with no range known is not: the executor decides at its first batch, and the plan keeps the bitmap price.
  */
@@ -647,7 +647,7 @@ distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
 	if (nd <= 0 || distinct_narrow(c, a))
 		return 0;
 	chunks = Max(ceil(nd / AGG_DIST_CHUNK_BITS), 1.0);
-	/* the integer set of a group that holds few rows starts as a hash set (dist_wide_mode in agg/dist.c): no chunk is allocated */
+	/* the integer set of a group that holds few rows starts as a hash set (dist_wide_mode in agg/dist/): no chunk is allocated */
 	if (leaf_of(c, a->leaf)->vtype != SCV_CODE && k->agg_rows / groups < 16.0 * (2.0 + floor((c->stats.max[a->leaf] - c->stats.min[a->leaf]) / AGG_DIST_CHUNK_BITS)))
 		return 0;
 	touched = Min(groups * chunks * -expm1(-k->agg_rows / groups / chunks), k->agg_rows);

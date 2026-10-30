@@ -95,7 +95,7 @@
 #define AGG_WIDE_BIG		10.0	/* ... and, for each million distinct values the column has past 2,000,000, this many more up to AGG_WIDE_BIG_MAX: the dictionary of a segment outgrows the cache and a row is a miss for its entry (975 cycles a row in one segment of 10,000,000 almost unique values, 573 in 2,000,000), so the parallel scan of 5,000,000 or 10,000,000 such rows takes 1.5 to 2.3 times as long as PostgreSQL's plan with 4 or 8 workers */
 #define AGG_WIDE_BIG_MAX	40.0
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
-#define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
+#define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist/) */
 #define AGG_DIST_CHUNK_BYTES	512.0
 #define AGG_ARR_KNEE		64		/* the bytes of an array from which the unit's dictionary entry for it costs more than the generic wide entry: 1,670 to 2,030 instructions a row for arrays of 44 to 78 bytes, 4,020 for 122 (1,000,000 rows of almost unique arrays, forced SiftAgg; the heap plan takes about 950 whatever the width) */
 #define AGG_ARR_BIG		6.0		/* the operators a byte of an array beyond the knee adds to a new entry: hash, intern and inflate (about 8.6 instructions an operator counted at 3 ns) */

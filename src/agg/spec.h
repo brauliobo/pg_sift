@@ -613,7 +613,7 @@ extern const char *sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg);
 /* the specs whose group table can also go to partitions on disk past hash memory (agg/spill.c): count, sum, avg, min and max over one pass */
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 
-/* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist.c), -1: none */
+/* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
 
 /* a float sum: the order of its additions is part of its result */

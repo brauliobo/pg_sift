@@ -1,7 +1,7 @@
 # Accepted findings of scripts/static.sh: tool|check|file|message, no line numbers. Regenerate with scripts/static.sh --update-baseline.
 scan|analyzer|src/agg/col_filter.c|Array subscript is undefined [core.uninitialized.ArraySubscript]
 scan|analyzer|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull' [core.NonNullParamChecker]
-scan|analyzer|src/agg/dist.c|Array access (from variable 'ocnt') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/agg/dist/add.c|Array access (from variable 'ocnt') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/agg/gen_run.c|Branch condition evaluates to a garbage value [core.uninitialized.Branch]
 scan|analyzer|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/agg/osa.c|Dereference of null pointer [core.NullDereference]
@@ -25,8 +25,9 @@ scan|analyzer|src/col/preagg_read.c|Array access results in a null pointer deref
 scan|analyzer|src/core/store.h|Array access (via field 'ext') results in a null pointer dereference [core.NullDereference]
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/combo.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist/convert.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist/convert.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist/convert.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/wide.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/analyze.c|performing an implicit widening conversion to type 'unsigned long' of a multiplication performed in type 'int'
@@ -105,7 +106,7 @@ tidy|clang-analyzer-core.BitwiseShift|src/col/codec_kern.c|Left shift by '32' ov
 tidy|clang-analyzer-core.BitwiseShift|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.CallAndMessage|src/bm25/topk.c|1st function call argument is an uninitialized value
 tidy|clang-analyzer-core.NonNullParamChecker|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull'
-tidy|clang-analyzer-core.NullDereference|src/agg/dist.c|Array access (from variable 'ocnt') results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/agg/dist/add.c|Array access (from variable 'ocnt') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/agg/osa.c|Dereference of null pointer
 tidy|clang-analyzer-core.NullDereference|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc')

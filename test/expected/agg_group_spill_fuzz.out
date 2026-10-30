@@ -30,7 +30,7 @@ DECLARE
 		'count(*) AS m1, count(DISTINCT vt) AS m2, sum(val) AS m3',
 		'count(DISTINCT vn) AS m1, count(DISTINCT vi) FILTER (WHERE id % 3 = 0) AS m2, max(val) AS m3',
 		'count(DISTINCT vi) AS m1, count(DISTINCT vt) AS m2, count(DISTINCT vn) AS m3, sum(val) AS m4, min(val) AS m5',
-		-- the narrow sets (agg/dist.c): 5 and 200 values, one that widens late, one past the widest window
+		-- the narrow sets (agg/dist/): 5 and 200 values, one that widens late, one past the widest window
 		'count(DISTINCT v5) AS m1, count(DISTINCT v200) AS m2, sum(val) AS m3',
 		'count(DISTINCT vl) AS m1, count(DISTINCT v600) AS m2, count(*) AS m3',
 		'count(DISTINCT v5) FILTER (WHERE id % 3 = 0) AS m1, count(DISTINCT vl) AS m2, count(DISTINCT vi) AS m3',

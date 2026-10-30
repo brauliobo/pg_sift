@@ -120,7 +120,7 @@ over_budget(AggExec *ex)
 }
 
 /*
- * Would the table be spilled now, had the spill been armed? A streaming count(DISTINCT) scan (agg/dist.c) holds the spill back, since a partial
+ * Would the table be spilled now, had the spill been armed? A streaming count(DISTINCT) scan (agg/dist/) holds the spill back, since a partial
  * state carries the set of a group and the pairs it dropped are not in it, and starts over as a plain scan when this says yes.
  */
 bool

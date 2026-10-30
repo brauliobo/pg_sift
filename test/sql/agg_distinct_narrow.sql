@@ -1,4 +1,4 @@
--- count(DISTINCT) of a column of a few values keeps a few words of bits per group instead of a directory and a chunk (agg/dist.c, DD_WORDS): the
+-- count(DISTINCT) of a column of a few values keeps a few words of bits per group instead of a directory and a chunk (agg/dist/, DD_WORDS): the
 -- window of values is that of the first batch, widens when a value falls outside, and the set becomes a bitmap past dist_narrow_words words. Every
 -- shape, on columns around the edges of the window (63, 64, 65, 512 and 513 values, negative values, ids of a dictionary that outgrow it, a column that
 -- widens late, one that spans more than a window, NULLs) and in groups of one to 2,000 values, must give the normal plan's rows; as must each of the

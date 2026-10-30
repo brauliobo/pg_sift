@@ -1,5 +1,5 @@
 /*
- * agg/dist_int.h - count(DISTINCT x) per group (agg/dist.c)
+ * agg/dist_int.h - count(DISTINCT x) per group (agg/dist/)
  */
 #ifndef SIFT_AGG_DIST_INT_H
 #define SIFT_AGG_DIST_INT_H
@@ -103,7 +103,7 @@ dset_hash(uint64 x)
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* dist.c */
+/* agg/dist/ */
 void agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get);
 void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
