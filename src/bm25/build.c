@@ -1,35 +1,9 @@
 /*
  * bm25/build.c - the PostgreSQL side of the build: heap scan, parallel workers and leader, ambuild and ambuildempty
- * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs.c).
+ * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs.c); the spill,
+ * merge and segment writing of the build, and the page documents, are in build_runs.c.
  */
-#include "postgres.h"
-
-#include "access/heapam.h"
-#include "access/parallel.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "commands/progress.h"
-#include "common/int.h"
-#include "executor/instrument.h"
-#include "miscadmin.h"
-#include "storage/buffile.h"
-#include "storage/sharedfileset.h"
-#include "tcop/tcopprot.h"
-#include "utils/backend_progress.h"
-#include "utils/backend_status.h"
-#include "utils/fmgrprotos.h"
-#include "utils/guc.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-
-#include "bm25/am.h"
-#include "bm25/build.h"
-#include "core/parbuild.h"
-#include "table/table.h"
-#include "core/visibility.h"
-
-#define BATCH			1024
-#define ULL(x)			((unsigned long long) (x))
+#include "build_int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_build_peak = 0;
@@ -43,7 +17,7 @@ static MemoryContext mem_root;
 static MemoryContextCallback mem_root_cb;
 static int	test_merges;		/* merges so far of the build of this process */
 
-static void
+void
 mem_sample(void)
 {
 	if (mem_root)
@@ -79,8 +53,6 @@ mem_watch(MemoryContext cxt)
 	mem_root_cb.func = mem_root_gone;
 	MemoryContextRegisterResetCallback(cxt, &mem_root_cb);
 }
-#define MEM_SAMPLE()	mem_sample()
-
 /* With sift_test_phase_gate set, entering a phase of the build waits for the advisory lock gate + phase (held by the test) */
 void
 sift_test_phase_wait(int phase)
@@ -93,66 +65,7 @@ sift_test_phase_wait(int phase)
 		DirectFunctionCall1(pg_advisory_unlock_int8, key);
 	}
 }
-#define TEST_PHASE_GATE(phase)	sift_test_phase_wait(phase)
-#else
-#define MEM_SAMPLE()	((void) 0)
-#define TEST_PHASE_GATE(phase)	((void) 0)
 #endif
-
-typedef struct PageDoc
-{
-	ItemPointerData tid;
-	uint32		off;			/* into the page's text arena */
-	uint32		len;
-} PageDoc;
-
-typedef struct BuildState
-{
-	Relation	index;
-	MemoryContext cxt;
-	MemoryContext tmpcxt;
-	SiftAnalyzer *an;
-	SiftInvBuf *inv;
-	Size		budget;
-	Size		page_text;		/* bytes of text of a heap page held before they are analyzed (see page_text_max) */
-	Size		small_doc;		/* docs of fewer bytes of text always fit the buffer that is not full */
-	SiftWriteTarget *wt;
-	SiftScoreRef ref;
-	/* docs of the current heap page, sorted by offset before analysis */
-	BlockNumber page;
-	PageDoc    *docs;
-	int			ndocs;
-	int			maxdocs;
-	StringInfoData text;
-	/* forced segment boundaries (build_segments) */
-	BlockNumber *bounds;
-	int			nbounds;
-	int			nextbound;
-	/* runs of the current segment */
-	SiftRun   **runs;
-	int			nruns;
-	int			maxruns;
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
-	int			nsegs;
-	double		indexed;
-	uint32		analyzer_hash;
-	bool		positions;
-	/* a parallel worker's runs go to files of the leader's fileset */
-	RunHome		home;
-	/* progress (pg_stat_progress_create_index): the phase, docs reported, scan done, docs of the segments written */
-	int			phase;
-	double		reported;
-	bool		scanned;
-	uint64		written;
-} BuildState;
-
-/* Subphases of the build, named by sift_ambuildphasename */
-#define PHASE_SCAN		2
-#define PHASE_SPILL		3
-#define PHASE_MERGE		4
-#define PHASE_WRITE		5
-#define PROGRESS_DOCS	1024		/* docs analyzed between two reports of the scan */
-
 char *
 sift_ambuildphasename(int64 phase)
 {
@@ -174,7 +87,7 @@ sift_ambuildphasename(int64 phase)
 }
 
 /* Only the leader (or a serial build) has a progress to report; a worker's docs go to it with progress_docs */
-static void
+void
 progress_phase(BuildState *bs, int phase)
 {
 	if (bs->phase == phase)
@@ -187,7 +100,7 @@ progress_phase(BuildState *bs, int phase)
 }
 
 /* The docs analyzed since the last report, at least PROGRESS_DOCS of them unless all is set */
-static void
+void
 progress_docs(BuildState *bs, bool all)
 {
 	if (bs->indexed - bs->reported < (all ? 1 : PROGRESS_DOCS))
@@ -195,300 +108,6 @@ progress_docs(BuildState *bs, bool all)
 	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (bs->indexed - bs->reported));
 	bs->reported = bs->indexed;
 }
-
-/* Reserves the next directory entry; its generation is the entry's 1-based position */
-static SiftSegEntry *
-next_entry(BuildState *bs, uint64 *gen)
-{
-	SIFT_INVARIANT(bs->nsegs < SIFT_MAX_SEGMENTS, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
-	*gen = bs->nsegs + 1;
-	return &bs->segs[bs->nsegs++];
-}
-
-/*
- * Limits of a segment written from runs: what its largest term takes of the memory (see seg_postings), of
- * the postings of a term and of the dictionary (the writers fail beyond SIFT_BLOB_MAX and SIFT_DICT_MAX).
- */
-typedef struct SegLimits
-{
-	uint64		df;
-	uint64		blob;
-	uint64		dict;
-} SegLimits;
-
-static SegLimits
-seg_limits(Size budget)
-{
-	return (SegLimits) {sift_seg_postings(budget), SIFT_BLOB_MAX, SIFT_DICT_MAX};
-}
-
-/* What the runs of a segment add up to, an upper bound of what the merged run takes */
-typedef struct RunSum
-{
-	uint64		df;
-	uint64		blob;
-	uint64		dict;
-} RunSum;
-
-static RunSum
-sum_with(RunSum sum, const SiftRun *run)
-{
-	sum.df += run->maxdf;
-	sum.blob += run->maxblob;
-	sum.dict += run->dict;
-	return sum;
-}
-
-static bool
-sum_fits(RunSum sum, const SegLimits *lim)
-{
-	return sum.df <= lim->df && sum.blob <= lim->blob && sum.dict <= lim->dict;
-}
-
-/*
- * The newest runs of one level are a block, which waits until it has fan-in runs: if no more come they are read by
- * the merge that writes the segment, with no pass of their own. Then its runs merge in groups of as many in a row as
- * fit a segment's limits (at most fan-in), each group into a run of the next level; a run that is alone in its
- * group, as large as it gets, is sealed: it stays as it is. Only runs of one level merge, so a posting is
- * merged a number of times logarithmic in the runs.
- */
-#define SEALED_LEVEL	INT_MAX
-
-static int
-block_runs(SiftRun **runs, int nruns)
-{
-	int			m = 1;
-
-	if (runs[nruns - 1]->level == SEALED_LEVEL)
-		return 0;
-	while (m < nruns && runs[nruns - 1 - m]->level == runs[nruns - 1]->level)
-		m++;
-	return m;
-}
-
-static int
-group_runs(SiftRun **runs, int first, int nruns, int fanin, const SegLimits *lim)
-{
-	RunSum		sum = {0};
-	int			last = first;
-
-	for (; last < nruns && last - first < fanin && sum_fits(sum_with(sum, runs[last]), lim); last++)
-		sum = sum_with(sum, runs[last]);
-	return Max(last, first + 1);
-}
-
-/* Merges the block of the m newest runs in groups, as above; returns the number of runs left */
-static int
-merge_block(BuildState *bs, int m, int fanin, const SegLimits *lim)
-{
-	int			first = bs->nruns - m;
-	int			level = bs->runs[first]->level + 1;
-	int			w = first;
-
-	for (int i = first, last; i < bs->nruns; i = last)
-	{
-		SiftRun    *run = bs->runs[i];
-		MemoryContext old = MemoryContextSwitchTo(bs->cxt);
-
-		last = group_runs(bs->runs, i, bs->nruns, fanin, lim);
-		if (last - i > 1)
-			run = sift_merge_to_run(bs->runs + i, last - i, bs->budget, &bs->home);
-		MemoryContextSwitchTo(old);
-		run->level = last - i > 1 ? level : SEALED_LEVEL;
-		bs->runs[w++] = run;
-	}
-	return w;
-}
-
-/*
- * Spills the buffer to a run, then merges its block of runs while it is a fan-in long (merge_block). A participant keeps
- * few runs (their files and buffers fit the budget) and none a hot term would make larger than a segment
- * takes: with the table size the runs that stay are the segments, not levels of merges the term holds whole.
- */
-static void
-spill(BuildState *bs)
-{
-	int			fanin = sift_merge_fanin(bs->budget);
-	SegLimits	lim = seg_limits(bs->budget);
-	SiftRun    *run;
-	int			m;
-	int			phase = bs->phase;
-
-	MEM_SAMPLE();
-	progress_phase(bs, PHASE_SPILL);
-	if (bs->nruns + 1 >= bs->maxruns)
-	{
-		bs->maxruns *= 2;
-		bs->runs = repalloc(bs->runs, bs->maxruns * sizeof(SiftRun *));
-	}
-	if (bs->home.fileset == NULL)
-		run = sift_inv_spill(bs->inv);
-	else
-		run = sift_inv_spill_shared(bs->inv, bs->home.fileset, bs->home.worker, bs->home.nfiles++);
-	bs->runs[bs->nruns++] = run;
-	while ((m = block_runs(bs->runs, bs->nruns)) >= fanin)
-		bs->nruns = merge_block(bs, m, fanin, &lim);
-	progress_phase(bs, phase);
-}
-
-/* End of the runs from first on that go to one segment: their largest terms fit the limits together */
-static int
-group_end(SiftRun **runs, int first, int nruns, const SegLimits *lim)
-{
-	RunSum		sum = sum_with((RunSum) {0}, runs[first]);
-	int			last = first + 1;
-
-	for (; last < nruns && sum_fits(sum_with(sum, runs[last]), lim); last++)
-		sum = sum_with(sum, runs[last]);
-	return last;
-}
-
-static int
-count_groups(SiftRun **runs, int nruns, const SegLimits *lim)
-{
-	int			n = 0;
-
-	for (int first = 0; first < nruns; first = group_end(runs, first, nruns, lim))
-		n++;
-	return n;
-}
-
-/* After the scan the progress counts the docs of the segments written, of all that were analyzed */
-static void
-progress_written(BuildState *bs, const SiftSegEntry *entry)
-{
-	bs->written += entry->ndocs;
-	if (bs->scanned)
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, bs->written);
-}
-
-/* Writes the docs gathered since the last boundary as one or more segments */
-static void
-end_segment(BuildState *bs)
-{
-	int			first = 0;
-	uint64		gen;
-	SiftSegEntry *entry;
-	SegLimits	lim = seg_limits(bs->budget);
-	/* the entries the segments still to come (one per forced boundary, and the last) leave */
-	int			room = SIFT_MAX_SEGMENTS - bs->nsegs - (bs->nbounds - bs->nextbound);
-
-	int			phase = bs->phase;
-
-	progress_phase(bs, PHASE_MERGE);
-	if (bs->nruns == 0)
-	{
-		if (!sift_inv_empty(bs->inv))
-		{
-			entry = next_entry(bs, &gen);
-			progress_phase(bs, PHASE_WRITE);
-			sift_inv_write(bs->inv, bs->wt, gen, &bs->ref, entry);
-			progress_written(bs, entry);
-		}
-		progress_phase(bs, bs->scanned ? PHASE_WRITE : phase);
-		return;
-	}
-	if (!sift_inv_empty(bs->inv))
-		spill(bs);
-	ereport(DEBUG2, errmsg("sift index \"%s\": merging %d runs into segments", RelationGetRelationName(bs->index), bs->nruns));
-	/*
-	 * Each segment merges runs whose largest terms fit the budget together. The directory holds a
-	 * number of segments, though: a term is encoded whole, so when the budget would need more, fewer
-	 * and larger segments are written, which take more memory than the budget in their largest terms.
-	 */
-	while (count_groups(bs->runs, bs->nruns, &lim) > room)
-	{
-		SIFT_INVARIANT(lim.df <= PG_INT64_MAX / 2, "sift: index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index),
-					   SIFT_MAX_SEGMENTS);
-		lim.df *= 2;
-	}
-	while (first < bs->nruns)
-	{
-		int			last = group_end(bs->runs, first, bs->nruns, &lim);
-		RunHome		tmp = {0};
-		int			n;
-
-		progress_phase(bs, PHASE_MERGE);
-		n = sift_shrink_runs(bs->runs + first, last - first, sift_merge_fanin(bs->budget), bs->budget, &tmp);
-		entry = next_entry(bs, &gen);
-		progress_phase(bs, PHASE_WRITE);
-		sift_runs_write(bs->runs + first, n, bs->wt, gen, &bs->ref, entry);
-		progress_written(bs, entry);
-		first = last;
-	}
-	bs->nruns = 0;
-	progress_phase(bs, bs->scanned ? PHASE_WRITE : phase);
-}
-
-static int
-pagedoc_cmp(const void *a, const void *b)
-{
-	return ItemPointerCompare(&((PageDoc *) a)->tid, &((PageDoc *) b)->tid);
-}
-
-/* The docs of a page come in tid order but for HOT chains, which report their root's tid: sort only when they do not */
-static void
-sort_page(PageDoc *docs, int ndocs)
-{
-	for (int i = 1; i < ndocs; i++)
-		if (ItemPointerGetOffsetNumber(&docs[i - 1].tid) > ItemPointerGetOffsetNumber(&docs[i].tid))
-		{
-			qsort(docs, ndocs, sizeof(PageDoc), pagedoc_cmp);
-			return;
-		}
-}
-
-/* Docs are added in ascending key order: the buffer is spilled when the next doc is not above the last one (a page cut short by the text limit goes on with lower tids) */
-static void
-check_order(BuildState *bs, ItemPointer tid)
-{
-	if (!sift_inv_after(bs->inv, tid))
-		spill(bs);
-}
-
-/* Analyzes a doc into the buffer, which is spilled first when a large doc does not fit it */
-static inline void
-analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len)
-{
-	SiftTermFreq *terms;
-	uint32		dl;
-	int			n = sift_analyze_doc(bs->an, text, len, &terms, &dl);
-
-	if (len >= bs->small_doc && !sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, n, len))
-		spill(bs);
-	bs->indexed++;
-	if (sift_inv_add(bs->inv, tid, terms, n, dl))
-		spill(bs);
-}
-
-/* Analyzes the buffered docs of one heap page in tid order */
-static void
-flush_page(BuildState *bs)
-{
-	sort_page(bs->docs, bs->ndocs);
-	if (bs->ndocs > 0)
-		check_order(bs, &bs->docs[0].tid);
-	for (int i = 0; i < bs->ndocs; i++)
-		analyze_doc(bs, &bs->docs[i].tid, bs->text.data + bs->docs[i].off, bs->docs[i].len);
-	bs->ndocs = 0;
-	resetStringInfo(&bs->text);
-	sift_analyzer_reset(bs->an);
-	progress_docs(bs, false);
-	CHECK_FOR_INTERRUPTS();
-}
-
-/*
- * The text of the docs of a heap page is copied until the page is done, to analyze them in tid order (a
- * HOT chain reports its root's tid). A page of large docs does not hold them all: past this many bytes
- * what is buffered is analyzed, and a doc over it is analyzed at once. A later doc of the page with a
- * lower tid then starts a new run (check_order).
- */
-static Size
-page_text_max(const BuildState *bs)
-{
-	return TEST_KNOB(sift_test_page_text, Min(Max(bs->budget / 4, 1024 * 1024), 256 * 1024 * 1024));
-}
-
 static void
 build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
 {
