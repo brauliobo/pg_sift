@@ -190,6 +190,71 @@ collect_segments(const SiftParLeader *ldr, int *nsegs)
 	return segs;
 }
 
+/*
+ * The second phase: the merge of the segments the participants left, by key range. The workers of the scan are gone, so a second round is launched on the
+ * same pattern; each participant takes the next slice of the key range until there are none (sift_col_merge_slice), and the leader makes the one switch of
+ * the directory that puts the slices in the place of the segments. Nothing is visible before it, so an error in a worker ends the build as one in the scan.
+ */
+typedef struct MergeShared
+{
+	SiftParCommon common;
+	int			n;
+	int			nslices;
+	pg_atomic_uint32 next;
+	SiftSegEntry in[SIFT_COL_BUILD_SEGMENTS];
+} MergeShared;
+
+static void
+merge_slices(MergeShared *sh, SiftSegEntry *out, Relation index)
+{
+	uint32		i;
+
+	while ((i = pg_atomic_fetch_add_u32(&sh->next, 1)) < sh->nslices)
+		sift_col_merge_slice(index, sh->in, sh->n, i, sh->nslices, &out[i]);
+}
+
+bool
+sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start)
+{
+	SiftParLeader *ldr = sift_par_enter(false);
+	MergeShared *sh;
+	SiftSegEntry *out,
+			   *made;
+	int			nout = 0;
+
+	if (n > SIFT_COL_BUILD_SEGMENTS || !sift_par_setup(ldr, "sift_col_merge_worker", nworkers, sizeof(MergeShared), nslices * sizeof(SiftSegEntry), false))
+		return false;
+	sh = ldr->shared;
+	out = ldr->parts;
+	*sh = (MergeShared) {.common = {index->rd_index->indrelid, RelationGetRelid(index), false}, .n = n, .nslices = nslices};
+	pg_atomic_init_u32(&sh->next, 0);
+	memcpy(sh->in, in, n * sizeof(SiftSegEntry));
+	memset(out, 0, nslices * sizeof(SiftSegEntry));
+	if (!sift_par_launch(ldr, "sift_col", index, nworkers))
+		return false;
+	merge_slices(sh, out, index);
+	sift_par_wait(ldr);
+	made = palloc(nslices * sizeof(SiftSegEntry));
+	for (int i = 0; i < nslices; i++)
+		if (out[i].ndocs > 0)
+			made[nout++] = out[i];
+	sift_par_end(ldr);
+	sift_col_merge_switch(index, in, n, made, nout, start);
+	return true;
+}
+
+PGDLLEXPORT void sift_col_merge_worker(dsm_segment *seg, shm_toc *toc);
+
+void
+sift_col_merge_worker(dsm_segment *seg, shm_toc *toc)
+{
+	SiftParWorker w;
+
+	sift_par_worker_begin(&w, toc);
+	merge_slices(w.shared, w.parts, w.index);
+	sift_par_worker_end(&w);
+}
+
 IndexBuildResult *
 sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 {
@@ -200,6 +265,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	int			nsegs;
 	BlockNumber gap;
 	uint32		gapn;
+	int			nmerge;
 
 	if (ldr == NULL)
 		return NULL;
@@ -224,9 +290,10 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	segs = collect_segments(ldr, &nsegs);
 	gap = sh->gap;
 	gapn = sh->gapn;
+	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;
 	sift_par_end(ldr);
 	sift_colb_publish(index, segs, nsegs);
-	sift_col_build_merge(index, gap, gapn);
+	sift_col_build_merge(index, gap, gapn, nmerge);
 	return res;
 }
 

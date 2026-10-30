@@ -312,7 +312,7 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
  */
 static int
 cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone done, void *state, const SiftColSchema *schema, const OrderCtx *ctx, uint32 unit_rows,
-		 MemoryContext cx, SiftColCutFn cutfn, void *cutarg)
+		 MemoryContext cx, SiftColCutFn cutfn, void *cutarg, uint32 seq0)
 {
 	uint64		slack = unit_rows / 4;
 	uint64		want = unit_rows + slack + 1;
@@ -320,7 +320,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 	RowRef	   *win = refs ? NULL : palloc_array(RowRef, want);
 	uint64		n = 0,
 				pos = 0;
-	uint32		seq = 0,
+	uint32		seq = seq0,
 				num = 0;
 	bool		eof = false,
 				split = false;
@@ -379,7 +379,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
-	return seq;
+	return seq - seq0;
 }
 
 /*
@@ -405,7 +405,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};
 	sort_refs(refs, total, &ctx);
-	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx, NULL, NULL);
+	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx, NULL, NULL, 0);
 	pfree(refs);
 	return units;
 }
@@ -433,6 +433,13 @@ typedef struct MergeChunk
 	bool		held;			/* the loaded chunk of its input */
 } MergeChunk;
 
+/* A bound of a slice of the key range: the first two leaves of the order, from the zone of a unit (no row is decoded to take it) */
+typedef struct BoundKey
+{
+	int64		k[2];
+	bool		nul[2];
+} BoundKey;
+
 typedef struct MergeSrc
 {
 	MergeChunk *chunk;
@@ -448,7 +455,117 @@ typedef struct MergeSrc
 	MemoryContext cx;
 	MergeIn   **heap;			/* the inputs with rows left, the one whose next row comes first at 0 */
 	int			nheap;
+	const BoundKey *lo;			/* a slice of the key range: the rows from lo (NULL: from the first) up to hi (NULL: to the last), not including it */
+	const BoundKey *hi;
 } MergeSrc;
+
+static inline int
+bound_leaves(const OrderCtx *c)
+{
+	return Min(c->nleaf, 2);
+}
+
+/* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
+static int
+bound_cmp(const MergeSrc *m, const SiftColBatch *b, uint32 r, const BoundKey *bk)
+{
+	for (int t = 0; t < bound_leaves(m->ctx); t++)
+	{
+		int			leaf = m->ctx->leaf[t];
+		bool		nr = ref_null(&(RowRef) {b, r}, leaf);
+		int64		kr;
+
+		if (nr || bk->nul[t])
+		{
+			if (nr != bk->nul[t])
+				return nr ? 1 : -1;
+			continue;
+		}
+		kr = sift_crun_key(&m->ctx->schema->cols[leaf], b->col[leaf].key[r]);
+		if (kr != bk->k[t])
+			return kr < bk->k[t] ? -1 : 1;
+	}
+	return 0;
+}
+
+/* Is every row of unit u of seg below lo? The leading leaf's zone says so when the unit has no NULL (they sort last) and its largest key is below: false is always safe */
+static bool
+unit_below(const MergeSrc *m, SiftColSegment *seg, uint32 u, const BoundKey *lo)
+{
+	SiftCZone	z;
+
+	sift_cseg_zone(seg, m->ctx->leaf[0], u, &z);
+	return z.nnull == 0 && (lo->nul[0] || z.max < lo->k[0]);
+}
+
+/* The first unit of seg that may hold a row at or above lo: the units follow each other in the order of the key, so the ones below are found by halving */
+static uint32
+first_unit(const MergeSrc *m, SiftColSegment *seg, const BoundKey *lo)
+{
+	uint32		a = 0,
+				b = seg->nsb;
+
+	while (a < b)
+	{
+		uint32		mid = a + (b - a) / 2;
+
+		if (unit_below(m, seg, mid, lo))
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	return a;
+}
+
+static int
+bound_order(const void *a, const void *b)
+{
+	const BoundKey *x = a,
+			   *y = b;
+
+	for (int t = 0; t < 2; t++)
+	{
+		if (x->nul[t] != y->nul[t])
+			return x->nul[t] ? 1 : -1;
+		if (!x->nul[t] && x->k[t] != y->k[t])
+			return x->k[t] < y->k[t] ? -1 : 1;
+	}
+	return 0;
+}
+
+/*
+ * The bounds of the slices of a merge: the smallest keys of every unit of every input, from the zones of the first two leaves, sorted; the bound before slice j
+ * of nslices is the one that j / nslices of the units come before. The same for every slice that asks, whatever the keys each input holds (the participants of a
+ * build hold the rows of the superblocks they claimed). Returns the sorted bounds, in *n.
+ */
+static BoundKey *
+slice_bounds(const MergeSrc *m, SiftColSegment *const *seg, int nseg, uint64 *n)
+{
+	uint64		units = 0;
+	BoundKey   *bk;
+
+	for (int i = 0; i < nseg; i++)
+		units += seg[i]->nsb;
+	bk = palloc(Max(units, 1) * sizeof(BoundKey));
+	*n = 0;
+	for (int i = 0; i < nseg; i++)
+		for (uint32 u = 0; u < seg[i]->nsb; u++)
+		{
+			BoundKey   *b = &bk[(*n)++];
+
+			memset(b, 0, sizeof(BoundKey));
+			for (int t = 0; t < bound_leaves(m->ctx); t++)
+			{
+				SiftCZone	z;
+
+				sift_cseg_zone(seg[i], m->ctx->leaf[t], u, &z);
+				b->nul[t] = z.nnull >= z.nvals;
+				b->k[t] = b->nul[t] ? 0 : sift_crun_key(&seg[i]->schema->cols[m->ctx->leaf[t]], z.min);
+			}
+		}
+	qsort(bk, *n, sizeof(BoundKey), bound_order);
+	return bk;
+}
 
 static int
 chunk_get(MergeSrc *m, const SiftColSchema *schema)
@@ -475,6 +592,8 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	old = MemoryContextSwitchTo(m->scratch);
 	if (in->keyed)
 	{
+		if (m->lo && prev < 0)
+			in->next_unit = first_unit(m, seg, m->lo);
 		while (b->nrows == 0 && in->next_unit < seg->nsb)
 			sift_cseg_decode_unit_freeze(seg, in->next_unit++, b, m->freeze, m->freeze_arg);
 	}
@@ -526,6 +645,13 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	m->chunk[cur].held = !in->done;
 	if (prev >= 0)
 		m->chunk[prev].held = false;
+	if (m->lo && !in->done)
+	{
+		while (in->pos < in->n && bound_cmp(m, in->ord[in->pos].b, in->ord[in->pos].r, m->lo) < 0)
+			in->pos++;
+		if (in->pos == in->n)
+			load_chunk(m, in);
+	}
 }
 
 /* Does the next row of input a come before that of b? Equal rows (one row of two inputs) go in the order of the inputs */
@@ -571,9 +697,20 @@ merge_next(void *state, RowRef *r)
 		for (int i = m->nheap / 2 - 1; i >= 0; i--)
 			heap_down(m, i);
 	}
-	if (m->nheap == 0)
-		return false;
-	best = m->heap[0];
+	for (;;)
+	{
+		if (m->nheap == 0)
+			return false;
+		best = m->heap[0];
+		if (m->hi == NULL || bound_cmp(m, best->ord[best->pos].b, best->ord[best->pos].r, m->hi) < 0)
+			break;
+		/* the rest of this input is in the slices above */
+		m->chunk[best->chunk].held = false;
+		best->done = true;
+		m->heap[0] = m->heap[--m->nheap];
+		if (m->nheap > 0)
+			heap_down(m, 0);
+	}
 	*r = best->ord[best->pos++];
 	m->chunk[r->chunk].pins++;
 	if (best->pos == best->n)
@@ -601,7 +738,7 @@ merge_done(void *state, const RowRef *refs, uint64 n)
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
@@ -610,7 +747,17 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 	for (int i = 0; i < n; i++)
 		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]), .chunk = -1};
-	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg);
+	if (nslices > 1)
+	{
+		uint64		nb;
+		BoundKey   *bk = slice_bounds(&m, seg, n, &nb);
+
+		if (nb == 0)
+			return 0;
+		m.lo = slice > 0 ? &bk[nb * slice / nslices] : NULL;
+		m.hi = slice < nslices - 1 ? &bk[nb * (slice + 1) / nslices] : NULL;
+	}
+	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg, unit_base);
 	MemoryContextDelete(m.scratch);
 	return units;
 }

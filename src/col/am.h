@@ -157,7 +157,8 @@ extern uint64 sift_colk_heap_sbs(Relation index);
 typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg);
+							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
+							int slice, int nslices, uint32 unit_base);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with
@@ -262,7 +263,9 @@ extern PGDLLIMPORT int sift_col_unit_floor;
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
-extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn);
+extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
+extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
+extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */
 #define SIFT_COL_GATE_HELD	1
 #define SIFT_COL_GATE_WAL	2

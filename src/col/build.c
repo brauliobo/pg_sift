@@ -43,6 +43,8 @@ int			sift_test_col_fail_sb = 0;
 int			sift_test_col_segment_kb = 0;
 int			sift_test_col_max_segments = 0;
 int			sift_test_col_gap_blocks = -1;
+int			sift_test_col_merge_workers = -1;
+int			sift_test_col_merge_slices = 0;
 #endif
 
 struct ColBuild
@@ -225,7 +227,7 @@ compact(ColBuild *b)
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim);
-	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL);
+	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0);
 	sift_colw_finish(w, &neu);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
@@ -1014,6 +1016,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
+	sift_test_col_merge_slices = 0;
 #endif
 	sift_col_auto_arrlen(index);
 	sift_col_auto_paths(heap, index);

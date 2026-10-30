@@ -37,6 +37,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
+#include "col/build.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
@@ -680,13 +681,21 @@ out_next(void *arg, SiftColSegWriter *w)
 	return o->w;
 }
 
+/* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
+typedef struct MergeSlice
+{
+	int			i;
+	int			nslices;
+	SiftSegEntry *out;
+} MergeSlice;
+
 /*
  * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
  * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory).
  */
 static void
 merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
-			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts)
+			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -758,7 +767,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		format = Min(format, SIFT_COL_FORMAT_TAGS);
 	o.pagg = pagg;
 	o.format = format;
-	o.expect = mi.bytes / o.parts;
+	o.expect = mi.bytes / (slice ? slice->nslices : o.parts);
 	/*
 	 * Rows that stay sparse (no input denser than the floor in the superblocks it reaches, a segment cut by TID range reaching any of the heap's, nor
 	 * all of them together) stay in units of sift.col_unit_floor rows, in one segment: the rewrite of a partition is of rows that are not
@@ -779,9 +788,13 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		if (live_rows > 0)
 		{
 			o.keyed = true;
-			out_begin(&o);
+			if (slice == NULL)
+				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
 			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? sift_col_rel(index)->cut : NULL, key_cut ? sift_col_rel(index)->ncut : 0,
-							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o);
+							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
+							slice ? slice->i : 0, slice ? slice->nslices : 1,
+							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
+							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -827,6 +840,22 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		sift_cseg_close(seg[i]);
 	if (o.w)
 		out_finish(&o);
+	if (slice)
+	{
+		*slice->out = o.nneu > 0 ? o.neu[0] : (SiftSegEntry) {0};
+#ifdef SIFT_TESTING
+		if (sift_test_col_merge_panic && slice->i == 0)
+			elog(PANIC, "sift test: a slice of the merge of a build stops before the segments replace the old ones");
+		if (sift_test_col_refresh_sleep_ms > 0)
+		{
+			pg_usleep(sift_test_col_refresh_sleep_ms * 1000L);
+			CHECK_FOR_INTERRUPTS();
+		}
+#endif
+		MemoryContextSwitchTo(old);
+		MemoryContextDelete(cx);
+		return;
+	}
 #ifdef SIFT_TESTING
 	if (sift_test_col_rollup_panic_armed || sift_test_col_merge_panic)
 		elog(PANIC, "sift test: the merge stops before the new segment replaces the old ones");
@@ -858,7 +887,70 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		policy = r->policy;
 		pagg = &r->pagg;
 	}
-	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1);
+	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1, NULL);
+}
+
+/* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
+static int	merge_workers = 0;
+
+/* One slice of the merge of in[0..n), made by a participant of the build; out: its segment, ndocs 0 when the slice holds no row */
+void
+sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out)
+{
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+
+	merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
+}
+
+/* The directory switch of a merge the participants made in slices: out[0..nout) replace in[0..n) */
+void
+sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start)
+{
+	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
+	int64		docs = 0;
+
+	for (int i = 0; i < nout; i++)
+		docs += out[i].ndocs;
+	sift_maint_replace_n(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
+}
+
+/*
+ * Fewer slices than this are merged by one process: the second round of workers (their start, a segment each, the rows decoded again) costs more than it saves.
+ * 1,000,000 rows, 8 workers, 3 slices: CPU 6.0 s against 7.7 s, WAL 159 against 259 MB, wall 4.7 against 5.1 s (medians of 5); 3,000,000 rows, 9 slices:
+ * wall 24.7 against 35.6 s at the same CPU.
+ */
+#define MERGE_SLICES_MIN 8
+
+/*
+ * The merge of the segments of a parallel build with key_cut, by the participants, when its output is cut into partitions (the rewrite of an index of the size
+ * of one is a single segment, which a single process writes): a slice of the key range for each partition the serial merge would write, so the next step finds
+ * the partitions it leaves alone. The participants take the slices, so the rows are read and written once, in parallel. Once: the steps after it are not
+ * the build's. false: the merge is made by one process.
+ */
+static bool
+merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int room)
+{
+	uint64		bytes = 0;
+	uint64		share = (uint64) part_kb * 1024 / 4 * 3;
+	int			workers = merge_workers;
+	int			nslices;
+
+	if (workers == 0 || !cut || n < 2 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		if (!sift_cseg_keyed(&sel[i]))
+			return false;
+		bytes += sel[i].bytes;
+	}
+	nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
+	if (nslices < MERGE_SLICES_MIN)
+		return false;
+	merge_workers = 0;
+#ifdef SIFT_TESTING
+	sift_test_col_merge_slices = nslices;
+#endif
+	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp());
 }
 
 static SiftStepResult
@@ -888,8 +980,9 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
-		merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-					   cut ? (uint64) part_kb * 1024 : 0, Max(room, 1));
+		if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
+			merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
+						   cut ? (uint64) part_kb * 1024 : 0, Max(room, 1), NULL);
 		if (keyed)
 			sift_col_auto_keys_report(index);
 	}
@@ -1252,15 +1345,31 @@ static const SiftMaintOps col_ops = {
  * brings it down.
  */
 void
-sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn)
+sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 {
+	bool		merged;
+
 	if (gapn > 0)
 	{
 		SiftExtent	ext = {gap, gapn};
 
 		sift_dir_update(index, &(SiftDirChange) {.release = &ext,.nrelease = 1,.immediate = true,.extra = InvalidBuffer});
 	}
-	if (sift_mops_rewrite(&col_ops, index, false) > 0 || gapn > 0)
+#ifdef SIFT_TESTING
+	if (sift_test_col_merge_workers >= 0)
+		workers = Min(workers, sift_test_col_merge_workers);
+#endif
+	merge_workers = workers;
+	PG_TRY();
+	{
+		merged = sift_mops_rewrite(&col_ops, index, false) > 0;
+	}
+	PG_FINALLY();
+	{
+		merge_workers = 0;
+	}
+	PG_END_TRY();
+	if (merged || gapn > 0)
 	{
 		sift_maint_lock(index, true);
 		sift_recycle(index);
