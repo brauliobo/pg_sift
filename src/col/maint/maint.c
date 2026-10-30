@@ -93,6 +93,7 @@ const SiftMaintOps maint_col_ops = {
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
 	.rewrite_all = maint_rewrite_all,
+	.compact_segment = maint_compact_segment,
 	.vacuum_space_defer = maint_space_deferred,
 	.vacuum_done = maint_rewrite_request,
 };

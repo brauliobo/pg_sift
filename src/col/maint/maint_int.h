@@ -87,6 +87,8 @@ extern bool	maint_vacuum_truncates(Relation index);
 
 extern bool	maint_space_deferred(Relation index);
 
+extern uint64	maint_compact_segment(Relation index, uint64 gen);
+
 extern XLogRecPtr	maint_header_lsn(Relation index, const SiftSegEntry *e);
 
 extern bool	maint_wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, int n, uint64 bytes);

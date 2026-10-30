@@ -621,6 +621,30 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1, NULL);
 }
 
+/* The segment of a generation written again as one, into the holes below it (sift_maint_compact): the bytes it took */
+uint64
+maint_compact_segment(Relation index, uint64 gen)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftSegEntry sel;
+	const SiftColRel *r;
+	bool		found = false;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs && !found; i++)
+		if (snap->segs[i].gen == gen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			sel = snap->segs[i];
+			found = true;
+		}
+	pfree(snap);
+	if (!found)
+		return 0;
+	r = sift_col_rel_private(index, CurrentMemoryContext);
+	merge_segments(index, r->schema, r->policy, &r->pagg, &sel, 1, sift_col_format_minor, NULL, NULL, 0, 1, NULL);
+	return sel.bytes;
+}
+
 /* One slice of the merge of in[0..n), made by a participant of the build; out: its segment, ndocs 0 when the slice holds no row */
 void
 sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out)

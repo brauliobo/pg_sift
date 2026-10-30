@@ -504,6 +504,49 @@ done:
 	pfree(snap);
 }
 
+/*
+ * A standby streams: the space step cannot move a segment (it needs the relation to itself, and the lock that gives it is replayed by the standby). The ordinary
+ * rewrite can. The segments that end the file (space_plan picks them, as for the space step) are written again, whole, into the reusable holes below them, the
+ * lowest first like every write, and their blocks are released like those of any rewrite: held by the horizon, which the feedback of the standby holds back. The
+ * online cut takes them once no snapshot can read them (the next VACUUM after the standby's query). A bounded number of bytes a call; nothing is locked.
+ */
+uint64
+sift_maint_compact(Relation rel, SiftCompactSegment rewrite, uint64 budget, int elevel)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
+	uint64		total = 0;
+
+	if (!online_cut_wanted(rel))
+		budget = 0;
+	while (budget > 0)
+	{
+		int64		gain;
+		BlockNumber limit = 0;
+		int			n;
+		uint64		written;
+		const SiftSegEntry *e;
+
+		sift_dir_read(rel, snap);
+		if (in_backoff(&snap->meta))
+			break;
+		n = space_plan(rel, snap, budget, seg, &gain, &limit);
+		/* the top one first: the plan is a prefix of the segments that end the file, and each rewrite leaves the next one nearer the end */
+		if (n == 0 || (e = space_entry(snap, seg[0].gen)) == NULL || e->kind != SIFT_SEG_IMMUTABLE)
+			break;
+		if ((written = rewrite(rel, seg[0].gen)) == 0)
+			break;
+		budget -= Min(written, budget);
+		total += written;
+		CHECK_FOR_INTERRUPTS();
+	}
+	pfree(seg);
+	pfree(snap);
+	if (total > 0)
+		ereport(elevel, (errmsg("index \"%s\": rewrote %llu bytes of the segments that end the file into the holes below them", RelationGetRelationName(rel), (unsigned long long) total)));
+	return total;
+}
+
 /* Is a free run of blocks worth the exclusive lock of the space step (the screen of sift_maint_space) */
 bool
 sift_maint_space_worth(int64 blocks, BlockNumber nblocks)
