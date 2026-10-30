@@ -26,9 +26,11 @@ col/codec_neon.c
 col/compress.c
 col/seg/seg.c
 col/seg/dict.c
+col/seg/pagg.c
+col/seg/points.c
+col/seg/sets.c
 col/seg/test.c
 col/seg/zone.c
-col/seg/pagg.c
 col/seg_write/seg_write.c
 col/seg_write/add.c
 col/seg_write/dict.c

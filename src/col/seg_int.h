@@ -475,4 +475,30 @@ extern bool	seg_within(uint64 room, uint64 off, uint64 a, uint64 b);
 extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len);
 extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
 
+/* The heap addresses a table of addresses lists (column format minor 16): the payload of a slot is one address, or a list at a word offset */
+typedef struct TidAcc
+{
+	SiftColSegment *seg;
+	int			col;
+	const PointLeaf *pl;
+	SiftKey    *t;
+	uint32		n;
+	uint32		cap;
+	uint32		limit;			/* 0: no limit; else more addresses than this make over */
+	bool		over;
+	uint32		words;			/* the words of the lists read */
+	uint32		slots;			/* the slots whose addresses were taken: one slot's list is ascending and lists no address twice */
+	uint32		last_sb;		/* the superblock of the last address and its unit: the addresses of a list ascend, so a unit repeats */
+	uint32		last_u;
+	bool		seen;			/* last_sb and last_u are those of an address */
+	bool		some;			/* keep has a unit */
+	const uint64 *keep;			/* the units the caller still reads (NULL: all): the addresses of the others are not kept, and a list ends at the last of these */
+	uint32		last_keep;
+	uint64	   *slot_seen;		/* NULL, or one bit for each slot of the table: a slot visited before (by a lookup of other keys, one fingerprint) gives its addresses once */
+} TidAcc;
+
+extern uint64 *	seg_point_list_read(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off, uint64 max, uint32 room, uint32 *cnt, uint32 *nwords);
+extern uint32	seg_point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off);
+extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
+
 #endif
