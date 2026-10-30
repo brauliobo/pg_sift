@@ -80,7 +80,7 @@ leak_logs() {
 	local p
 	for p in "$@"; do
 		if [[ -f $p ]]; then echo "$p"
-		else find "$p" -type f \( -name postgres.log -o -path '*/tap/log/*.log' -o -path '*/sanitizer/*' -o -name leakcheck.findings \) 2>/dev/null; fi
+		else find "$p" -type f \( -name postgres.log -o -path '*/tap/log/*.log' -o -name 'asan.*' -o -name 'ubsan.*' -o -name leakcheck.findings \) 2>/dev/null; fi
 	done
 }
 
@@ -232,6 +232,9 @@ leak_selftest() {
 	leak_scan "$d" 2>/dev/null && { echo "not ok: second hit allowed by one expectation"; rc=1; }
 	SIFT_TMP=$d leak_expect 1 'terminated by signal 6'
 	leak_scan "$d" 2>/dev/null || { echo "not ok: expected findings rejected"; rc=1; }
+	# a scan root below a directory called sanitizer: the files of the root are not all sanitizer reports
+	mkdir -p "$d/sanitizer/run" && printf '%s\n' "$sample" >"$d/sanitizer/run/postgres.log" && printf '1\tterminated by signal 6\n' >"$d/sanitizer/run/leakcheck.expect"
+	leak_scan "$d/sanitizer/run" 2>/dev/null || { echo "not ok: a scan root below a sanitizer directory reads its expectations as findings"; rc=1; }
 	awk 'BEGIN { for (i = 0; i < 30; i++) print i * 2, 7, 100000 + i * 6000; for (i = 0; i < 30; i++) print i * 2, 8, 100000 + (i % 3) * 50 }' >"$d/mem"
 	LEAK_QUARANTINE_MB=0 leak_growth "$d/mem" >"$d/growth" && { echo "not ok: steady growth accepted"; rc=1; }
 	grep -q 'pid 7: .*GROWING' "$d/growth" && grep -q 'pid 8: .*ok' "$d/growth" || { echo "not ok: growth verdict per process"; rc=1; }
