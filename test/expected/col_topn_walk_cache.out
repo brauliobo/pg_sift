@@ -1,4 +1,4 @@
--- The order of the walk of a top-N over a key that does not follow the table is kept by the backend between queries (agg/topn.c): the rows are those of the normal
+-- The order of the walk of a top-N over a key that does not follow the table is kept by the backend between queries (agg/topn/zone.c): the rows are those of the normal
 -- plan, and the units skipped are the same, when the walk is built and when it is found again, after rows in a write buffer, a promotion, a merge, deletes, a
 -- VACUUM and a REINDEX. A page holds one row, so a superblock is 256 rows and 60 of them make the walk (it starts from 10 superblocks).
 CREATE EXTENSION pg_sift;
