@@ -781,7 +781,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		if (lay->leaf[s->group].kind != SCL_ARRAY && lay->leaf[s->group].kind != SCL_OBJECT)
 			return SPW_NOT_LIST;
 		why = preagg_rollup(s, lay, nbase, pa, false, out);
-		/* a NULL test of a column of the rows (WHERE deleted_at IS NULL) is decided by the zone of each unit, or by the exceptions the unit kept (unit_preagg.c) */
+		/* a NULL test of a column of the rows (WHERE deleted_at IS NULL) is decided by the zone of each unit, or by the exceptions the unit kept (agg/preagg/) */
 		if (why == SPW_PRED && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
 			why = preagg_rollup(s, lay, nbase, pa, true, out);
 		return why;

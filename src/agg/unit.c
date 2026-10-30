@@ -1,5 +1,5 @@
 /*
- * agg/unit.c - answering one unit: late conjuncts, overflow checks, filters, process_unit (its pre-aggregates are agg/unit_preagg.c)
+ * agg/unit.c - answering one unit: late conjuncts, overflow checks, filters, process_unit (its pre-aggregates are agg/preagg/)
  */
 #include "postgres.h"
 

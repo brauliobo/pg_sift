@@ -1,5 +1,5 @@
 /*
- * agg/unit_int.h - the units of the scan and the rollups answered from them (agg/unit.c, agg/unit_preagg.c)
+ * agg/unit_int.h - the units of the scan and the rollups answered from them (agg/unit.c, agg/preagg/)
  */
 #ifndef SIFT_AGG_UNIT_INT_H
 #define SIFT_AGG_UNIT_INT_H
@@ -28,7 +28,7 @@ typedef struct PaVal
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* unit_preagg.c */
+/* agg/preagg/ */
 void preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v);
 void preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint32 nonnull, const SiftSrcDict *dict, const uint32 *kept, int nkept, uint32 *ids);
 void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
