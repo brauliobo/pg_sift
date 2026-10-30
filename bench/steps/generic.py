@@ -142,7 +142,7 @@ def main():
     if a.out and runs:
         with open(a.out, 'w') as f:
             f.write('# The generic suites on the other engines (steps/generic.py, bench/engines.tsv): %s against PostgreSQL 18 (the pg_duckdb image), the same rows, answers compared before any time.\n' % ', '.join(order))
-            f.write('# inputs: %s\n# host: %s\n# sha: %s\n' % (key, host, subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()))
+            f.write('# inputs: %s\n# host: %s\n# sha: %s\n' % (key, host, subprocess.run(['git', '-C', REPO, 'describe', '--tags', '--always'], capture_output=True, text=True).stdout.strip()))
             f.write('# rows: %d\n# date: %s\n# method: client-side milliseconds, warm median of %d runs after one untimed; %d CPUs and %s per engine, one engine at a time; pg is PostgreSQL 18.1 of the pg_duckdb image\n'
                     % (a.rows, time.strftime('%Y-%m-%d'), runs, a.cpus, a.memory))
             f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')

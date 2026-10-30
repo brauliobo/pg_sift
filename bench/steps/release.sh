@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/bench release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN] [--no-resume] [OPTION...]   (bench/steps/release.sh, called by bench/bench)
+# Usage: bench/bench release [--dry-run] [--rehearsal] [--apply PATCH|-] [--stages LIST] [--budget MIN] [--no-resume] [OPTION...]   (bench/steps/release.sh, called by bench/bench)
 # The one authoritative run after a release: every table the docs print, one command, one log. It is `bench/bench final --size release --docs` (bench/presets.env, steps/final.sh)
 # with the checks of a run that publishes numbers, and a summary of the minutes it took against the plan:
 #   store updates compression stats gap search cases duckdb generic scaling analytics
@@ -12,9 +12,11 @@
 #   --rehearsal  every stage at the smoke size in a throwaway worktree of this commit, with its own work and store directories, its tables rendered and checked there, then removed: a minute
 #                count per stage and the proof that the pipeline runs end to end, without touching this checkout's docs or the caches. No other option is needed.
 #   --dry-run    the plan and the preconditions, nothing started
+#   --apply P    the results of a run into this checkout, in minutes: the docs diff of the host (`ssh HOST 'cd DIR && git diff --binary' | bench/bench release --apply -`, or a patch file; REHEARSAL_PATCH=FILE
+#                makes --rehearsal write its own to try this) is applied to a clean checkout regenerates the blocks and the lint of the tables lists the sentences that still quote an old number
 #
-# On the benchmark host (HOST is the ssh name, DIR a checkout with the engines built by `bench/bench setup`, SHA the release candidate):
-#   ssh HOST 'cd DIR && git fetch -q && git checkout --detach SHA && bench/bench release --dry-run'              # read the plan and the preconditions
+# On the benchmark host (HOST is the ssh name, DIR a checkout with the engines built by `bench/bench setup`, TAG the release tag, v3.7.0 for example: the run is of a tag, never of a commit id):
+#   ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && bench/bench release --dry-run'              # read the plan and the preconditions
 #   ssh HOST 'cd DIR && nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'        # the run survives the connection
 #   ssh HOST 'tail -f ~/release-run.log'                                                                         # follow it; the stage lines are `[time final] stage ...`
 # and afterwards, in the checkout: `git diff --stat` shows the regenerated README.md and bench/results.
@@ -23,16 +25,27 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=release
 
-REHEARSAL='' ARGS=() DRY=''
+REHEARSAL='' ARGS=() DRY='' APPLY=''
 while (( $# )); do
   case $1 in
     --rehearsal) REHEARSAL=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    --apply) APPLY=${2:?--apply PATCH|-}; shift ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) ARGS+=("$1") ;;
   esac
   shift
 done
+
+if [[ -n $APPLY ]]; then
+  [[ -z $(git -C "$REPO" status --porcelain -- README.md docs) ]] || die 'the docs of this checkout have changes: apply the results to a clean checkout of the integration tip'
+  if [[ $APPLY == - ]]; then git -C "$REPO" apply --index; else git -C "$REPO" apply --index "$APPLY"; fi
+  git -C "$REPO" add -A README.md docs
+  git -C "$REPO" diff --cached --stat | tail -3
+  "$REPO/scripts/lint.sh" neutral || die 'the lint above lists what to edit'
+  log 'the results are applied and the checks pass: read git diff --cached, commit and open the pull request'
+  exit 0
+fi
 
 if [[ -n $REHEARSAL ]]; then
   # a detached worktree of HEAD (plus this checkout's uncommitted bench/ and scripts/ changes), its own work and store directories: nothing of this checkout's docs or caches is touched
@@ -47,16 +60,17 @@ if [[ -n $REHEARSAL ]]; then
   T0=$SECONDS
   "$tmp/wt/bench/bench" final --size smoke --docs --budget 0 "${ARGS[@]}"
   log "rehearsal: $(( (SECONDS - T0 + 30) / 60 )) min; checking the rendered tables"
+  [[ -z ${REHEARSAL_PATCH:-} ]] || git -C "$tmp/wt" diff --binary > "$REHEARSAL_PATCH"
   log "rehearsal: fuzzy cells in bench/results/articles.tsv: $(grep -c $'\tfuzzy\t' "$tmp/wt/bench/results/articles.tsv" || true); table heads: $(grep -h '^| engine .*| fuzzy' "$tmp/wt/README.md" "$tmp/wt/docs/BENCHMARKS.md" | head -2 | tr '\n' ' ')"
   log "rehearsal: every stage ran and the tables render; docs changed in the throwaway tree: $(git -C "$tmp/wt" diff --stat | tail -1)"
   exit 0
 fi
 
 [[ -n $DRY || -z $(git -C "$REPO" status --porcelain -- bench scripts src docs README.md) ]] || die 'the checkout has uncommitted changes: a published run is of a commit (git status)'
-SHA=$(git -C "$REPO" rev-parse --short=12 HEAD)
-log "release run of $SHA ($(git -C "$REPO" describe --tags --always)), size release, $(date -u +%FT%TZ)"
+REF=$(git -C "$REPO" describe --tags --always)
+log "release run of $REF, size release, $(date -u +%FT%TZ)"
 T0=$SECONDS
 rc=0
 "$STEPS/final.sh" --size release ${DRY:+--dry-run} --docs "${ARGS[@]}" || rc=$?
-[[ -n $DRY ]] || log "release run of $SHA: $(( (SECONDS - T0 + 30) / 60 )) min wall, exit $rc"
+[[ -n $DRY ]] || log "release run of $REF: $(( (SECONDS - T0 + 30) / 60 )) min wall, exit $rc"
 exit "$rc"
