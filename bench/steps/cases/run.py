@@ -11,8 +11,8 @@ import time
 import iolib
 from duckdb import busy, wait_quiet
 
-from . import settings
-from .settings import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
+from . import runcfg
+from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
 from .registry import read_registry
 from .server import Fresh, build, dataset, lane_sessions, load_duck, psql, server_load
 from .measure import expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
@@ -97,14 +97,14 @@ def run_point(args, cases, rows, engines, results, failed):
 
 
 def cmd_run(args):
-    settings.LANE_BUDGET = args.lane_budget
+    runcfg.LANE_BUDGET = args.lane_budget
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     if not cases:
         die('no case matches %s' % ','.join(args.cases))
     if args.no_share:
         for c in cases:
             c.share = None
-    settings.TIMEOUT = args.timeout
+    runcfg.TIMEOUT = args.timeout
     engines = args.engines.split(',')
     load_before = host_load()
     results, failed = [], []

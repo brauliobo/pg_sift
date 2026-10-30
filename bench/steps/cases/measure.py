@@ -10,8 +10,8 @@ import time
 
 import iolib
 
-from . import settings
-from .settings import FORCED, HERE, IO_HOW, MIN_RUNS, SCAN, die, log
+from . import runcfg
+from .runcfg import FORCED, HERE, IO_HOW, MIN_RUNS, SCAN, die, log
 from .server import Fresh, IDS, build, equal, equal_ties, plan_note, plan_shape, plan_text, psql, server_session, tie_keys
 
 
@@ -74,7 +74,7 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         order = order[r % len(order):] + order[:r % len(order)] if order else order
         for lane in order:
             for _ in range(runs):
-                if sum(times[lane]) / 1000 > settings.LANE_BUDGET and len(times[lane]) >= MIN_RUNS:   # a lane of seconds a run: the median of a few runs, not of fifteen
+                if sum(times[lane]) / 1000 > runcfg.LANE_BUDGET and len(times[lane]) >= MIN_RUNS:   # a lane of seconds a run: the median of a few runs, not of fifteen
                     break
                 times[lane].append(lanes[lane].run(sql[lane])[0])
     return times, notes, errors, texts

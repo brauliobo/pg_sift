@@ -8,8 +8,8 @@ from collections import Counter
 
 from duckdb import Session, key as row_key, same
 
-from . import settings
-from .settings import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, REPO, TYPES, die, log
+from . import runcfg
+from .runcfg import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, REPO, TYPES, die, log
 
 
 # --- the server
@@ -19,7 +19,7 @@ ENV = {**os.environ, 'LC_ALL': 'C'}
 
 def psql(sql, db=DB, port=None, *args):
     cmd = ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', db] + (['-h', '127.0.0.1', '-p', str(port)] if port else []) + list(args)
-    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning' % settings.TIMEOUT})
+    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning' % runcfg.TIMEOUT})
     if r.returncode:
         die('psql: %s' % r.stderr.strip()[:500])
     return r.stdout.strip()
@@ -89,7 +89,7 @@ class Fresh:
         self.setup = setup
 
     def run(self, sql):
-        s = server_session(settings.TIMEOUT)
+        s = server_session(runcfg.TIMEOUT)
         try:
             for st in self.setup:
                 s.run(st)
@@ -99,7 +99,7 @@ class Fresh:
 
     def persistent(self):
         """a new backend with the lane's settings, for the measures that need one backend across statements (steps/iolib.py); the caller closes it"""
-        s = server_session(settings.TIMEOUT)
+        s = server_session(runcfg.TIMEOUT)
         for st in self.setup:
             s.run(st)
         return s
@@ -123,11 +123,11 @@ def lane_sessions(case, engines, duck_port):
         if case.opt.get('fresh') == 'yes' and not lane.startswith('warm'):   # a lane named warm... keeps its backend: the same statement as the second of a backend
             out[lane] = Fresh(setup)
             continue
-        out[lane] = server_session(settings.TIMEOUT)
+        out[lane] = server_session(runcfg.TIMEOUT)
         for st in setup:
             out[lane].run(st)
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
-        s = Session(duck_port, settings.TIMEOUT, None)
+        s = Session(duck_port, runcfg.TIMEOUT, None)
         s.run('SET duckdb.force_execution = on')
         out['pg_duckdb'] = s
     return out

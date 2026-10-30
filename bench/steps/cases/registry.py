@@ -6,7 +6,7 @@ import re
 
 from store_lib import sections
 
-from .settings import DATASETS, FIELDS, FORCED, INDEX_COLUMNS, REPO, die
+from .runcfg import DATASETS, FIELDS, FORCED, INDEX_COLUMNS, REPO, die
 
 
 # --- the registry

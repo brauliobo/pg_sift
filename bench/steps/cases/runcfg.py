@@ -1,5 +1,5 @@
 # The paths, datasets and limits of a cases run, and its logger.
-# TIMEOUT and LANE_BUDGET are set by cmd_run from the command line and read as settings.TIMEOUT.
+# TIMEOUT and LANE_BUDGET are set by cmd_run from the command line and read as runcfg.TIMEOUT.
 
 import os
 import re
