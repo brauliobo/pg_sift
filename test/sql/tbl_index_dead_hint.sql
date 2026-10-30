@@ -4,9 +4,10 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pageinspect;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, v int, note text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE INDEX t_v ON t (v);
 INSERT INTO t SELECT g, 0, 'n' || g FROM generate_series(1, 200) g;
 SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
--- three updates of every row, one transaction each statement: 400 versions are dead, the live one of every row is the last
+-- three updates of every row (v is indexed: they are not HOT), one transaction each statement: 400 versions are dead, the live one of every row is the last
 UPDATE t SET v = v + 1;
 UPDATE t SET v = v + 1;
 UPDATE t SET v = v + 1;

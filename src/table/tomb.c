@@ -42,6 +42,11 @@ tomb_reset(SiftTblRel *st, const SiftSegEntry *e)
 	st->tomb_seqbase = 0;
 	st->tomb_followed = false;
 	st->nents = st->nrecent = 0;
+	if (st->hotm)
+	{
+		hash_destroy(st->hotm);
+		st->hotm = NULL;
+	}
 }
 
 /*
@@ -144,10 +149,37 @@ tomb_sort(SiftTblTomb *a, uint32 n)
 	pfree(src == a ? dst : src);
 }
 
+typedef struct HotLink
+{
+	uint64		succ;			/* key */
+	uint64		pred;
+} HotLink;
+
+bool
+sift_tbl_hot_pred(const SiftTblRel *st, uint64 key, uint64 *pred)
+{
+	HotLink    *l = st->hotm ? hash_search(st->hotm, &key, HASH_FIND, NULL) : NULL;
+
+	if (l && pred)
+		*pred = l->pred;
+	return l != NULL;
+}
+
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows */
 static void
 tomb_add(SiftTblRel *st, SiftTblTomb *batch, uint32 n)
 {
+	for (uint32 i = 0; i < n; i++)
+		if (batch[i].kind == SIFT_TBL_TOMB_UPDATE && (batch[i].flags & SIFT_TBL_TOMB_HOT))
+		{
+			if (st->hotm == NULL)
+			{
+				HASHCTL		ctl = {.keysize = sizeof(uint64),.entrysize = sizeof(HotLink),.hcxt = st->cxt};
+
+				st->hotm = hash_create("sift_table chain members", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			}
+			((HotLink *) hash_search(st->hotm, &batch[i].succ, HASH_ENTER, NULL))->pred = batch[i].key;
+		}
 	tomb_sort(batch, n);
 	/* the first look of a backend at a log that is long: into the main array, not through the recent one and a second copy */
 	if (st->nents == 0 && st->nrecent == 0 && n > TOMB_RECENT_MAX)
@@ -290,6 +322,29 @@ tomb_run_in(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi)
 	return f < a + na && f->key <= hi;
 }
 
+/* Sets the bit of the offset of each row of vblock that has a HOT update entry (a root or a member of a chain) */
+static void
+hot_offsets(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi, uint64 *mask)
+{
+	uint32		n;
+	const SiftTblTomb *f;
+
+	if (na == 0)
+		return;
+	for (f = find_run(a, na, lo, &n); f < a + na && f->key <= hi; f++)
+		if (f->kind == SIFT_TBL_TOMB_UPDATE && (f->flags & SIFT_TBL_TOMB_HOT))
+			mask[((f->key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((f->key & 0xFFFF) - 1) % 64);
+}
+
+void
+sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint64 *mask)
+{
+	uint64		lo = (uint64) vblock << 16;
+
+	hot_offsets(st->ents, st->nents, lo, lo | 0xFFFF, mask);
+	hot_offsets(st->recent, st->nrecent, lo, lo | 0xFFFF, mask);
+}
+
 bool
 sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi)
 {
@@ -324,10 +379,10 @@ sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n)
 
 void
 sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid, SiftTblTombKind kind,
-					 uint64 succ)
+					 uint16 flags, uint64 succ)
 {
 	const SiftSegEntry *e;
-	SiftTblTomb ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind};
+	SiftTblTomb ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind,.flags = flags};
 	SiftWbufHeaderData hdr;
 	Buffer		cur,
 				hbuf;

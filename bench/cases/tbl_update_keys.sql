@@ -1,6 +1,5 @@
 -- 40,000 UPDATEs by primary key of 2,000 rows in the column groups of a sift_table of 600,000 rows, 20 statements over the same rows, their secondary index keys unchanged,
--- with 100,000 rows in the write buffer that interleave with them in the index pages: before a page of a secondary index splits, the b-tree asks the table which of the
--- page's versions are dead (bottom-up deletion), which the table answers from its tombstone log
+-- with 100,000 rows in the write buffer: the updates are HOT (the new versions have no index entry; the entries of the old ones lead to them through the tombstone log), as the heap's
 -- label: `UPDATE t SET amount = amount + 1 WHERE id IN (<2,000 ids>)`, 20 statements over the same rows, a `sift_table` of 600,000 orders against a heap table, both with the primary key and the btrees of the store
 --@ prepare
 CREATE TABLE upd (id bigint, customer_id int, country text, category text, status text, amount numeric(10,2), quantity smallint, created_at timestamp, title text) USING {am};

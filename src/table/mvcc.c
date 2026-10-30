@@ -21,6 +21,22 @@ sift_tbl_xid_aborted(TransactionId xid)
 	return !TransactionIdIsCurrentTransactionId(xid) && !TransactionIdIsInProgress(xid) && !TransactionIdDidCommit(xid);
 }
 
+bool
+sift_tbl_hot_next(const SiftTblRel *st, uint64 key, uint64 *succ)
+{
+	SiftTblDel	del;
+
+	sift_tbl_del_state(st, key, &del);
+	*succ = del.succ;
+	return del.hot;
+}
+
+bool
+sift_tbl_xid_removable(Relation rel, TransactionId xid)
+{
+	return !TransactionIdIsNormal(xid) || GlobalVisCheckRemovableXid(rel, xid);
+}
+
 /* The insertion of rv is visible to snapshot; *dead: no snapshot will ever see it (aborted insertion, killed record) */
 bool
 sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead)
@@ -106,7 +122,7 @@ tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 				snapshot->xmax = e->xid;
 			return false;
 		case SNAPSHOT_NON_VACUUMABLE:
-			return TransactionIdDidCommit(e->xid) && sift_vis_removable_xid(snapshot->vistest, e->xid);
+			return TransactionIdDidCommit(e->xid) && (!TransactionIdIsNormal(e->xid) || sift_vis_removable_xid(snapshot->vistest, e->xid));
 		default:
 			SIFT_INVARIANT(false, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}
@@ -221,5 +237,6 @@ sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 		del->xid = e[i].xid;
 		del->cid = e[i].cid;
 		del->succ = e[i].succ;
+		del->hot = e[i].kind == SIFT_TBL_TOMB_UPDATE && (e[i].flags & SIFT_TBL_TOMB_HOT);
 	}
 }

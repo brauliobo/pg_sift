@@ -141,6 +141,9 @@ typedef enum SiftTblTombKind
 	SIFT_TBL_TOMB_LOCK			/* row lock: never deletes */
 } SiftTblTombKind;
 
+/* UPDATE entries: the new version is a member of the chain of this one, no index has an entry for it */
+#define SIFT_TBL_TOMB_HOT		0x0001
+
 typedef struct SiftTblTomb
 {
 	uint64		key;			/* SiftKey of the row version */
@@ -193,6 +196,8 @@ typedef struct SiftTblRel
 	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
 	uint32		caprecent;
+	int8		chain_ok;		/* 0 not known yet, 1: every index of the table is read by fetching its TIDs (a HOT chain is followed), -1: one is not */
+	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;
 	/* the page this backend appends to */
@@ -327,16 +332,21 @@ extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx
 extern void sift_tbl_tomb_sync(Relation rel, SiftTblRel *st);
 extern uint64 sift_tbl_tomb_entries(Relation rel, SiftTblRel *st);
 extern void sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid,
-								 SiftTblTombKind kind, uint64 succ);
+								 SiftTblTombKind kind, uint16 flags, uint64 succ);
 /*
  * Rewrites the tombstone segment without the entries keep() refuses, under the lock that keeps appenders out, and switches the
  * new segment in (the old pages are released with a safexid). Returns the entries kept.
  */
-typedef bool (*SiftTblTombKeep) (const SiftTblTomb *e, void *arg);
+typedef bool (*SiftTblTombKeep) (SiftTblTomb *e, void *arg);	/* may rewrite the entry it keeps */
 extern uint64 sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *arg);
 
 /* The entries of key (sorted by log position), n of them; NULL when none */
 extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n);
+/* Is the version a member of a chain (the next of a HOT update: no index has an entry for it); *pred: the version the update was of */
+extern bool sift_tbl_hot_pred(const SiftTblRel *st, uint64 key, uint64 *pred);
+#define sift_tbl_hot_member(st, key)	sift_tbl_hot_pred((st), (key), NULL)
+/* The offsets of the rows of vblock a HOT update entry names, as bits (SIFT_OFFMASK_WORDS words) */
+extern void sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint64 *mask);
 
 extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
 extern bool sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key);
@@ -358,10 +368,14 @@ typedef struct SiftTblDel
 	TransactionId xid;			/* the deleter (state != NONE) */
 	CommandId	cid;
 	uint64		succ;
+	bool		hot;			/* the update is a HOT one: the new version is the next of the chain of this one */
 	TransactionId lockxid;		/* an in-progress locker (another transaction), InvalidTransactionId if none */
 	bool		self_locked;	/* the current transaction holds a lock entry */
 } SiftTblDel;
 
+extern bool sift_tbl_index_follows_chains(Relation index);
+/* The version the HOT update of key (the last one the log tells of, aborted ones left out) led to: false when it has none */
+extern bool sift_tbl_hot_next(const SiftTblRel *st, uint64 key, uint64 *succ);
 /* The deletion state of key by the log as it is now (no snapshot: the writers' view) */
 extern void sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del);
 
@@ -444,6 +458,8 @@ extern void sift_tbl_layout_adopt(Relation rel, SiftTblRel *st, Relation from);
 extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
 extern bool sift_tbl_xid_aborted(TransactionId xid);
+/* No snapshot sees xid as running (a frozen xid, that of a chain's root the log keeps, always) */
+extern bool sift_tbl_xid_removable(Relation rel, TransactionId xid);
 
 /*
  * The slot of a sift_table (table/slot.c): a virtual slot that decodes the attributes of a row of a column group on demand.

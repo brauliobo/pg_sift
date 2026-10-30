@@ -281,6 +281,82 @@ build_verdict(Relation rel, SiftTblRel *st, const SiftTblRowVer *rv, Transaction
 	}
 }
 
+typedef enum BuildChain
+{
+	CHAIN_NONE,					/* a version of no chain: counted by itself */
+	CHAIN_SKIP,					/* a member the entry of its chain's first version covers, or a chain with no version that counts */
+	CHAIN_ENTRY					/* the first stored version of a chain: one entry at its root, with the columns of *last */
+} BuildChain;
+
+/*
+ * The versions a HOT update linked are one entry of an index built after them, as for the heap: at the TID of the root (where the other indexes
+ * have it, and the fetch from there reaches the live version), with the columns of the newest version that counts. The first stored version makes it: the
+ * root, or a member whose predecessor VACUUM removed. A chain with a recently dead version before it makes the index unusable to snapshots older
+ * than the build (ii_BrokenHotChain, as the heap's).
+ */
+static BuildChain
+build_chain(Relation rel, SiftTblScan *s, const SiftTblRowVer *rv, TransactionId oldest, bool anyvisible, bool mvcc, Snapshot snap,
+			IndexInfo *indexInfo, uint64 *root, uint64 *last, BuildVerdict *verdict)
+{
+	SiftTblRel *st = s->st;
+	uint64		key = rv->key,
+				next;
+	bool		found = false;
+
+	if (st->hotm == NULL)
+		return CHAIN_NONE;
+	*root = key;
+	if (sift_tbl_hot_pred(st, key, root))
+	{
+		ItemPointerData ptid;
+		SiftTblRowVer prv;
+		uint64		pred;
+
+		sift_key_to_tid(*root, &ptid);
+		if (sift_tbl_fetch_lazy(rel, st, &ptid, &prv))
+		{
+			sift_tbl_free_row(&prv);
+			return CHAIN_SKIP;
+		}
+		while (sift_tbl_hot_pred(st, *root, &pred))
+			*root = pred;
+	}
+	else if (!sift_tbl_hot_next(st, key, &next))
+		return CHAIN_NONE;
+	for (;;)
+	{
+		SiftTblRowVer cur = *rv;
+		bool		have = true;
+
+		if (key != rv->key)
+		{
+			ItemPointerData tid;
+
+			sift_key_to_tid(key, &tid);
+			have = sift_tbl_fetch_lazy(rel, st, &tid, &cur);
+		}
+		if (have)
+		{
+			BuildVerdict v = build_verdict(rel, st, &cur, oldest, anyvisible, mvcc, snap);
+
+			if (key != rv->key)
+				sift_tbl_free_row(&cur);
+			if (v != BUILD_SKIP)
+			{
+				if (found)
+					indexInfo->ii_BrokenHotChain = true;
+				found = true;
+				*last = key;
+				*verdict = v;
+			}
+		}
+		if (!sift_tbl_hot_next(st, key, &next))
+			break;
+		key = next;
+	}
+	return found ? CHAIN_ENTRY : CHAIN_SKIP;
+}
+
 /*
  * The columns an index build reads: the key and included columns, and those of the expressions and the predicate. The rows of a column group
  * are decoded column by column, so the others are not decoded at all (a BM25 index on the ninth column of a table decoded eight others).
@@ -355,21 +431,41 @@ sift_tbl_index_build_range_scan(Relation table_rel, Relation index_rel, IndexInf
 	{
 		SiftTblRowVer rv;
 		BuildVerdict v;
+		uint64		root,
+					last;
+		BuildChain	chain;
 
 		if (!scan_next_version(table_rel, s, &rv))
 			break;
 		if (rv.key >> 16 < start_blockno || rv.key >> 16 >= end)
 			continue;
 		CHECK_FOR_INTERRUPTS();
-		if ((v = build_verdict(table_rel, s->st, &rv, oldest, anyvisible, mvcc, snapshot)) == BUILD_SKIP)
+		chain = sift_tbl_index_follows_chains(index_rel) ?
+			build_chain(table_rel, s, &rv, oldest, anyvisible, mvcc, snapshot, indexInfo, &root, &last, &v) : CHAIN_NONE;
+		if (chain == CHAIN_SKIP)
 			continue;
-		scan_store(table_rel, s, &rv, slot);
+		if (chain == CHAIN_ENTRY)
+		{
+			SiftTblRowVer lrv = {.key = last};
+			ItemPointerData ltid;
+
+			sift_key_to_tid(last, &ltid);
+			sift_tbl_fetch_tuple(table_rel, s->st, &ltid, &lrv);
+			sift_tbl_store(slot, lrv.tuple);
+		}
+		else
+		{
+			if ((v = build_verdict(table_rel, s->st, &rv, oldest, anyvisible, mvcc, snapshot)) == BUILD_SKIP)
+				continue;
+			scan_store(table_rel, s, &rv, slot);
+			root = rv.key;
+		}
 		reltuples += 1;
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 		if (indexInfo->ii_PredicateState != NULL && !ExecQual(indexInfo->ii_PredicateState, econtext))
 			continue;
 		FormIndexDatum(indexInfo, slot, estate, values, isnull);
-		sift_key_to_tid(rv.key, &tid);
+		sift_key_to_tid(root, &tid);
 		callback(index_rel, &tid, values, isnull, v == BUILD_LIVE, callback_state);
 	}
 	sift_tbl_scan_end(scan);			/* a scan handed in is ended here too, as heapam does */

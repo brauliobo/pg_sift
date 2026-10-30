@@ -1,0 +1,275 @@
+-- An UPDATE of a sift_table that keeps every column an index reads is a HOT update: no index gets an entry for the new version, and the
+-- entries of the old one lead to it (a chain on the tombstone log). The table must answer as a heap twin does through every scan the
+-- indexes give (index, bitmap, lossy bitmap), across updates that do and do not keep the indexed columns, rollbacks, repeated updates of
+-- a row, VACUUM (the chain collapses, then goes with its last version), CREATE INDEX over the chains and REINDEX.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, grp int, status text, v int, note text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE h (id int PRIMARY KEY, grp int, status text, v int, note text) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT g, g % 50, CASE WHEN g % 3 = 0 THEN 'paid' WHEN g % 3 = 1 THEN 'sent' ELSE 'lost' END, g, 'n' || g FROM generate_series(1, 20000) g;
+INSERT INTO h SELECT * FROM t;
+CREATE INDEX t_grp ON t (grp);
+CREATE INDEX t_status_low ON t (lower(status)) WHERE grp < 25;
+CREATE INDEX h_grp ON h (grp);
+CREATE INDEX h_status_low ON h (lower(status)) WHERE grp < 25;
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+ANALYZE t, h;
+-- the same answer from t and h for a query on @, whichever scan the indexes give
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS
+$$
+DECLARE
+	modes text[] := ARRAY['enable_seqscan=on enable_indexscan=off enable_bitmapscan=off',
+						  'enable_seqscan=off enable_indexscan=on enable_bitmapscan=off',
+						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on',
+						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on work_mem=64kB'];
+	m text;
+	kv text;
+	a text;
+	b text;
+BEGIN
+	FOREACH m IN ARRAY modes LOOP
+		PERFORM set_config('work_mem', '4MB', false);
+		FOREACH kv IN ARRAY string_to_array(m, ' ') LOOP
+			PERFORM set_config(split_part(kv, '=', 1), split_part(kv, '=', 2), false);
+		END LOOP;
+		EXECUTE format('SELECT coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''') FROM (%s) x', replace(q, '@', 't')) INTO a;
+		EXECUTE format('SELECT coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''') FROM (%s) x', replace(q, '@', 'h')) INTO b;
+		IF a IS DISTINCT FROM b THEN
+			RAISE NOTICE 'differs under %: % rows against %', m, length(a), length(b);
+			RETURN false;
+		END IF;
+	END LOOP;
+	RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET work_mem;
+	RETURN true;
+END
+$$;
+CREATE FUNCTION same_all() RETURNS boolean LANGUAGE sql AS
+$$ SELECT same('SELECT * FROM @ WHERE grp = 7')
+      AND same('SELECT * FROM @ WHERE grp < 5')
+      AND same('SELECT id, v FROM @ WHERE id BETWEEN 100 AND 3000')
+      AND same('SELECT * FROM @ WHERE id IN (1, 5, 9, 300, 301, 5000, 19999, 20001)')
+      AND same('SELECT * FROM @ WHERE lower(status) = ''paid'' AND grp < 25')
+      AND same('SELECT * FROM @ WHERE grp = 3 OR id = 77 OR id = 78') $$;
+SELECT same_all() AS before_updates;
+ before_updates 
+----------------
+ t
+(1 row)
+
+-- updates that keep the indexed columns (v, note), then others, in rounds; the HOT ones are counted by the statistics of the transaction
+BEGIN;
+UPDATE t SET v = v + 1 WHERE id % 5 = 0;
+UPDATE h SET v = v + 1 WHERE id % 5 = 0;
+SELECT pg_stat_get_xact_tuples_hot_updated('t'::regclass) AS hot_updates, pg_stat_get_xact_tuples_updated('t'::regclass) AS updates;
+ hot_updates | updates 
+-------------+---------
+        4000 |    4000
+(1 row)
+
+UPDATE t SET v = v + 1, note = note || 'x' WHERE id % 5 = 0 AND id < 10000;
+UPDATE h SET v = v + 1, note = note || 'x' WHERE id % 5 = 0 AND id < 10000;
+COMMIT;
+SELECT same_all() AS after_hot_round;
+ after_hot_round 
+-----------------
+ t
+(1 row)
+
+UPDATE t SET grp = grp + 100, v = v + 1 WHERE id % 7 = 0;
+UPDATE h SET grp = grp + 100, v = v + 1 WHERE id % 7 = 0;
+SELECT same_all() AS after_key_change;
+ after_key_change 
+------------------
+ t
+(1 row)
+
+UPDATE t SET status = 'paid' WHERE id % 11 = 0;
+UPDATE h SET status = 'paid' WHERE id % 11 = 0;
+SELECT same_all() AS after_expression_change;
+ after_expression_change 
+-------------------------
+ t
+(1 row)
+
+-- a rolled-back HOT update leaves the old version live, also under a savepoint
+BEGIN;
+UPDATE t SET v = -1 WHERE id % 13 = 0;
+UPDATE h SET v = -1 WHERE id % 13 = 0;
+SAVEPOINT s;
+UPDATE t SET v = -2 WHERE id % 13 = 0;
+UPDATE h SET v = -2 WHERE id % 13 = 0;
+ROLLBACK TO s;
+SELECT same('SELECT * FROM @ WHERE id % 13 = 0 AND grp < 5') AS inside_savepoint;
+ inside_savepoint 
+------------------
+ t
+(1 row)
+
+ROLLBACK;
+SELECT same_all() AS after_rollback;
+ after_rollback 
+----------------
+ t
+(1 row)
+
+-- a row updated again and again in one transaction and across transactions, read by index
+BEGIN;
+DO $$ BEGIN FOR i IN 1..30 LOOP UPDATE t SET v = v + 1 WHERE id = 42; UPDATE h SET v = v + 1 WHERE id = 42; END LOOP; END $$;
+SELECT same('SELECT * FROM @ WHERE id = 42') AS own_chain;
+ own_chain 
+-----------
+ t
+(1 row)
+
+COMMIT;
+DO $$ BEGIN FOR i IN 1..30 LOOP UPDATE t SET v = v + 1 WHERE id = 42; UPDATE h SET v = v + 1 WHERE id = 42; END LOOP; END $$;
+SELECT same('SELECT * FROM @ WHERE id = 42') AS committed_chain;
+ committed_chain 
+-----------------
+ t
+(1 row)
+
+-- locks, ON CONFLICT and unique checks go through the chain
+SELECT (SELECT v FROM t WHERE id = 42 FOR UPDATE) = (SELECT v FROM h WHERE id = 42 FOR UPDATE) AS lock_reads_the_live_version;
+ lock_reads_the_live_version 
+-----------------------------
+ t
+(1 row)
+
+INSERT INTO t VALUES (42, 0, 'x', 0, 'conflict') ON CONFLICT (id) DO UPDATE SET v = t.v + 1000;
+INSERT INTO h VALUES (42, 0, 'x', 0, 'conflict') ON CONFLICT (id) DO UPDATE SET v = h.v + 1000;
+SELECT same('SELECT * FROM @ WHERE id = 42') AS on_conflict_update;
+ on_conflict_update 
+--------------------
+ t
+(1 row)
+
+INSERT INTO t VALUES (5, 0, 'x', 0, 'dup');
+ERROR:  duplicate key value violates unique constraint "t_pkey"
+DETAIL:  Key (id)=(5) already exists.
+-- VACUUM removes the old versions: the chains collapse and the answers do not change
+VACUUM t, h;
+SELECT same_all() AS after_vacuum;
+ after_vacuum 
+--------------
+ t
+(1 row)
+
+UPDATE t SET v = v + 1 WHERE id % 5 = 0;
+UPDATE h SET v = v + 1 WHERE id % 5 = 0;
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained_again;
+ maintained_again 
+------------------
+ t
+(1 row)
+
+VACUUM t, h;
+SELECT same_all() AS after_second_vacuum;
+ after_second_vacuum 
+---------------------
+ t
+(1 row)
+
+-- an index built or rebuilt over rows that have chains
+CREATE INDEX t_v ON t (v);
+CREATE INDEX h_v ON h (v);
+CREATE INDEX t_note ON t (note);
+CREATE INDEX h_note ON h (note);
+SET enable_seqscan = off;
+SELECT same('SELECT * FROM @ WHERE v BETWEEN 1000 AND 1100') AS new_index_v;
+ new_index_v 
+-------------
+ t
+(1 row)
+
+SELECT same('SELECT * FROM @ WHERE note LIKE ''n1%x''') AS new_index_note;
+ new_index_note 
+----------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+UPDATE t SET note = note || 'y' WHERE id % 9 = 0;
+UPDATE h SET note = note || 'y' WHERE id % 9 = 0;
+UPDATE t SET grp = grp WHERE id % 4 = 0;
+UPDATE h SET grp = grp WHERE id % 4 = 0;
+REINDEX TABLE t;
+REINDEX TABLE h;
+SELECT same_all() AS after_reindex;
+ after_reindex 
+---------------
+ t
+(1 row)
+
+SELECT same('SELECT * FROM @ WHERE v BETWEEN 1000 AND 1100') AS reindexed_v;
+ reindexed_v 
+-------------
+ t
+(1 row)
+
+-- a bitmap that goes lossy (rows of 1,500 bytes: a vblock holds a few, a small work_mem cannot hold an entry for each) reaches the members from their roots
+CREATE TABLE t2 (id int PRIMARY KEY, grp int, v int, pad text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE h2 (id int PRIMARY KEY, grp int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO t2 SELECT g, g % 10, g, repeat('x', 1500) FROM generate_series(1, 8000) g;
+INSERT INTO h2 SELECT * FROM t2;
+CREATE INDEX t2_grp ON t2 (grp);
+CREATE INDEX h2_grp ON h2 (grp);
+SELECT sift.table_maintain('t2') IS NOT NULL AS maintained_wide;
+ maintained_wide 
+-----------------
+ t
+(1 row)
+
+ANALYZE t2, h2;
+UPDATE t2 SET v = v + 1 WHERE id % 3 = 0;
+UPDATE h2 SET v = v + 1 WHERE id % 3 = 0;
+UPDATE t2 SET v = v + 1 WHERE id % 6 = 0;
+UPDATE h2 SET v = v + 1 WHERE id % 6 = 0;
+CREATE FUNCTION lossy(q text) RETURNS boolean LANGUAGE plpgsql AS
+$$
+DECLARE r text;
+BEGIN
+	FOR r IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF r ~ 'Heap Blocks: .*lossy=[1-9]' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END
+$$;
+SET enable_seqscan = off; SET enable_indexscan = off; SET work_mem = '64kB';
+SELECT lossy('SELECT * FROM t2 WHERE grp < 5') AS the_bitmap_is_lossy;
+ the_bitmap_is_lossy 
+---------------------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM t2 WHERE grp < 5) = (SELECT count(*) FROM h2 WHERE grp < 5) AS lossy_count;
+ lossy_count 
+-------------
+ t
+(1 row)
+
+SELECT (SELECT sum(v) FROM t2 WHERE grp < 5) = (SELECT sum(v) FROM h2 WHERE grp < 5) AS lossy_sum;
+ lossy_sum 
+-----------
+ t
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET work_mem;
+DROP FUNCTION lossy(text);
+-- the whole table is the same, and the planner uses the indexes for the lookups above
+SELECT (SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM h) x) = 0
+   AND (SELECT count(*) FROM (SELECT * FROM h EXCEPT ALL SELECT * FROM t) y) = 0 AS tables_equal;
+ tables_equal 
+--------------
+ t
+(1 row)
+
+DROP FUNCTION same_all();
+DROP FUNCTION same(text);
+DROP TABLE t, h, t2, h2;
+DROP EXTENSION pg_sift;

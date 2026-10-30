@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 115 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 116 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1002,6 +1002,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_wide_rows = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): such rows are refused again. Buffers already marked format 11 stay, and older builds still refuse to write to them.
 - **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: a row above the write buffer (up to 1 GB) is accepted. Rows that fit keep the old layout; the buffer that takes a wide row is format 11, which older builds refuse. Off refuses such rows.
+
+#### sift.table_hot_update
+
+`sift_table` · default · since 3.7 · default on
+
+- **What it does:** an UPDATE that keeps the columns the indexes read gets no entry in them: the entries of the old version lead to the new one
+- **Gain:** 40,000 UPDATEs by primary key of 2,000 rows (20 statements), keys unchanged, PK and two b-trees: 7,152 M to 3,853 M instructions (1.86x), 23.8 to 15.4 MB WAL, 1.90 M to 0.74 M buffer hits (heap twin: 4,168 M, 16.8 MB, 1.44 M); 600,000 rows
+- **Formula:** S 1.86x saving 164950k instructions, G 0.0%, W 0.0%, R 1: B 12.7 against C 0.0, automatic
+- **Impact:** index size: -0% (index pages do not grow with the versions: no entry per update); build, merge and writes: UPDATE: -46% instructions, -35% WAL; no cost elsewhere (INSERT and COPY unchanged); other: none for tables whose updates change an indexed column; a table with HOT updates cannot go back to a release before this one (it reads them as plain updates and loses the rows an index reaches through the chain)
+- **When:** Every UPDATE of a sift_table whose new version has the same binary datums in every column an index reads (key, included, expression, predicate), when the table has no summarizing index and no sift_col or sift index. Not UPDATEs that change one of them, nor INSERT, DELETE or COPY.
+- **Default:** on — On since 3.7: updates that keep the index columns no longer insert into every index (a heap does the same, HOT); measured -46% instructions on the case, no growth of the indexes.
+- **Turn off:** SET sift.table_hot_update = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): every update inserts its version into every index again. Chains written while it was on are still followed, so turning it off is safe at any time.
+- **Upgrade from 3.6:** After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones).
+- **Advice:** Leave on. Updates that change an indexed column, and tables with a sift_col or BM25 index, are not HOT. Off inserts every new version into every index again (chains already written are still followed).
 
 #### sift.table_inline_promote
 
@@ -2245,7 +2259,11 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.6; new: none.
+No default changed since 3.6; new: `sift.table_hot_update`.
+
+| Option | 3.6 | 3.6 | Column format | What a 3.6 user gets after the update |
+|---|---|---|---|---|
+| `sift.table_hot_update` | new | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

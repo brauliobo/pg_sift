@@ -15,8 +15,11 @@ ALTER TABLE h ADD PRIMARY KEY (id);
 -- a key that scatters the TIDs of an index page over the superblocks, and one that groups them
 CREATE INDEX t_k ON t (k);
 CREATE INDEX t_grp ON t (grp);
+-- (v is indexed too: the updates below change it, so they are not HOT and every index fills with versions)
+CREATE INDEX t_v ON t (v);
 CREATE INDEX h_k ON h (k);
 CREATE INDEX h_grp ON h (grp);
+CREATE INDEX h_v ON h (v);
 SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
 VACUUM (ANALYZE) t, h;
 SELECT (SELECT count(*) FROM sift.table_segments('t') WHERE kind = 'columns') > 0 AS promoted;

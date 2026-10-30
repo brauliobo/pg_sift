@@ -61,15 +61,16 @@ sift_tbl_index_fetch_end(IndexFetchTableData *data)
 	pfree(data);
 }
 
-/* Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale */
+/*
+ * Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale.
+ */
 static bool
-fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync)
+fetch_version(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync)
 {
 	SiftTblRowVer rv;
 	bool		dead;
 
-	if (all_dead)
-		*all_dead = false;
+	*all_dead = false;
 	PredicateLockRelation(rel, snapshot);
 	if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
 		sift_tbl_tomb_sync(rel, st);
@@ -77,25 +78,21 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 		return false;
 	if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 	{
-		if (all_dead)
-			*all_dead = true;
+		*all_dead = true;
 		return false;
 	}
 	if (!sift_tbl_visible(rel, st, snapshot, &rv))
 	{
 		(void) sift_tbl_inserted_visible(snapshot, &rv, &dead);
-		if (all_dead)
+		/* a version deleted or updated by a transaction that no snapshot can still see as running is dead for every snapshot: the b-tree marks its entry, and does not fetch it again */
+		if (!dead)
 		{
 			SiftTblDel	del;
 
-			/* a version deleted or updated by a transaction that no snapshot can still see as running is dead for every snapshot: the b-tree marks its entry, and does not fetch it again */
-			if (!dead)
-			{
-				sift_tbl_del_state(st, rv.key, &del);
-				dead = (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && GlobalVisCheckRemovableXid(rel, del.xid);
-			}
-			*all_dead = dead;
+			sift_tbl_del_state(st, rv.key, &del);
+			dead = (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && sift_tbl_xid_removable(rel, del.xid);
 		}
+		*all_dead = dead;
 		sift_tbl_free_row(&rv);
 		return false;
 	}
@@ -104,6 +101,37 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	sift_tbl_fetch_tuple(rel, st, tid, &rv);
 	sift_tbl_store(slot, rv.tuple);
 	return true;
+}
+
+/*
+ * The version of tid that the snapshot sees; chain: or the one of the chain a HOT update began at tid, which an index entry of tid stands for.
+ * *all_dead: every version of the chain is dead for everyone (the index entry may go)
+ */
+static bool
+fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync, bool chain)
+{
+	ItemPointerData cur = *tid;
+	bool		dead = true;
+
+	for (;;)
+	{
+		bool		this_dead;
+		uint64		succ;
+
+		if (fetch_version(rel, st, &cur, snapshot, slot, &this_dead, sync))
+		{
+			if (all_dead)
+				*all_dead = false;
+			return true;
+		}
+		dead &= this_dead;
+		if (!chain || !sift_tbl_hot_next(st, sift_key_from_tid(&cur), &succ))
+			break;
+		sift_key_to_tid(succ, &cur);
+	}
+	if (all_dead)
+		*all_dead = dead;
+	return false;
 }
 
 bool
@@ -116,7 +144,7 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 
 	f->fresh = false;
 	*call_again = false;
-	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync);
+	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync, true);
 }
 
 typedef struct VblockTest
@@ -196,7 +224,7 @@ sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapsho
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
-	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true);
+	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true, false);
 }
 
 bool
@@ -252,6 +280,26 @@ sift_tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot s
 	return ok;
 }
 
+/* Is the chain that begins at the version del tells of dead for everyone: its end deleted or updated (not HOT) by a removable xid; *xid: the latest of them */
+static bool
+chain_dead(Relation rel, const SiftTblRel *st, const SiftTblDel *first, TransactionId *xid)
+{
+	SiftTblDel	d = *first,
+			   *del = &d;
+
+	*xid = InvalidTransactionId;
+	for (;;)
+	{
+		if ((del->state != SIFT_TBL_DEL_DELETED && del->state != SIFT_TBL_DEL_UPDATED) || !sift_tbl_xid_removable(rel, del->xid))
+			return false;
+		if (!TransactionIdIsValid(*xid) || TransactionIdFollows(del->xid, *xid))
+			*xid = del->xid;
+		if (!del->hot)
+			return true;
+		sift_tbl_del_state(st, del->succ, del);
+	}
+}
+
 static int
 deltid_cmp(const void *a, const void *b)
 {
@@ -282,16 +330,17 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 		TM_IndexDelete *d = &delstate->deltids[i];
 		TM_IndexStatus *status = &delstate->status[d->id];
 		SiftTblRowVer rv;
-		SiftTblDel del;
+		SiftTblDel	del;
+		TransactionId xid;
 
 		if (delstate->bottomup && freed >= delstate->bottomupfreespace)
 			break;
 		sift_tbl_del_state(st, sift_key_from_tid(&d->tid), &del);
-		if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && GlobalVisCheckRemovableXid(rel, del.xid))
+		if (chain_dead(rel, st, &del, &xid))
 		{
 			status->knowndeletable = true;
-			if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
-				horizon = del.xid;
+			if (!TransactionIdIsValid(horizon) || TransactionIdFollows(xid, horizon))
+				horizon = xid;
 		}
 		else if (!delstate->bottomup && del.state == SIFT_TBL_DEL_NONE)
 		{
@@ -323,11 +372,54 @@ bitmap_add(SiftTblScan *s, HeapTuple tup)
 	s->brows[s->nbrows++] = tup;
 }
 
-/* The visible rows of vblock of the column groups at the given offsets (n < 0: all) */
+/*
+ * The visible version of the chain that begins at the row of tid (its entries lead there; the row may be gone): a HOT update's new version is no
+ * entry of any index and no page scan returns it, so the bitmap reaches it from the root. emitted: the offsets of the page whose own row was added.
+ */
 static void
-bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n)
+bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, const uint64 *emitted)
+{
+	uint64		roots[SIFT_OFFMASK_WORDS] = {0};
+	int			cnt = n;
+
+	if (n < 0)
+	{
+		sift_tbl_hot_offsets(s->st, vblock, roots);
+		cnt = SIFT_TBL_MAX_OFF;
+	}
+	for (int i = 0; i < cnt; i++)
+	{
+		OffsetNumber off = n < 0 ? i + 1 : offsets[i];
+		uint64		key = ((uint64) vblock << 16) | off;
+		uint64		succ;
+
+		if ((n < 0 && !sift_col_bit_test(roots, off - 1)) || sift_col_bit_test(emitted, off - 1) || sift_tbl_hot_member(s->st, key))
+			continue;
+		while (sift_tbl_hot_next(s->st, key, &succ))
+		{
+			SiftTblRowVer rv;
+			ItemPointerData tid;
+
+			sift_key_to_tid(succ, &tid);
+			key = succ;
+			if (!sift_tbl_fetch_row(rel, s->st, &tid, &rv))
+				continue;
+			if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+			{
+				bitmap_add(s, rv.tuple);
+				break;
+			}
+			sift_tbl_free_row(&rv);
+		}
+	}
+}
+
+/* The visible rows of vblock of the column groups at the given offsets (n < 0: all); chain: the bitmap's, which reaches the members of the chains from their roots */
+static void
+bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
 {
 	uint64		mask[SIFT_OFFMASK_WORDS] = {0};
+	uint64		emitted[SIFT_OFFMASK_WORDS] = {0};
 	HeapTuple	row[SIFT_TBL_MAX_OFF];
 	TransactionId xmin[SIFT_TBL_MAX_OFF];
 	CommandId	cmin[SIFT_TBL_MAX_OFF];
@@ -344,26 +436,32 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 	{
 		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = xmin[i],.cmin = cmin[i]};
 
-		if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+		if ((!chain || !sift_tbl_hot_member(s->st, rv.key)) && sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+		{
 			bitmap_add(s, row[i]);
+			sift_col_bit_set(emitted, ItemPointerGetOffsetNumberNoCheck(&row[i]->t_self) - 1);
+		}
 		else
 			heap_freetuple(row[i]);
 	}
+	if (chain)
+		bitmap_chains(rel, s, vblock, offsets, n, emitted);
 }
 
 /* Collects the visible rows of vblock at the given offsets (n < 0: every slot) */
 static void
-bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n)
+bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
 {
 	uint64		gen;
 	bool		held;
 	int			cnt = n < 0 ? SIFT_TBL_MAX_OFF : n;
+	uint64		emitted[SIFT_OFFMASK_WORDS] = {0};
 
 	s->nbrows = s->bri = 0;
 	/* the write buffers the scan began with, like its column groups (s->dir): a UPDATE reads the directory again at every row */
 	if (!sift_tbl_load_vblock_in(rel, s->seg, s->nseg, vblock, s->copy, &gen, &held))
 	{
-		bitmap_group_page(rel, s, vblock, offsets, n);
+		bitmap_group_page(rel, s, vblock, offsets, n, chain);
 		return;
 	}
 	for (int i = 0; i < cnt; i++)
@@ -377,11 +475,14 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 			continue;
 		ItemPointerSet(&tid, vblock, off);
 		sift_tbl_rowver(&rv, &tid, rec);
-		if (!sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+		if ((chain && sift_tbl_hot_member(s->st, rv.key)) || !sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			continue;
 		sift_tbl_rowver_tuple(rel, &rv, rec, gen, &tid);
 		bitmap_add(s, rv.tuple);
+		sift_col_bit_set(emitted, off - 1);
 	}
+	if (chain)
+		bitmap_chains(rel, s, vblock, offsets, n, emitted);
 }
 
 static bool
@@ -419,7 +520,7 @@ sift_tbl_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 		return false;
 	MemoryContextReset(s->rowcxt);
 	old = MemoryContextSwitchTo(s->rowcxt);
-	bitmap_page(scan->rs_rd, s, s->sample_blk, NULL, -1);
+	bitmap_page(scan->rs_rd, s, s->sample_blk, NULL, -1, false);
 	MemoryContextSwitchTo(old);
 	qsort(s->brows, s->nbrows, sizeof(HeapTuple), cmp_offset);
 	s->sample_max = s->nbrows > 0 ? ItemPointerGetOffsetNumberNoCheck(&s->brows[s->nbrows - 1]->t_self) : 0;
@@ -466,7 +567,7 @@ sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *
 		CHECK_FOR_INTERRUPTS();
 		if (tbmres.lossy)
 		{
-			bitmap_page(scan->rs_rd, s, tbmres.blockno, NULL, -1);
+			bitmap_page(scan->rs_rd, s, tbmres.blockno, NULL, -1, true);
 			(*lossy_pages)++;
 		}
 		else
@@ -474,7 +575,7 @@ sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *
 			OffsetNumber offsets[MaxHeapTuplesPerPage];
 			int			n = tbm_extract_page_tuple(&tbmres, offsets, lengthof(offsets));
 
-			bitmap_page(scan->rs_rd, s, tbmres.blockno, offsets, n);
+			bitmap_page(scan->rs_rd, s, tbmres.blockno, offsets, n, true);
 			(*exact_pages)++;
 		}
 		*recheck = tbmres.recheck;
@@ -489,7 +590,7 @@ sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
 	SiftTblScan *s = (SiftTblScan *) scan;
 
 	CHECK_FOR_INTERRUPTS();
-	bitmap_page(scan->rs_rd, s, tbmres->blockno, tbmres->ntuples < 0 ? NULL : tbmres->offsets, tbmres->ntuples);
+	bitmap_page(scan->rs_rd, s, tbmres->blockno, tbmres->ntuples < 0 ? NULL : tbmres->offsets, tbmres->ntuples, true);
 	return s->nbrows > 0;
 }
 

@@ -35,17 +35,21 @@
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/pg.h"
+#include "core/sift.h"
 #include "bm25/merge.h"
 #include "table/table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
+static bool sift_tbl_hot_update = true;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
 
@@ -91,6 +95,10 @@ sift_tbl_define_gucs(void)
 							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_hot_update",
+							 "An UPDATE of a sift_table that keeps the columns its indexes read gets no entry in them: the entries of the old version lead to the new one (a HOT chain on the tombstone log).",
+							 "Off: every update inserts the new version into every index. Chains written while it was on are still followed.",
+							 &sift_tbl_hot_update, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_dict_lookup",
 							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string, kept while the orders of a segment take at most a quarter of its chunks.",
 							 NULL, &sift_col_table_lookup, true,
@@ -425,13 +433,80 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 		ItemPointerSetMovedPartitions(&mp);
 		moved = sift_key_from_tid(&mp);
 		sift_tbl_tomb_append(rel, st, key, GetCurrentTransactionId(), cid,
-							 changingPart ? SIFT_TBL_TOMB_UPDATE : SIFT_TBL_TOMB_DELETE, changingPart ? moved : 0);
+							 changingPart ? SIFT_TBL_TOMB_UPDATE : SIFT_TBL_TOMB_DELETE, 0, changingPart ? moved : 0);
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_DELETE, tid, NULL);
 		pgstat_count_heap_delete(rel);
 	}
 	UnlockTuple(rel, tid, ExclusiveLock);
 	return result;
+}
+
+/* Does the index hand its TIDs to a fetch (a chain is followed there): not the sift indexes, which check the visibility of a page of TIDs themselves, so they have an entry for every version */
+bool
+sift_tbl_index_follows_chains(Relation index)
+{
+	return index->rd_rel->relam != sift_catalog()->am && index->rd_rel->relam != sift_col_am_oid();
+}
+
+static bool
+indexes_follow_chains(Relation rel, SiftTblRel *st)
+{
+	if (st->chain_ok == 0)
+	{
+		ListCell   *lc;
+
+		st->chain_ok = 1;
+		foreach(lc, RelationGetIndexList(rel))
+		{
+			Relation	index = index_open(lfirst_oid(lc), NoLock);
+
+			if (!sift_tbl_index_follows_chains(index))
+				st->chain_ok = -1;
+			index_close(index, NoLock);
+		}
+	}
+	return st->chain_ok > 0;
+}
+
+/*
+ * Does the new version keep every column an index reads, as binary datums (the heap's test): then no index gets an entry for it, its tombstone is a HOT
+ * one and the old version's entries lead to it. Not with a summarizing index, which wants the new
+ * version's block, nor on a table without index (nothing to save).
+ */
+static bool
+index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple mtup)
+{
+	Bitmapset  *attrs = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	TupleDesc	desc = RelationGetDescr(rel);
+	HeapTupleData new = {.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET,.t_data = (HeapTupleHeader) ((char *) mtup - MINIMAL_TUPLE_OFFSET)};
+	SiftTblRowVer rv;
+	bool		same = true;
+
+	if (!sift_tbl_hot_update || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) || !indexes_follow_chains(rel, st) ||
+		!sift_tbl_fetch_row(rel, st, otid, &rv))
+		return false;
+	for (int attr = -1; same && (attr = bms_next_member(attrs, attr)) >= 0;)
+	{
+		AttrNumber	a = attr + FirstLowInvalidHeapAttributeNumber;
+		Form_pg_attribute att;
+		bool		onull,
+					nnull;
+		Datum		old,
+					fresh;
+
+		if (a <= 0)
+		{
+			same = false;		/* a system column or the whole row */
+			break;
+		}
+		att = TupleDescAttr(desc, a - 1);
+		old = heap_getattr(rv.tuple, a, desc, &onull);
+		fresh = heap_getattr(&new, a, desc, &nnull);
+		same = onull == nnull && (onull || datumIsEqual(old, fresh, att->attbyval, att->attlen));
+	}
+	sift_tbl_free_row(&rv);
+	return same;
 }
 
 static TM_Result
@@ -463,6 +538,7 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	if (result == TM_Ok)
 	{
 		MinimalTuple mtup = form_mtuple(rel, slot);
+		bool		hot = index_columns_kept(rel, st, otid, mtup);
 
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		sift_tbl_append(rel, st, mtup, GetCurrentTransactionId(), cid, 0, &slot->tts_tid);
@@ -471,8 +547,10 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, otid, mtup);
 		heap_free_minimal_tuple(mtup);
 		sift_tbl_tomb_append(rel, st, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_UPDATE,
-							 sift_key_from_tid(&slot->tts_tid));
-		pgstat_count_heap_update(rel, false, false);
+							 hot ? SIFT_TBL_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
+		if (hot)
+			*update_indexes = TU_None;
+		pgstat_count_heap_update(rel, hot, false);
 	}
 	UnlockTuple(rel, otid, ExclusiveLock);
 	return result;
@@ -511,7 +589,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 		if (result != TM_Ok)
 			return result;
 		if (!del.self_locked)
-			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0);
+			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
 			ereport(ERROR,

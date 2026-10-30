@@ -134,12 +134,14 @@ tid_has(ItemPointer itemptr, void *state)
 
 typedef struct VacState
 {
+	const SiftTblRel *st;
 	TransactionId oldest;
 	TransactionId newest_kept;	/* oldest xid still stored: relfrozenxid */
 	double		live;			/* as a heap counts them: in-progress insertions left out, in-progress deletions in */
 	double		dead;			/* recently dead: deleter committed but not removable yet */
 	double		group_dead;		/* of those, rows of the column groups (their liveness bit is still set) */
 	TidList	dead_tids;
+	TidList	redirects;			/* of the dead TIDs, the roots of HOT chains that go on: their index entries stay, the log keeps the way to the live version */
 	SiftTblKeyRuns dead_runs;	/* sorted: the rows of the groups with unfrozen rows whose inserter aborted */
 } VacState;
 
@@ -150,9 +152,37 @@ note_xid(VacState *v, TransactionId xid)
 		v->newest_kept = xid;
 }
 
-/* Is the tombstone entry removable now: aborted, a lock of a finished transaction, or a delete whose row VACUUM has just flagged */
+/* Is the deletion or update del tells of committed and older than every snapshot */
 static bool
-tomb_keep(const SiftTblTomb *e, void *arg)
+del_removable(const VacState *v, const SiftTblDel *del)
+{
+	return (del->state == SIFT_TBL_DEL_DELETED || del->state == SIFT_TBL_DEL_UPDATED) && TransactionIdPrecedes(del->xid, v->oldest);
+}
+
+/* The chain that goes on at key (the new version of a HOT update) is dead: its end is deleted or updated otherwise, for good. *key: the first link that is not removable */
+static bool
+chain_dead(const SiftTblRel *st, const VacState *v, uint64 *key)
+{
+	for (;;)
+	{
+		SiftTblDel	del;
+
+		sift_tbl_del_state(st, *key, &del);
+		if (!del_removable(v, &del))
+			return false;
+		if (!del.hot)
+			return true;
+		*key = del.succ;
+	}
+}
+
+/*
+ * Is the tombstone entry removable now: aborted, a lock of a finished transaction, or a delete whose row VACUUM has just flagged. The HOT update of
+ * a chain member goes with the row (the entry of its root skips it); the one of a root whose chain lives stays, moved past the removable links, with
+ * a frozen xid (a log entry is read as the update of a transaction every snapshot sees, and holds no xid back)
+ */
+static bool
+tomb_keep(SiftTblTomb *e, void *arg)
 {
 	VacState   *v = arg;
 
@@ -168,7 +198,16 @@ tomb_keep(const SiftTblTomb *e, void *arg)
 		return false;
 	}
 	if (TransactionIdDidCommit(e->xid) && TransactionIdPrecedes(e->xid, v->oldest))
-		return false;
+	{
+		uint64		next = e->succ;
+
+		if (e->kind != SIFT_TBL_TOMB_UPDATE || !(e->flags & SIFT_TBL_TOMB_HOT) || sift_tbl_hot_member(v->st, e->key) || chain_dead(v->st, v, &next))
+			return false;
+		e->succ = next;
+		e->xid = FrozenTransactionId;
+		e->cid = 0;
+		return true;
+	}
 	note_xid(v, e->xid);
 	return true;
 }
@@ -201,9 +240,14 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 			else
 			{
 				sift_tbl_del_state(st, key, &del);
-				if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) &&
-					TransactionIdPrecedes(del.xid, v->oldest))
+				if (del_removable(v, &del))
+				{
+					uint64		next = del.succ;
+
 					dead = true;
+					if (del.hot && !chain_dead(st, v, &next))
+						ItemPointerSet(tid_push(&v->redirects), ph->vblock, off);
+				}
 				else if (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED)
 					v->dead += 1;
 				else if (!TransactionIdIsNormal(rec->xmin) || !TransactionIdIsInProgress(rec->xmin))
@@ -262,6 +306,13 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 			continue;
 		}
 		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
+		if (e->kind == SIFT_TBL_TOMB_UPDATE && (e->flags & SIFT_TBL_TOMB_HOT))
+		{
+			uint64		next = e->succ;
+
+			if (!chain_dead(st, v, &next))
+				sift_key_to_tid(e->key, tid_push(&v->redirects));
+		}
 		*lo = Min(*lo, sb);
 		*hi = Max(*hi, sb);
 	}
@@ -280,6 +331,15 @@ dead_has(ItemPointer itemptr, void *state)
 		return true;
 	SIFT_BISECT(int, mid, lo, hi, v->dead_runs.run[mid][0] <= key);
 	return lo > 0 && key <= v->dead_runs.run[lo - 1][1];
+}
+
+/* A dead TID that VACUUM may tell the indexes of: not the root of a chain that goes on */
+static bool
+index_dead_has(ItemPointer itemptr, void *state)
+{
+	VacState   *v = state;
+
+	return dead_has(itemptr, v) && !tid_has(itemptr, &v->redirects);
 }
 
 /* The writers of the groups with unfrozen rows hold the oldest xid back */
@@ -316,6 +376,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	v->dead_runs.mcxt = CurrentMemoryContext;
 	sift_tbl_aborted_runs(rel, st, &v->dead_runs, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);
+	tid_sort(&v->redirects);
 	if (v->dead_runs.n > 0)
 		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), sift_cmp_u64);
 	if (sb_lo <= sb_hi)
@@ -340,7 +401,7 @@ vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
 		IndexBulkDeleteResult *res = NULL;
 
 		if (v->dead_tids.n > 0 || v->dead_runs.n > 0)
-			res = index_bulk_delete(&ivinfo, NULL, dead_has, v);
+			res = index_bulk_delete(&ivinfo, NULL, index_dead_has, v);
 		res = index_vacuum_cleanup(&ivinfo, res);
 		if (res)
 			pfree(res);
@@ -462,6 +523,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	int			nindexes;
 
 	(void) vacuum_get_cutoffs(rel, params, &cutoffs);
+	v.st = st;
 	v.oldest = cutoffs.OldestXmin;
 	v.newest_kept = cutoffs.OldestXmin;
 	sift_tbl_refresh(rel, st);
@@ -561,6 +623,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 
 	*r = (SiftTblMaintain) {.blocks_before = RelationGetNumberOfBlocks(rel)};
 	r->blocks_after = r->blocks_before;
+	v.st = st;
 	v.oldest = v.newest_kept = oldest;
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
@@ -598,6 +661,8 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 	r->blocks_after = RelationGetNumberOfBlocks(rel);
 	if (v.dead_tids.tid)
 		pfree(v.dead_tids.tid);
+	if (v.redirects.tid)
+		pfree(v.redirects.tid);
 }
 
 /*
@@ -615,10 +680,11 @@ removable_tombs(Relation rel, SiftTblRel *st)
 	uint64		n = 0;
 
 	sift_tbl_tomb_sync(rel, st);
+	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
 	for (uint32 i = 0; i < st->nents; i++)
-		n += TransactionIdPrecedes(st->ents[i].xid, horizon);
+		n += st->ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->ents[i].xid, horizon);
 	for (uint32 i = 0; i < st->nrecent; i++)
-		n += TransactionIdPrecedes(st->recent[i].xid, horizon);
+		n += st->recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->recent[i].xid, horizon);
 	return n;
 }
 
@@ -1021,6 +1087,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	TidList		have = {0};
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
+	SiftTblRel *st = sift_tbl_rel(table_rel);
 
 	econtext->ecxt_scantuple = slot;
 	indexInfo->ii_PredicateState = ExecPrepareQual(indexInfo->ii_Predicate, estate);
@@ -1034,9 +1101,15 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		ItemPointerData tid = slot->tts_tid;
+		uint64		key = sift_key_from_tid(&tid),
+					pred;
 
 		CHECK_FOR_INTERRUPTS();
 		state->htups += 1;
+		/* the entries of a chain are at its root, where the other indexes have them */
+		while (sift_tbl_index_follows_chains(index_rel) && sift_tbl_hot_pred(st, key, &pred))
+			key = pred;
+		sift_key_to_tid(key, &tid);
 		if (tid_has(&tid, &have))
 			continue;
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
