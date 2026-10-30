@@ -21,6 +21,13 @@ CREATE INDEX pa_few ON pa USING sift_col (a, b, c, d, e, f);
 CREATE TABLE pas AS SELECT * FROM pa WHERE id <= 20000;
 VACUUM (FREEZE, ANALYZE) pas;
 CREATE INDEX pas_rid ON pas USING sift_col (rid, a, b, c, d, e, f);
+-- a column with a unique b-tree of its own is not chosen: the planner takes the b-tree for an equality, so the directory would be size alone
+CREATE TABLE pau AS SELECT * FROM pa;
+ALTER TABLE pau ADD PRIMARY KEY (rid);
+VACUUM (FREEZE, ANALYZE) pau;
+CREATE INDEX pau_rid ON pau USING sift_col (rid, a, b, c, d, e, f);
+SELECT popt('pau_rid') AS unique_btree;
+DROP TABLE pau;
 -- the options the user sets are kept
 CREATE INDEX pa_off ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'off');
 CREATE INDEX pa_user ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'a');
