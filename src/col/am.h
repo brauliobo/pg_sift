@@ -205,7 +205,7 @@ extern bool sift_colw_is_wide_pred(const SiftColDef *d, const SiftColPred *p);
 extern bool sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
 extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, uint64 *keep);
 
-/* col/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
+/* col/amscan/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
 extern bool sift_enable_col_scan;
 extern double sift_plan_scale;
 extern void sift_col_scan_init(void);
