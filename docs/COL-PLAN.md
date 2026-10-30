@@ -6,7 +6,7 @@ Files:
 
 | Path | Role |
 |---|---|
-| `src/agg/plan.c`, `src/agg/plan_*.c` | shape matcher, cost |
+| `src/agg/plan/`, `src/agg/plan_*.c` | shape matcher, cost |
 | `src/agg/spec.[ch]` | what the planner proved, serialized into `custom_private` |
 | `src/agg/agg.c` and neighbours (`agg_int.h`, `unit.c`, `update.c`, `init.c`, `par.c`, ...) | executor, EXPLAIN |
 | `src/agg/kern*.c` | vectorized operators |

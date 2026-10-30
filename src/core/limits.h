@@ -33,7 +33,7 @@
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
-	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan.c", 32, "times hash memory", \
+	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan/finish.c", 32, "times hash memory", \
 	  "estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
 	  "normal plan (slug group_memory, the detail names the groups and the limit)", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
@@ -52,7 +52,7 @@
 	  "columns of the joined table that expressions read", "normal plan (slug shape_width)", "-", 1) \
 	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec.h", SIFT_AGG_MAX_JIDX, "equalities", \
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
-	X(lookup_kb, "-", "agg/plan.c", 262144, "kB", \
+	X(lookup_kb, "-", "agg/plan/finish.c", 262144, "kB", \
 	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
 	X(lookup_shared_bytes, "SHARE_MAX", "agg/par.c", 1073741824, "bytes", \
 	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \

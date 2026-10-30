@@ -12,7 +12,7 @@ fail() { echo "check-approx: $*"; bad=1; }
 
 hits=$(grep -rnE '(DefineCustom[A-Za-z]*Variable|add_[a-z]*_reloption)\(\s*"[^"]*(approx|hll)' "$R/src" | grep -v '"hll_columns"' || true)
 [[ -z $hits ]] || fail "a setting or option other than hll_columns names the estimate: $hits"
-for f in agg/plan_agg.c agg/dist.c agg/spec_dist.c agg/plan.c; do
+for f in agg/plan_agg.c agg/dist.c agg/spec_dist.c $(cd "$R/src" && ls agg/plan/*.c 2>/dev/null); do
 	[[ -f $R/src/$f ]] || continue
 	hits=$(grep -nEi 'approx|hll|sketch' "$R/src/$f" || true)
 	[[ -z $hits ]] || fail "src/$f is on the path of count(DISTINCT) and names the estimate: $hits"

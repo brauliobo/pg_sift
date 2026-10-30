@@ -1,5 +1,5 @@
 /*
- * agg/plan_int.h - shared between the planner files (agg/plan.c, agg/plan_*.c).
+ * agg/plan_int.h - shared between the planner files (agg/plan/, agg/plan_*.c).
  */
 #ifndef SIFT_AGG_PLAN_INT_H
 #define SIFT_AGG_PLAN_INT_H

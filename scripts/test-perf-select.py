@@ -25,7 +25,7 @@ class SelectionTest(unittest.TestCase):
             'src/bm25/query.c': list(SELECT.ALL),
             'src/col/compress.c': ['smoke', 'agg', 'storage'],
             'src/agg/agg.c': ['smoke', 'agg'],
-            'src/agg/plan.c': ['smoke', 'agg'],
+            'src/agg/plan/base.c': ['smoke', 'agg'],
             'src/table/am.c': ['smoke', 'storage'],
             'sqlite/host/host.h': ['smoke'],
             '.github/workflows/assert.yml': [],

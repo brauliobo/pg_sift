@@ -6,7 +6,7 @@
 2. the column engine (`sift_col` index or `sift_table`) restricts each of its units to those keys, evaluates the column filters, and aggregates from columns only;
 3. visibility is the rule every SiftAgg scan has: rows that survive the filters are vetted at the end (all-visible pages pass, the others are checked in the heap).
 
-Code: `src/agg/search.[ch]` (planner extraction, cost, match-set iterator), `src/agg/sel.[ch]` (the rows of a unit a match set keeps), `src/agg/colsrc.h` (`select` provider callback), hooks in `src/agg/plan.c`, `src/agg/agg.c`, `src/agg/spec.[ch]`.
+Code: `src/agg/search.[ch]` (planner extraction, cost, match-set iterator), `src/agg/sel.[ch]` (the rows of a unit a match set keeps), `src/agg/colsrc.h` (`select` provider callback), hooks in `src/agg/plan/`, `src/agg/agg.c`, `src/agg/spec.[ch]`.
 
 ## What other engines do
 
@@ -184,10 +184,10 @@ The gain grows with the match count: the heap plan pays a heap fetch per match, 
 
 ## Code map
 
-- `src/agg/plan.c`, `plan_int.h`, `cost/model.c`: `AggCtx.search` and the call `sift_search_extract(...)` after `agg_spec_new` in `sift_agg_upper_paths`; `agg_cost` adds `sift_search_cost`; `agg_finish` copies the spec; `spec_deps` records the index dependency.
+- `src/agg/plan/`, `plan_int.h`, `cost/model.c`: `AggCtx.search` and the call `sift_search_extract(...)` after `agg_spec_new` in `sift_agg_upper_paths`; `agg_cost` adds `sift_search_cost`; `agg_finish` copies the spec; `spec_deps` records the index dependency.
 - `src/agg/spec.[ch]`: `Node *search` in `SiftAggSpec`, packed last in `custom_private` (`put_node`/`get_node`).
 - `src/agg/agg.c`: open/close of the match set in `engine_open/close`, EXPLAIN lines; `src/agg/par.c`: chunking in `scan_range`, worker counters.
 - `src/agg/colsrc.h`, `src/agg/colsrc.c`, `src/agg/col.c`, `src/agg/col_read.c`: the optional `select` provider callback, and for top-N the `tids`, `zone` and `read_rows` ops (`SiftSrcZone`).
-- Top-N: `src/agg/plan.c`, `plan_order.c`, `cost/model.c` (`spec_finish` split out of `agg_finish`, `topn_paths`, the `UPPERREL_ORDERED` dispatch, heap-fetch and correlation terms in `agg_cost`), `src/agg/spec.[ch]` (`topn`, `desc_topn`), `src/agg/agg.c` (`topn_run`/`topn_next`, `engine_open/close`, EXPLAIN, GUC `sift.enable_topn`), `src/agg/unit.c` (`topn_unit`, hooks in `process_unit`), `src/col/codec.c` (`sift_cc_decode_sel` goes dense earlier for delta-coded nodes), `src/col/enc.[ch]`, `src/col/scan*.c`, `src/col/col.h` (`sift_cunit_row_keys`, `sift_col_row_tids`).
+- Top-N: `src/agg/plan/`, `plan_order.c`, `cost/model.c` (`spec_finish` split out of `agg_finish`, `topn_paths`, the `UPPERREL_ORDERED` dispatch, heap-fetch and correlation terms in `agg_cost`), `src/agg/spec.[ch]` (`topn`, `desc_topn`), `src/agg/agg.c` (`topn_run`/`topn_next`, `engine_open/close`, EXPLAIN, GUC `sift.enable_topn`), `src/agg/unit.c` (`topn_unit`, hooks in `process_unit`), `src/col/codec.c` (`sift_cc_decode_sel` goes dense earlier for delta-coded nodes), `src/col/enc.[ch]`, `src/col/scan*.c`, `src/col/col.h` (`sift_cunit_row_keys`, `sift_col_row_tids`).
 - `src/col/scan*.c`, `enc.[ch]`, `col.h`: `sift_col_filter_tids` (match-driven), `sift_col_read_idx`, `sift_col_unit_allvisible`, sparse page masks, a faster `sift_col_vet`; `src/core/filter.[ch]`: `sift_filter_create/reset/add_page`.
 - BM25 side: only the existing iterator entry points (`sift_plan_bind`, `sift_iter_*`, `sift_plan_recheck`, `sift_vis_fetch`, `sift_estimate_cached`); `bm25/cscan.c`, `bm25/eval.c` and `bm25/segment.c` (BM25 segment format 2 of 3.0) are unchanged.

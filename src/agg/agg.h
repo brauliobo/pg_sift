@@ -1,7 +1,7 @@
 /*
  * agg/agg.h - SiftAgg: aggregate queries run on the column source (agg/colsrc.h) instead of the heap.
  *
- * agg/plan.c is the planner side (shape matcher in create_upper_paths_hook, cost), agg/agg.c the executor
+ * agg/plan/ is the planner side (shape matcher in create_upper_paths_hook, cost), agg/agg.c the executor
  * (Custom Scan (SiftAgg)), agg/kern*.c the vectorized operators. The query's result is the one of the plain plan:
  * a shape is matched only when every part of it is proven (docs/COL-PLAN.md).
  */
@@ -58,7 +58,7 @@ extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
 
-/* agg/plan.c: called by the upper path hook of bm25/planner.c */
+/* agg/plan/paths.c: called by the upper path hook of bm25/planner.c */
 extern void sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
 								 RelOptInfo *output_rel, void *extra);
