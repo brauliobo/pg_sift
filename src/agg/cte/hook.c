@@ -194,13 +194,13 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	if (!won && v.lifted)
 	{
 		/* the scans lost: the plan that stays is the one the planner makes without the lifted rows that priced them (its arms are the priced plan's) */
-		bool		quiet = agg_quiet_reports(true),
+		bool		was_quiet = agg_quiet_reports(true),
 					lifted;
 		double		lift;
 
 		discard_plan(v.plain_cx);
 		v.plain = plan_shared(SIFT_PLANNER_ARGS(v.stock_parse), &v.plain_cx, &lift, true, &lifted);
-		agg_quiet_reports(quiet);
+		agg_quiet_reports(was_quiet);
 	}
 	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, cte_size(v.plain), v.read_rows);
 	if (!planning_second)

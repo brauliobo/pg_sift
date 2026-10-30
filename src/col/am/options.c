@@ -13,6 +13,7 @@
 #include "col/gorder.h"
 #include "col/setsum.h"
 #include "col/am/am_int.h"
+#include "core/ops.h"
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and

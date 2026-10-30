@@ -13,6 +13,7 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "col/pg.h"
+#include "col/am.h"
 #include "col/amscan/amscan_int.h"
 
 /*

@@ -344,8 +344,7 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 	{
 		const ArrCand *c = &cand[k];
 		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c->idx)->attname);
-		double		total = heap->rd_rel->reltuples,
-					elem_row,
+		double		elem_row,
 					image_row;
 		bool		alone = c->arrs.n * 100 > c->rows * ARR_DISTINCT_PCT;
 

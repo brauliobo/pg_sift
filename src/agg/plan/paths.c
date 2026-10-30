@@ -16,6 +16,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
+#include "agg/agg_int.h"
 #include "agg/rows.h"
 #include "agg/plan/int.h"
 
@@ -393,6 +394,7 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 	return planned;
 }
 
+#if PG_VERSION_NUM < 180000
 /*
  * A set without a constant key nulls it. PostgreSQL's Agg reads the key as a column of its input, found by its sort-group reference; the output of a
  * custom scan is matched by expression, and setrefs.c never swaps a bare Const for a column, so the output would keep the constant. A relabel to the
@@ -423,6 +425,7 @@ const_keys_as_columns(PlannerInfo *root, CustomScan *cs)
 			}
 	}
 }
+#endif
 
 Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
