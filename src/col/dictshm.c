@@ -29,22 +29,9 @@
 
 #include "agg/stats.h"
 #include "col/dictshm.h"
+#include "col/dictshm_int.h"
 #include "col/dsmreg.h"
 
-#define DSHM_BUCKETS	64
-#define DSHM_WAYS		8
-#define DSHM_FLIGHT		8
-/* places tried for a record before the write is given up: the ring is held by readers */
-#define DSHM_TRIES		16
-#define DSHM_MAGIC		0x44534833
-/* the names carry the layout: the control table (the directory, small) and the ring of records, which is made at the size the control table records */
-#define DSHM_NAME		"sift_col_dict_5"
-#define DSHM_RING_NAME	"sift_col_dict_ring_5"
-/* the smallest record worth sharing: under it the segment is as cheap to read */
-#define DSHM_MIN_BYTES	(128 * 1024)
-#define DSHM_WINDOW		16
-#define DSHM_HOLD		64
-#define DSHM_ALIGN		64
 
 int			sift_col_dict_shared_cache_kb = 65536;
 
@@ -55,64 +42,6 @@ int			sift_test_col_dict_shared = 0;
 #define TEST_MODE(m)	false
 #endif
 
-typedef enum
-{
-	E_FREE,
-	E_LIVE,
-	E_STALE						/* replaced by a newer record of its key, still read by the backends that pin it */
-} EntState;
-
-typedef struct DshmEnt
-{
-	uint8		state;
-	uint32		asks;			/* times it was read, by all backends: a dictionary asked often is worth its hash table and sorted order (dict.c) */
-	uint64		orows;			/* rows of top-N scans compared with its strings, by all backends and statements (SiftCDict.orows): the sorted order is worth making at DICT_ORDER_ROWS times its entries */
-	int32		pins;			/* backends reading the record in place: its bytes are not overwritten while there are any */
-	DictKey		key;
-	Size		off,
-				len;
-	uint64		tick;			/* oldest of a bucket goes when it is full */
-}			DshmEnt;
-
-typedef struct DshmFlight
-{
-	Size		off,
-				len;			/* a record being copied in: len 0 when the place is free */
-}			DshmFlight;
-
-typedef struct Dshm
-{
-	slock_t		mutex;
-	uint64		tick;
-	Size		size;			/* of the ring: what the backend that made this table took from sift.col_dict_shared_cache_kb, whatever the setting of the others */
-	bool		ring_ready;		/* the ring of records is made: a parallel worker, which cannot make it, joins it */
-	Size		head;
-	uint32		hold;			/* writes still skipped */
-	uint32		writes,
-				thrown,
-				found;			/* of the window */
-	DshmFlight	flight[DSHM_FLIGHT];
-	DshmEnt		dir[DSHM_BUCKETS * DSHM_WAYS];
-}			Dshm;
-
-/*
- * A record, the arrays 8-aligned after the header: off[n + 1], the strings, the hash slots when the flag says so (nslots, as cdict_ready makes them), the
- * codes in byte order (n). Readers use them where they lie.
- */
-typedef struct DshmHdr
-{
-	uint32		magic;
-	uint32		n;
-	uint32		nbytes;
-	uint32		flags;
-	uint32		nslots;
-	DictKey		key;			/* whose record it is: a directory entry may name a place that another record took */
-}			DshmHdr;
-
-#define F_BLOCKED	1
-#define F_SORTED	2			/* sorted is the stored order of the blocks form */
-#define F_SLOTS		4
-#define F_ORDER		8			/* sorted is there, stored or built */
 
 static Dshm *dshm;
 static char *ring;
@@ -160,7 +89,7 @@ ring_init(SIFT_DSM_INIT_ARGS)
 }
 
 /* The directory of a server that shares dictionaries (nothing at all with the setting at 0) */
-static Dshm *
+Dshm *
 dshm_get(void)
 {
 	if (sift_col_dict_shared_cache_kb <= 0 || dshm_failed)
@@ -175,7 +104,7 @@ dshm_get(void)
  * The ring of the directory s, at the size the directory records. A parallel worker, or the leader inside the parallel operation, cannot make it (the registry
  * needs a subtransaction): it joins a ring that is there, and goes without one that is not.
  */
-static bool
+bool
 ring_get(Dshm *s)
 {
 	if (ring != NULL)
@@ -209,15 +138,7 @@ sift_dictshm_join(void)
 }
 
 /* The arrays of a record: where each lies, and the size of all (a multiple of DSHM_ALIGN) */
-typedef struct Layout
-{
-	Size		bytes_at,
-				slots_at,
-				order_at,
-				total;
-}			Layout;
-
-static Layout
+Layout
 layout(uint32 n, uint32 nbytes, uint32 flags, uint32 nslots)
 {
 	Layout		l;
@@ -229,7 +150,7 @@ layout(uint32 n, uint32 nbytes, uint32 flags, uint32 nslots)
 	return l;
 }
 
-static DshmEnt *
+DshmEnt *
 bucket(Dshm *s, const DictKey *k)
 {
 	return &s->dir[(hash_bytes((const unsigned char *) k, sizeof(*k)) % DSHM_BUCKETS) * DSHM_WAYS];
@@ -372,7 +293,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
  * Takes len bytes of the ring for a record, not over the records that are pinned or being copied (under the spinlock): the next place after the head that
  * is free; the unpinned records it covers go. False when there is none.
  */
-static bool
+bool
 ring_take(Dshm *s, Size len, Size *off, int *flight)
 {
 	Size		at = s->head + len > s->size ? 0 : s->head;
@@ -493,142 +414,3 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	return slot >= 0;
 }
 
-#ifdef SIFT_TESTING
-/* The records some backend reads in place, and the pins on them (all backends) */
-void
-sift_dictshm_pinned(int64 *records, int64 *pins)
-{
-	Dshm	   *s = dshm_get();
-
-	*records = *pins = 0;
-	if (s == NULL)
-		return;
-	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < lengthof(s->dir); i++)
-		if (s->dir[i].state != E_FREE && s->dir[i].pins > 0)
-		{
-			(*records)++;
-			*pins += s->dir[i].pins;
-		}
-	SpinLockRelease(&s->mutex);
-}
-
-PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_hold);
-
-/* sift._test_col_dict_shared_hold(n): the writes the ring still skips (a ring that threw out more than was found in it skips DSHM_HOLD of them) set to n; returns what it was */
-Datum
-sift_test_col_dict_shared_hold(PG_FUNCTION_ARGS)
-{
-	Dshm	   *s = dshm_get();
-	uint32		was;
-
-	if (s == NULL)
-		PG_RETURN_NULL();
-	SpinLockAcquire(&s->mutex);
-	was = s->hold;
-	s->hold = PG_GETARG_INT32(0);
-	s->writes = s->thrown = s->found = 0;
-	SpinLockRelease(&s->mutex);
-	PG_RETURN_INT32(was);
-}
-
-PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_stale);
-
-/* 6,000 strings of 64 bytes that start with c: two such dictionaries have the same record size, and the strings tell them apart */
-static SiftCDict *
-stale_dict(char c)
-{
-	SiftCDict  *d = sift_cdict_create(CurrentMemoryContext);
-
-	for (int i = 0; i < 6000; i++)
-	{
-		char		str[65];
-
-		snprintf(str, sizeof(str), "%c%063d", c, i);
-		sift_cdict_intern(d, str, 64);
-	}
-	return d;
-}
-
-/*
- * sift._test_col_dict_shared_stale(): the two ways a reader could be handed the record of another key. A place that a writer is copying into is not given to a
- * second writer (a ring of 2.5 records refuses the third while two are being copied in), and a directory entry that names a place that holds the record of
- * another key (forged here) is a miss for the reader, which gives its pin back. Returns the first letter of the dictionary the reader of the first key gets,
- * NULL when it gets none. The ring is made small for the test and put back, empty.
- */
-Datum
-sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
-{
-	Dshm	   *s = dshm_get();
-	DictKey		ka,
-				kc;
-	SiftCDict  *dc = stale_dict('c'),
-			   *got;
-	Size		len = layout(dc->n, dc->nbytes, dc->slots != NULL && ((Size) dc->n + 1) * 2 <= dc->nslots ? F_SLOTS : 0, dc->nslots).total,
-				size,
-				off[3];
-	int			flight[3];
-	int64		records,
-				npins;
-	bool		third,
-				wrote,
-				ready;
-	char		res[2] = {0, 0};
-
-	if (s == NULL)
-		PG_RETURN_NULL();
-	/* the ring is made at the size of the directory before the test makes the directory believe in a small one */
-	ready = ring_get(s);
-	SIFT_INVARIANT(ready, "the ring of the shared dictionaries is not there");
-	memset(&ka, 0, sizeof(ka));
-	kc = ka;
-	ka.gen = 1;
-	kc.gen = 2;
-	SpinLockAcquire(&s->mutex);
-	size = s->size;
-	s->size = len * 5 / 2;
-	s->head = 0;
-	s->hold = 0;
-	for (int i = 0; i < lengthof(s->dir); i++)
-		s->dir[i].state = E_FREE;
-	ring_take(s, len, &off[0], &flight[0]);
-	ring_take(s, len, &off[1], &flight[1]);
-	third = ring_take(s, len, &off[2], &flight[2]);
-	s->flight[flight[0]].len = s->flight[flight[1]].len = 0;
-	s->head = 0;
-	SpinLockRelease(&s->mutex);
-	SIFT_INVARIANT(!third && off[0] != off[1], "a place being copied into was given to another writer: %zu, %zu", off[0], off[1]);
-
-	wrote = sift_dictshm_write(&kc, dc);
-	SIFT_INVARIANT(wrote, "the record of the test was not written");
-	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < lengthof(s->dir); i++)
-		if (s->dir[i].state == E_LIVE)
-		{
-			DshmEnt    *b = bucket(s, &ka);
-
-			b[0] = s->dir[i];
-			b[0].key = ka;
-			break;
-		}
-	SpinLockRelease(&s->mutex);
-	got = sift_dictshm_read(&ka, CurrentMemoryContext);
-	if (got != NULL)
-		res[0] = got->bytes[got->off[0]];
-	else
-	{
-		sift_dictshm_pinned(&records, &npins);
-		SIFT_INVARIANT(npins == 0, "the reader of a stale entry kept its pin: %ld", (long) npins);
-	}
-
-	SpinLockAcquire(&s->mutex);
-	s->size = size;
-	s->head = 0;
-	for (int i = 0; i < lengthof(s->dir); i++)
-		s->dir[i].state = E_FREE;
-	SpinLockRelease(&s->mutex);
-	if (got == NULL)
-		PG_RETURN_NULL();
-	PG_RETURN_TEXT_P(cstring_to_text(res));
-}
-#endif

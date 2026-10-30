@@ -6,3 +6,5 @@ src/col/scan/	src/col/scan.c	scan_
 src/col/test/	src/col/test.c	ctest_
 src/col/seg_write/	src/col/seg_write.c	segw_
 src/col/seg/	src/col/seg.c	seg_
+src/table/funcs_test.c	src/table/funcs.c	
+src/col/dictshm_test.c	src/col/dictshm.c	
