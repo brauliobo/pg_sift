@@ -84,6 +84,24 @@ typedef struct RecFunc
 	RangeTblFunction *f;
 } RecFunc;
 
+/* The values a comparison or IN list keeps, as the executor reads them (prune_init): the range [lo, hi] and, for a set, its sorted values */
+typedef struct ZoneRange
+{
+	int64		lo;
+	int64		hi;
+	int			nvals;
+	int64	   *vals;
+} ZoneRange;
+
+/* the range of a predicate node, as the planner read it (zone_range): the constants of a 50,000-key list are read once for the dozen times the plan is priced */
+typedef struct AggRangeMemo
+{
+	const SiftAggPred *p;
+	bool		ok;
+	bool		sorted;
+	ZoneRange	r;
+} AggRangeMemo;
+
 typedef struct AggZoneMemo
 {
 	int			leaf;
@@ -158,6 +176,8 @@ typedef struct AggCtx
 	SiftSrcStats stats;
 	AggZoneMemo zone_memo[4];	/* zone_keys_kept's last answers */
 	int			nzone_memo;
+	AggRangeMemo range_memo[4];	/* zone_range's last answers */
+	int			nrange_memo;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
 	double		having_sel;		/* the share of the groups a HAVING clause keeps, as PostgreSQL's estimate has it (0 without one): the rows the path reports to the plan above */

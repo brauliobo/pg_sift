@@ -14,15 +14,6 @@
 #include "agg/plan_int.h"
 #include "core/cmp.h"
 
-/* The values a comparison or IN list keeps, as the executor reads them (prune_init): the range [lo, hi] and, for a set, its sorted values */
-typedef struct ZoneRange
-{
-	int64		lo;
-	int64		hi;
-	int			nvals;
-	int64	   *vals;
-} ZoneRange;
-
 /* the constants of an array operand: the elements of a Const array, or of an ArrayExpr whose elements are all Consts */
 static bool
 array_consts(Node *e, Oid elemtype, Datum **vals, bool **nulls, int *n)
@@ -59,7 +50,7 @@ array_consts(Node *e, Oid elemtype, Datum **vals, bool **nulls, int *n)
 
 /* The range of the values a conjunct of a unit's zone keeps, from its operand's value at plan time; false when the operand is not a constant (a parameter of a generic plan) or the leaf is not an integer; the values of a set are sorted (and kept) only when the zones are tested: its price needs the count and the span, which the 50,000 keys of a list would sort for each of the dozen times it is priced */
 static bool
-zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
+zone_range_read(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
 {
 	Node	   *e = estimate_expression_value(c->root, (Node *) p->expr);
 	const SiftSrcLeaf *lf = &c->lay->leaf[p->leaf];
@@ -119,6 +110,25 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
 		r->nvals = nv;
 		return true;
 	}
+}
+
+static bool
+zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
+{
+	AggRangeMemo *m;
+
+	for (int i = 0; i < c->nrange_memo; i++)
+		if (c->range_memo[i].p == p && (c->range_memo[i].sorted || !sorted))
+		{
+			*r = c->range_memo[i].r;
+			return c->range_memo[i].ok;
+		}
+	m = &c->range_memo[c->nrange_memo < lengthof(c->range_memo) ? c->nrange_memo++ : 0];
+	m->p = p;
+	m->sorted = sorted;
+	m->ok = zone_range_read(c, p, &m->r, sorted);
+	*r = m->r;
+	return m->ok;
 }
 
 /*
