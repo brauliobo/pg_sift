@@ -72,4 +72,37 @@ extern void wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec
 extern int	tbl_set_wide(void *impl, const SiftSrcWideTest *t, int nt);
 extern bool tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
 
-#endif							/* SIFT_TBL_SRC_INT_H */
+
+extern void tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
+extern bool tbl_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
+extern void tbl_set_raw(void *impl, int leaf);
+extern void tbl_tolerate_ovf(void *impl, int leaf);
+extern bool tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
+extern void tbl_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
+extern void tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);
+extern void tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+extern void tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
+extern uint32 tbl_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+extern void tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
+extern void tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
+extern bool tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits);
+extern void tbl_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
+extern void tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
+extern bool tbl_vet_needed(void *impl, const SiftSrcUnit *unit);
+extern void tbl_counters(const void *impl, SiftSrcCounters *c);
+extern void tbl_preagg(Relation rel, SiftSrcPreagg *pa);
+extern bool tbl_unit_exact(void *impl, const SiftSrcUnit *unit);
+extern bool tbl_whole(void *impl, int leaf, const int *meas, int nmeas);
+extern uint32 tbl_super_span(void *impl);
+extern void tbl_split(void *impl, const SiftSrcUnit *unit);
+extern bool tbl_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
+extern bool tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+extern uint32 tbl_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list);
+extern bool tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h);
+extern bool tbl_unit_rollup_miss(void *impl, const SiftSrcUnit *unit);
+extern bool tbl_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p);
+extern bool tbl_run_info(void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
+extern int tbl_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
+extern void tbl_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
+
+#endif
