@@ -20,8 +20,15 @@ typedef struct InlineCte
 {
 	const char *name;
 	Query	   *body;
-	int			levelsup;
 } InlineCte;
+
+/* the single-reference CTEs of one WITH, and how many query levels the walk is below it */
+typedef struct InlineSet
+{
+	InlineCte  *cte;
+	int			n;
+	int			levelsup;
+} InlineSet;
 
 static bool
 volatile_fn(Oid funcid, void *context)
@@ -46,41 +53,49 @@ dml_or_volatile(Node *n, void *context)
 	return expression_tree_walker(n, dml_or_volatile, context);
 }
 
-/* the reads of the CTE become the sub-select (inline_cte of PostgreSQL: the one reference takes the body, the outer references of it a level up) */
+/* the reads of the CTEs become their sub-selects (inline_cte of PostgreSQL: the one reference takes the body, the outer references of it a level up) */
 static bool
-inline_walker(Node *n, InlineCte *c)
+inline_walker(Node *n, InlineSet *set)
 {
 	if (n == NULL)
 		return false;
 	if (IsA(n, Query))
 	{
-		c->levelsup++;
+		set->levelsup++;
 		/* the entries of the range table last, or the walk would go into the body just placed in one and find the references of its own */
-		query_tree_walker((Query *) n, inline_walker, c, QTW_EXAMINE_RTES_AFTER);
-		c->levelsup--;
+		query_tree_walker((Query *) n, inline_walker, set, QTW_EXAMINE_RTES_AFTER);
+		set->levelsup--;
 		return false;
 	}
 	if (IsA(n, RangeTblEntry))
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) n;
 
-		if (rte->rtekind == RTE_CTE && rte->ctelevelsup == c->levelsup && strcmp(rte->ctename, c->name) == 0)
+		if (rte->rtekind == RTE_CTE && rte->ctelevelsup == set->levelsup)
 		{
-			if (c->levelsup > 0)
-				IncrementVarSublevelsUp((Node *) c->body, c->levelsup, 1);
-			rte->rtekind = RTE_SUBQUERY;
-			rte->subquery = c->body;
-			rte->security_barrier = false;
-			rte->ctename = NULL;
-			rte->ctelevelsup = 0;
-			rte->self_reference = false;
-			rte->coltypes = NIL;
-			rte->coltypmods = NIL;
-			rte->colcollations = NIL;
+			for (int i = 0; i < set->n; i++)
+			{
+				InlineCte  *c = &set->cte[i];
+
+				if (strcmp(rte->ctename, c->name) != 0)
+					continue;
+				if (set->levelsup > 0)
+					IncrementVarSublevelsUp((Node *) c->body, set->levelsup, 1);
+				rte->rtekind = RTE_SUBQUERY;
+				rte->subquery = c->body;
+				rte->security_barrier = false;
+				rte->ctename = NULL;
+				rte->ctelevelsup = 0;
+				rte->self_reference = false;
+				rte->coltypes = NIL;
+				rte->coltypmods = NIL;
+				rte->colcollations = NIL;
+				break;
+			}
 		}
 		return false;
 	}
-	return expression_tree_walker(n, inline_walker, c);
+	return expression_tree_walker(n, inline_walker, set);
 }
 
 static bool
@@ -92,7 +107,10 @@ inlinable(CommonTableExpr *cte)
 		!dml_or_volatile((Node *) q, NULL);
 }
 
-/* the single-reference CTEs of this query level, in the order PostgreSQL takes them; an inlined CTE leaves the list, nothing reads it */
+/*
+ * The single-reference CTEs of this query level, in the order PostgreSQL takes them; an inlined CTE leaves the list, nothing reads it. One walk of the
+ * query places them all, where PostgreSQL walks it once for each: a CTE reads the ones before it, so its body takes those first (a walk of the body alone).
+ */
 static bool
 inline_level(Node *n, void *context)
 {
@@ -102,19 +120,32 @@ inline_level(Node *n, void *context)
 	if (IsA(n, Query))
 	{
 		Query	   *q = (Query *) n;
+		InlineSet	set = {.levelsup = 0};
 
 		for (int i = 0; i < list_length(q->cteList);)
 		{
 			CommonTableExpr *cte = list_nth_node(CommonTableExpr, q->cteList, i);
-			InlineCte	c = {cte->ctename, castNode(Query, cte->ctequery), -1};
+			InlineCte	c = {cte->ctename, castNode(Query, cte->ctequery)};
 
 			if (!inlinable(cte))
 			{
 				i++;
 				continue;
 			}
+			if (set.cte == NULL)
+				set.cte = palloc(sizeof(InlineCte) * list_length(q->cteList));
+			if (set.n > 0)
+			{
+				set.levelsup = 0;
+				inline_walker((Node *) c.body, &set);
+			}
+			set.cte[set.n++] = c;
 			q->cteList = list_delete_nth_cell(q->cteList, i);
-			inline_walker((Node *) q, &c);
+		}
+		if (set.n > 0)
+		{
+			set.levelsup = -1;
+			inline_walker((Node *) q, &set);
 		}
 		return query_tree_walker(q, inline_level, context, 0);
 	}
