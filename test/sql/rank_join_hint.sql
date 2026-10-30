@@ -2,16 +2,9 @@
 -- fraction the other relations' restrictions leave, with a margin, in one search. With the limit as the hint the scan was drained past
 -- it, and every further search scored every block again (10, then 160, then 2560 hits).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
-CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Limit Hint: ' THEN RETURN substring(l from 'Limit Hint: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN 0;
-END $$;
+CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_limit_hint(q) $$;
 
 CREATE TABLE cat (id int PRIMARY KEY, region int);
 INSERT INTO cat SELECT i, i % 10 FROM generate_series(1, 200) i;
@@ -39,4 +32,5 @@ FROM (SELECT q.w, q.r,
 
 DROP FUNCTION limit_hint(text);
 DROP TABLE jd, cat;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

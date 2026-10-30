@@ -43,8 +43,7 @@ BEGIN
 END $$;
 
 -- a collation of the C library or ICU other than C, when the build has one (strcoll orders case and accents, lower() and upper() follow its ctype)
-CREATE FUNCTION tc_coll() RETURNS text LANGUAGE sql AS $$
-	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+CREATE FUNCTION tc_coll() RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.collation_for_text_order() $$;
 
 CREATE TABLE tc_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO tc_q VALUES

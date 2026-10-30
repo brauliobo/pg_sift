@@ -3,16 +3,14 @@
 -- plan as the reference (sift.enable_agg off) and the pushed one (the other plans disabled, so that it is the one planned whenever it
 -- can be), and the results are compared as sets of rows: after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 24000 rows are about 19 superblocks, enough for the lanes of a float sum to go back to the start
 CREATE TABLE cs (id serial PRIMARY KEY, store int, status text, amount numeric(10,2), placed date, memo text, pad text DEFAULT repeat('x', 1500));
 ALTER TABLE cs ALTER COLUMN pad SET STORAGE PLAIN;
-CREATE FUNCTION cs_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
-	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
-							 'thanks','wrong','size','color','cable','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
-	FROM generate_series(1, 3 + seed % 5) w $$;
+CREATE FUNCTION cs_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT sift_helpers.words_from_seed_list(seed) $$;
 INSERT INTO cs (store, status, amount, placed, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 23 = 0 THEN NULL ELSE (ARRAY['paid','shipped','delivered','cancelled'])[1 + (hashint4(i + 7) & 2147483647) % 4] END,
@@ -189,4 +187,5 @@ SELECT cs_check('SELECT note, count(*) AS n FROM cs_l WHERE memo @@> ''perfect''
 
 DROP TABLE cs_q, cs_l, cs_t, cs;
 DROP FUNCTION cs_words(int), cs_mode(bool), cs_check(text, text), cs_stat(text, text), cs_stage(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

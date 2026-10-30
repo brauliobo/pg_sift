@@ -2,6 +2,7 @@
 -- types, the repeated keys, the NULLs and the number of distinct values (the tables that find them grow), the rows of a join must be the same
 -- loaded for the query, taken from the cache and read by the normal plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
@@ -34,15 +35,7 @@ SELECT CASE WHEN i % 53 = 0 THEN NULL WHEN i % 59 = 0 THEN '' ELSE 'k' || (i % 7
 FROM generate_series(1, 9000) i;
 VACUUM (FREEZE, ANALYZE) dims;
 
-CREATE FUNCTION nodes(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; nodes int := 0; kept int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
-		IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
-	END LOOP;
-	RETURN format('%s SiftAgg nodes, %s cached tables', nodes, kept);
-END $$;
+CREATE FUNCTION nodes(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -113,4 +106,5 @@ RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET ena
 
 DROP FUNCTION nodes(text), same(text);
 DROP TABLE ev, dims;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

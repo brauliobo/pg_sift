@@ -5,13 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION sf_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
 -- the rows of the query in its order, as one document
-CREATE FUNCTION sf_rows(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
-DECLARE
-	j jsonb;
-BEGIN
-	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
-	RETURN j;
-END $$;
+CREATE FUNCTION sf_rows(q text) RETURNS jsonb LANGUAGE sql AS $$ SELECT sift_helpers.rows_as_jsonb(q) $$;
 -- the rows of the filtered query and the reference are the same ones in the same order
 CREATE FUNCTION sf_same(filtered text, ref text, OUT n int, OUT same boolean, OUT scan boolean) LANGUAGE plpgsql AS $$
 BEGIN

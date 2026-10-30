@@ -3,6 +3,7 @@
 -- rows until k pass. The document frequencies and field lengths are those of the whole index, so a visible row scores as the owner
 -- sees it. Every query returns what the superuser's full ranking, filtered by the tenant afterwards, returns (the reference).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 \set VERBOSITY terse
 
 CREATE ROLE sift_t_rr_user;
@@ -22,13 +23,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION rr_rows(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
-DECLARE
-	j jsonb;
-BEGIN
-	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
-	RETURN j;
-END $$;
+CREATE FUNCTION rr_rows(q text) RETURNS jsonb LANGUAGE sql AS $$ SELECT sift_helpers.rows_as_jsonb(q) $$;
 
 -- not leakproof, and raising for the rows nobody may see
 CREATE FUNCTION rr_boom(t text) RETURNS boolean LANGUAGE plpgsql STABLE AS $$
@@ -236,4 +231,5 @@ DROP FUNCTION rr_check(text, text), rr_set(text, text), rr_rows(text), rr_plan(t
 DROP TABLE rr_items, rr_tags, rr_grants, rr_ref, rr_a, rr_b, rr_pt, rr_pm;
 DROP OWNED BY sift_t_rr_user, sift_t_rr_owner, sift_t_rr_bypass;
 DROP ROLE sift_t_rr_user, sift_t_rr_owner, sift_t_rr_bypass;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

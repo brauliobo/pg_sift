@@ -2,6 +2,7 @@
 -- statement change the size of its request: the verdict holds only within a band of the rows its largest scan of an indexed table is expected to
 -- read. The sizes of one statement, met in any order, are planned as each is planned in full: owners <= 1 keeps the shared CTE, more take the scans.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
 INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 8000) g;
@@ -19,14 +20,7 @@ CREATE FUNCTION series_query(key_sets int) RETURNS text LANGUAGE sql AS $f$
 	b AS (SELECT r.ts, count(DISTINCT r.id) AS n, avg(o.score) AS s FROM r, jsonb_to_recordset(r.doc['parts']) AS o(cat text, score float) GROUP BY r.ts),
 	c AS (SELECT r.ts, r.set_id, count(DISTINCT r.id) AS n FROM r GROUP BY r.ts, r.set_id)
 SELECT 'a' AS src, ts, cat, s, n FROM a UNION ALL SELECT 'b', ts, NULL, s, n FROM b UNION ALL SELECT 'c', ts, set_id::text, NULL, n FROM c$q$, key_sets) $f$;
-CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes(q) $$;
 -- every size planned in full (ANALYZE drops the verdicts of the table before each)
 CREATE TABLE size_truth (key_sets int, scans int);
 DO $$
@@ -64,4 +58,5 @@ FROM (SELECT t.key_sets, t.scans FROM size_truth t, generate_series(1, 4) k ORDE
 
 DROP FUNCTION scans_of, series_query;
 DROP TABLE size_truth, events, kinds;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

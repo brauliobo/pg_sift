@@ -2,6 +2,7 @@
 -- rows, spread over every unit of the index. The scan reads those rows again from the heap and answers as the normal plan, whatever the share;
 -- the normal plan is the one the planner prefers when the rows read again cost more than it does (sift.explain_why names the slug).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -10,15 +11,7 @@ SET random_page_cost = 1000;
 
 \ir test/agg_same_helpers.sql
 
-CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE l text; n bigint := 0;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.plan_heap_rereads_forced_on(q) $$;
 
 -- items_<k>: 20,000 rows of which every k-th holds its scores as strings (k = 1000, 33 and 2 are 0.1%, 3% and 50%)
 DO $do$
@@ -64,4 +57,5 @@ DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

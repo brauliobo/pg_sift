@@ -5,19 +5,13 @@
 -- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 CREATE TABLE tcd (id int, ts timestamp, d date, tz timestamptz, cat int, amt numeric(10,2), qty int, f float8) USING sift_table;
 CREATE TABLE tcm (LIKE tcd) USING sift_table;
 CREATE TABLE tcy (LIKE tcd) USING sift_table;
-CREATE FUNCTION pm_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION pm_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -1018,5 +1012,6 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP
 
 DROP TABLE tcd, tcm, tcy, tci, tc7;
 DROP FUNCTION pm_check(text, int, int, int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
 DROP TABLE pm_q;

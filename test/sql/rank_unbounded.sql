@@ -7,6 +7,7 @@
 -- The check is the heap checks of EXPLAIN ANALYZE against the 30000 matches: a verification of each and a fetch of each
 -- row handed up make 2 per match; a search that holds a few hits makes a few hundred.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 CREATE FUNCTION heap_checks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
@@ -17,15 +18,7 @@ BEGIN
 		FROM jsonb_path_query(plan::jsonb, 'strict $.** ? (exists(@."Heap Checks"))') n), 0);
 END $$;
 
-CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Limit Hint: ' THEN RETURN substring(l from 'Limit Hint: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN 0;
-END $$;
+CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_limit_hint(q) $$;
 
 CREATE TABLE ub (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
 INSERT INTO ub SELECT i, 'common w' || i % 100 || ' x' || i % 7 FROM generate_series(1, 30000) i;
@@ -59,4 +52,5 @@ RESET plan_cache_mode;
 
 DROP FUNCTION heap_checks(text), limit_hint(text);
 DROP TABLE ub;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

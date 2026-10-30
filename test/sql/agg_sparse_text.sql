@@ -33,14 +33,7 @@ INSERT INTO s_q VALUES
  ('count without a group', 'SELECT count(*) AS n, count(DISTINCT uid) AS u, min(url) AS m FROM pg WHERE title LIKE ''%Google%'' AND url NOT LIKE ''%.google.%''');
 
 -- the scan runs (SiftAgg), and its rows are the heap's
-CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || qq LOOP
-		IF l ~ 'SiftAgg' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_regex(qq) $$;
 
 CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;

@@ -31,14 +31,7 @@ INSERT INTO s_q VALUES
  ('one row of the last word', 'SELECT i.kind, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 IN (63, 64, 127, 128, 5999, 6000) GROUP BY 1 ORDER BY 1');
 
 -- the scan runs (SiftAgg), and its rows are the heap's
-CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || qq LOOP
-		IF l ~ 'SiftAgg' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_regex(qq) $$;
 
 CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;

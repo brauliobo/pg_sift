@@ -2,6 +2,7 @@
 -- very values numeric_in gives (digits, weight and display scale), whatever the shape of the number. Every aggregate is run with the scan forced and
 -- with sift.enable_agg = off and the binary forms of the results compared.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE shapes (id serial, g int, x numeric);
 INSERT INTO shapes (g, x)
@@ -27,15 +28,7 @@ BEGIN
 	RETURN d;
 END $$;
 
-CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	SET LOCAL sift.agg_force = on;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_forced(q) $$;
 
 SELECT scanned('SELECT g, min(x), sum(x) FROM shapes GROUP BY g') AS scanned;
 SELECT differences('SELECT g, encode(numeric_send(min(x)), ''hex'') AS mn, encode(numeric_send(max(x)), ''hex'') AS mx, count(DISTINCT x) AS cd FROM shapes GROUP BY g') AS min_max_distinct;
@@ -45,4 +38,5 @@ SELECT differences('SELECT g, sum(x) FILTER (WHERE x > 0), min(x) FILTER (WHERE 
 
 DROP FUNCTION differences(text), scanned(text);
 DROP TABLE shapes;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

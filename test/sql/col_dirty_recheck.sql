@@ -3,6 +3,7 @@
 -- them (the text of the scalar through the input function of the column's type), so the scan answers, errors included, as the normal plan.
 -- Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -12,15 +13,7 @@ SET random_page_cost = 1000;
 \ir test/agg_same_helpers.sql
 
 -- the rows the scan read again from the heap
-CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE l text; n bigint := 0;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.plan_heap_rereads_forced_on(q) $$;
 
 CREATE FUNCTION rec_q(sel text, keep text DEFAULT 'true', grp text DEFAULT 'o.c') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || sel || ' FROM d_t CROSS JOIN LATERAL jsonb_to_recordset(doc -> ''parts'') AS o(c text, n int4, t text, score float8, ok bool) WHERE '
@@ -135,4 +128,5 @@ DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE d_t;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

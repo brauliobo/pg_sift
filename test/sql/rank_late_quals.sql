@@ -2,16 +2,9 @@
 -- them. It is asked instead for the hits that k rows take through the quals, and checks the quals on the rows it hands out; a
 -- search that falls short is followed by one sized from the rate at which the hits passed.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
-CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Limit Hint: ' THEN RETURN substring(l from 'Limit Hint: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN 0;
-END $$;
+CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_limit_hint(q) $$;
 
 CREATE TABLE lq (id int PRIMARY KEY, body text, cc text, n int) WITH (autovacuum_enabled = off);
 INSERT INTO lq SELECT i, 'common w' || i % 97 || ' x' || i % 7, CASE WHEN i % 1000 = 0 THEN 'rare' WHEN i % 10 = 0 THEN 'tenth' ELSE 'rest' END, i % 100
@@ -47,4 +40,5 @@ FROM (SELECT q.l, late_ids(q.w, q.c, q.l) AS got, limit_hint(format('SELECT id F
 DROP FUNCTION late_ids(text, text, int);
 DROP FUNCTION limit_hint(text);
 DROP TABLE lq;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

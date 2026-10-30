@@ -3,6 +3,7 @@
 -- pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
 -- answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use, '-': no SiftAgg).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -10,14 +11,7 @@ SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE tp (id int, g int, k text, cat int, d date, amt numeric(10,2), qty int, f float8, big bigint) USING sift_table;
 
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
 -- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
@@ -141,4 +135,5 @@ SELECT * FROM pa_check('tr', 20, 21);
 
 DROP TABLE tp, tq, tr, pa_q;
 DROP FUNCTION pa_rows, pa_units, pa_check, pa_sum;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -4,17 +4,12 @@
 -- does not name it) are written again by a merge, so that the units of the rewrite do not read every unit whose zone holds a key.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.col_auto_merge = off;
 SET max_parallel_workers_per_gather = 0;
 CREATE FUNCTION mk_opt(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce(array_to_string(reloptions, ','), '') FROM pg_class WHERE oid = idx $$;
 CREATE FUNCTION mk_held(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT held FROM sift.index_advice(idx) WHERE leaf = 'set_id' $$;
-CREATE FUNCTION mk_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION mk_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_pushdown_text(q, push) $$;
 -- clustered by set_id: about 6 owners in a unit, which the cube holds
 CREATE TABLE mk (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO mk SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(0, 29999) i;
@@ -169,4 +164,5 @@ SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
 SET client_min_messages = warning;
 DROP TABLE mk, mk2, mk3;
 DROP FUNCTION mk_opt(regclass), mk_held(regclass), mk_rows(text, bool), mk_lists(regclass), mk_units(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

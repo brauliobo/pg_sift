@@ -3,6 +3,9 @@
 -- The SQL helpers the regression tests share (test/sql). SQL only: it needs no test build of the library, so the tests that use it also run on the release library
 -- (scripts/release-library-check.sh). Never installed by a normal make install.
 
+-- The tests that run as a role without rights (row security, grants) call the helpers too
+GRANT USAGE ON SCHEMA sift_helpers TO PUBLIC;
+
 -- rows_agg: the helper that tests of test/sql defined themselves (a_rows, b_rows, chars_rows, gn_rows, j_rows, k_rows, long_rows, mk_rows, p_rows, pt_rows, top_rows, wd_rows)
 CREATE FUNCTION sift_helpers.rows_agg(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -332,4 +335,129 @@ BEGIN
 	RETURN r;
 EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+
+-- plan_siftagg_nodes: the helper that 3 tests of test/sql defined themselves (scans_of)
+CREATE FUNCTION sift_helpers.plan_siftagg_nodes(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- plan_siftagg_nodes_cached_tables: the helper that 3 tests of test/sql defined themselves (cached, nodes)
+CREATE FUNCTION sift_helpers.plan_siftagg_nodes_cached_tables(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; nodes int := 0; kept int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
+		IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
+	END LOOP;
+	RETURN format('%s SiftAgg nodes, %s cached tables', nodes, kept);
+END $$;
+
+-- rows_agg_pushdown_text: the helper that 3 tests of test/sql defined themselves (im_rows, mk_rows, ow_rows)
+CREATE FUNCTION sift_helpers.rows_agg_pushdown_text(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- agg_events_parts_arms_query: the helper that 3 tests of test/sql defined themselves (arms)
+CREATE FUNCTION sift_helpers.agg_events_parts_arms_query() RETURNS text LANGUAGE sql AS $$
+	SELECT $q$(SELECT e.id, e.parent_id, e.kind, e.ts, o.cat AS category, avg(o.score) AS score, count(*) AS n
+	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts, o.cat
+	           UNION ALL
+	           SELECT e.id, e.parent_id, e.kind, e.ts, NULL::text, avg(o.score), count(*)
+	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
+$$;
+
+-- plan_heap_rereads_forced_on: the helper that 3 tests of test/sql defined themselves (reread)
+CREATE FUNCTION sift_helpers.plan_heap_rereads_forced_on(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text; n bigint := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- plan_mentions_siftagg_regex: the helper that 3 tests of test/sql defined themselves (s_scan)
+CREATE FUNCTION sift_helpers.plan_mentions_siftagg_regex(qq text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || qq LOOP
+		IF l ~ 'SiftAgg' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- plan_mentions_siftagg_forced: the helper that 3 tests of test/sql defined themselves (scanned)
+CREATE FUNCTION sift_helpers.plan_mentions_siftagg_forced(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- rows_agg_preagg_and_pushdown: the helper that 3 tests of test/sql defined themselves (cc_rows, pa_rows, pm_rows)
+CREATE FUNCTION sift_helpers.rows_agg_preagg_and_pushdown(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- index_key_cut_reloption: the helper that 3 tests of test/sql defined themselves (kopt)
+CREATE FUNCTION sift_helpers.index_key_cut_reloption(i regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = i AND o ~ '^key_cut'), 'none') $$;
+
+-- plan_units_lines: the helper that 3 tests of test/sql defined themselves (kunits, nunits)
+CREATE FUNCTION sift_helpers.plan_units_lines(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; u text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
+	END LOOP;
+	RETURN u;
+END $$;
+
+-- words_from_seed_list: the helper that 3 tests of test/sql defined themselves (cs_words, ct_words)
+CREATE FUNCTION sift_helpers.words_from_seed_list(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
+							 'thanks','wrong','size','color','cable','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
+	FROM generate_series(1, 3 + seed % 5) w $$;
+
+-- collation_for_text_order: the helper that 3 tests of test/sql defined themselves (tb_coll, tc_coll, tx_coll)
+CREATE FUNCTION sift_helpers.collation_for_text_order() RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+
+-- plan_limit_hint: the helper that 3 tests of test/sql defined themselves (limit_hint)
+CREATE FUNCTION sift_helpers.plan_limit_hint(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Limit Hint: ' THEN RETURN substring(l from 'Limit Hint: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN 0;
+END $$;
+
+-- rows_as_jsonb: the helper that 3 tests of test/sql defined themselves (rr_rows, sf_rows, ss_rows)
+CREATE FUNCTION sift_helpers.rows_as_jsonb(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
+	RETURN j;
 END $$;

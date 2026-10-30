@@ -2,6 +2,7 @@
 -- distinct (group, value) pair, 25 ms of the leader for the 600,000 pairs of two percentiles over 300,000 rows, which the scan alone does in 70 ms.
 -- Priced at the pairs, a scan with workers costs more than the scan alone when the values are all different, and stays cheap when a column has few.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -32,16 +33,11 @@ INSERT INTO ow_q VALUES
 SELECT tag, ow_plan(q) FROM ow_q ORDER BY tag;
 
 -- the answer is the same with and without the scan
-CREATE FUNCTION ow_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION ow_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_pushdown_text(q, push) $$;
 SELECT tag, md5(ow_rows(q, true)) = md5(ow_rows(q, false)) AS same FROM ow_q ORDER BY tag;
 
 DROP FUNCTION ow_rows(text, bool);
 DROP FUNCTION ow_plan(text);
 DROP TABLE ow_q, ow;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

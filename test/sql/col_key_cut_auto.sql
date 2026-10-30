@@ -2,6 +2,7 @@
 -- an equality on it reads at least 8 times the units its rows fill (and 64 units), no other leaf follows the order of the table, and the index is wide enough for the
 -- addresses of the rows not to dominate it; key_cut = 'off' and an explicit list are never changed.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -14,8 +15,7 @@ INSERT INTO ka SELECT i, CASE WHEN random() < 0.15 THEN (random() * 100)::int EL
 FROM generate_series(1, 125000) i;
 VACUUM (FREEZE, ANALYZE) ka;
 
-CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$
-	SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = i AND o ~ '^key_cut'), 'none') $$;
+CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
 
 -- chosen: the key is scattered over the units, nothing else follows the table
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
@@ -154,4 +154,5 @@ SELECT sift.col_verify('kt_auto', true);
 DROP TABLE kt;
 DROP TABLE ka, kg, kf, ku;
 DROP FUNCTION kopt(regclass), kunits(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

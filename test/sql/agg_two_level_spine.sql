@@ -28,13 +28,7 @@ VACUUM (FREEZE, ANALYZE) buckets;
 VACUUM (FREEZE, ANALYZE) ticks;
 
 -- the arms: per row and category, and per row (a column of the table of rows can be a key of the cells)
-CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
-	SELECT $q$(SELECT e.id, e.parent_id, e.kind, e.ts, o.cat AS category, avg(o.score) AS score, count(*) AS n
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts, o.cat
-	           UNION ALL
-	           SELECT e.id, e.parent_id, e.kind, e.ts, NULL::text, avg(o.score), count(*)
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
-$$;
+CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_events_parts_arms_query() $$;
 
 -- the outer aggregates over the spine (columns kind, ts and label) joined to the arms; count(*) counts the joined rows, a row of a LEFT JOIN no cell matched included
 CREATE FUNCTION report(spine text, cond text, keys text DEFAULT 'category, sp.label', jointype text DEFAULT 'JOIN', hint text DEFAULT '') RETURNS text LANGUAGE sql AS $$

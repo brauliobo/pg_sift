@@ -3,6 +3,7 @@
 -- aggregates of the subqueries were not looked at), so the scans lost to it however much it costs: here the plan with the CTE shared reads the
 -- table twice, and the scans cost a fraction of it.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
 
@@ -13,14 +14,7 @@ CREATE INDEX sc_rows_col ON sc_rows USING sift_col (id, grp, v, doc);
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) sc_rows;
 
-CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes(q) $$;
 
 -- the scans of two scalar subqueries over the CTE, for ranges of the table
 SELECT w, scans_of(format($q$WITH r AS (SELECT * FROM sc_rows WHERE id BETWEEN 1 AND %s AND v >= 0)
@@ -29,4 +23,5 @@ FROM unnest(ARRAY[20000, 100000]) w ORDER BY w;
 
 DROP FUNCTION scans_of(text);
 DROP TABLE sc_rows;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

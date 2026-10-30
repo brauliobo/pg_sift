@@ -1,6 +1,7 @@
 -- The sum of a decimal expression of up to 38 digits is kept in 128 bits plus the number of times it wrapped: a group whose sum passes 2^127 (1.7e38) and one whose
 -- partial sums cancel out are exact, as are the average, a parallel scan and a grouped scan. Every statement runs with sift.enable_agg = off as well: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE lines (id int PRIMARY KEY, g int NOT NULL, a numeric(18, 0) NOT NULL, b numeric(18, 0) NOT NULL, c numeric(2, 0) NOT NULL, price numeric(12, 2) NOT NULL, disc numeric(12, 2) NOT NULL, tax numeric(12, 2) NOT NULL);
 INSERT INTO lines
 SELECT i, i % 4, 999999999999999999 - (i % 7), 999999999999999999 - (i % 5), CASE WHEN i % 11 = 0 THEN -99 ELSE 99 END,
@@ -24,15 +25,7 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN d;
 END $$;
-CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	SET LOCAL sift.agg_force = on;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_forced(q) $$;
 SET max_parallel_workers_per_gather = 0;
 
 SELECT scanned('SELECT g, sum(a * b * c) FROM lines GROUP BY g') AS wide_sum_scanned, scanned('SELECT sum(price * (1 - disc) * (1 + tax)) FROM lines') AS charge_scanned;
@@ -51,4 +44,5 @@ SELECT differences('SELECT sum(a * b * c) AS s, avg(a * b * c) FROM lines') AS p
 
 DROP FUNCTION differences(text), scanned(text);
 DROP TABLE lines;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

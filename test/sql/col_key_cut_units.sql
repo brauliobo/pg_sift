@@ -2,6 +2,7 @@
 -- the summaries of groups of units, so that a scan that does not use the key reads about the units of the page cut and answers from the same pre-aggregates,
 -- and a lookup of the key still reads a unit or two. Four integer columns, 1,200,000 rows in a random order of the key.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
@@ -20,13 +21,7 @@ SELECT sift.col_verify('nk_idx', true);
 -- no more than twice the units of the page cut
 SELECT (SELECT sum(units) FROM sift.col_segments('nk_idx') WHERE kind = 'immutable') <= 2 * (SELECT sum(units) FROM sift.col_segments('nu_idx') WHERE kind = 'immutable') AS units_within_twice;
 
-CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; u text := ''; BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
-	END LOOP;
-	RETURN u;
-END $$;
+CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
 
 -- whole-table sum and a group by of a column the cube holds: every unit from the pre-aggregates, in both
 SELECT 'page cut' AS index, nunits('SELECT sum(amt) FROM nu') AS sum_units UNION ALL SELECT 'key cut', nunits('SELECT sum(amt) FROM nk');
@@ -78,4 +73,5 @@ SELECT nunits('SELECT sum(amt) FROM nk') AS sum_units_after;
 
 DROP FUNCTION nunits(text);
 DROP TABLE nu, nk;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

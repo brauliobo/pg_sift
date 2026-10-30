@@ -2,6 +2,7 @@
 -- spans most of the key's dates); a smaller key keeps the units it had. The answers are those of the table (sift.enable_agg off) after updates, deletes, a promotion,
 -- a merge and a REINDEX: integers and numeric exact, float8 within rounding, NULL keys and NULL dates included.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -19,14 +20,7 @@ CREATE INDEX ks_idx ON ks USING sift_col (id, tenant_id, d, n, f) WITH (key_cut 
 CREATE INDEX ks_one ON ks USING sift_col (id, tenant_id, d, n, f) WITH (key_cut = 'tenant_id');
 SELECT sift.col_verify('ks_idx', true);
 
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; u text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
-	END LOOP;
-	RETURN u;
-END $$;
+CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
 CREATE FUNCTION kread(q text) RETURNS int LANGUAGE sql AS $$ SELECT (regexp_match(kunits(q), 'Units: (\d+) read'))[1]::int $$;
 
 -- the keys of 8,192 rows and more are cut into units of 4,096; the other keys fill the units of the key alone
@@ -88,4 +82,5 @@ SELECT sift.col_verify('ks_idx', true);
 
 DROP TABLE kq, ks;
 DROP FUNCTION kunits(text), kread(text), kuse(text), kres(bool), kwhole(bool), kcheck(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

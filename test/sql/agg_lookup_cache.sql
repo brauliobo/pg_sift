@@ -2,6 +2,7 @@
 -- the table is what it was: every page visible to all transactions (vacuumed) and not written to since. Every statement is run with the cache, with
 -- sift.agg_lookup_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the table in between.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -18,15 +19,7 @@ INSERT INTO ents SELECT i, i % 30, i % 4, 'e' || i FROM generate_series(1, 3000)
 VACUUM (FREEZE, ANALYZE) ents;
 
 -- the tables the node of an EXPLAIN ANALYZE took from an earlier query
-CREATE FUNCTION cached(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; nodes int := 0; kept int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
-		IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
-	END LOOP;
-	RETURN format('%s SiftAgg nodes, %s cached tables', nodes, kept);
-END $$;
+CREATE FUNCTION cached(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -134,4 +127,5 @@ SELECT cached('SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim
 DROP FUNCTION same(text);
 DROP FUNCTION cached(text);
 DROP TABLE ev, ents;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

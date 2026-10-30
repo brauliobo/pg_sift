@@ -10,10 +10,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE ct (id serial PRIMARY KEY, store int, status text, amount numeric(10,2), placed date, ts timestamp, seq int, f float8, memo text,
 				 pad text DEFAULT repeat('x', 1500));
 ALTER TABLE ct ALTER COLUMN pad SET STORAGE PLAIN;
-CREATE FUNCTION ct_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
-	SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
-							 'thanks','wrong','size','color','cable','wire','box','label'])[1 + (hashint4(seed * 31 + w) & 2147483647) % 20], ' ')
-	FROM generate_series(1, 3 + seed % 5) w $$;
+CREATE FUNCTION ct_words(seed int) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT sift_helpers.words_from_seed_list(seed) $$;
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 23 = 0 THEN NULL ELSE (ARRAY['paid','shipped','delivered','cancelled'])[1 + (hashint4(i + 7) & 2147483647) % 4] END,

@@ -51,8 +51,7 @@ CREATE FUNCTION tf_double_unsafe(x int) RETURNS int LANGUAGE plpgsql IMMUTABLE P
 CREATE FUNCTION tf_raise(x int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$ BEGIN IF x = 17 THEN RAISE EXCEPTION 'seventeen' USING ERRCODE = 'P0042'; END IF; RETURN x; END $$;
 CREATE FUNCTION tf_stable(x int) RETURNS int LANGUAGE plpgsql STABLE AS $$ BEGIN RETURN x; END $$;
 -- a collation of the C library or ICU other than C, when the build has one (the case of strings follows its ctype)
-CREATE FUNCTION tb_coll() RETURNS text LANGUAGE sql AS $$
-	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+CREATE FUNCTION tb_coll() RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.collation_for_text_order() $$;
 
 -- a statement with parameters, planned generic: tb_check's answer
 CREATE FUNCTION tb_check_p(q text, types text, args text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$

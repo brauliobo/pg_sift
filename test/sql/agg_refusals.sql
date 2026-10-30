@@ -2,6 +2,7 @@
 -- sift.explain_refusals on it names the first reason each candidate path (arm) gave up for, as a notice, and sift.explain_why plans a SELECT
 -- without running it and returns the same as rows. One table asserts the slug of every refusal shape; the setting changes no plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
 
@@ -39,13 +40,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
 
 -- the arms of a two level aggregate: per row and category, and per row; spine_q joins them to a spine
-CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
-	SELECT $q$(SELECT e.id, e.parent_id, e.kind, e.ts, o.cat AS category, avg(o.score) AS score, count(*) AS n
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts, o.cat
-	           UNION ALL
-	           SELECT e.id, e.parent_id, e.kind, e.ts, NULL::text, avg(o.score), count(*)
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
-$$;
+CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_events_parts_arms_query() $$;
 CREATE FUNCTION spine_q(spine text, cond text, grp text DEFAULT 'GROUP BY 1, 2') RETURNS text LANGUAGE sql AS $$
 	SELECT format('SELECT category, sp.k, avg(score) AS value FROM %s sp(k) JOIN %s ON %s %s', spine, arms(), cond, grp)
 $$;
@@ -187,4 +182,5 @@ RESET client_min_messages;
 DROP TABLE minmax_leftover;
 DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

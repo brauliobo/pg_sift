@@ -4,6 +4,7 @@
 -- re-check them, which a scan cannot: a subquery or WITH query of such a statement is planned apart, and a score read straight from the
 -- relation the statement joins is an error that says what to write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 \set VERBOSITY terse
 
 CREATE FUNCTION ss_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -17,13 +18,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION ss_rows(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
-DECLARE
-	j jsonb;
-BEGIN
-	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
-	RETURN j;
-END $$;
+CREATE FUNCTION ss_rows(q text) RETURNS jsonb LANGUAGE sql AS $$ SELECT sift_helpers.rows_as_jsonb(q) $$;
 
 -- the query and the reference return the same rows in the same order; scan: the query's plan holds the scan
 CREATE FUNCTION ss_same(q text, ref text, OUT n int, OUT same boolean, OUT scan boolean) LANGUAGE plpgsql AS $$
@@ -115,4 +110,5 @@ SELECT sift.score(ctid) FROM ss_items;
 DROP VIEW ss_scored, ss_ref;
 DROP TABLE ss_items, ss_other, ss_dst;
 DROP FUNCTION ss_same(text, text), ss_rows(text), ss_plan(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

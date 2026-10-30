@@ -2,6 +2,7 @@
 -- units by the lane when a range of its values reads at least 8 times the units its rows fill (and 64 units), no other leaf follows the order of the table, and the index does
 -- not grow; a containment test then reads the few units whose lane meets it.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
@@ -15,8 +16,7 @@ INSERT INTO kr SELECT (random() * 1000000)::int, int4range(a, a + 1 + (random() 
 FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
 VACUUM (FREEZE, ANALYZE) kr;
 
-CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$
-	SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = i AND o ~ '^key_cut'), 'none') $$;
+CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
 
 -- chosen: the start of the ranges is scattered over the units, nothing else follows the table
 CREATE INDEX kr_auto ON kr USING sift_col (id, r, ip);
@@ -105,4 +105,5 @@ SELECT leaf, decision, reason FROM sift.key_cut_decision('kp_auto');
 SELECT kept_share('SELECT count(*) FROM kp WHERE d BETWEEN 500000 AND 501000') < 0.6;
 DROP TABLE kp;
 DROP FUNCTION kopt(regclass), kept_share(text), same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -3,6 +3,7 @@
 -- rows that hold one are read again from the heap as `->>` reads them (a container as its JSON text, a key of an array or of a scalar as NULL) and the
 -- scan answers as it does for a clean column. Every query runs with and without the pushdown; the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -11,15 +12,7 @@ SET random_page_cost = 1000;
 \ir test/agg_same_helpers.sql
 \set ECHO none
 -- the rows the scan read again from the heap
-CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE l text; n bigint := 0;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.plan_heap_rereads_forced_on(q) $$;
 -- the shapes that read the path: a key, a filter (equality, NULL test, LIKE), distinct and extremes per group, a join key, the path operator
 CREATE FUNCTION t_q(where_ text) RETURNS text[] LANGUAGE sql AS $f$
 	SELECT ARRAY[
@@ -170,4 +163,5 @@ DROP FUNCTION same_costs(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE kinds, t;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

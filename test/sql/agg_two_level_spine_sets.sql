@@ -49,13 +49,7 @@ BEGIN
 END $$;
 
 -- the arms: per row and category, and per row
-CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
-	SELECT $q$(SELECT e.id, e.parent_id, e.kind, e.ts, o.cat AS category, avg(o.score) AS score, count(*) AS n
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts, o.cat
-	           UNION ALL
-	           SELECT e.id, e.parent_id, e.kind, e.ts, NULL::text, avg(o.score), count(*)
-	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
-$$;
+CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_events_parts_arms_query() $$;
 
 -- the outer aggregates by grouping sets of the columns cols (category, the kind of the arms, the label of the spine); g tells the sets apart
 CREATE FUNCTION report(spine text, cond text, sets text, jointype text DEFAULT 'JOIN', cols text DEFAULT 'category, sp.label') RETURNS text LANGUAGE sql AS $$

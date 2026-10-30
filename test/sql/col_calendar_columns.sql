@@ -4,6 +4,7 @@
 -- ways, which must give the same rows: pre-aggregates, scan of every unit (sift.agg_preagg off), the plain plan (sift.enable_agg off).
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
@@ -46,14 +47,7 @@ SELECT idx, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, cut > 0 AS
 FROM (SELECT 'cc_on' AS idx, * FROM sift._test_col_cube_damage('cc_on', 4)
       UNION ALL SELECT 'cc_all', * FROM sift._test_col_cube_damage('cc_all', 4)) d ORDER BY idx;
 
-CREATE FUNCTION cc_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION cc_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
 CREATE FUNCTION cc_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -101,4 +95,5 @@ END $$;
 SELECT * FROM cc_check() ORDER BY idx, n;
 DROP TABLE cc, cc_q;
 DROP FUNCTION cc_rows(text, bool, bool), cc_units(text), cc_check();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
