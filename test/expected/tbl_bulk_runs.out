@@ -1,0 +1,41 @@
+-- A bulk load writes a run of superblocks as one segment: each segment repeats the dictionaries of its columns, so the table is smaller the fewer
+-- segments a load leaves. Rows of about 330 bytes are 6500 to a write buffer of 2 MB: 40000 rows are one run, one segment; 100000 rows need more.
+CREATE EXTENSION pg_sift;
+SET sift.table_write_buffer_limit = 2048;
+CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 300, '0') AS pad FROM generate_series(1, 100000) g;
+CREATE FUNCTION same_rows(a regclass, b regclass) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE r boolean;
+BEGIN
+	EXECUTE format('SELECT (SELECT md5(string_agg(a::text, $q$,$q$ ORDER BY id)) FROM %1$s a) = (SELECT md5(string_agg(b::text, $q$,$q$ ORDER BY id)) FROM %2$s b)', a, b) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE small USING sift_table AS SELECT * FROM twin WHERE id <= 40000;
+CREATE TABLE small_twin AS SELECT * FROM twin WHERE id <= 40000;
+SELECT count(*) AS segments FROM sift.table_segments('small') WHERE kind = 'columns';
+ segments 
+----------
+        1
+(1 row)
+
+SELECT same_rows('small', 'small_twin');
+ same_rows 
+-----------
+ t
+(1 row)
+
+CREATE TABLE big USING sift_table AS SELECT * FROM twin;
+SELECT count(*) > 1 AS several FROM sift.table_segments('big') WHERE kind = 'columns';
+ several 
+---------
+ t
+(1 row)
+
+SELECT same_rows('big', 'twin');
+ same_rows 
+-----------
+ t
+(1 row)
+
+DROP TABLE small, small_twin, big, twin;
+DROP FUNCTION same_rows(regclass, regclass);
+DROP EXTENSION pg_sift;

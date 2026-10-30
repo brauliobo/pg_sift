@@ -125,14 +125,14 @@ sift_tbl_bulk_refusal(Relation rel)
 
 /*
  * A load takes whole superblocks of TIDs (a group owns its superblocks), LOAD_SBS at a time: its rows are encoded one superblock per unit and
- * the units of a run become one group, published when the run is full, so a load adds a directory entry about every 300,000 rows and the
+ * the units of a run become one group, published when the run is full, so a load adds a directory entry every few hundred thousand rows and the
  * merges of the writers keep the directory as they do for the groups of the promotions. The rows wait in the backend, in the batches of the
  * run (a write buffer's bytes each), until the run is full; the units are then written and the group published in one go, under the lock
  * that serializes the creations of segments (what the orphan sweep of a VACUUM waits for: the blocks written are in no directory until then).
  * The rows past the last full run are written when the command ends (finish_bulk_insert), or at the latest before the transaction commits,
  * so a row never outlives its transaction in memory.
  */
-#define LOAD_SBS		4
+#define LOAD_SBS		8
 #define LOAD_SB_ROWS	((uint64) SIFT_TBL_VBLOCKS_SB * SIFT_TBL_MAX_OFF)
 
 typedef struct Load

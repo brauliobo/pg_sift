@@ -31,7 +31,7 @@ TRUNCATE t;
 SET sift.table_bulk_groups = on;
 BEGIN;
 COPY t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
-SELECT load_path('t'), count(*) FILTER (WHERE unfrozen) > 0 AS carry_their_writer, count(*) FILTER (WHERE kind = 'columns') > 1 AS several FROM sift.table_segments('t');
+SELECT load_path('t'), count(*) FILTER (WHERE unfrozen) > 0 AS carry_their_writer FROM sift.table_segments('t');
 SELECT digest('t') = digest('twin') AS same_rows, count(*) = count(DISTINCT ctid) AS tids_unique FROM t;
 COMMIT;
 SELECT digest('t') = digest('twin') AS same_rows_after_commit;
