@@ -24,7 +24,7 @@ The MariaDB host (same C-library shim) syntax-checks all of them with its flags.
 PostgreSQL-bound, and staying so:
 
 - the page/buffer store behind `core/store.h` (PG: `core/store.c`, buffer manager, generic WAL; SQLite implements the same interface in `sqlite/store.c` over a BLOB table);
-- MVCC (visibility map, `Snapshot`, heap rechecks: `col/scan.c`, the `SiftColVisibility` callbacks) and write buffer lanes and WAL (`col/wbuf.c`);
+- MVCC (visibility map, `Snapshot`, heap rechecks: `col/scan/scan.c`, the `SiftColVisibility` callbacks) and write buffer lanes and WAL (`col/wbuf.c`);
 - index AM/build/maintenance/verify (`col/am.c`, `col/build.c`, `col/maint/maint.c`, `col/verify.c`, 2.5k lines) and the jsonb driver (`col/shred_pg.c`);
 - planner and custom scan (`agg/*.c`, 12k lines, `docs/COL-PLAN.md`) and the table AM (`table/*.c`, 5.6k lines, `docs/COL-TAM.md`).
 

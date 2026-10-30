@@ -431,7 +431,7 @@ extern int64 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback c
 extern uint64 sift_cseg_verify(SiftColSegment *seg);
 
 /*
- * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/scan.c): dir is the caller's directory copy (no snapshot is
+ * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/scan/scan.c): dir is the caller's directory copy (no snapshot is
  * registered, the caller keeps its own for as long as the source lives), only segments written for schema are read, the visibility is the
  * table's (vis), heap_sbs the superblocks of the table now. No write buffers: the table feeds its delta rows with sift_col_add_batches.
  */

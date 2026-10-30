@@ -95,7 +95,7 @@ zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
 
 /*
  * The share of the units the point directory of a leaf leaves for a list of `keys` of its nd distinct values: the rows it lists (keys x the rows of a key)
- * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/scan.c), and one without is not. A list the directory does not
+ * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/scan/scan.c), and one without is not. A list the directory does not
  * answer (col/point.h: too many keys or rows) or a leaf without one keeps every unit. SiftColSource asks the directory of each segment; the units of one
  * that has none stay, as the share of the units that have one says (point_cover).
  */

@@ -1,7 +1,7 @@
 /*
  * col/widescan.c - predicates and reads of the wide leaves: a wide integer of two INT lanes is compared as a
  * pair of keys, (lane 0, lane 1) in turn, which the column source builds out of ordinary tests of the lanes. Only the public API of the source
- * and the kernel table are used; col/scan.c and col/scan_filter.c call into this file from sift_col_begin and sift_col_filter.
+ * and the kernel table are used; col/scan/scan.c and col/scan_filter.c call into this file from sift_col_begin and sift_col_filter.
  */
 #include "postgres.h"
 

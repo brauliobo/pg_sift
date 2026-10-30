@@ -132,7 +132,7 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
 | P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
 | P4-2 | core/varint.h:sift_get_varint64_n, bm25/pos.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
-| P4-3 | col/unit.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2: done for `sift_cunit_chunk`); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
+| P4-3 | col/unit.c:sift_cunit_chunk; col/seg.c:sift_cseg_unit_fill; col/scan/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2: done for `sift_cunit_chunk`); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 
 Also: extend sift.verify (src/bm25/segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: bm25/docdir.c, core/lane.c, rest of bm25/wbuf.c, bm25/cscan.c, sift_cscan consumers.

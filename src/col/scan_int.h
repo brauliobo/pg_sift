@@ -1,5 +1,5 @@
 /*
- * col/scan_int.h - shared between the files of the column source (col/scan.c, col/scan_unit.c, col/scan_filter.c, col/scan_read.c).
+ * col/scan_int.h - shared between the files of the column source (col/scan/scan.c, col/scan_unit.c, col/scan_filter.c, col/scan_read.c).
  */
 #ifndef SIFT_COL_SCAN_INT_H
 #define SIFT_COL_SCAN_INT_H
@@ -312,8 +312,26 @@ unit_clean(ColUnit *cu)
 	return cu->clean;
 }
 
-
 /* col/delta.c */
 extern bool unit_pages_allvisible(ColUnit *cu);
+
+/* The units a begin reads, [ulo, uhi), and the bits of those that a small-set summary cleared */
+typedef struct PruneRange
+{
+	uint32		ulo;
+	uint32		uhi;
+	uint64	   *setcut;
+	ColCursor  *top;			/* the cursor of the segment, for the predicates that all rows must pass (not those of an OR): a point directory may answer one */
+} PruneRange;
+
+extern void	scan_load_wbuf(SiftColSource *src);
+extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
+extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
+extern bool	scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep);
+extern bool	scan_prune_places(SiftColSource *src, ColCursor *c, int i, int col, const SiftColPred *p, uint64 *keep);
+extern bool	scan_prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep);
+extern bool	scan_keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones);
+extern void	scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached);
+extern void	scan_ptid_merge_runs(SiftKey *a, uint32 n);
 
 #endif
