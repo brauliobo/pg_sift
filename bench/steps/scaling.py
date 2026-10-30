@@ -20,6 +20,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import json  # noqa: E402
+import meter  # noqa: E402  (steps/meter.py: the CPU of the server's process tree)
 import pgq  # noqa: E402  (steps/pgq.py)
 import extras  # noqa: E402
 
@@ -55,6 +57,27 @@ def plan_of(db, gucs, stmt):
     return 'SiftAgg' if 'SiftAgg' in text else 'Index Scan' if 'Index Scan' in text else 'Seq Scan' if 'Seq Scan' in text else 'other'
 
 
+def server_pid(db):
+    """the postmaster of the cluster behind `db`: its processes, the parallel workers too, are the CPU of a statement"""
+    return meter.postmaster(psql(db, ['show data_directory'], False)[1].strip())
+
+
+def idle_cpu(db, pid, runs=5):
+    """CPU ms of an empty session (connect, `select 1`, quit): what every timed run pays besides its statement"""
+    spent = []
+    for _ in range(runs):
+        c0 = meter.cpu_ms(pid)
+        psql(db, ['select 1'], False)
+        spent.append(meter.cpu_ms(pid) - c0)
+    return statistics.median(spent)
+
+
+def read_mb(db, gucs, stmt):
+    """MB the buffers of the statement hit and read (EXPLAIN (ANALYZE, BUFFERS), the plan's top node: its children and workers included)"""
+    top = json.loads(psql(db, gucs + ['EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + stmt], False)[1])[0]['Plan']
+    return (top['Shared Hit Blocks'] + top['Shared Read Blocks']) * 8192 / 2**20
+
+
 def cells(case, workers, rows):
     """[(case, arm, gucs, statement)]: the two arms of every question at one setting"""
     par = f'set max_parallel_workers_per_gather = {workers}'
@@ -67,6 +90,8 @@ def time_cells(db, cs, reps, rows):
     for c in cs:   # the untimed run of each cell; the result of the normal plan (the first arm of a question) is the reference
         ref.setdefault(c[1][:3], sorted(psql(db, c[2] + [c[3]], False)[1].splitlines()))
     times, ok, loads = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): True for c in cs}, {(c[0], c[1]): [] for c in cs}
+    cpus, mbs, pid = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): read_mb(db, c[2], c[3]) for c in cs}, server_pid(db)
+    idle = idle_cpu(db, pid)
     with open(LOCK, 'a') as lock:
         print('scaling: waiting for %s' % LOCK, file=sys.stderr)
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -75,17 +100,23 @@ def time_cells(db, cs, reps, rows):
             order = cs[:]
             random.Random(rep).shuffle(order)
             for case, arm, gucs, stmt in order:
+                c0 = meter.cpu_ms(pid)
                 ms, out = psql(db, gucs + [stmt])
+                cpu = meter.cpu_ms(pid) - c0 - idle
                 loads[(case, arm)].append(float(open('/proc/loadavg').read().split()[0]))
                 if rep:
                     times[(case, arm)].append(ms)
+                    cpus[(case, arm)].append(max(cpu, 0.0))
                 ok[(case, arm)] &= sorted(out.splitlines()) == ref[arm[:3]]
     for case, arm, _, _ in cs:
         t = times[(case, arm)]
         note = plans[(case, arm)] + ('' if ok[(case, arm)] else ' RESULT DIFFERS')
         rows.append(dict(case=case, arm=arm, metric='median_ms', value='%.2f' % statistics.median(t), min='%.2f' % min(t), max='%.2f' % max(t), n=str(len(t)),
                          load='%.2f' % statistics.mean(loads[(case, arm)]), note=note))
-        print('%-16s %-10s %9s ms  %s' % (case, arm, rows[-1]['value'], note), file=sys.stderr)
+        c = cpus[(case, arm)]
+        rows.append(dict(case=case, arm=arm, metric='cpu_ms', value='%.2f' % statistics.median(c), min='%.2f' % min(c), max='%.2f' % max(c), n=str(len(c)), load=rows[-1]['load'], note='the processes of the server, net of an empty session'))
+        rows.append(dict(case=case, arm=arm, metric='read_mb', value='%.3f' % mbs[(case, arm)], min='%.3f' % mbs[(case, arm)], max='%.3f' % mbs[(case, arm)], n='1', load=rows[-1]['load'], note='buffers hit and read'))
+        print('%-16s %-10s %9s ms  %s' % (case, arm, rows[-3]['value'], note), file=sys.stderr)
 
 
 def run(a):

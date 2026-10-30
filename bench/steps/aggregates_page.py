@@ -148,21 +148,32 @@ def rows_tables(results):
 
 def dim_table(results, dim, label):
     meta, rows = store_charts.read_tsv(os.path.join(results, 'scaling.tsv'))
-    rows = [r for r in rows if r['case'].startswith(dim + ' ') and r['metric'] == 'median_ms']
+    every = [r for r in rows if r['case'].startswith(dim + ' ')]
+    rows = [r for r in every if r['metric'] == 'median_ms']
     xs = sorted({int(r['case'].split()[1]) for r in rows})
     qs = sorted({r['arm'].split('_')[0] for r in rows}, key=store_charts.QUESTIONS.index)
     get = lambda x, arm: next((float(r['value']) for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == arm), None)
     plain = lambda x, arm: arm.endswith('_sift') and arm != 'point-lookup_sift' and next((r['note'] for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == arm), 'SiftAgg').split()[0] != 'SiftAgg'
-    cell = lambda x, q, sid: ms(get(x, f'{q}_{sid}')) + (' †' if plain(x, f'{q}_{sid}') else '')
-    head = [label] + [f'{q}: {s}' for q in qs for s in ('PostgreSQL', 'pg_sift')]
-    body = [[f'{x:,}'] + [cell(x, q, sid) for q in qs for sid in ('pg', 'sift')] for x in xs]
+    def fig(x, arm):
+        t = get(x, arm)
+        other = lambda metric: next((float(r['value']) for r in every if r['case'] == f'{dim} {x}' and r['arm'] == arm and r['metric'] == metric), triple.NA(triple.NOT_MEASURED))
+        return None if t is None else (t, other('cpu_ms'), other('read_mb'))
+
+    def cell(x, key):
+        q, sid = key
+        f, mine = fig(x, f'{q}_{sid}'), fig(x, f'{q}_sift')
+        ts = [t for t in (get(x, f'{q}_pg'), get(x, f'{q}_sift')) if t is not None]
+        return triple.cell(f, None if sid == 'sift' else mine, bold=f is not None and f[0] <= min(ts) * (1 + triple.TIE)) + (' †' if plain(x, f'{q}_{sid}') else '')
+
+    body = mdtable.tables([f'{x:,}' for x in xs], [(f'**{q}**', [((q, sid), name) for sid, name in (('sift', 'pg_sift'), ('pg', 'PostgreSQL'))]) for q in qs], lambda r, key: cell(int(r.replace(',', '')), key), max_cols=2, first=label)
+    shown = [f for x in xs for q in qs for sid in ('pg', 'sift') if (f := fig(x, f'{q}_{sid}'))]
     bad = [f'{r["case"]} {r["arm"]}' for r in rows if 'DIFFERS' in r['note']]
     agg = [q for q in qs if q != 'point-lookup']
     behind = [x for x in xs if any(get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05 for q in agg)]
     ahead = [x for x in xs if x not in behind]
     take = (f'**Takeaway:** pg_sift is faster than PostgreSQL on {", ".join(agg)} at {ahead[0]:,} to {ahead[-1]:,} {label}' if ahead else '**Takeaway:** pg_sift is not faster than PostgreSQL at any value here')
     take += (f'; at {", ".join(f"{x:,}" for x in behind)} {label} it is slower on ' + ', '.join(f'{q} ({ms(get(x, f"{q}_sift"))} against {ms(get(x, f"{q}_pg"))} ms)' for x in behind[-1:] for q in agg if get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05) if behind else '') + '.'
-    return [f'{int(meta["orders"]):,} orders of the orders benchmark ({meta.get("date", "?")}, {meta.get("cpu", "?")}, {meta.get("postgresql", "?")}, pg_sift {meta.get("sift", "?")}), one client, `psql \\timing` with planning, median of {rows[0]["n"]} runs in milliseconds.', ''] + md(head, body) + ['', take, '', '**Caveats**', '',
+    return [f'{int(meta["orders"]):,} orders of the orders benchmark ({meta.get("date", "?")}, {meta.get("cpu", "?")}, {meta.get("postgresql", "?")}, pg_sift {meta.get("sift", "?")}), one client, `psql \\timing` with planning, median of {rows[0]["n"]} runs; a cell is milliseconds (with planning) · CPU milliseconds of the server\'s processes, net of an empty session · MB of buffers hit and read.', ''] + body + [''] + triple.legend(shown, 'MB of buffers') + ['', take, '', '**Caveats**', '',
             ] + (['- † the planner kept the normal plan on the pg_sift arm (no `SiftAgg` node), so the cell is the same plan as PostgreSQL\'s.'] if any(plain(x, f'{q}_sift') for x in xs for q in qs) else []) + [
             '- point-lookup (a lookup by id) is pruned to one partition and uses the primary key in both arms.'] + ([f'- RESULT DIFFERS: {", ".join(bad)}.'] if bad else []) + [
             '- A scratch cluster on a shared host with 4 CPUs (`bench/bench scaling`), ' + ('2 parallel workers per query' if dim == 'partitions' else 'one plain table') + '; every pg_sift result was compared with the normal plan\'s.', '',
