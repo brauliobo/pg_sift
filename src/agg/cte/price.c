@@ -286,7 +286,7 @@ unnests(PlannedStmt *stmt, Plan *plan)
 /*
  * The aggregate of the shared plan that unnests the rows of a CTE is priced for the rows PostgreSQL expects of it, which fall to a default (a
  * row, the 100 rows of a function) where the scans of the inline plan read tens of thousands: the plan that keeps the CTE has to produce them.
- * The square root of the excess is charged, as input_rows_ratio charges the arm a scan compares with (agg/plan_cost.c). An aggregate that
+ * The square root of the excess is charged, as input_rows_ratio charges the arm a scan compares with (agg/cost/zone.c). An aggregate that
  * does not unnest keeps its estimate, which the statistics of its tables count.
  */
 static double

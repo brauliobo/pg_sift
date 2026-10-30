@@ -666,7 +666,7 @@ extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *la
 extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi);
 extern bool sift_aggspec_plain(const SiftAggSpec *s);
 
-/* agg/plan_cost.c: does a predicate test the leaf; is every reader of a numeric leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum) */
+/* agg/cost/leaf.c: does a predicate test the leaf; is every reader of a numeric leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum) */
 extern bool pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values);
 extern bool combo_wsum_only(const SiftAggSpec *s, int ci);
 extern bool leaf_wsum_only(const SiftAggSpec *s, int leaf);
@@ -770,7 +770,7 @@ extern void sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *l
 extern double sift_agg_rollup_cost;
 extern PGDLLIMPORT bool sift_agg_preagg_distinct;	/* sift.agg_preagg_distinct */
 extern Datum sift_approx_trans(struct FunctionCallInfoBaseData *fcinfo);	/* agg/approx.c: the transition function of sift.approx_count_distinct */
-#define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
+#define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (agg/cost/model.h) */
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
 /* The leaf of a numeric program that is `leaf * mul + add` (a lone leaf, or int8 arithmetic with a constant that ends in the range-checked cast), -1 if it is more */

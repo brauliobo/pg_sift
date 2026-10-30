@@ -15,7 +15,7 @@ extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_force;
 
 /*
- * agg/plan_cost.c: does probing the keys of a dependent lookup in a btree of the table cost less than reading its pages (the loader's rule and the price's), and the rows a key has
+ * agg/cost/join.c: does probing the keys of a dependent lookup in a btree of the table cost less than reading its pages (the loader's rule and the price's), and the rows a key has
  * (the table's rows over the distinct values of the column by its statistics; 0: unknown)
  */
 extern void sift_agg_walks_forget(void);

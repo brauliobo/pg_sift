@@ -865,7 +865,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	 */
 	lists = sqrt(lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c));
 	c->path_rows = lists > 1.0 ? Min(set_groups(c, root, s, keys, input_rel->rows * lists, true), s->est_groups + AGG_LIFT_GROUPS) : 0;
-	/* the floor PostgreSQL gives an unnest over a lookup it cannot count is not the groups of the table's elements (plan_cost.c) */
+	/* the floor PostgreSQL gives an unnest over a lookup it cannot count is not the groups of the table's elements (agg/cost/model.c) */
 	c->path_rows = Max(c->path_rows, tuple_group_count(c, s, input_rel));
 	if (c->search)
 		s->search = c->search->spec;

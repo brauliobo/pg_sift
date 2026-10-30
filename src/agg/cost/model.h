@@ -1,5 +1,5 @@
 /*
- * agg/cost_model.h - the constants of the cost model of the aggregate scan, in one place (agg_cost in agg/plan_cost.c prices a scan with them).
+ * agg/cost/model.h - the constants of the cost model of the aggregate scan, in one place (agg_cost in agg/cost/model.c prices a scan with them).
  *
  * Unless the comment of a constant says otherwise, a value is in operators: units of cpu_operator_cost, about AGG_OP_NS nanoseconds each, which
  * AGG_SCAN_SPEED scales to what the scan really spends. A comment that gives measured figures keeps them with the constant they calibrate.
@@ -139,5 +139,8 @@
 #define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
+
+/* a tuple of a bucket key: the number of its step, the lookup of the id */
+#define AGG_BUCKET_ROW		3.0
 
 #endif							/* SIFT_AGG_COST_MODEL_H */
