@@ -158,7 +158,7 @@ spec_reductions(void)
 	double		mn = 7,
 				mx = 7;
 	int32		imn = 0,
-				sidx = 0;
+				imax = 0;
 
 	EXPECT(sift_aggkern_scalar.minmax_f64(&mn, &mx, zeros, NULL, 3));
 	memcpy(&zbits, &mn, 8);
@@ -169,7 +169,7 @@ spec_reductions(void)
 	EXPECT(sift_aggkern_scalar.minmax_f64(&mn, &mx, onlynan, NULL, 2) && mn != mn && mx != mx);
 	mn = mx = 7;
 	EXPECT(!sift_aggkern_scalar.minmax_f64(&mn, &mx, mixed, (const uint64[]) {0}, 4) && mn == 7 && mx == 7);
-	EXPECT(!sift_aggkern_scalar.minmax_i32(&imn, &sidx, (const int32[]) {5}, (const uint64[]) {0}, 1) && imn == 0);
+	EXPECT(!sift_aggkern_scalar.minmax_i32(&imn, &imax, (const int32[]) {5}, (const uint64[]) {0}, 1) && imn == 0);
 
 	EXPECT(sift_aggkern_scalar.sum_i32((const int32[]) {INT32_MIN, INT32_MAX, 5}, NULL, 3) == 4);
 
