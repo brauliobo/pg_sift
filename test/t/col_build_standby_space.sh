@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
-plan 18
+plan 19
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
@@ -28,8 +28,10 @@ OPTS="SET max_parallel_maintenance_workers = 4"
 SMALL="SET min_parallel_table_scan_size = 0"
 size() { sql primary "SELECT pg_relation_size('t_idx')"; }
 live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
-# PCT: the most the file may be over its live bytes, in percent (the default 110)
-tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * ${1:-110} / 100 ))"; }
+# PCT: the most the file may be over its live bytes, in percent (the default 110), and 32 blocks (256 kB): the metadata, the free list and the few free blocks a merge
+# leaves are 3 to 13 blocks whatever the size (12 REINDEXes of a 160-block index: 3 with the gap of the statistics, 3 to 13 with a gap of 0 or 8 blocks; 18 on a CI runner),
+# which is 2% to 11% of an index of 160 blocks, and the bound is for a file that doubles
+tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * ${1:-110} / 100 + 32 * 8192 ))"; }
 
 sql primary "$OPTS" "$SMALL" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount) WITH (key_cut = grp)" >/dev/null || bail "create index failed"
 check "a standby streams: the file of CREATE INDEX is at most 1.1 times its live bytes" tight
@@ -52,8 +54,16 @@ WRITERS=$PGBENCH_PID
 sleep 1
 sql primary "$OPTS" "$SMALL" "REINDEX INDEX CONCURRENTLY t_idx" >/dev/null || bail "concurrent reindex under writers failed"
 kill "$WRITERS" 2>/dev/null; wait "$WRITERS" 2>/dev/null
+# the rows the writers added since the build are in write buffers, which are live data that "live bytes" (the column segments) does not count: 0.3 to 0.5 MB at the pace
+# of a lab host (six runs, the file 1.01 times the segments and buffers); on a CI runner the file was 1.9 MB over its live bytes
+buffers() { sql primary "SELECT coalesce(sum(bytes), 0) FROM sift.col_segments('t_idx') WHERE kind <> 'immutable'"; }
+BUF=$(buffers)
+echo "# writers: file $(size) live $(live) write buffers $BUF" >&2
+check "REINDEX CONCURRENTLY under writers: the file is at most 1.1 times its live bytes and write buffers" test "$(size)" -le "$(( ($(live) + BUF) * 110 / 100 ))"
+# promoting the buffers leaves their pages free (held until the horizon passes), a hole of the size of the buffers at most twice
 sql primary "SET sift.async_maintenance = off" "SELECT sift.col_maintain('t_idx')" >/dev/null
-check "REINDEX CONCURRENTLY under writers: the file is at most 1.4 times its live bytes (the writers add holes of their own)" tight 140
+echo "# promoted: file $(size) live $(live)" >&2
+check "... and after the buffers are promoted at most 1.1 times its live bytes and twice the buffers" test "$(size)" -le "$(( $(live) * 110 / 100 + 2 * BUF ))"
 for gap in 0 8; do
 	sql primary "SET sift.test_col_gap_blocks = $gap" "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex with gap $gap failed"
 	check "a gap of $gap blocks: nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none

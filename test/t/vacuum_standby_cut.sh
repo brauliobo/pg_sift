@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # VACUUM gives the free end of a sift_col index back under AccessExclusiveLock. A standby replays that lock record first and waits for every query that
 # holds the index (up to max_standby_streaming_delay, then cancels it): a b-tree is never cut, so a long query on a replica stalled the replay of the
-# primary's VACUUM for as long as it ran. While a standby streams, VACUUM leaves the free blocks to the next rewrite and takes no such lock.
+# primary's VACUUM for as long as it ran. While a standby streams, VACUUM takes an ExclusiveLock, which the standby does not replay, and cuts only the blocks the horizon
+# (held back by the feedback of the standby) says no snapshot can read: what a rewrite released after the standby's transaction began is not reusable, and the segment the
+# rewrite wrote lies behind it, so the file stays as it is (col_online_cut.sh has the cut once the transaction ends).
 # Here the standby holds a transaction on the index with max_standby_streaming_delay = -1 (a stalled replay never gives up) and the primary churns and VACUUMs.
 . "$(dirname "$0")/lib.bash"
 
@@ -44,6 +46,8 @@ rm -f "$D/locked" "$D/release"
 } | sql standby >"$D/query.out" 2>&1 &
 HOLDER=$!
 until [[ -e $D/locked ]]; do sleep 0.05; done
+# the feedback of the standby (wal_receiver_status_interval) tells the primary the transaction's snapshot: until it arrives the horizon does not hold the blocks
+sleep 3
 
 rewrite
 grown=$(size)
@@ -51,7 +55,7 @@ sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null || bail "va
 LSN=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 sleep 3
 check "a standby streams: the replay of VACUUM does not wait for its long query" test "$(sql standby "SELECT pg_last_wal_replay_lsn() >= '$LSN'")" == t
-check "a standby streams: VACUUM leaves the free end of the file" test "$(size)" -ge "$grown"
+check "a standby streams: VACUUM leaves the free end of the file (the snapshot of the standby may read it)" test "$(size)" -ge "$grown"
 touch "$D/release"
 wait "$HOLDER"
 check "the long query is not cancelled" test -z "$(grep -i 'conflict with recovery' "$D/query.out")"
