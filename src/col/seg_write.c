@@ -781,8 +781,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
-	SIFT_INVARIANT(w->nsb == 0 || b->sb > w->sbdir[w->nsb - 1].sb, "sift_col: superblock %u added after %u", b->sb,
-				   w->nsb > 0 ? w->sbdir[w->nsb - 1].sb : 0);
+	SIFT_INVARIANT(w->nsb == 0 || b->sb > w->sbdir[w->nsb - 1].id, "sift_col: superblock %u added after %u", b->sb,
+				   w->nsb > 0 ? w->sbdir[w->nsb - 1].id : 0);
 	if (w->nsb == w->capsb)
 	{
 		w->capsb *= 2;

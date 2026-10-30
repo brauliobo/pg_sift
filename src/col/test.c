@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_pinned);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
+PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_types);
@@ -1617,7 +1618,7 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 			sift_cchunk_decode(&ch, keys);
 			col = (SiftCPaggCol) {keys, ch.nulls, ch.ovf, ch.n, true};
 			addr = palloc((Size) ch.n * sizeof(SiftKey));
-			sift_cunit_keys(&uv, seg->sbdir[u].sb, addr);
+			sift_cunit_keys(&uv, seg->sbdir[u].id, addr);
 			ord += r.kind == SIFT_CRUN_ORD;
 			ident += r.kind == SIFT_CRUN_IDENT;
 			if (sift_crun_head(orig, len, r.n, &r2))
@@ -1818,6 +1819,40 @@ sift_test_col_zone_flags(PG_FUNCTION_ARGS)
 	v[0] = Int64GetDatum(units);
 	v[1] = Int64GetDatum(jnull);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift._test_col_unit_of_block(index, blk): for every immutable segment, the unit that holds the rows of heap block blk: 'unit', 'none' (a segment cut by superblock with no row there) or 'unknown' (a segment cut by key) */
+Datum
+sift_test_col_unit_of_block(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	BlockNumber blk = (BlockNumber) PG_GETARG_INT64(1);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		Datum		v[4];
+		bool		nulls[4] = {false};
+		uint32		u;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		u = sift_cseg_unit_of_block(seg, blk);
+		v[0] = Int32GetDatum(i);
+		v[1] = BoolGetDatum(sift_cseg_keyed(&seg->entry));
+		v[2] = Int64GetDatum(u);
+		nulls[2] = u >= seg->nsb;
+		v[3] = CStringGetTextDatum(u == SIFT_CUNIT_UNKNOWN ? "unknown" : u >= seg->nsb ? "none" : "unit");
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 /* (seg, pos, key, tid, null_row): the entries of the global order of leaf (by its column number) in every immutable segment that has one, in the order stored */

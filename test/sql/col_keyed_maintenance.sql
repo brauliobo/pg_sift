@@ -1,0 +1,97 @@
+-- A key-cut segment names its units by sequence, a heap address names none. Every maintenance path that reads or rewrites units must keep the index equal to its heap:
+-- verification (heap-all-indexed), promotion, merge, tombstones and VACUUM, REINDEX, for an index with and without an order array, against a heap twin without any index.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE TABLE km (id int, ent int, d date, del timestamp, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+CREATE TABLE km_heap (LIKE km) WITH (autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO km SELECT i, 1 + (random() * 39)::int, date '2024-01-01' + (random() * 1000)::int, CASE WHEN random() < 0.05 THEN now() END, repeat('x', 100) FROM generate_series(1, 20000) i;
+INSERT INTO km_heap SELECT * FROM km;
+VACUUM (FREEZE, ANALYZE) km;
+
+-- the same questions through the index (bitmap, index scan, aggregate pushdown) and through the heap twin; a plan that skipped the index counts as a difference
+CREATE FUNCTION km_count(q text, how text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint := 0; used bool := false; pl text;
+BEGIN
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_indexscan = on; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = on;
+	IF how = 'bitmap' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSIF how = 'index' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+	ELSIF how = 'heap' THEN q := replace(q, ' km ', ' km_heap ');
+	END IF;
+	IF how <> 'heap' THEN
+		FOR pl IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP used := used OR pl LIKE '%km_i%' OR pl LIKE '%SiftAgg%'; END LOOP;
+		IF NOT used THEN RETURN -1; END IF;
+	END IF;
+	EXECUTE 'SELECT count(*) FROM (' || q || ') s' INTO n;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION km_check(layout text) RETURNS TABLE (layout text, cases int, differ int) LANGUAGE sql AS $$
+	SELECT layout, count(*)::int, count(*) FILTER (WHERE km_count(q, 'bitmap') <> km_count(q, 'heap') OR km_count(q, 'index') <> km_count(q, 'heap'))::int
+	FROM (VALUES
+		('SELECT id FROM km WHERE d BETWEEN ''2024-03-01'' AND ''2024-03-04'''),
+		('SELECT id FROM km WHERE d BETWEEN ''2024-03-01'' AND ''2024-03-21'' AND del IS NULL'),
+		('SELECT id FROM km WHERE d >= ''2026-08-20'' AND del IS NULL'),
+		('SELECT id FROM km WHERE d = ''2024-03-05'''),
+		('SELECT id FROM km WHERE ent = 7'),
+		('SELECT id FROM km WHERE ent IN (3, 7, 9) AND del IS NULL'),
+		('SELECT id FROM km WHERE d BETWEEN ''2024-03-01'' AND ''2024-06-20'' AND ent = 7'),
+		('SELECT id FROM km WHERE id < 5000 AND del IS NULL')
+	) v(q) WHERE km_count(q, 'heap') > 0
+$$;
+
+CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_columns = 'd', order_array_columns = 'd');
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut + order array: built');
+
+INSERT INTO km SELECT 20000 + i, 1 + (random() * 39)::int, date '2024-01-01' + (random() * 1000)::int, CASE WHEN random() < 0.05 THEN now() END, repeat('x', 100) FROM generate_series(1, 4000) i;
+INSERT INTO km_heap SELECT * FROM km WHERE id > 20000;
+UPDATE km SET d = d + 1 WHERE id % 7 = 0;
+UPDATE km_heap SET d = d + 1 WHERE id % 7 = 0;
+DELETE FROM km WHERE id % 11 = 0;
+DELETE FROM km_heap WHERE id % 11 = 0;
+SELECT * FROM km_check('key_cut + order array: dirty');
+SELECT sift.col_promote('km_i') >= 0 AS promoted;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut + order array: promoted');
+
+-- tombstones: the deleted rows leave through VACUUM, and the units that held them are rewritten
+DELETE FROM km WHERE id % 5 = 0;
+DELETE FROM km_heap WHERE id % 5 = 0;
+SELECT * FROM km_check('key_cut + order array: tombstones');
+VACUUM km;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut + order array: vacuumed');
+
+SELECT sift.col_merge('km_i', true) >= 0 AS merged;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut + order array: merged');
+REINDEX INDEX km_i;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut + order array: reindexed');
+
+-- a key-cut index without an order array, and the units by superblock where the addresses do name them
+DROP INDEX km_i;
+CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_columns = 'off');
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut only: built');
+DELETE FROM km WHERE id % 3 = 0;
+DELETE FROM km_heap WHERE id % 3 = 0;
+VACUUM km;
+SELECT sift.col_merge('km_i', true) >= 0 AS merged;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('key_cut only: vacuumed and merged');
+ALTER INDEX km_i SET (key_cut = 'off');
+REINDEX INDEX km_i;
+SELECT sift.col_verify('km_i', true);
+SELECT * FROM km_check('by superblock: reindexed');
+
+DROP FUNCTION km_check(text);
+DROP FUNCTION km_count(text, text);
+DROP TABLE km, km_heap;
+DROP EXTENSION pg_sift;

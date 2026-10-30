@@ -18,10 +18,10 @@
 
 struct SiftCGOrdBuf;
 
-/* SBDIR entry */
+/* SBDIR entry. id: the superblock of a segment cut by superblock, the sequence number of a unit of a segment cut by key: sift_cseg_unit_sb and sift_cseg_unit_of_block are the readers of the first meaning */
 typedef struct SiftColSBRef
 {
-	uint32		sb;
+	uint32		id;
 	uint32		nrows;
 	uint64		off;			/* of the unit record in the UNITS section, 8-byte aligned */
 	uint64		rank_base;		/* liveness rank of the unit's first row */
@@ -116,8 +116,22 @@ extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
 extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
 
-/* Index of the first unit whose sb >= sb, nsb if none */
-extern uint32 sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb);
+/* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
+extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);
+
+/*
+ * The unit that holds the rows of superblock sb (of the block blk) of a segment cut by superblock, nsb if it has none. A segment cut by key has no such unit: its units hold
+ * a range of keys, whatever the blocks, and the answer is SIFT_CUNIT_UNKNOWN: the caller reads every unit that sift_cseg_sb_in_spans names for the block.
+ * Both are at least nsb, so a caller that tests only `u >= nsb` takes a key-cut segment for one that holds no row of the block: ask for UNKNOWN first wherever that is wrong.
+ */
+#define SIFT_CUNIT_UNKNOWN	PG_UINT32_MAX
+extern uint32 sift_cseg_unit_of_sb(const SiftColSegment *seg, uint32 sb);
+
+static inline uint32
+sift_cseg_unit_of_block(const SiftColSegment *seg, BlockNumber blk)
+{
+	return sift_cseg_unit_of_sb(seg, sift_block_sb(blk));
+}
 
 /* The record of unit u, 8-byte aligned, valid until the next call on seg */
 extern const uint8 *sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len);
@@ -449,6 +463,14 @@ static inline bool
 sift_cseg_keyed(const SiftSegEntry *e)
 {
 	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
+}
+
+/* The superblock of unit u of a segment cut by superblock (a unit of a segment cut by key has none: its id is a sequence number) */
+static inline uint32
+sift_cseg_unit_sb(const SiftColSegment *seg, uint32 u)
+{
+	Assert(!sift_cseg_keyed(&seg->entry));
+	return seg->sbdir[u].id;
 }
 
 #endif							/* SIFT_COL_SEG_H */

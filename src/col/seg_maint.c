@@ -26,13 +26,13 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 	bool		dirty = unit_dirty(seg, u);
 
 	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
-		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->sb);
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
 	for (int c = 0; c < seg->schema->ncols; c++)
 		dicts[c] = sift_cseg_dict(seg, c);
 	sift_cseg_live(seg, u, live);
-	sift_cbatch_reset(dst, r->sb);
+	sift_cbatch_reset(dst, r->id);
 	dst->keyed = v.keyed;
-	sift_cunit_decode(&v, r->sb, dicts, dirty ? live : NULL, dst);
+	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, dst);
 	pfree(dicts);
 	if (sift_cseg_vers(seg))
 	{
@@ -161,7 +161,7 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 		if (nd == 0)
 			continue;
 		sift_seg_mark_dirty(seg->index, &seg->entry);
-		sift_live_clear(&PRIV(seg)->live, r->sb - seg->hdr->sb_lo, gone, nd);
+		sift_live_clear(&PRIV(seg)->live, r->id - seg->hdr->sb_lo, gone, nd);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -190,8 +190,8 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 
 		rec = sift_cseg_unit(seg, u, &len);
 		if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
-			corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->sb);
-		sift_cunit_keys(&v, r->sb, keys);
+			corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
+		sift_cunit_keys(&v, r->id, keys);
 		sift_cseg_live(seg, u, live);
 		for (uint32 i = 0; i < r->nrows; i++)
 		{
@@ -208,7 +208,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 		if (nd == 0)
 			continue;
 		sift_seg_mark_dirty(seg->index, &seg->entry);
-		sift_live_clear(&pv->live, r->sb - seg->hdr->sb_lo, dead, nd);
+		sift_live_clear(&pv->live, r->id - seg->hdr->sb_lo, dead, nd);
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -380,14 +380,14 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 	const uint8 *ecube = sift_cseg_ecube(seg, u, &elen);
 
 	if (!sift_cunit_parse(rec, len, sc, &v) || v.nrows != r->nrows)
-		corrupt(seg, "Unit %u (SB %u) does not parse or lists another row count.", u, r->sb);
+		corrupt(seg, "Unit %u (SB %u) does not parse or lists another row count.", u, r->id);
 	if (!sift_cpagg_leaves(sc, cube, clen, ecube, elen, need))
-		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->sb);
-	sift_cunit_keys(&v, r->sb, keys);
+		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->id);
+	sift_cunit_keys(&v, r->id, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
-		if ((!v.keyed && sift_block_sb(sift_key_block(keys[i])) != r->sb) || (i > 0 && keys[i] <= keys[i - 1]) ||
+		if ((!v.keyed && sift_block_sb(sift_key_block(keys[i])) != r->id) || (i > 0 && keys[i] <= keys[i - 1]) ||
 			(keys[i] & 0xFFFF) == 0)
-			corrupt(seg, "Row %u of the unit of SB %u has key %llx out of order or outside the SB.", i, r->sb, ULL(keys[i]));
+			corrupt(seg, "Row %u of the unit of SB %u has key %llx out of order or outside the SB.", i, r->id, ULL(keys[i]));
 	for (int c = 0; c < sc->ncols; c++)
 	{
 		const SiftColDef *def = &sc->cols[c];
@@ -399,19 +399,19 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 		if (!sift_cunit_chunk(&v, c, &ch))
 			corrupt(seg, "Unit %u has no chunk for leaf %d.", u, c);
 		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= 4 && ch.ovf != NULL))
-			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->sb,
+			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->id,
 					ch.flags & SIFT_COLC_TAGS ? "has" : "lacks", seg->entry.format);
 		if ((ch.flags & SIFT_COLC_KINDS) && seg->entry.format < 4)
-			corrupt(seg, "The chunk of leaf %d in the unit of SB %u has kinds in a segment of column format 1.%d.", c, r->sb, seg->entry.format);
+			corrupt(seg, "The chunk of leaf %d in the unit of SB %u has kinds in a segment of column format 1.%d.", c, r->id, seg->entry.format);
 		if (ch.n !=(def->parent < 0 ? r->nrows : group_elems[def->parent]))
-			corrupt(seg, "Chunk of leaf %d in the unit of SB %u holds %u values, expected %llu.", c, r->sb, ch.n,
+			corrupt(seg, "Chunk of leaf %d in the unit of SB %u holds %u values, expected %llu.", c, r->id, ch.n,
 					ULL(def->parent < 0 ? r->nrows : group_elems[def->parent]));
 		vals = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
 		sift_cchunk_decode(&ch, vals);
 		sift_cchunk_zone(&ch, def->store, &computed);
 		sift_cseg_zone(seg, c, u, &stored);
 		if (!zone_equal(def, &stored, &computed))
-			corrupt(seg, "The zone of leaf %d in the unit of SB %u differs from its chunk.", c, r->sb);
+			corrupt(seg, "The zone of leaf %d in the unit of SB %u differs from its chunk.", c, r->id);
 		if (def->kind == SIFT_COLK_GROUP)
 			group_elems[c] = computed.sum_i;
 		pcol[c] = (SiftCPaggCol) {vals, ch.nulls, ch.ovf, ch.n, def->store != SIFT_COLS_VAR && ch.enc != SIFT_COLENC_ISTR};
@@ -423,7 +423,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			sift_cpagg_leaf(&pcol[c], &la);
 			sift_cseg_agg(seg, c, u, &sa);
 			if (sa.sum != la.sum || sa.sumsq != la.sumsq || sa.flags != la.flags)
-				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
+				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->id);
 		}
 		verify_set(seg, c, u, &pcol[c]);
 		verify_run(seg, c, u, &pcol[c], keys);
@@ -437,14 +437,14 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 				if (!(ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1)))
 				{
 					if ((uint64) vals[i] >= d->n)
-						corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->sb,
+						corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->id,
 								(long long) vals[i], d->n);
 					if (crows[c] != NULL)
 						crows[c][vals[i]]++;
 				}
 		}
 		if (crows[c] != NULL && (ch.enc == SIFT_COLENC_ISTR || ch.ovf != NULL))
-			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings, but the unit of SB %u stores them inline or has an overflow value.", c, r->sb);
+			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings, but the unit of SB %u stores them inline or has an overflow value.", c, r->id);
 		if (need[c] || def->kind == SIFT_COLK_GROUP)
 			kept[c] = vals;			/* the counts of a list: the directory of its elements reads them */
 		else if (kt)
@@ -460,7 +460,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 				pfree(late[c]);
 	}
 	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
-		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
+		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->id);
 	if (seg->entry.format >= SIFT_COL_FORMAT_EXCEPT)
 	{
 		uint32		xlen,
@@ -488,7 +488,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 		}
 		same = sift_cpagg_check_excepts(sc, pcol, eoff, r->nrows, cube, clen, ecube, elen, seg->entry.format, xcube, xcube ? xlen : 0, xecube, xecube ? xelen : 0);
 		if (!same)
-			corrupt(seg, "The exceptions of the unit of SB %u differ from its chunks.", r->sb);
+			corrupt(seg, "The exceptions of the unit of SB %u differ from its chunks.", r->id);
 	}
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])

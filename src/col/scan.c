@@ -154,7 +154,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
 	for (int i = 0; i < src->nseg; i++)
 		if (sift_cseg_keyed(&src->seg[i].seg->entry))
-			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].sb + 1);
+			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].id + 1);
 	src->cnt.segments = src->nseg;
 	MemoryContextSwitchTo(old);
 	return src;
@@ -473,6 +473,19 @@ point_lazy_adopt(ColCursor *c, int i, uint64 *keep)
 	c->ppred = i;
 }
 
+/* The unit of an address a list of the segment names: a segment cut by key has no unit by address, and an address in no unit is a corrupt list */
+static uint32
+listed_unit(SiftColSegment *seg, SiftKey key)
+{
+	uint32		u = sift_cseg_unit_of_block(seg, sift_key_block(key));
+
+	SIFT_INVARIANT(u != SIFT_CUNIT_UNKNOWN, "sift_col: the addresses of a segment cut by key name no unit");
+	if (u >= seg->nsb)
+		ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("sift_col index \"%s\" lists the address %llx, which is in no unit of its segment",
+																   RelationGetRelationName(seg->index), (unsigned long long) key)));
+	return u;
+}
+
 /*
  * The ascending addresses of the rows a directory or a range lists: those in a unit that is kept, has no dead row and is not read for the other predicates go to the
  * source; the units that hold any other address stay to be read, and the units that hold none are cleared.
@@ -496,10 +509,10 @@ emit_tids(SiftColSource *src, ColCursor *c, int i, uint64 *keep, const SiftKey *
 		src->ptid_unsorted = true;
 	for (uint32 k = 0, e; k < n; k = e)
 	{
-		uint32		sb = (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT,
-					u = last != PG_UINT32_MAX && sb == seg->sbdir[last].sb ? last : sift_cseg_find_unit(seg, sb);
+		uint32		sb = sift_block_sb(sift_key_block(tids[k])),
+					u = last != PG_UINT32_MAX && sb == sift_cseg_unit_sb(seg, last) ? last : listed_unit(seg, tids[k]);
 
-		for (e = k + 1; e < n && ((uint32) (tids[e] >> 16) >> SIFT_SB_SHIFT) == sb; e++)
+		for (e = k + 1; e < n && sift_block_sb(sift_key_block(tids[e])) == sb; e++)
 			;
 		sift_col_bit_set(has, u);
 		last = u;
@@ -610,10 +623,10 @@ intersect_tids(SiftColSource *src, ColCursor *c, uint64 *keep, const SiftKey *ti
 
 	for (uint32 k = 0, e; k < n; k = e)
 	{
-		uint32		sb = (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT,
-					u = last != PG_UINT32_MAX && sb == seg->sbdir[last].sb ? last : sift_cseg_find_unit(seg, sb);
+		uint32		sb = sift_block_sb(sift_key_block(tids[k])),
+					u = last != PG_UINT32_MAX && sb == sift_cseg_unit_sb(seg, last) ? last : listed_unit(seg, tids[k]);
 
-		for (e = k + 1; e < n && ((uint32) (tids[e] >> 16) >> SIFT_SB_SHIFT) == sb; e++)
+		for (e = k + 1; e < n && sift_block_sb(sift_key_block(tids[e])) == sb; e++)
 			;
 		sift_col_bit_set(has, u);
 		last = u;
@@ -1132,7 +1145,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 {
 	SiftColSegment *seg = c->seg;
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb);
-	PruneRange	pr = {sift_cseg_find_unit(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi), NULL,
+	PruneRange	pr = {sift_cseg_unit_lower_bound(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_unit_lower_bound(seg, sb_hi), NULL,
 	(src->flags & SIFT_COLO_POINTS) ? c : NULL};
 	PruneRange	zr = pr;
 
@@ -1350,13 +1363,14 @@ sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max)
 		got = sift_cseg_point_stream_next(c->ps, buf, Min(max - n, lengthof(buf)));
 		for (uint32 k = 0; k < got; k++)
 		{
-			uint32		b = (uint32) (buf[k] >> 16) >> SIFT_SB_SHIFT;
+			uint32		b = sift_block_sb(sift_key_block(buf[k]));
 
 			if (b != sb)
 			{
 				sb = b;
-				u = sift_cseg_find_unit(seg, sb);
-				mode = u >= seg->nsb || seg->sbdir[u].sb != sb || !sift_col_bit_test(c->pkept, u) ? 0 : sift_cseg_dirty(seg, u) ? 2 : 1;
+				u = sift_cseg_unit_of_sb(seg, sb);
+				SIFT_INVARIANT(u != SIFT_CUNIT_UNKNOWN, "sift_col: the addresses of a segment cut by key name no unit");
+				mode = u >= seg->nsb || !sift_col_bit_test(c->pkept, u) ? 0 : sift_cseg_dirty(seg, u) ? 2 : 1;
 				if (mode == 2)
 					sift_col_bit_set(c->ppend, u);
 			}
@@ -1380,7 +1394,7 @@ sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max)
 static uint32
 next_ahead_unit(const ColCursor *c, uint32 u)
 {
-	while (u < c->seg->nsb && !sift_col_bit_test(c->src->ahead_kept, c->seg->sbdir[u].sb))
+	while (u < c->seg->nsb && !sift_col_bit_test(c->src->ahead_kept, c->seg->sbdir[u].id))
 		u++;
 	return u;
 }
@@ -1506,7 +1520,7 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 		uint32		nsb = c->seg->nsb;
 
 		prune_segment(src, c, preds, npreds, zones, nzones, 0, PG_UINT32_MAX, true);
-		ok = nsb == 0 || c->seg->sbdir[nsb - 1].sb < nspace;
+		ok = nsb == 0 || c->seg->sbdir[nsb - 1].id < nspace;
 		for (uint32 w = 0; w < (nsb + 63) / 64 && ok; w++)
 		{
 			uint64		bits = c->keep[w];
@@ -1520,7 +1534,7 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 			{
 				const SiftColSBRef *u = &c->seg->sbdir[w * 64 + pg_rightmost_one_pos64(bits)];
 
-				sift_col_bit_set(kept, u->sb);
+				sift_col_bit_set(kept, u->id);
 				*rows += u->nrows;
 			}
 		}
@@ -1568,7 +1582,7 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 	}
 	if (c->cur >= c->end)
 		return false;
-	*sb = c->seg->sbdir[c->cur].sb;
+	*sb = c->seg->sbdir[c->cur].id;
 	return true;
 }
 
@@ -1577,7 +1591,7 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 {
 	cu->seg = seg;
 	cu->u = u;
-	cu->sb = seg->sbdir[u].sb;
+	cu->sb = seg->sbdir[u].id;
 	if (!sift_cseg_unit_view(seg, u, &cu->v))
 		corrupt("Unit %u of segment %llu does not parse.", u, (unsigned long long) seg->entry.gen);
 	cu->loaded = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols);
@@ -1658,11 +1672,12 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		{
 			/* the units of a segment of heap addresses are its superblocks, so the addresses of a unit are those of its superblock */
 			uint32		lo = 0,
-						hi = best->nptidv;
+						hi = best->nptidv,
+						usb = sift_cseg_unit_sb(best->seg, best->cur);
 
-			SIFT_BISECT(uint32, m, lo, hi, (uint32) (best->ptidv[m] >> 16 >> SIFT_SB_SHIFT) < cu->sb);
+			SIFT_BISECT(uint32, m, lo, hi, sift_block_sb(sift_key_block(best->ptidv[m])) < usb);
 			cu->ptid = best->ptidv + lo;
-			for (hi = lo; hi < best->nptidv && (uint32) (best->ptidv[hi] >> 16 >> SIFT_SB_SHIFT) == cu->sb;)
+			for (hi = lo; hi < best->nptidv && sift_block_sb(sift_key_block(best->ptidv[hi])) == usb;)
 				hi++;
 			cu->nptid = hi - lo;
 		}
@@ -1767,7 +1782,7 @@ sift_col_super_span(SiftColSource *src)
 
 		fan = Max(fan, sift_cseg_super_fan(seg));
 		if (seg->nsb > 0)
-			extent = Max(extent, seg->sbdir[seg->nsb - 1].sb - seg->sbdir[0].sb + 1);
+			extent = Max(extent, seg->sbdir[seg->nsb - 1].id - seg->sbdir[0].id + 1);
 	}
 	/* a segment the key table answers for lies in one item: four times its superblocks, as a scan with workers shares the span of four */
 	return Max(fan * 4 * Max(src->nseg, 1), (src->flags & COLO_TABLE) && src->whole ? extent * 4 : 0);

@@ -305,8 +305,8 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 				return false;
 			continue;
 		}
-		k = sift_cseg_find_unit(s, sb);
-		if (k >= s->nsb || s->sbdir[k].sb != sb)
+		k = sift_cseg_unit_of_sb(s, sb);
+		if (k >= s->nsb)
 			continue;
 		if (seg != NULL)
 			return false;
@@ -340,7 +340,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
 {
 	ColCursor  *c;
 	SiftColSegment *seg;
-	uint32		sb = blk / SIFT_SB_PAGES,
+	uint32		sb = sift_block_sb(blk),
 				u;
 
 	if (i >= src->nseg || (src->flags & COLO_TABLE))
@@ -350,10 +350,10 @@ sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
 	if (sift_cseg_keyed(&seg->entry))
 		return false;
 	/* the superblocks of a segment are mostly all of them in a row: the unit at the offset from the first is the one, else the gallop finds it */
-	u = seg->nsb > 0 ? sb - seg->sbdir[0].sb : 0;
-	if (u >= seg->nsb || seg->sbdir[u].sb != sb)
-		u = sift_cseg_find_unit(seg, sb);
-	if (u >= seg->nsb || seg->sbdir[u].sb != sb)
+	u = seg->nsb > 0 ? sb - sift_cseg_unit_sb(seg, 0) : 0;
+	if (u >= seg->nsb || sift_cseg_unit_sb(seg, u) != sb)
+		u = sift_cseg_unit_of_sb(seg, sb);
+	if (u >= seg->nsb)
 		return false;
 	if (c->gexact == NULL)
 		c->gexact = MemoryContextAllocZero(src->mcxt, seg->nsb);
@@ -433,9 +433,9 @@ zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone 
 	for (int i = 0; i < src->nseg; i++)
 	{
 		SiftColSegment *seg = src->seg[i].seg;
-		uint32		end = sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_find_unit(seg, sb_hi);
+		uint32		end = sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_unit_lower_bound(seg, sb_hi);
 
-		for (uint32 u = sift_cseg_find_unit(seg, sb_lo); u < end; u++, units++)
+		for (uint32 u = sift_cseg_unit_lower_bound(seg, sb_lo); u < end; u++, units++)
 		{
 			SiftCZone	z;
 
@@ -560,7 +560,7 @@ units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 				return false;
 			continue;
 		}
-		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[first + i].sb, av);
+		src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, first + i), av);
 		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
 				return false;
@@ -576,7 +576,7 @@ sbs_plain(SiftColSource *src, SiftColSegment *seg)
 
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[u].sb, av);
+		src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, u), av);
 		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 			if (av[w] != ~UINT64CONST(0))
 				return false;
@@ -605,7 +605,7 @@ take_units(ColCursor *c, ColUnit *cu, uint32 first, uint32 n, uint32 rows)
 	cu->seg = seg;
 	cu->u = first;
 	cu->nsu = n;
-	cu->sb = seg->sbdir[first].sb;
+	cu->sb = seg->sbdir[first].id;
 	cu->v.nrows = rows;
 	cu->clean = cu->clean_ready = cu->av_ready = true;
 	memset(cu->av, 0xFF, sizeof(cu->av));

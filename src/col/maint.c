@@ -416,10 +416,10 @@ seg_spans(SiftColSegment *seg)
 		SiftCSbSpan *r = palloc(Max(seg->nsb, 1) * sizeof(SiftCSbSpan));
 
 		for (uint32 u = 0; u < seg->nsb; u++)
-			if (sp.n > 0 && seg->sbdir[u].sb <= r[sp.n - 1].hi + 1)
-				r[sp.n - 1].hi = Max(r[sp.n - 1].hi, seg->sbdir[u].sb);
+			if (sp.n > 0 && seg->sbdir[u].id <= r[sp.n - 1].hi + 1)
+				r[sp.n - 1].hi = Max(r[sp.n - 1].hi, seg->sbdir[u].id);
 			else
-				r[sp.n++] = (SiftCSbSpan) {seg->sbdir[u].sb, seg->sbdir[u].sb};
+				r[sp.n++] = (SiftCSbSpan) {seg->sbdir[u].id, seg->sbdir[u].id};
 		sp.r = r;
 	}
 	return sp;
@@ -797,7 +797,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 
 		for (int i = 0; i < n; i++)
 		{
-			at[i] = tin[i].buf ? tid_peek(&tin[i], freeze, freeze_arg) : cur[i] < seg[i]->nsb ? seg[i]->sbdir[cur[i]].sb : PG_UINT32_MAX;
+			at[i] = tin[i].buf ? tid_peek(&tin[i], freeze, freeze_arg) : cur[i] < seg[i]->nsb ? seg[i]->sbdir[cur[i]].id : PG_UINT32_MAX;
 			sb = Min(sb, at[i]);
 		}
 		if (sb == PG_UINT32_MAX)

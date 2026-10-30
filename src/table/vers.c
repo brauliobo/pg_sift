@@ -64,7 +64,7 @@ ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	MemoryContextSwitchTo(old);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		g->sb[u] = seg->sbdir[u].sb;
+		g->sb[u] = sift_cseg_unit_sb(seg, u);
 		sift_cseg_ver_sum(seg, u, &g->sum[u]);
 	}
 	sift_cseg_close(seg);

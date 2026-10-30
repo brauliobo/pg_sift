@@ -1,0 +1,26 @@
+-- The unit that holds the rows of a heap block (sift_cseg_unit_of_block): a segment cut by superblock answers the unit of the block's superblock, or none; a segment cut by key
+-- has no unit by block and says unknown, whatever the block. A caller that took the address of a row for a superblock got the wrong unit in the released 3.6.0 and
+-- 3.6.1 (rows missing from bitmap and index scans); every reader of the mapping goes through this answer now.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- fillfactor 20 and a padded row: a few rows a page, 3000 pages, twelve superblocks of 256 pages
+CREATE TABLE ub (id int, ent int, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO ub SELECT i, 1 + i % 40, repeat('x', 1500) FROM generate_series(1, 3000) i;
+VACUUM (FREEZE, ANALYZE) ub;
+SELECT pg_relation_size('ub') / current_setting('block_size')::int AS pages;
+
+CREATE INDEX ub_sb ON ub USING sift_col (id, ent) WITH (key_cut = 'off');
+SELECT blk, seg, keyed, unit, outcome FROM unnest(ARRAY[0, 255, 256, 511, 512, 100000]::int8[]) blk, sift._test_col_unit_of_block('ub_sb', blk) ORDER BY blk, seg;
+DROP INDEX ub_sb;
+
+CREATE INDEX ub_key ON ub USING sift_col (id, ent) WITH (key_cut = 'ent');
+SELECT blk, seg, keyed, unit, outcome FROM unnest(ARRAY[0, 255, 256, 511, 512, 100000]::int8[]) blk, sift._test_col_unit_of_block('ub_key', blk) ORDER BY blk, seg;
+
+DROP TABLE ub;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

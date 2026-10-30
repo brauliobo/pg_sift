@@ -151,7 +151,7 @@ leaf_clustering(SiftColSegment **seg, int nseg, int c, int64 units, double width
 			if (z.flags & SIFT_COLZ_OVERFLOW)
 				nbad++;
 			else if (z.nnull < z.nvals)
-				za[n++] = (ZoneAt) {seg[s]->sbdir[u].sb, (double) z.min, (double) z.max};
+				za[n++] = (ZoneAt) {seg[s]->sbdir[u].id, (double) z.min, (double) z.max};
 		}
 	/* the segments of a parallel build interleave their superblocks: the order of the units is that of the heap */
 	qsort(za, n, sizeof(ZoneAt), zone_cmp);

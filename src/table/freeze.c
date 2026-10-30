@@ -253,8 +253,8 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32
 				continue;
 			if (unit_aborted_runs(seg, u, runs, xm, cm, live, keys))
 			{
-				*sb_lo = Min(*sb_lo, seg->sbdir[u].sb);
-				*sb_hi = Max(*sb_hi, seg->sbdir[u].sb);
+				*sb_lo = Min(*sb_lo, sift_cseg_unit_sb(seg, u));
+				*sb_hi = Max(*sb_hi, sift_cseg_unit_sb(seg, u));
 			}
 			CHECK_FOR_INTERRUPTS();
 		}

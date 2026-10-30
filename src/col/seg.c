@@ -98,10 +98,10 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	{
 		const SiftColSBRef *r = &dir[i];
 
-		if (r->sb < h->sb_lo || r->sb > h->sb_hi || (i > 0 && r->sb <= dir[i - 1].sb) || r->off % 8 != 0 ||
+		if (r->id < h->sb_lo || r->id > h->sb_hi || (i > 0 && r->id <= dir[i - 1].id) || r->off % 8 != 0 ||
 			r->nrows == 0 || r->nrows > SIFT_COL_UNIT_MAX_ROWS || r->rank_base != rank ||
 			r->off + r->len > s[SIFT_SEC_POSTINGS].len || (i > 0 && r->off < dir[i - 1].off + dir[i - 1].len))
-			corrupt(seg, "SBDIR entry %u (SB %u at %llu, %u rows, rank %llu) is out of order.", i, r->sb,
+			corrupt(seg, "SBDIR entry %u (SB %u at %llu, %u rows, rank %llu) is out of order.", i, r->id,
 					ULL(r->off), r->nrows, ULL(r->rank_base));
 		rank += r->nrows;
 	}
@@ -189,36 +189,47 @@ sift_cseg_close(SiftColSegment *seg)
 }
 
 uint32
-sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb)
+sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 sb)
 {
 	uint32		lo = 0,
 				hi = seg->nsb,
 				g,
 				step = 1;
 
-	if (seg->nsb == 0 || sb <= seg->sbdir[0].sb)
+	if (seg->nsb == 0 || sb <= seg->sbdir[0].id)
 		return 0;
-	if (sb > seg->sbdir[seg->nsb - 1].sb)
+	if (sb > seg->sbdir[seg->nsb - 1].id)
 		return seg->nsb;
 	/*
 	 * The superblocks of a segment are nearly evenly spaced (all of them, or every other one where two workers built it): the unit at the same share of the
 	 * directory is near, and a gallop from it brackets the answer in the steps of its distance, not of the directory.
 	 */
-	g = (uint32) ((uint64) (sb - seg->sbdir[0].sb) * (seg->nsb - 1) / (seg->sbdir[seg->nsb - 1].sb - seg->sbdir[0].sb));
-	if (seg->sbdir[g].sb < sb)
+	g = (uint32) ((uint64) (sb - seg->sbdir[0].id) * (seg->nsb - 1) / (seg->sbdir[seg->nsb - 1].id - seg->sbdir[0].id));
+	if (seg->sbdir[g].id < sb)
 	{
-		for (lo = g + 1; lo + step < seg->nsb && seg->sbdir[lo + step - 1].sb < sb; step <<= 1)
+		for (lo = g + 1; lo + step < seg->nsb && seg->sbdir[lo + step - 1].id < sb; step <<= 1)
 			lo += step;
 		hi = Min(lo + step, seg->nsb);
 	}
 	else
 	{
-		for (hi = g; hi >= step && seg->sbdir[hi - step].sb >= sb; step <<= 1)
+		for (hi = g; hi >= step && seg->sbdir[hi - step].id >= sb; step <<= 1)
 			hi -= step;
 		lo = hi >= step ? hi - step + 1 : 0;
 	}
-	SIFT_BISECT(uint32, mid, lo, hi, seg->sbdir[mid].sb < sb);
+	SIFT_BISECT(uint32, mid, lo, hi, seg->sbdir[mid].id < sb);
 	return lo;
+}
+
+uint32
+sift_cseg_unit_of_sb(const SiftColSegment *seg, uint32 sb)
+{
+	uint32		u;
+
+	if (sift_cseg_keyed(&seg->entry))
+		return SIFT_CUNIT_UNKNOWN;
+	u = sift_cseg_unit_lower_bound(seg, sb);
+	return u < seg->nsb && seg->sbdir[u].id == sb ? u : seg->nsb;
 }
 
 /*
@@ -2276,7 +2287,7 @@ sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans)
 			uint64		pm[SIFT_PAGEMASK_WORDS];
 
 			if (!keyed)
-				r[u] = (SiftCSbSpan) {seg->sbdir[u].sb, seg->sbdir[u].sb};
+				r[u] = (SiftCSbSpan) {sift_cseg_unit_sb(seg, u), sift_cseg_unit_sb(seg, u)};
 			else if (sift_cseg_unit_pagemask(seg, u, pm))
 				r[u] = (SiftCSbSpan) {(uint32) pm[0] / SIFT_SB_PAGES, (uint32) (pm[0] >> 32) / SIFT_SB_PAGES};
 			else
@@ -3298,8 +3309,8 @@ tid_push(TidAcc *a, SiftKey key)
 		u = a->last_u;
 	else
 	{
-		u = sift_cseg_find_unit(seg, sb);
-		if (u >= seg->nsb || seg->sbdir[u].sb != sb)
+		u = sift_cseg_unit_of_sb(seg, sb);
+		if (u >= seg->nsb)
 			corrupt(seg, "The point directory of leaf %d lists the address %llx, which is in no unit of the segment.", a->col, (unsigned long long) key);
 		a->last_sb = sb;
 		a->last_u = u;
@@ -4637,9 +4648,9 @@ unit_dirty(SiftColSegment *seg, uint32 u)
 	Buffer		buf = InvalidBuffer;
 	uint8		b;
 
-	if (u >= seg->nsb || seg->sbdir[u].sb < seg->hdr->sb_lo)
-		corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, u < seg->nsb ? seg->sbdir[u].sb : 0, seg->hdr->sb_lo);
-	i = seg->sbdir[u].sb - seg->hdr->sb_lo;
+	if (u >= seg->nsb || seg->sbdir[u].id < seg->hdr->sb_lo)
+		corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, u < seg->nsb ? seg->sbdir[u].id : 0, seg->hdr->sb_lo);
+	i = seg->sbdir[u].id - seg->hdr->sb_lo;
 	b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
 
 	UnlockReleaseBuffer(buf);
@@ -4783,7 +4794,7 @@ sift_cseg_ver_unit(SiftColSegment *seg, uint32 u, uint32 *xmin, uint32 *cmin)
 
 		seg_read(seg, PRIV(seg)->vblob_at + vu->off, vu->xlen + vu->clen, buf);
 		if (!sift_cver_decode(buf, vu->xlen, n, xmin) || !sift_cver_decode(buf + vu->xlen, vu->clen, n, cmin))
-			corrupt(seg, "The versions of unit %u (SB %u) do not decode as %u rows.", u, seg->sbdir[u].sb, n);
+			corrupt(seg, "The versions of unit %u (SB %u) do not decode as %u rows.", u, seg->sbdir[u].id, n);
 		pfree(buf);
 		return;
 	}
@@ -4798,7 +4809,7 @@ sift_cseg_page_rows(SiftColSegment *seg, uint32 u, BlockNumber blk, uint32 *firs
 	uint32		pg = blk % SIFT_SB_PAGES;
 
 	if (!sift_cseg_unit_view(seg, u, &v))
-		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].sb);
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].id);
 	for (uint32 p = 0; p < v.npages; p++)
 		if (v.page[p] == pg)
 		{
@@ -4817,6 +4828,6 @@ sift_cseg_unit_keys(SiftColSegment *seg, uint32 u, SiftKey *keys)
 	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 
 	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != seg->sbdir[u].nrows)
-		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].sb);
-	sift_cunit_keys(&v, seg->sbdir[u].sb, keys);
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].id);
+	sift_cunit_keys(&v, seg->sbdir[u].id, keys);
 }
