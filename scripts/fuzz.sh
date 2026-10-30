@@ -50,12 +50,13 @@ canary() {
 	q -c "CREATE OR REPLACE FUNCTION sift_asan_canary(int) RETURNS void AS '$OUT/asan_canary.so' LANGUAGE C STRICT" \
 		-c "SELECT sift_asan_canary(64)" >/dev/null 2>&1 && { echo "canary call survived"; return 1; }
 	until q -c "SELECT 1" >/dev/null 2>&1; do sleep 0.5; done
-	# only the report of the canary leaves the directory: one the targets before it left stays for the final sanitizer-report
+	# only the report of the canary leaves the directory: one the targets before it left stays for the final sanitizer-report; its name no longer
+	# starts with asan., which the leak scan reads wherever it finds it
 	mkdir -p "$OUT/canary"
 	for f in "$TMP"/sanitizer/asan.*; do
-		grep -qxF "${f##*/}" <<<"$old" || { mv "$f" "$OUT/canary/" && moved=1; }
+		grep -qxF "${f##*/}" <<<"$old" || { mv "$f" "$OUT/canary/canary.${f##*/}" && moved=1; }
 	done
-	(( moved )) && grep -q 'heap-buffer-overflow' "$OUT"/canary/asan.* || { echo "no ASan report"; return 1; }
+	(( moved )) && grep -q 'heap-buffer-overflow' "$OUT"/canary/canary.asan.* || { echo "no ASan report"; return 1; }
 	echo "ASan aborted the backend and reported the overflow"
 }
 
