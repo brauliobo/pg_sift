@@ -3,6 +3,7 @@
  * the free list, pages and churn.
  */
 #include "store_test_int.h"
+#include "utils/timestamp.h"
 
 #ifdef SIFT_TESTING
 

@@ -3,6 +3,7 @@
  * (docs/COL-TAM.md). The passes of the maintenance worker are in vacuum_maint.c, VACUUM FULL / CLUSTER in vacuum_copy.c.
  */
 #include "vacuum_int.h"
+#include "utils/timestamp.h"
 
 /* A worker's limits, from sift.table_auto_defrag_max_active and sift.table_auto_defrag_wal_rate (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop, and the WAL bytes per second it may average since the worker started */
 int	pass_max_active = 0;

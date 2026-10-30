@@ -4,6 +4,7 @@
  * the floors that keep small segments from being promoted
  */
 #include "postgres.h"
+#include "utils/timestamp.h"
 #include "col/maint/maint_int.h"
 
 #ifdef SIFT_TESTING

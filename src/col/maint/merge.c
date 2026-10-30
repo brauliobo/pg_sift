@@ -4,6 +4,7 @@
  * the output a merge writes
  */
 #include "postgres.h"
+#include "utils/timestamp.h"
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 

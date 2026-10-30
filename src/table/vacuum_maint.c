@@ -2,6 +2,7 @@
  * table/vacuum_maint.c - the maintenance of a sift_table: sift_tbl_maintain, the automatic defragmentation tick, the background VACUUM and the workers (settle, maintenance).
  */
 #include "vacuum_int.h"
+#include "utils/timestamp.h"
 
 void
 sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)

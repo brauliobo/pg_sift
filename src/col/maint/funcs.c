@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/relation.h"
 #include "funcapi.h"
+#include "utils/timestamp.h"
 #include "core/ops.h"
 #include "core/sql.h"
 #include "col/maint/maint_int.h"
