@@ -1,15 +1,16 @@
 name: ci
 
-# Only a pull request from an `integration/` branch, or one labeled `ci`, starts work; any other pull request skips every job (`gate` still passes). That one runs the
-# fast tier: lint, and one PostgreSQL 18 job with the regression tests its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`)
-# and the tests it touches, a few minutes in all. A push to main runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
-# release-library stages and the other jobs; its base is the last green run of main, so a red or cancelled push is not forgotten by the next one.
+# Every pull request runs the fast tier: lint, and one PostgreSQL 18 job on x86 with the regression tests its diff can break (scripts/areas.tsv, `scripts/ci.sh affected`)
+# and the tests it touches, a few minutes in all. A pull request from an `integration/` branch, or one labeled `ci-full` (one at a time: the Actions minutes of a private
+# repository are finite), adds the fast tier on PostgreSQL 17, 19 and AArch64, macOS, and the SQLite, MariaDB and replication jobs its diff can break. A push to main or to an
+# `integration/` branch runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
+# release-library stages and the other jobs; its base is the last green run of that branch, so a red or cancelled push is not forgotten by the next one.
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
 # The full tier is four shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
 # A deep run does not repeat the x86 quick shards on 17 and 18: its full tier has the same jobs at full scale; the quick shards of AArch64 and 19 stay, with the release-library list on 18.
-# Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
+# Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a `ci-full` pull request, the quick tier
 # of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 # A pull request of any kind runs one more job, PostgreSQL 18 with assertions (`cassert: true`), on the regression tests that run workers (`ASSERT_JOBS` of scripts/ci/affected.sh), when it
@@ -17,7 +18,7 @@ name: ci
 # No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:
   push:
-    branches: [main]
+    branches: [main, 'integration/**']
   pull_request:
     types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
@@ -38,20 +39,20 @@ permissions:
   contents: read
   actions: read
 
-# a pull request run is cancelled by the next push to the same pull request. A push to main never cancels the run of the one before it: that run finishes, and of the
+# a pull request run is cancelled by the next push to the same pull request. A push to main or to an integration branch never cancels the run of the one before it: that run finishes, and of the
 # runs waiting behind it GitHub keeps the newest, which scopes its diff from the last green run (see `changes`), so every batch of merges gets one complete run and
 # the head of main is tested. A nightly or dispatch run has a group of its own, so a push never cancels it (main-verify.yml dispatches one when the head of main has none).
 # A dispatch with heavy has a group of its own per run, so it never waits behind another run of the same ref (a long deep run held a lean one pending for six minutes); two
 # heavy dispatches of one ref can therefore run together, so check `gh run list` before dispatching. No dispatch is cancelled by another.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && inputs.heavy && format('-run-{0}', github.run_id) || '' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-full' && format('-label-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && inputs.heavy && format('-run-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# `changes` and `lint` start the work and carry the condition; the other jobs skip through `needs`. Any label other than `ci` starts a run of its own that skips
+# `changes` and `lint` start the work and carry the condition; the other jobs skip through `needs`. Any label other than `ci-full` starts a run of its own that skips
 # everything, in a group of its own, so it does not cancel the run of the pull request.
 jobs:
   changes:
-    if: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'assertions' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'ci-full' || github.event.label.name == 'assertions' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -71,22 +72,22 @@ jobs:
       - id: scope
         env:
           GH_TOKEN: ${{ github.token }}
-          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci') }}
+          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci-full') }}
         run: |
           base=all
           case "$GITHUB_EVENT_NAME" in
             pull_request) base=origin/$GITHUB_BASE_REF ;;
             push)
               # the newest green run of main whose commit is an ancestor of this one: what it checked is not checked again
-              for sha in $(gh run list --workflow ci.yml --branch main --status success --limit 20 --json headSha --jq '.[].headSha'); do
+              for sha in $(gh run list --workflow ci.yml --branch "$GITHUB_REF_NAME" --status success --limit 20 --json headSha --jq '.[].headSha'); do
                 git merge-base --is-ancestor "$sha" HEAD 2>/dev/null && { base=$sha; break; }
               done ;;
           esac
           echo "base: $base"
           scripts/ci.sh affected --list "$base" | tee -a "$GITHUB_STEP_SUMMARY"
-          # a pull request that is neither into an integration branch nor labeled `ci` runs the assertions family and nothing else (below)
+          # a pull request that is neither from an integration branch nor labeled `ci-full` runs the fast tier on x86 and the assertions family (below), not the other platforms
           if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$CIPR" != true ]; then
-            scripts/ci.sh affected --github "$base" | grep -E '^cassert(jobs)?=' | tee -a "$GITHUB_OUTPUT"
+            scripts/ci.sh affected --github "$base" | grep -vE '^(sqlite|mariadb|replication|macos)=' | tee -a "$GITHUB_OUTPUT"
           else
             scripts/ci.sh affected --github "$base" | tee -a "$GITHUB_OUTPUT"
           fi
@@ -106,7 +107,7 @@ jobs:
           FASTPG: ${{ steps.scope.outputs.fastpg }}
           VERSIONS: ${{ inputs.versions }}
           EVENT: ${{ github.event_name }}
-          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci') }}
+          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci-full') }}
           CASSERT: ${{ steps.scope.outputs.cassert }}
           CASSERTJOBS: ${{ steps.scope.outputs.cassertjobs }}
           LABEL_ASSERTIONS: ${{ contains(github.event.pull_request.labels.*.name, 'assertions') }}
@@ -118,7 +119,7 @@ jobs:
           set -o pipefail   # a jq error must fail the step: an empty matrix skips every test job and the gate passes
           d=; [ "$DEEP" = true ] && d=1
           jq -nc --argjson full17 "$(scripts/ci.sh --shards 17 $d)" --argjson full18 "$(scripts/ci.sh --shards 18 $d)" --argjson n "${NSHARDS:-1}" --arg cipr "$CIPR" --arg cassert "$CASSERT" --arg cassertjobs "$CASSERTJOBS" --arg label "$LABEL_ASSERTIONS" --argjson heavy "$HEAVY" --argjson deep "$DEEP" --arg pg "$PG" --arg fastpg "$FASTPG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
-            if $event == "pull_request" then (if $cipr == "true" and $fastpg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end)
+            if $event == "pull_request" then (if $fastpg == "true" then ([{pg: 18, arm: false}] + (if $cipr == "true" then [{pg: 18, arm: true}, {pg: 17}, {pg: 19, git: true}] else [] end)) | map({shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast} + .) else [] end)
               + (if $cassert == "true" or $label == "true" then [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: $cassertjobs, cassert: true}] else [] end) else
             (if $heavy then [(17, 18) as $v | (if $v == 17 then $full17 else $full18 end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end)
             + (if $pg == "true" then (if $deep then [] else [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}] end)
@@ -130,7 +131,7 @@ jobs:
 
   # no PostgreSQL: the syntax of every script, the portable core, the map of areas against the tests, the workflows
   lint:
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'labeled' || github.event.label.name == 'ci') && (startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci')) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'ci-full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -296,7 +297,7 @@ jobs:
   replication:
     name: Replication in containers (${{ matrix.image }})
     needs: changes
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.replication == 'true' }}
+    if: ${{ needs.changes.outputs.replication == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -311,7 +312,7 @@ jobs:
   sqlite:
     name: SQLite extension
     needs: changes
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.sqlite == 'true' }}
+    if: ${{ needs.changes.outputs.sqlite == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -342,7 +343,7 @@ jobs:
   mariadb:
     name: MariaDB extension (${{ matrix.series }})
     needs: changes
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.mariadb == 'true' }}
+    if: ${{ needs.changes.outputs.mariadb == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:

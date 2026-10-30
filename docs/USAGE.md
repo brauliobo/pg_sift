@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (whole suite), Linux arm64 (PostgreSQL 18; fast tier of every labeled pull request in CI) and macOS arm64 (Homebrew build and test plus a few regression tests, in CI). The column engine's chunk codec links `liblz4` and `libzstd` when their headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one; the packages depend on both.
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (whole suite), Linux arm64 (PostgreSQL 18; fast tier of a pull request in CI) and macOS arm64 (Homebrew build and test plus a few regression tests, in CI). The column engine's chunk codec links `liblz4` and `libzstd` when their headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one; the packages depend on both.
 
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
