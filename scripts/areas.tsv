@@ -85,7 +85,7 @@
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 # the focus table and its generator: read by `scripts/ci.sh affected --focus` only (a local shortcut; CI runs the jobs of the map above)
-^scripts/focus(-gen\.sh|-pins\.tsv|\.tsv)$	-
+^scripts/(focus(-gen\.sh|-pins\.tsv|\.tsv)|moved-sources\.tsv)$	-
 # the landing script: run by people, by no job
 ^scripts/land(\.sh|-selftest\.sh|-union\.py)$	-
 

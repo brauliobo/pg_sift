@@ -96,7 +96,7 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/table/analyze.c|res
 tidy|bugprone-integer-division|src/table/src.c|result of integer division used in a floating point context; possible loss of precision
 tidy|bugprone-not-null-terminated-result|src/bm25/analyze.c|the result from calling 'memcpy' is not null-terminated
 tidy|bugprone-signed-char-misuse|src/bm25/query.c|comparison between 'signed char' and 'unsigned char'
-tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/agg/plan_from.c|comparing object representation of type 'SiftSrcPreagg' (aka 'struct SiftSrcPreagg') which does not have a unique object representation; consider comparing the members of the object manually
+tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/agg/from/part.c|comparing object representation of type 'SiftSrcPreagg' (aka 'struct SiftSrcPreagg') which does not have a unique object representation; consider comparing the members of the object manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/col/seg_maint.c|comparing object representation of type 'double' which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float4' (aka 'float') which does not have a unique object representation; consider comparing the values manually
 tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparing object representation of type 'float8' (aka 'double') which does not have a unique object representation; consider comparing the values manually
