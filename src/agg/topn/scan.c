@@ -249,6 +249,45 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 	pfree(vm);
 }
 
+/*
+ * The rank of each OID of an enum's values in the order of the type: a pass over the rows for each value (branch free, so the compiler vectorizes it: a
+ * binary search of random OIDs costs a misprediction a row). A row that matches no value (a NULL row, or a value added while the scan runs) sends it to
+ * enum_rank, which raises the error for the second.
+ */
+static void
+enum_to_rank(const TopKey *k, const SiftSrcVec *v, int nrow, int32 *rank)
+{
+	const int32 *oid = v->data;
+	const uint8 *nl = v->isnull;
+	int64		matched = 0,
+				want_rows = nrow;
+
+	if (k->nenum <= TOPN_ENUM_PASSES)
+	{
+		for (int i = 0; nl && i < nrow; i++)
+			want_rows -= nl[i];
+		for (uint32 e = 0; e < k->nenum; e++)
+		{
+			const int32 val = (int32) k->eoid[e],
+						r = (int32) k->erank[e];
+			int32		n = 0;
+
+			for (int i = 0; i < nrow; i++)
+			{
+				int32		hit = (oid[i] == val) & (nl == NULL || !nl[i]);
+
+				rank[i] += hit * r;
+				n += hit;
+			}
+			matched += n;
+		}
+		if (matched == want_rows)
+			return;
+	}
+	for (int i = 0; i < nrow; i++)
+		rank[i] = nl && nl[i] ? 0 : (int32) enum_rank(k, oid[i]);
+}
+
 static void
 unit_reset(SiftTopN *t)
 {
@@ -439,6 +478,18 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum == 0 && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64 || k0->vtype == SCV_F64) &&
 		sift_colk->bits_count(rmask, nw) * TOPN_VEC_DENSITY >= nrow)
 		vec_rows(t, k0, key0, rmask, nrow, &bar, &barred, &m);
+	else if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum > 0 && sift_colk->bits_count(rmask, nw) * TOPN_VEC_DENSITY >= nrow)
+	{
+		/* an enum: the ranks of its OIDs in the order of the type are the key of the integer kernels */
+		TopKey		rk = *k0;
+		SiftSrcVec	rv = *key0;
+		int32	   *rank = MemoryContextAllocAligned(t->ucxt, nrow * sizeof(int32) + SIFT_AGG_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+
+		enum_to_rank(k0, key0, nrow, rank);
+		rk.nenum = 0;
+		rv.data = rank;
+		vec_rows(t, &rk, &rv, rmask, nrow, &bar, &barred, &m);
+	}
 	else
 		scan_rows(t, k0, key0, rmask, 0, nw, &bar, &barred, &m);
 	for (int q = 0; q < m; q++)

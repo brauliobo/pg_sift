@@ -27,6 +27,7 @@
 #define TOPN_OUT_ROWS	16
 /* Rows of a unit the first key of which is an integer, at least, for the best value of a segment to be looked at before its rows (vec_rows), and the rows of a segment */
 #define TOPN_VEC_ROWS	512
+#define TOPN_ENUM_PASSES 16		/* values of an enum the ranks of its OIDs are found for by one pass each, not by a search for each row */
 #define TOPN_SEG		256
 /*
  * ... and one row in this many of the unit passes the filters at least: the passes of the kernels cost the same whatever the rows are, so fewer rows go

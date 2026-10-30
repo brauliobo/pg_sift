@@ -368,7 +368,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			t->nblob++;
 		}
 	}
-	if (t->nblob > 0 || t->nexpr > 0)
+	if (t->nblob > 0 || t->nexpr > 0 || t->key[0].nenum > 0)
 		t->ucxt = AllocSetContextCreate(cxt, "sift top-N unit", ALLOCSET_DEFAULT_SIZES);
 	if (t->nblob > 0)
 		t->oc = palloc0(ORD_CACHE * sizeof(OrdCode));
