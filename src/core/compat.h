@@ -379,4 +379,7 @@ eclass_member_iterator_next(EquivalenceMemberIterator *it)
 #define ROWCMP_GT	ROWCOMPARE_GT
 #endif
 
+/* The cast of a JSON null to a number or a boolean is NULL from 18 and an error before */
+#define SIFT_JSON_NULL_CAST_RAISES	(PG_VERSION_NUM < 180000)
+
 #endif							/* SIFT_COMPAT_H */

@@ -196,8 +196,7 @@ recheck_leaf(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc, int col)
 	{
 		if (v->type == jbvNumeric)
 			return convert(sh, rc, col, value_text(v));
-		/* a JSON null casts to NULL from PostgreSQL 18, and raises before */
-		if (v->type != jbvNull || PG_VERSION_NUM < 180000)
+		if (v->type != jbvNull || SIFT_JSON_NULL_CAST_RAISES)
 			cast_error(rc, v, FLOAT8OID);
 		return false;
 	}
@@ -208,7 +207,7 @@ recheck_leaf(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc, int col)
 			{
 				if (v->type == jbvNumeric)
 					return convert(sh, rc, col, value_text(v));
-				if (v->type != jbvNull || PG_VERSION_NUM < 180000)
+				if (v->type != jbvNull || SIFT_JSON_NULL_CAST_RAISES)
 					cast_error(rc, v, rc->mem[i].cast);
 				return false;
 			}

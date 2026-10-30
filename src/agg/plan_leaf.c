@@ -705,7 +705,7 @@ match_leaf(AggCtx *c, Node *e)
 {
 	int			leaf = match_leaf_node(c, e);
 
-#if PG_VERSION_NUM < 180000
+#if SIFT_JSON_NULL_CAST_RAISES
 	if (leaf >= 0 && json_cast_target(func_of(strip_relabel(e))) != InvalidOid)
 		c->jcast = bms_add_member(c->jcast, leaf);
 #endif

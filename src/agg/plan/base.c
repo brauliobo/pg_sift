@@ -397,9 +397,6 @@ int			agg_index_pick;
 int			agg_index_usable;
 double		agg_stage_normal = HUGE_VAL;
 
-#if PG_VERSION_NUM < 180000
-#endif
-
 const CustomPathMethods agg_path_methods = {"SiftAgg", agg_plan_path, NULL};
 
 const CustomScanMethods sift_agg_plan_methods = {"SiftAgg", sift_agg_create_state};
