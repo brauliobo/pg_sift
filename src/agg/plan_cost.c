@@ -812,9 +812,7 @@ child_keys(PlannerInfo *root, Path *p)
 	{
 		case JOIN_INNER:
 		case JOIN_SEMI:
-#if PG_VERSION_NUM >= 180000
-		case JOIN_RIGHT_SEMI:
-#endif
+		SIFT_CASE_JOIN_RIGHT_SEMI
 			return Max(rows, IsA(p, NestPath) ? child_keys(root, jp->outerjoinpath) :
 					   Min(child_keys(root, jp->outerjoinpath), child_keys(root, jp->innerjoinpath)));
 		case JOIN_LEFT:

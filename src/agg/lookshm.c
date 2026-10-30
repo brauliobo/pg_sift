@@ -22,14 +22,10 @@
 #include "storage/spin.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
-#if PG_VERSION_NUM >= 180000
-#include "utils/wait_classes.h"
-#else
-#include "utils/wait_event.h"
-#endif
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
+#include "col/dsmreg.h"
 
 int			sift_agg_lookup_shared_kb = -1;
 #define LOOKSHM_SLOTS		64
@@ -108,16 +104,8 @@ typedef struct LookShmPin
 static LookShm *shm;
 static List *attached;
 
-#if PG_VERSION_NUM >= 190000
-#define SHM_INIT_ARGS		void *ptr, void *arg
-#define SHM_GET(init, found)	GetNamedDSMSegment("sift_agg_lookup", sizeof(LookShm), init, found, NULL)
-#else
-#define SHM_INIT_ARGS		void *ptr
-#define SHM_GET(init, found)	GetNamedDSMSegment("sift_agg_lookup", sizeof(LookShm), init, found)
-#endif
-
 static void
-shm_init(SHM_INIT_ARGS)
+shm_init(SIFT_DSM_INIT_ARGS)
 {
 	memset(ptr, 0, sizeof(LookShm));
 	SpinLockInit(&((LookShm *) ptr)->mutex);
@@ -126,10 +114,8 @@ shm_init(SHM_INIT_ARGS)
 static LookShm *
 shm_get(void)
 {
-	bool		found;
-
 	if (shm == NULL)
-		shm = SHM_GET(shm_init, &found);
+		shm = sift_dsm_join("sift_agg_lookup", sizeof(LookShm), shm_init);
 	return shm;
 }
 

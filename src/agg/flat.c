@@ -175,11 +175,7 @@ pull_up_lateral(Query *q, JoinExpr *j, RangeTblEntry *rte, List **pulled)
 static Node *
 read_columns(Node *n, Pulled *p)
 {
-#if PG_VERSION_NUM >= 180000
-	return ReplaceVarsFromTargetList(n, p->rti, 0, p->rte, p->targetlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL);
-#else
-	return ReplaceVarsFromTargetList(n, p->rti, 0, p->rte, p->targetlist, REPLACEVARS_REPORT_ERROR, 0, NULL);
-#endif
+	return sift_replace_vars_from_targetlist(n, p->rti, p->rte, p->targetlist);
 }
 
 static bool flatten_query(Query *q, bool apply);
@@ -1020,11 +1016,7 @@ typedef struct DecorRead
 
 /* a column of the lateral sub-select read where the join nulls it (PostgreSQL 19 hands the callback a const Var) */
 static Node *
-#if PG_VERSION_NUM >= 190000
-decor_read(const Var *var, replace_rte_variables_context *context)
-#else
-decor_read(Var *var, replace_rte_variables_context *context)
-#endif
+decor_read(SIFT_CALLBACK_VAR *var, replace_rte_variables_context *context)
 {
 	DecorRead  *read = context->callback_arg;
 	List	   *exprs = read->exprs;

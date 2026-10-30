@@ -21,6 +21,7 @@
 
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
+#include "commands/explain_state.h"
 #endif
 
 /* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
@@ -326,6 +327,56 @@ eclass_member_iterator_next(EquivalenceMemberIterator *it)
 #define sift_collate_is_c(collid) (pg_newlocale_from_collation(collid)->collate_is_c)
 #else
 #define sift_collate_is_c(collid) lc_collate_is_c(collid)
+#endif
+
+/* ReplaceVarsFromTargetList takes the result relation (18) */
+#if PG_VERSION_NUM >= 180000
+#define sift_replace_vars_from_targetlist(n, varno, rte, tlist) \
+	ReplaceVarsFromTargetList(n, varno, 0, rte, tlist, 0, REPLACEVARS_REPORT_ERROR, 0, NULL)
+#else
+#define sift_replace_vars_from_targetlist(n, varno, rte, tlist) \
+	ReplaceVarsFromTargetList(n, varno, 0, rte, tlist, REPLACEVARS_REPORT_ERROR, 0, NULL)
+#endif
+
+/* A replace_rte_variables callback gets a const Var (19) */
+#if PG_VERSION_NUM >= 190000
+#define SIFT_CALLBACK_VAR	const Var
+#else
+#define SIFT_CALLBACK_VAR	Var
+#endif
+
+/* The result relations of a PlannedStmt are a set of relids (19), a list of range table indexes before */
+#if PG_VERSION_NUM >= 190000
+#define sift_clear_result_relations(ps)	((ps)->resultRelationRelids = NULL)
+#else
+#define sift_clear_result_relations(ps)	((ps)->resultRelations = NIL)
+#endif
+
+/* The leader reads the error queues of its workers now (18 renamed the function) */
+#if PG_VERSION_NUM >= 180000
+#define sift_read_parallel_messages()	ProcessParallelMessages()
+#else
+#define sift_read_parallel_messages()	HandleParallelMessages()
+#endif
+
+/* The semi join that keeps the rows of its inner side exists from 18; a case label, empty before */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_CASE_JOIN_RIGHT_SEMI	case JOIN_RIGHT_SEMI:
+#else
+#define SIFT_CASE_JOIN_RIGHT_SEMI
+#endif
+
+/* The comparison a RowCompareExpr makes: a CompareType (18), a RowCompareType before */
+#if PG_VERSION_NUM >= 180000
+#define ROWCMP_KIND(rc)	((rc)->cmptype)
+#define ROWCMP_LT	COMPARE_LT
+#define ROWCMP_LE	COMPARE_LE
+#define ROWCMP_GT	COMPARE_GT
+#else
+#define ROWCMP_KIND(rc)	((rc)->rctype)
+#define ROWCMP_LT	ROWCOMPARE_LT
+#define ROWCMP_LE	ROWCOMPARE_LE
+#define ROWCMP_GT	ROWCOMPARE_GT
 #endif
 
 #endif							/* SIFT_COMPAT_H */

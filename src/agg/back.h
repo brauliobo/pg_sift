@@ -28,10 +28,6 @@
 #include "agg/colsrc.h"
 #include "core/compat.h"
 
-#if PG_VERSION_NUM >= 180000
-#include "commands/explain_state.h"
-#endif
-
 /* What a backend sees of a scan. Valid for the scan; the pointers are the scan's own. */
 typedef struct SiftAggScan
 {

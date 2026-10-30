@@ -737,18 +737,6 @@ is_gate(Node *n)
  * the executor evaluates for every row: a keyset page (WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT n) then reads the units from the key on, not all of them.
  * NULL where either gives it: the first pair that differs decides, as in the row compare. NULL when an operator is missing.
  */
-#if PG_VERSION_NUM >= 180000
-#define ROWCMP_KIND(rc)	((rc)->cmptype)
-#define ROWCMP_LT	COMPARE_LT
-#define ROWCMP_LE	COMPARE_LE
-#define ROWCMP_GT	COMPARE_GT
-#else
-#define ROWCMP_KIND(rc)	((rc)->rctype)
-#define ROWCMP_LT	ROWCOMPARE_LT
-#define ROWCMP_LE	ROWCOMPARE_LE
-#define ROWCMP_GT	ROWCOMPARE_GT
-#endif
-
 static Node *
 expand_row_compare(RowCompareExpr *rc)
 {

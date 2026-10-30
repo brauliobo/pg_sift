@@ -681,11 +681,7 @@ select_stmt(AggExec *ex, Plan *tree)
 	*ps = *ex->css.ss.ps.state->es_plannedstmt;
 	ps->planTree = tree;
 	ps->rowMarks = NIL;
-#if PG_VERSION_NUM >= 190000
-	ps->resultRelationRelids = NULL;
-#else
-	ps->resultRelations = NIL;
-#endif
+	sift_clear_result_relations(ps);
 	ps->utilityStmt = NULL;
 	ps->commandType = CMD_SELECT;
 	ps->canSetTag = false;
@@ -992,11 +988,7 @@ par_receive(AggExec *ex)
 			if (r == SHM_MQ_DETACHED)
 			{
 				/* a worker that failed sent its error before it exited, but the signal that makes the interrupt raise it may not have been handled yet: read the error queues now, so that the error of the worker is the one raised */
-#if PG_VERSION_NUM >= 180000
-				ProcessParallelMessages();
-#else
-				HandleParallelMessages();
-#endif
+				sift_read_parallel_messages();
 				ereport(ERROR,
 						(errcode(ERRCODE_CONNECTION_FAILURE),
 						 errmsg("sift: a worker of a parallel aggregate stopped without its result"),
