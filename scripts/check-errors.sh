@@ -3,7 +3,7 @@
 #   - an ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) names what to do: errhint or errdetail;
 #   - no ERROR has SQLSTATE XX000: a condition the code rules out is SIFT_INVARIANT(cond, "text") (core/host.h), anything else
 #     a reachable condition with its own errcode (54000, 0A000, 55000, 40001, XX001/XX002 for corruption, ...).
-#   An `errcode(ERRCODE_INTERNAL_ERROR)` is XX000 too. The test-only files (*_test.c, test.c, compiled only with SIFT_TESTING) are
+#   An `errcode(ERRCODE_INTERNAL_ERROR)` is XX000 too. The test-only files (*_test.c, test.c, and the files of a directory test/, compiled only with SIFT_TESTING) are
 #   not checked; any other site may say `check-errors: allow` in a comment on the line of the call or one of the two above it.
 #
 #   scripts/check-errors.sh
@@ -65,7 +65,7 @@ for root, _, names in os.walk(src):
         path = os.path.join(root, name)
         with open(path, encoding="utf-8") as f:
             raw = f.read()
-        if re.search(r"(^|_)test(_am)?\.c$", name) and "SIFT_TESTING" in raw:
+        if (re.search(r"(^|_)test(_am)?\.c$", name) or os.path.basename(root) == "test") and "SIFT_TESTING" in raw:
             continue
         text, notes = blank(raw)
         files += 1
