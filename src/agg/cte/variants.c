@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "optimizer/cost.h"
+#include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 
 #include "agg/agg.h"
@@ -34,6 +35,34 @@ plan_in_own_context(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	old = MemoryContextSwitchTo(*cx);
 	stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	MemoryContextSwitchTo(old);
+	return stmt;
+}
+
+/*
+ * The inline plan is searched for join orders in groups of at most INLINE_JOIN_LIMIT relations: its bodies join a dozen tables, and the full search is most of the 19 ms
+ * a statement costs to plan.
+ */
+#define INLINE_JOIN_LIMIT 4
+
+static PlannedStmt *
+plan_inline(SIFT_PLANNER_PARAMS, MemoryContext *cx)
+{
+	int			join_limit = join_collapse_limit,
+				from_limit = from_collapse_limit;
+	PlannedStmt *stmt;
+
+	join_collapse_limit = Min(join_limit, INLINE_JOIN_LIMIT);
+	from_collapse_limit = Min(from_limit, INLINE_JOIN_LIMIT);
+	PG_TRY();
+	{
+		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
+	}
+	PG_FINALLY();
+	{
+		join_collapse_limit = join_limit;
+		from_collapse_limit = from_limit;
+	}
+	PG_END_TRY();
 	return stmt;
 }
 
@@ -116,7 +145,7 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	memset(v, 0, sizeof(*v));
 	outer_variant = agg_variant_push("inline");
 	agg_read_rows = 0;
-	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
+	v->inlined = plan_inline(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
 	read_rows = agg_read_rows;
 	agg_variant = outer_variant;
 	v->read_rows = read_rows;
@@ -248,7 +277,7 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 			walk.only = vd->mask;
 		shared_cte_walker((Node *) inline_parse, &walk);
 
-		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
+		stmt = plan_inline(SIFT_PLANNER_ARGS(inline_parse), cx);
 		agg_variant = outer_variant;
 		inline_won = true;
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, 0, 0);

@@ -4,6 +4,7 @@
 CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
 COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
+INLINE_JOIN_LIMIT	width of the join-order search of the inline plan of a shared CTE: a planning-cost choice with no visible limit (the plan differs, the rows do not)
 LOOKCACHE_MAX_BLOCKS	derived from the lookup cache budget (sift.agg_lookup_cache_kb)
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
 ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of key_cut_rows (the directory of a unit is read with the head of its record)
