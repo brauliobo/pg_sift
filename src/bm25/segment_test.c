@@ -8,6 +8,9 @@
 #include "bm25/segment_sql.h"
 #include "funcapi.h"
 #include "bm25/kernels.h"
+#include "bm25/posting_int.h"
+#include "core/varint.h"
+#include "common/pg_prng.h"
 #include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_postings);
@@ -309,6 +312,109 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 	v[0] = Int64GetDatum(postings);
 	v[1] = Int64GetDatum(tfsum);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_posblk);
+
+/*
+ * Position blocks (bm25/posblk.c): n random blocks of 1 to 32 postings (single occurrences, runs, gaps of thousands, counts of 3000, first positions of
+ * every width) are coded, read back whole as records and posting by posting in any order, then damaged byte by byte and read again, which must stay
+ * inside the block (the sanitizer and hardened flavors trap otherwise). Returns the number of blocks that did not come back as they went in.
+ */
+Datum
+sift_test_posblk(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rng;
+	int32		n = PG_GETARG_INT32(1);
+	int64		bad = 0;
+
+	pg_prng_seed(&rng, PG_GETARG_INT64(0));
+	for (int32 b = 0; b < n; b++)
+	{
+		uint32		k = 1 + pg_prng_uint64_range(&rng, 0, SIFT_POS_EVERY - 1),
+					mode = b % 6,
+					cnt[SIFT_POS_EVERY],
+					off[SIFT_POS_EVERY + 1],
+				   *exp = palloc(sizeof(uint32) * 4096 * 2);
+		Size		lend[SIFT_POS_EVERY];
+		StringInfoData rec,
+					blk,
+					back;
+		uint8	   *buf;
+		SiftPosBlk	bk;
+		bool		same = true;
+
+		initStringInfo(&rec);
+		initStringInfo(&blk);
+		initStringInfo(&back);
+		enlargeStringInfo(&rec, 4096 * 2 * 5 + 64);
+		off[0] = 0;
+		for (uint32 i = 0; i < k; i++)
+		{
+			uint32		first = mode == 5 ? (1U << 30) + pg_prng_uint64_range(&rng, 0, 1000) : mode == 0 ? 0 : (pg_prng_uint32(&rng) >> 1) >> pg_prng_uint64_range(&rng, 0, 30),
+						pos;
+			uint8	   *p = (uint8 *) rec.data + rec.len;
+
+			cnt[i] = mode == 0 ? 1 : mode == 4 && i == 0 ? 3000 : mode == 2 ? 1 + pg_prng_uint64_range(&rng, 0, 59) : 1 + pg_prng_uint64_range(&rng, 0, 3);
+			exp[off[i]] = pos = first;
+			p = sift_put_varint(p, (uint64) first << 1 | (cnt[i] > 1));
+			if (cnt[i] > 1)
+				p = sift_put_varint(p, cnt[i] - 2);
+			for (uint32 j = 1; j < cnt[i]; j++)
+			{
+				uint32		g = mode == 3 ? pg_prng_uint64_range(&rng, 0, 100000) : mode == 4 ? 0 : pg_prng_uint64_range(&rng, 0, 40);
+
+				p = sift_put_varint(p, g);
+				exp[off[i] + j] = pos += g + 1;
+			}
+			rec.len = (char *) p - rec.data;
+			off[i + 1] = off[i] + cnt[i];
+		}
+		sift_posblk_put((uint8 *) rec.data, rec.len, k, &blk);
+		buf = palloc0(blk.len + 8);
+		memcpy(buf, blk.data, blk.len);
+		if (!sift_posblk_leb(buf, blk.len, k, &back, lend) || back.len != rec.len || memcmp(back.data, rec.data, rec.len) != 0 || lend[k - 1] != (Size) back.len)
+			same = false;
+		if (!sift_posblk_open(&bk, buf, blk.len, k))
+			same = false;
+		for (uint32 t = 0, i = 0; same && t < 2 * k; t++, i = (i * 7 + 3 + t) % k)
+		{
+			uint32	   *v = palloc(sizeof(uint32) * bk.cnt[i]);
+
+			if (bk.cnt[i] != cnt[i] || !sift_posblk_get(&bk, i, v) || memcmp(v, exp + off[i], sizeof(uint32) * cnt[i]) != 0)
+				same = false;
+			pfree(v);
+		}
+		bad += !same;
+		/* damaged: any byte of the block set to any value, 64 times */
+		for (int d = 0; d < 64; d++)
+		{
+			uint8	   *dmg = palloc0(blk.len + 8);
+
+			memcpy(dmg, blk.data, blk.len);
+			dmg[pg_prng_uint64_range(&rng, 0, blk.len - 1)] = pg_prng_uint32(&rng);
+			resetStringInfo(&back);
+			if (sift_posblk_leb(dmg, blk.len, k, &back, lend))
+				(void) 0;
+			if (sift_posblk_open(&bk, dmg, blk.len, k))
+				for (uint32 i = 0; i < k; i++)
+				{
+					uint32	   *v = palloc(sizeof(uint32) * bk.cnt[i]);
+
+					if (!sift_posblk_get(&bk, i, v))
+						break;
+					pfree(v);
+				}
+			pfree(dmg);
+		}
+		pfree(exp);
+		pfree(rec.data);
+		pfree(blk.data);
+		pfree(back.data);
+		pfree(buf);
+		CHECK_FOR_INTERRUPTS();
+	}
+	PG_RETURN_INT64(bad);
 }
 
 #endif							/* SIFT_TESTING */

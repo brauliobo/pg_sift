@@ -431,3 +431,5 @@ END $$;
 
 CREATE FUNCTION sift._test_col_dict_shared_hold(int4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_hold' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_posblk(seed int8, n int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_posblk' LANGUAGE C STRICT;

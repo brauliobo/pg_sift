@@ -32,6 +32,8 @@ SELECT 'pb3_idx' AS idx, format FROM sift._test_segment_formats('pb3_idx') WHERE
 UNION ALL SELECT 'pb4_idx', format FROM sift._test_segment_formats('pb4_idx') WHERE kind = 'immutable'
 UNION ALL SELECT 'pb4_idx metapage minor', format FROM sift._test_segment_formats('pb4_idx') WHERE kind = 'metapage minor';
 SELECT sift.verify('pb3_idx', true), sift.verify('pb4_idx', true);
+-- the block coder alone: random blocks of every shape come back as they went in, and damaged ones are read without leaving the block
+SELECT sift._test_posblk(7, 1200) AS blocks_different, sift._test_posblk(8, 1200) AS blocks_different_again;
 SELECT pg_relation_size('pb4_idx') < pg_relation_size('pb3_idx') AS blocks_smaller;
 
 CREATE FUNCTION qs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[

@@ -42,6 +42,13 @@ SELECT sift.verify('pb3_idx', true), sift.verify('pb4_idx', true);
         | 
 (1 row)
 
+-- the block coder alone: random blocks of every shape come back as they went in, and damaged ones are read without leaving the block
+SELECT sift._test_posblk(7, 1200) AS blocks_different, sift._test_posblk(8, 1200) AS blocks_different_again;
+ blocks_different | blocks_different_again 
+------------------+------------------------
+                0 |                      0
+(1 row)
+
 SELECT pg_relation_size('pb4_idx') < pg_relation_size('pb3_idx') AS blocks_smaller;
  blocks_smaller 
 ----------------
