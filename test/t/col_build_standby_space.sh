@@ -28,8 +28,10 @@ OPTS="SET max_parallel_maintenance_workers = 4"
 SMALL="SET min_parallel_table_scan_size = 0"
 size() { sql primary "SELECT pg_relation_size('t_idx')"; }
 live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
-# PCT: the most the file may be over its live bytes, in percent (the default 110)
-tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * ${1:-110} / 100 ))"; }
+# PCT: the most the file may be over its live bytes, in percent (the default 110), and 32 blocks (256 kB): the metadata, the free list and the few free blocks a merge
+# leaves are 3 to 13 blocks whatever the size (12 REINDEXes of a 160-block index: 3 with the gap of the statistics, 3 to 13 with a gap of 0 or 8 blocks; 18 on a CI runner),
+# which is 2% to 11% of an index of 160 blocks, and the bound is for a file that doubles
+tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * ${1:-110} / 100 + 32 * 8192 ))"; }
 
 sql primary "$OPTS" "$SMALL" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount) WITH (key_cut = grp)" >/dev/null || bail "create index failed"
 check "a standby streams: the file of CREATE INDEX is at most 1.1 times its live bytes" tight
