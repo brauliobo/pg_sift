@@ -559,45 +559,50 @@ sift_col_filter_tids(const SiftColUnit *unit, const SiftFilter *filter, SiftColS
 	{
 		/* the pages of a key-cut unit lie in any superblock: the filter's page of each is looked up in turn, and the offsets of the rows of the pages it keeps are read */
 		SiftCKeyedWalk w;
-		BlockNumber blk;
-		uint32		sbcur = PG_UINT32_MAX,
-					row,
-					n;
+		BlockNumber blks[SIFT_CKEYED_BATCH];
+		uint32		rows[SIFT_CKEYED_BATCH],
+					cnts[SIFT_CKEYED_BATCH],
+					sbcur = PG_UINT32_MAX,
+					nb;
 
 		sift_cunit_keyed_walk_begin(&cu->v, &w);
-		while (sift_cunit_keyed_walk_next(&w, &blk, &row, &n))
-		{
-			int			pg = blk % SIFT_SB_PAGES;
+		while ((nb = sift_cunit_keyed_walk_batch(&w, blks, rows, cnts)) > 0)
+			for (uint32 i = 0; i < nb; i++)
+			{
+				BlockNumber blk = blks[i];
+				uint32		row = rows[i],
+							n = cnts[i];
+				int			pg = blk % SIFT_SB_PAGES;
 
-			if (blk / SIFT_SB_PAGES != sbcur)
-			{
-				sbcur = blk / SIFT_SB_PAGES;
-				fs = sift_filter_sb(filter, sbcur);
-				curblk = -1;
-			}
-			if (fs == NULL || !(fs->pages[pg / 64] >> (pg & 63) & 1))
-				continue;
-			if (fs->lossy[pg / 64] >> (pg & 63) & 1)
-			{
-				for (uint32 r = row; r < row + n; r++)
-					if (sift_col_bit_test(sel->bits, r))
-						sift_col_bit_set(out, r);
-				continue;
-			}
-			if (curblk != pg / SIFT_BLK_PAGES)
-			{
-				curblk = pg / SIFT_BLK_PAGES;
-				sift_filter_block(filter, fs, curblk, offs);
-			}
-			{
-				uint16		koff[MaxHeapTuplesPerPage];
+				if (blk / SIFT_SB_PAGES != sbcur)
+				{
+					sbcur = blk / SIFT_SB_PAGES;
+					fs = sift_filter_sb(filter, sbcur);
+					curblk = -1;
+				}
+				if (fs == NULL || !(fs->pages[pg / 64] >> (pg & 63) & 1))
+					continue;
+				if (fs->lossy[pg / 64] >> (pg & 63) & 1)
+				{
+					for (uint32 r = row; r < row + n; r++)
+						if (sift_col_bit_test(sel->bits, r))
+							sift_col_bit_set(out, r);
+					continue;
+				}
+				if (curblk != pg / SIFT_BLK_PAGES)
+				{
+					curblk = pg / SIFT_BLK_PAGES;
+					sift_filter_block(filter, fs, curblk, offs);
+				}
+				{
+					uint16		koff[MaxHeapTuplesPerPage];
 
-				sift_cunit_keyed_walk_offs(&w, row, n, koff);
-				for (uint32 k = 0; k < n; k++)
-					if ((offs[pg % SIFT_BLK_PAGES][(koff[k] - 1) / 64] >> ((koff[k] - 1) % 64) & 1) && sift_col_bit_test(sel->bits, row + k))
-						sift_col_bit_set(out, row + k);
+					sift_cunit_keyed_walk_offs(&w, row, n, koff);
+					for (uint32 k = 0; k < n; k++)
+						if ((offs[pg % SIFT_BLK_PAGES][(koff[k] - 1) / 64] >> ((koff[k] - 1) % 64) & 1) && sift_col_bit_test(sel->bits, row + k))
+							sift_col_bit_set(out, row + k);
+				}
 			}
-		}
 		sift_cunit_keyed_walk_end(&w);
 	}
 	else if (fs != NULL && !unit_sparse(cu))

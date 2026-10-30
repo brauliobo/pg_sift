@@ -76,21 +76,24 @@ check_directory(TCtx *t, const SiftCUnitView *v, const SiftColBatch *b)
 	{
 		/* the walk of a key-cut unit's pages gives the blocks, rows and offsets of the keys */
 		SiftCKeyedWalk w;
-		BlockNumber blk;
-		uint32		row,
-					n,
+		BlockNumber blks[SIFT_CKEYED_BATCH];
+		uint32		rows[SIFT_CKEYED_BATCH],
+					cnts[SIFT_CKEYED_BATCH],
+					nb,
+					p = 0,
 					diff = 0;
 
 		sift_cunit_keyed_walk_begin(v, &w);
-		for (uint32 p = 0; sift_cunit_keyed_walk_next(&w, &blk, &row, &n); p++)
-		{
-			uint16		offs[MaxHeapTuplesPerPage];
+		while ((nb = sift_cunit_keyed_walk_batch(&w, blks, rows, cnts)) > 0)
+			for (uint32 i = 0; i < nb; i++, p++)
+			{
+				uint16		offs[MaxHeapTuplesPerPage];
 
-			sift_cunit_keyed_walk_offs(&w, row, n, offs);
-			diff += row != v->rowstart[p] || n != v->rowstart[p + 1] - v->rowstart[p] || blk != sift_key_block(keys[row]);
-			for (uint32 k = 0; k < n; k++)
-				diff += offs[k] != (keys[row + k] & 0xFFFF);
-		}
+				sift_cunit_keyed_walk_offs(&w, rows[i], cnts[i], offs);
+				diff += rows[i] != v->rowstart[p] || cnts[i] != v->rowstart[p + 1] - v->rowstart[p] || blks[i] != sift_key_block(keys[rows[i]]);
+				for (uint32 k = 0; k < cnts[i]; k++)
+					diff += offs[k] != (keys[rows[i] + k] & 0xFFFF);
+			}
 		sift_cunit_keyed_walk_end(&w);
 		CHECK(t, diff == 0, "%u pages or offsets of the walk differ", diff);
 	}

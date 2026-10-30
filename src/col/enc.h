@@ -522,34 +522,10 @@ sift_ckeyed_get(const uint8 *p, uint64 avail, uint64 bitpos, uint32 bits)
 	return (uint32) ((w >> (bitpos & 7)) & ((UINT64CONST(1) << bits) - 1));
 }
 
-/* The next page: its heap block, the first row and the number of rows; false after the last */
-static inline bool
-sift_cunit_keyed_walk_next(SiftCKeyedWalk *w, BlockNumber *blk, uint32 *row, uint32 *n)
-{
-	uint32		cnt;
+#define SIFT_CKEYED_BATCH	64
 
-	if (w->q == w->np)
-		return false;
-	if (w->q > 0)
-	{
-		uint64		b = (uint64) w->blk + sift_ckeyed_get(w->dp, w->dleft, w->dbit, w->bwd) + 1;
-
-		w->dbit += w->bwd;
-		if (b >= MaxBlockNumber)
-			sift_cunit_keyed_corrupt();
-		w->blk = (BlockNumber) b;
-	}
-	cnt = sift_ckeyed_get(w->cp, w->cleft, w->cbit, w->bwc) + 1;
-	w->cbit += w->bwc;
-	if (cnt > MaxHeapTuplesPerPage || cnt > w->nrows - w->row)
-		sift_cunit_keyed_corrupt();
-	*blk = w->blk;
-	*row = w->row;
-	*n = cnt;
-	w->row += cnt;
-	w->q++;
-	return true;
-}
+/* The next pages, at most SIFT_CKEYED_BATCH: their heap blocks, first rows and numbers of rows; 0 after the last */
+extern uint32 sift_cunit_keyed_walk_batch(SiftCKeyedWalk *w, BlockNumber *blk, uint32 *row, uint32 *cnt);
 
 /* The offsets (1 based) of the n rows from row of the page just walked; they must ascend below MaxHeapTuplesPerPage */
 static inline void

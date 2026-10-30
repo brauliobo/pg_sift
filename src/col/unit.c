@@ -296,6 +296,63 @@ sift_cunit_keyed_walk_begin(const SiftCUnitView *cv, SiftCKeyedWalk *w)
 	w->last = v->kblk1;
 }
 
+uint32
+sift_cunit_keyed_walk_batch(SiftCKeyedWalk *w, BlockNumber *blk, uint32 *row, uint32 *cnt)
+{
+	uint32		n = Min(SIFT_CKEYED_BATCH, w->np - w->q),
+				bwd = w->bwd,
+				bwc = w->bwc;
+	uint64		dbit = w->dbit,
+				cbit = w->cbit,
+				b = w->blk,
+				r = w->row,
+				dmask = (UINT64CONST(1) << bwd) - 1,
+				cmask = (UINT64CONST(1) << bwc) - 1;
+	/* eight bytes are read at the bit position: the last of the batch must leave them inside the record */
+	bool		fast = ((dbit + (uint64) n * bwd) >> 3) + 8 <= w->dleft && ((cbit + (uint64) n * bwc) >> 3) + 8 <= w->cleft;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		x,
+					c;
+
+		if (w->q + i > 0)
+		{
+			if (fast)
+			{
+				memcpy(&x, w->dp + (dbit >> 3), sizeof(x));
+				x = (x >> (dbit & 7)) & dmask;
+			}
+			else
+				x = sift_ckeyed_get(w->dp, w->dleft, dbit, bwd);
+			dbit += bwd;
+			b += x + 1;
+		}
+		if (fast)
+		{
+			memcpy(&c, w->cp + (cbit >> 3), sizeof(c));
+			c = ((c >> (cbit & 7)) & cmask) + 1;
+		}
+		else
+			c = sift_ckeyed_get(w->cp, w->cleft, cbit, bwc) + 1;
+		cbit += bwc;
+		if (c > MaxHeapTuplesPerPage)
+			sift_cunit_keyed_corrupt();
+		blk[i] = (BlockNumber) b;
+		row[i] = (uint32) r;
+		cnt[i] = (uint32) c;
+		r += c;
+	}
+	if (b >= MaxBlockNumber || r > w->nrows)
+		sift_cunit_keyed_corrupt();
+	w->dbit = dbit;
+	w->cbit = cbit;
+	w->blk = (BlockNumber) b;
+	w->row = (uint32) r;
+	w->q += n;
+	return n;
+}
+
 void
 sift_cunit_keyed_walk_end(const SiftCKeyedWalk *w)
 {
