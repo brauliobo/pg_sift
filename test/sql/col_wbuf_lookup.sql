@@ -170,7 +170,9 @@ BEGIN
 END $$;
 SELECT wl_candidates('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100') <= 20 AS equality_looks_up,
        wl_candidates('k = 100 AND k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g))') <= 20 AS in_either_order;
-INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100');
+-- a list alone keeps most of the buffer, so the buffer's batches test every condition and the heap is not read for the rows they reject (400 of the 500 buffered rows are in the list, 100 pass the second condition)
+SELECT wl_candidates('k = ANY (ARRAY(SELECT g FROM generate_series(1, 400) g)) AND id > 8400') <= 150 AS list_alone_tested;
+INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100'), ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 400) g)) AND id > 8400');
 :check;
 DROP FUNCTION wl_candidates(text);
 

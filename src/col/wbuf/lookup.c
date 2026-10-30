@@ -222,10 +222,10 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 /*
  * The heap addresses of the live records of a write buffer whose plain leaf holds one of the constants of pred (EQ or IN; INT: the integer, STR: the bytes): the
  * records are read once by this backend (leaf_read_lane), a lookup is a probe of the hash for each constant. A value the leaf could not store (an overflow)
- * may be any: its record is kept. The hash may name another value: the heap checks the condition. Ascending, each once; n = the count.
+ * may be any: its record is kept. The hash may name another value: the heap checks the condition. Ascending, each once; n = the count, rows = the live records of the leaf.
  */
 ItemPointerData *
-sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n)
+sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows)
 {
 	int			col = pred->col;
 	bool		str = schema->cols[col].store == SIFT_COLS_STR;
@@ -245,6 +245,7 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	sift_cwbuf_close(r);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
+	*rows = lf->n + lf->nover;
 	cap = lf->nover + 16;
 	out = MemoryContextAlloc(mcxt, cap * sizeof(ItemPointerData));
 	/* over is NULL until a row overflows: memcpy takes no NULL source, not even for zero bytes */

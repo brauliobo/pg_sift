@@ -221,7 +221,14 @@ SELECT wl_candidates('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) A
  t                 | t
 (1 row)
 
-INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100');
+-- a list alone keeps most of the buffer, so the buffer's batches test every condition and the heap is not read for the rows they reject (400 of the 500 buffered rows are in the list, 100 pass the second condition)
+SELECT wl_candidates('k = ANY (ARRAY(SELECT g FROM generate_series(1, 400) g)) AND id > 8400') <= 150 AS list_alone_tested;
+ list_alone_tested 
+-------------------
+ t
+(1 row)
+
+INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g)) AND k = 100'), ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 400) g)) AND id > 8400');
 :check;
  n | w | idx | bmp 
 ---+---+-----+-----

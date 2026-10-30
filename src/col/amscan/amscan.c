@@ -287,6 +287,9 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 		ItemPointerData *wt = NULL;
 		uint32		nw = 0;
 
+		/* before the begin: a lookup that finds too many rows has the source load the buffers (sift_col_wbuf_lookup) */
+		if (wl >= 0)
+			wt = sift_col_wbuf_lookup(so->src, &so->preds[wl], so->cxt, &nw);
 		so->npreds = scan->numberOfKeys;
 		sift_col_begin(so->src, so->preds, so->npreds, 0, PG_UINT32_MAX);
 		/* the addresses a directory of heap addresses lists are the fingerprints': the heap checks every condition again */
@@ -297,7 +300,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 				sift_key_to_tid(tids[i], &so->dtids[i]);
 			keys.recheck = true;
 		}
-		if (wl >= 0 && (wt = sift_col_wbuf_lookup(so->src, &so->preds[wl], so->cxt, &nw)) != NULL)
+		if (wt != NULL)
 		{
 			/* the rows of the buffer are the record's value of one condition: the heap checks them all */
 			so->dtids = so->dtids ? repalloc(so->dtids, (so->ndtids + nw) * sizeof(ItemPointerData)) : palloc(nw * sizeof(ItemPointerData));

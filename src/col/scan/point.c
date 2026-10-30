@@ -88,27 +88,40 @@ sift_col_wbuf_lookup_ok(const SiftColDef *def, const SiftColPred *p)
 	}
 }
 
-/* The heap addresses (in mcxt, each once) of the rows of the write buffers that p can match, for the heap to check; a source opened with SIFT_COLO_NOWBUF has loaded none of them */
+/*
+ * The heap addresses (in mcxt, each once) of the rows of the write buffers that p can match, for the heap to check; a source opened with SIFT_COLO_NOWBUF has loaded none of them.
+ * The heap rejects the rows the other conditions do: a lookup that keeps more than a quarter of the buffers' rows (an IN list of the scope and no equality) narrowed nothing, so
+ * the source loads the buffers, whose batches test every condition, and none is returned (before sift_col_begin).
+ */
 ItemPointerData *
 sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcxt, uint32 *n)
 {
 	ItemPointerData *all = NULL;
 	uint32		nall = 0;
+	uint64		rows = 0;
 
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		ItemPointerData *t;
 		uint32		m;
+		uint64		r;
 
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			continue;
-		t = sift_cwbuf_lookup(src->index, &src->dir.segs[i], src->schema, p, src->mcxt, &m);
+		t = sift_cwbuf_lookup(src->index, &src->dir.segs[i], src->schema, p, src->mcxt, &m, &r);
+		rows += r;
 		if (m > 0)
 		{
 			all = all ? repalloc(all, (nall + m) * sizeof(ItemPointerData)) : MemoryContextAlloc(mcxt, m * sizeof(ItemPointerData));
 			memcpy(all + nall, t, m * sizeof(ItemPointerData));
 			nall += m;
 		}
+	}
+	if ((uint64) nall * 4 > rows)
+	{
+		src->flags &= ~SIFT_COLO_NOWBUF;
+		nall = 0;
+		all = NULL;
 	}
 	*n = nall;
 	return all;
