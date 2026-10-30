@@ -501,4 +501,8 @@ extern uint64 *	seg_point_list_read(SiftColSegment *seg, int col, const PointLea
 extern uint32	seg_point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off);
 extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
 
+extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g);
+extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c);
+extern uint64	seg_gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col);
+
 #endif

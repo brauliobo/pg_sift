@@ -25,6 +25,10 @@ col/codec_avx512.c
 col/codec_neon.c
 col/compress.c
 col/seg/seg.c
+col/seg/gorder.c
+col/seg/prune.c
+col/seg/verify.c
+col/seg/vers.c
 col/seg/dict.c
 col/seg/pagg.c
 col/seg/points.c
