@@ -292,3 +292,44 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
 END $$;
+
+-- rows_agg_four_scans_or_no_rows: the helper that 6 tests of test/sql defined themselves (au_rows, ca_rows, cp_rows, kf_rows, kr_rows, sp_rows)
+CREATE FUNCTION sift_helpers.rows_agg_four_scans_or_no_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- count_agg_pushdown_set: the helper that 4 tests of test/sql defined themselves (count_of)
+CREATE FUNCTION sift_helpers.count_agg_pushdown_set(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
+	EXECUTE q INTO n;
+	RETURN n;
+END $$;
+
+-- plan_siftagg_or_normal: the helper that 4 tests of test/sql defined themselves (plan_of, shape_of)
+CREATE FUNCTION sift_helpers.plan_siftagg_or_normal(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- rows_agg_four_scans_error_text: the helper that 4 tests of test/sql defined themselves (kp_rows, kt_rows, ss_rows, tk_rows)
+CREATE FUNCTION sift_helpers.rows_agg_four_scans_error_text(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;

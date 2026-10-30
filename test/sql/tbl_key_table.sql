@@ -4,6 +4,7 @@
 -- buffer row or uncommitted row touches its superblocks and none of its rows is dead, else its units are read; the answers are the heap's; recomputed by
 -- sift._test_tbl_verify; kept by VACUUM, promotion and merge.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -38,16 +39,7 @@ SELECT sift._test_tbl_verify('tk') = 160000 AS verified, sift._test_tbl_verify('
 -- a few percent of the table at most
 SELECT pg_relation_size('tk') > pg_relation_size('tk_off') AS table_takes_bytes, pg_relation_size('tk') < pg_relation_size('tk_off') * 1.03 AS under_3_percent;
 
-CREATE FUNCTION tk_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+CREATE FUNCTION tk_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_error_text(q, push) $$;
 CREATE FUNCTION tk_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -172,4 +164,5 @@ SELECT sift._test_tbl_verify('ta');
 
 DROP TABLE tk, tk_off, tk_b, ta, ta_b, tk_src, tk_q;
 DROP FUNCTION tk_rows(text, bool), tk_units(text), tk_check(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

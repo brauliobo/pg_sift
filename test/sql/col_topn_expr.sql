@@ -4,6 +4,7 @@
 -- and above the values (zones of units that are all NULL, or hold none), ties, collations, the heap, the sort of every row, workers, rows in the write buffer.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tc (id int PRIMARY KEY, g int, a int, b bigint, c smallint, d date, t timestamp, z timestamptz, s text, v varchar(12));
@@ -25,17 +26,7 @@ CREATE INDEX tc_col ON tc USING sift_col (id, g, a, b, c, d, t, z, s, v);
 RESET sift.test_limits;
 VACUUM (ANALYZE) tc;
 
-CREATE FUNCTION tc_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION tc_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION tc_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -153,4 +144,5 @@ SELECT tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 100), id DESC LIMIT 30$q$) AS coalesce_above;
 DROP TABLE tc, tc_q, tq, tv;
 DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer), tq_runs(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift;

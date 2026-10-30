@@ -2,6 +2,7 @@
 -- normal plan, in the zones whose clocks jump (a gap at midnight, a day skipped, a repeated hour, a half hour of daylight time), for every operator and at the edges of the steps,
 -- the infinities, NULL and the constants that stay with the normal plan (outside the years 100 to 9900, NULL, a cross type comparison).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
@@ -27,13 +28,7 @@ INSERT INTO cf_zone VALUES ('America/New_York', '2024-03-10 07:00+00'), ('Americ
 	('Antarctica/Troll', '2024-03-31 01:00+00'), ('Asia/Kolkata', '2024-03-10 07:00+00'),
 	('UTC', '2024-03-10 07:00+00');
 
-CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
-	EXECUTE q INTO n;
-	RETURN n;
-END $$;
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 
 CREATE FUNCTION uses_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; s bool := false;
@@ -121,4 +116,5 @@ SELECT uses_scan('SELECT count(*) FROM cf WHERE ts::date = ''2024-03-10''') AS d
 DROP FUNCTION count_of(text, bool);
 DROP FUNCTION uses_scan(text);
 DROP TABLE cf_result, cf_zone, cf;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

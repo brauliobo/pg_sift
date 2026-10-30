@@ -3,6 +3,7 @@
 -- more than 4 keys of one type, a group for an array of objects; a rare key, one without a single shape and free text (values over 64 bytes on average) are left out. The answer is a spec the option accepts,
 -- an index built with it verifies, and what it pushes answers as the plain plan does.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -32,14 +33,7 @@ SELECT sift.suggest_paths('sp', 'other');
 SELECT format('CREATE INDEX sp_col ON sp USING sift_col (id, doc) WITH (paths = %L)', sift.suggest_paths('sp', 'doc')) AS ddl \gset
 :ddl;
 SELECT sift.col_verify('sp_col', true);
-CREATE FUNCTION sp_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION sp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 CREATE FUNCTION sp_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -86,4 +80,5 @@ RESET ROLE;
 DROP TABLE sp, sp_arr;
 DROP FUNCTION sp_rows(text, bool), sp_pushed(text);
 DROP ROLE sp_user;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

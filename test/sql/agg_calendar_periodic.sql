@@ -3,6 +3,7 @@
 -- ranges of the windows of the leaf's span ("Filters In Source"), and the expression is tested again. The rows are those of the normal plan in the zones whose clocks jump, for operands
 -- that no row has (13 months, the 25th hour, a fraction), formats the text of which is not in order, infinite timestamps and NULL.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -26,13 +27,7 @@ INSERT INTO pi VALUES (200001, 'infinity', 'infinity'), (200002, '-infinity', '-
 CREATE INDEX pi_col ON pi USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) pi;
 
-CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
-	EXECUTE q INTO n;
-	RETURN n;
-END $$;
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 -- does the scan narrow by the ranges of the step?
 CREATE FUNCTION narrowed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; s bool := false;
@@ -113,4 +108,5 @@ SELECT (SELECT md5(string_agg(m || ':' || n, ',' ORDER BY m)) FROM (SELECT extra
 DROP FUNCTION count_of(text, bool);
 DROP FUNCTION narrowed(text);
 DROP TABLE pc_result, pc_case, pw, pi, pc;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -4,6 +4,7 @@
 -- type, infinities and NaN, several expression keys, the heap, the sort of every row, workers, rows in the write buffer. Errors: the same SQLSTATE in both plans.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 CREATE TABLE ta (id int PRIMARY KEY, g int, a int, b bigint, c smallint, k int, f float8, r float4, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text);
@@ -27,17 +28,7 @@ CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s
 RESET sift.test_limits;
 VACUUM (ANALYZE) ta;
 
-CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION ta_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -220,4 +211,5 @@ SELECT ta_check($q$SELECT id, kn FROM tq ORDER BY kn * -1, id LIMIT 30$q$) AS ne
 	   ta_check($q$SELECT id, kn FROM tq ORDER BY kn % 5, id DESC LIMIT 30$q$) AS remainder;
 DROP TABLE ta, ta_q, tq, tv;
 DROP FUNCTION ta_check(text,integer), ta_error(text,boolean), ta_mode(boolean,integer), ta_scan(text), tq_runs(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift;

@@ -1,6 +1,7 @@
 -- The rows a unit keeps for the ranges of an equality of a periodic calendar step (extract(month|doy|hour FROM x), to_char) are not tested by the expression again. The rows are those of the
 -- normal plan over rows the source does not hold as a unit: a write buffer, deleted and updated rows, a NULL, and then an infinite timestamp in the write buffer.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 CREATE TABLE pd AS SELECT g AS id, timestamp '2024-01-01' + g * interval '13 minutes' AS ts FROM generate_series(1, 150000) g;
@@ -10,13 +11,7 @@ INSERT INTO pd SELECT 100000 + g, timestamp '2024-03-01' + g * interval '1 hour'
 INSERT INTO pd VALUES (200000, NULL);
 DELETE FROM pd WHERE id % 7 = 0;
 UPDATE pd SET ts = ts + interval '40 days' WHERE id % 11 = 0;
-CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
-	EXECUTE q INTO n;
-	RETURN n;
-END $$;
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 CREATE FUNCTION narrowed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; s bool := false;
 BEGIN
@@ -59,4 +54,5 @@ SELECT w, count_of('SELECT count(*) FROM pd WHERE ' || w, true) = count_of('SELE
 DROP FUNCTION count_of(text, bool);
 DROP FUNCTION narrowed(text);
 DROP TABLE pd_q, pd;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

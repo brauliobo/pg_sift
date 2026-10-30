@@ -3,6 +3,7 @@
 -- takes at most 3% of the segment and the option key_table is on, under sift.col_format_minor 15 or more; the units, and the scan, are what an index without it has
 -- (an older minor, the option off, a table over the budget: the same answers, read from the units); recomputed by sift.col_verify; kept by promotion, merge and VACUUM.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -41,16 +42,7 @@ SELECT sift.col_verify('kt_on', true), sift.col_verify('kt_b_off', true), sift.c
 -- a few percent of the index at most
 SELECT pg_relation_size('kt_on') > pg_relation_size('kt_b_off') AS table_takes_bytes, pg_relation_size('kt_on') < pg_relation_size('kt_b_off') * 1.03 AS under_3_percent;
 
-CREATE FUNCTION kt_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+CREATE FUNCTION kt_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_error_text(q, push) $$;
 CREATE FUNCTION kt_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -211,4 +203,5 @@ SELECT reloptions FROM pg_class WHERE relname = 'ka_idx';
 
 DROP TABLE kt, kt_b, kt_c, ka, kt_q;
 DROP FUNCTION kt_rows(text, bool), kt_units(text), kt_check(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

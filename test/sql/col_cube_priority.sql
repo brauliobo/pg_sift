@@ -2,6 +2,7 @@
 -- columns' own histograms last (a day cell answers what they do); a NOTICE names the columns left out. Nothing gives way when all fit, or for a cube(...) the
 -- user wrote. The same choice at REINDEX; the answers are the plain plan's.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -16,14 +17,7 @@ INSERT INTO cp SELECT i, i / 5000, i / 3000, i / 2000, (i / 1000) % 40, i % 7, i
                       hashint4(i + 9) & 1023, (i % 977) / 7.0, repeat('x', 150) FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) cp;
 
-CREATE FUNCTION cp_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION cp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 CREATE FUNCTION cp_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -67,4 +61,5 @@ DROP INDEX cp_fixed;
 
 DROP TABLE cp, cp_q;
 DROP FUNCTION cp_rows(text, bool), cp_units(text), cp_held(regclass);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -3,6 +3,7 @@
 -- for ties, all-distinct values, NaN, infinities, -0, NULLs, DESC, fractions at the ends, groups of one and two values, aggregates that share an argument and those that do not,
 -- a FILTER, a histogram that spills to a tuplesort (work_mem), and parallel workers (their histograms are merged).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 -- 12 digits: a PostgreSQL built with fused multiply-add interpolates in the last bit of a float8 differently
@@ -26,14 +27,7 @@ INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm) VALUES (100001, 9001,
 CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n, i8, ts, tz, nm);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) os;
 
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_or_normal(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -92,4 +86,5 @@ SELECT * FROM all_same();
 RESET ALL;
 DROP TABLE os;
 DROP FUNCTION all_same(), same(text), plan_of(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

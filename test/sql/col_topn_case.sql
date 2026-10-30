@@ -5,6 +5,7 @@
 -- plans, and none for a branch the CASE does not take.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tb (id int PRIMARY KEY, g int, a int, b bigint, c smallint, f float8, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text, v varchar(12));
@@ -27,17 +28,7 @@ CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 
-CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION tb_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -164,4 +155,5 @@ ORDER BY k COLLATE "C";
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE tb, tb_q;
 DROP FUNCTION tb_check(text,integer), tb_error(text,boolean), tb_mode(boolean,integer), tb_scan(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift;

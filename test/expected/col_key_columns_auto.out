@@ -4,6 +4,7 @@
 -- units, never a bloom filter, and a NOTICE says which, with the bytes, and how to turn it off.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -25,14 +26,7 @@ ALTER TABLE au ADD FOREIGN KEY (sparse_fk) REFERENCES au_p NOT VALID;
 ALTER TABLE au ADD FOREIGN KEY (ext_fk) REFERENCES au_p NOT VALID;
 ALTER TABLE au ADD FOREIGN KEY (wide_fk) REFERENCES au_p NOT VALID;
 VACUUM (FREEZE, ANALYZE) au;
-CREATE FUNCTION au_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION au_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 CREATE FUNCTION au_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int;
 BEGIN
@@ -259,4 +253,5 @@ SELECT sift.col_verify('au_m_i', true);
 
 DROP TABLE au, au_m, au_p CASCADE;
 DROP FUNCTION au_rows(text, bool), au_scanned(text), au_option(text), au_minors(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

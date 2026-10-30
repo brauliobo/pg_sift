@@ -4,6 +4,7 @@
 -- option, or under a lower setting, writes; read back by the decoder that refuses a damaged bitmap; recomputed by sift.col_verify; kept by promotion, merge
 -- and VACUUM; the answers are the heap's.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -56,16 +57,7 @@ CREATE INDEX kp_bad5 ON kp_t USING sift_col (id, f) WITH (rollup_dims = 'off', k
 DROP TABLE kp_t;
 
 -- three ways: the bitmaps on, the twin table's index without them, the plain plan; the units the bitmaps answered
-CREATE FUNCTION kp_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+CREATE FUNCTION kp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_error_text(q, push) $$;
 CREATE FUNCTION kp_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -265,4 +257,5 @@ SELECT sift.col_merge('kb_idx', true) >= 0 AS merged;
 SELECT sift.col_verify('kb_idx', true);
 DROP TABLE kb, ka, kp_q, kp, kp_b;
 DROP FUNCTION kp_rows(text, bool), kp_units(text), kp_check(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -2,6 +2,7 @@
 -- minute that the data holds (the step of the finest calendar function in it, "per day" in EXPLAIN) and not once for each distinct timestamp. The rows are those of the normal plan in the zones whose clocks jump,
 -- for operands that no row has, infinite timestamps, NULL, and a mix of steps; a text format has no step and keeps its expression evaluated for each value.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -21,13 +22,7 @@ INSERT INTO si VALUES (200001, 'infinity', 'infinity'), (200002, '-infinity', '-
 CREATE INDEX si_col ON si USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) si;
 
-CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
-	EXECUTE q INTO n;
-	RETURN n;
-END $$;
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 -- does the scan evaluate the filter for each step?
 CREATE FUNCTION stepped(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; s bool := false;
@@ -91,4 +86,5 @@ RESET sift.enable_agg;
 DROP FUNCTION count_of(text, bool);
 DROP FUNCTION stepped(text);
 DROP TABLE st_result, st_case, si, st;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -2,6 +2,7 @@
 -- a comparison, an AND or an OR of them is decided cell by cell by the cell's span (inside it passes, outside it does not, a bound that cuts a cell leaves the unit to
 -- a scan). Every shape is checked against the plain plan.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -17,14 +18,7 @@ INSERT INTO ct SELECT i, CASE WHEN i <= 15000 THEN date '2000-01-01' + (i * 7) %
 VACUUM (FREEZE, ANALYZE) ct;
 CREATE INDEX ct_col ON ct USING sift_col (id, d, ts, v, doc) WITH (paths = 'doc.k int4, doc.s text', calendar_columns = 'all');
 
-CREATE FUNCTION ca_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION ca_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 
 -- 120 shapes: one to three ranges on d or ts, joined by AND or OR, with the four operators, a count with or without a sum, by month or not
 CREATE TABLE ca_q (n int, q text);
@@ -82,4 +76,5 @@ SELECT u.units, u.pre > 0 AS from_cells FROM pa_units('SELECT count(*) FROM ct2 
 
 DROP TABLE ct, ct2, ca_q;
 DROP FUNCTION ca_rows(text, bool), pa_units(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

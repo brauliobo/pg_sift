@@ -2,6 +2,7 @@
 -- it would read every unit otherwise), and a unit whose keys come in runs of consecutive values, ids taken in bursts per owner, keeps them as a list of runs
 -- (set kind 5, col minor 23) where the offsets or the bitmap would not fit 3% of the unit. The answers are the heap's, the lookups read one unit of about ten.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -13,14 +14,7 @@ ALTER TABLE kr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kr SELECT g, 1 + (hashint4(g / 100) & 2147483647) % 400, (hashint4(g) & 2147483647) % 20, g % 1000, repeat('x', 150) FROM generate_series(1, 90000) g;
 VACUUM (FREEZE, ANALYZE) kr;
 
-CREATE FUNCTION kr_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION kr_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 CREATE FUNCTION kr_units(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int;
 BEGIN
@@ -111,4 +105,5 @@ SELECT array_agg(DISTINCT format ORDER BY format)::text AS minors, kr_units('SEL
 
 DROP TABLE kr;
 DROP FUNCTION kr_rows(text, bool), kr_units(text), kr_option(text), kr_queries();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

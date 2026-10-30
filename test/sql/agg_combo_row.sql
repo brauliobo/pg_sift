@@ -3,6 +3,7 @@
 -- a day in two periods is in two rows, a month nothing fell in is a row of NULLs, and a cache that starts again (a small hash memory spills the groups) does not
 -- keep the entries of the rows it forgot.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
@@ -12,14 +13,7 @@ INSERT INTO ev VALUES (60001, NULL, 1, 5), (60002, date '2031-01-01', 2, 7);
 CREATE INDEX ev_col ON ev USING sift_col (id, day, k, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_or_normal(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -56,4 +50,5 @@ RESET work_mem; RESET hash_mem_multiplier;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
