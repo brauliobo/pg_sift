@@ -72,7 +72,7 @@ append-only segments published by manifest swap, table-level locking and no mult
 Each is a work item of the phases below:
 
 - no host owns a `sift_colz` build option (vendored LZ4/zstd, 6.2);
-- `col/seg.c` is linked but its writer/reader path is tested only on PostgreSQL;
+- `col/seg/seg.c` is linked but its writer/reader path is tested only on PostgreSQL;
 - the unit key space is heap TIDs (`MaxHeapTuplesPerPage` = 291 in the host shim, 256-page superblocks); each host must choose its rowid mapping (6.5);
 - `col/shred_pg.c` has no counterpart (SQLite needs a driver over `json_each`/JSONB text, MariaDB over its JSON text);
 - `SiftColVisibility` has no non-PG implementation (a manifest-only one is trivial);

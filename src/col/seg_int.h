@@ -1,5 +1,5 @@
 /*
- * col/seg_int.h - shared between the files of the column segment writer and reader (col/seg.c, col/seg_write/seg_write.c, col/seg_maint.c).
+ * col/seg_int.h - shared between the files of the column segment writer and reader (col/seg/seg.c, col/seg_write/seg_write.c, col/seg_maint.c).
  */
 #ifndef SIFT_COL_SEG_INT_H
 #define SIFT_COL_SEG_INT_H
@@ -454,5 +454,21 @@ extern uint64 sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add);
 /* The bisection cache of the dictionary of leaf col (n strings), pinned for the segment's context; made empty when the cache has none, NULL if it has no room */
 extern SiftCBisect *sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n);
 extern SiftCBisect *sift_cseg_bisect_find(SiftColSegment *seg, int col);
+
+/* The head is not kept while a test flips a byte of what is read: the flipped one must not be found by the next open, nor the next one skip the read */
+#ifdef SIFT_TESTING
+#define HEAD_CACHED()	(sift_test_seg_flip_at == UINT64_MAX)
+#else
+#define HEAD_CACHED()	true
+#endif
+
+extern void	seg_seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst);
+extern const SiftSectionRef *	seg_sec(const SiftColSegment *seg, SiftSection s);
+extern const PointLeaf *	seg_points_read(SiftColSegment *seg);
+extern DictLook *	seg_dict_look(SiftColSegment *seg, int col);
+extern const PaggHeader *	seg_pagg_header(SiftColSegment *seg);
+extern const SetsLeaf *	seg_set_leaf(SiftColSegment *seg, int col);
+extern bool	seg_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len);
+extern const RunsLeaf *	seg_run_leaf(SiftColSegment *seg, int col);
 
 #endif

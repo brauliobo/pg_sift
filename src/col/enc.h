@@ -60,7 +60,7 @@ typedef struct SiftCDict
 	void	   *built_arg;
 	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
-	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
+	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg/seg.c) */
 	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
 	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
 	int			leaf1;			/* writer only: 1 + the leaf of the dictionary (0: unknown), for the hook of the formula */

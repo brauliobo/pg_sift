@@ -1,6 +1,6 @@
 /*
  * col/enc.c - L1 of the column engine: schema, dictionaries, batches, column chunks, zones,
- * chunk tests and unit records. Values and bytes only; the segment writer and reader (col/seg.c) and the sources of rows sit above.
+ * chunk tests and unit records. Values and bytes only; the segment writer and reader (col/seg/seg.c) and the sources of rows sit above.
  *
  *   1. schema         2. dictionaries      3. batches
  *   4. zones          5. codec seam        6. chunks

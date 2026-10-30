@@ -255,7 +255,7 @@ the new table of a rewrite is private, so its extents are reusable at once). The
 
 The promotion is part of `sift_tbl_settle`, which an insert runs when it needs a new write buffer and which takes the maintenance lock only if it is free; it also freezes the unfrozen groups whose live rows are committed and older than the horizon, and under pressure merges the smallest groups so the directory keeps shrinking while the load goes on. A 10M-row COPY in one transaction holds about 180 MB in the backend whatever its size, and a loop of 10M single-row INSERTs in one transaction ends with a handful of unfrozen groups.
 
-*Version vectors* (`src/col/ver.[ch]`, `src/col/seg.c`, `src/col/seg_write/seg_write.c`). A segment with rows that are not final is written as column format 4, with the directory entry flag `SIFT_SEG_VERS` (`reserved` = the smallest xid among them) and a section after the superblock directory of the DOCMAP section:
+*Version vectors* (`src/col/ver.[ch]`, `src/col/seg/seg.c`, `src/col/seg_write/seg_write.c`). A segment with rows that are not final is written as column format 4, with the directory entry flag `SIFT_SEG_VERS` (`reserved` = the smallest xid among them) and a section after the superblock directory of the DOCMAP section:
 
 - a header (magic, version, the unit count, the smallest and largest xid);
 - one record per unit (the range of its xids and the highest cmin, a flag for a unit that has frozen rows, the location of its vectors);
