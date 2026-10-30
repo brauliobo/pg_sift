@@ -65,6 +65,17 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
+	if (c->search)
+	{
+		double		scan_ops,
+					key_ops;
+
+		if (sift_search_key_first(root, c->rel, c->search, fs.quals, &scan_ops, &key_ops))
+		{
+			agg_refused_f(COST, "the other conditions keep few rows, which an index reads and checks the text of (about %.0f operators) for less than the scan walks the postings (about %.0f)", key_ops, scan_ops);
+			return;
+		}
+	}
 	if (!agg_quals(c, s, &fs))
 		return;
 

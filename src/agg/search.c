@@ -47,6 +47,7 @@
 #define SEARCH_BIND			20000.0	/* binding the queries: the directory, the analyzer, the dictionaries (about 60 us) */
 /* A value decoded by position costs this many dense ones (docs/COL-SEARCH.md, "Measured"); beyond a fraction 1 / this of a unit's rows the unit is read whole */
 #define SEARCH_SPARSE		8.0
+#define SEARCH_KEY_ROW		530.0	/* a row read by an index and checked for the text on the heap: 3,600 instructions measured on 500 keys, at the 6.8 instructions an operator that the postings of 25,000 and 62,500 matches measured */
 
 static bool
 operand_walker(Node *n, void *ctx)
@@ -212,6 +213,37 @@ sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *
 	/* the rows read: the matches by position, or the whole unit when they are many */
 	*rows = Min(nrows * (*units / Max(nunits, 1.0)), docs * SEARCH_SPARSE);
 	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE + docs * SEARCH_MATCH;
+}
+
+/*
+ * Do the other conditions of the WHERE keep so few rows that an index of the table reads them and checks the text on the heap for less than the scan walks the
+ * postings of the search? The match set is read whole, the rows of the keys by position: a key of 500 rows costs PostgreSQL's plan 1.8 M instructions at any size of
+ * the table, the postings of a word in a quarter of the rows cost the scan 3.0, 8.0 and 19.7 M at 30,000, 100,000 and 250,000 rows. Both in the price's own operators;
+ * PostgreSQL prices its plan by pages it assumes cold, which is why the two prices alone keep choosing the scan.
+ */
+bool
+sift_search_key_first(PlannerInfo *root, RelOptInfo *rel, const SiftSearchPlan *sp, List *rest, double *scan_ops, double *key_ops)
+{
+	double		units = Max(rel->tuples / 2000.0, 1.0),
+				rows_read,
+				units_read;
+	bool		indexed = false;
+	List	   *own = NIL;
+
+	/* the conditions on this table alone: a join clause keeps rows of the join, which the key of an index does not read */
+	foreach_ptr(Node, q, rest)
+		if (bms_equal(pull_varnos(root, q), bms_make_singleton(rel->relid)))
+			own = lappend(own, q);
+	if (own == NIL)
+		return false;
+	foreach_ptr(Path, p, rel->pathlist)
+		if ((IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam != sift_catalog()->am && ((IndexPath *) p)->indexclauses != NIL) || IsA(p, BitmapHeapPath))
+			indexed = true;
+	if (!indexed)
+		return false;
+	*scan_ops = sift_search_cost(sp, Max(rel->tuples, 1.0), units, &rows_read, &units_read);
+	*key_ops = Max(rel->tuples, 1.0) * clauselist_selectivity(root, own, rel->relid, JOIN_INNER, NULL) * SEARCH_KEY_ROW;
+	return *scan_ops > *key_ops;
 }
 
 /* "orders_title @@> 'a' AND orders_title @@> 'b' OR orders_title @@> 'c'": the operands of an arm ANDed, the arms ORed */
