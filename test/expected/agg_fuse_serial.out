@@ -1,0 +1,49 @@
+-- Arms of a UNION ALL that differ only in the reason their scan has no workers (EXPLAIN VERBOSE: Serial Because) are still one pass: the reason is text for
+-- EXPLAIN, not part of the shape the arms must share. The two coarsest arms are answered by the pre-aggregates of the index, the wider ones are not.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 2;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET sift.agg_force = on;
+CREATE TABLE ev (id int PRIMARY KEY, zone_id int, day date, kind text, qty int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3], i % 9 FROM generate_series(1, 6000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, qty);
+NOTICE:  sift_col index ev_col writes a rollup of the rows by kind, qty
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 9 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE arms (n int, q text);
+INSERT INTO arms VALUES
+	(1, 'SELECT zone_id AS a, NULL::int AS b, NULL::int AS c, NULL::text AS d, NULL::date AS e, count(*) AS n FROM ev GROUP BY zone_id'),
+	(2, 'SELECT zone_id, qty, NULL, NULL, NULL, count(*) FROM ev GROUP BY zone_id, qty'),
+	(3, 'SELECT zone_id, qty, id % 7, NULL, NULL, count(*) FROM ev GROUP BY zone_id, qty, id % 7'),
+	(4, 'SELECT zone_id, qty, id % 7, kind, NULL, count(*) FROM ev GROUP BY zone_id, qty, id % 7, kind'),
+	(5, 'SELECT zone_id, qty, id % 7, kind, day, count(*) FROM ev GROUP BY zone_id, qty, id % 7, kind, day');
+CREATE FUNCTION reason(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'no scan';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'workers'; END IF;
+		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+-- each arm alone: more than one reason among them
+SELECT count(DISTINCT reason(q)) > 1 AS arms_differ_in_reason FROM arms;
+ arms_differ_in_reason 
+-----------------------
+ t
+(1 row)
+
+-- together: one pass for all five
+SELECT sift_helpers.agg_arms_in_one_pass(string_agg(q, ' UNION ALL ' ORDER BY n)) AS arms_in_one_pass FROM arms;
+ arms_in_one_pass 
+------------------
+                5
+(1 row)
+
+DROP FUNCTION reason(text);
+DROP TABLE arms, ev;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

@@ -967,6 +967,7 @@ fuse_shape(const SiftAggSpec *a)
 	t.nkeys = 0;
 	t.key = NULL;
 	t.nworkers = 0;
+	t.serial = NULL;
 	t.est_groups = 0;
 	t.est_rows = 0;
 	/* the FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text; the conjuncts over the rows are split (fuse_split) */
