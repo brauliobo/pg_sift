@@ -215,6 +215,17 @@ sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *
 	return sift_search_open_cost(sp, nrows) + pages * SEARCH_PAGE + docs * SEARCH_MATCH;
 }
 
+/* a path that enable_* = off did not disable: PostgreSQL 18 counts the disabled nodes of a path, 17 adds disable_cost to its cost */
+static bool
+path_enabled(Path *p)
+{
+#if PG_VERSION_NUM >= 180000
+	return p->disabled_nodes == 0;
+#else
+	return p->total_cost < disable_cost;
+#endif
+}
+
 /*
  * Do the other conditions of the WHERE keep so few rows that an index of the table reads them and checks the text on the heap for less than the scan walks the
  * postings of the search? The match set is read whole, the rows of the keys by position: a key of 500 rows costs PostgreSQL's plan 1.8 M instructions at any size of
@@ -237,7 +248,7 @@ sift_search_key_first(PlannerInfo *root, RelOptInfo *rel, const SiftSearchPlan *
 	if (own == NIL)
 		return false;
 	foreach_ptr(Path, p, rel->pathlist)
-		if (p->disabled_nodes == 0 &&
+		if (path_enabled(p) &&
 			((IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam != sift_catalog()->am && ((IndexPath *) p)->indexclauses != NIL) || IsA(p, BitmapHeapPath)))
 			indexed = true;
 	if (!indexed)
