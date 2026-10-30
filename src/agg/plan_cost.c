@@ -66,6 +66,7 @@
 #include "agg/dist_int.h"
 #include "agg/search.h"
 #include "agg/lookup_int.h"
+#include "agg/acc_layout.h"
 #include "agg/plan_int.h"
 #include "agg/agg_int.h"
 
@@ -2716,54 +2717,6 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	*startup += setup * k->lift;
 }
 
-/* the per-group arrays of one aggregate, as acc_alloc (agg/group.c) allocates them */
-static double
-acc_bytes(const SiftAggAgg *a)
-{
-	double		b = sizeof(int64);	/* n */
-
-	switch (a->kind)
-	{
-		case SAA_SUM_INT:
-		case SAA_AVG_INT:
-		case SAA_PCT_CONT:
-		case SAA_PCT_DISC:
-		case SAA_O_SUM_I64:
-			return b + sizeof(int64);
-		case SAA_SUM_NUM:
-		case SAA_AVG_NUM:
-			return b + sizeof(sift_i128) + 1;
-		case SAA_MIN:
-		case SAA_MAX:
-			return b + sizeof(int64) + sizeof(double) + (a->num.n ? sizeof(sift_i128) : 0);
-		case SAA_SUM_F64:
-		case SAA_AVG_F64:
-		case SAA_O_SUM_F64:
-		case SAA_O_AVG_F64:
-			return b + sizeof(double) + 1;
-		case SAA_M_PG:
-			return b + 1 + sizeof(Datum);
-		case SAA_X_SUM:
-		case SAA_X_AVG:
-			return b + (a->restype == NUMERICOID ? sizeof(int64) + sizeof(sift_i128) : 0) + sizeof(double) + 1 + sizeof(Datum);
-		case SAA_M_SUM:
-		case SAA_M_AVG:
-			return b + sizeof(double) + 1 + sizeof(Datum);
-		case SAA_M_MIN:
-		case SAA_M_MAX:
-		case SAA_X_MIN:
-		case SAA_X_MAX:
-			return b + sizeof(Datum);
-		case SAA_O_COUNT_ROWS:
-		case SAA_COUNT_ROWS:
-			return b + sizeof(uint64);
-		case SAA_GEN:
-			return b + 2 * sizeof(Datum) + 1 + (a->gen->ordered || a->gen->sorted || a->gen->distinct ? sizeof(int64) : 0);
-		default:
-			return b;
-	}
-}
-
 /*
  * The bytes a group holds in the table of the scan: its keys' ids and values, its row in the group arrays, the arrays' room to grow.
  * *state: of them, what a partial state of the group carries when the table is written out (its aggregates and its key values).
@@ -2775,7 +2728,7 @@ group_bytes(const SiftAggSpec *s, double *state)
 	double		vals = 0;
 
 	for (int i = 0; i < s->naggs; i++)
-		b += acc_bytes(&s->agg[i]);
+		b += sift_agg_acc_layout_bytes(sift_agg_acc_layout(&s->agg[i], false));
 	*state = b;
 	/* the id tuple of the hash table and its slot, at most half full */
 	b += s->nkeys * sizeof(uint32) + 4 * sizeof(uint32);

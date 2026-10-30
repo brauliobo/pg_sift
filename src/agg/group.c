@@ -74,6 +74,7 @@
 #include "agg/topn.h"
 #include "core/visibility.h"
 #include "core/popcount.h"
+#include "agg/acc_layout.h"
 #include "agg/agg_int.h"
 
 /* ---- combos and lookup joins: the executor state of SiftAggCombo ---- */
@@ -99,79 +100,27 @@ acc_alloc(AggExec *ex, uint32 cap)
 
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
+		unsigned	layout = sift_agg_acc_layout(&ex->spec->agg[i], ex->lane_serial);
+
 		a[i].n = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
-		switch (ex->spec->agg[i].kind)
+		if (layout & ACCL_I)
+			a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));	/* SAA_GEN: the group's number among the sorted values */
+		if (layout & ACCL_W)
+			a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+		if (layout & ACCL_D)
+			a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+		if (layout & ACCL_DT)
+			a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+		if (layout & ACCL_NF)
+			a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
+		if (layout & ACCL_V)
+			a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+		if (layout & ACCL_R)
+			a[i].r = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+		if (layout & ACCL_LAST)
 		{
-			case SAA_SUM_INT:
-			case SAA_AVG_INT:
-			case SAA_PCT_CONT:
-			case SAA_PCT_DISC:
-				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
-				break;
-			case SAA_SUM_NUM:
-			case SAA_AVG_NUM:
-				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
-				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
-				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				break;
-			case SAA_MIN:
-			case SAA_MAX:
-				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
-				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				if (ex->spec->agg[i].num.n)
-					a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
-				break;
-			case SAA_SUM_F64:
-			case SAA_AVG_F64:
-			case SAA_O_SUM_F64:
-			case SAA_O_AVG_F64:
-				if (ex->lane_serial)
-					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				break;
-			case SAA_O_SUM_I64:
-				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
-				break;
-			case SAA_M_PG:
-				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
-				break;
-			case SAA_X_SUM:
-			case SAA_X_AVG:
-				if (ex->lane_serial && ex->spec->agg[i].restype == FLOAT8OID)
-					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				if (ex->spec->agg[i].restype == NUMERICOID)
-				{
-					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
-					a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
-				}
-				sift_fallthrough;
-			case SAA_M_SUM:
-			case SAA_M_AVG:
-				a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
-				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				sift_fallthrough;
-			case SAA_M_MIN:
-			case SAA_M_MAX:
-			case SAA_X_MIN:
-			case SAA_X_MAX:
-				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
-				break;
-			case SAA_O_COUNT_ROWS:
-			case SAA_COUNT_ROWS:
-				a[i].last = MemoryContextAlloc(ex->tcxt, cap * sizeof(uint64));
-				memset(a[i].last, 0xff, cap * sizeof(uint64));
-				break;
-			case SAA_GEN:
-				if (ex->spec->agg[i].gen->ordered || ex->spec->agg[i].gen->sorted || ex->spec->agg[i].gen->distinct)
-					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));	/* the group's number among the sorted values */
-				a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
-				a[i].r = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
-				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
-				break;
-			default:
-				break;
+			a[i].last = MemoryContextAlloc(ex->tcxt, cap * sizeof(uint64));
+			memset(a[i].last, 0xff, cap * sizeof(uint64));
 		}
 		if (ex->lanes && sift_aggkind_float_sum(&ex->spec->agg[i]))
 			a[i].lv = MemoryContextAllocZero(ex->tcxt, SIFT_AGG_LANES * sizeof(double *));
