@@ -136,8 +136,8 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
-NOTICE:  sift_col index "ka_auto": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 93 of 123 units, where 1 hold its rows (predicted index size +8.2%, benefit 18 against cost 6)
-DETAIL:  A sample of 32 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
+NOTICE:  sift_col index "ka_auto": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +10.2%, benefit 18 against cost 7)
+DETAIL:  A sample of 31 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX ka_auto SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 -- (small rows, 20 to a page: the prediction counts the addresses of the rows, not what the cut saves in the pre-aggregates, so it is an upper bound)
@@ -154,8 +154,8 @@ INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random(
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3);
-NOTICE:  sift_col index "kg_narrow": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 103 of 105 units, where 1 hold its rows (predicted index size +14.0%, benefit 39 against cost 12)
-DETAIL:  A sample of 32 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
+NOTICE:  sift_col index "kg_narrow": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 102 of 105 units, where 1 hold its rows (predicted index size +15.9%, benefit 39 against cost 12)
+DETAIL:  A sample of 27 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX kg_narrow SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
 SET client_min_messages = warning;
@@ -170,8 +170,8 @@ INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
-NOTICE:  sift_col index "kf_few": an equality on "tenant_id" reads about 71 of 72 units, where 36 hold its rows; key_cut = 'tenant_id' would cut that, and the index would grow by 28.2%
-DETAIL:  The predicted size comes from a sample of 32 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 11 against 22: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
+NOTICE:  sift_col index "kf_few": an equality on "tenant_id" reads about 69 of 72 units, where 35 hold its rows; key_cut = 'tenant_id' would cut that, and the index would grow by 30.7%
+DETAIL:  The predicted size comes from a sample of 18 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 11 against 23: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
 HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kf_few SET (key_cut = 'tenant_id') and REINDEX, if the lookups of this key matter more than the size.
 SET client_min_messages = warning;
 CREATE INDEX ka_seq ON ka USING sift_col (tenant_id, seq, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);

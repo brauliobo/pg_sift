@@ -13,7 +13,7 @@ CREATE INDEX kn_i ON kn USING sift_col (d, a);
 SELECT leaf, sampled, decision, reason IS DISTINCT FROM 'the units are too large for a sample' AS was_sampled FROM sift.key_cut_decision('kn_i');
 DROP TABLE kn;
 
--- a table of fewer than 32 units is sampled whole and the formula decides, with no minimum of units: 500,000 ranges of 56-byte rows (23 units) are cut by the start of the range,
+-- the sample is 16 superblocks at least (a table of fewer is sampled whole) and the formula decides, with no minimum of units: 500,000 ranges of 56-byte rows (23 units) are cut by the start of the range,
 -- as 1,000,000 and 3,000,000 are (@> 4.4 M instructions without the cut, 1.0 M with it, a GiST 0.4 M)
 CREATE TABLE kr (id int, r int4range, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO kr SELECT i, int4range(x, x + 1 + (hashint8extended(i, 7) & 1023)::int), repeat('x', 40)

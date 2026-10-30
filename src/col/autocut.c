@@ -47,7 +47,7 @@
 
 #define AUTOCUT_KEYS		32		/* keys taken from the sample, more than half of them must read that many */
 #define AUTOCUT_SBS			256		/* superblocks sampled, at most */
-#define AUTOCUT_MIN_SBS		32
+#define AUTOCUT_MIN_SBS	16
 #define AUTOCUT_QUICK_SBS	8		/* superblocks of the first look, which most tables end at: it prices the decision at a share of the heap, not at a pass over it */
 #define AUTOCUT_ROWS		400000	/* rows sampled, at most, unless AUTOCUT_MIN_SBS superblocks hold more: the sample is a number of units, so that a table of narrow rows (25,000 to a unit) is sampled as one of wide rows */
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
@@ -813,7 +813,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	v->sampled = samp->nsb;
 	if (samp->nsb < Min(AUTOCUT_MIN_SBS, want))
 	{
-		v->reason = "the sample holds fewer than 32 superblocks";
+		v->reason = "the sample holds fewer than 16 superblocks";
 		goto done;
 	}
 	tmp = palloc_array(int64, SIFT_COL_UNIT_MAX_ROWS);
