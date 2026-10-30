@@ -291,7 +291,7 @@ sift.async_maintenance = off'
 		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
 		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
 		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists no BM25 index" test "$(grep -c ' dgb_idx \| docs_idx ' <<<"$blockers")" == 0
+		check "3.2 downgrade: it lists the BM25 index (segment format 4, metapage minor 1.4: the release refuses it)" test "$(grep -c ' dgb_idx ' <<<"$blockers")" == 1
 		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
 		for _ in $(seq 100); do [[ $(q "SHOW sift.col_format_minor") == 6 ]] && break; sleep 0.1; done
@@ -303,8 +303,9 @@ sift.async_maintenance = off'
 				trigger) q "ALTER EVENT TRIGGER $obj DISABLE" >/dev/null || diag "ALTER EVENT TRIGGER $obj failed" ;;
 			esac
 		done <<<"$blockers"
-		uc --to 3.2 postgres >/dev/null; rc=$?
-		check "3.2 downgrade: the preflight has no blocker left" test $rc -eq 0
+		# the BM25 index has no setting that writes an older format: its REINDEX writes format 4 again, so it stays a blocker here and the way back is a REINDEX under the release
+		left_blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
+		check "3.2 downgrade: the BM25 indexes (dgb_idx, lw_idx) are the blockers left, and nothing else" test "$(grep -c . <<<"$left_blockers")/$(grep -cE ' (dgb|lw)_idx ' <<<"$left_blockers")" == 2/2
 		left=$(q "WITH i AS MATERIALIZED (SELECT c.oid, c.relname, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))
 			SELECT relname || ':' || (SELECT max(format) FROM sift.col_segments(oid::regclass)) FROM i WHERE amname = 'sift_col' AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
 			UNION ALL SELECT relname || ':' || (SELECT max(format) FROM sift.table_segments(oid::regclass)) FROM i WHERE amname = 'sift_table' AND (SELECT max(format) FROM sift.table_segments(oid::regclass)) > 6" | tr '\n' ' ')
@@ -317,6 +318,11 @@ sift.async_maintenance = off'
 		for idx in $(q "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i' ORDER BY 1"); do
 			check "3.2 downgrade: $idx verifies" q "SELECT sift.col_verify('$idx', true)"
 		done
+		err=$(q "SELECT sift.verify('dgb_idx', true)" 2>&1)
+		check "3.2 downgrade: the release refuses the BM25 index of format 4 with a format error and the REINDEX hint" grep -q 'dgb_idx" has on-disk format 1.4, this build reads formats 1.0 to 1.3' <<<"$err"
+		err=$(q "SET enable_seqscan = off" "$DGB" 2>&1)
+		check "3.2 downgrade: and a query through it refuses, it does not answer" grep -q 'has on-disk format 1.4' <<<"$err"
+		check "3.2 downgrade: REINDEX under the release rebuilds the BM25 indexes at its format" q "REINDEX INDEX dgb_idx" "REINDEX INDEX lw_idx"
 		check "3.2 downgrade: the BM25 index verifies" q "SELECT sift.verify('dgb_idx', true)"
 		check "3.2 downgrade: the BM25 index answers as before" test "$(q "SET enable_seqscan = off" "$DGB" | tail -1)" == "$bidx"
 		for f in "${formats[@]}"; do

@@ -161,7 +161,7 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
 - Keep `sift.col_format_minor = 6` while any 3.3 library still writes: a write at the default after step 4 would put a section 3.2 cannot read back into the database.
 - `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the table in the format of the setting, whatever the row size (tested with a 5 MB row). `ALTER TABLE t SET ACCESS METHOD heap` and
   back rewrites it too, but fails with `row is too big` on a row that does not fit a heap page, so the preflight does not name it.
-- A `sift` (BM25) index needs nothing for 3.2: its metapage minor (1.3) is the one 3.1 and 3.2 write (tested: built with 3.3, verified and answered the same by 3.2). A word over 255 bytes is
+- A `sift` (BM25) index built by 3.7 is at segment format 4 (metapage minor 1.4), which 3.2 refuses with the format error and the hint to `REINDEX` (no wrong answer; `scripts/upgrade-check.sh --to 3.2` lists it as a blocker). A 3.3 to 3.6 index is at minor 1.3, the one 3.1 and 3.2 write (tested: built with 3.3, verified and answered the same by 3.2). There is no setting that makes 3.7 write the older format, so the way back is the `REINDEX` of the index by the older library after the downgrade (tested: it verifies and answers as before). A word over 255 bytes is
   stored as a hash since 3.3 and cut at 255 bytes by 3.2 (section 2): `REINDEX` such an index with 3.2 if a query for the long word must find it.
 - The catalog keeps the extension at 3.3 (below). The access methods, `sift.col_verify`, `sift.verify`, the other functions 3.2 has, and writes, promotion, merge and `REINDEX` by the 3.2 library
   work on the downgraded database (tested).
