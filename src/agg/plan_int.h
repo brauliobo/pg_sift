@@ -121,6 +121,11 @@ typedef struct AggCtx
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	Bitmapset  *jcast;			/* leaves read through the cast function of jsonb to a number or boolean (before PostgreSQL 18 it raises for a JSON null) */
 	List	   *dpctx;			/* deparse context of expr_text */
+	const SiftAggPred **zs_pred;	/* zone_sample_kept: the conjuncts and the answer of its last call, which each arm prices again (NULL: none yet) */
+	int			zs_n;
+	const SiftSrcZones *zs_zones;
+	double		zs_share;
+	List	   *zs_rest;
 	bool		other_group;	/* a leaf of an array the query does not unnest is read */
 	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
 	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */

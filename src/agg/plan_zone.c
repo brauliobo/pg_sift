@@ -235,8 +235,8 @@ zone_may(const SiftSrcZones *z, const SiftAggPred *p, ZoneTest *t, int k)
  * The conjuncts it cannot test (no zones in the source, a parameter, a numeric, a ctid range) go to *rest for the estimate by selectivity.
  * 1.0 when none could be tested.
  */
-double
-zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest)
+static double
+zone_sample_scan(AggCtx *c, SiftAggSpec *s, List **rest)
 {
 	const SiftSrcZones *z = c->stats.zones;
 	ZoneTest   *t;
@@ -270,4 +270,24 @@ zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest)
 	}
 	share = (double) left / z->n;
 	return z->covered * share + (1.0 - z->covered);
+}
+
+/* ... each arm of the planner prices the same conjuncts over the same sample of zones: the answer of the last call is kept */
+double
+zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest)
+{
+	double		share;
+
+	if (c->zs_pred != NULL && c->zs_zones == c->stats.zones && c->zs_n == s->npred && memcmp(c->zs_pred, s->pred, s->npred * sizeof(SiftAggPred *)) == 0)
+	{
+		*rest = c->zs_rest;
+		return c->zs_share;
+	}
+	share = zone_sample_scan(c, s, rest);
+	c->zs_pred = memcpy(palloc(Max(s->npred, 1) * sizeof(SiftAggPred *)), s->pred, s->npred * sizeof(SiftAggPred *));
+	c->zs_n = s->npred;
+	c->zs_zones = c->stats.zones;
+	c->zs_share = share;
+	c->zs_rest = *rest;
+	return share;
 }
