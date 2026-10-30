@@ -234,6 +234,24 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	return true;
 }
 
+/* The bytes of the directory of a key-cut unit read to the end of its chunk table are read now, where a scan needs the pages or the TIDs */
+static void
+keyed_body(SiftCUnitView *v)
+{
+	if (v->kbody_at != 0 && !v->kbody_here)
+	{
+		SIFT_INVARIANT(v->fill != NULL, "sift_col: the directory of a key-cut unit is not read");
+		v->fill(v->fill_seg, v->fill_u, v->kbody_at, v->kbody_end - v->kbody_at);
+		v->kbody_here = true;
+	}
+}
+
+void
+sift_cunit_keyed_corrupt(void)
+{
+	ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: the TID directory of a key-cut unit does not decode")));
+}
+
 void
 sift_cunit_keyed_load(const SiftCUnitView *cv)
 {
@@ -241,15 +259,48 @@ sift_cunit_keyed_load(const SiftCUnitView *cv)
 
 	if (!v->keyed || v->blocks != NULL)
 		return;
-	if (v->kbody_at != 0 && !v->kbody_here)
-	{
-		/* the unit was read to the end of its chunk table: its directory is read now, where a scan needs the pages or the TIDs */
-		SIFT_INVARIANT(v->fill != NULL, "sift_col: the directory of a key-cut unit is not read");
-		v->fill(v->fill_seg, v->fill_u, v->kbody_at, v->kbody_end - v->kbody_at);
-		v->kbody_here = true;
-	}
+	keyed_body(v);
 	if (!keyed_decode(v, v->len))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: the TID directory of a key-cut unit does not decode")));
+		sift_cunit_keyed_corrupt();
+}
+
+void
+sift_cunit_keyed_walk_begin(const SiftCUnitView *cv, SiftCKeyedWalk *w)
+{
+	SiftCUnitView *v = (SiftCUnitView *) cv;
+	uint32		np = v->npages,
+				bw[3] = {v->kwidths & 0xFF, (v->kwidths >> 8) & 0xFF, (v->kwidths >> 16) & 0xFF};
+	uint64		at = v->kbody_at != 0 ? v->kbody_at : 24,
+				dbytes = ((uint64) (np > 0 ? np - 1 : 0) * bw[0] + 7) / 8,
+				cbytes = ((uint64) np * bw[1] + 7) / 8;
+
+	keyed_body(v);
+	if (at + dbytes + cbytes + ((uint64) v->nrows * bw[2] + 7) / 8 > v->len)
+		sift_cunit_keyed_corrupt();
+	w->dp = v->rec + at;
+	w->cp = w->dp + dbytes;
+	w->op = w->cp + cbytes;
+	w->dleft = v->len - at;
+	w->cleft = w->dleft - dbytes;
+	w->oleft = w->cleft - cbytes;
+	w->bwd = bw[0];
+	w->bwc = bw[1];
+	w->bwo = bw[2];
+	w->dbit = 0;
+	w->cbit = 0;
+	w->q = 0;
+	w->np = np;
+	w->nrows = v->nrows;
+	w->row = 0;
+	w->blk = v->kblk0;
+	w->last = v->kblk1;
+}
+
+void
+sift_cunit_keyed_walk_end(const SiftCKeyedWalk *w)
+{
+	if (w->q != w->np || w->row != w->nrows || (w->np > 0 && w->blk != w->last))
+		sift_cunit_keyed_corrupt();
 }
 
 /* The head of a key-cut unit (enc.c unit_put_directory_keyed); pos is where its directory ends, or, with the table first, where its head does */

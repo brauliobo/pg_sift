@@ -479,6 +479,96 @@ extern uint32 sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, i
 extern void sift_cunit_keyed_load(const SiftCUnitView *v);
 
 /*
+ * The pages of a key-cut unit in block order, read from its packed directory a page at a time, with none of its arrays decoded: a filter by heap address that most of the
+ * pages of the unit fail walks them and decodes the offsets of the few it keeps (sift_cunit_keyed_walk_offs). Of the checks of sift_cunit_keyed_load, the offsets
+ * are checked on the pages that are read, and the end of the walk checks the rest (sift_cunit_keyed_walk_end).
+ */
+typedef struct SiftCKeyedWalk
+{
+	const uint8 *dp;			/* the packed block distances, the rows a page holds less one, and the offsets of the rows */
+	const uint8 *cp;
+	const uint8 *op;
+	uint64		dleft;			/* the bytes from each to the end of the record */
+	uint64		cleft;
+	uint64		oleft;
+	uint32		bwd;
+	uint32		bwc;
+	uint32		bwo;
+	uint64		dbit;			/* where the next page's distance and row count are, in bits from dp and cp */
+	uint64		cbit;
+	uint32		q;				/* the next page */
+	uint32		np;
+	uint32		nrows;
+	uint32		row;			/* the first row of the next page */
+	BlockNumber blk;
+	BlockNumber last;
+} SiftCKeyedWalk;
+
+extern void sift_cunit_keyed_walk_begin(const SiftCUnitView *v, SiftCKeyedWalk *w);
+extern void sift_cunit_keyed_walk_end(const SiftCKeyedWalk *w);
+extern void sift_cunit_keyed_corrupt(void);
+
+/* the bits-wide value at bit position bitpos of a packed array of avail bytes; the last bytes of the record are read one at a time */
+static inline uint32
+sift_ckeyed_get(const uint8 *p, uint64 avail, uint64 bitpos, uint32 bits)
+{
+	uint64		w = 0;
+
+	if ((bitpos >> 3) + 8 <= avail)
+		memcpy(&w, p + (bitpos >> 3), sizeof(w));
+	else
+		for (uint64 b = bitpos >> 3, k = 0; b < avail; b++, k++)
+			w |= (uint64) p[b] << (8 * k);
+	return (uint32) ((w >> (bitpos & 7)) & ((UINT64CONST(1) << bits) - 1));
+}
+
+/* The next page: its heap block, the first row and the number of rows; false after the last */
+static inline bool
+sift_cunit_keyed_walk_next(SiftCKeyedWalk *w, BlockNumber *blk, uint32 *row, uint32 *n)
+{
+	uint32		cnt;
+
+	if (w->q == w->np)
+		return false;
+	if (w->q > 0)
+	{
+		uint64		b = (uint64) w->blk + sift_ckeyed_get(w->dp, w->dleft, w->dbit, w->bwd) + 1;
+
+		w->dbit += w->bwd;
+		if (b >= MaxBlockNumber)
+			sift_cunit_keyed_corrupt();
+		w->blk = (BlockNumber) b;
+	}
+	cnt = sift_ckeyed_get(w->cp, w->cleft, w->cbit, w->bwc) + 1;
+	w->cbit += w->bwc;
+	if (cnt > MaxHeapTuplesPerPage || cnt > w->nrows - w->row)
+		sift_cunit_keyed_corrupt();
+	*blk = w->blk;
+	*row = w->row;
+	*n = cnt;
+	w->row += cnt;
+	w->q++;
+	return true;
+}
+
+/* The offsets (1 based) of the n rows from row of the page just walked; they must ascend below MaxHeapTuplesPerPage */
+static inline void
+sift_cunit_keyed_walk_offs(const SiftCKeyedWalk *w, uint32 row, uint32 n, uint16 *offs)
+{
+	uint32		prev = 0;
+
+	for (uint32 k = 0; k < n; k++)
+	{
+		uint32		o = sift_ckeyed_get(w->op, w->oleft, (uint64) (row + k) * w->bwo, w->bwo);
+
+		if (o >= MaxHeapTuplesPerPage || (k > 0 && o <= prev))
+			sift_cunit_keyed_corrupt();
+		offs[k] = (uint16) (o + 1);
+		prev = o;
+	}
+}
+
+/*
  * The same for a unit whose record is read lazily: only its first avail bytes (the row directory and the chunk table, which a bound of
  * SIFT_COL_UNIT_HEAD covers) are present, len is the full length; the chunks are not looked at. The caller makes the bytes of a chunk
  * present (v->chunk_off[col], v->chunk_len[col]) before sift_cunit_chunk(col).

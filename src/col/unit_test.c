@@ -72,6 +72,28 @@ check_directory(TCtx *t, const SiftCUnitView *v, const SiftColBatch *b)
 			!((mask[(off - 1) / 64] >> ((off - 1) % 64)) & 1) || r < v->rowstart[p] || r >= v->rowstart[p + 1];
 	}
 	CHECK(t, bad == 0, "%u rows of the directory differ", bad);
+	if (v->keyed)
+	{
+		/* the walk of a key-cut unit's pages gives the blocks, rows and offsets of the keys */
+		SiftCKeyedWalk w;
+		BlockNumber blk;
+		uint32		row,
+					n,
+					diff = 0;
+
+		sift_cunit_keyed_walk_begin(v, &w);
+		for (uint32 p = 0; sift_cunit_keyed_walk_next(&w, &blk, &row, &n); p++)
+		{
+			uint16		offs[MaxHeapTuplesPerPage];
+
+			sift_cunit_keyed_walk_offs(&w, row, n, offs);
+			diff += row != v->rowstart[p] || n != v->rowstart[p + 1] - v->rowstart[p] || blk != sift_key_block(keys[row]);
+			for (uint32 k = 0; k < n; k++)
+				diff += offs[k] != (keys[row + k] & 0xFFFF);
+		}
+		sift_cunit_keyed_walk_end(&w);
+		CHECK(t, diff == 0, "%u pages or offsets of the walk differ", diff);
+	}
 	for (uint32 p = 0; p < v->npages; p++)
 	{
 		uint64		mask[SIFT_OFFMASK_WORDS];
