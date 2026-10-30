@@ -40,7 +40,7 @@ typedef struct SbPostings
 typedef struct Union
 {
 	SiftSegment *seg;
-	const SiftTermMatcher *m;
+	SiftTermMatcher *m;
 	bool		scoring;
 	MemoryContext cx;			/* the gathered postings */
 	MemoryContext tcxt;			/* the cursor of one term */
@@ -152,6 +152,12 @@ union_count(Union *u, uint32 gid, uint64 n)
 {
 	union_check(u, gid, 1);
 	u->count[gid - u->seg->hdr->sb_lo] += n;
+}
+
+static bool
+union_skip(void *arg, const char *term, int len, const char **next, int *nextlen)
+{
+	return sift_matcher_skip(((Union *) arg)->m, term, len, next, nextlen);
 }
 
 static bool
@@ -311,7 +317,7 @@ union_scan(Union *u, uint32 from, uint32 to)
 	UNION_STAT(from != u->seg->hdr->sb_lo || to != u->seg->hdr->sb_hi, windows, sift_prefix_stats.windows + 1);
 	UNION_STAT(from == to && u->count == NULL && u->seg->hdr->sb_lo != u->seg->hdr->sb_hi, direct, sift_prefix_stats.direct + 1);
 	sift_matcher_bounds(u->m, &lo, &lolen, &hi, &hilen);
-	sift_dict_scan(u->seg->dict, lo, lolen, hi, hilen, union_term, u);
+	sift_dict_scan_skipping(u->seg->dict, lo, lolen, hi, hilen, sift_matcher_skips(u->m) ? union_skip : NULL, union_term, u);
 	sift_sr_release(&u->seg->sr);
 	UNION_STAT(!union_direct(u) && u->total > sift_prefix_stats.peak, peak, u->total);
 }
@@ -360,7 +366,7 @@ union_windows(Union *u)
 }
 
 static const uint8 *
-union_build(SiftSegment *seg, const SiftTermMatcher *m, const SiftScoreRef *ref, bool scoring, MemoryContext mcxt,
+union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool scoring, MemoryContext mcxt,
 			SiftTermInfo *info)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift prefix union", ALLOCSET_DEFAULT_SIZES);
@@ -510,7 +516,7 @@ cache_find(const SiftSegment *seg, const char *key, int keylen, bool scoring)
 }
 
 const uint8 *
-sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
+sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
 				  bool scoring, MemoryContext mcxt, SiftTermInfo *info)
 {
 	bool		cached = key != NULL && sift_prefix_cache_size > 0;

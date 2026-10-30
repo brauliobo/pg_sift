@@ -104,6 +104,8 @@ extern char *sift_query_deparse(const SiftQuery *q);
  * evaluation and dictionary expansion.
  */
 extern bool sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len);
+/* Bytes of the shortest prefix of the term that no term starting with it matches the leaf (0: none known) */
+extern int sift_query_leaf_dead_prefix(const SiftQNode *leaf, const char *term, int len);
 
 /*
  * Evaluate an analyzed query against raw document text without an index

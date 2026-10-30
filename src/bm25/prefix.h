@@ -14,7 +14,7 @@
  * when it is not to be cached. With scoring false, tf and bounds are not computed
  * (every tf is 1), which is all a match or a count needs. Allocates the blob in mcxt.
  */
-extern const uint8 *sift_prefix_union(SiftSegment *seg, const SiftTermMatcher *m, const char *key, int keylen,
+extern const uint8 *sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen,
 									  const SiftScoreRef *ref, bool scoring, MemoryContext mcxt, SiftTermInfo *info);
 
 /* sift.prefix_cache_size (kB): the blobs this backend keeps for the next bind, 0 = none. key names the term (indexed_leaf's) */

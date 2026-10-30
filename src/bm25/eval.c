@@ -295,7 +295,7 @@ sure_tree(SiftPlan *p)
 typedef struct Expand
 {
 	SiftPlan   *plan;
-	const SiftTermMatcher *matcher;
+	SiftTermMatcher *matcher;
 	SiftQKind	kind;			/* of the leaf */
 	SiftSegment *seg;
 	SiftSegment *live_in;		/* when set, terms without a live posting in it are skipped */
@@ -326,6 +326,12 @@ expand_add(Expand *e, const char *term, int len, const SiftTermInfo *info)
 	t->info = *info;
 	if (info->flags & SIFT_TERM_INLINE && info->pos_len > 0)
 		t->info.inline_pos = memcpy(MemoryContextAlloc(e->plan->mcxt, info->pos_len), info->inline_pos, info->pos_len);
+}
+
+static bool
+expand_skip(void *arg, const char *term, int len, const char **next, int *nextlen)
+{
+	return sift_matcher_skip(((Expand *) arg)->matcher, term, len, next, nextlen);
 }
 
 static bool
@@ -403,7 +409,7 @@ expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
 					hilen;
 
 		sift_matcher_bounds(l->m, &lo, &lolen, &hi, &hilen);
-		sift_dict_scan(seg->dict, lo, lolen, hi, hilen, expand_visit, &e);
+		sift_dict_scan_skipping(seg->dict, lo, lolen, hi, hilen, sift_matcher_skips(l->m) ? expand_skip : NULL, expand_visit, &e);
 	}
 	sift_sr_release(&seg->sr);
 	l->nterms[s] = e.n;

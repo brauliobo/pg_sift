@@ -146,6 +146,57 @@ fuzzy_match(const char *q, int qlen, const char *t, int tlen, int k)
 	return lev_within(qw, n, tw, m, k);
 }
 
+/*
+ * Bytes of the shortest prefix of the term that no term starting with it matches a fuzzy leaf (0: none, or the term is not in the
+ * leaf's first character): a prefix more than k edits from every prefix of the query is that far from the query whatever follows it.
+ */
+static int
+fuzzy_dead_prefix(const char *q, int qlen, const char *t, int tlen, int k)
+{
+	int			l = char_len(q, q + qlen),
+				n,
+				m,
+				off = l;
+	pg_wchar	qb[WBUF],
+				tb[WBUF];
+	pg_wchar   *qw,
+			   *tw;
+	int			rows[2][WBUF + 1];
+	int		   *prev = rows[0],
+			   *row = rows[1];
+
+	if (tlen < l || memcmp(q, t, l) != 0)
+		return 0;
+	qw = to_wchar(q + l, qlen - l, qb, &n);
+	tw = to_wchar(t + l, tlen - l, tb, &m);
+	for (int j = 0; j <= n; j++)
+		prev[j] = j;
+	for (int i = 1; i <= m; i++)
+	{
+		int			best = row[0] = i;
+		int		   *tmp;
+
+		off += char_len(t + off, t + tlen);
+		for (int j = 1; j <= n; j++)
+		{
+			int			v = Min(prev[j - 1] + (tw[i - 1] != qw[j - 1]), Min(prev[j], row[j - 1]) + 1);
+
+			row[j] = v;
+			best = Min(best, v);
+		}
+		if (best > k)
+			return off;
+		tmp = prev, prev = row, row = tmp;
+	}
+	return 0;
+}
+
+int
+sift_query_leaf_dead_prefix(const SiftQNode *leaf, const char *term, int len)
+{
+	return leaf->kind == SQ_FUZZY ? fuzzy_dead_prefix(leaf->text, leaf->textlen, term, len, leaf->fuzzy) : 0;
+}
+
 bool
 sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len)
 {

@@ -491,6 +491,7 @@ sift_dict_track_slots(SiftDict *d)
 
 #ifdef SIFT_TESTING
 uint64		sift_dict_probes;
+uint64		sift_dict_scan_blocks;
 #endif
 
 /*
@@ -603,9 +604,17 @@ void
 sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen,
 			   SiftDictVisit fn, void *arg)
 {
+	sift_dict_scan_skipping(d, lo, lolen, hi, hilen, NULL, fn, arg);
+}
+
+void
+sift_dict_scan_skipping(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen,
+						SiftDictSkip skip, SiftDictVisit fn, void *arg)
+{
 	int64		b = lo && d->nblocks ? Max(find_block(d, lo, lolen), 0) : 0;
 	uint8	   *buf;
-	bool		more = true;
+	bool		more = true,
+				sought = false;
 	uint32		nblk = 0,
 				slot;
 
@@ -618,9 +627,13 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 	{
 		BlockIter	it;
 		SiftTermInfo info;
+		bool		jump = false;
 
 		block_begin(d, off, slot, buf, &it);
 		off += it.end - buf;
+#ifdef SIFT_TESTING
+		sift_dict_scan_blocks++;
+#endif
 		while (more && block_next_slots(&it, &info))
 		{
 			if (lo && sift_term_cmp(it.term, it.len, lo, lolen) < 0)
@@ -630,10 +643,34 @@ sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen
 				more = false;
 				break;
 			}
+			sought = false;
+			if (skip && skip(arg, it.term, it.len, &lo, &lolen))
+			{
+				if (lolen == 0)
+				{
+					more = false;
+					break;
+				}
+				sought = true;
+				continue;
+			}
 			entry_stats(&it, &info, true);
 			more = fn(arg, it.term, it.len, &info);
 		}
-		slot = it.slot;
+		/* the block ended below the key the skip asked for: it is in a later block unless the next one holds it */
+		if (more && sought)
+		{
+			SiftDictIdx e = read_idx(d, Max(find_block(d, lo, lolen), 0));
+
+			if (e.block_off > off)
+			{
+				off = e.block_off;
+				slot = e.slot_base;
+				jump = true;
+			}
+		}
+		if (!jump)
+			slot = it.slot;
 		if ((++nblk & 15) == 0)
 		{
 			sift_sr_unlock(d->sr);	/* a buffer lock holds off interrupts */
@@ -651,6 +688,7 @@ struct SiftTermMatcher
 	char	   *hi;				/* NULL: unbounded */
 	int			hilen;
 	char		field;			/* terms of a field start with this byte, else 0 */
+	char	   *skip;			/* the key of the last sift_matcher_skip */
 };
 
 /* Smallest string above every string starting with s[0..len): NULL if none */
@@ -773,6 +811,33 @@ sift_matcher_bounds(const SiftTermMatcher *m, const char **lo, int *lolen,
 	*lolen = m->lolen;
 	*hi = m->hi;
 	*hilen = m->hilen;
+}
+
+bool
+sift_matcher_skips(const SiftTermMatcher *m)
+{
+	return m->leaf->kind == SQ_FUZZY;
+}
+
+/* A term that starts with a dead prefix of the leaf: the next term the leaf can match is above every term with it (*nextlen 0: none) */
+bool
+sift_matcher_skip(SiftTermMatcher *m, const char *term, int len, const char **next, int *nextlen)
+{
+	int			skip = m->field ? 1 : 0,
+				dead;
+
+	if (len <= skip || (m->field && *term != m->field) || SIFT_SYNTHETIC_TERM(term + skip))
+		return false;
+	dead = sift_query_leaf_dead_prefix(m->leaf, term + skip, len - skip);
+	if (dead == 0)
+		return false;
+	if (m->skip)
+		pfree(m->skip);
+	*nextlen = dead + skip;
+	*next = m->skip = successor(term, nextlen);
+	if (m->skip == NULL)
+		*nextlen = 0;
+	return true;
 }
 
 bool

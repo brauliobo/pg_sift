@@ -122,6 +122,15 @@ extern void sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *h
 						   SiftDictVisit fn, void *arg);
 
 /*
+ * The same scan, asking skip about every term in the range before fn sees it: true says no term from `term` up to *next (> term, in
+ * byte order; *nextlen 0: none above) is wanted, and the scan seeks there instead of decoding the blocks between. A seek costs a
+ * bisection of the block index and the terms of one block, so a skip pays when it passes a block or more.
+ */
+typedef bool (*SiftDictSkip) (void *arg, const char *term, int len, const char **next, int *nextlen);
+extern void sift_dict_scan_skipping(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen,
+									SiftDictSkip skip, SiftDictVisit fn, void *arg);
+
+/*
  * Term matchers for expansion leaves (SQ_PREFIX, SQ_WILDCARD, SQ_REGEX,
  * SQ_FUZZY, also SQ_TERM). bounds give the byte range implied by the
  * literal prefix (NULL: unbounded); allocates in CurrentMemoryContext.
@@ -129,6 +138,8 @@ extern void sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *h
 #ifdef SIFT_TESTING
 /* Blocks a term lookup read to find its block (sift._test_read_stats) */
 extern uint64 sift_dict_probes;
+/* Blocks the dictionary scans decoded */
+extern uint64 sift_dict_scan_blocks;
 #endif
 
 typedef struct SiftTermMatcher SiftTermMatcher;
@@ -137,5 +148,8 @@ extern SiftTermMatcher *sift_matcher_create(const SiftQNode *leaf);
 extern void sift_matcher_bounds(const SiftTermMatcher *m, const char **lo, int *lolen,
 								const char **hi, int *hilen);
 extern bool sift_matcher_match(const SiftTermMatcher *m, const char *term, int len);
+/* The leaf rules out the terms that start with a prefix (fuzzy): sift_dict_scan_skipping asks sift_matcher_skip for it */
+extern bool sift_matcher_skips(const SiftTermMatcher *m);
+extern bool sift_matcher_skip(SiftTermMatcher *m, const char *term, int len, const char **next, int *nextlen);
 
 #endif							/* SIFT_DICT_H */
