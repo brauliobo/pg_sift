@@ -8,7 +8,7 @@ import tempfile
 import time
 from store_common import host, percentile, write
 from store_data import Rows, effective, load_pg, mib, servers
-from store_engine import Window, gate, psql_value
+from store_engine import Window, cgroup_usage, container_cgroup, gate, psql_value
 from store_lib import LANES, NOISY, container, load_queries, log, port
 from store_updates import update_engine
 
@@ -63,7 +63,8 @@ def window(eid, rows, args, name, script, read=None):
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, 'w.pgb')
         open(path, 'w').write(script)
-        start, t0 = lsn(eid), time.time()
+        start, t0, cg = lsn(eid), time.time(), container_cgroup(eid)
+        cpu0 = cgroup_usage(cg)
         w = pgbench(eid, path, args.rows, args.churn_seconds, CLIENTS, os.path.join(d, 'log-w'))
         r = None
         if read:
@@ -75,7 +76,7 @@ def window(eid, rows, args, name, script, read=None):
             r.communicate()
         secs = time.time() - t0
         lat = latencies_ms(os.path.join(d, 'log-w'))
-        wal = wal_bytes(eid, start)
+        wal, cpu = wal_bytes(eid, start), (cgroup_usage(cg) - cpu0) * 1000
         if not lat:
             raise RuntimeError(f'{name}: pgbench ran no transaction: {out.strip()[-300:]}')
         rows.add(eid, name, 'steady', 'tps', 'transactions/s', value=round(len(lat) / args.churn_seconds, 1))
@@ -83,6 +84,7 @@ def window(eid, rows, args, name, script, read=None):
             rows.add(eid, name, 'steady', 'rows_s', 'rows/s', value=round(len(lat) * 1000 / args.churn_seconds))
         rows.add(eid, name, 'steady', 'p99_ms', 'ms', value=round(percentile(lat, 99), 2))
         rows.add(eid, name, 'steady', 'wal_bytes_per_tx', 'bytes', value=round(wal / len(lat)))
+        rows.add(eid, name, 'steady', 'cpu_ms_per_tx', 'ms', value=round(cpu / len(lat), 3))   # the whole window, the reader's requests too
         rows.add(eid, name, 'steady', 'window_s', 's', value=round(secs, 1))
         if read:
             rl = latencies_ms(os.path.join(d, 'log-r'))

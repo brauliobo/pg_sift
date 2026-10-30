@@ -24,7 +24,7 @@ import benchlib  # noqa: E402  (steps/benchlib.py: host fingerprint, cell cache,
 import store_common  # noqa: E402  (steps/store_common.py: LOAD_CODE and MEASURE_CODE are set here)
 import store_engine  # noqa: E402  (steps/store_engine.py: UTIL is set here)
 from store_common import PARTS, host_fp, make_cache, part_done, part_path  # noqa: E402
-from store_data import build_indexes, bulk_docs, cmd_datakey, cmd_gen, cmd_load, copy_chunks, load_ch, load_es, load_pg  # noqa: E402
+from store_data import Rows, build_indexes, bulk_docs, cmd_datakey, cmd_gen, cmd_load, copy_chunks, load_ch, load_es, load_pg  # noqa: E402
 from store_engine import Client, Http, Utilization, restart  # noqa: E402
 from store_lib import CH_AUTH, DEFAULT_ENGINES, UPDATE_ENGINES, container, die, load_queries, log  # noqa: E402
 from store_plan import cmd_cache_save, cmd_merge, cmd_noisy, cmd_patch, cmd_plan, cmd_planget, cmd_stable  # noqa: E402
@@ -167,7 +167,7 @@ def main():
     args = ap.parse_args()
     store_common.LOAD_CODE = benchlib.key_of([inspect.getsource(f) for f in (load_pg, build_indexes, copy_chunks, load_ch, load_es, bulk_docs)], 12)
     store_common.MEASURE_CODE = benchlib.key_of([store_common.LOAD_CODE] + [inspect.getsource(f) for f in (run_query, time_cell, time_wave, one_container, sample, cold_cell, evict, restart, update_engine, with_load, churn, read_latency,
-                                                                                   read_after_write, Client.run, Client.read_mb, Writer.bulk, Writer.probe_set)], 12)
+                                                                                   read_after_write, Client.run, Client.read_mb, Rows.cost, Writer.bulk, Writer.probe_set)], 12)
     if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'section', 'verify', 'plan', 'datakey', 'interference') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
     args.cell = 0

@@ -7,7 +7,8 @@ import time
 from store_common import difference, marker_path, percentile, write
 from store_data import Rows, effective, mib
 from stats import summary
-from store_engine import Client, Http, Window, es_text, gate, server_log
+from store_engine import Client, Http, Window, cgroup_usage, es_text, gate, server_log
+from store_run import sample
 from store_lib import CH_AUTH, CH_TABLE, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, NOISY, PG_ENGINES, TOL, UPDATE_ENGINES, container, is_ch, load_queries, log, read, sections
 
 
@@ -150,7 +151,11 @@ def read_latency(w, q, args, rows, variant):
     c, st = w.c, q.statement(w.eid, args.rows)
     for _ in range(args.warmups):
         c.run(st)
-    rows.add(w.eid, q.id, variant, 'latency_ms', 'ms', st=summary([c.run(st)[0] for _ in range(args.runs)]))
+    c.cpus, times = [], []
+    for _ in range(args.runs):
+        sample(c, st, times)
+    rows.add(w.eid, q.id, variant, 'latency_ms', 'ms', st=summary(times))
+    rows.cost(c, w.eid, q.id, variant, st)
 
 
 def churn(eid, n, rate, seconds, stop, out):
@@ -269,7 +274,7 @@ def update_engine(eid, args, rows, ref):
         point('before')
     for name, kind, pred, test in PHASES:
         ids = [i for i in range(1, n + 1) if test(i)]
-        lsn = w.lsn()
+        lsn, cpu0 = w.lsn(), cgroup_usage(w.c.cg)
         t0 = time.perf_counter()
         if eid == 'ch_mut':
             w.predicate(kind, pred)
@@ -278,6 +283,7 @@ def update_engine(eid, args, rows, ref):
                 w.bulk(kind, ids[k:k + 1000])
         dt = time.perf_counter() - t0
         rows.add(eid, '-', name, 'phase_s', 's', value=round(dt, 2))
+        rows.add(eid, '-', name, 'phase_cpu_ms', 'ms', value=round((cgroup_usage(w.c.cg) - cpu0) * 1000, 1))
         rows.add(eid, '-', name, 'phase_rows_s', 'rows/s', value=round(len(ids) / dt))
         if lsn:
             rows.add(eid, '-', name, 'wal_mib', 'MiB', value=w.wal_mib(lsn))
@@ -300,10 +306,11 @@ def update_engine(eid, args, rows, ref):
     point('after churn')
     for q in qs.values():
         read_latency(w, q, args, rows, 'after churn')
-    lsn = w.lsn()
+    lsn, cpu0 = w.lsn(), cgroup_usage(w.c.cg)
     t0 = time.perf_counter()
     w.maintain()
     rows.add(eid, '-', 'maintenance', 'maintain_s', 's', value=round(time.perf_counter() - t0, 1))
+    rows.add(eid, '-', 'maintenance', 'maintain_cpu_ms', 'ms', value=round((cgroup_usage(w.c.cg) - cpu0) * 1000, 1))
     if lsn:
         rows.add(eid, '-', 'maintenance', 'wal_mib', 'MiB', value=w.wal_mib(lsn))
     point('after maintenance')

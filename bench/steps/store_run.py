@@ -135,9 +135,7 @@ def run_query(q, clients, args, rows):
     times = time_cell(live, stmts, clients, args)
     for e in live:
         rows.add(e, q.id, 'warm', 'latency_ms', 'ms', st=summary(times[e]))
-        rows.add(e, q.id, 'warm', 'cpu_ms', 'ms', st=summary(clients[e].cpus))
-        mb = clients[e].read_mb(stmts[e])
-        rows.add(e, q.id, 'warm', 'read_mb', 'MB', **({'value': mb} if isinstance(mb, str) else {'st': summary([mb])}))
+        rows.cost(clients[e], e, q.id, 'warm', stmts[e])
     log(f'{q.id}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
     return stop
 

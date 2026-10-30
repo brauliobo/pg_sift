@@ -13,6 +13,7 @@ import time
 import urllib.parse
 from store_common import csv_path, dataset_id, image_ids, marker_path, write
 import store_common
+from stats import summary
 from store_engine import Http, ask, docker, pg_args, psql_file, psql_value, quiet_gate, wait_idle
 from store_lib import CHUNK, CH_AUTH, COMPRESSION, DDL, LANES, MAINT, NAME, PG_ENGINES, container, die, is_ch, is_es, log, read, sections
 
@@ -50,6 +51,12 @@ class Rows:
             if isinstance(r[k], float):
                 r[k] = round(r[k], 4)
         self.rows.append(r)
+
+    def cost(self, c, engine, cls, variant, stmt):
+        """the CPU of the timed requests of the client (c.cpus) and the MB one more request of `stmt` reads (or the reason the engine cannot say)"""
+        self.add(engine, cls, variant, 'cpu_ms', 'ms', st=summary(c.cpus))
+        mb = c.read_mb(stmt)
+        self.add(engine, cls, variant, 'read_mb', 'MB', **({'value': mb} if isinstance(mb, str) else {'st': summary([mb])}))
 
 
 def mib(b):

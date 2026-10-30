@@ -59,6 +59,31 @@ class CaseFig(unittest.TestCase):
         self.assertIsInstance(got[2], NA)
 
 
+class UpdatesFig(unittest.TestCase):
+    class S:
+        lanes = ['pg', 'sift']
+        sizes = [1000]
+        VALUES = {('pg', 'phase_s'): 0.5, ('pg', 'phase_cpu_ms'): 400.0, ('pg', 'wal_mib'): 10.0, ('sift', 'phase_s'): 0.25, ('sift', 'phase_cpu_ms'): 200.0, ('sift', 'wal_mib'): 5.0, ('sift', 'tps'): 500.0}
+
+        def med(self, size, lane, cls, variant, metric):
+            return self.VALUES.get((lane, metric))
+
+    def test_phase_seconds_become_milliseconds_and_missing_measures_are_reasons(self):
+        import section_render
+        S = self.S()
+        self.assertEqual(section_render.fig(S, 1000, 'sift', '-', 'u', ('phase_s', section_render.SECONDS), 'phase_cpu_ms', 'wal_mib'), (250.0, 200.0, 5.0))
+        got = section_render.fig(S, 1000, 'pg', '-', 'u', 'tps', 'phase_cpu_ms', 'wal_mib')
+        self.assertIsNone(got)
+        reason = triple.NA('a probe')
+        self.assertEqual(section_render.fig(S, 1000, 'sift', '-', 'u', ('tps', lambda v: 1e6 / v), reason, 'nothing')[1:], (reason, triple.NA(triple.NOT_MEASURED)))
+
+    def test_table_compares_postgres_with_the_best_sift_lane(self):
+        import section_render
+        lines = '\n'.join(section_render.triples(self.S(), 1000, [('update', ('-', 'u', ('phase_s', section_render.SECONDS), 'phase_cpu_ms', 'wal_mib'))])[0])
+        self.assertIn('| `sift_col` | **250 · 200 · 5.00** |', lines)
+        self.assertIn('| PostgreSQL | 500 · 400 · 10.0 (2.0x · 2.0x · 2.0x) |', lines)
+
+
 class Table(unittest.TestCase):
     FIGS = {('sift', 'q'): (1.0, 2.0, 3.0), ('pg', 'q'): (10.0, 20.0, 30.0), ('es', 'q'): (1.02, MISSING, MISSING)}
 

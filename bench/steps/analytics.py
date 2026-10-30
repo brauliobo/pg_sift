@@ -215,12 +215,13 @@ class ClickHouse:
             instr = perf.stop(h)
         return qid, wall, instr
 
-    def cpu_ms(self, qids):
+    def logged(self, qids):
+        """{query id: (CPU ms, MB read)} of the finished queries from the query log; the MB is what the query read (decompressed)"""
         self.client('SYSTEM FLUSH LOGS')
         ids = ','.join(f"'{q}'" for q in qids)
-        rows = self.client(f"SELECT query_id, ProfileEvents['UserTimeMicroseconds'] + ProfileEvents['SystemTimeMicroseconds'] FROM system.query_log "
+        rows = self.client(f"SELECT query_id, ProfileEvents['UserTimeMicroseconds'] + ProfileEvents['SystemTimeMicroseconds'], read_bytes FROM system.query_log "
                            f"WHERE type = 'QueryFinish' AND query_id IN ({ids}) FORMAT TSV")
-        return {l.split('\t')[0]: float(l.split('\t')[1]) / 1e3 for l in rows.strip().split('\n') if l}
+        return {f[0]: (float(f[1]) / 1e3, float(f[2]) / 2**20) for f in (l.split('\t') for l in rows.strip().split('\n') if l)}
 
 
 # --- rows
@@ -286,6 +287,16 @@ def plan_text(pg, gucs, known, applied, sql):
     return [l[:200] for l in pg.run('EXPLAIN (COSTS OFF) ' + sql, capture=True)]
 
 
+def blocks_mb(pg, gucs, known, applied, sql):
+    """[MB the buffers of the statement hit and read] in one more run (EXPLAIN (ANALYZE, BUFFERS)), [] for a statement that cannot be explained"""
+    apply_gucs(pg, gucs, known, applied)
+    try:
+        top = json.loads('\n'.join(pg.run('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + sql, capture=True)))[0]['Plan']
+    except (RuntimeError, ValueError, KeyError):
+        return []
+    return [(top['Shared Hit Blocks'] + top['Shared Read Blocks']) * 8192 / 2**20]
+
+
 def measure_task(q, set_name, tenants, sources, args, engines, pg, ch, perf, known, rows):
     sql = {e: expand(q.sql[SECTIONS[e]], tenants, sources) if args.corpus == 'orders' else q.sql[SECTIONS[e]] for e in engines if SECTIONS[e] in q.sql}
     engines = [e for e in engines if e in sql]
@@ -293,7 +304,7 @@ def measure_task(q, set_name, tenants, sources, args, engines, pg, ch, perf, kno
     applied = {}
     variant = set_name or '-'
     tol = q.tol if q.tol is not None else args.tol
-    out, runs, fail, plans = {}, {e: dict(cpu=[], wall=[], instr=[], qids=[]) for e in engines}, {}, {}
+    out, runs, fail, plans = {}, {e: dict(cpu=[], wall=[], instr=[], qids=[], mb=[]) for e in engines}, {}, {}
     # warm-up run per engine: the first result of heap is the reference of the others
     for e in engines:
         try:
@@ -339,13 +350,19 @@ def measure_task(q, set_name, tenants, sources, args, engines, pg, ch, perf, kno
                 log(f'{q.id} {variant} {e}: {x}')
                 break
     if 'ch' in engines and 'ch' not in fail:
-        cpu = ch.cpu_ms(runs['ch']['qids'])
-        runs['ch']['cpu'] = [cpu[x] for x in runs['ch']['qids'] if x in cpu]
+        logged = ch.logged(runs['ch']['qids'])
+        runs['ch']['cpu'] = [logged[x][0] for x in runs['ch']['qids'] if x in logged]
+        runs['ch']['mb'] = [logged[x][1] for x in runs['ch']['qids'] if x in logged]
+    for e in ('heap', 'col', 'flat'):   # the buffers one more run hits and reads
+        if e in engines and e not in fail:
+            runs[e]['mb'] = blocks_mb(pg, gucs[e], known, applied, sql[e])
     for e in engines:
         if e in fail:
             continue
         rows.add(e, q.id, variant, 'cpu_ms', 'ms', st=summary(runs[e]['cpu']))
         rows.add(e, q.id, variant, 'wall_ms', 'ms', st=summary(runs[e]['wall']))
+        if runs[e]['mb']:
+            rows.add(e, q.id, variant, 'read_mb', 'MB', st=summary(runs[e]['mb']))
         if any(x is not None for x in runs[e]['instr']):
             rows.add(e, q.id, variant, 'instr_m', 'M instructions', st=summary(runs[e]['instr']))
         if e == 'heap':

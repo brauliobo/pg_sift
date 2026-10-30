@@ -24,6 +24,7 @@ import bench_charts  # noqa: E402  (scale_takeaway)
 import extras  # noqa: E402,F401  (read, duck_table: the pg_duckdb tables)
 import readme  # noqa: E402  (replace_block)
 import store_charts  # noqa: E402
+import mdtable  # noqa: E402
 import triple  # noqa: E402
 from store_charts import SYSTEMS, picture  # noqa: E402
 
@@ -219,17 +220,17 @@ SHAPES_CMD = 'bench/bench analytics run --engines heap,col,flat,ch --flat --clic
 
 
 def shape_figs(results):
-    """(meta, [(query, set, {engine: (wall ms, cpu ms, read MB)})]) of bench/results/analytics.json (steps/triple.py: the CPU is the backend's from /proc/PID/schedstat, the read is not recorded); None when the file or its sift_col arm is missing"""
+    """(meta, [(query, set, {engine: (wall ms, cpu ms, read MB)})]) of bench/results/analytics.json (steps/triple.py: the CPU is the backend's from /proc/PID/schedstat, ClickHouse's from its query log; the read is the buffers one more run hit and read, ClickHouse's the bytes it read); None when the file or its sift_col arm is missing"""
     path = maybe(results, 'analytics.json')
     if not path:
         return None
     d = json.load(open(path))
-    wall, cpu = ({(r['engine'], r['class'], r['variant']): r['value'] for r in d['rows'] if r['metric'] == m} for m in ('wall_ms', 'cpu_ms'))
+    wall, cpu, mb = ({(r['engine'], r['class'], r['variant']): r['value'] for r in d['rows'] if r['metric'] == m} for m in ('wall_ms', 'cpu_ms', 'read_mb'))
     if not any(k[0] == 'col' for k in wall):
         return None
     order = {f[:-4]: int(re.search(r'(?m)^-- order: (\d+)', open(os.path.join(ANALYTICS_QUERIES, f)).read()).group(1)) for f in os.listdir(ANALYTICS_QUERIES)}
     cases = sorted({(k[1], k[2]) for k in wall}, key=lambda c: (c[1] != '-', order[c[0]], c[1]))   # the whole-table shapes first, each group in the order of its query files
-    fig = lambda e, q, v: (wall[e, q, v], cpu.get((e, q, v), triple.NA(triple.NOT_MEASURED)), triple.NA(triple.NOT_MEASURED)) if wall.get((e, q, v)) is not None else None  # noqa: E731
+    fig = lambda e, q, v: (wall[e, q, v], cpu.get((e, q, v), triple.NA(triple.NOT_MEASURED)), mb.get((e, q, v), triple.NA(triple.NOT_MEASURED))) if wall.get((e, q, v)) is not None else None  # noqa: E731
     return d['meta'], [(q, v, {e: fig(e, q, v) for e in ('heap', 'col', 'flat', 'ch')}) for q, v in cases]
 
 
@@ -240,7 +241,7 @@ def shape_cases(results):
 
 
 def shapes_lines(results):
-    found = shape_cases(results)
+    found = shape_figs(results)
     if not found:
         return not_measured(SHAPES_CMD, 'bench/results/analytics.json with the sift_col arm')
     meta, cases = found
@@ -248,15 +249,19 @@ def shapes_lines(results):
     for f in sorted(os.listdir(ANALYTICS_QUERIES)):
         first = open(os.path.join(ANALYTICS_QUERIES, f)).readline()
         desc[f[:-4]] = first.split(':', 1)[1].strip() if ':' in first else first
-    body, gains = [], []
-    for q, v, t in cases:
-        gain = t['heap'] / t['col'] if t['heap'] and t['col'] else None
-        gains += [gain] if gain else []
-        body.append([q, desc.get(q, '')[:90], v if v != '-' else '', ms(t['heap']), ms(t['col']), ms(t['flat']), ms(t['ch']), f'{gain:.1f}x' if gain else 'n/a'])
-    out = [f'{meta.get("tier", "?")} orders, median of {meta.get("runs", "?")} runs, {meta.get("date", "?")[:10]}, one backend, `max_parallel_workers_per_gather = 0`; wall milliseconds. PostgreSQL is the heap with the application\'s query, '
+    gains = [t['heap'][0] / t['col'][0] for _, _, t in cases if t['heap'] and t['col']]
+    label = lambda q, v: q if v == '-' else f'{q} {v}'  # noqa: E731
+    figs = {label(q, v): t for q, v, t in cases}
+    systems = {'pg_sift': 'col', 'PostgreSQL': 'heap', 'PostgreSQL flat tables': 'flat', 'ClickHouse': 'ch'}
+    fig = lambda e, k: figs[k][e]  # noqa: E731
+    ref = lambda e, k: figs[k]['col'] or (None,) * 3  # noqa: E731
+    best = {k: min((f[0] for f in figs[k].values() if f), default=None) for k in figs}
+    text = lambda k, e: triple.cell(fig(e, k), None if e == 'col' else ref(e, k), bold=bool(fig(e, k)) and fig(e, k)[0] <= best[k] * (1 + triple.TIE))  # noqa: E731
+    out = [f'{meta.get("tier", "?")} orders, median of {meta.get("runs", "?")} runs, {meta.get("date", "?")[:10]}, one backend, `max_parallel_workers_per_gather = 0`. PostgreSQL is the heap with the application\'s query, '
            f'pg_sift the same query and heap with the `sift_col` index, flat the best conventional layout (flat tables), ClickHouse a throwaway server. `K10`, `K400`, `K4000` are the number of tenants in the filter.', '']
-    out += md(['shape', 'what it does', 'tenants', 'PostgreSQL', 'pg_sift', 'PostgreSQL flat tables', 'ClickHouse', 'pg_sift against PostgreSQL'], body, ['---', '---', '---', '---:', '---:', '---:', '---:', '---:'])
-    out += ['', f'pg_sift is faster than the heap on {sum(1 for g in gains if g > 1.05)} of {len(gains)} cases (median {statistics.median(gains):.1f}x).']
+    out += md(['shape', 'what it does'], [[f'{label(q, v)}', desc.get(q, '')[:90]] for q, v, _ in cases], ['---', '---'])
+    out += [''] + mdtable.tables(list(figs), [('', [(e, h) for h, e in systems.items()])], lambda k, e: text(k, e), max_cols=2, first='shape')
+    out += [''] + triple.legend([f for t in figs.values() for f in t.values() if f]) + ['', f'pg_sift is faster than the heap on {sum(1 for g in gains if g > 1.05)} of {len(gains)} cases (median {statistics.median(gains):.1f}x).']
     return out
 
 

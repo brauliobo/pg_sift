@@ -11,7 +11,7 @@ import mdtable
 TIE = 0.05
 SEP = ' · '
 NOT_MEASURED = 'not measured under 3.7 yet'
-MINE = ('sift', 'sift_col', 'sift_table')   # the systems that are the reference: no factors
+MINE = ('sift', 'sift_col', 'sift_table', 'sift_maint')   # the systems that are the reference: no factors
 MAX_COLS = 4   # a cell is about 40 characters: four of them and the system fit the 880 px of the README
 
 
@@ -71,7 +71,7 @@ def legend(figs, read='MB read'):
             + ''.join(f' `n/a`: {w}.' for w in why)]
 
 
-def table(systems, columns, fig, ref, first='system', read='MB read'):
+def rows(systems, columns, fig, ref, first='system'):
     """lines of the tables of `systems` (label -> key) against `columns` (key, header): fig(system, column) is the (ms, cpu_ms, mb) or None, ref(system, column) the figure it is compared with (pg_sift's);
     the fastest system of a column and anything within 5% of it is in bold, pg_sift's own rows have no factors"""
     best = {}
@@ -83,6 +83,10 @@ def table(systems, columns, fig, ref, first='system', read='MB read'):
         s, f = systems[label], fig(systems[label], c)
         return cell(f, None if s in MINE else ref(s, c), bold=bool(f) and f[0] is not None and f[0] <= best[c] * (1 + TIE))
 
-    figs = [f for s in systems.values() for c, _ in columns if (f := fig(s, c))]
-    return mdtable.tables(list(systems), [('', columns)], text, max_cols=MAX_COLS, first=first) + [''] + legend(figs, read)
+    return mdtable.tables(list(systems), [('', columns)], text, max_cols=MAX_COLS, first=first)
 
+
+def table(systems, columns, fig, ref, first='system', read='MB read'):
+    """rows() and the legend under them"""
+    figs = [f for s in systems.values() for c, _ in columns if (f := fig(s, c))]
+    return rows(systems, columns, fig, ref, first) + [''] + legend(figs, read)
