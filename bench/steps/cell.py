@@ -18,20 +18,21 @@ chunk is sized from the error so far (the error shrinks with the square root of 
   qps      value = transactions per second of all clients. The standard error is that of batch means: the transactions of every client
            are cut into consecutive batches, a batch's rate is the sum over the clients of their transactions per second in it, and the
            error is the standard deviation of the batch rates over the square root of their number (at least 4 batches), or, when
-           there are fewer, that of the mean latency: sd / (mean * sqrt(n)), whichever is larger. Prints: qps, stderr, n, seconds.
+           there are fewer, that of the mean latency: sd / (mean * sqrt(n)), whichever is larger. Prints: qps, stderr, n, seconds, CPU ms per transaction, MB per transaction.
   latency  value = p50 and p95 of the transaction latency in ms. The standard error of the p50 is distribution free: half the
            distance between the order statistics n/2 -+ sqrt(n)/2 (the 68% interval of the median). Prints: p50, p95, stderr of p50, n,
-           seconds. n counts the transactions kept.
+           seconds, CPU ms per transaction, MB per transaction. n counts the transactions kept.
 
     python3 -I cell.py batch PLAN OUT [--rse X] [--min-time S] [--max-time S] [--min-n N] [--seed N] [--timeout S] [--retries N]
 
 batch is the single-client latency cell of a Postgres engine without pgbench: one process opens a connection per (port, database) once and runs every cell of PLAN (one
 `id<TAB>port<TAB>database<TAB>script` per line, in that order; script is a pgbench file with \\set NAME random(A, B), statements and \\gset) in a tight loop through libpq (ctypes),
 the transaction latency is the same as pgbench's (from the first statement sent to the last result), seeded alike. A cell stops by the rule above, checked every ~20 ms of
-work, so there is no process start, connection or log file per cell. Its OUT line is `id<TAB>p50<TAB>p95<TAB>se of p50<TAB>n<TAB>seconds<TAB>noisy`; noisy is 1 when the host's
+work, so there is no process start, connection or log file per cell. Its OUT line is `id<TAB>p50<TAB>p95<TAB>se of p50<TAB>n<TAB>seconds<TAB>cpu<TAB>mb<TAB>noisy`; noisy is 1 when the host's
 CPU or IO pressure stall time (/proc/pressure) over the window was above SIFT_QUIET_MAX percent (default 10): such cells are measured again after the batch, up to --retries
 times, and stay 1 only when the last attempt was noisy too. Outliers are not removed: p50 and p95 are order statistics.
 
+--server PID|PGDATA (with --db for Postgres) meters the server around the whole cell, the chunks the cell drops too (steps/meter.py): `NA` for both figures without it, and for the MB of a server with no buffer counter.
 --hint FILE remembers the rate of the cell; the next round of the same cell needs no first chunk to size the others. A failed pgbench
 prints 0 (qps) or nan (latency) like before, its error on stderr.
 """
@@ -40,10 +41,15 @@ import argparse, ctypes, ctypes.util, math, os, random, re, shutil, subprocess, 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import mean, sem  # noqa: E402  (steps/stats.py)
 import benchlib  # noqa: E402  (steps/benchlib.py: the exit status of an interrupted run)
+import meter  # noqa: E402  (steps/meter.py: the CPU and buffers of the server)
 
 FEW = 10          # transactions per client that make a chunk worth a dropped first transaction and a count instead of seconds
 MAX_CHUNKS = 12
 BATCH = 5         # transactions of a client in a batch, at least
+
+
+def figure(v):
+    return 'NA' if v is None else f'{v:.4g}'
 
 
 def pgbench_rows(log):
@@ -99,10 +105,11 @@ def batches(clients):
 
 class Cell:
     def __init__(self, mode, clients):
-        self.mode, self.clients, self.lat, self.batches, self.est = mode, clients, [], [], 0.0
+        self.mode, self.clients, self.lat, self.batches, self.est, self.total = mode, clients, [], [], 0.0, 0   # total: every transaction, the dropped ones too
 
     def add(self, clients, warm):
         """the transactions of a chunk, the first `warm` of every client dropped"""
+        self.total += sum(map(len, clients.values()))
         kept = {c: rows[warm:] for c, rows in clients.items() if len(rows) > warm}
         if kept:
             self.lat += [lat for rows in kept.values() for _, lat in rows]
@@ -272,9 +279,11 @@ def noisy(before, after, limit):
     return wall > 0 and max(after[0] - before[0], after[1] - before[1]) / wall * 100 > limit
 
 
-def measure(conn, steps, a, seed):
-    """(cell, noisy) of one cell on an open connection"""
+def measure(conn, steps, a, seed, used=None):
+    """(cell, noisy) of one cell on an open connection; cell.spent is the CPU ms and MB per transaction of the server `used` (a Meter) over it, the three first executions too"""
     rng, values, cell = random.Random(seed), {}, Cell('latency', 1)
+    if used:
+        used.start()
     for _ in range(3):
         transaction(conn, steps, rng, values)   # the statement's first executions: plan and caches
     before, t0, check = pressure(), time.monotonic(), 1
@@ -285,7 +294,16 @@ def measure(conn, steps, a, seed):
             break
         check = max(1, int(0.02 / max(mean(cell.lat), 1e-6)))   # about 20 ms of work between two looks at the error
     cell.wall = time.monotonic() - t0
+    if used:
+        conn.run(b'SELECT pg_stat_force_next_flush()')   # the buffers of this session are counted when the next transaction ends
+        used.stop()
+    cell.spent = used.per(cell.n + 3) if used else (None, None)
     return cell, noisy(before, pressure(), float(os.environ.get('SIFT_QUIET_MAX', 10)))
+
+
+def server(conn, port, db):
+    """the Meter of the Postgres server behind a connection: its postmaster is the parent of the backend"""
+    return meter.Meter(meter.stat(int(conn.run(b'SELECT pg_backend_pid()', True)['pg_backend_pid']))[0], ['psql', '-p', str(port)], db)
 
 
 def batch(argv):
@@ -297,22 +315,23 @@ def batch(argv):
     benchlib.resumable()
     os.environ['PGOPTIONS'] = f'-c statement_timeout={a.timeout}'
     cells = [l.rstrip('\n').split('\t') for l in open(a.plan) if l.strip()]
-    scripts, lib, conns, done = {c[0]: parse_script(open(c[3]).read()) for c in cells}, libpq(), {}, {}
+    scripts, lib, conns, done, meters = {c[0]: parse_script(open(c[3]).read()) for c in cells}, libpq(), {}, {}, {}
     try:
         for attempt in range(1 + a.retries):
             for id, port, db, _ in [c for c in cells if attempt == 0 or done[c[0]][1]]:
                 try:
                     if (port, db) not in conns:
                         conns[port, db] = Connection(lib, f'port={port} dbname={db} application_name=sift-cell')
-                    done[id] = measure(conns[port, db], scripts[id], a, a.seed)
+                        meters[port, db] = server(conns[port, db], port, db)
+                    done[id] = measure(conns[port, db], scripts[id], a, a.seed, meters[port, db])
                 except RuntimeError as e:
                     print(f'{id}: {e}', file=sys.stderr)
                     done[id] = (None, False)
     finally:
         for c in conns.values():
             c.close()
-    row = lambda id, cell, noise: '\t'.join([id, *(['nan', 'nan', 'NA', '0', '0'] if cell is None else
-                                                    [f'{cell.p50() * 1e3:.3f}', f'{cell.p95() * 1e3:.3f}', f'{cell.se_p50() * 1e3:.4f}', str(cell.n), f'{cell.wall:.2f}']), str(int(noise))]) + '\n'
+    row = lambda id, cell, noise: '\t'.join([id, *(['nan', 'nan', 'NA', '0', '0', 'NA', 'NA'] if cell is None else
+                                                    [f'{cell.p50() * 1e3:.3f}', f'{cell.p95() * 1e3:.3f}', f'{cell.se_p50() * 1e3:.4f}', str(cell.n), f'{cell.wall:.2f}', *map(figure, cell.spent)]), str(int(noise))]) + '\n'
     benchlib.write_text(a.out, ''.join(row(id, *done[id]) for id, *_ in cells))   # all or nothing: an interrupted batch leaves no file, the round is measured again
 
 def main():
@@ -328,9 +347,12 @@ def main():
     p.add_argument('--hint')
     p.add_argument('--tmp', default=tempfile.gettempdir())
     p.add_argument('--xbench', action='store_true')
+    p.add_argument('--server', help='pid of the server, or its data directory: its CPU and buffers per transaction are the last two fields')
+    p.add_argument('--db', help='the database whose buffers are counted (Postgres)')
     split = sys.argv.index('--')
     a, argv = p.parse_args(sys.argv[1:split]), sys.argv[split + 1:]
     cell, start, chunk = Cell(a.mode, int(argv[argv.index('--clients' if a.xbench else '-c') + 1])), time.monotonic(), 0
+    used = meter.Meter(meter.postmaster(a.server) if os.path.isdir(a.server) else int(a.server), dbname=a.db).start() if a.server else None
     try:
         if a.hint and os.path.exists(a.hint):
             cell.est = float(open(a.hint).read())
@@ -340,6 +362,8 @@ def main():
             cell.est = cell.clients / mean(lat)
             if a.min_time / mean(lat) < FEW:
                 cell.add(first, 0)
+            else:
+                cell.total += sum(map(len, first.values()))
         while (step := next_chunk(cell, a)) and chunk < MAX_CHUNKS:
             flag, amount, warm = step
             chunk, t0 = chunk + 1, time.monotonic()
@@ -348,15 +372,18 @@ def main():
                 print(f'chunk {chunk}: {flag} {amount} warm {warm}: {time.monotonic() - t0:.2f} s, now n {cell.n} {cell.seconds:.2f} s rse {cell.rel_se():.3f}', file=sys.stderr)
     except RuntimeError as e:
         print(e, file=sys.stderr)
-        print('0\tNA\t0\t0' if a.mode == 'qps' else 'nan\tnan\tNA\t0\t0')
+        print('0\tNA\t0\t0\tNA\tNA' if a.mode == 'qps' else 'nan\tnan\tNA\t0\t0\tNA\tNA')
         return
     if a.hint:
         open(a.hint, 'w').write(f'{cell.rate}\n')
     wall = time.monotonic() - start
+    if used:
+        used.stop()
+    spent = '\t'.join(map(figure, used.per(cell.total))) if used else 'NA\tNA'
     if a.mode == 'qps':
-        print(f'{cell.rate:.2f}\t{cell.rel_se() * cell.rate:.2f}\t{cell.n}\t{wall:.2f}')
+        print(f'{cell.rate:.2f}\t{cell.rel_se() * cell.rate:.2f}\t{cell.n}\t{wall:.2f}\t{spent}')
     else:
-        print(f'{cell.p50() * 1e3:.3f}\t{cell.p95() * 1e3:.3f}\t{cell.se_p50() * 1e3:.4f}\t{cell.n}\t{wall:.2f}')
+        print(f'{cell.p50() * 1e3:.3f}\t{cell.p95() * 1e3:.3f}\t{cell.se_p50() * 1e3:.4f}\t{cell.n}\t{wall:.2f}\t{spent}')
 
 
 if __name__ == '__main__':

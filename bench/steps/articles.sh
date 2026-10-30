@@ -156,7 +156,7 @@ pg_cell() { # ENGINE CLASS SECONDS: queries per second of the clients, with its 
   local e=$1
   [[ $2 == update ]] && { pg_update_cell "$e" "$3"; return; }
   PGOPTIONS="-c statement_timeout=${TIMEOUT:-60s}" lane_run "$e" python3 -I "$STEPS/cell.py" qps --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" \
-    --min-n "$MIN_N" --hint "$RUN/$2.hint" --tmp "$RUN" -- -n -c "$CLIENTS" -j "${THREADS:-4}" -f "$RUN/$2.pgb" "$(engine_db "$e")"
+    --min-n "$MIN_N" --hint "$RUN/$2.hint" --tmp "$RUN" --server "${LANE_DATA[$e]}" --db "$(engine_db "$e")" -- -n -c "$CLIENTS" -j "${THREADS:-4}" -f "$RUN/$2.pgb" "$(engine_db "$e")"
 }
 declare -A EXT   # the external engines
 cell() { # ENGINE CLASS SECONDS [warm]: only the external engines are warmed up, a Postgres cell drops the first query of its clients
@@ -231,15 +231,16 @@ cell_engines() { # ROUND CLASS: the engines to measure: all up to MINR rounds, t
   else rse_cells <(qps_cells) 3,4 6 7 | awk -F'\t' -v c="$2" '$1 == c {print $2}'; fi
 }
 round() {
-  local c e engs v se n t
+  local c e engs v se n t cpu mb
   for c in $CLASSES; do
     engs=$(cell_engines "$1" "$c" | tr '\n' ' ')
     [[ -n $engs ]] || continue
     # shellcheck disable=SC2086  # one argument per engine
     { [[ $1 != 1 || -z $EXTERNALS ]] || group "$c" "$WARM" warm $engs; group "$c" "$FIXED" '' $engs; }
     for e in $engs; do
-      IFS=$'\t' read -r v se n t <"$OUT/$e/val" || true
+      IFS=$'\t' read -r v se n t cpu mb <"$OUT/$e/val" || true
       row "$1" "$c" "$e" qps "$v" "$se" "$n" "$t"
+      [[ $c == update || $v == NA ]] || { row "$1" "$c" "$e" cpu_ms_query "${cpu:-NA}"; row "$1" "$c" "$e" read_mb_query "${mb:-NA}"; }
       [[ $c != update || $v == NA ]] || {
         row "$1" "$c" "$e" write_ops "$(cat "$OUT/$e/update.wps" 2>/dev/null || echo 0)"
         row "$1" "$c" "$e" wal_mib "$(awk -v b="$(cat "$OUT/$e/update.wal" 2>/dev/null || echo 0)" 'BEGIN {printf "%.1f", b / 1048576}')"

@@ -197,8 +197,8 @@ script() { # WORKLOAD CLASS ENGINE: the pgbench script of the cell (one primary-
   { printf '\\set i random(1, 300)\nSELECT quote_literal(q) AS q, quote_literal(sq) AS sq, quote_literal(sqb) AS sqb, quote_literal(tq) AS tq, quote_literal(ng) AS ng FROM (%s WHERE id = %d + :i) x) y \\gset\n' "$FORMS" "${BASE[$2]}"; echo "$(stmt "$1" "$e");"; } >"$f"
   echo "$f"
 }
-ext_cell() { # WORKLOAD CLASS ENGINE: an engine outside Postgres: the request file of the workload and class, one client over HTTP -> "p50 p95 stderr-of-p50 transactions seconds"
-  [[ -f $ROOT/places/$3/$1.$2.q ]] || { printf 'NA\tNA\tNA\tNA\tNA\n'; return; }
+ext_cell() { # WORKLOAD CLASS ENGINE: an engine outside Postgres: the request file of the workload and class, one client over HTTP -> "p50 p95 stderr-of-p50 transactions seconds cpu-ms mb"
+  [[ -f $ROOT/places/$3/$1.$2.q ]] || { printf 'NA\tNA\tNA\tNA\tNA\tNA\tNA\n'; return; }
   RUN=$ROOT/places/$3 lane_run "$3" xe "$3" x_cell_se latency "$ROOT/places/$3/$1.$2.q"
 }
 cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR rounds, then those whose p50 is above the error target
@@ -206,7 +206,7 @@ cell_engines() { # ROUND WORKLOAD CLASS: the engines to measure: all up to MINR 
   if (( $1 <= MINR )); then rotated "$1" $ENGINES
   else rse_cells "$DEST/cells.tsv" 3,4,5 6 8 | awk -F'\t' -v w="$2" -v c="$3" '$1 == w && $2 == c {print $3}'; fi
 }
-cells_begin $'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs'
+cells_begin $'round\tload\tworkload\tclass\tengine\tp50\tp95\tse\tn\tsecs\tcpu_ms_query\tread_mb_query'
 stable() { [[ -z $(rse_cells "$DEST/cells.tsv" 3,4,5 6 8) ]]; }   # no cell needs another round
 # a round: the Postgres cells of every group go to one plan that steps/cell.py batch runs in one process on connections kept open (no process, connection or log file per cell); the
 # cells of the engines outside Postgres follow. A cell that ran in a window the host stalled in is measured again by the batch (its noise sentinel), not waited for beforehand.
@@ -219,7 +219,7 @@ round() {
       id=$wl.$c.$e; cells+=("$id")
       if [[ -n ${EXT[$e]:-} ]]; then continue; fi
       f=$(script "$wl" "$c" "$e")
-      if [[ -n $f ]]; then printf '%s\t%s\t%s\t%s\n' "$id" "${LANE_PORT[$e]}" "$(edb "$e")" "$f" >>"$plan"; else printf '%s\tNA\tNA\tNA\tNA\tNA\t0\n' "$id" >>"$out"; fi
+      if [[ -n $f ]]; then printf '%s\t%s\t%s\t%s\n' "$id" "${LANE_PORT[$e]}" "$(edb "$e")" "$f" >>"$plan"; else printf '%s\tNA\tNA\tNA\tNA\tNA\tNA\tNA\t0\n' "$id" >>"$out"; fi
     done
   done; done
   [[ ! -s $plan ]] || python3 -I "$STEPS/cell.py" batch "$plan" "$out.pg" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --timeout "${TIMEOUT:-120s}"
@@ -228,7 +228,7 @@ round() {
   for id in "${cells[@]}"; do
     IFS=. read -r wl c e <<<"$id"
     if [[ -n ${EXT[$e]:-} ]]; then v=$(ext_cell "$wl" "$c" "$e")
-    else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; if ($7 == 1) noisy = 1} END {exit noisy ? 1 : 0}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
+    else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8; if ($9 == 1) noisy = 1} END {exit noisy ? 1 : 0}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$v" >>"$DEST/cells.tsv"
   done
 }

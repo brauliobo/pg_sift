@@ -23,6 +23,7 @@ import extras  # noqa: E402
 import mdtable  # noqa: E402
 import readme  # noqa: E402  (steps/readme.py: the search tier, replace_block)
 import store_charts  # noqa: E402
+import tables  # noqa: E402  (steps/tables.py: the figures of the search cells)
 import triple  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -248,23 +249,18 @@ def search_tables(results):
         return []
     engines = [e for e in tt.articles if e not in ('sift', 'sift_nopos')]
     n = f'{tt.corpus("articles"):,}'
-    mine_mib = tt.num('articles', 'sift', metric='index_mib')
-    cells, slower = {}, {}
+    slower = {}
     for e in engines:
         for c in tt.classes:
             r = readme.ratio(tt.qps('sift', c), tt.qps(e, c))[0]
-            cells[tt.label(e), c] = x(r) if r else 'n/a'
             if r and r <= 1 - TIE:
                 slower.setdefault(tt.label(e), []).append(f'`{c}` ({x(1 / r)})')
-        mib = tt.num('articles', e, metric='index_mib')
-        cells[tt.label(e), 'index MiB'] = f'{mib:.0f}' if mib else 'n/a'
-    mine = 'pg_sift (the row compared)'
-    cells.update({(mine, c): f'{tt.qps("sift", c)["value"] if isinstance(tt.qps("sift", c), dict) else readme.number(tt.qps("sift", c)):,.0f} qps' for c in tt.classes})
-    cells[mine, 'index MiB'] = f'{mine_mib:.0f}'
-    body = mdtable.tables([tt.label(e) for e in engines] + [mine], [('', [(c, f'`{c}`') for c in tt.classes] + [('index MiB', 'index MiB')])], lambda r, c: cells[r, c], max_cols=7, first="pg_sift's queries per second over")
+    body = tables.md_triples(tt.rows, 'articles', tt.tier, {tt.label(e): e for e in engines} | {'pg_sift': 'sift'}, [(c, f'`{c}`') for c in tt.classes], first='system')
+    sizes = ', '.join(f'{tt.label(e)} {tt.num("articles", e, metric="index_mib"):.0f}' for e in engines + ['sift'] if tt.num('articles', e, metric='index_mib'))
     s = tt.session
     out = [f'{n} Simple English Wikipedia articles, 8 clients, every engine on the same data and queries ({s.get("quota", "3 CPUs")} for each server, {s.get("cpu", "?")}, {s.get("date", "?")}, PostgreSQL 18.6, Elasticsearch {s.get("elasticsearch", "?")}); '
-           'the ratio is pg_sift\'s throughput over the engine\'s, so above 1x pg_sift is faster. Not in the tables: PostgreSQL\'s own full-text search (the `gin` engine of `bench/engines.tsv` has no stored result) and OpenSearch (no adapter).', ''] + body
+           'a cell is the time, CPU and data of a query with 8 clients (milliseconds are 8 over the queries per second; CPU and MB are the whole server\'s per query), so above 1x in the parentheses the engine uses more than pg_sift. Not in the tables: PostgreSQL\'s own full-text search (the `gin` engine of `bench/engines.tsv` has no stored result) and OpenSearch (no adapter).', ''] + body
+    out += ['', f'Index size in MiB: {sizes}.']
     if slower:
         out += ['', 'pg_sift is slower than ' + '; '.join(f'{e} on ' + ', '.join(cs) for e, cs in slower.items()) + '.']
     return out

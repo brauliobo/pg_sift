@@ -93,6 +93,28 @@ class UpdatesFig(unittest.TestCase):
         self.assertIn('| PostgreSQL | 500 · 400 · 10.0 (2.0x · 2.0x · 2.0x) |', lines)
 
 
+class SearchFig(unittest.TestCase):
+    ROWS = [('articles', 'slim', e, 'and', '-', m, v, v, v, 'x', 'NA', '2', v) for e, m, v in (
+        ('sift', 'qps', '4000'), ('sift', 'cpu_ms_query', '0.5'), ('sift', 'read_mb_query', '0.25'),
+        ('es', 'qps', '2000'), ('es', 'cpu_ms_query', '2.0'), ('es', 'read_mb_query', 'NA'), ('pg', 'qps', '1000'))]
+
+    def test_time_is_the_clients_over_the_throughput(self):
+        import tables
+        self.assertEqual(tables.query_fig(self.ROWS, 'articles', 'slim', 'sift', 'and'), (2.0, 0.5, 0.25))
+        got = tables.query_fig(self.ROWS, 'articles', 'slim', 'es', 'and')
+        self.assertEqual(got[:2], (4.0, 2.0))
+        self.assertIs(got[2], tables.NO_COUNTER)
+        self.assertEqual(tables.query_fig(self.ROWS, 'articles', 'slim', 'pg', 'and')[1:], (triple.NA(triple.NOT_MEASURED),) * 2)
+        self.assertIsNone(tables.query_fig(self.ROWS, 'articles', 'slim', 'pg', 'or'))
+
+    def test_table_has_factors_over_sift(self):
+        import tables
+        text = '\n'.join(tables.md_triples(self.ROWS, 'articles', 'slim', {'pg_sift': 'sift', 'Elasticsearch': 'es', 'PostgreSQL': 'pg'}, [('and', 'and')]))
+        self.assertIn('| pg_sift | **2.00 · 0.50 · 0.25** |', text)
+        self.assertIn('| Elasticsearch | 4.00 · 2.00 · n/a (2.0x · 4.0x · n/a) |', text)
+        self.assertIn('`n/a`: the engine reports no count of the data a query touched.', text)
+
+
 class Table(unittest.TestCase):
     FIGS = {('sift', 'q'): (1.0, 2.0, 3.0), ('pg', 'q'): (10.0, 20.0, 30.0), ('es', 'q'): (1.02, MISSING, MISSING)}
 

@@ -121,9 +121,10 @@ xp_ids() { # WORKLOAD N: the engine's answers to the first N queries of every cl
 }
 
 # --- cells. $1 is the request file; the cell is measured by steps/cell.py (mode qps: 8 clients; latency: 1 client) like a pgbench one
-x_cell_se() { # MODE FILE [HINT]: the output of cell.py, queries per second (qps, stderr, n, seconds) or p50, p95, stderr, n, seconds (latency)
+x_cell_se() { # MODE FILE [HINT]: the output of cell.py, queries per second (qps, stderr, n, seconds) or p50, p95, stderr, n, seconds (latency), then the CPU ms and MB per query (NA: the adapter has no x_pid)
+  local pid; pid=$(x_pid)
   # shellcheck disable=SC2153  # RSE, MIN_TIME, SECS, MIN_N are set by articles.sh / places.sh
-  python3 -I "$STEPS/cell.py" "$1" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --hint "${3:-$2.hint}" --tmp "$RUN" --xbench -- \
+  python3 -I "$STEPS/cell.py" "$1" --rse "$RSE" --min-time "$MIN_TIME" --max-time "$SECS" --min-n "$MIN_N" --hint "${3:-$2.hint}" --tmp "$RUN" --xbench ${pid:+--server "$pid"} -- \
     "$XBENCH" http "$URL" "$2" --clients "$([[ $1 == qps ]] && echo "${CLIENTS:-8}" || echo 1)" "${XB_ARGS[@]}"
 }
 x_warm() { # SECONDS CLIENTS FILE...: every file for that long, the answers dropped (the JVM and the caches, what pg_prewarm is for Postgres)
@@ -133,11 +134,11 @@ x_warm() { # SECONDS CLIENTS FILE...: every file for that long, the answers drop
 
 # $1 class, $2 seconds, $3 warm (no writers): queries per second of the clients, 0 when the run failed; the update class leaves
 # $RUN/update.wps (writer operations per second) and $RUN/update.wal (bytes written by the engine process). A class of an HTTP engine
-# other than update is measured by cell.py (`qps stderr n seconds`), the others for a fixed time
+# other than update is measured by cell.py (`qps stderr n seconds cpu mb`), the others for a fixed time
 x_cell() {
   local c=$1 extra=() pid w0 out=$RUN/$1.out
   if [[ $EXTERNAL == http && $c != update ]]; then
-    if [[ -n ${3:-} ]]; then x_warm "$2" "${CLIENTS:-8}" "$RUN/$c.q"; else x_cell_se qps "$RUN/$c.q" "$RUN/$c.hint" || printf '0\tNA\t0\t0\n'; fi
+    if [[ -n ${3:-} ]]; then x_warm "$2" "${CLIENTS:-8}" "$RUN/$c.q"; else x_cell_se qps "$RUN/$c.q" "$RUN/$c.hint" || printf '0\tNA\t0\t0\tNA\tNA\n'; fi
     return
   fi
   [[ $c == update && -z ${3:-} ]] && extra=(--writes "$RUN/writes.tsv" --write-rate "$UPDATE_RATE")

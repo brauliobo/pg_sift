@@ -44,11 +44,15 @@ import collections, math, os, re, statistics as st, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import number as num, sem  # noqa: E402  (steps/stats.py)
 import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
+import triple  # noqa: E402  (steps/triple.py: the cell of time, CPU and IO)
 
 NAME = {r['id']: r['md'] for r in engines.rows()}   # the engines, in table order
 ORDER = list(NAME)
 MIB = 1048576
-UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}
+CLIENTS = 8   # the clients of the articles cells (steps/articles.sh)
+NO_CPU = triple.NA('the engine\'s process is not metered')
+NO_COUNTER = triple.NA('the engine reports no count of the data a query touched')
+UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB', 'cpu_ms_query': 'ms', 'read_mb_query': 'MB'}
 COLUMNS = '# columns: dataset tier engine class variant metric value min max unit stderr n values (tab separated; NA = the engine cannot run the class, error = the statement failed; stderr = the larger of sd / sqrt(n) over the n interleaved rounds (NA below 2) and the errors of the rounds themselves, sqrt(sum se^2) / n; values = the rounds; bench/steps/tables.py)'
 HEADER = 'dataset\ttier\tengine\tclass\tvariant\tmetric\tvalue\tmin\tmax\tunit\tstderr\tn\tvalues'
 WIDTH = 13
@@ -148,6 +152,9 @@ def places(tier, path):
         for metric, col in (('p50_ms', 5), ('p95_ms', 6)):
             t = stats([None if x[col] == 'NA' else num(x[col]) for x in sel], [num(x[7]) if metric == 'p50_ms' and len(x) > 7 else None for x in sel])
             out.append(('places', tier, e, c, wl, metric, *t[:3], 'ms', *t[3:]))
+        for metric, col in (('cpu_ms_query', 10), ('read_mb_query', 11)):   # the server's CPU and buffers per transaction (steps/meter.py)
+            t = stats([None if len(x) <= col or x[col] == 'NA' else num(x[col]) for x in sel])
+            out.append(('places', tier, e, c, wl, metric, *t[:3], UNIT[metric], *t[3:]))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # engine build_s index_bytes heap_growth setup_s variant
         builds.append(('places', tier, b[0], b[4], b[1], b[2], b[3], b[5]))
     return out, builds, [float(c[1]) for c in cells]
@@ -202,6 +209,25 @@ def value(rows, *key, **kw):
     return r[6] if r else 'NA'
 
 
+def query_fig(rows, dataset, tier, e, c, wl='-'):
+    """(ms, CPU ms, MB) per query of an engine on a class: the time is the response time of the clients (articles: CLIENTS over the queries per second) or the p50 of the single client (places);
+    the CPU is the whole server's and the MB the data its buffers hit and read (steps/meter.py), none for an engine that cannot count them; None when the engine did not answer the class"""
+    t = get(rows, dataset, tier, e, c, wl, 'qps' if dataset == 'articles' else 'p50_ms')
+    if t is None or t[6] in ('NA', 'error') or not float(t[6]):
+        return None
+
+    def spent(metric, why):
+        r = get(rows, dataset, tier, e, c, wl, metric)
+        return triple.NA(triple.NOT_MEASURED) if r is None else why if r[6] in ('NA', 'error') else float(r[6])
+    return (CLIENTS * 1000 / float(t[6]) if dataset == 'articles' else float(t[6])), spent('cpu_ms_query', NO_CPU), spent('read_mb_query', NO_COUNTER)
+
+
+def md_triples(rows, dataset, tier, systems, columns, wl='-', first='engine'):
+    """the table of `T · C · M` per query of each system (label -> engine id) against pg_sift's, a column (class, header) per class"""
+    fig = lambda e, c: query_fig(rows, dataset, tier, e, c, wl)  # noqa: E731
+    return triple.table(systems, columns, fig, lambda e, c: fig('sift', c) or (None,) * 3, first=first, read='MB of buffers touched')
+
+
 def ratio(a, b):
     try:
         return '%.2fx' % (float(a) / float(b))
@@ -247,7 +273,6 @@ def md_articles(rows, tier):
     measured = [r for r in rows if r[:2] == ('articles', tier) and r[5] == 'qps']
     engines = [e for e in ORDER if any(r[2] == e for r in measured)]
     classes = list(dict.fromkeys(r[3] for r in measured))
-    ref = 'pg_search' if 'pg_search' in engines else engines[-1]
     growth = any(float(value(rows, 'articles', tier, e, metric='heap_growth_mib') or 0) > 0.5 for e in engines)
     qps = lambda e, c: get(rows, 'articles', tier, e, c, '-', 'qps')
     shown = lambda r: pm(r) + ' (%s-%s)' % (fmt(float(r[7])), fmt(float(r[8]))) if r and r[6] not in ('NA', 'error') else (r[6] if r else 'NA')
@@ -257,9 +282,7 @@ def md_articles(rows, tier):
     out = ['Queries per second, median ± standard error (minimum-maximum over the rounds); index size and CREATE INDEX time of the one build per engine:', ''] + md_table(head, body)
     out += md_merge(rows, 'articles', tier, engines)
     out += ['', LEGEND]
-    rel = [[NAME[e] + ' / ' + NAME[ref]] + [ratio(value(rows, 'articles', tier, e, c, '-', 'qps'), value(rows, 'articles', tier, ref, c, '-', 'qps')) for c in classes]
-           for e in engines if e != ref]
-    out += ['', 'Ratio of queries per second to %s:' % NAME[ref], ''] + md_table(['engine'] + classes, rel)
+    out += ['', 'Per query with %d clients (milliseconds are %d over the queries per second, CPU and MB are the server\'s per query):' % (CLIENTS, CLIENTS), ''] + md_triples(rows, 'articles', tier, {NAME[e]: e for e in engines}, [(c, c) for c in classes])
     upd = [e for e in engines if get(rows, 'articles', tier, e, 'update', '-', 'write_ops')]
     if upd:
         out += ['', 'Continuous updates (writers at a fixed rate: 70% update, 15% insert, 15% delete) with `mixed` readers:', '']
@@ -286,7 +309,6 @@ def md_places(rows, tier):
     sel = [r for r in rows if r[:2] == ('places', tier) and r[5] == 'p50_ms']
     classes = place_classes(sel)
     first = sel[0][4]
-    base = 'sift' if 'sift' in engines else engines[0]   # the engine the ratios are relative to
     p50 = lambda e, c, wl: next((r for r in sel if (r[2], r[3], r[4]) == (e, c, wl)), None)
     show = lambda r, d=2: pm(r, d)
     head = ['engine', 'index (MiB)', 'build (s)'] + ['%s' % c for c in classes]
@@ -301,12 +323,7 @@ def md_places(rows, tier):
                         [[NAME[e]] + [value(rows, 'places', tier, e, '-', 'emulation', m) for m in metrics] for e in emu])
     out += md_merge(rows, 'places', tier, engines)
     for wl in dict.fromkeys(r[4] for r in sel):
-        body = []
-        for c in classes:
-            v = {e: p50(e, c, wl) for e in engines}
-            val = lambda e: v[e][6] if v[e] else 'NA'
-            body.append([c] + [show(v[e]) + ('' if e == base or val(e) in ('NA', 'error') else ' (%s)' % ratio(val(e), val(base))) for e in engines])
-        out += ['', 'Workload `%s`, p50 latency in ms ± standard error (ratio to %s):' % (wl, NAME[base]), ''] + md_table(['class'] + [NAME[e] for e in engines], body)
+        out += ['', 'Workload `%s`, p50 of the single client, with the server\'s CPU and buffers per query:' % wl, ''] + md_triples(rows, 'places', tier, {NAME[e]: e for e in engines}, [(c, c) for c in classes], wl)
     out += ['', LEGEND]
     return out
 
