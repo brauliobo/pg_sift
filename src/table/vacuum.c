@@ -410,17 +410,25 @@ vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
 	return nindexes;
 }
 
-/* Would the tombstone rewrite drop an entry? tomb_keep notes the xids of the entries kept either way */
+/* Would the tombstone rewrite change the log, by dropping an entry or freezing a root? tomb_keep notes the xids of the entries kept either way */
 static bool
-tomb_drops(SiftTblRel *st, VacState *v)
+tomb_changes(SiftTblRel *st, VacState *v)
 {
-	bool		drops = false;
+	bool		changes = false;
 
 	for (uint32 i = 0; i < st->nents; i++)
-		drops |= !tomb_keep(&st->ents[i], v);
+	{
+		TransactionId xid = st->ents[i].xid;
+
+		changes |= !tomb_keep(&st->ents[i], v) || st->ents[i].xid != xid;
+	}
 	for (uint32 i = 0; i < st->nrecent; i++)
-		drops |= !tomb_keep(&st->recent[i], v);
-	return drops;
+	{
+		TransactionId xid = st->recent[i].xid;
+
+		changes |= !tomb_keep(&st->recent[i], v) || st->recent[i].xid != xid;
+	}
+	return changes;
 }
 
 /* The table buffer adds a virtual-to-physical page vector and overflow links to the common lane layout. */
@@ -486,7 +494,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
 	(void) merge_steps(rel, st, v->oldest);
-	if (tomb_drops(st, v))
+	if (tomb_changes(st, v))
 		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
