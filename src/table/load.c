@@ -25,6 +25,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
 #include "col/am.h"
 #include "col/seg.h"
 #include "core/page.h"
@@ -292,6 +295,11 @@ end_unit(Load *ld)
 	ld->bytes = 0;
 }
 
+#ifdef SIFT_TESTING
+/* the phase a participant waits in for the advisory lock of sift.test_phase_gate + this, so that a test finds a worker that is writing a group */
+#define SIFT_TBL_PHASE_LOAD	4
+#endif
+
 /* The units of group g of the run as one segment: the rows of a unit are one batch, written as the unit of its superblock */
 static void
 write_group(const LoadRun *r, const char *rows, Relation rel, int g, SiftSegEntry *seg)
@@ -306,6 +314,9 @@ write_group(const LoadRun *r, const char *rows, Relation rel, int g, SiftSegEntr
 	Datum	   *values = palloc(desc->natts * sizeof(Datum));
 	bool	   *isnull = palloc(desc->natts * sizeof(bool));
 
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_TBL_PHASE_LOAD);
+#endif
 	for (int u = g * r->per; u < Min(r->units, (g + 1) * r->per); u++)
 	{
 		uint64		vblock = r->first + (uint64) u * SIFT_TBL_VBLOCKS_SB;
