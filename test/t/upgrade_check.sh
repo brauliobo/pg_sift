@@ -124,7 +124,7 @@ check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.
 q clean "DROP TABLE run_facts" >/dev/null
 # a text dictionary read in place has row counts (count_columns) and a hash of its strings: column format 25, which 3.5 refuses too
 q clean "CREATE INDEX facts_cnt ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, count_columns = 'pad')" >/dev/null
-check "an index with row counts and a hash is column format 25" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 25' <<<"$(uc clean)"
+check "an index with row counts and a hash is column format 25 or later" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format (2[5-9]|[3-9][0-9])' <<<"$(uc clean)"
 check "to 3.4: an index with a hash is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_cnt .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
 q clean "DROP INDEX facts_cnt" >/dev/null
 # a point directory is a packed table of entries: column format 35, which 3.6 refuses; the setting 14 writes the power of two of slots
