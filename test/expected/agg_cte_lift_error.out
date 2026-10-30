@@ -1,0 +1,65 @@
+-- An error while the shared plan of a statement is made (plan_shared) leaves the planner state as it was. The shared plan of a statement whose inline plan holds
+-- no scan is made with the rows of the CTEs and sub-selects as PostgreSQL has them (agg_stock_rows); the flag stayed set when the plan failed, and every
+-- statement the backend planned after it kept the estimate of its sub-selects whose filters have no statistics (derived_rel_rows lifts it) at PostgreSQL's own.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
+INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 3000) g;
+CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL);
+INSERT INTO events SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360) FROM generate_series(1, 20000) g;
+CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts);
+NOTICE:  sift_col index events_col writes a rollup of the rows by set_id, kind_id
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX events_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE kinds;
+-- an immutable function (folded each time the statement is planned) that fails on its n-th evaluation in the session: the pass that fails is every one in turn
+CREATE FUNCTION fail_on(x int) RETURNS int IMMUTABLE LANGUAGE plpgsql AS $$
+DECLARE n int := coalesce(nullif(current_setting('test.n', true), '')::int, 0) + 1;
+BEGIN
+	PERFORM set_config('test.n', n::text, false);
+	IF n = current_setting('test.fail')::int THEN RAISE EXCEPTION 'evaluation %', n; END IF;
+	RETURN x;
+END $$;
+CREATE FUNCTION scan_rows(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (jsonb_path_query_first(j, '$.** ? (@."Node Type" == "Subquery Scan")') ->> 'Plan Rows')::float8;
+END $$;
+-- the rows of a sub-select filtered on the output of its aggregates, in a statement that reads the table with the column index: lifted above PostgreSQL's one row
+CREATE FUNCTION filtered_rows() RETURNS float8 LANGUAGE sql AS $$
+	SELECT scan_rows('SELECT count(*) FROM (SELECT set_id, count(*) AS w, sum(id) AS t FROM events GROUP BY set_id OFFSET 0) s, kinds k
+	                  WHERE s.w > 5 AND s.w < 100 AND s.t > 3 AND k.id = s.set_id') $$;
+SELECT filtered_rows() > 1 AS lifted;
+ lifted 
+--------
+ t
+(1 row)
+
+-- the CTE has a window, so that the scans cannot take it: the inline plan holds no scan and the shared plan is the stock one
+CREATE TEMP TABLE after_error (n int, raised bool, lifted bool);
+DO $$
+DECLARE r bool;
+BEGIN
+	FOR n IN 1..8 LOOP
+		PERFORM set_config('test.fail', n::text, false);
+		PERFORM set_config('test.n', '0', false);
+		r := false;
+		BEGIN
+			EXECUTE 'EXPLAIN (COSTS OFF) WITH r AS (SELECT e.*, fail_on(1) AS f, row_number() OVER (ORDER BY e.id) AS rn FROM events e JOIN kinds k ON k.id = e.kind_id AND k.enabled)
+			         SELECT (SELECT sum(rn) FROM r) AS a, (SELECT max(rn) FROM r) AS b';
+		EXCEPTION WHEN raise_exception THEN r := true;
+		END;
+		INSERT INTO after_error VALUES (n, r, filtered_rows() > 1);
+	END LOOP;
+END $$;
+SELECT bool_or(raised) AS some_pass_failed, bool_and(lifted) AS planned_as_before, count(*) AS tries FROM after_error;
+ some_pass_failed | planned_as_before | tries 
+------------------+-------------------+-------
+ t                | t                 |     8
+(1 row)
+
+DROP FUNCTION filtered_rows, scan_rows, fail_on;
+DROP TABLE events, kinds;
+DROP EXTENSION pg_sift;
