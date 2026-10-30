@@ -3,6 +3,8 @@
 -- more than the whole shared plan did, no scan pays for it. Here a CTE of rows of a table with a column index is read by two aggregates, and a heavy CTE of another
 -- table is joined to their result two or three times. Two copies are a rest within the margin of the shared plan and the scans run; three are not, and the shared
 -- plan is kept (the scans would have won on the work they replace alone). Every statement runs with the pushdown on and off: the rows must be the same.
+-- PostgreSQL 17 orders the joins of the rest worse and prices it 1.3 times the shared plan (1.1 on 18, the limit is 1.25): there two copies keep the shared plan
+-- (agg_cte_inline_rest_1.out).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

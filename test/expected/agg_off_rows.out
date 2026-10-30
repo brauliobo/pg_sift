@@ -1,5 +1,6 @@
 -- sift.enable_agg = off leaves the normal plan as PostgreSQL makes it. The rows of a CTE scan and of a sub-select scan that the aggregate scan's choice is
--- priced from (a floor over a default guess of a row) are lifted for that choice only; with the scan off they moved the joins of the normal plan.
+-- priced from (a floor over a default guess of a row) are lifted for that choice only; with the scan off they moved the joins of the normal plan. The plan
+-- that stays when the scans of a shared CTE lose has PostgreSQL's rows of the CTE too (agg_cte_stock_rows); the sub-select is lifted in the plan it has.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 \set rows 20000
@@ -20,10 +21,10 @@ CREATE FUNCTION cte_query() RETURNS text LANGUAGE sql AS $$
 	SELECT (SELECT count(*) FROM c), (SELECT max(id) FROM c)$q$ $$;
 CREATE FUNCTION sub_query() RETURNS text LANGUAGE sql AS $$
 	SELECT $q$SELECT count(*) FROM (SELECT id, payload ->> 'a' AS a, payload ->> 'b' AS b FROM events ORDER BY id LIMIT 10000) s WHERE s.a = 'x' AND s.b = 'y'$q$ $$;
-SELECT scan_rows(cte_query(), 'CTE Scan') > 1 AS cte_lifted, scan_rows(sub_query(), 'Subquery Scan') > 1 AS sub_lifted;
- cte_lifted | sub_lifted 
-------------+------------
- t          | t
+SELECT scan_rows(cte_query(), 'CTE Scan') = 1 AS cte_stock, scan_rows(sub_query(), 'Subquery Scan') > 1 AS sub_lifted;
+ cte_stock | sub_lifted 
+-----------+------------
+ t         | t
 (1 row)
 
 SET sift.enable_agg = off;

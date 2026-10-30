@@ -2,6 +2,8 @@
 -- Every statement runs with the aggregate scan off and on and the rows are compared as sorted jsonb text (a total order of the whole row), for groups of 100, 80, 1
 -- and no members, for entries without a member, without scores or with empty scores, labels that map to NULL, and after updates, deletes and inserts of the entries,
 -- the links and the labels between the runs.
+-- Before PostgreSQL 18 the cast of a JSON null score raises an error in the normal plan too, so the scan refuses the statements that read one (error_parity) and
+-- the groups with such entries answer with the error in both runs (agg_flat_key_lookup_diff_1.out).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
