@@ -31,6 +31,8 @@ PG_FUNCTION_INFO_V1(sift_test_key_sorts);
 
 PG_FUNCTION_INFO_V1(sift_test_source_lookups);
 
+PG_FUNCTION_INFO_V1(sift_test_prepass_nodes);
+
 PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
@@ -307,6 +309,17 @@ sift_test_source_lookups(PG_FUNCTION_ARGS)
 
 	if (PG_GETARG_BOOL(0))
 		sift_source_lookups = 0;
+	PG_RETURN_INT64(n);
+}
+
+/* the nodes the passes that rewrite a query before planning visited since the last read; the argument true resets the count */
+Datum
+sift_test_prepass_nodes(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_prepass_nodes;
+
+	if (PG_GETARG_BOOL(0))
+		sift_prepass_nodes = 0;
 	PG_RETURN_INT64(n);
 }
 #endif							/* SIFT_TESTING */

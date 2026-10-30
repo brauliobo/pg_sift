@@ -98,6 +98,7 @@ inline_level(Node *n, void *context)
 {
 	if (n == NULL)
 		return false;
+	SIFT_SKIP_CONST_LIST(n, false);
 	if (IsA(n, Query))
 	{
 		Query	   *q = (Query *) n;

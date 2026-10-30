@@ -241,6 +241,7 @@ flatten_sublinks(Node *n, SublinkFlat *c)
 {
 	if (n == NULL)
 		return false;
+	SIFT_SKIP_CONST_LIST(n, false);
 	if (IsA(n, Query))
 	{
 		c->changed |= flatten_query((Query *) n, c->apply);
@@ -1163,6 +1164,7 @@ decor_sublink(Node *n, SublinkDecor *c)
 
 	if (n == NULL)
 		return NULL;
+	SIFT_SKIP_CONST_LIST(n, n);
 	if (!IsA(n, SubLink))
 		return expression_tree_mutator(n, decor_sublink, c);
 	s = (SubLink *) n;

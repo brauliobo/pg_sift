@@ -15,6 +15,31 @@ extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_force;
 
 /*
+ * The passes that rewrite a query before it is planned (agg/flat.c, agg/preinline.c, agg/cte/rewrite.c, core/jsonbuild.c) look for sub-selects, CTE
+ * references and calls; a list of constants (`k IN (1, 2, ..)`) holds none, and walking it costs about 570 instructions a key over all of them.
+ * SIFT_SKIP_CONST_LIST(n, ret) is the first line of their walkers, after the NULL test.
+ */
+static inline bool
+sift_const_list(Node *n)
+{
+	if (!IsA(n, ArrayExpr))
+		return false;
+	foreach_ptr(Node, e, ((ArrayExpr *) n)->elements)
+		if (!IsA(e, Const))
+			return false;
+	return true;
+}
+
+#ifdef SIFT_TESTING
+extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_prepass_nodes */
+#define SIFT_SKIP_CONST_LIST(n, ret) \
+	do { sift_prepass_nodes++; if (sift_const_list(n)) return ret; } while (0)
+#else
+#define SIFT_SKIP_CONST_LIST(n, ret) \
+	do { if (sift_const_list(n)) return ret; } while (0)
+#endif
+
+/*
  * agg/cost/join.c: does probing the keys of a dependent lookup in a btree of the table cost less than reading its pages (the loader's rule and the price's), and the rows a key has
  * (the table's rows over the distinct values of the column by its statistics; 0: unknown)
  */

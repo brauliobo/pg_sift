@@ -23,6 +23,8 @@
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
+#include "agg/agg.h"
+
 #include "core/sift.h"
 #include "core/sql.h"
 
@@ -204,6 +206,7 @@ swap_call(Node *n, void *context)
 {
 	if (n == NULL)
 		return NULL;
+	SIFT_SKIP_CONST_LIST(n, n);
 	if (IsA(n, Query))
 		return (Node *) query_tree_mutator((Query *) n, swap_call, context, QTW_DONT_COPY_QUERY);
 	n = expression_tree_mutator(n, swap_call, context);

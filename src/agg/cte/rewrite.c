@@ -32,6 +32,7 @@ typedef struct SourceEntry
 static HTAB *source_cache;
 
 #ifdef SIFT_TESTING
+int64		sift_prepass_nodes;	/* the nodes the rewrite passes visited (sift._test_prepass_nodes) */
 int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
 #endif
 
@@ -258,6 +259,7 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 
 	if (n == NULL)
 		return false;
+	SIFT_SKIP_CONST_LIST(n, false);
 	if (!IsA(n, Query))
 		return expression_tree_walker(n, shared_cte_walker, w);
 	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
