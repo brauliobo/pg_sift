@@ -439,7 +439,7 @@ extern SiftColSource *sift_col_open_table(Relation rel, const SiftColSchema *sch
 										  uint32 heap_sbs, MemoryContext mcxt);
 
 #ifdef SIFT_TESTING
-/* The counts of sift_test_cube_damage (col/test.c) over the cube blobs it was given */
+/* The counts of sift_test_cube_damage (col/test/test.c) over the cube blobs it was given */
 typedef struct SiftTestDamage
 {
 	int64		blobs,
