@@ -25,3 +25,4 @@ src/agg/flat/	src/agg/flat.c
 src/agg/spec_fuse/	src/agg/spec_fuse.c	
 src/agg/preagg/	src/agg/unit_preagg.c	
 src/agg/dist/	src/agg/dist.c	
+src/agg/blob/	src/agg/blob.c	

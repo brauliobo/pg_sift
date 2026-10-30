@@ -1,5 +1,5 @@
 /*
- * agg/blob_int.h - the blob a group table leaves a process as (agg/blob.c)
+ * agg/blob_int.h - the blob a group table leaves a process as (agg/blob/)
  */
 #ifndef SIFT_AGG_BLOB_INT_H
 #define SIFT_AGG_BLOB_INT_H
@@ -24,7 +24,7 @@ typedef struct BlobHdr
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* blob.c */
+/* agg/blob/ */
 void blob_dump(AggExec *ex, int lane, StringInfo b);
 void blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b);
 bool blob_splittable(const AggExec *ex);

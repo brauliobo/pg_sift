@@ -23,7 +23,8 @@ scan|analyzer|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32
 scan|analyzer|src/col/preagg.c|The first element of the 2nd argument is undefined [unix.cstring.UninitializedRead]
 scan|analyzer|src/col/preagg_read.c|Array access results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/core/store.h|Array access (via field 'ext') results in a null pointer dereference [core.NullDereference]
-tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob/sets.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob/sets.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/combo.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist/convert.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/dist/convert.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'

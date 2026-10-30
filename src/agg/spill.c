@@ -2,7 +2,7 @@
  * agg/spill.c - the group table past hash memory: partial states in partitions on disk
  *
  * The group table of a scan is in memory. When, at the end of an item, it holds more than hash memory (work_mem times
- * hash_mem_multiplier), its groups go to a set of partitions as blobs (agg/blob.c, the partial tables of the workers): a group goes to the
+ * hash_mem_multiplier), its groups go to a set of partitions as blobs (agg/blob/, the partial tables of the workers): a group goes to the
  * partition of the hash of its key values, so every table that ever held the group wrote it to the same one. The table is reset and the
  * scan goes on. When the scan ends, the last table goes to the partitions too, and each partition is merged into a table of its own, by
  * value, and returned as the groups of the result before the next is read. A partition that does not fit hash memory when merged goes to a
@@ -61,7 +61,7 @@ typedef struct AggSpill
 	int64		nwritten;
 	bool		replayed;		/* the node was scanned again: the store is read as well as written (the groups made since are stepped over) */
 	bool		done;
-	MemoryContext tmp;			/* the temporaries of one blob, dumped or merged (agg/blob.c keeps them for the life of a process) */
+	MemoryContext tmp;			/* the temporaries of one blob, dumped or merged (agg/blob/ keeps them for the life of a process) */
 	SpillSet   *set;			/* the level 0 partitions the scan writes */
 	List	   *work;			/* partitions to merge, as SpillWork */
 	double	   *amax;			/* avg(float8): the largest absolute input of the tables written */
