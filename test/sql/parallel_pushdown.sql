@@ -2,17 +2,9 @@
 -- filter is built by one backend, so a ranked scan with a bitmap child is never parallel-aware; the parallel path is
 -- planned without a filter and competes with it on cost. Every combination of the two GUCs answers what both off answer.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
-CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
 -- the SiftScan with a bitmap child, a Gather over a SiftScan, a serial SiftScan or another plan
 CREATE FUNCTION pp_kind(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
@@ -127,6 +119,7 @@ SELECT pp_shape_ok(format('SELECT sift.score(ctid) FROM pp WHERE body @@> ''comm
 FROM unnest(ARRAY[1, 7, 50, 250, 500]) t, unnest(ARRAY[1, 10, 1000]) k GROUP BY 1;
 
 DROP TABLE pp;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
 DROP TABLE pp_modes;
 DROP FUNCTION pp_check(text,text), pp_count(text,text,text,text), pp_ids(text,text,text,text), pp_kind(text), pp_kinds(text,text), pp_plan(text), pp_set(text,text), pp_shape_ok(text), pp_top(text,text,integer,text,text);

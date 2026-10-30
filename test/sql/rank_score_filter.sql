@@ -2,17 +2,9 @@
 -- subquery that ranks and filters on the score above it returns (the reference); any other use of the score in WHERE
 -- is still an error
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
-CREATE FUNCTION sf_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+CREATE FUNCTION sf_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
 
 -- the rows of the query in its order, as one document
 CREATE FUNCTION sf_rows(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -335,4 +327,5 @@ DROP FUNCTION sf_prepared(text, text);
 DROP FUNCTION sf_same(text, text);
 DROP FUNCTION sf_rows(text);
 DROP FUNCTION sf_plan(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

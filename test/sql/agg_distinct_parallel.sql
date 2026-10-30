@@ -4,6 +4,7 @@
 -- a FILTER, a small work_mem (the sets go through a sort), the leader out of the scan, and a global aggregate. mode: parallel (workers planned
 -- in the SiftAgg node), serial (SiftAgg alone), none (the normal plan).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;
 
@@ -64,17 +65,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; par bool := false; agg bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		par := par OR l LIKE '%Workers Planned: %';
-		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';
-	END LOOP;
-	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
-END $$;
+CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_workers(q, workers) $$;
 
 -- the mode with 4 workers, then whether 0, 2 and 4 workers (and the leader out of the scan) give the rows of the normal plan
 SELECT s.name, mode_of(s.q, 4) AS mode,
@@ -116,5 +107,6 @@ SELECT mode_of('SELECT grp, string_agg(DISTINCT kind, '','') FROM facts GROUP BY
        serial_because('SELECT grp, count(DISTINCT amount) FROM facts GROUP BY grp') AS count_distinct_why;
 
 DROP TABLE facts, shapes;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
 DROP FUNCTION mode_of, rows_of, serial_because;

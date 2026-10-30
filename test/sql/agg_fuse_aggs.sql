@@ -1,6 +1,7 @@
 -- UNION ALL arms that join the same lookup and read the same rows but ask for other aggregates run in one pass over the index: the pass has the
 -- union of the aggregates and each set updates its own. Arms whose aggregates are numbered by their own list (a percentile) keep their scans.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -20,14 +21,7 @@ VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE dims;
 
 -- the most arms one scan served in the plan
-CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Arms In One Pass: ' THEN n := greatest(n, substr(l, strpos(l, ': ') + 2)::int); END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.agg_arms_in_one_pass(q) $$;
 
 -- the rows are those of the normal plan, and those of the arms each in a scan of its own
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -107,4 +101,5 @@ SELECT same(:'simple') AS simple_par_same, same(:'flag_a') AS mapped_par_same, s
 
 DROP FUNCTION arms_shared(text), same(text);
 DROP TABLE ev, dims;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

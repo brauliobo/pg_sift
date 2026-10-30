@@ -4,6 +4,7 @@
 -- the same with 0, 2 and 4 workers to the last digit. A child plan that runs per combination of leaves keeps one process, a unique-key LIMIT 1 child
 -- (read as a table) does not.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 
 SET parallel_setup_cost = 0;
@@ -58,17 +59,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; par bool := false; agg bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		par := par OR l LIKE '%Workers Planned: 2%';
-		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
-END $$;
+CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_two_workers(q) $$;
 
 -- did workers scan? (a launch can fail when the other sessions hold the workers: tried again)
 CREATE FUNCTION p_launched(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -233,4 +224,5 @@ SELECT * FROM p_each(true);
 
 DROP TABLE items, kinds, kinds_u, parents, p_q;
 DROP FUNCTION report(text, text, text, text, text, text), p_rows(text, bool, int), p_mode(text), p_launched(text), p_compare(int[]), p_each(bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -2,6 +2,7 @@
 -- numeric leaves, short IN lists, text equality, inequality and lists) and the leaves read for the surviving rows only. Every query
 -- runs with and without the pushdown; the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -15,18 +16,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX f_t_col ON f_t USING sift_col (id, g, k, v, n, t, d, c);
 VACUUM (FREEZE, ANALYZE) f_t;
 
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
 
 -- the conjuncts the source applies, from EXPLAIN ANALYZE (0 when the plan has no SiftAgg)
 CREATE FUNCTION filters_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -81,4 +71,5 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

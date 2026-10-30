@@ -4,6 +4,7 @@
 -- expression of a row that reaches the aggregates) and never when a conjunct or a lookup drops the row, or when the cast runs for some rows only.
 -- Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -19,16 +20,7 @@ BEGIN
 END $$;
 
 -- the rows the scan read again from the heap
-CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE l text; n bigint := 0;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
-	END LOOP;
-	RETURN n;
-EXCEPTION WHEN others THEN RETURN -1;
-END $$;
+CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_heap_rereads(q) $$;
 
 CREATE TABLE s_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO s_t
@@ -114,4 +106,5 @@ DROP FUNCTION reread(text);
 DROP FUNCTION pushed(text);
 DROP FUNCTION outcome(text);
 DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

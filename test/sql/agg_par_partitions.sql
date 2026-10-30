@@ -2,6 +2,7 @@
 -- partition only: a worker with an item in another partition ran on a source that was not there. Each query runs with workers, with and without
 -- the leader scanning too, and gives the rows of the scan without workers and of the normal plan; for hash, range and list partitions.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -45,17 +46,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; par bool := false; agg bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		par := par OR l LIKE '%Workers Planned: 2%';
-		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
-END $$;
+CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_two_workers(q) $$;
 
 -- the workers of the scan started (a launch can fail when the other sessions hold the workers: tried again)
 CREATE FUNCTION p_launched(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -135,4 +126,5 @@ SELECT tbl, lim, (p_limit(tbl, lim)).* FROM unnest(ARRAY['ph', 'pr', 'pl']) tbl,
 DROP TABLE ph, pr, pl, p_q, p_lim;
 DROP FUNCTION p_limit(text, int);
 DROP FUNCTION p_rows(text, bool, int, bool), p_mode(text), p_launched(text), p_compare();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -2,6 +2,7 @@
 -- dictionary at the start of the statement. The rows must be those of the normal plan with NULLs, empty strings, long strings, a dictionary of one entry, codes that
 -- the first chunk does not read (the later ones do) and groups that only a filter keeps.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -17,15 +18,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (grp, word, one, tail, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
 
 SELECT * FROM same('SELECT word, count(*), sum(amount) FROM ev GROUP BY 1');
 SELECT * FROM same('SELECT word, grp, count(*) FROM ev GROUP BY 1, 2');
@@ -43,4 +36,5 @@ EXPLAIN (COSTS OFF) SELECT word, count(*) FROM ev GROUP BY 1;
 
 DROP FUNCTION same(text);
 DROP TABLE ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

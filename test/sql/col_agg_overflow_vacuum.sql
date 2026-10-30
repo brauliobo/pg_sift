@@ -3,6 +3,7 @@
 -- dead. The VACUUM of the index (amvacuumcleanup) finds the dead rows that hold the values and the pushdown is back; a unit that still has a live
 -- row with such a value keeps its flag. Plain VACUUM throughout (no INDEX_CLEANUP on). Every query runs with and without the pushdown.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -19,19 +20,7 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
 
 \ir test/agg_helpers.sql
 
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint; n bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	SELECT count(*) INTO n FROM r_on;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0 AND n > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_nonempty(q) $$;
 
 -- the strings read as numbers, as the normal plan reads them
 CREATE FUNCTION unstring(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
@@ -76,4 +65,5 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

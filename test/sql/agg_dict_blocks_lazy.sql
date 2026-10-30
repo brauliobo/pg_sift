@@ -2,6 +2,7 @@
 -- (SiftColDict.get), where the statement used to inflate the whole dictionary first. A request over a few groups loads none; a dictionary that the statements
 -- ask for in many blocks is loaded whole, and the one a predicate, a top-N or a lookup reads whole is loaded when it is read. The rows are those of the normal plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -19,15 +20,7 @@ CREATE INDEX lz_col ON lz USING sift_col (grp, word, other, amount) WITH (order_
 VACUUM (FREEZE, ANALYZE) lz;
 SELECT count(*) AS segments FROM sift.col_segments('lz_col') WHERE kind = 'immutable';
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
 
 -- a new backend reads the words of the groups it keeps and parses no dictionary
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
@@ -56,4 +49,5 @@ SELECT * FROM same('SELECT word, count(*) FROM lz WHERE word IS NOT NULL AND id 
 DROP FUNCTION same(text);
 DROP TABLE lz;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

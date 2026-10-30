@@ -4,6 +4,7 @@
 -- groups, which plan workers. A scan that makes a group of each element is priced for the groups its workers send to the leader and usually stays
 -- in one process, so its mode is not shown: what is checked there is that the rows are the same whatever the workers allowed.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;
 
@@ -34,17 +35,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; par bool := false; agg bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		par := par OR l LIKE '%Workers Planned: %';
-		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';
-	END LOOP;
-	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
-END $$;
+CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_workers(q, workers) $$;
 
 -- the mode with 4 workers, then whether 0, 2 and 4 workers give the rows of the normal plan
 CREATE FUNCTION check_rows(q text, show_mode bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -149,5 +140,6 @@ RESET plan_cache_mode;
 DEALLOCATE by_bucket;
 
 DROP TABLE facts, shapes;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
 DROP FUNCTION check_all, check_rows, cursor_rows, generic_rows, mode_of, rescan_rows, rows_of;

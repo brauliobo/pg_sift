@@ -3,6 +3,7 @@
 -- under write buffers, dead rows, HOT chains, uncommitted deletes and a rescanned Gather
 --
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 -- about a thousand rows per superblock: a few superblocks to hand out
 CREATE TABLE ps (id int PRIMARY KEY, body text, pad text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 3);
 ALTER TABLE ps ALTER COLUMN pad SET STORAGE PLAIN;
@@ -77,16 +78,7 @@ BEGIN
 		INTO r USING q;
 	RETURN r;
 END $$;
-CREATE FUNCTION ps_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+CREATE FUNCTION ps_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
 CREATE FUNCTION ps_same(q text) RETURNS TABLE (query text, n bigint, count_ok text, rows_ok text, top_ok text) LANGUAGE sql AS $$
 	SELECT q, ps_count(q, 'par'),
 		CASE WHEN ps_count(q, 'par') = ps_count(q, 'seq') AND ps_count(q, 'par') = ps_count(q, 'ser') THEN 'ok' ELSE 'MISMATCH' END,
@@ -460,4 +452,5 @@ SELECT sift.verify('ps_idx', true);
 
 DROP TABLE ps, pj;
 DROP FUNCTION ps_doc(int), ps_ids(text, text), ps_count(text, text), ps_top(text, int, text), ps_plan(text), ps_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -3,6 +3,7 @@
 -- other use of their values (a key, an aggregate, an OR, a FILTER, an expression) reads them as a dictionary of the unit's distinct values
 -- (col_agg_wide_keys). Every query runs with and without the pushdown and the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -35,18 +36,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX wa_col ON wa USING sift_col (id, grp, qty, n38, n19, img, neg, m, iv);
 VACUUM (FREEZE, ANALYZE) wa;
 
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
 
 -- the wide conjuncts the source applies (0 when the plan has no SiftAgg), and whether the plan is the scan at all
 CREATE FUNCTION wide_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -260,4 +250,5 @@ SELECT same($$SELECT count(*), sum(qty) FROM wa WHERE n38 > 1234.5 AND m < '900.
 
 DROP TABLE wa;
 DROP FUNCTION same(text), wide_in_source(text), scanned(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

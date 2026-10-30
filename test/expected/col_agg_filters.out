@@ -2,6 +2,7 @@
 -- numeric leaves, short IN lists, text equality, inequality and lists) and the leaves read for the surviving rows only. Every query
 -- runs with and without the pushdown; the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -16,18 +17,7 @@ NOTICE:  sift_col index f_t_col writes a rollup of the rows by k, c
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 15 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX f_t_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) f_t;
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
 -- the conjuncts the source applies, from EXPLAIN ANALYZE (0 when the plan has no SiftAgg)
 CREATE FUNCTION filters_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
@@ -197,4 +187,5 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

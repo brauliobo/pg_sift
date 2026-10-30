@@ -2,6 +2,7 @@
 -- decoded values (sum of float4, the variance family, bit and boolean aggregates, min/max of text, DISTINCT, string_agg, array_agg,
 -- ordered-set aggregates of any type, user aggregates). The rows are the ones of the normal plan (sift.enable_agg off); what keeps the plan is listed.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
@@ -20,18 +21,7 @@ SELECT g, g % 7, CASE WHEN g % 5 = 0 THEN NULL ELSE (ARRAY['web', 'shop', 'phone
 FROM generate_series(1, 1500) g;
 CREATE INDEX o_col ON o USING sift_colstub (id, store, kind, price, f8, f4, day, tag, items) WITH (paths = 'items: []{category text, qty int4, price float8}');
 VACUUM ANALYZE o;
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
 CREATE FUNCTION sq_add(acc float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE AS $$ SELECT acc + x * x $$;
 CREATE AGGREGATE sum_sq(float8) (sfunc = sq_add, stype = float8, initcond = '0');
 CREATE FUNCTION vol_add(acc float8, x float8) RETURNS float8 LANGUAGE sql VOLATILE AS $$ SELECT acc + x + 0 * random() $$;
@@ -267,4 +257,5 @@ CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

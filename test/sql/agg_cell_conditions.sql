@@ -1,6 +1,7 @@
 -- The outer aggregates of a two-level scan with a FILTER on the value of a cell (an inner average, sum or count) read that value once for the cell and compare it with the
 -- constant inline: NaN above every number and equal to itself, infinities, NULL cells (an average of no value), integer and float comparisons. The rows are the normal plan's.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
@@ -13,15 +14,7 @@ FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (cat, who, x, k);
 VACUUM (FREEZE, ANALYZE) ev;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
 
 SELECT * FROM same($q$SELECT cat, count(*) AS cells, count(*) FILTER (WHERE a >= 8) AS hi, count(*) FILTER (WHERE a < 6) AS lo, count(*) FILTER (WHERE a > 6 AND a < 8) AS mid,
   count(*) FILTER (WHERE a = 'NaN') AS nan, count(*) FILTER (WHERE a <> 'NaN') AS not_nan, count(*) FILTER (WHERE a <= 'Infinity') AS le_inf, count(a) AS with_a
@@ -38,4 +31,5 @@ RESET sift.agg_force;
 
 DROP FUNCTION same(text);
 DROP TABLE ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

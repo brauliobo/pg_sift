@@ -1,6 +1,7 @@
 -- A lookup table loaded from the leaves of a sift_col index reads a text column whose dictionary the segment keeps in blocks (many entries, not loaded by the backend)
 -- through the string of the entry, not through the arrays of the whole dictionary: the rows are those of the normal plan, with NULLs and repeated strings.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -16,15 +17,7 @@ CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dm2 SELECT * FROM dm;
 CREATE INDEX dm2_col ON dm2 USING sift_col (k, county, kind);
 VACUUM (FREEZE, ANALYZE) ev, dm, dm2;
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
 -- the first read of a dictionary is a test of the table's own condition
 SELECT * FROM same('SELECT kind, sum(amount), count(*) FROM ev, dm2 WHERE ev.k = dm2.k AND county = ''c'' || md5(''17'') GROUP BY kind');
  result_rows | vs_normal_plan 
@@ -58,4 +51,5 @@ SELECT * FROM same('SELECT count(*) FROM ev, dm WHERE ev.k = dm.k AND county = '
 
 DROP FUNCTION same(text);
 DROP TABLE ev, dm, dm2;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

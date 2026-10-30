@@ -1,6 +1,7 @@
 -- The arms of a UNION ALL that read the same rows for the same aggregates run in one pass over the index: arms with a lookup join, with keys
 -- of their own, with leaves only some of them read, and arms whose rows the index cannot store (read again from the heap once, not per arm).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -19,28 +20,9 @@ VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE zones;
 
 -- the most arms one scan served in the plan; the rows must be those of the normal plan
-CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Arms In One Pass: ' THEN n := greatest(n, substr(l, strpos(l, ': ') + 2)::int); END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.agg_arms_in_one_pass(q) $$;
 
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE d bigint; n bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	SELECT count(*) INTO n FROM r_on;
-	DROP TABLE r_on, r_off;
-	RETURN d = 0 AND n > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_all(q) $$;
 
 -- rows the scan read again from the heap, as the first node of the plan that shows it reports them
 CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
@@ -163,4 +145,5 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

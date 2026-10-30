@@ -3,6 +3,7 @@
 -- answers stay the heap's whether a unit keeps none of its rows, a few, or most, for a leaf of strings of its own in each unit and a leaf of a few
 -- values, with NULLs and empty strings, and when the same leaf is read again for other rows of the unit.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE pg (id int PRIMARY KEY, title text, url text, kind text, uid int, phrase text) WITH (autovacuum_enabled = false);
 INSERT INTO pg
 SELECT i,
@@ -40,18 +41,7 @@ BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
-CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE b bigint;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	EXECUTE 'CREATE TEMP TABLE s_a ON COMMIT DROP AS ' || qq;
-	PERFORM set_config('sift.enable_agg', 'off', true);
-	EXECUTE 'CREATE TEMP TABLE s_b ON COMMIT DROP AS ' || qq;
-	EXECUTE 'SELECT count(*) FROM ((SELECT * FROM s_a EXCEPT ALL SELECT * FROM s_b) UNION ALL (SELECT * FROM s_b EXCEPT ALL SELECT * FROM s_a)) d' INTO b;
-	DROP TABLE s_a, s_b;
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN b;
-END $$;
+CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;
                      name                      | scan | differing_rows 
 -----------------------------------------------+------+----------------
@@ -70,4 +60,5 @@ SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY na
 RESET sift.enable_agg;
 DROP FUNCTION s_scan(text), s_diff(text);
 DROP TABLE s_q, pg;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

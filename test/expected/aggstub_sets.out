@@ -2,6 +2,7 @@
 -- the outer query of per-order aggregates, aggregates of the columns of a lookup join and float group keys (-0, 0 and NaN: the stub
 -- keeps the values of the heap). The rows are the ones of the normal plan (sift.enable_agg off).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
@@ -22,18 +23,7 @@ VACUUM ANALYZE o;
 -- the values to aggregate through a lookup join: a key with two rows, NULL values, a key without a row (E)
 CREATE TABLE vals (category text, label text, weight numeric(8,2), factor float8);
 INSERT INTO vals VALUES ('A', 'a1', 1.50, 0.5), ('A', 'a2', 2.25, NULL), ('b', NULL, 3.10, 2.0), ('C', 'cc', NULL, 1.5), ('D', 'dd', 0.05, 0.25);
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
 -- the plans
 EXPLAIN (COSTS OFF) SELECT kind, store, grouping(kind, store) AS g, count(*) FROM o GROUP BY ROLLUP (kind, store);
                QUERY PLAN                
@@ -471,4 +461,5 @@ CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

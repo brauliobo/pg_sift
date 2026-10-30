@@ -2,6 +2,7 @@
 -- dictionary leaves) as aggregate arguments, group keys and filters, with the rows of the normal plan (sift.enable_agg off); a division
 -- that the normal plan never reaches does not raise, and a small combo cache that is dropped many times changes nothing.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 LOAD 'pg_sift';
 
@@ -21,19 +22,7 @@ EXPLAIN (COSTS OFF) SELECT g, count(*) FILTER (WHERE sqrt(abs(f)) > 1 AND g <> 0
 -- an integer sum PostgreSQL would evaluate: a generic aggregate
 EXPLAIN (COSTS OFF) SELECT g, sum(id / 2) FROM e GROUP BY g;
 
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint; n bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	SELECT count(*) INTO n FROM r_on;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0 AND n > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_nonempty(q) $$;
 SELECT same($$SELECT g, sum(f / 3) AS a, max(b % 7) AS b, min(b / 3) AS c, count(id / 2) AS d, max(sqrt(abs(f))) AS e FROM e GROUP BY g$$) AS arguments;
 SELECT same($$SELECT b % 7 AS k, date_trunc('month', d) AS m, upper(t) AS u, count(*) AS n, max(id % 100) AS x FROM e GROUP BY 1, 2, 3$$) AS keys;
 SELECT same($$SELECT g, count(*) FILTER (WHERE sqrt(abs(f)) > 1) AS a, count(*) FILTER (WHERE b / 3 > 100 AND d > date '2024-06-01') AS b,
@@ -49,4 +38,5 @@ SELECT same($$SELECT g, sum(id / 2) AS a, avg(b % 4) AS b FROM e GROUP BY g$$) A
 DROP FUNCTION same(text);
 DROP TABLE e;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -2,6 +2,7 @@
 -- each element looked up) when many are. Rows of 0 to 130 elements put the ranges across the 64 bit words of the bitmap; the answers stay the heap's whether
 -- 0.5 %, 5 %, 30 % or 80 % of the rows are kept, with a conjunct on the elements, and for a left lateral (rows with no element).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 CREATE TABLE ev (id int PRIMARY KEY, day date, items jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, '2026-01-01'::date + i % 400,
@@ -39,21 +40,11 @@ BEGIN
 	RETURN false;
 END $$;
 
-CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE b bigint;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	EXECUTE 'CREATE TEMP TABLE s_a ON COMMIT DROP AS ' || qq;
-	PERFORM set_config('sift.enable_agg', 'off', true);
-	EXECUTE 'CREATE TEMP TABLE s_b ON COMMIT DROP AS ' || qq;
-	EXECUTE 'SELECT count(*) FROM ((SELECT * FROM s_a EXCEPT ALL SELECT * FROM s_b) UNION ALL (SELECT * FROM s_b EXCEPT ALL SELECT * FROM s_a)) d' INTO b;
-	DROP TABLE s_a, s_b;
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN b;
-END $$;
+CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;
 
 RESET sift.enable_agg;
 DROP FUNCTION s_scan(text), s_diff(text);
 DROP TABLE s_q, ev, ev2;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

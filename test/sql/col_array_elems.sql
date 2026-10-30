@@ -2,6 +2,7 @@
 -- point directory that lists the rows that own a value. Every query runs with and without the pushdown and the rows must be the same; the shapes with 'scan'
 -- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -25,30 +26,7 @@ VACUUM (FREEZE, ANALYZE) ad;
 SELECT sift.col_verify('ad_col', true);
 SELECT leaf, path, type FROM sift.col_leaves('ad_col') ORDER BY leaf;
 
-CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
-BEGIN
-	SET sift.enable_agg = on;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
-	BEGIN
-		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
-	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
-	SET sift.enable_agg = off;
-	SET enable_sort = off;
-	BEGIN
-		EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
-	EXCEPTION WHEN OTHERS THEN e_off := SQLERRM; END;
-	RESET sift.enable_agg;
-	RESET enable_sort;
-	IF e_on IS NOT NULL OR e_off IS NOT NULL THEN
-		DROP TABLE IF EXISTS r_on, r_off;
-		RETURN CASE WHEN e_on IS NOT DISTINCT FROM e_off THEN 'error: ' || e_on ELSE 'DIFF on=' || coalesce(e_on, 'ok') || ' off=' || coalesce(e_off, 'ok') END;
-	END IF;
-	SELECT count(*) INTO a FROM ((SELECT d::text FROM r_on d EXCEPT ALL SELECT d::text FROM r_off d)
-								  UNION ALL (SELECT d::text FROM r_off d EXCEPT ALL SELECT d::text FROM r_on d)) x;
-	DROP TABLE r_on, r_off;
-	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
-END $$;
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_check_outcome(q) $$;
 
 CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) LANGUAGE sql AS $$
 	SELECT tag || ' ' || s.name, chk(format(s.q, t)) FROM (VALUES
@@ -170,4 +148,5 @@ SELECT * FROM reads($q$SELECT count(*) FROM ar WHERE ids @> ARRAY[1001, 2003]$q$
 SELECT * FROM reads($q$SELECT count(*) FROM ar WHERE ids @> ARRAY[1001]$q$);
 DROP TABLE ae, ad, ar;
 DROP FUNCTION gen(int, int), chk(text), shapes(text, text), reads(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

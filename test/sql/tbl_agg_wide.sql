@@ -9,15 +9,7 @@ CREATE TABLE wd (id int, g int, n38 numeric(38, 6), nf numeric, m money, iv inte
 
 CREATE FUNCTION wd_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
-CREATE FUNCTION wd_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION wd_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg(q) $$;
 
 CREATE TABLE wd_q (q text);
 INSERT INTO wd_q VALUES

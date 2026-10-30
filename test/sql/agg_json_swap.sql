@@ -2,6 +2,7 @@
 -- lookups of an argument made once per call site); sift.enable_agg = off keeps the core function. A query that reads no such table, a call with no
 -- argument, jsonb_build_object, and a role that may not execute sift's function keep the core one.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 CREATE TABLE jt (id int PRIMARY KEY, g int, label text, price numeric, day date);
 INSERT INTO jt SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'l"' || i % 5 || E'\n' END, i / 4.0, '2026-01-01'::date + i % 30 FROM generate_series(1, 3000) i;
@@ -34,18 +35,7 @@ BEGIN
 	RETURN CASE WHEN r = '{}' THEN 'none' ELSE array_to_string(r, ',') END;
 END $$;
 
-CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE b bigint;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	EXECUTE 'CREATE TEMP TABLE s_a ON COMMIT DROP AS ' || qq;
-	PERFORM set_config('sift.enable_agg', 'off', true);
-	EXECUTE 'CREATE TEMP TABLE s_b ON COMMIT DROP AS ' || qq;
-	EXECUTE 'SELECT count(*) FROM ((SELECT * FROM s_a EXCEPT ALL SELECT * FROM s_b) UNION ALL (SELECT * FROM s_b EXCEPT ALL SELECT * FROM s_a)) d' INTO b;
-	DROP TABLE s_a, s_b;
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN b;
-END $$;
+CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 
 SELECT name, s_call(q) AS call, s_diff(q) AS differing_rows FROM s_q ORDER BY name;
 SET sift.enable_agg = off;
@@ -66,4 +56,5 @@ DROP ROLE jsw_plain;
 
 DROP FUNCTION s_call(text), s_diff(text);
 DROP TABLE s_q, jt, jp;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
