@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Improved: pg_sift: the load that `sift.table_bulk_groups` (on by default since 3.3) writes, `COPY`, `CREATE TABLE AS` and `REFRESH MATERIALIZED VIEW` into a `sift_table` of 16 MB of rows or more, writes the groups of a run in the backend and in up to `max_parallel_maintenance_workers` parallel workers (merged in 3.7.1): 1,000,000 orders, the backend's instructions 22,630 to 17,820 M (19,290 M at the default `maintenance_work_mem`), the cluster's +5.4%, the same WAL and TIDs; `max_parallel_maintenance_workers = 0` keeps the load in the backend.
+
 ## 3.7.0 - 2026-10-30
 
 - Improved: pg_sift: the fetch scans of a `sift_table` (index scans, bitmap, UPDATE, DELETE by TID) keep 256 superblocks and 64 MB per table, where they kept 32 and 8 MB, so the UPDATEs of a table that has more superblocks than that no longer parse the heads of a superblock again on every fetch: the 40,000 UPDATEs by key of `tbl_update_keys` on 1,000,000 rows take 3,538 M instructions to 2,381 M once the write buffer is settled (300,000 rows 2,320 M to 2,336 M, 600,000 rows 2,803 M to 2,336 M: the loop no longer grows with the table; the heap twin 4.2 G), and 5,621 M to 4,451 M with the 166,000 rows the case leaves in the write buffer, whose promotion is the rest of the growth. Test: `scripts/instr-budget-fetch.sh` (836 M to 691 M callgrind instructions, budget 760 M).
