@@ -16,6 +16,8 @@
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
 
 #include "agg/agg.h"
 #include "agg/cost/int.h"

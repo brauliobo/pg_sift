@@ -11,6 +11,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "utils/selfuncs.h"
+#include "catalog/pg_type.h"
 
 #include "agg/cost/int.h"
 

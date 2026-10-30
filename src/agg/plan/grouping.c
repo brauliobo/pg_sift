@@ -10,6 +10,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/selfuncs.h"
+#include "catalog/pg_type.h"
 #include "utils/typcache.h"
 
 #include "agg/plan/int.h"

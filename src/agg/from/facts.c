@@ -9,6 +9,8 @@
 #include "access/table.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
 
 #include "agg/agg.h"
 #include "agg/part.h"

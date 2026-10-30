@@ -6,6 +6,7 @@
 
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
+#include "catalog/pg_type.h"
 
 #include "agg/part.h"
 #include "agg/from/int.h"

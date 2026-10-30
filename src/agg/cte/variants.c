@@ -10,6 +10,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
+#include "utils/memutils.h"
 
 #include "agg/agg.h"
 #include "agg/cte/int.h"

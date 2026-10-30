@@ -17,6 +17,8 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
 
 #include "agg/agg.h"
 #include "agg/topn.h"

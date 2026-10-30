@@ -13,6 +13,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
 
 #include "agg/topn.h"
 #include "agg/order/int.h"

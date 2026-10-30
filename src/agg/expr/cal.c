@@ -12,6 +12,8 @@
 #include "utils/lsyscache.h"
 
 #include "col/preagg.h"
+#include "catalog/pg_type.h"
+
 #include "agg/expr/int.h"
 
 /*

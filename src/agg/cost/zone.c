@@ -13,6 +13,7 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
 
 #include "agg/agg.h"
 #include "col/point.h"

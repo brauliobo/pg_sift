@@ -8,6 +8,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/fmgroids.h"
+#include "catalog/pg_type.h"
 
 #include "agg/expr/int.h"
 

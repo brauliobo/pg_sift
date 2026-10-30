@@ -12,6 +12,8 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
 
 #include "agg/agg.h"
 #include "agg/cte/int.h"

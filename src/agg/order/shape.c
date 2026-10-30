@@ -9,6 +9,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
+#include "catalog/pg_type.h"
 
 #include "agg/agg.h"
 #include "agg/topn.h"

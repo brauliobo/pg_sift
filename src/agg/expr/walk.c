@@ -12,6 +12,9 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "utils/memutils.h"
 
 #include "agg/agg.h"
 #include "agg/expr/int.h"

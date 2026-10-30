@@ -11,6 +11,7 @@
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/syscache.h"
+#include "access/htup_details.h"
 
 #include "agg/cost/int.h"
 
