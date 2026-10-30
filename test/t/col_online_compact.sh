@@ -44,19 +44,25 @@ echo "# built: $(ratio)% of the live bytes" >&2
 check "a rewrite of the whole index leaves its one segment behind the blocks of the five it replaced (the file is over 2 times the live bytes)" test "$(ratio)" -gt 200
 check "... and those blocks are all reusable" test "$(sql primary "SELECT reusable_blocks > 0 AND reusable_blocks = free_blocks FROM sift.col_index_info('t_idx')")" == t
 
-# a standby query on the table holds the horizon back: the blocks the rewrite releases stay in the file until it ends, and the replay does not wait for it
-rm -f "$D/held"
-{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(15);"
+# a standby query on the table holds the horizon back: the blocks the rewrite releases stay in the file until it ends, and the replay does not wait for it. The query stays open until the
+# test lets it go, and the rewrite starts once the primary has the horizon the query holds (the xmin the standby reports), so nothing here depends on the speed of the host
+rm -f "$D/held" "$D/release" "$D/xmin"
+{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"
+  echo "SELECT backend_xmin::text AS x FROM pg_stat_activity WHERE pid = pg_backend_pid() \\gset"; echo "\\! echo :x > '$D/xmin'"; echo "\\! touch '$D/held'"
+  echo "\\! while [ ! -e '$D/release' ]; do sleep 0.1; done"
   echo "SET enable_seqscan = off; SELECT 'after', count(*), sum(amount) FROM t WHERE grp = 5;"; echo "COMMIT;"; } | sql standby >"$D/hold.out" 2>&1 &
 HOLDER=$!
 until [[ -e $D/held ]]; do sleep 0.05; done
+for _ in $(seq 300); do
+	[[ $(sql primary "SELECT coalesce(backend_xmin::text::bigint <= $(cat "$D/xmin"), false) FROM pg_stat_replication") == t ]] && break
+	sleep 0.1
+done
 wal0=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 t0=$(date +%s.%N)
 sql primary "SET sift.async_maintenance = off" "SET client_min_messages = log" "VACUUM (VERBOSE) t" 2>&1 | grep -E "rewrote|truncated" | sed 's/^/# VAC /' >&2
 echo "# first VACUUM: $(echo "$(date +%s.%N) - $t0" | bc) s, WAL $(sql primary "SELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '$wal0'))")" >&2
-lsn=$(sql primary "SELECT pg_current_wal_insert_lsn()")
-sleep 3
-check "the segments are written again into the holes while the query holds the table: the replay does not stall behind it" test "$(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'")" == t
+check "the segments are written again into the holes while the query holds the table: the replay does not stall behind it" catchup primary standby
+touch "$D/release"
 wait "$HOLDER"
 check "... and the query reads what the primary reads" test "$(grep after "$D/hold.out" | tr -d ' ')" == "after|$(sql primary "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5")"
 
