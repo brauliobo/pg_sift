@@ -7,6 +7,7 @@
 #include <math.h>
 #include "utils/date.h"
 #include "utils/lsyscache.h"
+#include "utils/timestamp.h"
 #include "utils/uuid.h"
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
