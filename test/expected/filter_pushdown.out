@@ -1,6 +1,7 @@
 -- Filter-mask pushdown: a ranked SiftScan whose child is a bitmap of the other quals,
 -- turned into page and offset masks the ranker ANDs into its candidates. Every answer must equal the post-filter plan
--- bit for bit (ctids, scores, order) and the sequential evaluation of the same query, for exact, lossy and combined
+-- (scores and order of the scores; the ctids of every group of equal scores, but for the last one of a list that a LIMIT cuts, where any of the rows
+-- of the group will do: SQL does not define the order of equal scores) and the sequential evaluation of the same query, for exact, lossy and combined
 -- bitmaps, partial and partitioned tables, and rows in every state (updates, deletes, inserts, vacuumed or not).
 CREATE EXTENSION pg_sift;
 \ir test/sift_plan.sql
@@ -69,21 +70,33 @@ BEGIN
 		set_config('enable_indexscan', 'on', true);
 END $$;
 -- ok, or what differs: pushdown against the post-filter plan for several k, and for k = everything also
--- against the sequential matches under the filter
+-- against the sequential matches under the filter. The scores and their order are the same; the rows of every group of equal scores
+-- are the same, except the group a LIMIT cuts, whose rows are any of its rows (they must be in the list of everything, with that score)
 CREATE FUNCTION pd_check(tbl regclass, q text, flt text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	k int;
 	a record;
 	b record;
+	all_rows record;
 	seq tid[];
 BEGIN
+	all_rows := pd_top(tbl, q, flt, 1000000, 'force');
 	FOREACH k IN ARRAY ARRAY[1, 7, 25, 1000000] LOOP
 		a := pd_top(tbl, q, flt, k, 'force');
 		b := pd_top(tbl, q, flt, k, 'off');
-		IF a.ids IS DISTINCT FROM b.ids THEN
-			RETURN format('k %s: ctids differ: pushdown %s rows, post-filter %s rows', k, cardinality(a.ids), cardinality(b.ids));
-		ELSIF (SELECT array_agg(float4send(s)) FROM unnest(a.metrics_a) s) IS DISTINCT FROM (SELECT array_agg(float4send(s)) FROM unnest(b.metrics_a) s) THEN
+		IF (SELECT array_agg(float4send(s)) FROM unnest(a.metrics_a) s) IS DISTINCT FROM (SELECT array_agg(float4send(s)) FROM unnest(b.metrics_a) s) THEN
 			RETURN format('k %s: metrics_a differ', k);
+		END IF;
+		IF EXISTS (
+			WITH ra AS (SELECT c, s, dense_rank() OVER (ORDER BY s DESC) g FROM unnest(a.ids, a.metrics_a) u(c, s)),
+				 rb AS (SELECT c, s, dense_rank() OVER (ORDER BY s DESC) g FROM unnest(b.ids, b.metrics_a) u(c, s)),
+				 whole AS (SELECT g, array_agg(c ORDER BY c) ids FROM ra WHERE g < (SELECT max(g) FROM ra) GROUP BY g),
+				 wholeb AS (SELECT g, array_agg(c ORDER BY c) ids FROM rb WHERE g < (SELECT max(g) FROM rb) GROUP BY g)
+			SELECT 1 FROM whole FULL JOIN wholeb USING (g) WHERE whole.ids IS DISTINCT FROM wholeb.ids
+			UNION ALL
+			SELECT 1 FROM (SELECT c, s FROM unnest(a.ids, a.metrics_a) u(c, s) UNION ALL SELECT c, s FROM unnest(b.ids, b.metrics_a) u(c, s)) x
+			WHERE NOT EXISTS (SELECT 1 FROM unnest(all_rows.ids, all_rows.metrics_a) f(c, s) WHERE f.c = x.c AND float4send(f.s) = float4send(x.s))) THEN
+			RETURN format('k %s: ctids differ: pushdown %s rows, post-filter %s rows', k, cardinality(a.ids), cardinality(b.ids));
 		END IF;
 	END LOOP;
 	EXECUTE format('SELECT array_agg(ctid ORDER BY ctid) FROM %s WHERE ctid IN (SELECT tid FROM pd_seq WHERE q = %L) AND (%s)', tbl, q, flt) INTO seq;

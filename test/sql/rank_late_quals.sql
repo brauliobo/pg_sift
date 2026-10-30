@@ -37,6 +37,41 @@ FROM (SELECT q.l, late_ids(q.w, q.c, q.l) AS got, limit_hint(format('SELECT id F
       FROM (SELECT 'common OR w' || a || ' OR x' || b AS w, c, l FROM generate_series(0, 96, 8) a, generate_series(0, 6, 2) b,
                    unnest(ARRAY['tenth', 'rare', 'rest']) c, unnest(ARRAY[1, 10, 50]) l) q) z;
 
+-- the ranker does not fetch the heap row of every candidate: the scan fetches the rows it hands out, and a late scan checks the quals and the visibility there
+CREATE FUNCTION heap_checks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'heap checks' THEN RETURN substring(l from '(\d+) heap checks')::int; END IF;
+	END LOOP;
+	RETURN -1;
+END $$;
+
+SELECT heap_checks($$SELECT id FROM lq WHERE body @@> 'common OR w5 OR x3' AND cc = 'tenth' ORDER BY sift.score(ctid) DESC LIMIT 10$$)
+	<= 3 * limit_hint($$SELECT id FROM lq WHERE body @@> 'common OR w5 OR x3' AND cc = 'tenth' ORDER BY sift.score(ctid) DESC LIMIT 10$$) AS heap_checks_of_the_hits;
+
+-- dead rows and rows updated in place (a HOT chain: the index entry is the root of the visible version) among the best hits, not vacuumed: still the best rows that pass
+-- (the scores of the rows, not their ids: an updated row has a new ctid, which orders the ties at the end of the list)
+DELETE FROM lq WHERE id % 13 = 0;
+UPDATE lq SET n = n + 1 WHERE id % 5 = 0 AND n < 80;
+CREATE FUNCTION late_scores(w text, c text, l int) RETURNS float4[] LANGUAGE plpgsql AS $$
+DECLARE
+	r float4[];
+BEGIN
+	EXECUTE format('SELECT array_agg(s ORDER BY s DESC) FROM (SELECT sift.score(ctid) s FROM lq WHERE body @@> %L AND cc = %L AND n < 90 ORDER BY sift.score(ctid) DESC LIMIT %s) t', w, c, l) INTO r;
+	RETURN r;
+END $$;
+SELECT count(*) AS queries,
+       count(*) FILTER (WHERE got IS DISTINCT FROM want) AS different
+FROM (SELECT late_scores(q.w, q.c, q.l) AS got,
+             (SELECT array_agg(s ORDER BY s DESC) FROM (SELECT s FROM (SELECT sift.score(ctid) s, cc, n FROM lq
+                WHERE body @@> q.w ORDER BY sift.score(ctid) DESC LIMIT 1000000) a WHERE cc = q.c AND n < 90 ORDER BY s DESC LIMIT q.l) t) AS want
+      FROM (SELECT 'common OR w' || a || ' OR x' || b AS w, c, l FROM generate_series(0, 96, 8) a, generate_series(0, 6, 2) b,
+                   unnest(ARRAY['tenth', 'rare', 'rest']) c, unnest(ARRAY[1, 10, 50]) l) q) z;
+
+DROP FUNCTION heap_checks(text);
+DROP FUNCTION late_scores(text, text, int);
 DROP FUNCTION late_ids(text, text, int);
 DROP FUNCTION limit_hint(text);
 DROP TABLE lq;

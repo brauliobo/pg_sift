@@ -121,13 +121,18 @@ index_text(SiftScanState *ss)
 	return isnull ? NULL : DatumGetTextPP(value);
 }
 
-/* Visible, passes the residual quals, and with want_doc yields the indexed text */
+/*
+ * Visible, passes the residual quals, and with want_doc yields the indexed text. A late scan checks both on the rows it hands out
+ * (ranked_next) and asks the ranker for more when they drop some, so a candidate that needs no text is not fetched here too.
+ */
 bool
 scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 {
 	SiftScanState *ss = arg;
 	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
 
+	if (ss->late && !want_doc)
+		return true;
 	if (!sift_vis_fetch(&ss->vis, tid, ss->heapslot))
 		return false;
 	if (ss->quals && !ss->late)
