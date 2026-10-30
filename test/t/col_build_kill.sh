@@ -3,7 +3,7 @@
 # kill -9 in the middle of the parallel build of a key_cut sift_col index (workers, gap, merge into the gap) with a streaming standby attached, then crash recovery:
 # the build is rolled back (no index, on the primary and on the standby), the standby streams again and counts as the primary, and the build run again finishes with
 # the file at most 1.1 times its live bytes (the gap and the cut of a build; the dead build leaves nothing the next one has to work around) and an index that verifies
-# and answers as the table does. Kills: a parallel worker while it scans (kill -9 of its pid), and the leader before the n-th directory update of the build and after the last
+# and answers as the table does. Kills: a parallel worker held at the start of its scan (kill -9 of its pid), and the leader before the n-th directory update of the build and after the last
 # (sift.test_crash_dir: the publication of the segments, then each partition the merge into the gap writes). SIFT_BK_ROWS (400000, 150000 quick), SIFT_BK_POINTS
 # (most directory updates killed in the leader, 8, 4 quick).
 . "$(dirname "$0")/lib.bash"
@@ -56,27 +56,28 @@ recovered() { # LABEL
 	sql primary "DROP INDEX t_idx" >/dev/null && catchup primary standby
 }
 
-# a parallel worker, killed while the scan runs (a build that ends before a worker is seen is dropped and run again, three times at most)
+# a parallel worker, killed while the scan runs: the workers wait to start the scan for an advisory lock this session holds (sift.test_phase_gate + the scan phase), so one is there to
+# be found and killed whatever the speed and the cores of the runner
 PM=$(head -1 "$(dir primary)/data/postmaster.pid")
+D=$(dir primary)
+GATE=7000
+rm -f "$D/held"
+{ echo "SELECT pg_advisory_lock($(( GATE + 2 )));"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(600);"; } | sql primary >/dev/null 2>&1 &
+until [[ -e $D/held ]]; do sleep 0.05; done
+sql primary "${OPTS[@]}" "SET sift.test_phase_gate = $GATE" "$BUILD" >"$D/build.out" 2>&1 &
+BUILDER=$!
 victim=
-built=0
-for _ in 1 2 3; do
-	sql primary "${OPTS[@]}" "$BUILD" >"$(dir primary)/build.out" 2>&1 &
-	BUILDER=$!
-	for _ in $(seq 2400); do
-		victim=$(sql primary "SELECT pid FROM pg_stat_activity WHERE backend_type = 'parallel worker' LIMIT 1" 2>/dev/null)
-		[[ -z $victim ]] || break
-		kill -0 "$BUILDER" 2>/dev/null || break
-		sleep 0.02
-	done
-	if [[ -n $victim ]]; then
-		SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
-		kill -9 "$victim"
-	fi
-	wait "$BUILDER"; built=$?
-	[[ -n $victim ]] && break
-	sql primary "DROP INDEX t_idx" >/dev/null
+for _ in $(seq 1200); do
+	victim=$(sql primary "SELECT pid FROM pg_stat_activity WHERE backend_type = 'parallel worker' AND wait_event_type = 'Lock' LIMIT 1" 2>/dev/null)
+	[[ -z $victim ]] || break
+	kill -0 "$BUILDER" 2>/dev/null || break
+	sleep 0.05
 done
+if [[ -n $victim ]]; then
+	SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
+	kill -9 "$victim"
+fi
+wait "$BUILDER"; built=$?
 check "a parallel worker was found and killed, the build failed" test -n "$victim" -a "$built" -ne 0
 if restart; then ok "the primary restarts and the standby streams again"; recovered "worker killed in the scan" || true
 else not_ok "the primary restarts and the standby streams again"; fi

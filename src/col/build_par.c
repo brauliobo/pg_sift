@@ -306,6 +306,9 @@ sift_col_build_worker(dsm_segment *seg, shm_toc *toc)
 
 	sift_par_worker_begin(&w, toc);
 	await_gate(w.shared);
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_PHASE_SCAN);	/* a test holds the advisory lock to find a worker that is still scanning */
+#endif
 	participate(w.shared, w.parts, ParallelWorkerNumber, w.heap, w.index, w.info, w.snapshot);
 	sift_par_worker_end(&w);
 }
