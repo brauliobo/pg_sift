@@ -14,8 +14,8 @@ APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::
 # no lsof, lslocks or fuser on a runner: /proc/locks names the holder of a lock file by its inode
 apt_diag() {
 	local f ino pid
-	echo "::group::apt diagnostics"
-	ps -eo pid,ppid,etime,stat,wchan:20,cmd --forest | grep -E 'apt|dpkg|needrestart|postinst|debconf' | grep -v 'grep -E' || true
+	echo "::group::apt diagnostics"   # no --forest: it takes seconds on a table of tens of thousands of processes (a shared box), the ppid column gives the tree
+	ps -eo pid,ppid,etime,stat,wchan:20,cmd | grep -E 'apt|dpkg|needrestart|postinst|debconf' | grep -v 'grep -E' || true
 	for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
 		[[ -e $f ]] || continue
 		ino=$(stat -c %i "$f")
@@ -79,15 +79,15 @@ esac
 exit "${FAIL:-0}"
 FAKE
 	chmod +x "$d"/bin/*
-	local run="env PATH=$d/bin:$PATH APT_UNIT=1 LOG=$d/log FAIL= bash $self pkg"
+	local run="env PATH=$d/bin:$PATH APT_UNIT=3 LOG=$d/log FAIL= bash $self pkg"
 	# a hang in the download: cut, diagnosed (the stuck call is in the process list), retried, then the install
-	out=$($run 2>&1) || { echo "FAIL: apt-install does not recover from a hung download: $out"; bad=1; }
-	[[ $out == *'still running after'* && $out == *'timeout -k 10 2 apt-get'* && $out == *'cut after 2 s'* ]] || { echo "FAIL: apt-install does not print the diagnostics of a hung call: $out"; bad=1; }
+	out=$($run 2>&1) || { echo "FAIL: apt-install does not recover from a hung download: $(tail -n 5 <<<"$out")"; bad=1; }
+	[[ $out == *'still running after'* && $out == *'timeout -k 10 6 apt-get'* && $out == *'cut after 6 s'* ]] || { echo "FAIL: apt-install does not print the diagnostics of a hung call: $(tail -n 5 <<<"$out")"; bad=1; }
 	[[ $(grep -c 'download-only' "$d/log") == 2 && $(grep -c ' install -y --no-install-recommends pkg$' "$d/log") == 1 && $(grep -c '^dpkg --configure -a$' "$d/log") == 1 ]] ||
 		{ echo "FAIL: apt-install retry path differs from one cut download, one reconfigure, one install: $(cat "$d/log")"; bad=1; }
 	# an install that keeps failing is retried three times and fails the step
 	: >"$d/log"
-	out=$(env FAIL=1 PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" bash "$self" pkg 2>&1) && { echo "FAIL: apt-install exits 0 when the install fails: $out"; bad=1; }
+	out=$(env FAIL=1 PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" bash "$self" pkg 2>&1) && { echo "FAIL: apt-install exits 0 when the install fails: $(tail -n 5 <<<"$out")"; bad=1; }
 	[[ $(grep -c ' install -y --no-install-recommends pkg$' "$d/log") == 3 ]] || { echo "FAIL: apt-install does not try the install three times: $(cat "$d/log")"; bad=1; }
 	rm -rf "$d"
 	(( bad )) || echo "apt-install selftest: a hung call is cut, diagnosed and retried; a failing install is tried three times"
