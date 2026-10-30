@@ -12,6 +12,8 @@ psql -X -q -U postgres -d cases -c "CREATE EXTENSION pg_sift"
 for kv in work_mem=64MB maintenance_work_mem=256MB effective_cache_size=3GB jit=off parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB; do
 	psql -X -q -U postgres -d postgres -c "ALTER DATABASE cases SET ${kv%%=*} = '${kv#*=}'"
 done
+# one backend, as the ceilings were recorded (bench cases, one CPU): with the default of two workers the join to a key set loses its scan plan to a parallel scan of the table
+export CASES_WORKERS=0
 f=test/plan/execution.tsv
 exec python3 -I bench/steps/cases.py run --cases "$(grep -v '^#' "$f" | cut -f1 | paste -sd, -)" --rows 300000 --rounds 1 --runs 1 --minstr --io off --no-wait \
 	--budget "$f" ${1:+--budget-update} --out "${SIFT_TMP:-/tmp}/exec-budget.tsv"
