@@ -810,6 +810,23 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->typid = ex->lay->leaf[p->leaf].typid;
 		return g;
 	}
+	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf == keyleaf && p->leaf < ex->nbase && (g->attno = sift_topn_text_attno(ex->lay, p->leaf)) > 0)
+	{
+		SiftSrcStrTest st = {0};
+
+		if (!sift_aggspec_text_bound(p, ex->lay, ex->nbase, &st))
+			return NULL;
+		g->kind = STG_STR;
+		g->sop = st.op;
+		g->str = st.vals[0];
+		g->slen = st.lens[0];
+		g->collid = st.collid;
+		g->lead = true;
+		g->pinned = pinned;
+		g->leaf = p->leaf;
+		g->typid = ex->lay->leaf[p->leaf].typid;
+		return g;
+	}
 	/* leaf IN (constants) is an OR of equalities (as many as a global order grouped by the leaf reads at once); NOT IN and a NULL element are for the units, and so is the set of keys of a join, which has no expression */
 	if (p->kind == SAP_IN && p->op == 0 && p->expr != NULL && p->level == 0 && !p->late && p->leaf < ex->nbase &&
 		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))

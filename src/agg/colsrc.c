@@ -353,6 +353,12 @@ sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const 
 	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped, collid) : -1;
 }
 
+uint32
+sift_colsrc_gorder_strrank(SiftSrcSource *src, int i, int leaf, const char *s, uint32 len, bool after)
+{
+	return src->prov->gorder_strrank(src->impl, i, leaf, s, len, after);
+}
+
 const char *
 sift_colsrc_gorder_str(SiftSrcSource *src, int i, int leaf, int64 key, uint32 *len)
 {

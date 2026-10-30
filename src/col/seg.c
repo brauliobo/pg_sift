@@ -4058,6 +4058,31 @@ sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
 	return str;
 }
 
+/* the order of the string of rank r against s */
+static int
+gord_str_vs(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r, const char *s, uint32 slen)
+{
+	uint32		len;
+	const char *str = sift_cseg_gorder_str(seg, col, r, &len);
+
+	return sift_cgord_str_order(str, len, s, slen, g->hdr.collid);
+}
+
+uint32
+sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 slen, bool after)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+	uint32		lo = 0,
+				hi;
+
+	if (g == NULL || g->hdr.strbytes == 0)
+		corrupt(seg, "The global order of leaf %d has no strings.", col);
+	(void) gord_strs(seg, g, col);
+	hi = g->nstr;
+	SIFT_BISECT(uint32, mid, lo, hi, after ? gord_str_vs(seg, g, col, mid, s, slen) <= 0 : gord_str_vs(seg, g, col, mid, s, slen) < 0);
+	return lo;
+}
+
 /* The slot of the block of leaf col to read: the one sorted by group (the second slot, ncols + col; the first when it is grouped, as the user's order_array_group writes it) or the plain one; -1 when the segment has none */
 int
 sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)

@@ -1,0 +1,86 @@
+-- A range of a text column read from its global order: `txt >= 'k' ORDER BY txt LIMIT n`, a prefix (`LIKE 'abc%'`, `starts_with`), an equality, a BETWEEN and an OR of two
+-- half lines find the first and the last entry of the range in each segment and in the write buffer by comparing strings (the ranks of a segment are its own), as a b-tree descends to its first
+-- leaf, and read n entries. The answers are the heap's through ties, NULLs, the empty string, accents and case, both directions, OFFSET, DML, a write buffer, a promotion, a merge and a REINDEX,
+-- under the C collation and under a locale (a prefix is a range of the bytes: under a locale it reads the units).
+CREATE EXTENSION pg_sift CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = notice;
+\set VERBOSITY terse
+
+CREATE TABLE tr (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 200));
+ALTER TABLE tr ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION tr_str(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 11 WHEN 0 THEN '' WHEN 1 THEN 'a' ELSE '' END
+		|| (ARRAY['Zeta', 'alpha', 'Alpha', 'ALPHA', 'beta-2', 'beta 2', 'Beta2', 'été', 'ete', 'Ete', 'zz', '_x', '10', '9', 'a-b', 'ab', 'A.B', 'ä', 'a', 'z'])[1 + (i * 7) % 20]
+		|| (i % 97)::text $$;
+INSERT INTO tr (id, c, l)
+SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tr_str(i) END, CASE WHEN i % 37 = 0 THEN NULL ELSE tr_str(i * 3) END FROM generate_series(1, 9000) i;
+INSERT INTO tr (id, c, l) VALUES (9001, '', ''), (9002, NULL, NULL);
+CREATE INDEX tr_i ON tr USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
+SELECT sift.col_verify('tr_i');
+ANALYZE tr;
+
+-- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
+CREATE FUNCTION tr_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
+END $$;
+
+-- the conditions: a bound that is a stored string, one between two, one before all and one after all, a prefix that matches a few, many and none
+CREATE TABLE trq (cond text);
+INSERT INTO trq
+SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
+	 unnest(ARRAY['%1$s >= %2$L', '%1$s > %2$L', '%1$s < %2$L', '%1$s <= %2$L', '%1$s = %2$L', '%1$s BETWEEN %2$L AND ''zz''', '%1$s >= %2$L AND %1$s < ''b''', '%1$s < %2$L OR %1$s > ''beta''']) f,
+	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'ab', 'b', 'été3', 'ete', 'z', 'zz9', 'zzzz', '~']) b;
+INSERT INTO trq
+SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
+	 unnest(ARRAY['%1$s LIKE %2$L', 'starts_with(%1$s, %2$L)', '%1$s >= %2$L AND %1$s LIKE ''al%%''']) f,
+	 unnest(ARRAY['a%', 'al%', 'alpha1%', 'beta%', 'z%', 'zzz%', 'Q%', '%']) b;
+
+CREATE TABLE trs (q text);
+INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', col, cond, d, nl, l, o)
+FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 25, 3000]) l, unnest(ARRAY[0, 5]) o
+WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
+SELECT count(*) AS statements FROM trs;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs) r GROUP BY 1 ORDER BY 1;
+
+-- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
+CREATE FUNCTION tr_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 5 = 0) r GROUP BY 1 ORDER BY 1 $$;
+INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
+SELECT * FROM tr_all();
+DELETE FROM tr WHERE id % 7 = 0;
+UPDATE tr SET c = 'U' || c WHERE id % 11 = 0;
+UPDATE tr SET l = NULL WHERE id % 13 = 0;
+SELECT * FROM tr_all();
+VACUUM tr;
+SELECT * FROM tr_all();
+SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all();
+INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
+SELECT * FROM tr_all();
+SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all();
+REINDEX INDEX tr_i;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all();
+
+-- a condition on another column, a sort under another collation, and an unbounded condition keep the units or the normal plan, and the answers are the heap's
+SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
+	   tr_chk('SELECT c FROM tr WHERE c <> ''a'' ORDER BY c LIMIT 10') AS not_equal, tr_chk('SELECT c FROM tr WHERE lower(c) >= ''a'' ORDER BY c LIMIT 10') AS expression,
+	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;
+
+DROP TABLE tr, trq, trs CASCADE;
+DROP FUNCTION tr_chk(text), tr_all(), tr_str(int);
+DROP EXTENSION pg_sift CASCADE;

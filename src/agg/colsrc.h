@@ -293,6 +293,7 @@ typedef struct SiftSrcStrTest
 {
 	int			leaf;
 	SiftSrcStrOp op;
+	Oid			collid;			/* the collation the test compares under (set by the planner's recognizer; the source ignores it) */
 	int			nvals;
 	const char *const *vals;
 	const uint32 *lens;
@@ -708,6 +709,7 @@ typedef struct SiftSrcProvider
 	 */
 	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);	/* collid: the collation of a text key (0: an integer or time key; a block of another collation or kind cannot answer); grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
+	uint32		(*gorder_strrank) (void *impl, int i, int leaf, const char *s, uint32 len, bool after);	/* a text key: the ranks below s in source i (after: below or equal), which is the rank of the first string that is not */
 	const char *(*gorder_str) (void *impl, int i, int leaf, int64 key, uint32 *len);	/* a text key: the string of the entries with that key in source i, valid until the next call */
 	void		(*gorder_head) (void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
@@ -904,6 +906,7 @@ extern int	sift_colsrc_key_order(SiftSrcSource *src, const SiftSrcUnit *unit, in
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
 extern const char *sift_colsrc_gorder_str(SiftSrcSource *src, int i, int leaf, int64 key, uint32 *len);
+extern uint32 sift_colsrc_gorder_strrank(SiftSrcSource *src, int i, int leaf, const char *s, uint32 len, bool after);
 extern bool sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values);
 extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, BlockNumber blk);
 extern void sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);

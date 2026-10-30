@@ -286,10 +286,18 @@ str_cmp_bytes(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 	return c != 0 ? c : SIFT_CMP3(la, lb);
 }
 
+int
+sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
+{
+	int			c = (sift_cgord_strcmp != NULL ? sift_cgord_strcmp : str_cmp_bytes) (a, la, b, lb, collid);
+
+	return c != 0 ? c : str_cmp_bytes(a, la, b, lb, 0);
+}
+
 static const SiftCDict *rank_dict;
 static uint32 rank_coll;
 
-/* the codes in the order of their strings: the collation, then the bytes (the order of a b-tree on the column) */
+/* the codes in the order of their strings */
 static int
 rank_cmp(const void *pa, const void *pb)
 {
@@ -297,9 +305,8 @@ rank_cmp(const void *pa, const void *pb)
 				lb;
 	const char *a = sift_cdict_str(rank_dict, *(const uint32 *) pa, &la),
 			   *b = sift_cdict_str(rank_dict, *(const uint32 *) pb, &lb);
-	int			c = (sift_cgord_strcmp != NULL ? sift_cgord_strcmp : str_cmp_bytes) (a, la, b, lb, rank_coll);
 
-	return c != 0 ? c : str_cmp_bytes(a, la, b, lb, 0);
+	return sift_cgord_str_order(a, la, b, lb, rank_coll);
 }
 
 static void

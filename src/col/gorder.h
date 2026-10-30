@@ -97,6 +97,8 @@ extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint
  */
 typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 extern SiftCStrCmp sift_cgord_strcmp;
+/* The order of the strings of a text block: the collation, then the bytes (what the b-tree of the column does) */
+extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, StringInfo out);
 /* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
 typedef struct SiftCStrPos

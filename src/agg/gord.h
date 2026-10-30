@@ -15,13 +15,19 @@
 
 typedef struct SiftGOrd SiftGOrd;
 
-/* A range of the key, ends included, for the conjuncts of the query on it: the rows with no value are not in it */
+/* A range of the key, ends included (of the strings, for a text key, each end included or not), for the conjuncts of the query on it: the rows with no value are not in it */
 typedef struct SiftGBound
 {
 	bool		has_lo;
 	bool		has_hi;
 	int64		lo;
 	int64		hi;
+	const char *slo;			/* a text key (collid not 0 at the open): the range is of strings, in the order of the collation, instead of lo and hi; has_lo and has_hi say which ends it has */
+	const char *shi;
+	uint32		slolen;
+	uint32		shilen;
+	bool		slo_excl;		/* the strings must be after slo, not equal to it */
+	bool		shi_excl;		/* ... before shi */
 	int			npin;			/* conditions leaf = value of the query: a global order grouped by one of the leaves reads the entries of that group only, and cannot answer without it */
 	int			pinleaf[SIFT_GORD_PIN_MAX];	/* the same leaf more than once: an IN list, the group of any of the values */
 	int64		pinval[SIFT_GORD_PIN_MAX];

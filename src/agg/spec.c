@@ -428,7 +428,7 @@ pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *su
 
 /* a test of the leaf and a constant by a comparison or pattern function: leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%', '%part%' or '%suffix', ... */
 static bool
-str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out)
+str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool ranges)
 {
 	Node	   *a,
 			   *b;
@@ -454,9 +454,10 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out)
 		return false;
 	if (pattern && !pattern_test(funcid, &s, &len, &sop, &subst))
 		return false;
-	if (sop >= SSTR_LT && sop <= SSTR_GE ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
+	if (sop >= SSTR_LT && sop <= SSTR_GE && !ranges ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
 		return false;
 	out->op = sop;
+	out->collid = collid;
 	if (sop == SSTR_ICONTAINS)
 	{
 		const char **vals;
@@ -589,7 +590,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 }
 
 static bool
-str_expr_test(const SiftAggPred *p, SiftSrcStrTest *out)
+str_expr_test(const SiftAggPred *p, SiftSrcStrTest *out, bool ranges)
 {
 	Node	   *e = strip_relabel(p->expr);
 
@@ -598,15 +599,15 @@ str_expr_test(const SiftAggPred *p, SiftSrcStrTest *out)
 		OpExpr	   *op = (OpExpr *) e;
 
 		set_opfuncid(op);
-		return int4_holds(op->opfuncid, 0, 0) >= 0 ? strpos_test(op, out) : str_call_test(op->opfuncid, op->inputcollid, op->args, out);
+		return int4_holds(op->opfuncid, 0, 0) >= 0 ? strpos_test(op, out) : str_call_test(op->opfuncid, op->inputcollid, op->args, out, ranges);
 	}
 	if (IsA(e, FuncExpr))
-		return str_call_test(((FuncExpr *) e)->funcid, ((FuncExpr *) e)->inputcollid, ((FuncExpr *) e)->args, out);
+		return str_call_test(((FuncExpr *) e)->funcid, ((FuncExpr *) e)->inputcollid, ((FuncExpr *) e)->args, out, ranges);
 	return IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
 }
 
-bool
-sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
+static bool
+str_leaf_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out, bool ranges)
 {
 	const SiftSrcLeaf *lf;
 
@@ -617,7 +618,20 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 		return false;
 	out->leaf = p->leaf;
 	out->ints = NULL;
-	return str_expr_test(p, out);
+	return str_expr_test(p, out, ranges);
+}
+
+bool
+sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
+{
+	return str_leaf_test(p, lay, nbase, out, false);
+}
+
+/* ... and a test that bounds the strings of the leaf in the order of its collation (a comparison under any deterministic collation, a prefix where the bytes are that order): the ranks of an order array */
+bool
+sift_aggspec_text_bound(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
+{
+	return str_leaf_test(p, lay, nbase, out, true) && (out->op == SSTR_PREFIX ? sift_collate_is_c(out->collid) : (out->op == SSTR_EQ || (out->op >= SSTR_LT && out->op <= SSTR_GE)));
 }
 
 /* EXISTS element = a string, or in a set, of a list of text: the element leaf's test, for the units and rows that own such an element (a source prunes by it; the executor tests the elements) */
@@ -648,7 +662,7 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 	}
 	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !text_type(lf->typid))
 		return false;
-	return str_expr_test(t, out) && (out->op == SSTR_EQ || out->op == SSTR_IN);
+	return str_expr_test(t, out, false) && (out->op == SSTR_EQ || out->op == SSTR_IN);
 }
 
 static bool

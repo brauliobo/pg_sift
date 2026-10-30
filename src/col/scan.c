@@ -1928,6 +1928,7 @@ typedef struct ColGOrdMem
 	uint32		nvals;
 	int64	   *key;
 	uint64	   *tid;
+	uint32		collid;
 	uint32		nstr;			/* a text key: the key of an entry is the rank of its string among the nstr distinct ones, which are str[rank] (len[rank] bytes, in the batches of the buffers) */
 	const char **str;
 	uint32	   *len;
@@ -1947,12 +1948,8 @@ gord_text_cmp(const void *a, const void *b)
 {
 	const GOrdText *x = a,
 			   *y = b;
-	int			c = sift_cgord_strcmp != NULL ? sift_cgord_strcmp(x->s, x->len, y->s, y->len, gord_text_coll) : 0;
+	int			c = sift_cgord_str_order(x->s, x->len, y->s, y->len, gord_text_coll);
 
-	if (c == 0)
-		c = memcmp(x->s, y->s, Min(x->len, y->len));
-	if (c == 0)
-		c = SIFT_CMP3(x->len, y->len);
 	return c != 0 ? c : SIFT_CMP3(x->tid, y->tid);
 }
 
@@ -2034,6 +2031,7 @@ gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v
 		g->tid[i] = pv[i].tid;
 	}
 	g->nstr = nstr;
+	g->collid = collid;
 	for (uint32 i = 0; i < nn; i++)
 	{
 		g->key[nv + i] = 0;
@@ -2226,6 +2224,22 @@ sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len)
 		return sift_cseg_gorder_str(src->seg[j].seg, gorder_slot(src, j, col), (uint32) key, len);
 	*len = src->gmem[v]->len[key];
 	return src->gmem[v]->str[key];
+}
+
+uint32
+sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint32 len, bool after)
+{
+	int			v,
+				j = gorder_src(src, i, &v);
+	const ColGOrdMem *g = src->gmem[v];
+	uint32		lo = 0,
+				hi;
+
+	if (j < src->nseg)
+		return sift_cseg_gorder_strrank(src->seg[j].seg, gorder_slot(src, j, col), s, len, after);
+	hi = g->nstr;
+	SIFT_BISECT(uint32, mid, lo, hi, after ? sift_cgord_str_order(g->str[mid], g->len[mid], s, len, g->collid) <= 0 : sift_cgord_str_order(g->str[mid], g->len[mid], s, len, g->collid) < 0);
+	return lo;
 }
 
 bool

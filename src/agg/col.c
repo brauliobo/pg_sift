@@ -676,6 +676,12 @@ col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, co
 	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid);
 }
 
+static uint32
+col_gorder_strrank(void *impl, int i, int leaf, const char *s, uint32 len, bool after)
+{
+	return sift_col_gorder_strrank(((ColSource *) impl)->cs, i, leaf, s, len, after);
+}
+
 static const char *
 col_gorder_str(void *impl, int i, int leaf, int64 key, uint32 *len)
 {
@@ -894,6 +900,7 @@ static const SiftSrcProvider col_provider = {
 	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
 	.gorder_open = col_gorder_open,
+	.gorder_strrank = col_gorder_strrank,
 	.gorder_str = col_gorder_str,
 	.gorder_info = col_gorder_info,
 	.gorder_exact = col_gorder_exact,

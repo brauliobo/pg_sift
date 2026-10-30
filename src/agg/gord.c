@@ -272,9 +272,21 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 			continue;
 		c->buf = gbuf_get();
 		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
-		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
-		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
-		if ((g->bounded && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
+		if (g->bounded && collid != 0)
+		{
+			/* the ends are ranks of this source's strings, found by the order of the collation */
+			uint32		rlo = b->has_lo ? sift_colsrc_gorder_strrank(src, i, leaf, b->slo, b->slolen, b->slo_excl) : 0,
+						rhi = b->has_hi ? sift_colsrc_gorder_strrank(src, i, leaf, b->shi, b->shilen, !b->shi_excl) : PG_UINT32_MAX;
+
+			c->vs = b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, rlo, false, desc ? NULL : c->buf) : rvs;
+			c->ve = b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, rhi, false, desc ? c->buf : NULL) : rve;
+		}
+		else
+		{
+			c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
+			c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
+		}
+		if ((g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
 		{
 			gbuf_put(c->buf);
 			continue;
@@ -299,17 +311,6 @@ sift_gord_rewind(SiftGOrd *g)
 	g->last_set = false;
 }
 
-/* the order of the strings of a text key: the collation of the query, then the bytes (what the b-tree of the column does) */
-static pg_noinline int
-str_cmp(const SiftGOrd *g, const char *a, uint32 la, const char *b, uint32 lb)
-{
-	int			c = sift_cgord_strcmp != NULL ? sift_cgord_strcmp(a, la, b, lb, g->collid) : 0;
-
-	if (c == 0)
-		c = memcmp(a, b, Min(la, lb));
-	return c != 0 ? c : SIFT_CMP3(la, lb);
-}
-
 /* < 0: a comes before b in the scan */
 static pg_attribute_always_inline int
 cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b, bool text)
@@ -318,7 +319,7 @@ cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b, bool text)
 		return a->cls < b->cls ? -1 : 1;
 	if (text && a->cls == 1)
 	{
-		int			c = str_cmp(g, a->str, a->slen, b->str, b->slen);
+		int			c = sift_cgord_str_order(a->str, a->slen, b->str, b->slen, g->collid);
 
 		if (c != 0)
 			return (c < 0) != g->desc ? -1 : 1;

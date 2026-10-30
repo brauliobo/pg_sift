@@ -909,19 +909,26 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 
 /* a condition the array of the key answers as sift_topn_gorder tests it (topn_gpred, gcond_loose): comparisons of integer or time columns with constants, the columns other than the key only where the key or (at the top of the conjunction) the group is pinned by an equality */
 static bool
-topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top)
+topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top, Oid collid)
 {
 	if (p->kind == SAP_AND || p->kind == SAP_OR)
 	{
 		for (int i = 0; p->kind == SAP_AND && i < p->nchild && !pinned; i++)
 			pinned = p->child[i]->kind == SAP_CMP && p->child[i]->leaf == key && p->child[i]->op == SCMP_EQ;
 		for (int i = 0; i < p->nchild; i++)
-			if (!topn_array_pred(c, p->child[i], key, group, pinned, top && p->kind == SAP_AND))
+			if (!topn_array_pred(c, p->child[i], key, group, pinned, top && p->kind == SAP_AND, collid))
 				return false;
 		return true;
 	}
 	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0)
 		return p->leaf == key || pinned;
+	/* a text key: its strings against a constant, under the collation the array ranks by (a string bound is found in the strings of each segment: sift_gord_open) */
+	if (p->kind == SAP_LUT)
+	{
+		SiftSrcStrTest st = {0};
+
+		return p->leaf == key && sift_aggspec_text_bound(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && st.collid == collid;
+	}
 	/* the IN list of the group (as many elements as one scan reads at once: sift_topn_gorder, SIFT_GORD_PIN_MAX), tested by the heap row as the equalities are */
 	if (p->kind == SAP_IN && p->op == 0 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0 &&
 		sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
@@ -938,6 +945,8 @@ topn_array_bounded(const SiftAggPred *p, int key)
 {
 	if (p->kind == SAP_NULL)
 		return p->leaf == key && p->op == 1;
+	if (p->kind == SAP_LUT)
+		return p->leaf == key;
 	if (p->kind == SAP_CMP)
 		return p->leaf == key && p->op != SCMP_NE;
 	for (int i = 0; i < p->nchild; i++)
@@ -967,7 +976,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
 
 		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID &&
-									   !(j == 0 && nkey == 1 && s->npred == 0 && (typ == TEXTOID || typ == VARCHAROID))))
+									   !(j == 0 && nkey == 1 && (typ == TEXTOID || typ == VARCHAROID))))
 			return false;
 	}
 	/* the strings of a text array are ranked by the collation of the column: a query that sorts by another reads the units; any other key has no collation */
@@ -979,7 +988,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 	{
 		const SiftAggPred *p = s->pred[i];
 
-		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true))
+		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true, collid))
 			return false;
 		bounded |= topn_array_bounded(p, leaf[0]);
 		group_pinned |= (p->kind == SAP_CMP && p->op == SCMP_EQ && p->leaf == gl) || (p->kind == SAP_IN && p->op == 0 && p->leaf == gl);

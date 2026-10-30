@@ -556,6 +556,12 @@ leaf_var_attno(const SiftSrcLayout *lay, int leaf)
 }
 
 int
+sift_topn_text_attno(const SiftSrcLayout *lay, int leaf)
+{
+	return lay->leaf[leaf].typid == TEXTOID || lay->leaf[leaf].typid == VARCHAROID ? leaf_var_attno(lay, leaf) : 0;
+}
+
+int
 sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 {
 	switch (lay->leaf[leaf].typid)
@@ -3778,6 +3784,8 @@ gcond_box(const SiftTopGPred *p)
 {
 	GBox		r = {false, false, false, 0, 0};
 
+	if (p->kind == STG_STR)
+		return r;
 	/* a value is not NULL: the entries of the values, whatever the key (those of the NULLs come after them) */
 	if (p->kind == STG_NOTNULL)
 	{
@@ -3846,6 +3854,160 @@ gcond_box(const SiftTopGPred *p)
 	return r;
 }
 
+/* The range of the strings of a text key that a condition keeps (the ends that it bounds); the order is the collation's, then the bytes */
+typedef struct SBox
+{
+	bool		has_lo;
+	bool		has_hi;
+	bool		lo_excl;
+	bool		hi_excl;
+	const char *lo;
+	const char *hi;
+	uint32		lolen;
+	uint32		hilen;
+} SBox;
+
+/* the least string after every string that starts with s, in the order of the bytes (the C collation); NULL when there is none (no byte left to carry into) */
+static char *
+prefix_end(const char *s, uint32 len, uint32 *olen)
+{
+	char	   *e;
+
+	while (len > 0 && (uint8) s[len - 1] == 0xFF)
+		len--;
+	if (len == 0)
+		return NULL;
+	e = palloc(len);
+	memcpy(e, s, len);
+	e[len - 1]++;
+	*olen = len;
+	return e;
+}
+
+static SBox
+gcond_sbox(const SiftTopGPred *p, Oid collid)
+{
+	SBox		r = {0};
+
+	if (p->kind == STG_STR)
+	{
+		switch (p->sop)
+		{
+			case SSTR_EQ:
+				r.has_lo = r.has_hi = true;
+				r.lo = r.hi = p->str;
+				r.lolen = r.hilen = p->slen;
+				break;
+			case SSTR_LT:
+			case SSTR_LE:
+				r.has_hi = true;
+				r.hi = p->str;
+				r.hilen = p->slen;
+				r.hi_excl = p->sop == SSTR_LT;
+				break;
+			case SSTR_GT:
+			case SSTR_GE:
+				r.has_lo = true;
+				r.lo = p->str;
+				r.lolen = p->slen;
+				r.lo_excl = p->sop == SSTR_GT;
+				break;
+			case SSTR_PREFIX:
+				r.has_lo = true;
+				r.lo = p->str;
+				r.lolen = p->slen;
+				r.hi = prefix_end(p->str, p->slen, &r.hilen);
+				r.has_hi = r.hi != NULL;
+				r.hi_excl = true;
+				break;
+		}
+		return r;
+	}
+	if (p->kind == STG_CMP || p->kind == STG_NOTNULL)
+		return r;
+	r = gcond_sbox(p->child[0], collid);
+	for (int i = 1; i < p->nchild; i++)
+	{
+		SBox		c = gcond_sbox(p->child[i], collid);
+		int			d;
+
+		if (p->kind == STG_AND)
+		{
+			if (c.has_lo)
+			{
+				d = r.has_lo ? sift_cgord_str_order(c.lo, c.lolen, r.lo, r.lolen, collid) : 1;
+				if (d > 0 || (d == 0 && c.lo_excl))
+					r.has_lo = true, r.lo = c.lo, r.lolen = c.lolen, r.lo_excl = c.lo_excl;
+			}
+			if (c.has_hi)
+			{
+				d = r.has_hi ? sift_cgord_str_order(c.hi, c.hilen, r.hi, r.hilen, collid) : -1;
+				if (d < 0 || (d == 0 && c.hi_excl))
+					r.has_hi = true, r.hi = c.hi, r.hilen = c.hilen, r.hi_excl = c.hi_excl;
+			}
+		}
+		else
+		{
+			if (r.has_lo && c.has_lo)
+			{
+				d = sift_cgord_str_order(c.lo, c.lolen, r.lo, r.lolen, collid);
+				if (d < 0 || (d == 0 && r.lo_excl))
+					r.lo = c.lo, r.lolen = c.lolen, r.lo_excl = c.lo_excl;
+			}
+			else
+				r.has_lo = false;
+			if (r.has_hi && c.has_hi)
+			{
+				d = sift_cgord_str_order(c.hi, c.hilen, r.hi, r.hilen, collid);
+				if (d > 0 || (d == 0 && r.hi_excl))
+					r.hi = c.hi, r.hilen = c.hilen, r.hi_excl = c.hi_excl;
+			}
+			else
+				r.has_hi = false;
+		}
+	}
+	return r;
+}
+
+/* is every condition on a text string one that compares under the collation the array ranks by */
+static bool
+gcond_coll_ok(const SiftTopGPred *p, Oid collid)
+{
+	if (p->kind == STG_STR)
+		return p->collid == collid;
+	for (int i = 0; i < p->nchild; i++)
+		if (!gcond_coll_ok(p->child[i], collid))
+			return false;
+	return true;
+}
+
+/* does the heap string pass: the collation, then the bytes, as the b-tree of the column compares */
+static bool
+gcond_str_test(const SiftTopGPred *p, Datum d)
+{
+	struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+	const char *s = VARDATA_ANY(v);
+	uint32		len = VARSIZE_ANY_EXHDR(v);
+	int			c;
+
+	if (p->sop == SSTR_PREFIX)
+		return len >= p->slen && memcmp(s, p->str, p->slen) == 0;
+	c = sift_cgord_str_order(s, len, p->str, p->slen, p->collid);
+	switch (p->sop)
+	{
+		case SSTR_EQ:
+			return c == 0;
+		case SSTR_LT:
+			return c < 0;
+		case SSTR_LE:
+			return c <= 0;
+		case SSTR_GT:
+			return c > 0;
+		default:
+			return c >= 0;
+	}
+}
+
 /* The conditions of the scan on the first key as the range of it that they keep, which a sorted run is read within (only integer and time columns make a condition: sift_topn_leaf_attno) */
 void
 sift_topn_key_range(SiftTopN *t, const SiftTopGPred *cond)
@@ -3865,14 +4027,14 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 		(void) slot_getattr(slot, p->attno, &isnull);
 		return !isnull;
 	}
-	if (p->kind == STG_CMP)
+	if (p->kind == STG_CMP || p->kind == STG_STR)
 	{
 		bool		isnull;
 		Datum		d = slot_getattr(slot, p->attno, &isnull);
 
 		if (isnull)
 			return false;
-		return gcond_cmp(p->op, heap_key(p->typid, d), p->val);
+		return p->kind == STG_STR ? gcond_str_test(p, d) : gcond_cmp(p->op, heap_key(p->typid, d), p->val);
 	}
 	for (int i = 0; i < p->nchild; i++)
 		if (gcond_test(p->child[i], slot) == (p->kind == STG_OR))
@@ -3891,6 +4053,8 @@ gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
 
 	if (p->kind == STG_NOTNULL)
 		return p->lead ? !isnull : -1;
+	if (p->kind == STG_STR)
+		return -1;				/* the string is the heap row's: the entry holds a rank */
 	if (p->kind == STG_CMP)
 	{
 		if (p->lead)
@@ -4037,6 +4201,8 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 
 	if (p->kind == STG_NOTNULL)
 		return p->lead || p->pinned ? 0 : 1;
+	if (p->kind == STG_STR)
+		return p->lead ? 0 : 1;
 	if (p->kind == STG_CMP)
 		return p->lead || p->pinned || (top && p->op == SCMP_EQ && p->leaf == gl) ? 0 : 1;
 	if (top && gcond_group_in(p, gl))
@@ -4145,10 +4311,21 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	int			gl;
 
 	/* past the cap of the heap only a walk that throws the OFFSET away unread gives the rows */
-	if (!t->gok || t->nogord || (t->all && (t->skip == 0 || t->nkey > 1 || t->gwant == 0)) || (t->gtext && cond != NULL))
+	if (!t->gok || t->nogord || (t->all && (t->skip == 0 || t->nkey > 1 || t->gwant == 0)))
 		return false;
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (cond != NULL)
+	if (cond != NULL && t->gtext)
+	{
+		SBox		box;
+
+		if (!gcond_coll_ok(cond, t->key[0].collid))
+			return false;
+		box = gcond_sbox(cond, t->key[0].collid);
+		b.has_lo = box.has_lo, b.has_hi = box.has_hi, b.slo = box.lo, b.slolen = box.lolen, b.slo_excl = box.lo_excl;
+		b.shi = box.hi, b.shilen = box.hilen, b.shi_excl = box.hi_excl;
+		bounds = box.has_lo || box.has_hi;
+	}
+	else if (cond != NULL)
 	{
 		GBox		box = gcond_box(cond);
 

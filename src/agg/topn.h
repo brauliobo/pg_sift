@@ -108,7 +108,8 @@ typedef enum SiftTopGKind
 	STG_AND,
 	STG_OR,
 	STG_CMP,
-	STG_NOTNULL					/* the column is not NULL (op, val unused) */
+	STG_NOTNULL,				/* the column is not NULL (op, val unused) */
+	STG_STR						/* the first sort key, a text column, against a constant string: sop, str, collid (op, val unused) */
 } SiftTopGKind;
 
 typedef struct SiftTopGPred
@@ -121,6 +122,10 @@ typedef struct SiftTopGPred
 	int			attno;			/* STG_CMP: the heap column and its type */
 	Oid			typid;
 	int64		val;
+	int			sop;			/* STG_STR: SiftSrcStrOp (EQ, LT, LE, GT, GE or PREFIX) */
+	const char *str;
+	uint32		slen;
+	Oid			collid;			/* ... and the collation it compares under */
 	int			nchild;
 	struct SiftTopGPred **child;
 } SiftTopGPred;
@@ -135,6 +140,8 @@ extern bool sift_topn_gordered(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 /* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
 extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
+/* ... and of a text or varchar one, which the global order of a text key orders */
+extern int	sift_topn_text_attno(const SiftSrcLayout *lay, int leaf);
 extern bool sift_topn_same_scale(Oid a, Oid b);
 
 /*

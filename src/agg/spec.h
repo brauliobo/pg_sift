@@ -780,6 +780,7 @@ extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */
 extern bool sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
+extern bool sift_aggspec_text_bound(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 
 /* Whether the collation lowers A-Z to a-z in a UTF-8 database: ILIKE and ~* of an ASCII part compare the ASCII letters in lower case then */
 extern bool sift_aggspec_ascii_fold(Oid collid);
