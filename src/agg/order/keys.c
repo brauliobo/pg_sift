@@ -17,6 +17,7 @@
 #include "optimizer/tlist.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/typcache.h"
 #include "utils/ruleutils.h"
 #include "utils/syscache.h"
 #include "access/htup_details.h"
