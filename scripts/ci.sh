@@ -255,6 +255,7 @@ if [[ $MODE == --selftest ]]; then
 	bad=0
 	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD SIFT_CI_DEEP   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
 	# plan_of MODE PG [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
+	ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT   # everything the selftest makes is under it
 	declare -A PLANS INSTALLS
 	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -qvE '^\s*#|echo' && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
 	before=" $(descendants $$ | tr '\n' ' ')"
@@ -290,14 +291,13 @@ if [[ $MODE == --selftest ]]; then
 	miss=$(areas_invalid; (( ! ${#unmatched[@]} )) || areas_regex "${unmatched[@]}" 2>&1 >/dev/null)   # a file in no row is named by areas_regex
 	[[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
 	# the table of rows that areas_invalid must flag (a path, a jobs expression) and the ones it must not (a group, a capture)
-	t=$(mktemp)
+	t=$ST/areas.tsv
 	printf '=g\tinstallcheck-a\nsrc/x/(.*)\t{g}|\\1\nsrc/(\t.\nsrc/y\t(\nsrc/z\t-\nsrc/w\tfast:{g}\n' >"$t"
 	areas_load "$t"
 	[[ $(areas_invalid | grep -c 'invalid ERE') == 2 ]] || { echo "FAIL: areas_invalid does not flag exactly the two invalid rows: $(areas_invalid)"; bad=1; }
 	printf 'src/x/.*\t.\nsrc/y\t-\n' >"$t"
 	areas_load "$t"
 	[[ $(areas_unmatched src/x/a src/y other) == other ]] || { echo "FAIL: areas_unmatched does not name the one file no row matches"; bad=1; }
-	rm -f "$t"
 	areas_load "$REPO/scripts/areas.tsv"
 	grouped=$(printf '(%s)|' "${GROUP[@]}")
 	for m in quick full; do
@@ -436,6 +436,10 @@ if [[ $MODE == --selftest ]]; then
 	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
 		! grep -qE "$b4" "$REPO/$f" || grep -q 'needs bash 4+' "$REPO/$f" || { echo "FAIL: $f uses bash 4 and lacks the first-line check of scripts/ci.sh"; bad=1; }
 	done
+	# a script that makes a temporary file or directory removes it on the way out, also when it is stopped (8,552 entries of /tmp/tmp.* were left by lint and ci helpers)
+	for f in $(git -C "$REPO" ls-files 'scripts/*.sh'); do
+		! grep -qE '^[^#]*\bmktemp\b' "$REPO/$f" || grep -qE '^[^#]*\btrap .*\b(EXIT|RETURN)\b' "$REPO/$f" || { echo "FAIL: $f calls mktemp and sets no EXIT trap that removes it"; bad=1; }
+	done
 	# the checksum tool of macOS is BSD's (`-c --quiet` needs a file operand) and older releases have none: scripts/sha256.sh is the one caller (the pattern is split so that this line is not a match)
 	h='sha256''sum|md5''sum'
 	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
@@ -467,10 +471,9 @@ if [[ $MODE == --selftest ]]; then
 	out=$(bash -c "${first//>= 4/>= 99}" 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
 	[[ $out == *'needs bash 4+'* ]] || { echo "FAIL: ci.sh does not say it needs bash 4+: $out"; bad=1; }
 	# a copy outside a checkout and a run that has started itself too many times stop before they start anything
-	t=$(mktemp); cp "$0" "$t"
+	t=$ST/copy.sh; cp "$0" "$t"
 	out=$(env -u SIFT_CI_TMP bash "$t" quick 2>&1) && { echo "FAIL: a copy of ci.sh outside a checkout exits 0"; bad=1; }
 	[[ $out == *'from the scripts/ of a checkout'* ]] || { echo "FAIL: a copy of ci.sh outside a checkout does not stop with a message: $out"; bad=1; }
-	rm -f "$t"
 	out=$(SIFT_CI_DEPTH=8 "$0" --plan quick 2>&1) && { echo "FAIL: ci.sh exits 0 when it has started itself 8 levels deep"; bad=1; }
 	[[ $out == *'levels deep'* ]] || { echo "FAIL: ci.sh does not stop at a depth of 9: $out"; bad=1; }
 	# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
@@ -481,7 +484,7 @@ if [[ $MODE == --selftest ]]; then
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 	done
 	# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
-	t=$(mktemp -d); ( exit 0 ) & dead=$!; wait "$dead"
+	t=$ST/reaper; mkdir "$t"; ( exit 0 ) & dead=$!; wait "$dead"
 	mkdir -p "$t/sift-ci-$dead/lane1/data" "$t/sift-ci-$$/lane1" "$t/sift-ci-1$dead" "$t/sift-ci-1$dead/data"
 	touch "$t/sift-ci-1$dead/kept"
 	( exec -a postgres sleep 60 ) & pm=$!
@@ -491,7 +494,6 @@ if [[ $MODE == --selftest ]]; then
 	{ wait "$pm"; } 2>/dev/null   # the postmaster is a child of this shell: a stopped one is a zombie until it is waited for
 	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
 	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
-	rm -rf "$t"
 	# the process count is back to where it started: nothing a check began is left running
 	leaked=$(for p in $(descendants $$); do [[ $p == "$BASHPID" || $before == *" $p "* ]] || ps -o pid=,args= -p "$p" 2>/dev/null; done)
 	[[ -z $leaked ]] || { echo "FAIL: processes left running by the checks: $leaked"; bad=1; }

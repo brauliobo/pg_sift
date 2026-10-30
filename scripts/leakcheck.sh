@@ -215,7 +215,7 @@ leak_growth() {
 
 leak_selftest() {
 	local d rc=0 rule re sample
-	d=$(mktemp -d)
+	d=$(mktemp -d); trap "rm -rf '$d'; trap - RETURN" RETURN
 	printf '%s\n' '2026-10-16 12:00:00.000 UTC [1] LOG:  database system is ready to accept connections' \
 		'2026-10-16 12:00:01.000 UTC [1] LOG:  background worker "logical replication launcher" (PID 7) exited with exit code 1' \
 		'2026-10-16 12:00:02.000 UTC [9] ERROR:  duplicate key value violates unique constraint "t_pkey"' >"$d/postgres.log"

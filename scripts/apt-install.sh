@@ -66,7 +66,7 @@ apt_selftest() {
 	[[ $(uname) == Linux ]] || { echo "apt-install selftest: skipped (not Linux)"; return 0; }
 	local d out bad=0 self
 	self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
-	d=$(mktemp -d)
+	d=$(mktemp -d); trap "rm -rf '$d'; trap - RETURN" RETURN
 	mkdir "$d/bin"
 	printf '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n' >"$d/bin/sudo"
 	printf '#!/bin/sh\necho "dpkg $*" >>"$LOG"\n' >"$d/bin/dpkg"
