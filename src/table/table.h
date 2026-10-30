@@ -11,7 +11,7 @@
  *   table/analyze.c ANALYZE sampling, index build
  *   table/vacuum.c  VACUUM, promotion, rewrites
  *   table/seg.c     the column groups: the layout of a table, datum <-> leaf values, the engine glue
- *   table/gscan.c   the group scan: rows of the column groups in order, a vblock, TID fetches
+ *   table/gscan.c   the group scan: rows of the column groups in order (gscan_row.c: their values; gscan_cache.c: a vblock, TID fetches)
  *   table/vers.c    versions of the rows of the groups with unfrozen rows
  *   table/feed.c    what the groups give the aggregate scan: schemas, write buffer batches, path statistics
  *   table/promote.c promotion of the sealed write buffers into column segments
