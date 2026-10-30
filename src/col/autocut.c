@@ -444,7 +444,7 @@ pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nlea
 			continue;
 		for (uint32 i = 0; i < n; i++)
 			tmp[i] = tr[t].nl[rows[i]] ? PG_INT64_MIN : tr[t].v[rows[i]];
-		qsort(tmp, n, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(tmp, n);
 		for (uint32 i = 0; i < n; i++)
 			groups += i == 0 || tmp[i] != tmp[i - 1];
 		if (groups <= AUTOCUT_PAGG_GROUPS)
@@ -503,9 +503,10 @@ cut_units(const Track *k0, const uint32 *sel, uint32 nsel, uint32 unit, double s
  * holds. The row directory is encoded as enc.c writes it: a unit of the cut holds the rows of the whole heap in a range of the key and lists their addresses,
  * and the sample holds a share of the heap, so a unit is the sampled rows in the range, n / nsb of them. When that is fewer than AUTOCUT_DIR_ROWS, the unit is
  * that many rows and the gaps between its blocks, then smaller than the whole heap gives, are widened by the bits of the difference.
+ * units: also the headers and the pre-aggregates of the units, which the value returned then holds; plain, when given, receives the bytes without them from the same pass.
  */
 static double
-layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key, int key2, bool units, double nsb, double heap_pages, double rows_per_unit)
+layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key, int key2, bool units, double *plain, double nsb, double heap_pages, double rows_per_unit)
 {
 	const Track *order[2] = {key >= 0 ? &tr[key] : NULL, key2 >= 0 ? &tr[key2] : NULL};
 	StringInfoData buf;
@@ -595,6 +596,8 @@ layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key, int 
 				bytes += (1 + tr[t].image) * b;
 			}
 	}
+	if (plain != NULL)
+		*plain = bytes / Max(nsel, 1) + AUTOCUT_OVERHEAD_BYTES;
 	/* the pre-aggregates and the header of the units: the units of a cut are a share of a unit of the table, so their constants are that share too */
 	if (units)
 		bytes += AUTOCUT_UNIT_BYTES * (key < 0 ? nused : ncut * Min(1.0, (double) unit / rows_per_unit));
@@ -681,7 +684,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	double		nsb = ceil((double) nblocks / SIFT_SB_PAGES),
 				rows_per_unit,
 				def_row = 0,
-				kc_row = 0;
+				kc_row = 0,
+				kc_units = 0;
 	double		reads[AUTOCUT_LEAVES],
 				fills[AUTOCUT_LEAVES];
 	bool		blocked[AUTOCUT_LEAVES] = {false},
@@ -844,7 +848,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	}
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
-	def_row = layout_bytes(tr, ntr, ntr + untracked, samp, -1, -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes;
+	def_row = layout_bytes(tr, ntr, ntr + untracked, samp, -1, -1, false, NULL, nsb, nblocks, rows_per_unit) + untracked_bytes;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
 	for (int pass = 0; pass < 2; pass++)
 		for (int t = 0; t < ntr; t++)
@@ -914,7 +918,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		for (int i = first_open; i < nfire; i++)
 			if (!blocked[i] && tr[fire[i]].time)
 			{
-				double		g = 100.0 * (layout_bytes(tr, ntr, ntr + untracked, samp, fire[i], -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes - def_row) / def_row;
+				double		g = 100.0 * (layout_bytes(tr, ntr, ntr + untracked, samp, fire[i], -1, false, NULL, nsb, nblocks, rows_per_unit) + untracked_bytes - def_row) / def_row;
 
 				if (cut_benefit(cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0) + AUTOCUT_QUICK_SLACK < cut_cost(g, ntr + untracked))
 				{
@@ -944,7 +948,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 
 		if (blocked[i])
 			continue;
-		kc_row = layout_bytes(tr, ntr, ntr + untracked, samp, pick, -1, false, nsb, nblocks, rows_per_unit) + untracked_bytes;
+		/* the cut by the key alone, with and without the units, from one pass over the sample */
+		kc_units = layout_bytes(tr, ntr, ntr + untracked, samp, pick, -1, !tr[pick].time, &kc_row, nsb, nblocks, rows_per_unit);
+		kc_row += untracked_bytes;
 		/*
 		 * The rows of a key are sorted by the first date or timestamp leaf, scattered over the table like every other leaf (or the cut would be blocked): a key
 		 * with more rows than a unit is split by date, and a window of dates skips the units outside it. Taken when the sample predicts an index not larger by more than AUTOCUT_SECOND_SLACK, the units of 4,096 rows of a key of 8,192 rows or more counted (layout_bytes).
@@ -953,12 +959,10 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		if (!tr[pick].time)
 		{
 			/* the units of a key cut by a second leaf are counted, with their pre-aggregates, against the cut by the key alone: what the two have in common cancels */
-			double		kc_units = layout_bytes(tr, ntr, ntr + untracked, samp, pick, -1, true, nsb, nblocks, rows_per_unit);
-
 			for (int t = 0; t < ntr && sec < 0; t++)
 				if (t != pick && (time_type(tr[t].type) || (tr[t].shape != NULL && tr[t].lane == 1)))
 				{
-					double		delta = layout_bytes(tr, ntr, ntr + untracked, samp, pick, t, true, nsb, nblocks, rows_per_unit) - kc_units;
+					double		delta = layout_bytes(tr, ntr, ntr + untracked, samp, pick, t, true, NULL, nsb, nblocks, rows_per_unit) - kc_units;
 
 					if (delta <= kc_row * AUTOCUT_SECOND_SLACK / 100.0)
 					{
