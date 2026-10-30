@@ -215,6 +215,7 @@ typedef struct SiftTblRel
 	int64		defrag_free;
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
+	TransactionId settle_horizon;	/* the oldest xmin when this backend last asked for the settling of closed write buffers: they wait for it to move */
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */

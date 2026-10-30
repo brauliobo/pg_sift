@@ -1796,7 +1796,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **What it does:** the writer asks a worker to promote a closed buffer, taking the 25 ms pass out of its statement
 - **Gain:** statements that close a buffer 25-31 ms to at most 2.8 ms; median 65 us, p99 190 us, p99.9 0.6 ms unchanged (single-row INSERTs, 100,000 rows)
 - **Impact:** index size: -; build, merge and writes: 4 clients of single-row INSERT: tps and p99 equal within noise; other: off by default: 4 clients of single-row INSERT, tps and p99 equal within noise
-- **When:** Writers of a sift_table that close a write buffer: a worker promotes it instead of the statement. Needs sift.async_maintenance and table_inline_promote; from half of the directory on the writer promotes itself.
+- **When:** Writers of a sift_table that close a write buffer: a worker promotes it instead of the statement. Needs sift.async_maintenance and table_inline_promote; from half of the directory on the writer promotes itself. A closed buffer whose rows belong to an open transaction is left; a reader or deleter (with sift.table_auto_defrag) asks again once the oldest xmin has moved, so it is promoted after the commit although no other buffer closes.
 - **Default:** off — off: the statements that close a buffer drop from 25-31 ms to at most 2.8 ms, but the median, p99 and tps are equal within noise (single-row INSERTs, 4 clients): the speedup of the relevant class is under 1.05.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** Already off. SET sift.table_async_promote = on to use it; off or RESET returns the writer promoting itself. Session or role setting; pair with the worker settings.

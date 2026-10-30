@@ -714,6 +714,19 @@ dead_wanted(Relation rel, SiftTblRel *st, uint64 tombs, uint64 seen)
 	return dead_over(st, tombs) && tombs >= seen && (tombs - seen) * 200 >= column_rows(st) * sift_tbl_auto_defrag_dead_pct;
 }
 
+/*
+ * Closed write buffers are waiting and the oldest xmin moved since they were asked for: a worker that found rows of a transaction still open left
+ * without them, and nobody asks again until another buffer closes, which a table that is read, or written in small transactions, may not do for long
+ */
+static bool
+settle_due(Relation rel, SiftTblRel *st)
+{
+	for (int i = 0; i < st->dir.nsegs; i++)
+		if (st->dir.segs[i].kind == SIFT_SEG_WBUF_SEALED && (st->dir.segs[i].flags & SIFT_TBL_SEG_WBUF))
+			return st->settle_horizon != GetOldestNonRemovableTransactionId(rel);
+	return false;
+}
+
 static void
 auto_defrag_check(Relation rel, SiftTblRel *st)
 {
@@ -750,7 +763,11 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
+	{
+		if (settle_due(rel, st))
+			(void) sift_tbl_settle_async(rel, st);
 		return;
+	}
 	if (sift_maint_request_worker(rel, "sift_tbl_maint_worker_main"))
 	{
 		st->defrag_tombs = tombs;
@@ -944,7 +961,8 @@ sift_tbl_settle_async(Relation rel, SiftTblRel *st)
 	/* under pressure the writer settles itself: it never depends on the worker to stay inside the directory */
 	if (!sift_tbl_async_promote || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
 		return false;
-	(void) sift_maint_request_worker(rel, "sift_tbl_settle_worker_main");
+	if (sift_maint_request_worker(rel, "sift_tbl_settle_worker_main"))
+		st->settle_horizon = GetOldestNonRemovableTransactionId(rel);
 	return true;
 }
 
