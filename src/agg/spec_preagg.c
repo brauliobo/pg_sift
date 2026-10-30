@@ -748,7 +748,7 @@ static bool
 rows_zone_bound(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftAggPaShape *shape)
 {
 	foreach_ptr(SiftAggPred, p, zone_conjs(s, lay, nbase, shape->nullz))
-		if (sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->dim)
+		if (sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->dim && sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->hdim)
 			return true;
 	return false;
 }
