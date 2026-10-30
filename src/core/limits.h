@@ -29,9 +29,9 @@
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
 	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
-	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part.c", 1048576, "combinations", \
+	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part/prune.c", 1048576, "combinations", \
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
-	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part.c", 20000, "tests", \
+	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
 	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan/finish.c", 32, "times hash memory", \
 	  "estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
