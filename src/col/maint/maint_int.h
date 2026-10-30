@@ -87,7 +87,6 @@ extern bool	maint_vacuum_truncates(Relation index);
 
 extern bool	maint_space_deferred(Relation index);
 
-extern uint64	maint_compact_segment(Relation index, uint64 gen);
 
 extern XLogRecPtr	maint_header_lsn(Relation index, const SiftSegEntry *e);
 

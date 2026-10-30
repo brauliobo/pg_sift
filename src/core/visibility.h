@@ -68,6 +68,7 @@ extern PGDLLIMPORT int sift_test_vis_jitter_us;
 /* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables */
 extern PGDLLIMPORT bool sift_test_count_gate;
 extern PGDLLIMPORT bool sift_test_cleanup_gate;
+extern PGDLLIMPORT bool sift_test_shrink_gate;
 extern void sift_test_wait(int key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
 #else

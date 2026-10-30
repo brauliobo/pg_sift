@@ -113,11 +113,13 @@ pick_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 
 		if (e->nblocks < p->min || !reusable(p->index, e->safexid, &p->horizon))
 			continue;
-		if (space_exclusive && BlockNumberIsValid(space_limit))
+		if (BlockNumberIsValid(space_limit))
 		{
-			/* Exact relocation reservations: the lowest eligible run below the planned end. */
+			/* Relocation reservations: the lowest eligible run below the planned end. */
 			better = space_fits(e, p->min, space_limit) && (p->idx < 0 || e->start < p->start);
 		}
+		else if (e->nblocks >= p->want)
+			better = p->nblocks < p->want || e->start < p->start;
 		else
 			better = p->nblocks < p->want && e->nblocks > p->nblocks;
 		if (better)
@@ -129,12 +131,13 @@ pick_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 			p->safexid = e->safexid;
 		}
 	}
-	return space_exclusive || p->nblocks < p->want;
+	return true;
 }
 
 /*
- * Takes up to want contiguous blocks (at least min): the first reusable
- * free-list record holding want, else the largest holding min, else extends
+ * Takes up to want contiguous blocks (at least min): the lowest reusable
+ * free-list record holding want (the file fills from its start, and the end
+ * stays free for the cut), else the largest holding min, else extends
  * by want. metabuf is locked exclusively, which also guards the free list.
  */
 BlockNumber
@@ -149,6 +152,34 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid) && !space_exclusive)
 		log_reuse(index, p.blk, p.safexid);
 	return p.idx >= 0 ? take_free(index, p.blk, p.idx, *got) : extend(index, metabuf, want);
+}
+
+/*
+ * The lowest reusable run that starts below limit (up to want blocks, at least min, none past limit), InvalidBlockNumber when none: the allocation of the
+ * online shrink, which moves what lies above the limit into the holes below it and gives up, instead of extending the file, when they are gone
+ */
+BlockNumber
+alloc_blocks_below(Relation index, Buffer metabuf, uint32 want, uint32 min, BlockNumber limit, uint32 *got)
+{
+	FreePick	p = {index, want, min, InvalidBlockNumber, -1, 0, 0, InvalidFullTransactionId, InvalidFullTransactionId};
+
+	Assert(!BlockNumberIsValid(space_limit));
+	space_limit = limit;
+	PG_TRY();
+	{
+		sift_freelist_walk(index, metabuf, pick_free, &p);
+	}
+	PG_FINALLY();
+	{
+		space_limit = InvalidBlockNumber;
+	}
+	PG_END_TRY();
+	if (p.idx < 0)
+		return InvalidBlockNumber;
+	*got = Min(want, Min(p.nblocks, limit - p.start));
+	if (FullTransactionIdIsValid(p.safexid) && !space_exclusive)
+		log_reuse(index, p.blk, p.safexid);
+	return take_free(index, p.blk, p.idx, *got);
 }
 
 /* Under the metapage lock, so the orphan sweep never sees them uninitialized */

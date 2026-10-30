@@ -217,6 +217,18 @@ extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftS
 extern uint64 sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, uint64 budget, SiftSegEntry *fresh,
 							   SiftExtent **release, int *nrelease);
 
+/* The online shrink: moves what an immutable segment holds above keep, up to budget, into the reusable free runs below it (no exclusive lock, the allocator asked run by run); the header page is written again below as well. Zero if nothing moved. Publish the entry and the released runs together with sift_wt_publish. */
+extern uint64 sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, BlockNumber keep, uint64 budget, SiftSegEntry *fresh,
+								SiftExtent **release, int *nrelease);
+
+/*
+ * One call for every run of blocks the directory and the free list account for, in the order of the walk: what it is ("segment extent", "segment header",
+ * "liveness run", "write buffer header", "write buffer page", "free extent", "free list page", "metapage and directory"), the generation of its segment (0 for none),
+ * the first block, the blocks, and for a free extent whether the horizon still holds it (a snapshot may read it: it is not reusable yet)
+ */
+typedef void (*SiftExtentVisit) (void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending);
+extern void sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg);
+
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
 extern uint64 sift_store_held_blocks(Relation index);
@@ -457,6 +469,8 @@ extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
  */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
+/* The lowest reusable run below limit (up to want blocks, at least min), InvalidBlockNumber when none: a SHARED target only, the file is never extended */
+extern BlockNumber sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got);
 extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
 
 /*

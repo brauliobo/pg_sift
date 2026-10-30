@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/relation.h"
+#include "common/int.h"
 #include "funcapi.h"
 #include "utils/timestamp.h"
 #include "core/ops.h"
@@ -168,6 +169,134 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	v[13] = CStringGetTextDatum(sift_simd_level_name(sift_cpu.active));
 	v[14] = Int64GetDatum(pagg_bytes);
 	v[15] = Int64GetDatum(pagg_units);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift.col_extents: the runs the map walk reports, kept to be sorted by their first block */
+typedef struct ExtentRow
+{
+	const char *what;
+	uint64		gen;
+	BlockNumber start;
+	uint64		nblocks;
+	bool		pending;
+} ExtentRow;
+
+typedef struct ExtentRows
+{
+	ExtentRow  *row;
+	int			n;
+	int			max;
+} ExtentRows;
+
+static void
+collect_extent(void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending)
+{
+	ExtentRows *r = arg;
+
+	if (r->n == r->max)
+		r->row = repalloc(r->row, (r->max *= 2) * sizeof(ExtentRow));
+	r->row[r->n++] = (ExtentRow) {what, gen, start, nblocks, pending};
+}
+
+static int
+cmp_extent_start(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const ExtentRow *) a)->start, ((const ExtentRow *) b)->start);
+}
+
+Datum
+sift_col_extents(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	ExtentRows	rows = {palloc(256 * sizeof(ExtentRow)), 0, 256};
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_store_extent_map(index, collect_extent, &rows);
+	qsort(rows.row, rows.n, sizeof(ExtentRow), cmp_extent_start);
+	for (int i = 0; i < rows.n; i++)
+	{
+		Datum		v[5];
+		bool		nulls[5] = {0};
+
+		v[0] = CStringGetTextDatum(rows.row[i].what);
+		v[1] = Int64GetDatum(rows.row[i].gen);
+		nulls[1] = rows.row[i].gen == 0;
+		v[2] = Int64GetDatum(rows.row[i].start);
+		v[3] = Int64GetDatum(rows.row[i].nblocks);
+		v[4] = BoolGetDatum(rows.row[i].pending);
+		nulls[4] = strcmp(rows.row[i].what, "free extent") != 0;
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+typedef struct SpaceTally
+{
+	int64		used;
+	int64		reusable;
+	int64		pending;
+	int64		largest;
+	int			extents;
+	uint64		tail_end;
+	const char *tail_what;
+	uint64		tail_gen;
+} SpaceTally;
+
+static void
+tally_extent(void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending)
+{
+	SpaceTally *t = arg;
+
+	if (strcmp(what, "free extent") == 0)
+	{
+		if (pending)
+			t->pending += nblocks;
+		else
+			t->reusable += nblocks;
+		t->extents++;
+		t->largest = Max(t->largest, (int64) nblocks);
+		return;
+	}
+	t->used += nblocks;
+	if ((uint64) start + nblocks > t->tail_end)
+	{
+		t->tail_end = (uint64) start + nblocks;
+		t->tail_what = what;
+		t->tail_gen = gen;
+	}
+}
+
+Datum
+sift_col_space(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	SpaceTally	t = {0};
+	Datum		v[12];
+	bool		nulls[12] = {0};
+	int64		movable;
+	BlockNumber to;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	sift_dir_read(index, snap);
+	sift_store_extent_map(index, tally_extent, &t);
+	to = sift_maint_shrink_target(index, &movable);
+	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
+	v[1] = Int64GetDatum(snap->meta.high_water);
+	v[2] = Int64GetDatum(t.used);
+	v[3] = Int64GetDatum(t.reusable);
+	v[4] = Int64GetDatum(t.pending);
+	v[5] = Int32GetDatum(t.extents);
+	v[6] = Int64GetDatum(t.largest);
+	v[7] = CStringGetTextDatum(t.tail_what ? t.tail_what : "none");
+	v[8] = Int64GetDatum(t.tail_gen);
+	nulls[8] = t.tail_gen == 0;
+	v[9] = Int64GetDatum(t.tail_end);
+	v[10] = Int64GetDatum(to);
+	v[11] = Int64GetDatum(movable);
 	index_close(index, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }

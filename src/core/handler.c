@@ -77,6 +77,8 @@ PG_FUNCTION_INFO_V1(sift_index_format);
 PG_FUNCTION_INFO_V1(sift_worker_state);
 PG_FUNCTION_INFO_V1(sift_col_handler);
 PG_FUNCTION_INFO_V1(sift_col_index_info);
+PG_FUNCTION_INFO_V1(sift_col_extents);
+PG_FUNCTION_INFO_V1(sift_col_space);
 PG_FUNCTION_INFO_V1(sift_col_segments);
 PG_FUNCTION_INFO_V1(sift_col_leaves);
 PG_FUNCTION_INFO_V1(sift_col_sections);

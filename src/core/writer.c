@@ -146,13 +146,24 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
 }
 
+/* The blocks taken from the store, in the order of the target: adjacent runs are one */
+static void
+wt_note_taken(SiftWriteTarget *wt, BlockNumber start, uint32 got)
+{
+	SiftExtent *last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
+
+	if (last && last->start + last->nblocks == start)
+		last->nblocks += got;
+	else
+		wt->taken[wt->ntaken++] = (SiftExtent) {start, got};
+}
+
 /* Takes want blocks (at least min): spare runs first, then fresh ones */
 static BlockNumber
 wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 {
 	Buffer		metabuf;
 	BlockNumber start;
-	SiftExtent *last;
 
 	for (int i = 0; i < wt->nspare; i++)
 	{
@@ -194,16 +205,28 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
 	start = alloc_blocks(wt->index, metabuf, want, min, got);
 	UnlockReleaseBuffer(metabuf);
-	last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
-	if (last && last->start + last->nblocks == start)
-		last->nblocks += *got;
-	else
-		wt->taken[wt->ntaken++] = (SiftExtent) {start, *got};
+	wt_note_taken(wt, start, *got);
 #ifdef SIFT_TESTING
 	/* another backend allocating in between: the next run is not adjacent to this one */
 	if (sift_test_run_gap)
 		UnlockReleaseBuffer(sift_alloc_page(wt->index, SIFT_PT_FREE, 0));
 #endif
+	return start;
+}
+
+BlockNumber
+sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got)
+{
+	Buffer		metabuf;
+	BlockNumber start;
+
+	Assert(wt->mode == SIFT_WRITE_SHARED);
+	wt->taken = wt_list_room(wt, wt->taken, wt->ntaken, &wt->maxtaken);
+	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
+	start = alloc_blocks_below(wt->index, metabuf, want, min, limit, got);
+	UnlockReleaseBuffer(metabuf);
+	if (BlockNumberIsValid(start))
+		wt_note_taken(wt, start, *got);
 	return start;
 }
 

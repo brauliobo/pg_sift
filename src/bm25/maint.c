@@ -424,8 +424,15 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	{
 		bool		defer = ops->vacuum_space_defer && ops->vacuum_space_defer(index);
 
-		if (ops->compact_segment && !defer)
-			(void) sift_maint_compact(index, ops->compact_segment, (uint64) sift_vacuum_rewrite_limit << 20, info->message_level);
+		if (!defer)
+		{
+			if (ops->vacuum_rotate && sift_maint_buffer_above_shrink(index))
+			{
+				ops->vacuum_rotate(index);
+				promote_locked(ops, index, false, false);
+			}
+			(void) sift_maint_shrink(index, info->message_level);
+		}
 		sift_maint_space_rounds(index, NULL, info->message_level, defer ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
 	}
 	sift_maint_unlock(index);

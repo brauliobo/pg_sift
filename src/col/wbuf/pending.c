@@ -320,6 +320,13 @@ sift_cwbuf_seal(Relation index, bool force)
 	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, wbuf_limit_pages(index), has_rows);
 }
 
+uint64
+sift_cwbuf_rotate(Relation index)
+{
+	wbuf_flush_for_read(index);
+	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS);
+}
+
 /* VACUUM seals an open buffer once it holds a quarter of write_buffer_limit: its rows are promoted and merged with the rest instead of waiting for a seal that may never come */
 uint64
 sift_cwbuf_seal_vacuum(Relation index)

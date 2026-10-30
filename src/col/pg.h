@@ -170,6 +170,8 @@ extern const char *sift_col_options_return_columns(Relation index);	/* "" when n
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
+extern PGDLLEXPORT Datum sift_col_extents(PG_FUNCTION_ARGS);	/* (index regclass): where every run of blocks of the file lies */
+extern PGDLLEXPORT Datum sift_col_space(PG_FUNCTION_ARGS);	/* (index regclass): the free space of the file and what the shrink still has to move */
 extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);

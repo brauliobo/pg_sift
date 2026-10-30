@@ -50,6 +50,9 @@ extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Siz
  */
 extern uint64 sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *));
 
+/* Seals the active segment whatever it holds, so that a promotion frees its pages: a buffer in the way of a shrink */
+extern uint64 sift_lane_rotate(Relation index, Size hdrsize, uint16 format);
+
 /* Sets the sealed flag on the true tail of every lane */
 extern void sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry);
 /* The same on every page of every lane, for records that go to any page of the chain, not just its tail (sift_table) */

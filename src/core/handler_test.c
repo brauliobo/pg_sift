@@ -53,6 +53,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_cleanup_gate",
 							 "Testing: a VACUUM waits for advisory lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables.",
 							 NULL, &sift_test_cleanup_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_shrink_gate",
+							 "Testing: the online shrink waits for advisory lock (0x51F7, 3) once it reserved the header page of a segment, before it reserves the runs of its data.",
+							 NULL, &sift_test_shrink_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_ahead_cold",
 							 "Testing: a segment reader reads ahead from its first read, as one whose pages are not in shared buffers does.",
 							 NULL, &sift_test_ahead_cold, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -81,8 +84,8 @@ sift_handler_test_gucs(void)
 							 "Testing: error after publishing an open write buffer relocation.",
 							 NULL, &sift_test_space_error, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_space_crash",
-							"Testing: kill the backend after recycling (1), relocation publication (2), lowering high_water (3), or the publication of a shift (4).",
-							NULL, &sift_test_space_crash, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: kill the backend after recycling (1), relocation publication (2), lowering high_water (3), the publication of a shift (4), the pages of an online shrink copied (5), or its publication (6).",
+							NULL, &sift_test_space_crash, 0, 0, 6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_phase_gate",
 							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
 							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

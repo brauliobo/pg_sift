@@ -32,6 +32,7 @@
 #include "core/lane.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/visibility.h"
 
 /* the shortest free run a piece of a data run is moved into (fewer, longer extents in the header) */
 #define SPACE_MIN_RUN_BLOCKS	16
@@ -273,6 +274,81 @@ cmp_part_src(const void *a, const void *b)
 }
 
 /*
+ * The pages of the parts go to their free runs as they are (the segment keeps its generation), and the header page is written again at newhdr with the
+ * extents the segment has now; the caller publishes the new entry and the released runs together (sift_wt_publish). Takes over part.
+ */
+static uint64
+shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOAlignedBlock *hdrcopy, ShiftPart *part, int nparts, int ndata,
+			 BlockNumber newhdr, SiftSegEntry *entry_new, SiftExtent **release, int *nrelease)
+{
+	SiftSegHeaderData *h = (SiftSegHeaderData *) SiftPageGetData(hdrcopy->data);
+	PGIOAlignedBlock copy;
+	SiftExtent *list;
+	SiftExtent *rel_ext;
+	uint64		moved = 0;
+	int			nlist = 0;
+	uint64		gen = entry->gen;
+
+	for (int i = 0; i < nparts; i++)
+		for (uint32 j = 0; j < part[i].src.nblocks; j++)
+		{
+			Buffer		src = read_locked(rel, part[i].src.start + j, BUFFER_LOCK_SHARE);
+
+			sift_store_check_page(rel, src, part[i].ext < 0 ? SIFT_PT_LIVE : SIFT_PT_DATA, gen);
+			memcpy(copy.data, BufferGetPage(src), BLCKSZ);
+			UnlockReleaseBuffer(src);
+			sift_wt_put_page(wt, part[i].dst + j, copy.data);
+			CHECK_FOR_INTERRUPTS();
+		}
+
+	for (int i = 0; i < nparts; i++)
+		moved += part[i].src.nblocks;
+
+	/* the extents the header lists now, in the order of the stream: what stayed of each, then the pieces that left it, lowest first */
+	qsort(part, nparts, sizeof(ShiftPart), cmp_part_src);
+	list = palloc((h->nextents + ndata) * sizeof(SiftExtent));
+	for (int e = 0; e < (int) h->nextents; e++)
+	{
+		SiftExtent	old = h->extents[e];
+		uint32		stays = old.nblocks;
+
+		for (int i = 0; i < nparts; i++)
+			if (part[i].ext == e)
+				stays -= part[i].src.nblocks;
+		if (stays > 0)
+			list[nlist++] = (SiftExtent) {old.start, stays};
+		for (int i = 0; i < nparts; i++)
+			if (part[i].ext == e)
+			{
+				if (nlist > 0 && list[nlist - 1].start + list[nlist - 1].nblocks == part[i].dst)
+					list[nlist - 1].nblocks += part[i].src.nblocks;
+				else
+					list[nlist++] = (SiftExtent) {part[i].dst, part[i].src.nblocks};
+			}
+	}
+	for (int i = 0; i < nparts; i++)
+		if (part[i].ext < 0)
+			h->live_first = part[i].dst;
+	h->nextents = nlist;
+	memcpy(h->extents, list, nlist * sizeof(SiftExtent));
+	SiftPageSetUsed(hdrcopy->data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
+	sift_wt_put_page(wt, newhdr, hdrcopy->data);
+	sift_wt_finish(wt);
+
+	rel_ext = palloc((nparts + 1) * sizeof(SiftExtent));
+	for (int i = 0; i < nparts; i++)
+		rel_ext[i] = part[i].src;
+	rel_ext[nparts] = (SiftExtent) {entry->header_blk, 1};
+	*release = rel_ext;
+	*nrelease = nparts + 1;
+	*entry_new = *entry;
+	entry_new->header_blk = newhdr;
+	pfree(list);
+	pfree(part);
+	space_written += moved + 1;
+	return (moved + 1) * BLCKSZ;
+}
+/*
  * Moves the runs of an immutable segment that lie highest in the file (up to budget) into the lowest free runs below each of them,
  * and writes the header page again, at the lowest free block below it, with the extents they now are (when only the header has a free block below it, it moves alone): a segment far larger than the budget
  * walks down the file a round at a time, and the file can be cut where it ended. The pages are copied as they are (the segment keeps its
@@ -285,21 +361,17 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 				 SiftExtent **release, int *nrelease)
 {
 	PGIOAlignedBlock hdrcopy;
-	PGIOAlignedBlock copy;
 	SiftSegHeaderData *h = (SiftSegHeaderData *) SiftPageGetData(hdrcopy.data);
 	Buffer		buf = read_locked(rel, entry->header_blk, BUFFER_LOCK_SHARE);
 	Buffer		metabuf;
 	FreeChain	free;
 	ShiftPiece *piece;
 	ShiftPart  *part;
-	SiftExtent *list;
-	SiftExtent *rel_ext;
 	uint64		moved = 0;
 	uint64		maxblocks = budget / BLCKSZ > 0 ? budget / BLCKSZ - 1 : 0;	/* the header page is copied too */
 	int			npiece = 0;
 	int			nparts = 0;
 	int			ndata = 0;
-	int			nlist = 0;
 	BlockNumber newhdr = InvalidBlockNumber;
 	int			hdrbest;
 	bool		hdrfirst = false;
@@ -406,59 +478,90 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 		SIFT_INVARIANT(sift_wt_reserve(wt, 1) == newhdr, "sift: shift allocation differs from its plan");
 	}
 	space_limit = InvalidBlockNumber;
-	for (int i = 0; i < nparts; i++)
-		for (uint32 j = 0; j < part[i].src.nblocks; j++)
-		{
-			Buffer		src = read_locked(rel, part[i].src.start + j, BUFFER_LOCK_SHARE);
+	return shift_finish(rel, wt, entry, &hdrcopy, part, nparts, ndata, newhdr, entry_new, release, nrelease);
+}
 
-			sift_store_check_page(rel, src, part[i].ext < 0 ? SIFT_PT_LIVE : SIFT_PT_DATA, gen);
-			memcpy(copy.data, BufferGetPage(src), BLCKSZ);
-			UnlockReleaseBuffer(src);
-			sift_wt_put_page(wt, part[i].dst + j, copy.data);
-			CHECK_FOR_INTERRUPTS();
-		}
 
-	/* the extents the header lists now, in the order of the stream: what stayed of each, then the pieces that left it, lowest first */
-	qsort(part, nparts, sizeof(ShiftPart), cmp_part_src);
-	list = palloc((h->nextents + ndata) * sizeof(SiftExtent));
-	for (int e = 0; e < (int) h->nextents; e++)
+/*
+ * The online shrink: moves what an immutable segment holds above keep (the parts of its data runs, from the top down, and its liveness run) into the
+ * lowest reusable runs below keep, and writes its header page again below as well, so that the file can be cut at keep. Nothing is locked but the maintenance
+ * lock of the caller: the pages are copied as they are (the segment keeps its generation), the runs that left stay as they were until the horizon says no
+ * snapshot reads them (the release is pending like that of a rewrite), and the allocator is asked for each run when it is needed, so an insert that took a
+ * free run first costs the move a piece and nothing else. Returns the bytes copied, zero when no piece moved, with nothing reserved. Publish the entry and the
+ * released runs together (sift_wt_publish).
+ */
+uint64
+sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, BlockNumber keep, uint64 budget, SiftSegEntry *entry_new,
+				  SiftExtent **release, int *nrelease)
+{
+	PGIOAlignedBlock hdrcopy;
+	SiftSegHeaderData *h = (SiftSegHeaderData *) SiftPageGetData(hdrcopy.data);
+	Buffer		buf = read_locked(rel, entry->header_blk, BUFFER_LOCK_SHARE);
+	ShiftPiece *piece;
+	ShiftPart  *part;
+	uint64		moved = 0;
+	uint64		maxblocks = budget / BLCKSZ > 0 ? budget / BLCKSZ - 1 : 0;	/* the header page is copied too */
+	int			npiece = 0;
+	int			nparts = 0;
+	int			ndata = 0;
+	uint32		got;
+	BlockNumber newhdr;
+
+	sift_store_check_page(rel, buf, SIFT_PT_SEGHEADER, entry->gen);
+	memcpy(hdrcopy.data, BufferGetPage(buf), BLCKSZ);
+	UnlockReleaseBuffer(buf);
+	if (h->nextents > SIFT_MAX_EXTENTS)
+		ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\": segment header block %u lists %u extents", RelationGetRelationName(rel), entry->header_blk, h->nextents)));
+	piece = palloc((h->nextents + 1) * sizeof(ShiftPiece));
+	part = palloc((SIFT_MAX_EXTENTS + 2) * sizeof(ShiftPart));
+	for (int i = 0; i < (int) h->nextents; i++)
+		if (h->extents[i].start + h->extents[i].nblocks > keep)
+			piece[npiece++] = (ShiftPiece) {h->extents[i], i};
+	if (h->live_npages > 0 && h->live_first + h->live_npages > keep)
+		piece[npiece++] = (ShiftPiece) {{h->live_first, h->live_npages}, -1};
+	qsort(piece, npiece, sizeof(ShiftPiece), cmp_piece_end_desc);
+
+	/* the header first: the data runs would take the lowest free blocks and leave it none, as in sift_store_shift */
+	newhdr = npiece > 0 && maxblocks > 0 ? sift_wt_reserve_below(wt, 1, 1, keep, &got) : InvalidBlockNumber;
+	SIFT_TEST_GATE(sift_test_shrink_gate, 3);
+	for (int p = 0; BlockNumberIsValid(newhdr) && p < npiece && moved < maxblocks; p++)
 	{
-		SiftExtent	old = h->extents[e];
-		uint32		stays = old.nblocks;
+		const SiftExtent *run = &piece[p].run;
+		BlockNumber top = run->start + run->nblocks;
+		uint32		left = top - Max(run->start, keep);
 
-		for (int i = 0; i < nparts; i++)
-			if (part[i].ext == e)
-				stays -= part[i].src.nblocks;
-		if (stays > 0)
-			list[nlist++] = (SiftExtent) {old.start, stays};
-		for (int i = 0; i < nparts; i++)
-			if (part[i].ext == e)
-			{
-				if (nlist > 0 && list[nlist - 1].start + list[nlist - 1].nblocks == part[i].dst)
-					list[nlist - 1].nblocks += part[i].src.nblocks;
-				else
-					list[nlist++] = (SiftExtent) {part[i].dst, part[i].src.nblocks};
-			}
+		if (piece[p].ext < 0)
+		{
+			BlockNumber dst = left == run->nblocks && left <= maxblocks - moved ?
+				sift_wt_reserve_below(wt, left, left, keep, &got) : InvalidBlockNumber;
+
+			if (!BlockNumberIsValid(dst))
+				continue;
+			part[nparts++] = (ShiftPart) {{run->start, left}, dst, -1};
+			moved += left;
+			continue;
+		}
+		while (left > 0 && moved < maxblocks && h->nextents + ndata < SIFT_MAX_EXTENTS)
+		{
+			uint32		want = Min(left, maxblocks - moved);
+			BlockNumber dst = sift_wt_reserve_below(wt, want, Min(want, SPACE_MIN_RUN_BLOCKS), keep, &got);
+
+			if (!BlockNumberIsValid(dst))
+				break;
+			top -= got;
+			part[nparts++] = (ShiftPart) {{top, got}, dst, piece[p].ext};
+			left -= got;
+			moved += got;
+			ndata++;
+		}
 	}
-	for (int i = 0; i < nparts; i++)
-		if (part[i].ext < 0)
-			h->live_first = part[i].dst;
-	h->nextents = nlist;
-	memcpy(h->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(hdrcopy.data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
-	sift_wt_put_page(wt, newhdr, hdrcopy.data);
-	sift_wt_finish(wt);
-
-	rel_ext = palloc((nparts + 1) * sizeof(SiftExtent));
-	for (int i = 0; i < nparts; i++)
-		rel_ext[i] = part[i].src;
-	rel_ext[nparts] = (SiftExtent) {entry->header_blk, 1};
-	*release = rel_ext;
-	*nrelease = nparts + 1;
-	*entry_new = *entry;
-	entry_new->header_blk = newhdr;
-	pfree(list);
-	pfree(part);
-	space_written += moved + 1;
-	return (moved + 1) * BLCKSZ;
+	pfree(piece);
+	if (nparts == 0)
+	{
+		if (BlockNumberIsValid(newhdr))
+			sift_wt_release(wt, &(SiftExtent) {newhdr, 1}, 1);
+		pfree(part);
+		return 0;
+	}
+	return shift_finish(rel, wt, entry, &hdrcopy, part, nparts, ndata, newhdr, entry_new, release, nrelease);
 }

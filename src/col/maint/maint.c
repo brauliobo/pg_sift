@@ -85,6 +85,7 @@ const SiftMaintOps maint_col_ops = {
 	.force_seals = true,
 	.vacuum_truncate = maint_vacuum_truncates,
 	.vacuum_seal = sift_cwbuf_seal_vacuum,
+	.vacuum_rotate = sift_cwbuf_rotate,
 	.is_index = maint_is_col,
 	.seal = sift_cwbuf_seal,
 	.promote_next = maint_promote_next,
@@ -94,7 +95,6 @@ const SiftMaintOps maint_col_ops = {
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
 	.rewrite_all = maint_rewrite_all,
-	.compact_segment = maint_compact_segment,
 	.vacuum_space_defer = maint_space_deferred,
 	.vacuum_done = maint_rewrite_request,
 };

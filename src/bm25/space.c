@@ -509,45 +509,212 @@ done:
 }
 
 /*
- * A standby streams: the space step cannot move a segment (it needs the relation to itself, and the lock that gives it is replayed by the standby). The ordinary
- * rewrite can. The segments that end the file (space_plan picks them, as for the space step) are written again, whole, into the reusable holes below them, the
- * lowest first like every write, and their blocks are released like those of any rewrite: held by the horizon, which the feedback of the standby holds back. The
- * online cut takes them once no snapshot can read them (the next VACUUM after the standby's query). A bounded number of bytes a call; nothing is locked.
+ * The online shrink: the immutable segments lose what lies above `keep` (sift_store_shrink), step by step, while the index is in use. keep is the lowest end of the file
+ * such that the blocks of the segments above it fit in the reusable free runs below it; the file is cut there by the cut that follows, once the horizon
+ * (held back by the feedback of a standby, and by its queries) has passed the runs that left. A VACUUM copies at most a share of the file, the next one goes on.
  */
-uint64
-sift_maint_compact(Relation rel, SiftCompactSegment rewrite, uint64 budget, int elevel)
+#define SHRINK_SHARE	4
+
+typedef struct SpaceShrink
+{
+	const SiftSegEntry *entry;
+	BlockNumber keep;
+	uint64		budget;
+	SiftExtent *release;
+	int			nrelease;
+	uint64		written;
+} SpaceShrink;
+
+static void
+space_shrink_step(Relation rel, SiftWriteTarget *wt, const void *arg)
+{
+	SpaceShrink *sh = (SpaceShrink *) arg;
+	SiftSegEntry fresh;
+	SiftMaintSwitch sw = {.old = &sh->entry->gen,.nold = 1,.neu = &fresh};
+	TimestampTz start = GetCurrentTimestamp();
+
+	sh->written = sift_store_shrink(rel, wt, sh->entry, sh->keep, sh->budget, &fresh, &sh->release, &sh->nrelease);
+	if (sh->written == 0)
+		return;
+	SIFT_SPACE_TEST_POINT(5);
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = sh->release,
+					.nrelease = sh->nrelease,.extra = InvalidBuffer});
+	SIFT_SPACE_TEST_POINT(6);
+	sift_log_maint(rel, "shrunk", start, sh->entry->ndocs, fresh.bytes);
+}
+
+/* The extents of the immutable segments of the directory (header and liveness run included) */
+static SiftExtent *
+shrink_extents(Relation rel, const SiftDirSnapshot *snap, int *n)
+{
+	SiftExtent *all = palloc((SIFT_MAX_SEGMENTS * (SIFT_MAX_EXTENTS + 2) + 1) * sizeof(SiftExtent));
+
+	*n = 0;
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		int			k;
+		SiftExtent *ext;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		ext = sift_store_immutable_extents(rel, &snap->segs[i], &k);
+		memcpy(all + *n, ext, k * sizeof(SiftExtent));
+		*n += k;
+		pfree(ext);
+	}
+	return all;
+}
+
+static int64
+shrink_above(const SiftExtent *ext, int n, BlockNumber from)
+{
+	int64		blocks = 0;
+
+	for (int i = 0; i < n; i++)
+		if (ext[i].start + ext[i].nblocks > from)
+			blocks += ext[i].start + ext[i].nblocks - Max(ext[i].start, from);
+	return blocks;
+}
+
+/* The lowest end of the file such that the blocks of the segments above it fit in the reusable free runs below it */
+static BlockNumber
+shrink_fit(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, int n)
+{
+	BlockNumber lo = 0;
+	BlockNumber hi = snap->meta.high_water;
+
+	/* the runs are filled by pieces of the segments, whose ends leave the rest of a hole too short for the next: an eighth more room than blocks to move */
+	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, SPACE_MIN_RUN) < shrink_above(ext, n, mid) + shrink_above(ext, n, mid) / 8 + 4 * SPACE_MIN_RUN);
+	return lo;
+}
+
+/* The end the file is moved to, or its end now when the cut that follows would not be worth the copy (the screen of the space step) */
+static BlockNumber
+shrink_keep(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, int n)
+{
+	BlockNumber keep = shrink_fit(rel, snap, ext, n);
+
+	return space_worth((int64) snap->meta.high_water - keep, snap->meta.high_water) ? keep : snap->meta.high_water;
+}
+
+/* Where the shrink would end the file (sift.col_space), and the blocks of the segments that lie above that: what it has still to move */
+BlockNumber
+sift_maint_shrink_target(Relation rel, int64 *movable)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
-	uint64		total = 0;
+	int			n;
+	SiftExtent *ext;
+	BlockNumber keep;
+
+	sift_dir_read(rel, snap);
+	ext = shrink_extents(rel, snap, &n);
+	keep = shrink_fit(rel, snap, ext, n);
+	*movable = shrink_above(ext, n, keep);
+	pfree(ext);
+	pfree(snap);
+	return keep;
+}
+
+/* Does a write buffer lie above where the shrink would end the file? It cannot move while appenders keep its lane tails: sealing it promotes its rows into a segment below, and the next buffer starts in the lowest free run */
+bool
+sift_maint_buffer_above_shrink(Relation rel)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftExtent *ext;
+	int			n;
+	BlockNumber keep;
+	bool		above = false;
 
 	if (!online_cut_wanted(rel))
-		budget = 0;
+	{
+		pfree(snap);
+		return false;
+	}
+	sift_dir_read(rel, snap);
+	ext = shrink_extents(rel, snap, &n);
+	keep = shrink_keep(rel, snap, ext, n);
+	pfree(ext);
+	for (int i = 0; i < snap->nsegs && keep < snap->meta.high_water; i++)
+	{
+		int			k;
+		SiftExtent *lane;
+
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			continue;
+		lane = sift_lane_extents(rel, &snap->segs[i], &k);
+		for (int x = 0; x < k; x++)
+			above |= lane[x].start + lane[x].nblocks > keep;
+		pfree(lane);
+	}
+	pfree(snap);
+	return above;
+}
+
+uint64
+sift_maint_shrink(Relation rel, int elevel)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		total = 0;
+	uint64		budget;
+
+	if (!online_cut_wanted(rel))
+	{
+		pfree(snap);
+		return 0;
+	}
+	budget = (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE;
 	while (budget > 0)
 	{
-		int64		gain;
-		BlockNumber limit = 0;
+		SiftExtent *ext;
 		int			n;
-		uint64		written;
-		const SiftSegEntry *e;
+		BlockNumber keep;
+		SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
+		int			nseg = 0;
+		uint64		moved = 0;
 
 		sift_dir_read(rel, snap);
 		if (in_backoff(&snap->meta))
 			break;
-		n = space_plan(rel, snap, budget, seg, &gain, &limit);
-		/* the top one first: the plan is a prefix of the segments that end the file, and each rewrite leaves the next one nearer the end */
-		if (n == 0 || (e = space_entry(snap, seg[0].gen)) == NULL || e->kind != SIFT_SEG_IMMUTABLE)
+		ext = shrink_extents(rel, snap, &n);
+		keep = shrink_keep(rel, snap, ext, n);
+		pfree(ext);
+		if (keep >= snap->meta.high_water)
 			break;
-		if ((written = rewrite(rel, seg[0].gen)) == 0)
+		/* the segment that ends the file highest goes first: its pieces above keep are the ones that hold the cut; one that cannot move any goes to the next */
+		for (int i = 0; i < snap->nsegs; i++)
+		{
+			int			k;
+			SiftExtent *e;
+
+			if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+				continue;
+			e = sift_store_immutable_extents(rel, &snap->segs[i], &k);
+			seg[nseg] = (SpaceSeg) {.gen = snap->segs[i].gen};
+			for (int x = 0; x < k; x++)
+				seg[nseg].end = Max(seg[nseg].end, e[x].start + e[x].nblocks);
+			if (seg[nseg].end > keep)
+				nseg++;
+			pfree(e);
+		}
+		qsort(seg, nseg, sizeof(SpaceSeg), cmp_space_end_desc);
+		for (int i = 0; i < nseg && moved == 0; i++)
+		{
+			SpaceShrink sh = {.entry = space_entry(snap, seg[i].gen),.keep = keep,.budget = budget};
+
+			if (sh.entry == NULL || run_step(rel, false, space_shrink_step, &sh) != SIFT_STEP_DONE)
+				break;
+			moved = sh.written;
+		}
+		pfree(seg);
+		if (moved == 0)
 			break;
-		budget -= Min(written, budget);
-		total += written;
+		budget -= Min(moved, budget);
+		total += moved;
 		CHECK_FOR_INTERRUPTS();
 	}
-	pfree(seg);
 	pfree(snap);
 	if (total > 0)
-		ereport(elevel, (errmsg("index \"%s\": rewrote %llu bytes of the segments that end the file into the holes below them", RelationGetRelationName(rel), (unsigned long long) total)));
+		ereport(elevel, (errmsg("index \"%s\": moved %llu bytes of the segments that end the file into the holes below them", RelationGetRelationName(rel), (unsigned long long) total)));
 	return total;
 }
 
