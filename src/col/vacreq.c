@@ -53,7 +53,7 @@
 /* A worker looks once per naptime, leaves after this many looks at a clean table, or this many in all */
 #define CLEAN_LOOKS		3
 #define MAX_LOOKS		60
-/* The advisory lock (in the space of col/maint.c's, 0x51F7) a worker holds for the table it is at */
+/* The advisory lock (in the space of col/maint/maint.c's, 0x51F7) a worker holds for the table it is at */
 #define TABLE_LOCK_KEY	0x51F8
 
 typedef enum TableState

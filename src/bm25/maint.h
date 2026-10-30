@@ -7,7 +7,7 @@
  * returns false when busy. VACUUM and the SQL functions hold it exclusive.
  *
  * The control flow is written once (sift_mops_*, below) and parametrized by SiftMaintOps: the BM25 index
- * (bm25/maint.c) and the sift_col index (col/maint.c) each supply what a segment is read and written with.
+ * (bm25/maint.c) and the sift_col index (col/maint/maint.c) each supply what a segment is read and written with.
  */
 #ifndef SIFT_MAINT_H
 #define SIFT_MAINT_H

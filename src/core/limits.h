@@ -102,7 +102,7 @@
 	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
-	X(merge_disk_peak, "-", "col/maint.c", 2, "times the live index", \
+	X(merge_disk_peak, "-", "col/maint/maint.c", 2, "times the live index", \
 	  "disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back", "the step fails with PostgreSQL's disk-full error before it replaces a segment", "-", 0) \
 	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \

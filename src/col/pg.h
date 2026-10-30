@@ -143,7 +143,7 @@ typedef struct SiftColOptions
 	bool		cluster_advice;	/* sift.cluster_advice() may recommend an order for the table (advice only, not part of the format) */
 } SiftColOptions;
 
-/* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/maint.c) */
+/* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/maint/maint.c) */
 #define SIFT_COL_DEAD_AUTO	0
 /* Instructions a scan pays for each dead row of a unit (the unit answers net of them), for each row of a unit more than a tenth dead, and the scans expected between two VACUUMs */
 #define SIFT_COL_DEAD_ROW	430

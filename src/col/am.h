@@ -232,7 +232,7 @@ extern char *sift_col_ambuildphasename(int64 phase);
 extern bool sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 							  IndexUniqueCheck checkUnique, bool indexUnchanged, struct IndexInfo *indexInfo);
 
-/* col/maint.c */
+/* col/maint/maint.c */
 extern IndexBulkDeleteResult *sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 													IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
@@ -250,7 +250,7 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
-/* sift.col_auto_merge* (col/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint.c) */
+/* sift.col_auto_merge* (col/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
