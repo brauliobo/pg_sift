@@ -90,15 +90,29 @@ key_spelling(AggCtx *c, const SiftAggSpec *s)
 }
 
 /*
- * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
- * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
- * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables; the plan of a correlated join runs in each worker.
+ * The workers of the scan and the reason for none, decided here and nowhere else (EXPLAIN VERBOSE prints s->serial after the reasons of the
+ * spec itself, sift_aggspec_serial_reason). refused: a reason the caller found (a top-N whose sort the workers cannot evaluate, a table that
+ * spills, pre-aggregates that answer it). Otherwise the workers are those of a parallel seq scan of the table (size, reloption, the GUCs), when
+ * the spec's expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are
+ * not asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables; the plan of a correlated join runs in each worker.
  */
 int
-parallel_workers(AggCtx *c, SiftAggSpec *s)
+parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused)
 {
-	if (!sift_aggspec_parallel_ok(s) || !c->root->glob->parallelModeOK || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
+	int			workers;
+
+	if (refused)
+	{
+		s->serial = refused;
 		return 0;
+	}
+	if (!sift_aggspec_parallel_ok(s) || max_parallel_workers_per_gather <= 0)
+		return 0;
+	if (!c->root->glob->parallelModeOK || !c->rel->consider_parallel)
+	{
+		s->serial = "PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor";
+		return 0;
+	}
 	if (c->sub_serial || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
 	{
 		s->serial = "an expression of the query has a sub-select or a function that is not parallel safe";
@@ -118,8 +132,14 @@ parallel_workers(AggCtx *c, SiftAggSpec *s)
 	}
 	/* the leader writes the lookup tables to the shared memory and each worker maps them: a scan of fewer rows than AGG_SHARE_RATIO for each of their rows does not pay for it */
 	if (agg_share_rows(c, s) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
+	{
+		s->serial = "the lookup tables of its joins are too large for the rows of the scan to share them with workers";
 		return 0;
-	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
+	}
+	workers = compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
+	if (workers == 0)
+		s->serial = "the table is smaller than min_parallel_table_scan_size";
+	return workers;
 }
 
 /* is leaf m the value column of an object whose members the spec reads only by key, all of them read again from the heap (member_recheck_ok)? */
@@ -412,10 +432,10 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
-	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
+	nworkers = parallel_verdict(c, s,
+								preagg_share(c, s) >= AGG_PREAGG_EXACT ? "the pre-aggregates of the index answer it without reading its rows" :
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
-	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
-		nworkers = 0;
+								table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s) ? "its group table outgrows hash memory and spills, which one process does" : NULL);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);

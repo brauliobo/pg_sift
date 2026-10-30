@@ -404,9 +404,15 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			flags |= TOPN_NOGORD;
 		}
 		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
-		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
-		nworkers = !deep && c->joins == NIL && c->level_params == NIL && s->naggs == 0 && !c->topn_xserial && nlead == nkey && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
+		nworkers = parallel_verdict(c, s,
+									deep ? "it reads the order array of the key down to the offset, which one process does" :
+									c->joins != NIL || c->level_params != NIL ? "the lookup tables of its joins are loaded by the process that runs the scan" :
+									s->naggs > 0 ? "the totals of the workers of a top-N are not merged" :
+									c->topn_xserial ? "a sort expression has a parameter of the statement or a function that is not parallel safe" :
+									nlead < nkey ? "the sort has keys the scan does not hold" :
+									!input_rel->consider_parallel || !output_rel->consider_parallel ? "PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor" : NULL);
+		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers, nlead, count + offset);
 		if (rows <= TOPN_SORT_ROWS)

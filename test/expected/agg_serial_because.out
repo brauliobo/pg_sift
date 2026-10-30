@@ -1,0 +1,97 @@
+-- Why a pushed scan has no workers, one statement for each rule that decides it (EXPLAIN VERBOSE: Serial Because): the aggregate kinds whose partial states the
+-- leader cannot merge, a group key that shows a spelling of equal values, the joins whose lookup tables the process of the scan loads, a statement or sort
+-- expression that is not parallel safe. 'workers' when nothing keeps them from it; 'none given' when the scan has none and no rule is named.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE f (id int, g int, k int, x numeric, y float8, t text, d_id int) WITH (autovacuum_enabled = false);
+INSERT INTO f SELECT i, i % 7, i % 5, (i % 1001)::numeric / 8, (i % 997) / 8.0, 'v' || i % 50, i % 30 FROM generate_series(1, 60000) i;
+CREATE TABLE d (id int PRIMARY KEY, name text, w numeric);
+INSERT INTO d SELECT i, 'n' || i % 9, (i % 13)::numeric FROM generate_series(0, 29) i;
+CREATE INDEX f_col ON f USING sift_col (id, g, k, x, y, t, d_id);
+VACUUM (FREEZE, ANALYZE) f;
+ANALYZE d;
+CREATE FUNCTION unsafe_k(i int) RETURNS int LANGUAGE sql IMMUTABLE PARALLEL UNSAFE AS 'SELECT i';
+CREATE FUNCTION restricted_k(i int) RETURNS int LANGUAGE sql IMMUTABLE PARALLEL RESTRICTED AS 'SELECT i';
+CREATE FUNCTION scan_workers(q text, preagg bool DEFAULT false) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'no scan';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
+	PERFORM set_config('sift.agg_preagg', preagg::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'none given'; END IF;
+		IF l LIKE '%Workers Planned%' AND r <> 'no scan' THEN RETURN 'workers'; END IF;
+		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE TABLE shapes (n serial, name text, q text);
+INSERT INTO shapes (name, q) VALUES
+	('plain',              'SELECT g, count(*), sum(y) FROM f GROUP BY g'),
+	('generic and float',  'SELECT g, sum(y), string_agg(k::text, '','') FROM f GROUP BY g'),
+	('spelling of a key',  'SELECT x, count(*) FROM f GROUP BY x'),
+	('joined sum',         'SELECT g, sum(d.w) FROM f JOIN d ON d.id = f.d_id GROUP BY g'),
+	('joined min',         'SELECT g, min(d.name) FROM f JOIN d ON d.id = f.d_id GROUP BY g'),
+	('expression sum',     'SELECT g, sum(d.w + f.y::numeric) FROM f JOIN d ON d.id = f.d_id GROUP BY g'),
+	('expression min',     'SELECT g, min(d.w * 2) FROM f JOIN d ON d.id = f.d_id GROUP BY g'),
+	('expression float',   'SELECT g, sum(d.w::float8 + 1) FROM f JOIN d ON d.id = f.d_id GROUP BY g'),
+	('expression count',   'SELECT g, count(d.w + 1) FROM f LEFT JOIN d ON d.id = f.d_id GROUP BY g'),
+	('outer join',         'SELECT g, count(*) FROM f LEFT JOIN d ON d.id = f.d_id GROUP BY g'),
+	('unsafe in a sum',    'SELECT g, sum(unsafe_k(k)) FROM f GROUP BY g'),
+	('unsafe in a filter', 'SELECT g, count(*) FROM f WHERE unsafe_k(k) > 1 GROUP BY g'),
+	('unsafe in a key',    'SELECT unsafe_k(g), count(*) FROM f GROUP BY 1'),
+	('restricted filter',  'SELECT g, count(*) FROM f WHERE restricted_k(k) > 1 GROUP BY g'),
+	('top-n',              'SELECT id FROM f ORDER BY y DESC LIMIT 10'),
+	('top-n unsafe key',   'SELECT id FROM f ORDER BY unsafe_k(k), id LIMIT 10'),
+	('top-n joined',       'SELECT f.id FROM f JOIN d ON d.id = f.d_id ORDER BY f.y DESC LIMIT 10'),
+	('top-n with a total', 'SELECT g, count(*) FROM f GROUP BY g ORDER BY 2 DESC LIMIT 3');
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT n, name, scan_workers(q) FROM shapes ORDER BY n;
+ n  |        name        |                                                              scan_workers                                                               
+----+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------
+  1 | plain              | workers
+  2 | generic and float  | Serial Because: string_agg((f.k)::text, ','::text): a float sum is merged in lane order, a generic state as the workers finish
+  3 | spelling of a key  | Serial Because: a group key shows one of the spellings of equal values (1.0, 1.00), which the workers read in no order
+  4 | joined sum         | Serial Because: sum(d.w): its partial state holds ids of values that are the worker's own
+  5 | joined min         | Serial Because: min(d.name): its partial state holds ids of values that are the worker's own
+  6 | expression sum     | Serial Because: sum((d.w + (f.y)::numeric)): its partial state holds ids of values that are the worker's own
+  7 | expression min     | Serial Because: min((d.w * '2'::numeric)): its partial state holds ids of values that are the worker's own
+  8 | expression float   | Serial Because: sum(((d.w)::double precision + '1'::double precision)): its partial state holds ids of values that are the worker's own
+  9 | expression count   | workers
+ 10 | outer join         | workers
+ 11 | unsafe in a sum    | Serial Because: PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor
+ 12 | unsafe in a filter | Serial Because: PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor
+ 13 | unsafe in a key    | Serial Because: PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor
+ 14 | restricted filter  | workers
+ 15 | top-n              | workers
+ 16 | top-n unsafe key   | Serial Because: PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor
+ 17 | top-n joined       | Serial Because: the lookup tables of its joins are loaded by the process that runs the scan
+ 18 | top-n with a total | workers
+(18 rows)
+
+-- the pre-aggregates of the index answer a count by group without a scan of the rows
+SELECT n, name, scan_workers(q, true) FROM shapes WHERE n IN (1, 11, 18) ORDER BY n;
+ n  |        name        |                                    scan_workers                                    
+----+--------------------+------------------------------------------------------------------------------------
+  1 | plain              | workers
+ 11 | unsafe in a sum    | Serial Because: the pre-aggregates of the index answer it without reading its rows
+ 18 | top-n with a total | Serial Because: the pre-aggregates of the index answer it without reading its rows
+(3 rows)
+
+-- no workers asked for: no reason is printed
+SET max_parallel_workers_per_gather = 0;
+SELECT n, name, scan_workers(q) FROM shapes WHERE n <= 4 ORDER BY n;
+ n |       name        | scan_workers 
+---+-------------------+--------------
+ 1 | plain             | none given
+ 2 | generic and float | none given
+ 3 | spelling of a key | none given
+ 4 | joined sum        | none given
+(4 rows)
+
+DROP FUNCTION scan_workers(text, bool), unsafe_k(int), restricted_k(int);
+DROP TABLE shapes, f, d;
+DROP EXTENSION pg_sift;

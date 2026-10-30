@@ -671,55 +671,92 @@ plain_key(const SiftAggKey *k)
 	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO || k->kind == SAK_SPINE;
 }
 
+/*
+ * What the planner and the executor need to know of each kind of aggregate, in one table: a new kind fails the StaticAssert until it has a row.
+ * merge: how the partial states of the workers reach the leader (a text is the reason when they cannot); order_exact: the result does not
+ * depend on the order the rows are read in (sift_aggspec_dstream).
+ */
+typedef enum AggMerge
+{
+	AGG_MERGE_OK,				/* the leader adds them up */
+	AGG_MERGE_SUM_TYPE,			/* a sum or average of a float8 or a numeric is added up; others hold the worker's own ids */
+	AGG_MERGE_GEN,				/* the generic state says (SiftAggGen.serial) */
+	AGG_MERGE_NEVER				/* the state holds ids of values that are the worker's own */
+} AggMerge;
+
+typedef struct AggKindInfo
+{
+	bool		set;
+	AggMerge	merge;
+	bool		order_exact;
+} AggKindInfo;
+
+#define KIND(k, ...) [k] = {.set = true, __VA_ARGS__}
+
+static const AggKindInfo kind_info[] = {
+	KIND(SAA_COUNT_STAR, .order_exact = true),
+	KIND(SAA_COUNT, .order_exact = true),
+	KIND(SAA_COUNT_ROWS, .order_exact = true),
+	KIND(SAA_COUNT_DISTINCT),
+	KIND(SAA_SUM_INT, .order_exact = true),
+	KIND(SAA_SUM_F64),
+	KIND(SAA_AVG_INT, .order_exact = true),
+	KIND(SAA_AVG_F64),
+	KIND(SAA_MIN, .order_exact = true),
+	KIND(SAA_MAX, .order_exact = true),
+	KIND(SAA_SUM_NUM),
+	KIND(SAA_AVG_NUM),
+	KIND(SAA_PCT_CONT),
+	KIND(SAA_PCT_DISC),
+	KIND(SAA_M_COUNT),
+	KIND(SAA_M_DISTINCT),
+	KIND(SAA_M_MIN, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_M_MAX, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_M_SUM, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_M_AVG, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_GROUPING),
+	/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
+	KIND(SAA_O_COUNT_STAR),
+	KIND(SAA_O_COUNT_ROWS),
+	KIND(SAA_O_AVG_F64),
+	KIND(SAA_O_SUM_F64),
+	KIND(SAA_O_SUM_I64),
+	KIND(SAA_M_PG, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_GEN, .merge = AGG_MERGE_GEN),
+	/* the aggregates of the columns of a nullable input (a preserved join): counts and float sums add up (the lanes keep the order of the sums) */
+	KIND(SAA_X_COUNT),
+	KIND(SAA_X_MIN, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_X_MAX, .merge = AGG_MERGE_NEVER),
+	KIND(SAA_X_SUM, .merge = AGG_MERGE_SUM_TYPE),
+	KIND(SAA_X_AVG, .merge = AGG_MERGE_SUM_TYPE),
+	KIND(SAA_O_COUNT_KEY),
+};
+
+StaticAssertDecl(lengthof(kind_info) == SAA_NKINDS, "every kind of aggregate has a row in kind_info");
+
+static const AggKindInfo *
+kind_of(SiftAggKind kind)
+{
+	Assert(kind >= 0 && kind < SAA_NKINDS && kind_info[kind].set);
+	return &kind_info[kind];
+}
+
 /* why the workers' partial states of the aggregate cannot be merged by the leader (NULL: they can) */
 static const char *
 agg_serial(const SiftAggAgg *a)
 {
-	switch (a->kind)
+	switch (kind_of(a->kind)->merge)
 	{
-		case SAA_COUNT_STAR:
-		case SAA_COUNT:
-		case SAA_COUNT_ROWS:
-		case SAA_SUM_INT:
-		case SAA_AVG_INT:
-		case SAA_SUM_F64:
-		case SAA_AVG_F64:
-		case SAA_PCT_CONT:
-		case SAA_PCT_DISC:
-		case SAA_GROUPING:
-		case SAA_SUM_NUM:
-		case SAA_AVG_NUM:
-		case SAA_COUNT_DISTINCT:
-		case SAA_M_COUNT:
-		case SAA_M_DISTINCT:
-		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
-		case SAA_O_COUNT_STAR:
-		case SAA_O_COUNT_ROWS:
-		case SAA_O_COUNT_KEY:
-		case SAA_O_SUM_I64:
-		case SAA_O_SUM_F64:
-		case SAA_O_AVG_F64:
-		case SAA_MIN:
-		case SAA_MAX:
-		/* the aggregates of the columns of a nullable input (a preserved join): counts and float sums add up (the lanes keep the order of the sums) */
-		case SAA_X_COUNT:
+		case AGG_MERGE_OK:
 			return NULL;
-		case SAA_X_SUM:
-		case SAA_X_AVG:
+		case AGG_MERGE_SUM_TYPE:
 			return a->restype == FLOAT8OID || a->restype == NUMERICOID ? NULL : "its sum is neither a float8 nor a numeric";
-		case SAA_GEN:
+		case AGG_MERGE_GEN:
 			return a->gen->serial;
-		case SAA_X_MIN:
-		case SAA_X_MAX:
-		case SAA_M_MIN:
-		case SAA_M_MAX:
-		case SAA_M_SUM:
-		case SAA_M_AVG:
-		case SAA_M_PG:
+		case AGG_MERGE_NEVER:
 			return "its partial state holds ids of values that are the worker's own";
-		default:
-			return "its partial state is not one the leader can merge";
 	}
+	return "its partial state is not one the leader can merge";
 }
 
 /* does the group table go to partitions on disk when it outgrows hash memory (agg/spill.c)? It must travel as a blob, one pass, one table */
@@ -757,24 +794,14 @@ sift_aggspec_dstream(const SiftAggSpec *s)
 		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_SET || s->key[j].kind == SAK_COMBO)
 			return -1;
 	for (int i = 0; i < s->naggs; i++)
-		switch (s->agg[i].kind)
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
 		{
-			case SAA_COUNT_DISTINCT:
-				if (found >= 0 || s->agg[i].num.n || s->agg[i].leaf < 0)
-					return -1;
-				found = i;
-				break;
-			case SAA_COUNT_STAR:
-			case SAA_COUNT:
-			case SAA_COUNT_ROWS:
-			case SAA_SUM_INT:
-			case SAA_AVG_INT:
-			case SAA_MIN:
-			case SAA_MAX:
-				break;
-			default:
+			if (found >= 0 || s->agg[i].num.n || s->agg[i].leaf < 0)
 				return -1;
+			found = i;
 		}
+		else if (!kind_of(s->agg[i].kind)->order_exact)
+			return -1;
 	return found;
 }
 

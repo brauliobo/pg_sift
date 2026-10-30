@@ -215,6 +215,9 @@ typedef enum SiftAggKind
 	SAA_O_COUNT_KEY				/* count(DISTINCT x) of a column the arms group by: the distinct ids of key `slot` in the cells of a group */
 } SiftAggKind;
 
+/* the number of kinds: spec.c keeps a row of facts for each (kind_info); not an enumerator, so that a switch over the kinds does not ask for it */
+#define SAA_NKINDS	(SAA_O_COUNT_KEY + 1)
+
 /* `inner column op constant`, a conjunct of the FILTER of an outer aggregate */
 typedef struct SiftAggCond
 {

@@ -459,7 +459,7 @@ extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
 extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
-extern int	parallel_workers(AggCtx *c, SiftAggSpec *s);
+extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
 						 List *scan_tlist, int nworkers, List *pathkeys);
