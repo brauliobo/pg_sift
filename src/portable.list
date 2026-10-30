@@ -53,6 +53,7 @@ core/span.c
 core/sift.h
 bm25/analyze.h
 bm25/analyze_tables.h
+bm25/analyze_scan.h
 bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
