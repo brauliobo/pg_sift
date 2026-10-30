@@ -8,6 +8,7 @@ Rewrites <!-- bench:compare:begin --> (a matrix of workload classes against ever
 <!-- bench:numbers:begin --> (the warm milliseconds of every question on every system, at 1,000,000 and at 10,000,000 orders). A competitor figure is read from a results file or not shown: nothing here is typed, extrapolated or rerun.
 """
 import argparse
+import json
 import os
 import re
 import statistics
@@ -219,7 +220,7 @@ def sources(results):
     m = S.tiers[t1]
     sv, h = m['servers'], S.meta['host']
     date = m['parts']['warm']['date'][:10]
-    an = bench_charts.json.load(open(os.path.join(results, 'analytics.json')))['meta'] if os.path.exists(os.path.join(results, 'analytics.json')) else {}
+    an = json.load(open(os.path.join(results, 'analytics.json')))['meta'] if os.path.exists(os.path.join(results, 'analytics.json')) else {}
     duck_meta = {}
     p = os.path.join(results, 'duckdb.tsv')
     if os.path.exists(p):
