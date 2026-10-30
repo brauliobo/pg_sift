@@ -29,3 +29,4 @@ src/agg/blob/	src/agg/blob.c
 src/agg/group/	src/agg/group.c	
 src/agg/update/	src/agg/update.c	
 src/agg/part/	src/agg/part.c	
+src/agg/lookup/	src/agg/lookup.c	

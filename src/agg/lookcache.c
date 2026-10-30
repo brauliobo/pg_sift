@@ -1,7 +1,7 @@
 /*
  * agg/lookcache.c - the rows of a joined table, kept by the backend for the next query.
  *
- * A lookup join loads the rows it can match into a hash table before the scan (agg/lookup.c): a mapping table of half a million rows is
+ * A lookup join loads the rows it can match into a hash table before the scan (agg/lookup/): a mapping table of half a million rows is
  * a second of every query that joins it. The rows are kept under the conditions that narrowed the load, up to sift.agg_lookup_cache_kb
  * per backend, and serve the next query when the table is what it was. A page that every transaction sees (PD_ALL_VISIBLE) holds the
  * same rows for every snapshot, and a write to it moves its LSN: so an entry keeps the LSN of every page of the table, taken before the

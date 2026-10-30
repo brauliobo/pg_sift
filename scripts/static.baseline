@@ -140,7 +140,7 @@ tidy|clang-analyzer-deadcode.DeadStores|src/bm25/step.c|Although the value store
 tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory around 'live'
 tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory preceding 'live'
 tidy|clang-analyzer-security.ArrayBound|src/agg/group/table.c|Out of bound access to memory around 'hash_group_fns'
-tidy|clang-analyzer-security.ArrayBound|src/agg/lookup.c|Out of bound access to memory after the end of the field 'idxval'
+tidy|clang-analyzer-security.ArrayBound|src/agg/lookup/load.c|Out of bound access to memory after the end of the field 'idxval'
 tidy|clang-analyzer-security.ArrayBound|src/agg/unit.c|Out of bound access to memory preceding 'r.key'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/dict.c|Out of bound access to memory after the end of the field 'inline_tf'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/maint.c|Out of bound access to memory preceding the field 'segs'

@@ -333,7 +333,7 @@ sift_agg_rows_per_key(unsigned int relid, int att, double tuples)
 }
 
 /*
- * The keys of a dependent lookup that the loader probes in a btree of the table (map_keyed_dependent and map_probe in agg/lookup.c): an inner or semi join keyed by a
+ * The keys of a dependent lookup that the loader probes in a btree of the table (map_keyed_dependent and map_probe in agg/lookup/): an inner or semi join keyed by a
  * column of the table alone, or a child plan inner or semi joined on the same leaf of the scan, when a btree starts with the column and the probes cost less than its pages
  * (sift_agg_probe_pays). 0: the table is read whole. The keys are the rows PostgreSQL expects of the dependent lookup, taken as the geometric mean with the table's rows
  * when it has no statistics for them (join_key_zone).

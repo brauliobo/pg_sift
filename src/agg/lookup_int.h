@@ -1,5 +1,5 @@
 /*
- * agg/lookup_int.h - the rows of a lookup join, loaded by key (agg/lookup.c)
+ * agg/lookup_int.h - the rows of a lookup join, loaded by key (agg/lookup/)
  */
 #ifndef SIFT_AGG_LOOKUP_INT_H
 #define SIFT_AGG_LOOKUP_INT_H
@@ -159,7 +159,7 @@ typedef struct LookFinger
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* lookup.c */
+/* lookup/ */
 uint32 map_key_id(const MapTab *m, int k, const char *ptr, uint32 len, int64 iv);
 int map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows);
 int map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows);
