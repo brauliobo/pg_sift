@@ -57,9 +57,9 @@ array_consts(Node *e, Oid elemtype, Datum **vals, bool **nulls, int *n)
 	return false;
 }
 
-/* The range of the values a conjunct of a unit's zone keeps, from its operand's value at plan time; false when the operand is not a constant (a parameter of a generic plan) or the leaf is not an integer */
+/* The range of the values a conjunct of a unit's zone keeps, from its operand's value at plan time; false when the operand is not a constant (a parameter of a generic plan) or the leaf is not an integer; the values of a set are sorted (and kept) only when the zones are tested: its price needs the count and the span, which the 50,000 keys of a list would sort for each of the dozen times it is priced */
 static bool
-zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
+zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
 {
 	Node	   *e = estimate_expression_value(c->root, (Node *) p->expr);
 	const SiftSrcLeaf *lf = &c->lay->leaf[p->leaf];
@@ -95,7 +95,10 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 
 		if (!array_consts(e, p->argtype, &el, &nl, &ne))
 			return false;
-		r->vals = palloc(Max(ne, 1) * sizeof(int64));
+		r->lo = PG_INT64_MAX;
+		r->hi = PG_INT64_MIN;
+		if (sorted)
+			r->vals = palloc(Max(ne, 1) * sizeof(int64));
 		for (int i = 0; i < ne; i++)
 		{
 			int64		v;
@@ -105,12 +108,15 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 			v = sift_aggspec_operand_int(p->argtype, el[i]);
 			if (lf->vtype != SCV_I64 && (v < PG_INT32_MIN || v > PG_INT32_MAX))
 				continue;
-			r->vals[nv++] = v;
+			if (sorted)
+				r->vals[nv] = v;
+			nv++;
+			r->lo = Min(r->lo, v);
+			r->hi = Max(r->hi, v);
 		}
-		sift_sort_i64(r->vals, nv);
+		if (sorted)
+			sift_sort_i64(r->vals, nv);
 		r->nvals = nv;
-		r->lo = nv > 0 ? r->vals[0] : PG_INT64_MAX;
-		r->hi = nv > 0 ? r->vals[nv - 1] : PG_INT64_MIN;
 		return true;
 	}
 }
@@ -129,7 +135,7 @@ in_list_shape(AggCtx *c, const SiftAggPred *p, uint64 *span, int *nv)
 
 	if (p->kind != SAP_IN)
 		return false;
-	if (zone_range(c, p, &r))
+	if (zone_range(c, p, &r, false))
 	{
 		*span = (uint64) r.hi - (uint64) r.lo + 1;
 		*nv = r.nvals;
@@ -202,7 +208,7 @@ zone_testable(AggCtx *c, const SiftSrcZones *z, const SiftAggPred *p, ZoneTest *
 	if (!t[p->id].done)
 	{
 		t[p->id].done = true;
-		t[p->id].ok = sift_aggspec_zone_cmp(p, c->lay, c->lay->nleaves) && z->lo[p->leaf] != NULL && zone_range(c, p, &t[p->id].r);
+		t[p->id].ok = sift_aggspec_zone_cmp(p, c->lay, c->lay->nleaves) && z->lo[p->leaf] != NULL && zone_range(c, p, &t[p->id].r, true);
 	}
 	return t[p->id].ok;
 }
