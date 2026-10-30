@@ -2261,7 +2261,7 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 
 <!-- sift-upgrade:start -->
 No default changed since 3.6; new: `sift.table_hot_update`.
 
-| Option | 3.6 | 3.6 | Column format | What a 3.6 user gets after the update |
+| Option | 3.6 | 3.7 | Column format | What a 3.6 user gets after the update |
 |---|---|---|---|---|
 | `sift.table_hot_update` | new | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 <!-- sift-upgrade:end -->

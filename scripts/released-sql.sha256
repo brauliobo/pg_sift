@@ -15,3 +15,5 @@ d0518a77b8d6889ae1ab7052bbb4de74bcf17e3684ccdde8e1f5a9c44256186d  sql/pg_sift--3
 0d22bcbff2a35582e3f697597162c3c761ebd2df42638becbafaa204c1847c6d  sql/pg_sift--3.4.sql
 d9faab5a2eb5134db9d18a1db089edc4756fefa23825ec2ffa2da33838ddd10c  sql/pg_sift--3.4--3.5.sql
 db6d94fd0b595831ad74b26eb3d3b021c6ee185b4233dcf740892422404b3cb9  sql/pg_sift--3.5.sql
+402dddbfb76b7681a06ca87f5da21a1de249a87862f62b7da4773ce68e77f4b8  sql/pg_sift--3.5--3.6.sql
+9eb76fd773b355eb521facc96d06dbec102d4918027dc5c7a37bf64c45d21be9  sql/pg_sift--3.6.sql

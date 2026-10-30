@@ -207,7 +207,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16, 3.4 up to 21, 3.5 up to 24, 3.6 up to 32 and 3.7 up to 33; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, minor 22 for an index with `key_columns` leaves unless `key_table = off` and for a `sift_table` with a foreign key or `*_id` column unless `sift.table_key_table = off`, minor 24 for an index with `count_columns`, minor 25 for a lookup dictionary of 1,024 strings or more, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16, 3.4 up to 21, 3.5 up to 24, 3.6 up to 32 and 3.7 up to 39; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, minor 22 for an index with `key_columns` leaves unless `key_table = off` and for a `sift_table` with a foreign key or `*_id` column unless `sift.table_key_table = off`, minor 24 for an index with `count_columns`, minor 25 for a lookup dictionary of 1,024 strings or more, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's (3.7 writes format 4, which 3.6 and older refuse with the format error): drop the index and create it again with the older release, or keep the newer library |
 
@@ -241,6 +241,8 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 17 (`key_cut`), 18 (heads of the sorted runs), 19 (the exceptions of a NULL-heavy leaf), 20 (`hll_columns`), 21 (`order_array_columns`) | 3.4 |
 | column format 22 (`key_table`, the key table of a segment) | 3.5 |
 | column format 24 (`count_columns`, the row counts of a text dictionary) | 3.5 |
+| column format 25 to 32 (the hash of the lookup dictionaries, the containment lanes of range, inet and cidr columns, the text signatures, the finer global order of `order_array_columns` for dates and text) | 3.6 |
+| column format 33 to 39 (the point directories at `ceil(keys * 4 / 3)` slots, the chunk table before the directory, the rollup lengths, the directory records at the end of the dictionary section, the packed order of a dictionary searched in place) | 3.7; 3.6 and older refuse them |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

@@ -47,7 +47,7 @@ ALTER EXTENSION pg_sift UPDATE;
 SET client_min_messages = warning;
 SELECT extversion FROM pg_extension WHERE extname = 'pg_sift';
 
--- at 3.6: the same statements work and so does everything that was there
+-- at 3.7: the same statements work and so does everything that was there
 SELECT * FROM rr_run($$
 ru_own | DROP TABLE ru.plain
 ru_own | DROP INDEX ru.docs_col

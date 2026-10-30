@@ -135,7 +135,7 @@ SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1
 $$);
                                      stmt                                      |                     result                      |                       by_role                       
 -------------------------------------------------------------------------------+-------------------------------------------------+-----------------------------------------------------
- SELECT sift.version()                                                         | ok: (3.6)                                       | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.version()                                                         | ok: (3.7)                                       | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.stats()                                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.stats_reset()                                                     | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.refusal_slugs()                                            | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
@@ -186,7 +186,7 @@ SELECT sift.version()
 $$);
                 stmt                |                  result                  |    by_role    
 ------------------------------------+------------------------------------------+---------------
- SELECT sift.version()              | ok: (3.6)                                | rm_own
+ SELECT sift.version()              | ok: (3.7)                                | rm_own
  SELECT sift.version()              | ERROR: permission denied for schema sift | rm_rd, rm_nos
  SELECT sift.promote('rm.docs_idx') | ok                                       | rm_own
  SELECT sift.promote('rm.docs_idx') | ERROR: permission denied for schema sift | rm_rd, rm_nos
