@@ -87,31 +87,39 @@ subtest 'with sift.async_maintenance off the writer promotes it itself' => sub {
 	unlike(slurp_file($node->logfile, $offset), $worker, 'no worker ran');
 };
 
-subtest 'a request that found only uncommitted rows is not lost' => sub {
-	$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h; VACUUM s');
-	sleep 1;
-	my $offset = -s $node->logfile;
-	my $a = $node->background_psql('postgres');
-	# the writer closes write buffers inside its transaction and asks for them to be settled: its rows are not final, the worker has nothing to do and leaves
-	$a->query_safe('BEGIN');
-	$a->query_safe('INSERT INTO s SELECT g, repeat(chr(97 + (g % 26)::int), 300 + (g % 400)::int) FROM generate_series(1, 8000) g');
-	ok($node->wait_for_log($worker, $offset), 'a worker ran and left');
-	cmp_ok(segs('sealed buffer'), '>', 0, 'closed write buffers wait for the transaction');
-	$a->query_safe('COMMIT');
-	$a->quit;
-	# no other write buffer closes: whoever looks at the table asks again
-	my $settled = 0;
-	for (1 .. 60)
-	{
-		$node->safe_psql('postgres', 'SET sift.table_auto_defrag = on; SET sift.enable_agg = off; SELECT count(*) FROM s');
-		$settled = segs('sealed buffer') == 0;
-		last if $settled;
-		select(undef, undef, undef, 0.25);
-	}
-	ok($settled, 'the closed write buffers are promoted after the commit, with no other buffer closing');
-	is(digest('s'), '8000:8000:' . $node->safe_psql('postgres', 'SELECT sum(g) FROM generate_series(1, 8000) g') . ':'
-		. $node->safe_psql('postgres', 'SELECT sum(300 + (g % 400)) FROM generate_series(1, 8000) g') . ':0', 'every row with its bytes');
-};
+# whoever looks at the table asks again once the transaction is over: a scan, and a SiftAgg aggregate (which does not scan the table)
+my %readers = ('a table scan' => ['SET sift.enable_agg = off', 'SELECT count(*) FROM s', qr/Seq Scan/],
+			   'a SiftAgg aggregate' => ['SET sift.enable_agg = on', 'SELECT count(*), sum(id) FROM s', qr/SiftAgg/]);
+foreach my $reader (sort keys %readers)
+{
+	subtest "a request that found only uncommitted rows is not lost ($reader)" => sub {
+		$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h; VACUUM s');
+		sleep 1;
+		my $offset = -s $node->logfile;
+		my $a = $node->background_psql('postgres');
+		# the writer closes write buffers inside its transaction and asks for them to be settled: its rows are not final, the worker has nothing to do and leaves
+		$a->query_safe('BEGIN');
+		$a->query_safe('INSERT INTO s SELECT g, repeat(chr(97 + (g % 26)::int), 300 + (g % 400)::int) FROM generate_series(1, 8000) g');
+		ok($node->wait_for_log($worker, $offset), 'a worker ran and left');
+		cmp_ok(segs('sealed buffer'), '>', 0, 'closed write buffers wait for the transaction');
+		$a->query_safe('COMMIT');
+		$a->quit;
+		my ($set, $query, $plan) = @{ $readers{$reader} };
+		like($node->safe_psql('postgres', "$set; EXPLAIN $query"), $plan, 'the plan of the reader');
+		# no other write buffer closes
+		my $settled = 0;
+		for (1 .. 60)
+		{
+			$node->safe_psql('postgres', "SET sift.table_auto_defrag = on; $set; $query");
+			$settled = segs('sealed buffer') == 0;
+			last if $settled;
+			select(undef, undef, undef, 0.25);
+		}
+		ok($settled, 'the closed write buffers are promoted after the commit, with no other buffer closing');
+		is(digest('s'), '8000:8000:' . $node->safe_psql('postgres', 'SELECT sum(g) FROM generate_series(1, 8000) g') . ':'
+			. $node->safe_psql('postgres', 'SELECT sum(300 + (g % 400)) FROM generate_series(1, 8000) g') . ':0', 'every row with its bytes');
+	};
+}
 
 $node->stop;
 done_testing();
