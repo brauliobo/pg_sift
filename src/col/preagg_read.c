@@ -488,10 +488,24 @@ sift_cpagg_meas_slot(const SiftCHistDim *d, int m)
 	return -1;
 }
 
-/* the varints of n values are passed over */
+/* the varints of n values are passed over; eight bytes at a time while they end fewer values than are left (a value that continues into the next eight is counted there) */
 static void
 skip_u(Rd *r, uint32 n)
 {
+	while (n > 8 && r->end - r->p >= 8)
+	{
+		uint64		w,
+					ends;
+		uint32		c;
+
+		memcpy(&w, r->p, sizeof(w));
+		ends = ~w & UINT64CONST(0x8080808080808080);
+		c = (uint32) (((ends >> 7) * UINT64CONST(0x0101010101010101)) >> 56);
+		if (c >= n)
+			break;
+		n -= c;
+		r->p += 8;
+	}
 	while (n-- > 0)
 	{
 		const uint8 *p = r->p;

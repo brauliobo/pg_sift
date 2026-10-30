@@ -974,10 +974,14 @@ preagg_rollup(AggExec *ex)
 	if (s->npred > 0 || has_filter(s))
 		rollup_bind(ex, &r);
 	keep = NULL;
-	/* the conjuncts of a scan of the elements that are the rows' are zone comparisons the unit lies inside (preagg_zones); those of the rows' rollup all test dims */
+	/* the conjuncts of a scan of the elements that are the rows' are zone comparisons the unit lies inside (preagg_zones), and so is a range of the rows' rollup on a leaf that is not its dim */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == qlevel)
+	{
+		int			l = ex->pa.rows ? sift_aggspec_pred_leaf(s->pred[i], ex->lay, ex->nbase, -1) : -2;
+
+		if (s->pred[i]->level == qlevel && (l < 0 || rollup_dim_leaf(ex, l)))
 			keep = pred_pass(ex, s->pred[i], qlevel, r.ntuples, keep);
+	}
 	for (int ai = 0; ai < s->naggs; ai++)
 		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, qlevel, r.ntuples, NULL) : NULL;
 	for (int d = 0; d < ex->pa.ndims; d++)
