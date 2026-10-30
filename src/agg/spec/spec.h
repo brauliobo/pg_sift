@@ -16,6 +16,9 @@ typedef struct SiftAggOrd
 	Oid			collation;
 	bool		nulls_first;
 	Const	   *subst;			/* COALESCE(key, subst) is the sort value: a NULL key sorts as this constant; NULL: the key itself */
+	Const	   *eq;				/* (key = eq) is the sort value, a boolean made with the operator eqop under the collation eqcoll; NULL: the key itself */
+	Oid			eqop;
+	Oid			eqcoll;
 } SiftAggOrd;
 
 typedef struct SiftAggSpec

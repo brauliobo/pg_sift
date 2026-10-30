@@ -444,6 +444,9 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, (int) s->ord[i].collation);
 		put_int(p, s->ord[i].nulls_first);
 		put_node(p, (Node *) s->ord[i].subst);
+		put_node(p, (Node *) s->ord[i].eq);
+		put_int(p, (int) s->ord[i].eqop);
+		put_int(p, (int) s->ord[i].eqcoll);
 	}
 	return pk.items;
 }
@@ -904,6 +907,9 @@ sift_aggspec_unpack(const List *items)
 		s->ord[i].collation = (Oid) get_int(u);
 		s->ord[i].nulls_first = get_int(u);
 		s->ord[i].subst = (Const *) get_node(u);
+		s->ord[i].eq = (Const *) get_node(u);
+		s->ord[i].eqop = (Oid) get_int(u);
+		s->ord[i].eqcoll = (Oid) get_int(u);
 	}
 	return s;
 }

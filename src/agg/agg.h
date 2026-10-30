@@ -76,6 +76,7 @@ extern MemoryContext sift_agg_memo_begin(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
 extern void sift_agg_drop_unused_laterals(Query *q);
+extern void sift_agg_drop_sorts(PlannedStmt *stmt);
 #ifdef SIFT_TESTING
 extern int64 sift_source_lookups;	/* the asks of has_column_source that went to the catalog */
 #endif

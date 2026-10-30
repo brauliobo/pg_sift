@@ -132,6 +132,7 @@ ordered_prefix(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *out
 
 		if (j < 0 || n >= SIFT_AGG_MAX_KEYS)
 			break;
+		memset(&ord[n], 0, sizeof(SiftAggOrd));
 		ord[n].key = j;
 		ord[n].sortop = sortop;
 		ord[n].collation = pk->pk_eclass->ec_collation;
@@ -253,6 +254,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		sortop = sift_pathkey_sortop(pk, exprType((Node *) tle->expr));
 		if (!found || !OidIsValid(sortop) || n >= SIFT_AGG_MAX_KEYS)
 			break;
+		memset(&ord[n], 0, sizeof(SiftAggOrd));
 		ord[n].key = j;
 		ord[n].sortop = sortop;
 		ord[n].collation = pk->pk_eclass->ec_collation;

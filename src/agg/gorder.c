@@ -14,7 +14,9 @@
 #include "port/pg_bitutils.h"
 #include "utils/jsonb.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/sortsupport.h"
@@ -233,7 +235,10 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 	IdVal	   *vals;
 	SortSupportData ssup = {0};
 	uint32		r = 0;
+	FmgrInfo	eqfn;
 
+	if (o->eq != NULL)
+		fmgr_info(get_opcode(o->eqop), &eqfn);
 	for (uint32 i = 0; i < n; i++)
 		maxid = Max(maxid, ids[(Size) i * nord + col]);
 	rank = palloc0((maxid + 1) * sizeof(uint32));
@@ -265,11 +270,14 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 				break;
 			}
 	}
+	/* (key = constant): the sort value is the boolean */
+	for (uint32 i = 0; o->eq != NULL && i < nd; i++)
+		vals[i].val = FunctionCall2Coll(&eqfn, o->eqcoll, vals[i].val, o->eq->constvalue);
 	ssup.ssup_cxt = CurrentMemoryContext;
 	ssup.ssup_collation = o->collation;
 	ssup.ssup_nulls_first = o->nulls_first;
 	PrepareSortSupportFromOrderingOp(o->sortop, &ssup);
-	if (!(ex->spec->key[o->key].typid == JSONBOID && nd > 64 && jsonb_presort(vals, nd, &ssup)))
+	if (!(o->eq == NULL && ex->spec->key[o->key].typid == JSONBOID && nd > 64 && jsonb_presort(vals, nd, &ssup)))
 		qsort_arg(vals, nd, sizeof(IdVal), idval_cmp, &ssup);
 	/* NULLs rank before every value or after all of them; the values from 1 */
 	for (uint32 i = 0; i < nd; i++)

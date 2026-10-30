@@ -419,7 +419,10 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PG_END_TRY();
 	delete_discarded();
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
+	{
 		stmt->jitFlags = PGJIT_NONE;
+		sift_agg_drop_sorts(stmt);
+	}
 	return stmt;
 }
 
