@@ -95,11 +95,17 @@ for n in "${points[@]}"; do
 	(( done_points < POINTS )) || break
 	seen[$n]=1
 	done_points=$((done_points + 1))
-	PM=$(head -1 "$(dir primary)/data/postmaster.pid")
-	SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
-	sql primary "${OPTS[@]}" "SET sift.test_crash_dir = $n" "$BUILD" >/dev/null 2>&1
-	if restart; then recovered "leader killed $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $updates" || true
-	else not_ok "leader killed $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $updates: restart"; fi
+	# the participants claim the heap by superblock, so the leader publishes 4 or 5 updates, build after build of one table: a build that ends before the n-th one is dropped and run again
+	crashed=
+	for _ in $(seq 8); do
+		PM=$(head -1 "$(dir primary)/data/postmaster.pid")
+		SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
+		if sql primary "${OPTS[@]}" "SET sift.test_crash_dir = $n" "$BUILD" >/dev/null 2>&1; then sql primary "DROP INDEX t_idx" >/dev/null; else crashed=1; break; fi
+	done
+	what="leader killed $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $updates"
+	if [[ -z $crashed ]]; then not_ok "$what: eight builds ended before it"
+	elif restart; then recovered "$what" || true
+	else not_ok "$what: restart"; fi
 done
 echo "1..$NTEST"
 finish
