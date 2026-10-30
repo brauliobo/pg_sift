@@ -283,7 +283,7 @@ function_rescans(Plan *plan)
 }
 
 /*
- * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat.c): the flat plan wins if it
+ * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat/): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
  */
 static PlannedStmt *

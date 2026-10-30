@@ -1,4 +1,4 @@
--- A flattened lateral sub-select (agg/flat.c) runs in the scan although the query also looks up the keys of its table in a CTE that reads another
+-- A flattened lateral sub-select (agg/flat/) runs in the scan although the query also looks up the keys of its table in a CTE that reads another
 -- table with a column index: those few probes are not an ordinary plan the flat plan must be set against, and the estimates of the plan as written
 -- (the CTE's rows and the rows of each key) are low by two orders of magnitude. The same when the planner reads the table of that CTE as an input of a merge join: the join
 -- is priced for the few rows it reads of it, not for its index scan (30,000 members are priced 997 for the scan, over a quarter of the flat plan, and the join 22).

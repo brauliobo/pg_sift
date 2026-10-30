@@ -6,7 +6,7 @@
  * rewrite is made where the query is that one: the sub-select has the one window function, the outer WHERE keeps its first row (`= 1`, `<= 1`,
  * `< 2`), so every row that is left has rn = 1 and the column reads 1 anywhere the query uses it. Rows of a tie in o are in no order in the
  * window and in DISTINCT ON: the row kept is one of the tie in both. The planner hook plans the query both ways, as for the lateral
- * sub-selects of flat.c, and keeps the rewritten one only if it runs in the scan.
+ * sub-selects of flat/, and keeps the rewritten one only if it runs in the scan.
  *
  * The first N rows (`rn <= N`, N > 1) are the group's array of each column, ordered by o, cut to N elements and unnested with their ordinal:
  * `(SELECT k, array_agg(c ORDER BY o) a FROM t GROUP BY k) g, LATERAL unnest(g.a[1:N]) WITH ORDINALITY u(c, rn)`. The scan runs the

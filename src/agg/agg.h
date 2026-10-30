@@ -15,7 +15,7 @@ extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_force;
 
 /*
- * The passes that rewrite a query before it is planned (agg/flat.c, agg/preinline.c, agg/cte/rewrite.c, core/jsonbuild.c) look for sub-selects, CTE
+ * The passes that rewrite a query before it is planned (agg/flat/, agg/preinline.c, agg/cte/rewrite.c, core/jsonbuild.c) look for sub-selects, CTE
  * references and calls; a list of constants (`k IN (1, 2, ..)`) holds none, and walking it costs about 570 instructions a key over all of them.
  * SIFT_SKIP_CONST_LIST(n, ret) is the first line of their walkers, after the NULL test.
  */
