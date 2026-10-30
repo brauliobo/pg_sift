@@ -281,7 +281,7 @@ arr_elem_type(Oid elem)
 static bool
 arr_both_pays(Relation heap, const ArrCand *c, double growth)
 {
-	double		total = heap->rd_rel->reltuples,
+	double		total = keycols_heap_rows(heap),
 				ndistinct,
 				corr,
 				distinct = (double) c->arrs.n / c->rows * total,
@@ -312,7 +312,7 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 	MemoryContext row_cx;
 	double		base;
 
-	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON || heap->rd_rel->reltuples < ARR_AUTO_ROWS || nst == 0)
+	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON || keycols_heap_rows(heap) < ARR_AUTO_ROWS || nst == 0)
 		return;
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < SIFT_COL_MAX_COLS; i++)
 	{

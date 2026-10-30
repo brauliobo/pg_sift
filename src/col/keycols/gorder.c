@@ -66,7 +66,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || (gopt[0] != '\0' && !gauto && strcmp(gopt, "off") != 0))
 		return;
 	keycols_analyze_if_unknown(heap, index);
-	if (heap->rd_rel->reltuples < GORD_AUTO_ROWS)
+	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;
 	index_bytes = keycols_est_index_bytes(heap, index) + GORD_ROW_OVERHEAD;
 	room = index_bytes * GORD_AUTO_GROWTH_PCT / 100;
@@ -96,7 +96,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		if (text)
 		{
 			/* the keys and addresses (4.4 bytes) and the strings, which front coding shortens by a tenth; the build adds the sort of the strings, by strcoll under a locale */
-			cand[ncand].bytes = 4.4 + Min(width, 255) * Min(1.0, ndistinct / Max(heap->rd_rel->reltuples, 1)) * 0.9;
+			cand[ncand].bytes = 4.4 + Min(width, 255) * Min(1.0, ndistinct / Max(keycols_heap_rows(heap), 1)) * 0.9;
 			cand[ncand].write = (varstr_cmp("a", 1, "B", 1, TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attcollation) < 0 ? GORD_TEXT_WRITE_LOC : GORD_TEXT_WRITE_C) * 4.0 / index->rd_index->indnatts;
 		}
 		ncand++;
@@ -137,11 +137,11 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
-		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || heap->rd_rel->reltuples / ndistinct < GORD_GROUP_DEPTH)
+		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
 		/* a foreign key or a column named *_id is the entity the rows belong to; among those, or among the rest, the one of most values */
 		if (keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d)))
-			ndistinct += heap->rd_rel->reltuples;
+			ndistinct += keycols_heap_rows(heap);
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;

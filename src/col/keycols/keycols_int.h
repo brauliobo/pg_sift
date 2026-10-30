@@ -42,6 +42,7 @@
 #define GORD_GROUP_BYTES	6.0		/* the second order of a timestamp: its 5.6 bytes a row and the groups (the structure's share of the room, as an array's) */
 
 extern AttrNumber	keycols_heap_attno(Relation index, const SiftColDef *d);
+extern double	keycols_heap_rows(Relation heap);
 extern bool	keycols_col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32 *width);
 extern bool	keycols_ends_in_id(const char *name);
 extern bool	keycols_is_fk_column(Relation heap, AttrNumber attno);

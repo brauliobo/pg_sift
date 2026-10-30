@@ -23,5 +23,12 @@ SELECT rep, count(*) FROM aa GROUP BY 1 ORDER BY 1 LIMIT 3;
 CREATE TABLE ab AS SELECT i AS id, ARRAY['a' || i] AS uniq FROM generate_series(1, 500) i;
 CREATE INDEX ab_col ON ab USING sift_col (id, uniq);
 SELECT leaf, path FROM sift.col_leaves('ab_col') ORDER BY leaf;
-DROP TABLE aa, ab;
+-- a table loaded and indexed before its first ANALYZE or VACUUM (reltuples -1) is sized from its pages, as the planner does: it gets the same choice as the analyzed one
+CREATE TABLE ac (id int, uniq text[], rep text[]) WITH (autovacuum_enabled = false);
+INSERT INTO ac SELECT i, ARRAY['a' || i, 'b' || i % 50, 'c' || i % 7], ARRAY['r' || i % 5, 's' || i % 3] FROM generate_series(1, 12000) i;
+SELECT reltuples FROM pg_class WHERE relname = 'ac';
+CREATE INDEX ac_col ON ac USING sift_col (id, uniq, rep);
+SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
+SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
+DROP TABLE aa, ab, ac;
 DROP EXTENSION pg_sift;

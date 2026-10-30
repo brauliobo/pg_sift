@@ -198,7 +198,7 @@ sift_col_auto_point(Relation heap, Relation index)
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (plain[0] != '\0' || (opt[0] != '\0' && !autolist))
 		return;
-	rows = heap->rd_rel->reltuples;
+	rows = keycols_heap_rows(heap);
 	initStringInfo(&list);
 	base = point_base_bytes(heap, index, rel->schema);
 	for (int c = 0; c < rel->schema->ncols && rows > 0; c++)

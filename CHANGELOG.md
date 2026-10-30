@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Improved: pg_sift: the build-time choices of a `sift_col` index (the elements of an array column, the sorted arrays, the point directories) size a table that was never vacuumed or analyzed from its pages, as the planner does, instead of reading `reltuples = -1`: an index created right after a load kept the whole-array image of a `text[]` column, and every element test (`labels @> ARRAY['x']`) decoded, hashed and interned each distinct array; 500,000 rows with one label filter and a group by `kind` execute 459.6 M instructions, 112.9 ms to 40.0 M, 5.4 ms.
 - Improved: pg_sift: the load that `sift.table_bulk_groups` (on by default since 3.3) writes, `COPY`, `CREATE TABLE AS` and `REFRESH MATERIALIZED VIEW` into a `sift_table` of 16 MB of rows or more, writes the groups of a run in the backend and in up to `max_parallel_maintenance_workers` parallel workers (merged in 3.7.1): 1,000,000 orders, the backend's instructions 22,630 to 17,820 M (19,290 M at the default `maintenance_work_mem`), the cluster's +5.4%, the same WAL and TIDs; `max_parallel_maintenance_workers = 0` keeps the load in the backend.
 
 ## 3.7.0 - 2026-10-30

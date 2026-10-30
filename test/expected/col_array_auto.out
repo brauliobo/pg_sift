@@ -98,5 +98,41 @@ SELECT leaf, path FROM sift.col_leaves('ab_col') ORDER BY leaf;
     3 | uniq#2
 (4 rows)
 
-DROP TABLE aa, ab;
+-- a table loaded and indexed before its first ANALYZE or VACUUM (reltuples -1) is sized from its pages, as the planner does: it gets the same choice as the analyzed one
+CREATE TABLE ac (id int, uniq text[], rep text[]) WITH (autovacuum_enabled = false);
+INSERT INTO ac SELECT i, ARRAY['a' || i, 'b' || i % 50, 'c' || i % 7], ARRAY['r' || i % 5, 's' || i % 3] FROM generate_series(1, 12000) i;
+SELECT reltuples FROM pg_class WHERE relname = 'ac';
+ reltuples 
+-----------
+        -1
+(1 row)
+
+CREATE INDEX ac_col ON ac USING sift_col (id, uniq, rep);
+NOTICE:  sift_col index ac_col keeps the lengths of the arrays uniq, rep
+DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
+HINT:  ALTER INDEX ac_col SET (array_lengths = 'off'), then REINDEX, drops them.
+NOTICE:  sift_col index ac_col keeps the elements of the arrays uniq
+DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.
+HINT:  ALTER INDEX ac_col SET (paths = ''), then REINDEX, leaves the elements out.
+SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
+               options               
+-------------------------------------
+ {array_lengths=on,"paths=auto: ...}
+(1 row)
+
+SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
+ leaf |  path  |       type       
+------+--------+------------------
+    0 | id     | integer
+    1 | uniq   | text[]
+    2 | uniq#1 | integer (lane 1)
+    3 | uniq#2 | integer (lane 2)
+    4 | uniq[] | bigint
+    5 | uniq[] | text
+    6 | rep    | text[]
+    7 | rep#1  | integer (lane 1)
+    8 | rep#2  | integer (lane 2)
+(9 rows)
+
+DROP TABLE aa, ab, ac;
 DROP EXTENSION pg_sift;
