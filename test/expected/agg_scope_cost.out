@@ -43,6 +43,10 @@ END $$;
 CREATE FUNCTION in_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
 WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+CREATE FUNCTION cte_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+WITH scope AS MATERIALIZED (SELECT DISTINCT d.id FROM sc_dims d WHERE %s)
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
+WHERE f.parent_id IN (SELECT id FROM scope) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
 CREATE FUNCTION join_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f JOIN sc_dims d ON d.id = f.parent_id
 WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
@@ -66,6 +70,19 @@ SELECT * FROM same(in_scope('d.id % 3 = 1'));
 (1 row)
 
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_c'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+-- the same list as a CTE of ids (the scope of a request): PostgreSQL counts a row or two for the CTE as well, and the keys it holds are not a literal list
+SELECT * FROM same(cte_scope('d.settings ->> ''tier'' = ''tier_b'''));
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
+(1 row)
+
+SELECT * FROM same(cte_scope('d.id % 3 = 1'));
   plan   | result_rows | vs_normal_plan 
 ---------+-------------+----------------
  SiftAgg |           4 |              0
@@ -100,6 +117,13 @@ SELECT * FROM same(join_scope('d.id IN (3, 4)'));
  normal |           2 |              0
 (1 row)
 
+-- a CTE of a literal list is a count the planner knows: the btree plan reads the few parents
+SELECT * FROM same(cte_scope('d.id IN (3, 4)'));
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           2 |              0
+(1 row)
+
 -- the switch: the normal plan keeps the estimate
 SET sift.agg_param_set_size = 0;
 SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b'''))).plan AS plan_off;
@@ -119,6 +143,6 @@ SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)'))) = known AS known_u
  t
 (1 row)
 
-DROP FUNCTION in_scope(text), join_scope(text), plan_of(text), same(text);
+DROP FUNCTION in_scope(text), cte_scope(text), join_scope(text), plan_of(text), same(text);
 DROP TABLE sc_facts, sc_dims, sc_kinds;
 DROP EXTENSION pg_sift;

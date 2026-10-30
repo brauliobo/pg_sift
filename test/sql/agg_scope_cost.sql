@@ -45,6 +45,11 @@ CREATE FUNCTION in_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT for
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
 WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
 
+CREATE FUNCTION cte_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+WITH scope AS MATERIALIZED (SELECT DISTINCT d.id FROM sc_dims d WHERE %s)
+SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
+WHERE f.parent_id IN (SELECT id FROM scope) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+
 CREATE FUNCTION join_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f JOIN sc_dims d ON d.id = f.parent_id
 WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
@@ -54,6 +59,9 @@ SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_b'''));
 SELECT * FROM same(in_scope('d.id % 3 = 1'));
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_c'''));
+-- the same list as a CTE of ids (the scope of a request): PostgreSQL counts a row or two for the CTE as well, and the keys it holds are not a literal list
+SELECT * FROM same(cte_scope('d.settings ->> ''tier'' = ''tier_b'''));
+SELECT * FROM same(cte_scope('d.id % 3 = 1'));
 -- the facts joined to a third table: the normal plan reads them by the probes of a nested loop below a hash join, priced for the same keys
 SELECT * FROM same($f$
 SELECT k.label, count(*) AS n FROM sc_dims d JOIN sc_facts f ON f.parent_id = d.id JOIN sc_kinds k ON k.kind = f.kind
@@ -63,6 +71,8 @@ SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_none'''));
 -- a filter PostgreSQL has statistics for (the primary key and its values): its estimate stands and the btree plan reads the few parents
 SELECT * FROM same(in_scope('d.id IN (3, 4)'));
 SELECT * FROM same(join_scope('d.id IN (3, 4)'));
+-- a CTE of a literal list is a count the planner knows: the btree plan reads the few parents
+SELECT * FROM same(cte_scope('d.id IN (3, 4)'));
 -- the switch: the normal plan keeps the estimate
 SET sift.agg_param_set_size = 0;
 SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b'''))).plan AS plan_off;
@@ -74,6 +84,6 @@ CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (
 RESET sift.agg_param_set_size;
 SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)'))) = known AS known_unchanged FROM c_est;
 
-DROP FUNCTION in_scope(text), join_scope(text), plan_of(text), same(text);
+DROP FUNCTION in_scope(text), cte_scope(text), join_scope(text), plan_of(text), same(text);
 DROP TABLE sc_facts, sc_dims, sc_kinds;
 DROP EXTENSION pg_sift;

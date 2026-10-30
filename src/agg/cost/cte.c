@@ -379,6 +379,63 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 	return ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
 }
 
+/*
+ * Does PostgreSQL's count of the rows of a CTE rest on a default guess? The body is read as the planner counted it: a filter of a table that has no
+ * statistics, a semi-join on an expression (the rows of a sub-select that builds its key with coalesce), an equivalence of expressions, a HAVING or a window
+ * in a sub-select it reads, and the same of the CTEs it reads. A CTE of tables filtered by their statistics and joined on columns is a count.
+ */
+static bool
+body_guessed(PlannerInfo *body, int depth)
+{
+	if (depth > 4 || body->parse->havingQual != NULL || body->parse->hasWindowFuncs)
+		return true;
+	foreach_node(SpecialJoinInfo, sj, body->join_info_list)
+		foreach_ptr(Node, e, sj->semi_rhs_exprs)
+			if (!IsA(strip_relabel(e), Var))
+				return true;
+	foreach_node(EquivalenceClass, ec, body->eq_classes)
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+			if (!em->em_is_const && !IsA(strip_relabel((Node *) em->em_expr), Var) && !bms_is_empty(em->em_relids))
+				return true;
+	for (int i = 1; i < body->simple_rel_array_size; i++)
+	{
+		RelOptInfo *rel = body->simple_rel_array[i];
+		RangeTblEntry *rte = body->simple_rte_array[i];
+
+		if (rel == NULL || rel->reloptkind != RELOPT_BASEREL)
+			continue;
+		if (rte->rtekind == RTE_RELATION)
+		{
+			foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+				if (!filter_has_stats(body, ri))
+					return true;
+		}
+		else if (rte->rtekind == RTE_SUBQUERY && rel->subroot != NULL)
+		{
+			if (body_guessed(rel->subroot, depth + 1))
+				return true;
+		}
+		else if (rte->rtekind == RTE_CTE && !rte->self_reference)
+		{
+			int			id = cte_plan_id(body, rte);
+
+			if (id > 0 && body_guessed(list_nth(body->glob->subroots, id - 1), depth + 1))
+				return true;
+		}
+	}
+	return false;
+}
+
+/* does PostgreSQL's count of the rows of the CTE the lookup reads rest on a guess, and no literal list names its keys? */
+bool
+cte_guessed(AggCtx *c, const JoinCtx *jc)
+{
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+	int			plan_id = cte_plan_id(c->root, rte);
+
+	return plan_id > 0 && cte_list_keys(c, jc, 0) == HUGE_VAL && body_guessed(list_nth(c->root->glob->subroots, plan_id - 1), 0);
+}
+
 /* the keys of the table the literal list a lookup CTE holds is worth (list_keys_worth), for its column k: 0 for any other lookup */
 double
 cte_list_worth(AggCtx *c, const JoinCtx *jc, int k, Var *key)

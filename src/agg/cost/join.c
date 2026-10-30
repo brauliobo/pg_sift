@@ -215,11 +215,18 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 	return jc->cpath ? Max(child_keys(c->root, jc->cpath), 1.0) : lookup_rows(c, jc);
 }
 
-/* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
+/*
+ * is the count of a lookup a default guess: a filter of a table that PostgreSQL has no statistics for, or a CTE whose body is counted by defaults (cte_guessed)? A CTE
+ * of ids built from sub-selects on an expression key or a jsonb filter is estimated at the clamp of one row whatever it holds, and the normal plan would be priced for one probe
+ */
 bool
 lookup_guessed(AggCtx *c, const JoinCtx *jc)
 {
-	return planner_rt_fetch(jc->rti, c->root)->rtekind == RTE_RELATION && !lookup_counted(c, jc);
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+
+	if (rte->rtekind == RTE_CTE)
+		return cte_guessed(c, jc);
+	return rte->rtekind == RTE_RELATION && !lookup_counted(c, jc);
 }
 
 /*
