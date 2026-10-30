@@ -286,7 +286,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README: PostgreSQL, `sift_col` and `sift_table` with the defaults of the build (`sift.table_auto_defrag` is on) and `sift_col` with the opt-in automatic vacuum and merge (lane `sift_maint`: `ALTER DATABASE ... |
 | `store.sh`, `store.py` |  |
 | `duckdb.sh`, `duckdb.py` |  |
-| `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared |
+| `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared; the code of `cases.py` is the package `cases/` (settings, registry, server, measure, run, check, main) |
 | `cases_render.py`, `cases_discover.py` |  |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
