@@ -4145,7 +4145,8 @@ gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 
 {
 	GOrdLeaf   *g = gord_leaf(seg, col);
 
-	if (g == NULL || g->hdr.gcol >= 0)
+	/* the keys of a text block are ranks of the segment's strings, not the codes of its dictionary that a range of the scan is in */
+	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0)
 		return false;
 	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
 	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);

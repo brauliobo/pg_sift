@@ -1,0 +1,102 @@
+-- A text column with an order array: an equality, a range and a BETWEEN of its strings read as a bitmap index scan hand the heap the rows of the units, not the addresses of
+-- the array, whose keys are the ranks of the segment's strings and not the codes of its dictionary. The counts are the heap's, under the C collation and under a locale, with a write buffer.
+-- Then 105,000 rows of 10 to a heap page (the late blocks are past 10,000), in segments cut by superblock and cut by a key, an integer and a text column with an array and a second
+-- condition on another column: the bitmap scan returns the rows of the seq scan over many ranges, the late blocks included.
+CREATE EXTENSION pg_sift CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+CREATE TABLE tb (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 200));
+ALTER TABLE tb ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tb SELECT i, (ARRAY['Zeta', 'alpha', 'Alpha', 'beta', 'été', 'ete', 'zz', '10', 'a-b', 'ab'])[1 + i % 10] || (i % 97), (ARRAY['Zeta', 'alpha', 'Alpha', 'beta', 'été', 'ete', 'zz', '10', 'a-b', 'ab'])[1 + (i * 3) % 10] || (i % 89)
+FROM generate_series(1, 9000) i;
+CREATE INDEX tb_i ON tb USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
+NOTICE:  sift_col index "tb_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+INSERT INTO tb SELECT 20000 + i, 'alpha' || (i % 97), 'beta' || (i % 89) FROM generate_series(1, 300) i;
+ANALYZE tb;
+CREATE FUNCTION tb_count(cond text, bitmap bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	IF bitmap THEN
+		SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSE
+		SET LOCAL sift.enable_col_scan = off; SET LOCAL sift.enable_agg = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+	END IF;
+	EXECUTE 'SELECT count(*) FROM tb WHERE ' || cond INTO n;
+	RETURN n;
+END $$;
+SELECT cond, tb_count(cond, true) = tb_count(cond, false) AS same, tb_count(cond, false) > 0 AS found
+FROM (VALUES ('c = ''alpha5'''), ('c = ''zz9'''), ('c = ''nothing'''), ('c >= ''alpha'' AND c < ''b'''), ('c BETWEEN ''Zeta5'' AND ''beta7'''), ('c < ''Alpha'''), ('c > ''zz90'''),
+			 ('l = ''beta5'''), ('l = ''ete3'''), ('l >= ''alpha'' AND l < ''b'''), ('l BETWEEN ''Alpha5'' AND ''beta7''')) q(cond);
+              cond              | same | found 
+--------------------------------+------+-------
+ c = 'alpha5'                   | t    | t
+ c = 'zz9'                      | t    | t
+ c = 'nothing'                  | t    | f
+ c >= 'alpha' AND c < 'b'       | t    | t
+ c BETWEEN 'Zeta5' AND 'beta7'  | t    | t
+ c < 'Alpha'                    | t    | t
+ c > 'zz90'                     | t    | t
+ l = 'beta5'                    | t    | t
+ l = 'ete3'                     | t    | t
+ l >= 'alpha' AND l < 'b'       | t    | t
+ l BETWEEN 'Alpha5' AND 'beta7' | t    | t
+(11 rows)
+
+DROP TABLE tb;
+CREATE FUNCTION tb_count(tbl text, cond text, bitmap bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	IF bitmap THEN
+		SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSE
+		SET LOCAL sift.enable_col_scan = off; SET LOCAL sift.enable_agg = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+	END IF;
+	EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl, cond) INTO n;
+	RETURN n;
+END $$;
+-- ts: segments cut by superblock (block ranges); tk: the same rows cut by a key that does not follow the heap
+CREATE TABLE ts (id int, k int, d int, c text COLLATE "C", flag int, pad text DEFAULT repeat('x', 800));
+ALTER TABLE ts ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ts SELECT i, (i * 7919) % 5003, i % 20011, 'k' || lpad(((i * 31) % 20011)::text, 5, '0'), CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END FROM generate_series(1, 105000) i;
+CREATE TABLE tk (LIKE ts INCLUDING DEFAULTS);
+ALTER TABLE tk ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tk SELECT * FROM ts;
+CREATE INDEX ts_i ON ts USING sift_col (id sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_columns = 'd', order_array_columns = 'd, c', key_cut = 'off');
+NOTICE:  sift_col index "ts_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+CREATE INDEX tk_i ON tk USING sift_col (k sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_columns = 'd', order_array_columns = 'd, c', key_cut = 'k');
+NOTICE:  sift_col index "tk_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+ANALYZE ts;
+ANALYZE tk;
+SELECT sift.col_verify('ts_i'), sift.col_verify('tk_i');
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SELECT pg_relation_size('ts') / 8192 > 10000 AS late_blocks;
+ late_blocks 
+-------------
+ t
+(1 row)
+
+CREATE TABLE tq (cond text);
+INSERT INTO tq
+SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %s AND %s AND flag IS NULL', 'd >= %s AND d < %s AND flag = 1']) f,
+	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) a, unnest(ARRAY[40, 900]) w;
+INSERT INTO tq
+SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) f,
+	   (VALUES ('k00000', 'k00040'), ('k04000', 'k04900'), ('k10050', 'k10090'), ('k16500', 'k17400'), ('k19900', 'k19999')) v(a, b);
+SELECT t.tbl, count(*) AS conditions, count(*) FILTER (WHERE tb_count(t.tbl, q.cond, true) = tb_count(t.tbl, q.cond, false)) AS same,
+	   count(*) FILTER (WHERE tb_count(t.tbl, q.cond, false) > 0) AS found
+FROM tq q, (VALUES ('ts'), ('tk')) t(tbl) GROUP BY t.tbl ORDER BY 1;
+ tbl | conditions | same | found 
+-----+------------+------+-------
+ tk  |         45 |   45 |    45
+ ts  |         45 |   45 |    45
+(2 rows)
+
+DROP TABLE ts, tk, tq;
+DROP FUNCTION tb_count(text, text, bool);
+DROP FUNCTION tb_count(text, bool);
+DROP EXTENSION pg_sift CASCADE;
