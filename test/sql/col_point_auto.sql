@@ -69,6 +69,14 @@ SELECT popt('pj_auto') AS pj_point_tid_columns,
 	round(100.0 * (pg_relation_size('pj_auto') - pg_relation_size('pj_off')) / pg_relation_size('pj_off'), -1) AS measured_growth_pct;
 DROP TABLE pj;
 
+-- the paths of a jsonb column have the statistics of the column, not their own: none of them is a lookup key or an order array of its own, and the default builds
+CREATE TABLE pjp AS SELECT g AS id, jsonb_build_object('a', (hashint8extended(g, 5) & 1048575) % 100000, 'b', 'v' || (hashint8extended(g, 6) & 1048575) % 500,
+	'tags', jsonb_build_array('t' || (hashint8extended(g, 7) & 1048575) % 50)) AS doc FROM generate_series(1, 300000) g;
+VACUUM (FREEZE, ANALYZE) pjp;
+CREATE INDEX pjp_auto ON pjp USING sift_col (doc);
+SELECT popt('pjp_auto') AS pjp_options;
+DROP TABLE pjp;
+
 DROP FUNCTION popt(regclass);
 DROP TABLE pa, pas;
 DROP EXTENSION pg_sift;

@@ -117,11 +117,11 @@ keycols_leaf_name(Relation index, const SiftColDef *d)
 	return NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
 }
 
-/* the heap column of a leaf (0: a path of a document, which no constraint names) */
+/* the heap column of a leaf (0: an expression, or a path of a document, which has no statistics or constraint of its own) */
 AttrNumber
 keycols_heap_attno(Relation index, const SiftColDef *d)
 {
-	return index->rd_index->indkey.values[d->attno - 1];
+	return d->path[0] != '\0' ? 0 : index->rd_index->indkey.values[d->attno - 1];
 }
 
 bool
