@@ -247,7 +247,9 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 {
 	int64	   *r;
 
-	if (t->mem && (t->nmem + 1) * t->stride * (int64) sizeof(int64) > sort_memory())
+	if (t->memmax == 0)
+		t->memmax = sort_memory();
+	if (t->mem && (t->nmem + 1) * t->stride * (int64) sizeof(int64) > t->memmax)
 		mem_spill(t);
 	if (t->mem == NULL)
 	{
@@ -259,7 +261,7 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 		t->capmem *= 2;
 		t->mem = repalloc(t->mem, t->capmem * t->stride * sizeof(int64));
 	}
-	r = mem_row(t, t->nmem++);
+	r = mem_row(t, t->nmem);
 	memset(r, 0, t->stride * sizeof(int64));
 	for (int j = 0; j < t->nkey; j++)
 		if (isnull[j])
@@ -267,6 +269,71 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 		else
 			r[j] = k[j];
 	r[t->stride - 1] = tid;
+	if (t->bar && mem_cmp(r, t->bar, t) > 0)
+		return;
+	t->nmem++;
+	if (t->keep > 0 && t->nmem >= 2 * t->keep)
+		mem_cut(t);
+}
+
+static inline void
+mem_swap(const SiftTopN *t, int64 a, int64 b)
+{
+	int64	   *x = mem_row(t, a),
+			   *y = mem_row(t, b);
+
+	for (int i = 0; i < t->stride; i++)
+	{
+		int64		v = x[i];
+
+		x[i] = y[i];
+		y[i] = v;
+	}
+}
+
+/* The rows of mem rearranged so that the first n are the n that sort first (in no order): quickselect, the rows differ by their TIDs */
+static void
+mem_select(SiftTopN *t, int64 n)
+{
+	int64		lo = 0,
+				hi = t->nmem - 1;
+
+	while (lo < hi)
+	{
+		int64		mid = lo + (hi - lo) / 2,
+					at = lo;
+
+		if (mem_cmp(mem_row(t, mid), mem_row(t, lo), t) < 0)
+			mem_swap(t, mid, lo);
+		if (mem_cmp(mem_row(t, hi), mem_row(t, lo), t) < 0)
+			mem_swap(t, hi, lo);
+		if (mem_cmp(mem_row(t, hi), mem_row(t, mid), t) < 0)
+			mem_swap(t, hi, mid);
+		mem_swap(t, mid, hi);	/* the median is the pivot, at the end */
+		for (int64 j = lo; j < hi; j++)
+			if (mem_cmp(mem_row(t, j), mem_row(t, hi), t) < 0)
+				mem_swap(t, at++, j);
+		mem_swap(t, at, hi);
+		if (at == n)
+			return;
+		if (at < n)
+			lo = at + 1;
+		else
+			hi = at - 1;
+	}
+}
+
+/* mem keeps the best `keep` rows; the worst of them is the bar of the rows that come after */
+void
+mem_cut(SiftTopN *t)
+{
+	if (t->keep <= 0 || t->nmem <= t->keep)
+		return;
+	mem_select(t, t->keep - 1);
+	t->nmem = t->keep;
+	if (t->bar == NULL)
+		t->bar = MemoryContextAlloc(GetMemoryChunkContext(t), t->stride * sizeof(int64));
+	memcpy(t->bar, mem_row(t, t->keep - 1), t->stride * sizeof(int64));
 }
 
 int

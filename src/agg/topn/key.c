@@ -509,7 +509,10 @@ sift_topn_finish(SiftTopN *t)
 	if (t->sort)
 		tuplesort_performsort(t->sort);
 	else if (t->all)
+	{
+		mem_cut(t);
 		qsort_arg(t->mem, t->nmem, t->stride * sizeof(int64), mem_cmp, t);
+	}
 	else
 	{
 		t->res = t->heap;

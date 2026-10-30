@@ -413,6 +413,9 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->stride = t->nkey + (t->nkey + 63) / 64 + 1;
 		t->mem = palloc(1024 * t->stride * sizeof(int64));
 		t->capmem = 1024;
+		/* the Limit above takes the first LIMIT + OFFSET rows of the sort: the rows after them are not kept (but those that tie, TOPN_TIES) */
+		if (!(flags & TOPN_TIES))
+			t->keep = t->gwant;
 	}
 	else if (t->limit > 0)
 	{

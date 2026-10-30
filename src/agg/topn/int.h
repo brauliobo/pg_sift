@@ -170,6 +170,9 @@ struct SiftTopN
 	int64		nmem;
 	int64		capmem;
 	int			stride;			/* int64s of a row of mem */
+	int64		keep;			/* a bound the heap does not take (LIMIT + OFFSET past the cap): mem is cut to the best of them whenever it holds twice that, 0: none */
+	int64		memmax;			/* bytes of rows mem may hold (sort_memory), read once */
+	int64	   *bar;			/* the last row kept by the last cut: a row after it cannot be among the rows that count */
 	Tuplesortstate *sort;		/* ... else a tuplesort of them (work_mem, then disk) */
 	TupleTableSlot *sin,
 			   *sout;			/* the rows going in and out of sort: the keys, then the TID as a number */
@@ -347,6 +350,7 @@ extern int bytes_cmp(const TopKey *k, const char *a, uint32 la, const char *b, u
 extern int key_cmp_n(const SiftTopN *t, const TopEnt *a, const TopEnt *b, int nk);
 extern void sort_rows(uint32 *data, size_t n);
 extern int mem_cmp(const void *a, const void *b, void *arg);
+extern void mem_cut(SiftTopN *t);
 
 extern Tuplesortstate * sort_begin(SiftTopN *t);
 extern void grow_unit_buffers(SiftTopN *t, int nrow);
