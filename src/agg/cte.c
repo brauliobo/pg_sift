@@ -169,7 +169,35 @@ reads_indexed_table(Query *q, List *siblings, int depth, int level, const List *
 	return false;
 }
 
-/* a CTE that is read twice or more and selects from a table that has a column index; siblings: the CTEs of its WITH */
+/*
+ * does the query yield the rows of an aggregate, a window or a DISTINCT, its own or of a sub-select or CTE of the WITH that it reads? Only a CTE that one query
+ * reads and that is not MATERIALIZED counts: PostgreSQL inlines it, any other is computed once. level as for reads_indexed_table
+ */
+static bool
+yields_computed_rows(Query *q, List *siblings, int depth, int level)
+{
+	if (q->hasAggs || q->hasWindowFuncs || q->groupClause != NIL || q->distinctClause != NIL)
+		return true;
+	if (depth <= 0)
+		return false;
+	foreach_node(RangeTblEntry, rte, q->rtable)
+	{
+		if (rte->rtekind == RTE_SUBQUERY && yields_computed_rows(rte->subquery, siblings, depth - 1, level + 1))
+			return true;
+		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != level)
+			continue;
+		foreach_node(CommonTableExpr, sib, siblings)
+			if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && sib->cterefcount < 2 && sib->ctematerialized != CTEMaterializeAlways && IsA(sib->ctequery, Query) &&
+				yields_computed_rows(castNode(Query, sib->ctequery), siblings, depth - 1, 1))
+				return true;
+	}
+	return false;
+}
+
+/*
+ * A CTE that is read twice or more and selects from a table that has a column index; siblings: the CTEs of its WITH. One that yields computed rows
+ * stays a CTE: its aggregates are scans inside it, run once, where a copy in each reader would run them once per reader.
+ */
 static bool
 shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 {
@@ -329,7 +357,7 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 			}
 			else if (!w->inline_them)
 				return true;
-			else if (bit == 0 || (w->only & bit))
+			else if ((bit == 0 || (w->only & bit)) && !yields_computed_rows(body, ((Query *) n)->cteList, 4, 1))
 			{
 				cte->ctematerialized = CTEMaterializeNever;
 				w->names = lappend(w->names, cte->ctename);
