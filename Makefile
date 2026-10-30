@@ -15,7 +15,8 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
 # -MMD records header dependencies (src/*/*.d, src/*/*/*.d) so a header edit rebuilds its users.
 PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS))
-PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement $(SIFT_BASE_ISA)
+# an implicit declaration is an error: gcc 13 only warns, and a function taken to return int cuts a pointer to 32 bits (an include dropped from a file whose code is built only with assertions did that)
+PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement -Werror=implicit-function-declaration $(SIFT_BASE_ISA)
 # PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
 # Off by default; SIFT_LTO=1 enables it with at most 4 jobs. Switching it needs `make clean`.
 ifdef SIFT_LTO
