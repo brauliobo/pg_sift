@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 70
+plan 71
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -55,7 +55,8 @@ check "to 3.0: a packed BM25 segment is a blocker" test -n "$(row "$out" blocker
 check "to 3.0: a column index of format 4 is a blocker with the setting that writes what 3.0 reads" grep -q -E '^blocker +facts_col .*sift\.col_format_minor = 3 and REINDEX INDEX facts_col' <<<"$out"
 check "to 3.0: a sift_table is a blocker and its advice rewrites it" grep -q -E '^blocker +tbl .*sift\.col_format_minor = 3, then VACUUM FULL tbl ' <<<"$out"
 out=$(uc --to 3.1 clean); rc=$?
-check "to 3.1: the index of format 4 and the BM25 index are ok" test -z "$(row "$out" blocker facts_col)$(row "$out" blocker docs_idx)"
+check "to 3.1: the column index of format 4 is ok and the BM25 index with position blocks (format 1.4) is a blocker" test -z "$(row "$out" blocker facts_col)" &&
+	test -n "$(row "$out" blocker docs_idx)"
 check "to 3.1: the wide leaf (format 5) is a blocker that says to drop the index" grep -q -E '^blocker +facts_wide .*wide leaves.*drop the index' <<<"$out"
 check "to 3.1: the cube option (format 7) is a blocker" test -n "$(row "$out" blocker facts_cube)"
 out=$(uc --to 3.2 clean)
@@ -66,7 +67,8 @@ check "to 3.2: the two event triggers of 3.3, and no other, are blockers that sa
 q clean "ALTER EVENT TRIGGER sift_table_ddl_check DISABLE" "ALTER EVENT TRIGGER sift_table_repack_guard DISABLE" >/dev/null
 check "to 3.2: a disabled event trigger is not listed" test "$(uc --to 3.2 clean | grep -c ' trigger ')" == 0
 q clean "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" >/dev/null
-check "to 3.3: nothing blocks" test "$(uc --to 3.3 clean | grep -c '^blocker')" == 0
+check "to 3.3: the BM25 index with position blocks is the one blocker" test "$(uc --to 3.3 clean | awk '$1 == "blocker" {print $2}')" == docs_idx
+check "to 3.7: nothing blocks" test "$(uc --to 3.7 clean | grep -c '^blocker')" == 0
 check "a release that is not major.minor is refused" test "$(uc --to three clean 2>&1 | grep -c 'target must be a release')" == 1
 
 # options that only the units written afterwards follow

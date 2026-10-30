@@ -16,7 +16,7 @@ TMP=${SIFT_TMP:-/tmp/sift-hardened-$$}
 WORK=$TMP/hardened
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(colcodec_basic colcodec_simd col_enc col_kernels_simd kernels_simd kernels_filter shred_values shred_kernels shred_diff
-	verify_corrupt store_corrupt query_errors phrase_positions index_build_postings tbl_basic tbl_agg)
+	verify_corrupt store_corrupt query_errors phrase_positions position_blocks index_build_postings tbl_basic tbl_agg)
 export SIFT_HARDEN=${SIFT_HARDEN:-1}
 # the trap flavor, not the ASan flavor scripts/ci.sh full exports
 unset SANITIZE

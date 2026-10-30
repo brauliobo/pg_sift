@@ -291,8 +291,11 @@ sift_posblk_open(SiftPosBlk *bk, const uint8 *b, uint32 len, uint32 k)
 			return false;
 	}
 	else
-		for (uint32 i = 0; i <= k; i++)
-			bk->cnt[i] = 1, bk->gofs[i] = 0;
+	{
+		for (uint32 i = 0; i < k; i++)
+			bk->cnt[i] = 1;
+		memset(bk->gofs, 0, sizeof(bk->gofs));
+	}
 	return true;
 }
 

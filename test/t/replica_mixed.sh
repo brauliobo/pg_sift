@@ -5,7 +5,8 @@
 #         BM25, sift_col and sift_table objects the release wrote and keeps writing as the primary does (inserts, updates, deletes, VACUUM), as the primary answers
 #         them and as the plain plan does, sift.verify and sift.col_verify are clean on it.
 #   down: the primary runs this tree at the column format minor the release reads (sift.col_format_minor = 6, the setting of the rollback in docs/UPGRADING.md
-#         section 4), the standby the release: the same checks.
+#         section 4) and writes BM25 segments of format 3 (sift.test_segfmt in its sessions: the release refuses format 4, which a rollback
+#         rebuilds with REINDEX), the standby the release: the same checks.
 # The release is built from its tag by scripts/old-lib-check.sh (PostgreSQL 18).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
@@ -28,8 +29,11 @@ answers() {
 	printf '%s\n' "${out[@]}"
 }
 verify() { test -z "$(sql "$1" "SELECT sift.verify('docs_idx', true)" "SELECT sift.col_verify('docs_col', true)" 2>&1 | grep -v '^$' | grep -ivx 't\|true')"; }
+# the release reads BM25 segments to format 3 and refuses the position blocks of format 4 (docs/UPGRADING.md): the primary of the down run writes format 3
+# with the test setting, in its sessions (a setting in its configuration would reach the standby, which does not know it)
+FMT=("SELECT 1")
 write_load() { # NODE: more writes of every kind
-	sql "$1" "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(20001, 20600) i" \
+	sql "$1" "${FMT[@]}" "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(20001, 20600) i" \
 		"UPDATE docs SET n = n + 1 WHERE id % 97 = 0" "DELETE FROM docs WHERE id % 89 = 0" \
 		"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(20001, 20600) i" "UPDATE tbl SET n = n + 1 WHERE id % 97 = 0" "DELETE FROM tbl WHERE id % 89 = 0" \
 		"VACUUM docs" "VACUUM tbl" >/dev/null
@@ -45,7 +49,8 @@ sift.async_maintenance = off${pconf:+
 $pconf}"
 	use_root "$p" "$proot"
 	node_start "$p" || bail "$dir: primary start failed"
-	sql "$p" "CREATE EXTENSION pg_sift" \
+	[[ $dir == down ]] && FMT=("SET sift.test_segfmt = 3")
+	sql "$p" "CREATE EXTENSION pg_sift" "${FMT[@]}" \
 		"CREATE TABLE docs (id int PRIMARY KEY, g int, n int, body text)" \
 		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 12000) i" \
 		"CREATE INDEX docs_idx ON docs USING sift (body)" "CREATE INDEX docs_col ON docs USING sift_col (id, g, n)" \

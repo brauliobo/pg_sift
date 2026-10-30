@@ -58,7 +58,7 @@ SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
-SELECT sift._test_poke('t_idx', 0, 30, 4, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 5, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 30, 0, 2);

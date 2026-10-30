@@ -1,5 +1,6 @@
 -- sift.verify raises ERRCODE_INDEX_CORRUPTED, and never crashes, on a damaged position stream:
--- 0xFF bytes are written over every block of a positioned index in turn
+-- 0xFF bytes are written over every block of a positioned index in turn, at three offsets (the index is small and the position blocks of
+-- format 4 lie at other places than the records did: one offset can miss them all)
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE TABLE vp (id serial PRIMARY KEY, body text);
 INSERT INTO vp (body) SELECT 'w' || (i % 7) || ' x' || (i % 101) || ' common doc' || i % 50 || ' common' FROM generate_series(1, 3000) i;
@@ -9,16 +10,19 @@ CREATE TABLE vp_verdict (blk int, state text, msg text);
 DO $$
 DECLARE
 	nb int := pg_relation_size('vp_idx') / 8192;
+	o int;
 BEGIN
-	FOR b IN 2 .. nb - 1 LOOP
-		PERFORM sift._test_poke('vp_idx', b, 3000, -1, 8);
-		BEGIN
-			PERFORM sift.verify('vp_idx');
-			INSERT INTO vp_verdict VALUES (b, 'ok', NULL);
-		EXCEPTION WHEN OTHERS THEN
-			INSERT INTO vp_verdict VALUES (b, SQLSTATE, SQLERRM);
-		END;
-		REINDEX INDEX vp_idx;
+	FOREACH o IN ARRAY ARRAY[1600, 4200, 6200] LOOP
+		FOR b IN 2 .. nb - 1 LOOP
+			PERFORM sift._test_poke('vp_idx', b, o, -1, 8);
+			BEGIN
+				PERFORM sift.verify('vp_idx');
+				INSERT INTO vp_verdict VALUES (b, 'ok', NULL);
+			EXCEPTION WHEN OTHERS THEN
+				INSERT INTO vp_verdict VALUES (b, SQLSTATE, SQLERRM);
+			END;
+			REINDEX INDEX vp_idx;
+		END LOOP;
 	END LOOP;
 END $$;
 
