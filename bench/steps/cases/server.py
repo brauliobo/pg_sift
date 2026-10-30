@@ -71,7 +71,8 @@ def build(case, rows):
     for schema, pre in [(case.schema(), '')] + ([(case.schema() + '_base', 'SET %s;\n' % case.opt['base'])] if case.base_settings() else []):
         sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
         if case.opt.get('vacuum', 'yes') == 'yes':
-            sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
+            # every table of the case, not only orders: without the visibility map the scan checks the heap of each page for its rows (many_groups: 17,668 blocks read against 1,500 of the index)
+            sql += "SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec\n" % schema
         psql(sql)
     psql('CHECKPOINT')
     BUILT.add((case.schema(), rows))
