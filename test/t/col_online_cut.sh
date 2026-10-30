@@ -46,17 +46,22 @@ lay() {
 }
 # the layout of a build whose merge went into its gap and whose free end was not cut (the 3.6.1 concurrent build): live in front, free blocks behind
 drop_idx() { sql primary "DROP INDEX IF EXISTS t_idx" >/dev/null; catchup primary standby; }
-# a parallel build can leave a small object of the index (a page of the free list, a lane) after the free run, and no cut passes it: build again until the free run ends the file
-ends_file() { # the free records that run into the end of the file hold at least 1000 blocks
-	[[ $(sql primary "WITH RECURSIVE f AS (SELECT start, nblocks FROM sift._test_freelist('t_idx')), r AS (SELECT start, nblocks FROM f WHERE start + nblocks = (SELECT relation_blocks FROM sift.col_index_info('t_idx'))
-		UNION ALL SELECT f.start, f.nblocks FROM f JOIN r ON f.start + f.nblocks = r.start) SELECT coalesce(sum(nblocks), 0) >= 1000 FROM r") == t ]]
+# the blocks of the chain of free records that runs into the end of the file; the pages of the free list there count as free (the cut moves them to the front)
+end_run() {
+	sql primary "WITH RECURSIVE n AS (SELECT relation_blocks FROM sift.col_index_info('t_idx')),
+		f AS (SELECT start, nblocks FROM sift._test_freelist('t_idx') UNION ALL SELECT b, 1 FROM n, generate_series(relation_blocks - 64, relation_blocks - 1) b, LATERAL sift._test_page('t_idx', b) pg WHERE pg.type = 8),
+		r AS (SELECT start, nblocks FROM f, n WHERE start + nblocks = relation_blocks UNION ALL SELECT f.start, f.nblocks FROM f JOIN r ON f.start + f.nblocks = r.start)
+		SELECT coalesce(sum(nblocks), 0) FROM r"
 }
+ends_file() { test "$(end_run)" -ge 1000; }
+# a parallel build can leave its output behind free blocks (a merge that does not fit its gap), which no cut passes: build again until the free blocks end the file
 build_idx() {
 	for _ in $(seq 20); do
-		sql primary "$OPTS" "$SMALL" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (key_cut = grp, vacuum_truncate = off)" >/dev/null || bail "create failed"
+		sql primary "$OPTS" "$SMALL" "SET sift.test_col_gap_blocks = 6000" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (key_cut = grp, vacuum_truncate = off)" >/dev/null || bail "create failed"
 		sql primary "ALTER INDEX t_idx SET (vacuum_truncate = on)" >/dev/null
 		catchup primary standby
 		ends_file && return 0
+		echo "# build without a free end: file $(size) live $(live) $(lay) end_run $(end_run)" >&2
 		sql primary "DROP INDEX t_idx" >/dev/null
 		catchup primary standby
 	done
