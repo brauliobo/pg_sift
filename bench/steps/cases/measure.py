@@ -189,7 +189,7 @@ def measure_load(case, csv, rounds, rows, instr=False):
         for lane in names[r % len(names):] + names[:r % len(names)]:
             am, sets = lanes[lane]
             s = server_session(600)
-            for st in ['SET search_path = c_%s, public' % case.id] + sets:
+            for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
                 s.run(st)
             for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv)):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
                 err = s.run(stmt)[2]
