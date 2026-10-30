@@ -309,17 +309,22 @@ find_run(const SiftTblTomb *a, uint32 na, uint64 key, uint32 *n)
 	return a + lo;
 }
 
-/* Does the sorted array a hold an entry with lo <= key <= hi (find_run's start is the lower bound of lo whether or not lo is present) */
+/*
+ * Does the sorted array a hold an entry a scan has to look at with lo <= key <= hi (find_run's start is the lower bound of lo whether or not lo
+ * is present)? Not the frozen ones: they are the roots of HOT chains that VACUUM kept after it cleared the liveness of their rows, which no
+ * snapshot sees, so a range that holds only those is read from the liveness alone
+ */
 static bool
 tomb_run_in(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi)
 {
 	uint32		n;
-	const SiftTblTomb *f;
 
 	if (na == 0)
 		return false;
-	f = find_run(a, na, lo, &n);
-	return f < a + na && f->key <= hi;
+	for (const SiftTblTomb *f = find_run(a, na, lo, &n); f < a + na && f->key <= hi; f++)
+		if (f->xid != FrozenTransactionId)
+			return true;
+	return false;
 }
 
 /* Sets the bit of the offset of each row of vblock that has a HOT update entry (a root or a member of a chain) */

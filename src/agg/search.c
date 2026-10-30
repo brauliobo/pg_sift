@@ -506,11 +506,15 @@ static const SiftFilter *
 search_with_chains(SiftSearch *s)
 {
 	HASHCTL		ctl = {.keysize = sizeof(BlockNumber),.entrysize = sizeof(HotPage),.hcxt = CurrentMemoryContext};
-	HTAB	   *pages = hash_create("sift search pages of chains", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	HTAB	   *members = hash_create("sift search members of chains", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	HASH_SEQ_STATUS seq;
 	HotPage    *p,
-			   *sorted;
-	int			n = 0;
+			   *roots = palloc(256 * sizeof(HotPage)),
+			   *later;
+	int			nroots = 0,
+				maxroots = 256,
+				nlater = 0,
+				r = 0;
 	BlockNumber blk;
 	uint64		mask[SIFT_OFFMASK_WORDS];
 
@@ -519,25 +523,41 @@ search_with_chains(SiftSearch *s)
 	s->want_hi = PG_UINT32_MAX;
 	for (int i = 0; i < s->narms; i++)
 		arm_start(&s->arm[i]);
+	/* the pages come in ascending order; the members, which lie in later pages than their roots, are collected by page and merged in */
 	while (union_page(s, &blk, mask))
 	{
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-		{
 			s->matches += pg_popcount64(mask[k]);
-			for (uint64 m = mask[k]; m; m &= m - 1)
-				hot_member(pages, ((uint64) blk << 16) | (k * 64 + pg_rightmost_one_pos64(m) + 1));
-		}
-		sift_vis_chain_members(s->heap, blk, mask, hot_member, pages);
+		if (nroots == maxroots)
+			roots = repalloc(roots, (maxroots *= 2) * sizeof(HotPage));
+		roots[nroots].blk = blk;
+		memcpy(roots[nroots++].mask, mask, sizeof(mask));
+		sift_vis_chain_members(s->heap, blk, mask, hot_member, members);
 	}
-	sorted = palloc(hash_get_num_entries(pages) * sizeof(HotPage));
-	hash_seq_init(&seq, pages);
+	later = palloc(hash_get_num_entries(members) * sizeof(HotPage) + 1);
+	hash_seq_init(&seq, members);
 	while ((p = hash_seq_search(&seq)) != NULL)
-		sorted[n++] = *p;
-	qsort(sorted, n, sizeof(HotPage), hot_cmp);
-	for (int i = 0; i < n; i++)
-		sift_filter_add_page(s->filter, sorted[i].blk, sorted[i].mask);
-	pfree(sorted);
-	hash_destroy(pages);
+		later[nlater++] = *p;
+	qsort(later, nlater, sizeof(HotPage), hot_cmp);
+	for (int i = 0; i < nlater || r < nroots;)
+	{
+		HotPage		page;
+
+		if (r < nroots && (i >= nlater || roots[r].blk <= later[i].blk))
+			page = roots[r++];
+		else
+			page = later[i];
+		if (i < nlater && later[i].blk == page.blk)
+		{
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				page.mask[k] |= later[i].mask[k];
+			i++;
+		}
+		sift_filter_add_page(s->filter, page.blk, page.mask);
+	}
+	pfree(roots);
+	pfree(later);
+	hash_destroy(members);
 	s->chains_done = true;
 	return s->filter;
 }

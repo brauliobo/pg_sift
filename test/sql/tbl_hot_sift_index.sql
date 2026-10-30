@@ -98,6 +98,32 @@ SELECT same('SELECT id, v FROM # WHERE grp = 2 AND body @@> ''n42''') AS by_bm25
 -- VACUUM: the chains collapse, then go with the last version
 VACUUM t, h;
 SELECT same_all() AS after_vacuum;
+-- the chains VACUUM kept (their roots are frozen log entries) do not send the superblocks to the per-row check of the snapshot: the aggregate that
+-- reads the table (it is chosen at this size and selectivity) checks no row against the snapshot
+CREATE TABLE big (id int PRIMARY KEY, body text, v int) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO big SELECT g, (ARRAY['smart', 'wireless', 'folding', 'premium'])[1 + g % 4] || ' item n' || g, 0 FROM generate_series(1, 100000) g;
+CREATE INDEX big_bm25 ON big USING sift (body);
+SELECT sift.table_maintain('big') IS NOT NULL AS big_maintained;
+ANALYZE big;
+UPDATE big SET v = v + 1 WHERE id % 50 = 0;
+UPDATE big SET v = v + 1 WHERE id % 50 = 0;
+VACUUM big;
+CREATE FUNCTION plan_has(q text, pat text) RETURNS boolean LANGUAGE plpgsql AS
+$$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l LIKE pat THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END
+$$;
+SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%SiftAgg%') AS reads_the_table,
+       plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%vetted by heap%') AS vets_rows;
+SELECT count(*), sum(v) FROM big WHERE body @@> 'smart';
+DROP FUNCTION plan_has(text, text);
+DROP TABLE big;
 UPDATE t SET v = v + 1 WHERE id % 3 = 0;
 UPDATE h SET v = v + 1 WHERE id % 3 = 0;
 DELETE FROM t WHERE id % 17 = 0;
