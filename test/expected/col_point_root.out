@@ -58,3 +58,5 @@ SELECT (SELECT count(*) FROM sift.col_verify('rt_old', true)) >= 0 AS old_verifi
 (1 row)
 
 DROP TABLE rt;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

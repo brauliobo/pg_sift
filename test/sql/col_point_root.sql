@@ -31,3 +31,5 @@ SELECT count(*) AS text_found FROM rt h WHERE h.d = 7 AND NOT EXISTS (SELECT 1 F
 
 SELECT (SELECT count(*) FROM sift.col_verify('rt_old', true)) >= 0 AS old_verified, (SELECT count(*) FROM sift.col_verify('rt_new', true)) >= 0 AS new_verified;
 DROP TABLE rt;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

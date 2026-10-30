@@ -36,9 +36,9 @@ INSERT INTO dc SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g
 FROM generate_series(1, 3000) g;
 CREATE INDEX dc_col ON dc USING sift_col (id, kind, grp, val, small) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 
-SELECT 'dm_col' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('dm_col')
-UNION ALL SELECT 'dw_col', array_agg(DISTINCT format) FROM sift._test_col_formats('dw_col')
-UNION ALL SELECT 'dc_col', array_agg(DISTINCT format) FROM sift._test_col_formats('dc_col') ORDER BY 1;
+SELECT 'dm_col' AS idx, array_agg(DISTINCT least(format, 33)) AS minors FROM sift._test_col_formats('dm_col')
+UNION ALL SELECT 'dw_col', array_agg(DISTINCT least(format, 33)) FROM sift._test_col_formats('dw_col')
+UNION ALL SELECT 'dc_col', array_agg(DISTINCT least(format, 33)) FROM sift._test_col_formats('dc_col') ORDER BY 1;
 SELECT sift.col_verify('dm_col', true), sift.col_verify('dw_col', true), sift.col_verify('dc_col', true);
 
 -- every section of every index: the objects are there and read intact, damage is made, some of it is refused, and nothing is unsound

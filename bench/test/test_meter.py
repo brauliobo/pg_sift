@@ -13,6 +13,7 @@ def which(name):
     return shutil.which(name) or shutil.which(name, path=subprocess.run(['pg_config', '--bindir'], capture_output=True, text=True).stdout.strip() or None)
 
 
+@unittest.skipUnless(os.path.exists('/proc/self/stat'), 'the process tree is read from /proc (Linux)')
 class Tree(unittest.TestCase):
     def test_stat_survives_a_name_with_spaces_and_parentheses(self):
         self.assertEqual(meter.stat(os.getpid())[0], os.getppid())
