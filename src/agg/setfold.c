@@ -12,7 +12,8 @@
  * A query whose grouping sets all lie inside one of them (ROLLUP, CUBE, and the sets of a report: (a, b), (a), (b), ()) needs the rows of the finest set only: the groups of
  * the others are sums of its groups. The scan updates that set (ex->fold = its number + 1) and sets_fold adds each of its groups into the group of every other set, with the merge
  * of two processes' tables, so the scan hashes a row once and updates the aggregates once instead of once per set. Aggregates whose states add exactly qualify: counts, integer
- * and numeric sums and averages, min, max (float sums would add in another order than the rows came in).
+ * and numeric sums and averages, min, max (float sums would add in another order than the rows came in). Not count(DISTINCT x) of a unique column (SAA_COUNT_ROWS): over the
+ * elements of a list a row has elements in several groups of the finest set and counts once in each, once in the coarser set.
  */
 static bool
 fold_kind(const SiftAggAgg *a)
@@ -21,7 +22,6 @@ fold_kind(const SiftAggAgg *a)
 	{
 		case SAA_COUNT_STAR:
 		case SAA_COUNT:
-		case SAA_COUNT_ROWS:
 		case SAA_SUM_INT:
 		case SAA_AVG_INT:
 		case SAA_MIN:

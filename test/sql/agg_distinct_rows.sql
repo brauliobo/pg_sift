@@ -58,6 +58,11 @@ SELECT * FROM check_query($q$ SELECT p.cat, count(DISTINCT f.id) AS rows_, count
 SELECT p.cat, count(DISTINCT f.id) AS rows_, count(DISTINCT f.id) FILTER (WHERE p.score >= 8) AS high, count(*) AS elements
 FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY 1 ORDER BY 1;
 
+-- a rollup of the elements: a row with elements in several groups of the finest set counts once in each, and once in the coarser sets (the counts do not add), NULL keys included
+SELECT pushed($q$ SELECT p.cat, p.score >= 8 AS high, count(DISTINCT f.id) AS rows_, count(*) AS elements FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY ROLLUP (1, 2) $q$);
+SELECT * FROM check_query($q$ SELECT p.cat, p.score >= 8 AS high, count(DISTINCT f.id) AS rows_, count(*) AS elements FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY ROLLUP (1, 2) ORDER BY 1, 2 $q$);
+SELECT * FROM check_query($q$ SELECT p.cat, p.score >= 8 AS high, count(DISTINCT f.id) AS rows_, count(*) AS elements FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY CUBE (1, 2) ORDER BY 1, 2 $q$);
+
 -- the report shape: periods as a spine (one matches nothing), the parsed map joined from the left, grouping sets, the buckets as filtered distinct
 -- counts, a distinct count of a duplicated column beside them; the planner hands the key as a placeholder under the grouping sets
 SELECT pushed($q$
