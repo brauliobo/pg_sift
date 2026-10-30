@@ -14,7 +14,14 @@ fi
 # execute the function (scripts/focus.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
 # change outside functions, scripts/areas.tsv as ever for the other files. A function no row has is new or run by no test: its callers are the other tokens.
 focus_regex() {
-	local t f rest=() star=() sel names
+	local t f rest=() star=() sel names extra
+	# a file that was split into a folder (scripts/moved-sources.tsv: NEWFOLDER/ OLDFILE FUNCTION-PREFIX): the rows of the table that were made for the old file name its functions
+	# still, with the prefix a static got when a second file of the folder began to call it; a token of the new files is also a token of the old one
+	extra=$(awk -F'\t' -v toks="$*" '/^#/ { next } { m[++k] = $0 } END { n = split(toks, a, " ")
+		for (i = 1; i <= n; i++) { f = a[i]; fn = ""; if (index(f, ":")) { fn = substr(f, index(f, ":") + 1); f = substr(f, 1, index(f, ":") - 1) }
+			for (j = 1; j <= k; j++) { split(m[j], r, "\t"); if (index(f, r[1]) == 1) {
+				print (fn == "" ? r[2] : r[2] ":" fn); if (fn != "" && r[3] != "" && index(fn, r[3]) == 1) print r[2] ":" substr(fn, length(r[3]) + 1) } } } }' "$REPO/scripts/moved-sources.tsv" 2>/dev/null)
+	set -- "$@" $extra
 	for t; do
 		f=${t%%:*}
 		[[ $f =~ ^src/(agg|col|table|bm25)/([^/]+/)?[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }

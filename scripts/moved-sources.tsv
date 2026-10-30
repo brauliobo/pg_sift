@@ -1,0 +1,8 @@
+# The files that were split into a folder of files (a folder for each context): NEWFOLDER/<TAB>OLDFILE<TAB>PREFIX of the functions that a split made global.
+# scripts/focus.tsv and scripts/focus-pins.tsv were made for the old file names: a function of a new file is looked up under the old file too (scripts/ci/affected.sh focus_regex),
+# with and without the prefix, and scripts/restructure-src.sh accepts the old path in those two files. A table made again by scripts/focus-gen.sh names the new files and needs none of this.
+src/col/maint/	src/col/maint.c	maint_
+src/col/scan/	src/col/scan.c	scan_
+src/col/test/	src/col/test.c	ctest_
+src/col/seg_write/	src/col/seg_write.c	segw_
+src/col/seg/	src/col/seg.c	seg_
