@@ -25,9 +25,11 @@ BEGIN
 	RETURN sift._test_prepass_nodes(true);
 END $f$;
 
-SELECT pc_nodes(10) AS discard, pc_nodes(5000) AS discard2 \gset
+-- a planning that is a hit of the verdict cache plans one form, every eighth plans them all, and a short list is planned by another path than a long one: the count of one planning moves by a few hundred
+-- nodes, and a walk of the list adds about 4 nodes a key, so the growth is read between lists 19,000 keys apart
+SELECT pc_nodes(10) AS discard, pc_nodes(1000) AS discard2, pc_nodes(20000) AS discard3 \gset
 SELECT pc_nodes(10) > 0 AS passes_ran;
-SELECT pc_nodes(5000) - pc_nodes(10) < 50 AS nodes_do_not_grow_with_the_list;
+SELECT pc_nodes(20000) - pc_nodes(1000) < 2000 AS nodes_do_not_grow_with_the_list;
 
 -- a list that holds one element that is not a constant is walked (it may hold a sub-select), and the sub-select is found as before
 SELECT pc_nodes(5000, ', (SELECT 3)') > 5000 AS a_list_with_a_sublink_is_walked;
