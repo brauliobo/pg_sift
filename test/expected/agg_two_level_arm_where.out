@@ -7,6 +7,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+-- the scan is asked for: its price against the normal plan moves with the estimate of the join with the ranges of the list (agg_range_join_rows), the test is of its answers
+SET sift.agg_force = on;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO events
 SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, 'k' || i % 5, date '2025-01-01' + i % 400,
