@@ -194,7 +194,7 @@ BEGIN
 	-- test-only objects left behind
 	FOR r IN SELECT extname FROM pg_extension WHERE extname = 'pg_sift_test' LOOP
 		object := r.extname; kind := 'test'; detected := 'extension installed'; status := 'warn';
-		advice := 'it needs the test build of the library and is not meant for a normal install: DROP EXTENSION pg_sift_test';
+		advice := 'it needs the test build of the library and does not load in a release build: DROP EXTENSION pg_sift_test';
 		RETURN NEXT;
 	END LOOP;
 END

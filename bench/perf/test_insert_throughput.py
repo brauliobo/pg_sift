@@ -1,4 +1,4 @@
-"""Release label_a and measured-admission contracts, without PostgreSQL."""
+"""Composition and measured-admission contracts, without PostgreSQL."""
 import contextlib
 import json
 import math

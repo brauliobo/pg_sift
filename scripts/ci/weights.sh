@@ -1,4 +1,4 @@
-# The constants of the plan that other parts read: the release smoke list, the column slices and the job weights that cut the shards.
+# The constants of the plan that other parts read: the release-library smoke list, the column slices and the job weights that cut the shards.
 # weight_of sets WEIGHT from JOB_WEIGHT or scripts/weights-deep.tsv. Sourced by scripts/ci.sh; not a script of its own.
 STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
 COL_SLICES_LEAN=4 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths

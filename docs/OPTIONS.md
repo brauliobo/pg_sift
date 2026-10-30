@@ -670,10 +670,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.3 · default on
 
 - **What it does:** a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns
-- **Gain:** LEFT JOIN LATERAL over a row's list, three captured queries: lateral part 27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms (small data, median of 3)
+- **Gain:** LEFT JOIN LATERAL over a row's list, three corpus queries: lateral part 27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms (small data, median of 3)
 - **Impact:** index size: -; build, merge and writes: -; other: none; off keeps the normal plan of such a query (the way to compare it and to isolate a wrong result)
 - **When:** LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row; a WHERE above the join that sees the NULL element tuple, or a lateral condition that may raise, keeps the normal plan.
-- **Default:** on — On: lateral part 2.7x to 4.9x faster on three captured queries (27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms); the pushdown is checked by test agg_left_lateral.
+- **Default:** on — On: lateral part 2.7x to 4.9x faster on three corpus queries (27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms); the pushdown is checked by test agg_left_lateral.
 - **Turn off:** SET sift.agg_left_lateral = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the statement then keeps the normal plan. No REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Off keeps the normal plan for a LEFT JOIN LATERAL over a row's list (to compare, or to isolate a wrong result). A WHERE that sees the NULL element tuple keeps the normal plan anyway.
@@ -1166,8 +1166,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.3 · default 100
 
 - **What it does:** keeps an inline shared CTE that is a close call only if it also wins at the square root of this many times the rows and at this many times (sift.plan_scale)
+- **Gain:** 237 corpus statements, plans at 10x and 100x: horizon 10 gives the plans of 100; 1 makes 3 faster (0.09x to 0.56x time); 1000 makes 2 slower (2.1x), 1 faster
 - **Impact:** index size: -; build, merge and writes: -; other: none at 1; two more plans of the statement where the scans cost less than the shared work but not by the margin
 - **When:** Only an inline shared CTE that is a close call (scans cost less than the shared work, not by the margin); it is planned again at the square root of the horizon and at the horizon times the rows.
+- **Default:** 100 — 100 over 237 corpus statements at 10x and 100x rows: horizon 10 gives the plans of 100; 1 changes 3 (0.09x to 0.56x time); 1000 makes 2 slower (2.1x) and 1 faster; values near 100 change few plans.
 - **Turn off:** SET sift.agg_scale_horizon = 1 (minimum; session, role, database or postgresql.conf) keeps the choice at the size the table has, with no further planning.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Default 100: a close call between an inline and a shared CTE must also hold at 10 and at 100 times the rows. 1 keeps the choice at the current size; values around the default change few plans.

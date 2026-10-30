@@ -13,7 +13,7 @@
  * zeros without generating content, for throughput runs (read modes 2-3).
  *
  * Locks: writers and droppers take LockPage(index, 0, ShareLock), the sweep
- * and check take ExclusiveLock (the maintenance lock in release), drops
+ * and check take ExclusiveLock (the maintenance lock in a release build), drops
  * also serialize on LockPage(index, 1, ExclusiveLock).
  *
  * This file: the test index, the segments written and read back. The allocation, recycling, truncation, free list, page and churn functions are

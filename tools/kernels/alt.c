@@ -88,7 +88,7 @@ alt_bm25_compress(float4 *scores, const uint64 *mask, int npages, const uint8 *t
 	return n;
 }
 
-/* tf placement variants for the AVX-512 kernel (same loop as release) */
+/* tf placement variants for the AVX-512 kernel (same loop as the release kernel) */
 #define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
 #define XL(m, j)	((((m) >> (j)) & 1) ? BELOW(m, j) : 0x80)
 #define XROW(m)		{XL(m, 0), XL(m, 1), XL(m, 2), XL(m, 3), XL(m, 4), XL(m, 5), XL(m, 6), XL(m, 7)}
