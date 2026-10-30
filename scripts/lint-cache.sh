@@ -5,7 +5,8 @@
 #   scripts/lint-cache.sh NAME [--names] [--tags] PATHSPEC... -- COMMAND...
 #
 # The key is the staged content of PATHSPEC (`git ls-files -s`), the unstaged changes to it, with --names the name of every tracked file (a map of files),
-# with --tags the release tags. Only a pass is stored (SIFT_LINT_CACHE, default ~/.cache/pg_sift/lint); a failure always runs again. CI and
+# with --tags the release tags. LINT_CACHE_RECORD=1 stores the pass without running the command, for a caller that has just done what the command proves (land.sh after
+# gen-docs left the tree unchanged: `gen-docs.py --check` is then true by construction). Only a pass is stored (SIFT_LINT_CACHE, default ~/.cache/pg_sift/lint); a failure always runs again. CI and
 # SIFT_LINT_NOCACHE=1 run the command as it is.
 NAME=${1:?name}; shift
 names='' tags='' specs=()
@@ -29,6 +30,7 @@ key=$({
 [[ -n $key ]] || exec "$@"
 stamp=$DIR/$NAME-${key:0:24}.ok
 
+[[ -z ${LINT_CACHE_RECORD:-} ]] || { echo "recorded by the caller" >"$stamp"; exit 0; }
 hit() { [[ -f $stamp ]] && { echo "$(cat "$stamp") (cached)"; exit 0; }; }
 hit
 if command -v flock >/dev/null; then   # the same check on the same inputs in another run: wait for it (at most 20 minutes), then take its result

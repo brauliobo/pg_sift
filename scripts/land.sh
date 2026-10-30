@@ -169,7 +169,7 @@ red() { echo "$1"; [[ -z ${2:-} ]] || tail -n 3 "$2"; exit 4; }
 
 worker() {
 	pr=$1 repo=${LAND_REPO:-$(cd "$CLONE" && gh repo view --json nameWithOwner -q .nameWithOwner)}
-	local meta_hits cand state base br head mb before round push=0 W=$WORK/wt dels prot required verdict meta prc tests rows missing merges how opts st sha ms f note=''
+	local docs_proved= meta_hits cand state base br head mb before round push=0 W=$WORK/wt dels prot required verdict meta prc tests rows missing merges how opts st sha ms f note=''
 	[[ -n $repo ]] || { echo "cannot tell the GitHub repository (LAND_REPO)"; exit 75; }
 	cd "$CLONE" || exit 1
 	IFS=$'\t' read -r state base br have_ms < <(gh pr view "$pr" --repo "$repo" --json state,baseRefName,headRefName,milestone -q '[.state,.baseRefName,.headRefName,.milestone.title // ""]|@tsv') && [[ -n $br ]] || { echo "cannot read #$pr from GitHub"; exit 75; }
@@ -193,6 +193,7 @@ worker() {
 			git commit -q --no-edit || { echo "commit failed"; exit 3; }
 		fi
 		changelog_check || exit $?
+		docs_proved=
 		if ! git diff --quiet; then git add -A; git commit -q -m "docs: regenerate after the merge of the tip"; fi
 		echo "round $round, src patch-id: PR $(git diff "$mb" "$before" -- src | git patch-id --stable | cut -c1-12), merged-up $(git diff "origin/$base" HEAD -- src | git patch-id --stable | cut -c1-12)"
 		(( round == 1 )) || { cand=$(git rev-parse HEAD); cd "$CLONE" || exit 1; fetch_tip || { echo "cannot fetch $base"; exit 75; }; continue; }   # again: the checks of the pushed head are the gates

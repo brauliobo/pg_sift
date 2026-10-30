@@ -249,5 +249,11 @@ wait "$hold"
 [[ $(lslot 10 echo ran) == ran ]] || fail "lint_slot did not run the command with a free slot"
 [[ $(lslot 10 echo ran-again) == *cached* ]] || fail "lint_slot linted a tree that passed before"
 
+# 13. lint-cache.sh: a pass recorded by the caller (LINT_CACHE_RECORD, after gen-docs wrote the tree) is taken by the next run without running the command, and a check never recorded runs it
+LC=$T/lint-cache; mkdir -p "$LC"
+(cd "$HERE/.." && SIFT_LINT_CACHE=$LC LINT_CACHE_RECORD=1 scripts/lint-cache.sh rec scripts/lint-cache.sh -- false >/dev/null) || fail "lint-cache.sh did not record a pass"
+[[ $(cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
+(cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
+
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad
