@@ -164,6 +164,18 @@ BufFileWrite(BufFile *f, const void *p, size_t n)
 	UNREACHED("BufFileWrite");
 }
 
+int
+BufFileSeek(BufFile *f, int fileno, pgoff_t offset, int whence)
+{
+	UNREACHED("BufFileSeek");
+}
+
+void
+BufFileReadExact(BufFile *f, void *p, size_t n)
+{
+	UNREACHED("BufFileReadExact");
+}
+
 uint64
 sift_sw_tell(const SiftStreamWriter *sw)
 {
