@@ -255,5 +255,22 @@ LC=$T/lint-cache; mkdir -p "$LC"
 [[ $(cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
 (cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
 
+# 14. settle_mergeable: GitHub answers UNKNOWN for a few polls after a push to the base, the answer that follows is taken; an answer that never comes is UNKNOWN
+mkdir -p "$T/fakebin"
+cat >"$T/fakebin/gh" <<'GH'
+#!/usr/bin/env bash
+n=$(cat "$T_DIR/gh14.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$T_DIR/gh14.n"
+(( n < ${GH14_UNKNOWN:-2} )) && printf 'UNKNOWN\tUNKNOWN\n' || printf 'MERGEABLE\tBEHIND\n'
+GH
+chmod +x "$T/fakebin/gh"
+settle() { rm -f "$T/gh14.n"; ( . "$LAND"; PATH=$T/fakebin:$PATH; repo=x; LAND_POLL=0.01 settle_mergeable 5; echo "$MG $ST $(<"$T/gh14.n")" ); }
+[[ $(GH14_UNKNOWN=2 settle) == "MERGEABLE BEHIND 3" ]] || fail "settle_mergeable does not wait out the UNKNOWN answers"
+[[ $(GH14_UNKNOWN=99 settle) == "UNKNOWN UNKNOWN 24" ]] || fail "settle_mergeable does not give up with UNKNOWN after 24 polls: $(GH14_UNKNOWN=99 settle)"
+
+# 15. landings.tsv: a line per landing with its exit code, and --stats counts them per day
+n=$(grep -vc '^#' "$T/state/landings.tsv"); r4=$(awk -F'\t' '$2 == 6 && $3 == 4' "$T/state/landings.tsv" | wc -l)
+(( n >= 5 && r4 == 1 )) || fail "landings.tsv does not hold a line per landing with its exit code ($n lines, $r4 for request 6 with exit 4)"
+"$LAND" --stats | grep -q "rc4=1" || fail "--stats does not count the exit codes per day: $("$LAND" --stats)"
+
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad
