@@ -185,16 +185,27 @@ semi_lut_build(AggExec *ex, int ci)
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
-	const MapTab *m = cs->map;
+	MapTab	   *m = cs->map;
 	int64		lo = PG_INT32_MAX,
 				hi = PG_INT32_MIN;
 	bool	   *keep;
+	/* the table depends on the rows alone when the load tested the table's own conditions: the same rows give the same table */
+	bool		kept = m->filtered || j->fslot < 0;
 
 	if (!semi_lut_possible(ex->spec, ci, ex->nbase))
 		return;
 	if (ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
 	{
 		semi_pass(ex, ci);
+		return;
+	}
+	if (kept && m->slut && m->slut_kind == j->kind && m->snlut <= (uint64) sift_agg_semi_lut_size * 1024)
+	{
+		cs->slo = m->slo;
+		cs->snlut = m->snlut;
+		cs->slut = m->slut;
+		ex->nsemi++;
+		ex->semi_bytes += cs->snlut;
 		return;
 	}
 	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
@@ -229,7 +240,7 @@ semi_lut_build(AggExec *ex, int ci)
 	}
 	cs->slo = lo <= hi ? (int32) lo : 0;
 	cs->snlut = lo <= hi ? (uint32) (hi - lo + 1) : 0;
-	cs->slut = MemoryContextAllocZero(ex->cxt, cs->snlut + SIFT_AGG_PAD);
+	cs->slut = MemoryContextAllocZero(kept ? m->cxt : ex->cxt, cs->snlut + SIFT_AGG_PAD);
 	for (uint32 r = 0; r < m->nrow; r++)
 		if (keep[r])
 		{
@@ -245,6 +256,13 @@ semi_lut_build(AggExec *ex, int ci)
 			cs->slut[map_kint(m, r, 0) - cs->slo] = 1;
 		}
 	pfree(keep);
+	if (kept)
+	{
+		m->slut = cs->slut;
+		m->slo = cs->slo;
+		m->snlut = cs->snlut;
+		m->slut_kind = j->kind;
+	}
 	ex->nsemi++;
 	ex->semi_bytes += cs->snlut;
 }
