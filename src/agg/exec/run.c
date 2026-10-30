@@ -160,6 +160,7 @@ run_scan(AggExec *ex)
 	ex->lanes = ordered && !ex->lane_serial;
 	spill_begin(ex);
 	table_init(ex);
+	sets_fold_begin(ex);
 	if (ex->spec->spine)
 		spine_load(ex);
 	if (ex->ndsorder > 0)
@@ -183,6 +184,7 @@ run_scan(AggExec *ex)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
 	if (ex->lanes)
 		lanes_sum(ex);
+	sets_fold(ex);
 	osa_finish_all(ex);
 	gen_flush(ex);
 	final_checks(ex, ex->n_tuples);

@@ -32,6 +32,7 @@ void blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 
 					 void (*put) (void *arg, int p, StringInfo b), void *arg);
 uint32 blob_group_hash(AggExec *ex, uint32 g);
 void blob_merge(AggExec *g, const char *p);
+void blob_fold(AggExec *g, const uint32 *from, const uint32 *to, uint32 n);
 
 #pragma GCC visibility pop
 

@@ -89,6 +89,7 @@ bool step_numbers(const SiftSrcVec *v, int start, int n, const uint32 *iota, Zon
 void compute_kids(AggExec *ex, int nsel, uint32 *kid);
 void compute_gids(AggExec *ex, int nsel);
 void compute_set_gids(AggExec *ex, int nsel, const uint32 *kid);
+uint32 ids_gid(AggExec *ex, const uint32 *ids);
 
 #pragma GCC visibility pop
 

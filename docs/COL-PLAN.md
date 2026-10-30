@@ -233,6 +233,7 @@ Every label that `src/` raises is named in a document. The ones not described wh
 
 | Label | Node | What it counts or says |
 |---|---|---|
+| `Sets Summed From One` | `SiftAgg` | grouping sets whose groups were added from the finest set's at the end of the scan (the sets all lie inside one of them and every aggregate adds exactly: counts, integer and numeric sums and averages, min, max); absent when each set had its own pass |
 | `Blocks Scored`, `Blocks Skipped` | `SiftScan` (ranked) | posting blocks the ranked evaluation scored, and those it skipped without scoring |
 | `Limit Hint` | `SiftScan` (ranked) | the `LIMIT k` the planner gave the scan |
 | `Filter Mask Up To Matches` | `SiftScan` (`VERBOSE`) | with `Filter Mask From Matches`: the bitmap filter is built when the query matches between the two numbers of documents |

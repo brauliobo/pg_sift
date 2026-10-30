@@ -2,7 +2,7 @@
 bulk_copy_wal	6191.6
 calendar_month	3.8
 flat_lateral_key_lookup	424.9
-grouping_sets_report	147.1
+grouping_sets_report	57.2
 groupset_window_order	6520.1
 key_lookup_units	1.6
 keycut_customer_agg	1.9

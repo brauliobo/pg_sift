@@ -296,6 +296,8 @@ preagg_rollup(AggExec *ex)
 	/* a grouping set folds the tuples again, under the ids of its own columns; a plain query is the one set */
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
+		if (ex->fold && set != ex->fold - 1)	/* sets_fold sums the other sets from this one */
+			continue;
 		ids_to_gids(ex, nkept, s->nsets ? set_ids(ex, set, nkept, ids) : ids, gid);
 		for (int i = 0; i < nkept; i++)
 			preagg_fold(ex, gid[i], r.count[kept[i]], vs + (Size) i * s->naggs);

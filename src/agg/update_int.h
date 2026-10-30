@@ -14,6 +14,9 @@
 void agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all);
 const double *eval_vx(AggExec *ex, SiftAggAgg *a, int nsel);
 void agg_tuples(AggExec *ex, Tup *t);
+bool set_has_post(const SiftAggSpec *s, int set);
+void sets_fold_begin(AggExec *ex);
+void sets_fold(AggExec *ex);
 void join_stage(AggExec *ex, int s, Tup *in);
 Tup *stage_tuples(AggExec *ex, int s);
 void dense_init(AggExec *ex);

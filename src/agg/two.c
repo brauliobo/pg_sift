@@ -560,7 +560,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 }
 
 /* the group of a tuple of key ids */
-static uint32
+uint32
 ids_gid(AggExec *ex, const uint32 *ids)
 {
 	uint32		gid = 0;

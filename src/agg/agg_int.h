@@ -103,6 +103,7 @@ typedef struct AggExec
 	const char *spine_buf;		/* the spine's plan rows, serialized by the leader before the scan (spine_fetch): a worker reads them from the shared memory */
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
+	int			fold;			/* grouping sets that all lie inside one of them: its number + 1, the only set the scan updates (sets_fold sums the others from it); 0: every set is updated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
 	uint32	   *setg;			/* per grouping set: the outer group of the cell being flushed */
 	Touch	   *touched;		/* the cells of the current row */

@@ -349,6 +349,8 @@ explain_run(AggExec *ex, ExplainState *es)
 	if (ex->fuse)
 		ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
 	ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
+	if (ex->fold)
+		ExplainPropertyInteger("Sets Summed From One", NULL, s->nsets - 1, es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
 	if (s->topn && ex->topn)

@@ -438,6 +438,21 @@ merge_osa(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 	}
 }
 
+/* the states of the groups from[i] added into the groups to[from[i]] of the same table: what blob_merge does for a blob made of this table's own arrays */
+void
+blob_fold(AggExec *g, const uint32 *from, const uint32 *to, uint32 n)
+{
+	for (int ai = 0; ai < g->spec->naggs; ai++)
+	{
+		BlobAgg		ba = {.a = g->acc[ai]};
+
+		for (uint32 i = 0; i < n; i++)
+			merge_agg(g, ai, &ba, to, from[i], 1);
+	}
+	for (uint32 i = 0; i < n; i++)
+		g->seen[to[from[i]]] += g->seen[from[i]];
+}
+
 void
 blob_merge(AggExec *g, const char *p)
 {

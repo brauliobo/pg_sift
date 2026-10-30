@@ -103,7 +103,7 @@ set_tuples(AggExec *ex, const Tup *t, int set)
 	return own;
 }
 
-static bool
+bool
 set_has_post(const SiftAggSpec *s, int set)
 {
 	if (s->setpred && s->setpred[set])
@@ -143,8 +143,11 @@ agg_tuples(AggExec *ex, Tup *t)
 	shared = false;
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
-		Tup		   *st = s->nsets && set_has_post(s, set) ? set_tuples(ex, t, set) : t;
+		Tup		   *st;
 
+		if (ex->fold && set != ex->fold - 1)	/* the other sets are summed from this one at the end (sets_fold) */
+			continue;
+		st = s->nsets && set_has_post(s, set) ? set_tuples(ex, t, set) : t;
 		if (st->n == 0)
 			continue;
 		/* the free combos are resolved for the tuples they were asked for: the set's own are not the chunk's */
@@ -156,7 +159,7 @@ agg_tuples(AggExec *ex, Tup *t)
 		ex->ridx = st->ridx;
 		ex->curset = set;
 		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
-		if (s->nsets > 1 && ex->hash && st == t)
+		if (s->nsets > 1 && ex->hash && st == t && !ex->fold)
 		{
 			if (!shared)
 			{

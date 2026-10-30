@@ -574,6 +574,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	scan_buffers(ex);
 	table_init(ex);
+	sets_fold_begin(ex);
 	if (ex->spec->spine)
 	{
 		ex->spine_buf = shm_toc_lookup(toc, KEY_SPINE, false);
