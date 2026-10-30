@@ -36,6 +36,7 @@
 #define SIFT_CGORD_GRPENT	24
 #define SIFT_CGORD_ROWS		1024		/* the entries of a chunk written below column format minor 30, and the most a chunk holds (the slots of the arrays) */
 #define SIFT_CGORD_ROWS_FINE	512		/* from minor 30: a seek and a cursor decode half of the entries */
+#define SIFT_CGORD_GAPS		1		/* SiftCGOrdDir.pad bit 0: the addresses of the chunk are the first of each run of equal keys and the gaps; bits 8..11 are the bits of the offset in the address code (0: 9, the code of the point directory) */
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
 #define SIFT_GORD_PIN_MAX	16		/* the values of a group a scan reads at once: the elements of an IN list, or the equalities of a conjunction (a scan with more reads the plain order or the units) */
@@ -87,9 +88,9 @@ typedef struct SiftCGOrdDir
  * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
  * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  */
-extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, StringInfo out);
+extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
-extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, StringInfo out);
+extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, StringInfo out);
 
 /*
  * The block of a text leaf (version 3): key[i] is the segment code of the string of the entry in d, ranked here by cmp under collid (0: the bytes), which the caller
@@ -99,7 +100,7 @@ typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, 
 extern SiftCStrCmp sift_cgord_strcmp;
 /* The order of the strings of a text block: the collation, then the bytes (what the b-tree of the column does) */
 extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
-extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, StringInfo out);
+extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, StringInfo out);
 /* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
 typedef struct SiftCStrPos
 {
@@ -147,6 +148,6 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
  * Decodes the first w entries (all m when w >= m) of a chunk of m from its two blobs (kb, klen) and (ab, alen) into key[0..w) and addr[0..w) (heap addresses); both need
  * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
-extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m, uint32 w, int64 *key, uint64 *addr);
+extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
 
 #endif

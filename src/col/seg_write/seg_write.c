@@ -397,6 +397,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_ROOT);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
+	if (w->anydense)
+		w->format = Max(w->format, SIFT_COL_FORMAT_ADDRPACK);
 	if (w->anydual)
 		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
 	if (w->anytextord)

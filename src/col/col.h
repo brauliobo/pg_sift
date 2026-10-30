@@ -57,7 +57,8 @@ struct SiftCGOrdBuf;
 #define SIFT_COL_FORMAT_PACKED	35	/* 3.7: a point directory of nearly unique keys is a packed table of entries by bucket, a third to a half of the slots */
 #define SIFT_COL_FORMAT_MEASLEN	36	/* 3.7: every measure of a rollup blob (docs/COL-PREAGG.md) starts with its length in bytes, so that a query skips the measures it does not read without walking their values; written under sift.col_format_minor 15 or more by a segment whose index has rollups */
 #define SIFT_COL_FORMAT_ROOT	37	/* 3.7: the header, the records and the parameters of the point directories end the DICT section next to its footer, so a lookup reads them from the page of the footer */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_ROOT	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_ADDRPACK	38	/* 3.7: the addresses of a chunk of a global order are coded with the bits of the largest offset of the chunk, and as gaps inside a run of equal keys where that is smaller */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_ADDRPACK	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

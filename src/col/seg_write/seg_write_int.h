@@ -121,6 +121,7 @@ struct SiftColSegWriter
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
+	bool		anydense;		/* ... and some chunk codes its addresses with the bits of its largest offset (minor 38) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
 	bool		anypacked;		/* ... and one of them is a packed table (column format minor 36) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */

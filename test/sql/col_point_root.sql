@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;
+SET sift.test_col_gorder_unpacked = on;
 
 CREATE TABLE rt (id int8, s text, d int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO rt SELECT hashint8extended(g, 1) & 4611686018427387903, 'k' || md5(g::text), g % 5000, repeat('x', 20) FROM generate_series(1, 30000) g;

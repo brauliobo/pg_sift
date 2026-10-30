@@ -18,11 +18,23 @@ segw_put8(SiftColSegWriter *w, const void *data, Size len)
 	return off;
 }
 
+/* Whether the chunks of a global order code their addresses with the bits of their largest offset (column format minor 38, which is also the rooted point directories of 37, so a segment with only global orders keeps the plain addresses and its minor; fine chunks only, and a testing build can turn it off) */
+static bool
+gord_dense_ok(const SiftColSegWriter *w)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_gorder_unpacked)
+		return false;
+#endif
+	return w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE && segw_rooted_ok(w);
+}
+
 /* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
 static void
 build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, int c)
 {
 	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+	bool		dense = gord_dense_ok(w);
 
 	initStringInfo(&ob->tab);
 	MemoryContextSwitchTo(old);
@@ -53,7 +65,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		ob->nent = nv + nl;
 		ob->nvals = nv;
 		if (ob->nent > 0)
-			sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, &ob->tab);
+			sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, dense, &ob->tab);
 		pfree(key);
 		pfree(grp);
 		pfree(ngrp);
@@ -67,22 +79,25 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		if (sift_cgord_leaf_text(&w->schema->cols[c]))
 		{
 			w->anytextord = true;
-			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], &ob->tab);
+			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, &ob->tab);
 		}
 		else
-			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &ob->tab);
+			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, &ob->tab);
 	}
 	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
 	w->anyord = ob->nch > 0 || w->anyord;
+	w->anydense = (dense && ob->nch > 0) || w->anydense;
 }
 #ifdef SIFT_TESTING
 bool		sift_test_col_point_unpacked = false;
 
 bool		sift_test_col_point_unrooted = false;
+
+bool		sift_test_col_gorder_unpacked = false;
 #endif
 
 /* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first). A segment with only global orders
- * keeps them first: no lookup reads them, and its minor stays one that 3.6 reads */
+ * keeps them first, and its minor stays one that 3.6 reads */
 bool
 segw_rooted_ok(const SiftColSegWriter *w)
 {
