@@ -63,7 +63,7 @@ container() {
 	rm -rf "$tmp" && mkdir -p "$tmp/export" "$tmp/scratch" "$cache"
 	trap 'docker rm -f "$name" >/dev/null 2>&1 || true; (( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$tmp"' EXIT
 	copy_git_sources "$REPO" "$tmp/export"
-	local run=(docker run --rm --init --name "$name" --user "$uid" --cpus "${SIFT_VALGRIND_CPUS:-4}" --memory "${SIFT_VALGRIND_MEMORY:-16g}" -e HOME=/tmp -e SIFT_PG_CACHE=/cache
+	local run=(docker run --rm --init --name "$name" --user "$uid" --cpus "${SIFT_VALGRIND_CPUS:-$("$REPO/scripts/docker-cpus.sh")}" --memory "${SIFT_VALGRIND_MEMORY:-16g}" -e HOME=/tmp -e SIFT_PG_CACHE=/cache
 		-v "$tmp/export:/src:ro" -v "$cache:/cache")
 	# the server build needs the network the first time (the tarball), the tests do not
 	"${run[@]}" "$image" /src/scripts/pg-assert.sh --valgrind "${PGA[@]}" >/dev/null || { rc=1; echo "valgrind: the PostgreSQL build in the container failed"; return 1; }

@@ -70,8 +70,8 @@
 ^bench/steps/plan_budget\.py$	^plan-budget$
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
-^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
-^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb
+^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh|scripts/docker-cpus\.sh)	gh:sqlite
+^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh|scripts/docker-cpus\.sh)	gh:mariadb
 ^test/matrix/	^coverage
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
 ^\.coderabbit\.yaml$	-
