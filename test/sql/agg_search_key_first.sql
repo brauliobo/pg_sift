@@ -41,6 +41,18 @@ SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' 
 -- no other condition: nothing to read by a key
 SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' GROUP BY 1 ORDER BY 1') AS search_alone;
 
+-- sift.agg_force keeps the path the refusal would remove
+SET sift.agg_force = on;
+SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1') AS forced_keeps_path;
+RESET sift.agg_force;
+
+-- the key's index plans disabled: no plan to prefer
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1') AS key_plans_disabled;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+
 -- a join clause is no key of this table: it keeps rows of the join, and the scan reads the lookup once
 SELECT * FROM why('SELECT t.tier, count(*) AS n FROM ev e JOIN tiers t ON t.id = e.parent_id WHERE e.memo @@> ''switch'' GROUP BY 1 ORDER BY 1') AS join_not_a_key;
 

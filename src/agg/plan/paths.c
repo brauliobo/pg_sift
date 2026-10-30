@@ -73,7 +73,8 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 		if (sift_search_key_first(root, c->rel, c->search, fs.quals, &scan_ops, &key_ops))
 		{
 			agg_refused_f(COST, "the other conditions keep few rows, which an index reads and checks the text of (about %.0f operators) for less than the scan walks the postings (about %.0f)", key_ops, scan_ops);
-			return;
+			if (!sift_agg_force)
+				return;
 		}
 	}
 	if (!agg_quals(c, s, &fs))

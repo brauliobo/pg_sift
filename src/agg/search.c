@@ -237,7 +237,8 @@ sift_search_key_first(PlannerInfo *root, RelOptInfo *rel, const SiftSearchPlan *
 	if (own == NIL)
 		return false;
 	foreach_ptr(Path, p, rel->pathlist)
-		if ((IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam != sift_catalog()->am && ((IndexPath *) p)->indexclauses != NIL) || IsA(p, BitmapHeapPath))
+		if (p->disabled_nodes == 0 &&
+			((IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam != sift_catalog()->am && ((IndexPath *) p)->indexclauses != NIL) || IsA(p, BitmapHeapPath)))
 			indexed = true;
 	if (!indexed)
 		return false;
