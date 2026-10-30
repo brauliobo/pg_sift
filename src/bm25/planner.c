@@ -436,6 +436,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		derived_cte_rows(root, rel);
 	if (!scannable(root, rel, rte))
 		return;
+	/* a relation the planner proved empty is left out of root->total_table_pages, which the page costs of a scan divide by */
+	if (IS_DUMMY_REL(rel))
+		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
 		check_partition_scores(rel, scores);

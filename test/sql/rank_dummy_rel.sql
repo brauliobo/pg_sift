@@ -1,0 +1,19 @@
+-- A relation the planner has proved empty (a CHECK constraint that excludes the qual, the buckets of a facet whose bounds exclude each other) is out of the pages the
+-- planner counts for the cache (root->total_table_pages), and the page costs of a scan divide by them: costing a scan of it failed an
+-- assertion (T <= total_pages in index_pages_fetched) on a server built with assertions.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE dr (id int PRIMARY KEY, body text, n int CHECK (n >= 0)) WITH (autovacuum_enabled = off);
+INSERT INTO dr SELECT i, 'alpha beta w' || i % 50, i FROM generate_series(1, 20000) i;
+CREATE INDEX dr_idx ON dr USING sift (body);
+ANALYZE dr;
+
+SET constraint_exclusion = on;
+SELECT id FROM dr WHERE body @@> 'alpha' AND n < 0 ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id FROM dr WHERE body @@> 'alpha' AND n < 0;
+SELECT count(*) FROM dr WHERE body @@> 'alpha OR w7' AND n < 0;
+SELECT count(*) FROM (SELECT id FROM dr WHERE body @@> 'alpha' AND n < 0 UNION ALL SELECT id FROM dr WHERE body @@> 'w7' ORDER BY 1 LIMIT 5) u;
+RESET constraint_exclusion;
+
+DROP TABLE dr;
+DROP EXTENSION pg_sift;
