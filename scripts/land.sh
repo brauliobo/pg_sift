@@ -145,6 +145,25 @@ fetch_pr_head() {
 	echo "$sha"
 }
 
+# lint_slot CMD...: at most LAND_LINT_SLOTS (default 2) lints run on the box at once, each one low priority (a lint runs thirty checks side by side, and ten landings at the same time
+# kept the CPU pressure at 40%); the others wait here with no lock but their own held. A tree that already passed lint on this box (same git tree, stamp in $DIR) is not linted again.
+lint_slot() {
+	local i n=${LAND_LINT_SLOTS:-2} rc tree stamp
+	tree=$(git rev-parse HEAD^{tree}) stamp=$DIR/lint-pass-$tree
+	[[ -f $stamp ]] && { echo "lint: the tree $tree passed before (cached)"; return 0; }
+	while :; do
+		for (( i = 1; i <= n; i++ )); do
+			exec 8>"$DIR/lint-slot.$i"
+			flock -n 8 || continue
+			nice -n 19 "$@"; rc=$?
+			exec 8>&-
+			(( rc )) || { : >"$stamp"; find "$DIR" -name 'lint-pass-*' -mtime +3 -delete 2>/dev/null; }
+			return $rc
+		done
+		sleep 3 # wait: for a slot
+	done
+}
+
 # red MESSAGE [LOG]: a gate is red
 red() { echo "$1"; [[ -z ${2:-} ]] || tail -n 3 "$2"; exit 4; }
 
@@ -177,7 +196,7 @@ worker() {
 		if ! git diff --quiet; then git add -A; git commit -q -m "docs: regenerate after the merge of the tip"; fi
 		echo "round $round, src patch-id: PR $(git diff "$mb" "$before" -- src | git patch-id --stable | cut -c1-12), merged-up $(git diff "origin/$base" HEAD -- src | git patch-id --stable | cut -c1-12)"
 		(( round == 1 )) || { cand=$(git rev-parse HEAD); cd "$CLONE" || exit 1; fetch_tip || { echo "cannot fetch $base"; exit 75; }; continue; }   # again: the checks of the pushed head are the gates
-		scripts/lint.sh >"$WORK/lint.log" 2>&1 || { cp "$WORK/lint.log" "$DIR/lint-$pr.log"; echo "LINT RED (log: $DIR/lint-$pr.log)"; grep -E '^(FAIL|[A-Za-z-]+: .*(not|missing|differ))' "$WORK/lint.log" | head -n 5 | cut -c1-200; exit 4; }
+		lint_slot scripts/lint.sh >"$WORK/lint.log" 2>&1 || { cp "$WORK/lint.log" "$DIR/lint-$pr.log"; echo "LINT RED (log: $DIR/lint-$pr.log)"; grep -E '^(FAIL|[A-Za-z-]+: .*(not|missing|differ))' "$WORK/lint.log" | head -n 5 | cut -c1-200; exit 4; }
 		cand=$(git rev-parse HEAD); cd "$CLONE" || exit 1
 		fetch_tip || { echo "cannot fetch $base"; exit 75; }
 	done

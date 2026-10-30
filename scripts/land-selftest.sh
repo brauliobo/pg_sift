@@ -13,6 +13,7 @@
 #   9. a CHANGELOG a merge of the tip left broken (markers, a duplicated line, an entry moved out of Unreleased or lost) is refused
 #  10. the verdict on the required checks (ok, missing, pending, red, a head that is not the PR head, a re-run) and the bounded wait for pending and missing ones
 #  11. the script has no process-table matching and no sleep that does not say what it waits for
+#  12. a lint waits for a free slot, and a tree that passed once is not linted again
 set -u
 [[ $(uname) == Linux ]] && command -v flock >/dev/null && command -v setsid >/dev/null || { echo "land selftest: skipped (needs Linux with flock and setsid)"; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -236,6 +237,17 @@ grep -nE '(^|[^a-z])(ps -|ps aux|pgrep|pkill|pidof|killall)|kill -0|/proc/' "${l
 grep -nE '^[^#]*\bsleep\b' "${launch[@]}" | grep -v '# wait: ' && fail "a sleep in land.sh does not say what it waits for"
 grep -q '9>&-' "$LAND" || fail "the worker is not started without the lock descriptor"
 grep -qE '^\s*merge_locked gh pr merge' "$LAND" || fail "the merge call is not made under merge_locked"
+
+# 12. lint_slot: with every slot held it waits, with one free it runs the command, and the tree that passed has a stamp that skips the next run
+LR=$T/lintrepo; git init -q "$LR" && git -C "$LR" -c user.email=x@y -c user.name=x commit -q --allow-empty -m x
+lslot() { (cd "$LR" && timeout "$1" bash -c '. "$1"; DIR=$2 LAND_LINT_SLOTS=1; shift 2; lint_slot "$@"' _ "$LAND" "$T/lint-state" "${@:2}"); }
+mkdir -p "$T/lint-state"
+( exec 8>"$T/lint-state/lint-slot.1"; flock 8; sleep 3 ) & hold=$!   # wait: holds the only slot while the check below runs
+sleep 0.3 # wait: for the holder to take the slot
+lslot 1 echo ran >/dev/null 2>&1 && fail "lint_slot ran with every slot held"
+wait "$hold"
+[[ $(lslot 10 echo ran) == ran ]] || fail "lint_slot did not run the command with a free slot"
+[[ $(lslot 10 echo ran-again) == *cached* ]] || fail "lint_slot linted a tree that passed before"
 
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad

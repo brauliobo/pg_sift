@@ -7,6 +7,9 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 2
 
+# bench-fresh, docs and plan go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
+# waits for the one that is running and takes its result; CI always runs them.
+
 # bench-cases compares with the base branch: a CI checkout is shallow. Only a shallow one is given the base: in a full clone (fetch-depth 0, the macOS job) a depth-1 fetch makes
 # origin/main a shallow commit, its history is cut, and the neutral check then judges every commit of HEAD that main reached before (3 600 instead of 271 on the merge of main)
 [[ -z ${CI:-} || $(git rev-parse --is-shallow-repository) != true ]] || git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" 2>/dev/null || true
@@ -27,7 +30,7 @@ CHECKS=(
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'slugs		scripts/check-slugs.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
-	'plan		scripts/ci.sh --selftest'
+	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par.c src/agg/update.c bench/scaling '\''*.py'\'' -- scripts/ci.sh --selftest'
 	'ci-claim	scripts/test-ci-claim.sh'
 	'land		scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'

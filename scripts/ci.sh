@@ -214,10 +214,10 @@ declare -A JOB_WEIGHT_DEEP17 JOB_WEIGHT_DEEP18
 while IFS=$'\t' read -r job w17 w18; do
 	[[ $job == '#'* ]] || { JOB_WEIGHT_DEEP17[$job]=$w17; JOB_WEIGHT_DEEP18[$job]=$w18; }
 done <"$REPO/scripts/weights-deep.tsv"
-# weight_of JOB [deep [MAJOR]]: the weight in seconds of a lane
+# weight_of JOB [deep [MAJOR]]: sets WEIGHT to the weight in seconds of a lane (no subshell: the shard checks ask for it a million times)
 weight_of() {
 	local -n deep_w=JOB_WEIGHT_DEEP$([[ ${3:-${PG_MAJOR:-18}} == 17 ]] && echo 17 || echo 18)
-	if [[ -n ${2:-} ]]; then echo "${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi
+	if [[ -n ${2:-} ]]; then WEIGHT=${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}; else WEIGHT=${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}; fi
 }
 # stop_postmasters DIR: every postmaster whose data directory is under DIR (a fast shutdown, then QUIT, then KILL, two seconds each); the pid is checked to be a postgres process, never matched by name
 stop_postmasters() {
@@ -373,7 +373,7 @@ if [[ $MODE == --selftest ]]; then
 		lo='' hi=0
 		for (( k = 1; k <= ns; k++ )); do
 			l=0
-			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			while read -r j _; do weight_of "$j" "$deep" "$pg"; l=$(( l + WEIGHT )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
 			[[ -z $lo ]] || (( l < lo )) && lo=$l
 		done
@@ -517,12 +517,14 @@ installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1
 # their own: VACUUM removes (and a sift_table seals) only the rows older than every snapshot of the database, and an autovacuum worker on
 # the tables an earlier test left behind holds one
 installcheck_batches() {
-	local n=$1 i=0 b=() t
+	local n=$1 i=0 b=() t f
+	local -A stateful=()   # the tests that VACUUM or use a sift_table, found in one grep (one a test was 330 forks of every plan)
+	while IFS= read -r f; do f=${f##*/}; stateful[${f%.sql}]=1; done < <(grep -liE 'using sift_table|\<vacuum\>' "$REPO"/test/sql/*.sql)
 	shift
 	for t in "$@"; do
 		[[ installcheck-$t =~ ${SIFT_CI_AFFECTED:-.} ]] || continue
 		[[ -z ${SIFT_CI_ASSERT:-} || ! installcheck-$t =~ $ASSERT_SKIP ]] || continue
-		if grep -qiE 'using sift_table|\<vacuum\>' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
+		if [[ -v stateful[$t] ]]; then installcheck "$t"; continue; fi
 		b+=("$t")
 		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
 	done
@@ -629,10 +631,13 @@ else
 	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
-		local t p
+		local t p f pats
+		local -A guarded=()   # the tests that name a test-only object, found in one grep
+		pats=$(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile")
+		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO"/test/sql/*.sql)
 		for t in $(rest sql .sql $SLOW_REGRESS); do
-			for p in $(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
-			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
+			for p in $pats; do [[ $t == ${p//%/*} ]] && continue 2; done
+			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* || -v guarded[$t] ]] || continue
 			echo "$t"
 		done
 	}
@@ -696,12 +701,12 @@ shard_loads() {
 	local pool=$1 line id k i
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && LOAD[pool - 1]=$(( LOAD[pool - 1] + $(weight_of "$id" "${SIFT_CI_DEEP:-}") )); done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id" "${SIFT_CI_DEEP:-}"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT )); }; done
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
-	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || echo "$(weight_of "$id" "${SIFT_CI_DEEP:-}") $id"; done | sort -s -k1,1nr)
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 }
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
