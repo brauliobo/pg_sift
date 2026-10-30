@@ -964,16 +964,32 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 
 		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
+			int32		last = 0;
+			uint32		lastid = 0;
+
+			/* the rows of one value follow each other (the elements of one row's array, the rows of one parent): the id of the row before is theirs */
 			for (int i = 0; i < nsel; i++)
 			{
-				if (i + GROUP_AHEAD < nsel)
-				{
-					uint32		h = wide_hash((int32) vals_out[i + GROUP_AHEAD], k->wcap);
+				int32		x = (int32) vals_out[i];
 
-					__builtin_prefetch(&k->wid[h]);
-					__builtin_prefetch(&k->wval[h]);
+				if (v->isnull && v->isnull[idx[i]])
+				{
+					vals_out[i] = 0;
+					continue;
 				}
-				vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, (int32) vals_out[i]);
+				if (lastid == 0 || x != last)
+				{
+					if (i + GROUP_AHEAD < nsel)
+					{
+						uint32		h = wide_hash((int32) vals_out[i + GROUP_AHEAD], k->wcap);
+
+						__builtin_prefetch(&k->wid[h]);
+						__builtin_prefetch(&k->wval[h]);
+					}
+					lastid = ident_wide_id(ex, k, x);
+					last = x;
+				}
+				vals_out[i] = lastid;
 			}
 			*map_out = NULL;		/* the values are the ids */
 			*base_out = 0;

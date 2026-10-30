@@ -1,6 +1,7 @@
 -- An integer group key whose values are clustered by unit and far apart (a column the table is ordered by another way) is grouped through the
 -- hash table once the range table would be filled with many more values than the rows: the same groups as PostgreSQL, also when the switch
--- happens after the first units gave ids from the range table, with NULL keys, and for pre-aggregated units.
+-- happens after the first units gave ids from the range table, with NULL keys, and for pre-aggregated units. The rows of one key that follow each other take
+-- the id of the row before; a NULL between two rows of a key, a key that comes back after others and a key that follows the NULLs keep the groups of PostgreSQL.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -11,7 +12,11 @@ CREATE INDEX sk_facts_col ON sk_facts USING sift_col (id, set_id, kind, score);
 NOTICE:  sift_col index sk_facts_col writes a rollup of the rows by set_id, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 57 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX sk_facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-VACUUM (FREEZE, ANALYZE) sk_facts;
+CREATE TABLE sk_runs (id int PRIMARY KEY, set_id int, score float8, pad text);
+INSERT INTO sk_runs SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 100000 + ((i / 3) % 40) * 60000 + (i / 3000) * 7 END, (i % 10)::float8, repeat('x', 300)
+	FROM generate_series(1, 60000) i;
+CREATE INDEX sk_runs_col ON sk_runs USING sift_col (id, set_id, score);
+VACUUM (FREEZE, ANALYZE) sk_facts, sk_runs;
 \ir test/agg_check_pushed.sql
 \set ECHO none
 SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total, count(DISTINCT kind) AS kinds FROM sk_facts GROUP BY set_id');
@@ -32,6 +37,18 @@ SELECT * FROM check_query('SELECT set_id, count(*) AS n FROM sk_facts WHERE kind
  t      |           0
 (1 row)
 
+SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total FROM sk_runs GROUP BY set_id');
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+SELECT * FROM check_query('SELECT set_id, count(*) AS n FROM sk_runs WHERE id % 5 <> 0 GROUP BY set_id');
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
 DROP FUNCTION check_query(text);
-DROP TABLE sk_facts;
+DROP TABLE sk_facts, sk_runs;
 DROP EXTENSION pg_sift;
