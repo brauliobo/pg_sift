@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests of the release run (bench/steps/release.sh): the preset `release`, its minutes against the budget, the stages it covers and the inputs key that lets the generic stage be carried.
 Run: python3 -I bench/test/test_release.py"""
-import os, subprocess, sys, unittest
+import os, re, subprocess, sys, unittest
 from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -17,7 +17,7 @@ class Preset(unittest.TestCase):
     def test_every_stage_has_minutes_and_a_reason_and_the_total_is_inside_the_budget(self):
         p = budget.presets('release')
         stages = [s for s, _, _ in budget.RELEASE_STAGES]
-        self.assertEqual(stages, ['store', 'updates', 'compression', 'stats', 'gap', 'search', 'cases', 'duckdb', 'generic', 'scaling', 'analytics'])
+        self.assertEqual(stages, ['store', 'updates', 'compression', 'stats', 'gap', 'search', 'cases', 'duckdb', 'generic', 'scaling', 'analytics', 'sizes'])
         self.assertEqual(set(stages), set(budget.RELEASE_WHY))
         rows = budget.release_table()
         total = int(rows[-1].split('|')[2].strip(' *'))
@@ -48,19 +48,23 @@ class CasesMemory(unittest.TestCase):
                               'awk() { echo %d; } && cases_memory && echo "$CASES_X $CASES_RESERVE_GB $CASES_CAP"' % (REPO, available_gb)], capture_output=True, text=True).stdout.split()
         return out[0], int(out[1]), out[2]
 
-    def test_the_reserve_is_3x_with_a_24g_cap_when_the_host_has_3x_the_plan_and_8_gb_else_2x_with_16g(self):
+    def test_the_reserve_is_3x_with_a_40g_cap_from_60_gb_available_24g_from_3x_the_plan_and_8_gb_else_2x_with_16g(self):
         plan = self.reserve(1000)[1] // 3   # the plan of the cases at 1,000,000 orders, in GB
         self.assertGreater(plan, 0)
-        for available, expected in ((3 * plan + 8, ('3', 3 * plan, '24G')), (3 * plan + 7, ('2', 2 * plan, '16G')), (4, ('2', 2 * plan, '16G'))):
+        for available, expected in ((60, ('3', 3 * plan, '40G')), (59, ('3', 3 * plan, '24G')), (3 * plan + 8, ('3', 3 * plan, '24G')), (3 * plan + 7, ('2', 2 * plan, '16G')), (4, ('2', 2 * plan, '16G'))):
             self.assertEqual(self.reserve(available), expected, available)
 
 
 class StageList(unittest.TestCase):
     def test_final_plans_the_stages_of_every_table(self):
         out = subprocess.run(['bash', '-c', 'cd %s && bench/bench final --size release --dry-run 2>&1 | sed -n "/^Release pass/,/^Total/p"' % REPO], capture_output=True, text=True).stdout
-        for stage in ('store', 'updates', 'compression', 'stats', 'gap', 'search', 'cases', 'duckdb', 'generic', 'scaling', 'analytics'):
+        for stage in ('store', 'updates', 'compression', 'stats', 'gap', 'search', 'cases', 'duckdb', 'generic', 'scaling', 'analytics', 'sizes'):
             self.assertRegex(out, r'\n  %s +(about|carried|skipped)' % stage)
         self.assertIn('budget 120 min', out)
+        m = re.search(r'Total about (\d+) min without sizes, (\d+) with, budget 120', out)   # the budget is checked without the last stage, which runs only if it fits
+        self.assertTrue(m, out)
+        self.assertLessEqual(int(m.group(2)), BUDGET_MINUTES)
+        self.assertEqual(int(m.group(2)) - int(m.group(1)), int(budget.presets('release')['P_MIN_SIZES']))
 
 
 class InputsKey(unittest.TestCase):

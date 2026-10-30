@@ -16,8 +16,8 @@
 #                makes --rehearsal write its own to try this) is applied to a clean checkout regenerates the blocks and the lint of the tables lists the sentences that still quote an old number
 #
 # On the benchmark host (HOST is the ssh name, DIR a checkout with the engines built by `bench/bench setup`, TAG the release tag, v3.7.0 for example: the run is of a tag, never of a commit id):
-#   ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && bench/bench release --dry-run'              # read the plan and the preconditions
-#   ssh HOST 'cd DIR && nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'        # the run survives the connection
+#   ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && BENCH_STORE=STORE bench/bench release --dry-run'              # read the plan and the preconditions
+#   ssh HOST 'cd DIR && BENCH_STORE=STORE nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'        # the run survives the connection
 #   ssh HOST 'tail -f ~/release-run.log'                                                                         # follow it; the stage lines are `[time final] stage ...`
 # and afterwards, in the checkout: `git diff --stat` shows the regenerated README.md and bench/results.
 # What to read in the dry-run, when to abort, how a finished run looks and who commits the diff: docs/BENCHMARKS.md, "The go: one block and a checklist".

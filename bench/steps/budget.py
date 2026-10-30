@@ -100,20 +100,23 @@ RELEASE_WHY = {  # stage: what the release run cuts against the standard pass, a
     'generic': 'the other engines on three generated datasets, 3 runs, the answers checked first; this stage does not run pg_sift (its numbers are the cases stage\'s), so when its inputs key (harness, adapters, generators, statements, rows, runs, the CPU, threads and memory of the host) is the one in bench/results/generic.tsv the committed numbers stand in and the plan says `carried`: 0 minutes; the first pass of a host measures them',
     'scaling': 'partitions 1, 16, 256, 4096 and workers 0, 1, 3 (standard sweeps: 7 and 4 points), 3 runs per cell: the endpoints and the middle of each curve; the chart keeps its slope',
     'analytics': 'the 29 application shapes on 1,200,000 orders, 3 timed runs after one warm-up (5): heap, pg_sift, flat tables and ClickHouse',
+    'sizes': 'as in the 3.6 window (two store runs at 25,000 and 100,000 orders and at 10,000,000, merged into store-scaling.json, and pg_duckdb at 10,000,000 orders): LAST, and only if the minutes elapsed plus these fit under 120; otherwise it is skipped with a line in the log and the two tables keep the numbers, and the date, of the release that measured them',
 }
 RELEASE_STAGES = STAGES + [('scaling', 'the partition (1 to 4,096) and parallel worker (0 to 3) sweeps of four questions', 'PostgreSQL, pg_sift'),
-                           ('analytics', 'the application shapes: whole-table reports and reports of a set of tenants', 'PostgreSQL heap, pg_sift, PostgreSQL flat tables, ClickHouse')]
+                           ('analytics', 'the application shapes: whole-table reports and reports of a set of tenants', 'PostgreSQL heap, pg_sift, PostgreSQL flat tables, ClickHouse'),
+                           ('sizes', 'the store at 25,000, 100,000 and 10,000,000 orders, and pg_duckdb at 10,000,000 (the scale charts)', 'PostgreSQL, pg_sift, Citus, ClickHouse, Elasticsearch, pg_duckdb')]
 
 
 def release_table():
     """the release run (steps/release.sh): the minutes of every stage from the preset `release`, against the budget"""
     p = presets('release')
     mins = lambda s: int({'store': sum(int(p.get('P_MIN_' + k, 0)) for k in ('SETUP', 'WARM', 'COLD', 'UPDATES')), 'updates': p.get('P_MIN_SECTION', 0)}.get(s, p.get('P_MIN_' + s.upper(), 0)))
-    total = sum(mins(s) for s, _, _ in RELEASE_STAGES)
+    sizes = mins('sizes')
+    total = sum(mins(s) for s, _, _ in RELEASE_STAGES) - sizes   # the budget is checked without `sizes`, which runs last and only if it fits
     cached = total - mins('store') + int(p.get('P_MIN_STORE_CACHED', 0))
     out = ['| stage | minutes | what it times | what the release run changes against the standard pass, and why the number stays |', '|---|---:|---|---|']
     out += ['| `%s` | %d | %s | %s |' % (s, mins(s), what, RELEASE_WHY[s]) for s, what, _ in RELEASE_STAGES]
-    out += ['| **all** | **%d** | `bench/bench release`: one stage after another, the plan checked against 120 minutes before anything starts | with the cells of the engines not under test in the cache of cells: **%d** minutes (ideal: 60) |' % (total, cached)]
+    out += ['| **all** | **%d** | `bench/bench release`: one stage after another, the plan checked against 120 minutes before anything starts; **%d** with `sizes` | with the cells of the engines not under test in the cache of cells: **%d** minutes, **%d** with `sizes` (ideal: 60) |' % (total, total + sizes, cached, cached + sizes)]
     return out
 
 
@@ -244,15 +247,18 @@ def block(results):
             '`bench/bench release` reserves 3x the plan (15 GB) under `CASES_TMP` with `CASES_MEM=24G` when the host has 3x the plan and 8 GB of memory available (23 GB), else 2x (10 GB) with 16G, choosing by itself from the measured memory and printing the numbers; it checks the free space, the available memory (the reserve and 8 GB) and the cap (the reserve and 4 GB) before it starts, and stops with the numbers when they are short; '
             '`CASES_TMP=/path` moves the clusters to a disk (slower builds, minutes not comparable) and `CASES_MEM` changes the cap.']
     out += ['', '#### The go: one block and a checklist', '',
-            '`HOST` is the ssh name, `DIR` a checkout with the engines built by `bench/bench setup`, `TAG` the release tag (`v3.7.0`; the run is of a tag, never of a commit id, because the history is rewritten before a release). The first line reads, the second starts, the third follows:', '', '```',
-            "ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && bench/bench release --dry-run'",
-            "ssh HOST 'cd DIR && nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'",
+            '`HOST` is the ssh name, `DIR` a checkout, `STORE` a directory on a disk that is neither tmpfs nor the root file system (datasets, downloads and the cache of cells: inputs and caches only, they change no measurement), `TAG` the release tag (`v3.7.0`; the run is of a tag, never of a commit id, because the history is rewritten before a release). '
+            'The work directory stays the default, `/tmp/sift-bench` in memory, as the published numbers were measured. Before the first line, `BENCH_STORE=STORE bench/bench setup` (the engines for the tag; the datasets and downloads are kept in STORE and reused) and `bench/bench store prepare --sizes 25000,100000,200000,1000000,10000000`. The first line reads, the second starts, the third follows:', '', '```',
+            "ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && BENCH_STORE=STORE bench/bench release --dry-run'",
+            "ssh HOST 'cd DIR && BENCH_STORE=STORE nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'",
             "ssh HOST 'tail -f ~/release-run.log'", '```', '',
+            'The first run on a host has no cache of cells in STORE: the competitor cells are all measured (the worst case of the table above, and `sizes` only if it fits) and the run leaves the cache there; the next run takes those cells from it, with their date and key in the tables. '
+            'If the host is also somebody\'s desktop, it cannot be made exclusive: its owner keeps it idle for the run.', '',
             'Read in the dry-run, before the second line:', '',
             '1. The plan total is at most 120 minutes (the run refuses a plan over it). The `store` line says about 5 minutes when the cache of cells of this host exists and about 24 when everything is measured; `generic` is carried (the table says which tag measured it) when its inputs key is unchanged. No cache and no carry is the worst case, about 103 minutes in all; the cache and the carry together about 70.',
             '2. Every precondition is `ok`. A `MISSING` line (the ClickHouse binary, a port, a leftover container of `bench/bench store clean`, the engines of `bench/bench setup`) stops the run: do not start.',
             '3. The line `cases memory` shows the plan, the available memory and the reserve it chose by itself (3x the plan with `CASES_MEM=24G` when the host has 3x the plan and 8 GB available, else 2x with 16G); `the cases fit` is `ok`.',
-            '4. The host is quiet: no other benchmark or heavy job (CPU and IO pressure `some avg10` under 10% in `/proc/pressure`). The run holds the perf lock for the whole pass; nothing else may time on the host.', '',
+            '4. The host is quiet: nobody works on it, no other benchmark or heavy job (CPU and IO pressure `some avg10` under 10% in `/proc/pressure`). The run holds the perf lock for the whole pass; nothing else may time on the host.', '',
             'Abort (`ssh HOST \'kill $(cat ~/release-run.pid); cd DIR && bench/bench store clean\'`) on: a `MISSING` precondition or a plan over 120 minutes (the run stops by itself); two `OVER BUDGET` stage lines in a row or more than 120 minutes of wall time; less than 5 GB free on the disk of the host; another job starting there. A stage that fails does not stop the pass: the others continue, the log ends with `FAILED stages: ...`, and `bench/bench resume` runs only those.', '',
             'It is finished when the log ends with the table of stage minutes and `release run of TAG: N min wall, exit 0` and `pgrep -f bench/steps/final.sh` finds nothing on the host. A `FAILED stages:` line or an exit other than 0 is not a clean finish.', '',
             'The docs diff lands in the working tree of `DIR` on the host (README.md, bench/results, docs/img); nothing is committed there. '

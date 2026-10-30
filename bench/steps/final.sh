@@ -49,7 +49,7 @@ SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
 ALL_STAGES="store updates compression stats gap search cases duckdb generic"
-if [[ $SIZE == release || -n ${REHEARSAL:-} ]]; then ALL_STAGES="$ALL_STAGES scaling analytics"; fi   # the tables of the partition and worker sweeps and of the application shapes
+if [[ $SIZE == release || -n ${REHEARSAL:-} ]]; then ALL_STAGES="$ALL_STAGES scaling analytics sizes"; fi   # the tables of the partition and worker sweeps and of the application shapes; `sizes` is last: it runs only if it still fits the budget
 [[ -n $STAGES ]] || STAGES=$ALL_STAGES
 [[ $SIZE == standard || $SIZE == release || $SIZE == full || -n ${REHEARSAL:-} || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
 
@@ -68,13 +68,22 @@ s_search() { # the slim tier of every engine, then `fuzzy` (not a class of the r
   bench all "${FWD[@]}" ${REHEARSAL:+--engines "$fuzzy"} --run-id "final-$SIZE-search" ${DOCS:+--docs}   # a rehearsal builds no other competitor extension
   bench run "${FWD[@]}" --dataset articles --classes fuzzy --engines "$fuzzy" --run-id "final-$SIZE-search-fuzzy" ${DOCS:+--docs --merge}
 }
+s_sizes() { # the store at other sizes and pg_duckdb at the big size; a rehearsal does not write them: the smoke sizes are not the ladder the charts read
+  local small="final-$SIZE-sizes-small" big="final-$SIZE-sizes-big" scaling=$GAPOUT/store-scaling.json duck=$GAPOUT/duckdb-big.tsv
+  if [[ -n $DOCS && -z ${REHEARSAL:-} ]]; then scaling=$REPO/bench/results/store-scaling.json duck=$REPO/bench/results/duckdb-10000000.tsv; fi
+  bench store all "${FWD[@]}" --run-id "$small" --sizes "$P_SIZES_SMALL" --cold-runs 0 --restart-runs 0 --update-sizes none
+  bench store all "${FWD[@]}" --run-id "$big" --sizes "$P_SIZES_BIG" --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none
+  bench store scaling "$scaling" "$BENCH/out/run-$small/store.json" "$BENCH/out/run-$big/store.json"
+  bench duckdb --rows "$P_DUCKDB_BIG" --out "$duck"
+}
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
-cases_memory() {   # the scratch of the cases is tmpfs charged to the memory cap of the server: reserve 3x the plan (cap 24G) when the host has 3x the plan and 8 GB of memory available, else 2x (cap 16G); the plan undercounts by up to 1.6x; CASES_MEM names the cap by hand
+cases_memory() {   # the scratch of the cases is tmpfs charged to the memory cap of the server: reserve 3x the plan with a 40G cap when 60 GB are available, with 24G when the host has 3x the plan and 8 GB, else 2x with 16G; the plan undercounts by up to 1.6x; CASES_MEM names the cap by hand
   CASES_PLAN_GB=$("$BENCH/bench" cases --plan --rows "$P_ROWS" 2>/dev/null | sed -n 's/.*largest point needs about \([0-9]*\) GB.*/\1/p')
   CASES_AVAIL_GB=$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)
   CASES_X=2 CASES_CAP=16G
-  if [[ -n $CASES_PLAN_GB ]] && (( CASES_AVAIL_GB >= CASES_PLAN_GB * 3 + 8 )); then CASES_X=3 CASES_CAP=24G; fi
+  if (( CASES_AVAIL_GB >= 60 )) && [[ -n $CASES_PLAN_GB ]]; then CASES_X=3 CASES_CAP=40G   # the 3.6 window: 14 GB of scratch at 1,000,000 orders, 40G
+  elif [[ -n $CASES_PLAN_GB ]] && (( CASES_AVAIL_GB >= CASES_PLAN_GB * 3 + 8 )); then CASES_X=3 CASES_CAP=24G; fi
   CASES_CAP=${CASES_MEM:-$CASES_CAP} CASES_RESERVE_GB=$(( ${CASES_PLAN_GB:-0} * CASES_X ))
 }
 s_cases() { cases_memory; CASES_MEM=$CASES_CAP bench cases ${P_CASES:+--cases "$P_CASES"} --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" ${P_CASE_RUNS:+--runs "$P_CASE_RUNS"} --lane-budget "${P_LANE_BUDGET:-20}" ${REHEARSAL:+--no-wait} ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
@@ -99,6 +108,7 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     generic) echo "${P_MIN_GENERIC:-3}" ;;
     scaling) echo "${P_MIN_SCALING:-12}" ;;
     analytics) echo "${P_MIN_ANALYTICS:-10}" ;;
+    sizes) echo "${P_MIN_SIZES:-13}" ;;
     scale) echo "${P_MIN_SCALE:-430}" ;;
     sets) echo "${P_MIN_SETS:-25}" ;;
     extras) echo "${P_MIN_EXTRAS:-100}" ;;
@@ -112,16 +122,18 @@ carried() { # STAGE: the stage whose committed results stand in for a new run, w
 }
 
 plan() { # the stages that will run, their minutes, the total against the budget
-  local total=0 s m
+  local total=0 withsizes=0 s m
   printf 'Release pass, size %s (bench/presets.env), stages one after another:\n' "$SIZE"
   for s in $STAGES; do
     m=$(minutes "$s")
     if why=$(carried "$s"); then printf '  %-12s carried, 0 min: %s\n' "$s" "$why"
     elif stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
+    elif [[ $s == sizes ]]; then printf '  %-12s about %2d min, last: runs only if the minutes before it plus these fit the budget\n' "$s" "$m"; withsizes=$m
     else printf '  %-12s about %2d min\n' "$s" "$m"; total=$(( total + m )); fi
   done
   [[ " $STAGES " != *" scale "* ]] || "$BENCH/bench" cases --plan --rows 200000 --scales 1,10,100 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} | sed 's/^/  /' || true   # the points, the disk and the time of the scale stage
-  printf 'Total about %d min, budget %s min.\n' "$total" "$BUDGET"
+  if (( withsizes )); then printf 'Total about %d min without sizes, %d with, budget %s min.\n' "$total" "$(( total + withsizes ))" "$BUDGET"
+  else printf 'Total about %d min, budget %s min.\n' "$total" "$BUDGET"; fi
   TOTAL=$total
 }
 check() { # DESCRIPTION COMMAND...
@@ -171,6 +183,8 @@ for s in $STAGES; do
   rc=0
   [[ -z ${REHEARSAL:-} || $s != search ]] || git -C "$REPO" checkout -- bench/results/store.json bench/results/store-scaling.json   # the smoke store stages replaced the 1,000,000-order tiers that the charts and highlights read
   if why=$(carried "$s"); then log "stage $s: carried, $why"
+  elif [[ $s == sizes ]] && (( BUDGET > 0 )) && (( (SECONDS - T0 + 30) / 60 + $(minutes sizes) > BUDGET )); then
+    log "stage sizes: skipped, $(( (SECONDS - T0 + 30) / 60 )) min elapsed and about $(minutes sizes) to run do not fit the budget of $BUDGET min; bench/results/store-scaling.json and bench/results/duckdb-10000000.tsv keep the numbers of the release that measured them (the date is in each file)"
   elif ! stage_done "$s" "$(key "$s")"; then
     "$0" --stage-only "$s" "${ORIG[@]}" &
     STAGE_PID=$!
