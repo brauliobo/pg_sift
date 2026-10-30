@@ -56,7 +56,7 @@ extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
 extern void sift_col_report_caps(Relation index);
 extern void sift_col_report_key_cut(Relation index);
-/* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
+/* The default of key_columns (col/keycols/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
 typedef enum SiftAutoCut
@@ -72,14 +72,14 @@ extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */
 extern bool sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n);
 extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec);
-/* paths = 'auto' (col/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
+/* paths = 'auto' (col/keycols/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
 extern void sift_col_auto_paths(Relation heap, Relation index);
-/* preagg = 'auto' or none (col/keycols.c): before a build of an index with more plain columns than the cube holds, the columns ranked by data and written to the option as 'auto: a, b' */
+/* preagg = 'auto' or none (col/keycols/keycols.c): before a build of an index with more plain columns than the cube holds, the columns ranked by data and written to the option as 'auto: a, b' */
 extern void sift_col_auto_cube(Relation heap, Relation index);
-/* rollup_dims = 'auto' (col/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
+/* rollup_dims = 'auto' (col/keycols/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
 extern void sift_col_auto_rows(Relation heap, Relation index);
-/* array_lengths = auto (col/keycols.c): written as on for an index with an array column, before the build */
+/* array_lengths = auto (col/keycols/keycols.c): written as on for an index with an array column, before the build */
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index);

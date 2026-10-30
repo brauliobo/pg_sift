@@ -554,7 +554,7 @@ COL_OPT_STR(sift_col_options_preagg, preagg, "")
 
 /*
  * An ALTER INDEX is checked by building the state the new options give. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
- * again at the next REINDEX (col/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
+ * again at the next REINDEX (col/keycols/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
  */
 void
 sift_col_alter_check(Relation index)

@@ -1,5 +1,5 @@
 /*
- * col/keycols_int.h - what the files of the build-time defaults (keycols*.c) share.
+ * col/keycols/keycols_int.h - what the files of the build-time defaults (keycols/) share.
  */
 #ifndef SIFT_COL_KEYCOLS_INT_H
 #define SIFT_COL_KEYCOLS_INT_H

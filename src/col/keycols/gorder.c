@@ -1,5 +1,5 @@
 /*
- * col/keycols_gorder.c - order_array_columns by default: the columns that take a global order
+ * col/keycols/gorder.c - order_array_columns by default: the columns that take a global order
  */
 #include "postgres.h"
 
@@ -7,7 +7,7 @@
 
 #include "utils/varlena.h"
 #include "col/am.h"
-#include "col/keycols_int.h"
+#include "col/keycols/keycols_int.h"
 #include "col/gorder.h"
 
 typedef struct GordCand

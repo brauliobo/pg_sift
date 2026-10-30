@@ -173,7 +173,7 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 
 /*
  * The entry of an array column that begins with '+' ('+tags[] text, ids[] int4') keeps the image of the array beside its elements; the mark is the build's
- * choice for a column whose arrays repeat (col/keycols.c) and is stored with the paths. Returns the spec without the marks and sets ShredAttr.image.
+ * choice for a column whose arrays repeat (col/keycols/keycols.c) and is stored with the paths. Returns the spec without the marks and sets ShredAttr.image.
  */
 static char *
 take_image_marks(const char *paths, ShredAttr *attr, int natts)

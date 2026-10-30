@@ -6,7 +6,7 @@
  *   dimension  at most DIM_GROUPS distinct values (NULL counts as one) in AGREE_PCT of the sampled units: a column the cube holds a histogram of
  *   pair       two dimensions whose combinations fit a rollup of the rows of the unit (min(rows / 10, SIFT_PAGG_ROWS_CELLS) cells) in AGREE_PCT of the
  *              units and whose cells take at most GROWTH_PCT of the index: rollup_dims would answer a GROUP BY of both from cells
- *   key        an int2, int4, int8 or date foreign key or column named *_id that is not unique: key_columns keeps a key list or bitmap of it (col/keycols.c)
+ *   key        an int2, int4, int8 or date foreign key or column named *_id that is not unique: key_columns keeps a key list or bitmap of it (col/keycols/keycols.c)
  */
 #include "postgres.h"
 

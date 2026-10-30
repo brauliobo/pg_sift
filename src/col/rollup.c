@@ -458,7 +458,7 @@ leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n
  * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
  * holds more than SIFT_CSET_LIMIT of them and nothing where its keys are one value or fill their range, and no key list or bitmap where that would take
  * more than a few percent of the unit, a rollup_dims rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
- * leaves out the date columns past the 16 dimensions of the cube. The leaves the build chose for key_columns are reported by it (col/keycols.c). Read from
+ * leaves out the date columns past the 16 dimensions of the cube. The leaves the build chose for key_columns are reported by it (col/keycols/keycols.c). Read from
  * the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
  */
 void

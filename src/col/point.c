@@ -14,7 +14,7 @@ leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 	return d->parent < 0 && sift_cset_leaf_ok(s, d);
 }
 
-/* 'auto: a, b' is the choice of the build (col/keycols.c) and reads as the list 'a, b'; 'auto' is none */
+/* 'auto: a, b' is the choice of the build (col/keycols/keycols.c) and reads as the list 'a, b'; 'auto' is none */
 const char *
 sift_cpoint_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
 {

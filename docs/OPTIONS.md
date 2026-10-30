@@ -2293,15 +2293,15 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
 | NOTICE | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
-| NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
-| NOTICE | sift_col index %s keeps the elements of the arrays %s | `src/col/keycols.c` |  |
-| NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
-| NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols_cube.c` |  |
-| NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols_cube.c` |  |
-| NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols_cube.c` | `rollup` |
-| NOTICE | sift_col index "%s": order_array_columns = 'auto' chose the text column "%s": benefit %s against cost %s | `src/col/keycols_gorder.c` | `order_array_columns` |
-| NOTICE | sift_col index "%s": order_array_columns = 'auto' did not choose the text column "%s": benefit %s against cost %s | `src/col/keycols_gorder.c` | `order_array_columns` |
-| NOTICE | sift_col index "%s": point_tid_columns includes "%s", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %s M instructions against %s M with the directory; predicted index size %s%%, %s bytes a row, benefit %s against cost %s) | `src/col/keycols_point.c` | `point_tid_columns` |
+| NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols/cube.c` |  |
+| NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols/cube.c` |  |
+| NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols/cube.c` | `rollup` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' chose the text column "%s": benefit %s against cost %s | `src/col/keycols/gorder.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' did not choose the text column "%s": benefit %s against cost %s | `src/col/keycols/gorder.c` | `order_array_columns` |
+| NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols/keycols.c` |  |
+| NOTICE | sift_col index %s keeps the elements of the arrays %s | `src/col/keycols/keycols.c` |  |
+| NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols/keycols.c` | `paths` |
+| NOTICE | sift_col index "%s": point_tid_columns includes "%s", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %s M instructions against %s M with the directory; predicted index size %s%%, %s bytes a row, benefit %s against cost %s) | `src/col/keycols/point.c` | `point_tid_columns` |
 | WARNING | maintenance of sift_col index %s failed: %s | `src/col/maint/maint.c` |  |
 | NOTICE | sift_col index %s: the cube dim "%s" has no histogram in %s%%sf %s units, which hold more than %s groups of it | `src/col/rollup.c` |  |
 | NOTICE | sift_col index %s: the keys of "%s" are a bloom filter, not a list, in %s%%sf %s units, which hold more than %s distinct keys | `src/col/rollup.c` |  |

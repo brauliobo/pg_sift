@@ -113,7 +113,7 @@ typedef struct Samp
 	SiftKey	   *tid;			/* the address of each sampled row, the sampled superblocks side by side (superblock s starts at block s * SIFT_SB_PAGES) */
 } Samp;
 
-/* point_tid_columns is a list the user wrote: the 'auto: col' of an earlier build (col/keycols.c) is decided again after this choice, and lists rows on a key-cut index as point_columns does */
+/* point_tid_columns is a list the user wrote: the 'auto: col' of an earlier build (col/keycols/keycols.c) is decided again after this choice, and lists rows on a key-cut index as point_columns does */
 static bool
 point_tid_set(Relation index)
 {

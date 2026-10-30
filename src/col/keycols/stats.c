@@ -1,5 +1,5 @@
 /*
- * col/keycols_stats.c - the statistics of a column for the build-time defaults: sizes of the index, a sample, ANALYZE when unknown
+ * col/keycols/stats.c - the statistics of a column for the build-time defaults: sizes of the index, a sample, ANALYZE when unknown
  */
 #include "postgres.h"
 
@@ -10,7 +10,7 @@
 #include "executor/spi.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-#include "col/keycols_int.h"
+#include "col/keycols/keycols_int.h"
 
 
 /* the statistics of heap column hatt: distinct values, the correlation with the heap order (1 when unknown) and the average width; false without them */

@@ -1,5 +1,5 @@
 /*
- * col/keycols_cube.c - the cube, the arrays and the rollup of rows by default: which dimensions and measures the build keeps
+ * col/keycols/cube.c - the cube, the arrays and the rollup of rows by default: which dimensions and measures the build keeps
  */
 #include "postgres.h"
 
@@ -8,7 +8,7 @@
 #include "access/heapam.h"
 #include "utils/lsyscache.h"
 #include "col/am.h"
-#include "col/keycols_int.h"
+#include "col/keycols/keycols_int.h"
 #include "col/shred_pg.h"
 
 /*

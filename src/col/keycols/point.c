@@ -1,5 +1,5 @@
 /*
- * col/keycols_point.c - point_tid_columns by default: which keys list their rows' addresses and the gap a parallel build leaves
+ * col/keycols/point.c - point_tid_columns by default: which keys list their rows' addresses and the gap a parallel build leaves
  */
 #include "postgres.h"
 
@@ -9,7 +9,7 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "col/am.h"
-#include "col/keycols_int.h"
+#include "col/keycols/keycols_int.h"
 #include "col/setsum.h"
 #include "col/point.h"
 

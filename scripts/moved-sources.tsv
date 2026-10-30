@@ -8,3 +8,8 @@ src/col/seg_write/	src/col/seg_write.c	segw_
 src/col/seg/	src/col/seg.c	seg_
 src/table/funcs_test.c	src/table/funcs.c	
 src/col/dictshm_test.c	src/col/dictshm.c	
+src/col/keycols/	src/col/keycols.c	
+src/col/keycols/	src/col/keycols_cube.c	
+src/col/keycols/	src/col/keycols_gorder.c	
+src/col/keycols/	src/col/keycols_point.c	
+src/col/keycols/	src/col/keycols_stats.c	

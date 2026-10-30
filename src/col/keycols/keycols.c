@@ -1,5 +1,5 @@
 /*
- * col/keycols.c - the default of the option key_columns: an index created without it, or with key_columns = 'auto', keeps the keys of its
+ * col/keycols/keycols.c - the default of the option key_columns: an index created without it, or with key_columns = 'auto', keeps the keys of its
  * foreign key columns and of its columns named *_id, as far as they are int2, int4, int8 or date, not unique, and not held by the cube. CREATE INDEX is the only
  * place it is decided: the columns are written to the option as 'auto: a, b', so that a rebuild keeps them, and the build keeps those that hold a key list or
  * a bitmap in half of the units or more. The same file decides the other defaults that read the columns' data before a build: the jsonb paths and the plain
@@ -20,7 +20,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/keycols_int.h"
+#include "col/keycols/keycols_int.h"
 #include "col/ktab.h"
 #include "col/setsum.h"
 
