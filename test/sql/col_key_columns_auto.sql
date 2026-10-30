@@ -51,7 +51,7 @@ CREATE FUNCTION au_minors(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15))::text FROM sift._test_col_formats(i::regclass) $$;
 
 -- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
-CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096, point_tid_columns = 'off');
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
 SELECT sift.col_verify('au_i', true);
 

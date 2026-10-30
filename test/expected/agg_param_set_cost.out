@@ -13,7 +13,7 @@ SELECT setseed(0.42);
 
 INSERT INTO items SELECT g, 1 + (random() * 999999)::int, g % 9, random() * 100 FROM generate_series(1, 200000) g;
 CREATE INDEX items_key ON items (key);
-CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount);
+CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount) WITH (point_tid_columns = 'off');
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION key_list(n int) RETURNS text LANGUAGE sql AS $$
 	SELECT (SELECT string_agg(key::text, ',') FROM (SELECT key FROM items ORDER BY id LIMIT n) k)

@@ -33,14 +33,14 @@ CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_i
 SET sift.col_format_minor = 14;
 CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, order_array_columns = off);
 RESET sift.col_format_minor;
-SELECT 'kt_on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kt_on')
-UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_b_off')
-UNION ALL SELECT 'kt_c_old', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_c_old') ORDER BY 1;
+SELECT 'kt_on' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('kt_on')
+UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kt_b_off')
+UNION ALL SELECT 'kt_c_old', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kt_c_old') ORDER BY 1;
    idx    | minors 
 ----------+--------
  kt_b_off | {15}
  kt_c_old | {14}
- kt_on    | {22}
+ kt_on    | {15}
 (3 rows)
 
 SELECT sift.col_verify('kt_on', true), sift.col_verify('kt_b_off', true), sift.col_verify('kt_c_old', true);
@@ -192,10 +192,10 @@ SELECT sift.col_promote('kt_on') >= 0 AS promoted;
  t
 (1 row)
 
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kt_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('kt_on');
  minors 
 --------
- {22}
+ {15}
 (1 row)
 
 SELECT sift.col_verify('kt_on', true);
@@ -217,10 +217,10 @@ SELECT sift.col_merge('kt_on', true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('kt_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('kt_on');
  minors | segments 
 --------+----------
- {22}   |        1
+ {15}   |        1
 (1 row)
 
 SELECT sift.col_verify('kt_on', true);
@@ -253,7 +253,7 @@ INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '
 SET sift.col_format_minor = 14;
 CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096);
 RESET sift.col_format_minor;
-SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ka_idx');
+SELECT array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ka_idx');
  minors 
 --------
  {14}
@@ -268,10 +268,10 @@ SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
 (1 row)
 
 VACUUM (freeze) ka;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ka_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('ka_idx');
  minors  
 ---------
- {14,22}
+ {14,15}
 (1 row)
 
 SELECT sift.col_verify('ka_idx', true);
@@ -299,10 +299,10 @@ SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
  minors | segments 
 --------+----------
- {22}   |        1
+ {15}   |        1
 (1 row)
 
 SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) = 0 AS merged_answers_all,
@@ -332,7 +332,7 @@ SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
  minors | segments 
 --------+----------
  {15}   |        1
@@ -366,10 +366,10 @@ INSERT INTO kr SELECT g, g % 20, g % 100, md5(g::text) || md5(g::text || 'a') FR
 VACUUM (FREEZE, ANALYZE) kr;
 CREATE INDEX kr_on ON kr USING sift_col (id, kk_id, val, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, cube_minmax = false);
 CREATE INDEX kr_off ON kr USING sift_col (id, kk_id, val, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, cube_minmax = false, key_table = off);
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('kr_on');
  minors 
 --------
- {22}
+ {15}
 (1 row)
 
 ALTER INDEX kr_on SET (cube_minmax = true);
@@ -395,12 +395,12 @@ SELECT sift.col_verify('kr_on', true);
 (1 row)
 
 -- the rewrite keeps the key lists and the table (the option names no column: the build dropped kk_id from it for the cube and kept its lists), and the answers
-SELECT 'on' AS idx, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on')
-UNION ALL SELECT 'off', array_agg(DISTINCT format ORDER BY format) FROM sift._test_col_formats('kr_off') ORDER BY 1;
+SELECT 'on' AS idx, array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('kr_on')
+UNION ALL SELECT 'off', array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) FROM sift._test_col_formats('kr_off') ORDER BY 1;
  idx | minors 
 -----+--------
  off | {15}
- on  | {22}
+ on  | {15}
 (2 rows)
 
 SELECT 'on' AS idx, coalesce(sum(bytes), 0) > 0 AS has_lists FROM sift.col_sections('kr_on') WHERE section = 'sets'

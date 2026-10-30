@@ -6,7 +6,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int PRIMARY KEY, wid int NOT NULL, kind int, score float8);
 INSERT INTO ev SELECT i, 1 + (hashint8extended(i, 5) & 33554431) % 50000000, i % 20, i % 10 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_wid ON ev (wid);
-CREATE INDEX ev_col ON ev USING sift_col (wid, kind, score);
+CREATE INDEX ev_col ON ev USING sift_col (wid, kind, score) WITH (point_tid_columns = 'off');
 VACUUM (FREEZE, ANALYZE) ev;
 
 -- 200 values: spread over the whole range (a hash table) and packed in the lowest 10,000 (a byte table in the cache); some of each are in the table

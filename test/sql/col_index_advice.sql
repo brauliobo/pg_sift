@@ -27,8 +27,8 @@ SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE k
 
 -- the advice is what the build then finds: the advised pair is written in every unit, a pair with a column the advice leaves out (300 values in a unit) is not
 SET client_min_messages = notice;
-CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off');
-CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off');
+CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off', point_tid_columns = 'off');
+CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off', point_tid_columns = 'off');
 SET client_min_messages = warning;
 
 -- a covered column that looks rewritten often: its UPDATEs are not HOT

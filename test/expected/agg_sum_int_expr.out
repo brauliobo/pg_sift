@@ -11,7 +11,7 @@ CREATE TABLE si (id int, g int, s smallint, i int, n smallint) WITH (autovacuum_
 INSERT INTO si SELECT x, x % 7, ((x::bigint * 7919) % 65536 - 32768)::smallint, ((x::bigint * 104729) % 4000000 - 2000000)::int, CASE WHEN x % 11 = 0 THEN NULL ELSE (x % 200 - 100)::smallint END
 FROM generate_series(1, 150000) x;
 INSERT INTO si VALUES (200001, 0, -32768, 2147483647, -32768), (200002, 0, 32767, -2147483648, 32767), (200003, 1, NULL, NULL, NULL), (200004, 1, 0, 0, 0);
-CREATE INDEX si_col ON si USING sift_col (id, g, s, i, n);
+CREATE INDEX si_col ON si USING sift_col (id, g, s, i, n) WITH (point_tid_columns = 'off');
 NOTICE:  sift_col index si_col writes a rollup of the rows by g, n
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 1407 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX si_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.

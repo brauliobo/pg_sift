@@ -17,7 +17,7 @@ SELECT i % 10, i::bigint * 1000003 - 15000000000, (hashint4(i) & 2147483647) % 2
 	   CASE WHEN i % 9 = 0 THEN NULL ELSE (hashint4(i + 4) & 2147483647) % 50 END,
 	   CASE WHEN i % 10 = 0 THEN (hashint4(i + 5) & 2147483647) % 1000 END
 FROM generate_series(1, 30000) i;
-CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul);
+CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul) WITH (point_tid_columns = 'off');
 VACUUM (ANALYZE) tv;
 
 CREATE FUNCTION tv_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;

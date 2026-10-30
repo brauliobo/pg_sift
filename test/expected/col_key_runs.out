@@ -178,7 +178,7 @@ CREATE TABLE kf (id int PRIMARY KEY, set_id int NOT NULL, val int, x1 float8, x2
 ALTER TABLE kf ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, hashint4(g + 1) / 7.0, hashint4(g + 2) / 11.0, repeat('x', 150) FROM generate_series(1, 90000) g ORDER BY g;
 VACUUM (FREEZE, ANALYZE) kf;
-CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
+CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id', point_tid_columns = 'off');
 NOTICE:  sift_col index kf_i keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 90160 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (3 to 10 bits a key, within 5% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large). Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX kf_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.

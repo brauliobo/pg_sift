@@ -13,7 +13,7 @@ SELECT CASE WHEN i % 41 = 0 THEN NULL ELSE (hashint4(i + 7) & 2147483647) % 50 E
 	   'label_' || (hashint4(i + 9) & 2147483647) % 40, (hashint4(i + 1) & 2147483647) % 1000000,
 	   CASE WHEN i % 9 = 0 THEN NULL ELSE (hashint4(i + 2) & 2147483647) % 50 END
 FROM generate_series(1, 30000) i;
-CREATE INDEX jf_col ON jf USING sift_col (id, g, h, lab, k_rand, k_mix) WITH (write_buffer_limit = 256);
+CREATE INDEX jf_col ON jf USING sift_col (id, g, h, lab, k_rand, k_mix) WITH (write_buffer_limit = 256, point_tid_columns = 'off');
 CREATE TABLE jd (g int PRIMARY KEY, label text, region int);
 INSERT INTO jd SELECT x, 'label_' || x, x % 5 FROM generate_series(0, 39) x;
 CREATE TABLE jd2 (h bigint PRIMARY KEY, tier int);

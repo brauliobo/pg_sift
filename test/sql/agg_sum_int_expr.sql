@@ -12,7 +12,7 @@ CREATE TABLE si (id int, g int, s smallint, i int, n smallint) WITH (autovacuum_
 INSERT INTO si SELECT x, x % 7, ((x::bigint * 7919) % 65536 - 32768)::smallint, ((x::bigint * 104729) % 4000000 - 2000000)::int, CASE WHEN x % 11 = 0 THEN NULL ELSE (x % 200 - 100)::smallint END
 FROM generate_series(1, 150000) x;
 INSERT INTO si VALUES (200001, 0, -32768, 2147483647, -32768), (200002, 0, 32767, -2147483648, 32767), (200003, 1, NULL, NULL, NULL), (200004, 1, 0, 0, 0);
-CREATE INDEX si_col ON si USING sift_col (id, g, s, i, n);
+CREATE INDEX si_col ON si USING sift_col (id, g, s, i, n) WITH (point_tid_columns = 'off');
 VACUUM (FREEZE, ANALYZE) si;
 CREATE TABLE sx AS SELECT * FROM si WHERE id > 200000;
 CREATE INDEX sx_col ON sx USING sift_col (id, g, s, i, n);

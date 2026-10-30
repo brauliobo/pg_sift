@@ -84,7 +84,7 @@ CREATE TABLE kf (id int PRIMARY KEY, set_id int NOT NULL, val int, x1 float8, x2
 ALTER TABLE kf ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, hashint4(g + 1) / 7.0, hashint4(g + 2) / 11.0, repeat('x', 150) FROM generate_series(1, 90000) g ORDER BY g;
 VACUUM (FREEZE, ANALYZE) kf;
-CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
+CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id', point_tid_columns = 'off');
 SELECT kr_option('kf_i') AS option;
 SELECT sift.col_verify('kf_i', true);
 SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same, kr_units(q) AS units FROM (VALUES

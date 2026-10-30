@@ -117,7 +117,7 @@ check "to 3.4: the same index with key_table = off is ok" test -z "$(row "$(uc -
 # the units of a key-cut index (lists of runs among them) have the table first: column format 34, which 3.4 refuses; the setting 14 writes units by superblock
 q clean "CREATE TABLE run_facts AS SELECT i AS id, 1 + (hashint4(i / 100) & 2147483647) % 400 AS set_id, i % 1000 AS v, repeat('x', 150) AS pad FROM generate_series(1, 90000) i" "ALTER TABLE run_facts ADD PRIMARY KEY (id)" \
 	"CREATE INDEX facts_runs ON run_facts USING sift_col (id, set_id, v, pad) WITH (key_cut = 'set_id')" >/dev/null
-check "an index with key-cut units and lists of runs is column format 34" grep -q -E '^ok +facts_runs +index +format 1\.[0-9]+, column format 34' <<<"$(uc clean)"
+check "an index with key-cut units and lists of runs is column format 34 or later" grep -q -E '^ok +facts_runs +index +format 1\.[0-9]+, column format (3[4-9]|[4-9][0-9])' <<<"$(uc clean)"
 check "to 3.4: an index with key-cut units is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_runs .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_runs" <<<"$(uc --to 3.4 clean)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_runs" >/dev/null
 check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs)"

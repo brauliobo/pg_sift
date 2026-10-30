@@ -8,7 +8,7 @@ SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
 CREATE TABLE ev (id int, k int, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 120000, i % 13 FROM generate_series(1, 240000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, k, amount);
+CREATE INDEX ev_col ON ev USING sift_col (id, k, amount) WITH (point_tid_columns = 'off');
 CREATE TABLE dm (k int PRIMARY KEY, county text, kind text) WITH (autovacuum_enabled = false);
 INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 119999) i;
 CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);

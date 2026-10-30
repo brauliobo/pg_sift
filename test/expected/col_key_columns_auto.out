@@ -49,7 +49,7 @@ CREATE FUNCTION au_minors(i text) RETURNS text LANGUAGE sql AS
 -- minor 22 (a key table, written where it fits 3% of a segment) counts as 15: what is tested is the key lists
 $$ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15))::text FROM sift._test_col_formats(i::regclass) $$;
 -- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
-CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096, point_tid_columns = 'off');
 NOTICE:  sift_col index au_i writes a rollup of the rows by low_id, ts
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 561 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX au_i SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.

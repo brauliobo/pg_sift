@@ -11,21 +11,21 @@ CREATE EXTENSION pg_sift;
 CREATE TABLE caps (id int, few int, many int, mid int, wide bigint) WITH (autovacuum_enabled = off);
 INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3 FROM generate_series(1, 100000) g;
 -- a dim over its cap, and a summary of more than 32 keys that is a bloom filter
-CREATE INDEX caps_a ON caps USING sift_col (id, few, many, wide) WITH (preagg = 'cube(few: id; many: id)', key_columns = 'wide');
+CREATE INDEX caps_a ON caps USING sift_col (id, few, many, wide) WITH (preagg = 'cube(few: id; many: id)', key_columns = 'wide', point_tid_columns = 'off');
 NOTICE:  sift_col index caps_a: the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
 DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
 HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
 -- the same for a column of 3,000 keys, alone
-CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (key_columns = 'wide');
+CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (key_columns = 'wide', point_tid_columns = 'off');
 NOTICE:  sift_col index caps_b: key_columns wrote no key list or bitmap of "wide" in 34% of 3 units, where it would take more than 3% of the bytes of the unit
 DETAIL:  A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
 HINT:  Leave "wide" out of key_columns, or sort the table by it before REINDEX.
 -- the caps hold: nothing to tell (the 7 keys of few are a bitmap)
-CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', key_columns = 'few');
+CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', key_columns = 'few', point_tid_columns = 'off');
 -- the default spec asks for no dim by name, and no set: silent
-CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid);
+CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid) WITH (point_tid_columns = 'off');
 -- no key list or bitmap of many (over 3% of the unit: a bloom filter instead), a rollup of more cells than a tenth of the rows
-CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many');
+CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many', point_tid_columns = 'off');
 NOTICE:  sift_col index caps_e: key_columns wrote no key list or bitmap of "many" in 100% of 3 units, where it would take more than 3% of the bytes of the unit
 DETAIL:  A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
 HINT:  Leave "many" out of key_columns, or sort the table by it before REINDEX.
@@ -33,7 +33,7 @@ NOTICE:  sift_col index caps_e: rollup_dims wrote no rollup of "few, many" in 10
 DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
-CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid');
+CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid', point_tid_columns = 'off');
 NOTICE:  sift_col index caps_f: rollup_dims wrote no rollup of "few, mid" in 34% of 3 units, which hold more combinations of them than a unit may keep
 DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.

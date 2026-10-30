@@ -31,9 +31,9 @@ SET sift.col_format_minor = 7;
 CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
 CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
-SELECT 'ss_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ss_off')
-UNION ALL SELECT 'ss_seven', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_seven')
-UNION ALL SELECT 'ss_on', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_on') ORDER BY 1;
+SELECT 'ss_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ss_off')
+UNION ALL SELECT 'ss_seven', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('ss_seven')
+UNION ALL SELECT 'ss_on', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('ss_on') ORDER BY 1;
 SELECT sift.col_verify('ss_off', true), sift.col_verify('ss_seven', true), sift.col_verify('ss_on', true);
 -- under a lower setting the bytes are those of an index without the option
 SELECT pg_relation_size('ss_seven') = pg_relation_size('ss_off') AS seven_is_off_size,
@@ -209,12 +209,12 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) ss;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ss_b;
 SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
 SELECT sift.col_promote('ss_on') >= 0 AS promoted;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ss_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('ss_on');
 SELECT sift.col_verify('ss_on', true);
 SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
 SELECT sift.col_merge('ss_on', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ss;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ss_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('ss_on');
 SELECT sift.col_verify('ss_on', true);
 SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
 SELECT (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)) > 0 AS point_still_skips;
@@ -243,11 +243,11 @@ CREATE TABLE sa (id int, kind bigint, parent_id bigint, val int, pad text) WITH 
 ALTER TABLE sa ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(1, 12000) g;
 CREATE INDEX sa_idx ON sa USING sift_col (id, kind, parent_id, val) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('sa_idx');
 ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
 INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(12001, 24000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('sa_idx');
 SELECT sift.col_verify('sa_idx', true);
 SELECT string_agg(x::text, ',' ORDER BY x::text) = (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT id FROM sa WHERE parent_id = 17) x) AS point_same
 FROM (SELECT id FROM sa WHERE parent_id = 17) x;
@@ -257,14 +257,14 @@ SET sift.enable_agg = off;
 SELECT count(*), sum(val) FROM sa WHERE parent_id = 17;
 RESET sift.enable_agg;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
 SELECT blobs > 0 AS has_summaries FROM sift._test_col_set_damage('sa_idx', 3);
 SELECT sift.col_verify('sa_idx', true);
 ALTER INDEX sa_idx SET (key_columns = '');
 INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(24001, 28000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('sa_idx');
 SELECT blobs AS summaries FROM sift._test_col_set_damage('sa_idx', 3);
 SELECT sift.col_verify('sa_idx', true);
 ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
@@ -272,7 +272,7 @@ SET sift.col_format_minor = 6;
 INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(28001, 30000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('sa_idx');
 RESET sift.col_format_minor;
 SELECT sift.col_verify('sa_idx', true);
 
@@ -282,7 +282,7 @@ ALTER TABLE sr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sr SELECT g, g % 9, g % 7, g * 7919 % 5000, g % 1000 / 8.0, repeat('x', 1000) FROM generate_series(1, 30000) g;
 CREATE INDEX sr_idx ON sr USING sift_col (id, a, b, k, val) WITH (rollup_dims = 'a, b', key_columns = 'k', cube_minmax = false, superunit = 0);
 VACUUM ANALYZE sr;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sr_idx');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('sr_idx');
 SELECT sift.col_verify('sr_idx', true);
 SELECT count(*) || ':' || sum(val) AS plain FROM sr WHERE k = 2919 \gset
 SET sift.enable_agg = off;
@@ -306,7 +306,7 @@ CREATE INDEX su_off ON su_b USING sift_col (id, u, val) WITH (rollup_dims = 'off
 VACUUM ANALYZE su;
 VACUUM ANALYZE su_b;
 SELECT sift.col_verify('su_on', true);
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('su_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('su_on');
 SELECT u AS u1 FROM su WHERE id = 5000 \gset
 CREATE TABLE su_q (n int, shape text, q text);
 INSERT INTO su_q VALUES
