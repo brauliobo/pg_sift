@@ -52,6 +52,11 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# a copy outside a checkout (REPO is then /) must stop, not run the harness on nothing, and a run that starts itself again and again must stop at some depth
+[[ -f $REPO/scripts/ci.sh && -f $REPO/Makefile ]] || { echo "ci.sh runs from the scripts/ of a checkout, not from $(dirname "$0")" >&2; exit 2; }
+export SIFT_CI_DEPTH=$(( ${SIFT_CI_DEPTH:-0} + 1 ))
+(( SIFT_CI_DEPTH <= 8 )) || { echo "ci.sh started from itself $SIFT_CI_DEPTH levels deep, stopping" >&2; exit 2; }
+MAIN=$$
 MODE=${1:-quick}
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status
@@ -219,6 +224,8 @@ weight_of() {
 	local -n deep_w=JOB_WEIGHT_DEEP$([[ ${3:-${PG_MAJOR:-18}} == 17 ]] && echo 17 || echo 18)
 	if [[ -n ${2:-} ]]; then WEIGHT=${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}; else WEIGHT=${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}; fi
 }
+# descendants PID: the processes below PID, deepest first
+descendants() { local p; for p in $(pgrep -P "$1" 2>/dev/null); do descendants "$p"; echo "$p"; done; }
 # stop_postmasters DIR: every postmaster whose data directory is under DIR (a fast shutdown, then QUIT, then KILL, two seconds each); the pid is checked to be a postgres process, never matched by name
 stop_postmasters() {
 	local f pid i sig
@@ -246,14 +253,27 @@ reap_stale() {
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
 	bad=0
-	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
+	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD SIFT_CI_DEEP   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
+	# plan_of MODE PG [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
+	declare -A PLANS INSTALLS
+	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -qvE '^\s*#|echo' && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
+	before=" $(descendants $$ | tr '\n' ' ')"
+	plan_of() {
+		local k="$1 $2 ${3:-} ${4:-}" out
+		if [[ -z ${PLANS[$k]+x} ]]; then
+			out=$(env SIFT_CI_DEEP="${3:-}" ${4:+SIFT_CI_SHARD=$4} SIFT_CI_PG_MAJOR="$2" "$0" --plan "$1") || return 1
+			PLANS[$k]=$out
+		fi
+		PLAN_OUT=${PLANS[$k]}
+	}
 	for pg in 16 17 18; do
 		for m in quick full; do
-			plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan $m) || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
+			plan_of $m $pg || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
+			plan=$PLAN_OUT
 			n=0
 			while read -r id suite where cmd; do
 				# a job whose script runs `pgtest.sh install` builds a flavor of its own: before 18 that is the server's library
-				for w in $cmd; do [[ $w == */scripts/*.sh && -f $w ]] && { grep -E 'pgtest\.sh"? install' "$w" | grep -qvE '^\s*#|echo'; } && break || w=; done
+				for w in $cmd; do [[ $w == */scripts/*.sh && -f $w ]] && installs "$w" && break || w=; done
 				[[ -n $w ]] || continue
 				n=$((n + 1))
 				want=pool; (( pg < 18 )) && want=after
@@ -269,15 +289,17 @@ if [[ $MODE == --selftest ]]; then
 	miss=$(areas_regex "${tracked[@]}" 2>&1 >/dev/null) && [[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
 	grouped=$(printf '(%s)|' "${GROUP[@]}")
 	for m in quick full; do
+		plan_of $m 18
 		while read -r id _; do
 			[[ $id == installcheck-batch* || $id =~ ${grouped%|} ]] || { echo "FAIL: areas: the $m job $id is in no group of scripts/areas.tsv"; bad=1; }
-		done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan $m)
+		done <<<"$PLAN_OUT"
 	done
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
 	# a script of scripts/ selects every job that runs it, and a change of documentation, benchmarks or release notes selects none
 	for m in quick full; do
+		plan_of $m 18
 		while read -r id _ _ cmd; do
 			eval "args=($cmd)"
 			for a in "${args[@]}"; do
@@ -285,7 +307,7 @@ if [[ $MODE == --selftest ]]; then
 				rx=$(areas_regex "${a#"$REPO"/}")
 				[[ -n $rx && $id =~ $rx ]] || { echo "FAIL: areas: ${a#"$REPO"/} runs the $m job $id and a change of it does not select the job"; bad=1; }
 			done
-		done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan $m)
+		done <<<"$PLAN_OUT"
 	done
 	[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
 	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
@@ -306,12 +328,13 @@ if [[ $MODE == --selftest ]]; then
 	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
 	fast_agg=$(areas_fast_regex src/agg/agg.c) fast_core=$(areas_fast_regex src/core/ops.c)
+	plan_of quick 18
 	while read -r id _; do
 		[[ $id == installcheck-* ]] || continue
 		[[ $id =~ $fast_core ]] || { echo "FAIL: areas: src/core/ops.c does not select the fast job $id"; bad=1; }
 		[[ $id =~ ${GROUP[tbl]} && ! $id =~ ${GROUP[agg]} && ! $id =~ ${GROUP[col]} && $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file selects the table-only fast job $id"; bad=1; }
 		[[ $id =~ ${GROUP[agg]} && ! $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file does not select the agg fast job $id"; bad=1; }
-	done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick)
+	done <<<"$PLAN_OUT"
 	for f in src/core/ops.c "$REPO"/sql/*.sql; do
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
@@ -321,7 +344,8 @@ if [[ $MODE == --selftest ]]; then
 		# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 12): K/N for K = 1..N, nothing else different between them (no subset of the variants,
 		# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects. The lean slices are split between 17 and
 		# 18 (each once), the deep ones are all on 18
-		plan=$(for pg in 18 $([[ -n $deep ]] || echo 17); do env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full; done)
+		plan=
+		for pg in 18 $([[ -n $deep ]] || echo 17); do plan_of full $pg "$deep"; plan+=$PLAN_OUT$'\n'; done
 		for prefix in difftest-col difftest-col-tbl; do
 			n=0 ks='' rest='' union='' cd=''
 			while read -r id _ _ cmd; do
@@ -354,12 +378,14 @@ if [[ $MODE == --selftest ]]; then
 	# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean; 18 runs the others), the first nine of 18 (deep; 18 runs all 12)
 	for pg in 16 17; do
 		for deep in '' 1; do
-			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
+			plan_of full $pg "$deep"
+			n=$(grep -cE '^difftest-col-[0-9]+ ' <<<"$PLAN_OUT")
 			(( n == (deep ? COL_SLICES_DEEP17 : COL_SLICES_LEAN) / 2 )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
 		done
 	done
 	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
-	prod=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD -u SIFT_CI_DEEP SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep '^release-library-regress ')
+	plan_of quick 18
+	prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
 	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
 	(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
@@ -367,13 +393,17 @@ if [[ $MODE == --selftest ]]; then
 	for pg in 17 18; do
 	for deep in '' 1; do
 		ns=$("$0" --shards "$pg" "$deep")
-		all=$(env -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
-		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
+		plan_of full $pg "$deep"
+		all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
+		got=
+		for (( k = 1; k <= ns; k++ )); do plan_of full $pg "$deep" $k/$ns; got+=$PLAN_OUT$'\n'; done
+		got=$(awk 'NF {print $1}' <<<"$got" | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
 		lo='' hi=0
 		for (( k = 1; k <= ns; k++ )); do
 			l=0
-			while read -r j _; do weight_of "$j" "$deep" "$pg"; l=$(( l + WEIGHT )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			plan_of full $pg "$deep" $k/$ns
+			while read -r j _; do weight_of "$j" "$deep" "$pg"; l=$(( l + WEIGHT )); done <<<"$PLAN_OUT"
 			(( l > hi )) && hi=$l
 			[[ -z $lo ]] || (( l < lo )) && lo=$l
 		done
@@ -388,11 +418,6 @@ if [[ $MODE == --selftest ]]; then
 		[[ -z $l || $l == '#'* ]] && continue
 		[[ $l =~ $re && -f $REPO/test/sql/${BASH_REMATCH[1]}.sql ]] || { echo "FAIL: scripts/leftovers.allow: \"$l\" is not \"test: regex # reason\" of an existing test"; bad=1; }
 	done < "$REPO/scripts/leftovers.allow"
-	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
-	"$REPO/scripts/gen-options.sh" --selftest || bad=1
-	"$REPO/scripts/package.sh" --selftest || bad=1
-	"$REPO/scripts/check-bench-cases.sh" --selftest || bad=1
-	"$REPO/scripts/apt-install.sh" --selftest || bad=1
 	# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message
 	b4='declare -A|local -A|local -n|declare -n|mapfile|readarray|\[\[ -v |\$\{[A-Za-z_]+(,,|\^\^)\}|wait -n|EPOCHSECONDS|EPOCHREALTIME|printf .%\(|&>>|\|&|coproc|;;&|read -[a-zA-Z]*N'
 	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
@@ -423,10 +448,18 @@ if [[ $MODE == --selftest ]]; then
 			{ echo "FAIL: $f has an annotation 'X | None' and lacks 'from __future__ import annotations' (Python 3.9)"; bad=1; }
 	done
 	# the loud failures: bash older than 4 (the check made to fail), and a run that selects no job, stop before anything is built
-	t=$(mktemp)
-	sed 's/>= 4/>= 99/' "$0" >"$t"
-	out=$(env -u SIFT_CI_TMP bash "$t" quick 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
+	# the first command of the script alone, made to fail: a copy of the whole script would run the harness (a copy outside the checkout once left a tree of 41,000 processes)
+	first=$(grep -vE '^[[:space:]]*(#|$)' "$0" | head -n 1)
+	[[ $first == '((BASH_VERSINFO[0] >= 4))'* ]] || { echo "FAIL: the first command of ci.sh is not the bash 4 check: $first"; bad=1; }
+	out=$(bash -c "${first//>= 4/>= 99}" 2>&1) && { echo "FAIL: ci.sh exits 0 on bash older than 4"; bad=1; }
 	[[ $out == *'needs bash 4+'* ]] || { echo "FAIL: ci.sh does not say it needs bash 4+: $out"; bad=1; }
+	# a copy outside a checkout and a run that has started itself too many times stop before they start anything
+	t=$(mktemp); cp "$0" "$t"
+	out=$(env -u SIFT_CI_TMP bash "$t" quick 2>&1) && { echo "FAIL: a copy of ci.sh outside a checkout exits 0"; bad=1; }
+	[[ $out == *'from the scripts/ of a checkout'* ]] || { echo "FAIL: a copy of ci.sh outside a checkout does not stop with a message: $out"; bad=1; }
+	rm -f "$t"
+	out=$(SIFT_CI_DEPTH=8 "$0" --plan quick 2>&1) && { echo "FAIL: ci.sh exits 0 when it has started itself 8 levels deep"; bad=1; }
+	[[ $out == *'levels deep'* ]] || { echo "FAIL: ci.sh does not stop at a depth of 9: $out"; bad=1; }
 	# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
 	out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
@@ -434,19 +467,21 @@ if [[ $MODE == --selftest ]]; then
 		fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 	done
-	rm -f "$t"
 	# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
 	t=$(mktemp -d); ( exit 0 ) & dead=$!; wait "$dead"
 	mkdir -p "$t/sift-ci-$dead/lane1/data" "$t/sift-ci-$$/lane1" "$t/sift-ci-1$dead" "$t/sift-ci-1$dead/data"
 	touch "$t/sift-ci-1$dead/kept"
 	( exec -a postgres sleep 60 ) & pm=$!
 	printf '%s\n/x\n' "$pm" >"$t/sift-ci-$dead/lane1/data/postmaster.pid"
-	reap_stale "$t"
+	reap_stale "$t" 2>/dev/null   # the shell reports the postmaster it killed (a job of this shell)
 	[[ ! -e $t/sift-ci-$dead ]] || { echo "FAIL: the directory of a dead run is not reaped"; bad=1; }
 	{ wait "$pm"; } 2>/dev/null   # the postmaster is a child of this shell: a stopped one is a zombie until it is waited for
 	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
 	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
 	rm -rf "$t"
+	# the process count is back to where it started: nothing a check began is left running
+	leaked=$(for p in $(descendants $$); do [[ $p == "$BASHPID" || $before == *" $p "* ]] || ps -o pid=,args= -p "$p" 2>/dev/null; done)
+	[[ -z $leaked ]] || { echo "FAIL: processes left running by the checks: $leaked"; bad=1; }
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv; the column differential slices are the whole corpus"
 	exit $bad
 fi
@@ -631,12 +666,13 @@ else
 	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
-		local t p f pats
+		local t f pats
 		local -A guarded=()   # the tests that name a test-only object, found in one grep
-		pats=$(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile")
+		pats=$(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
+		pats="^(${pats// /|})\$"; pats=${pats//%/.*}   # the patterns of the Makefile as one regular expression
 		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO"/test/sql/*.sql)
 		for t in $(rest sql .sql $SLOW_REGRESS); do
-			for p in $pats; do [[ $t == ${p//%/*} ]] && continue 2; done
+			[[ $t =~ $pats ]] && continue
 			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* || -v guarded[$t] ]] || continue
 			echo "$t"
 		done
@@ -797,7 +833,7 @@ lane() {
 	LANE=lane$1
 	export SIFT_TMP=$BASE/$LANE SIFT_PORT=$((BASE_PORT + 10 * ($1 - 1)))
 	mkdir -p "$SIFT_TMP"
-	while :; do
+	while kill -0 "$MAIN" 2>/dev/null; do
 		claim && rc=0 || rc=$?
 		case $rc in 1) break ;; 2) sleep 0.5; continue ;; esac
 		id=$CLAIMED
@@ -826,7 +862,7 @@ t0=$SECONDS
 
 watchdog() { # stops every postmaster under $BASE once the scratch directory passes the cap
 	local peak=0 mb
-	while sleep 2; do
+	while sleep 2 && kill -0 "$MAIN" 2>/dev/null; do   # the lanes and these loops end with the run, also when it was killed without a trap
 		mb=$(( $(du -sk "$BASE" 2>/dev/null | cut -f1) / 1024 ))
 		(( mb > peak )) && { peak=$mb; echo "$peak" >"$LOG/peak_mb"; }
 		if (( mb > MAX_MB )); then
@@ -842,7 +878,7 @@ WATCHDOG=$!
 # 10 minutes are listed with the last line of their own log, so that a long run is told from a hang by whether that line moves
 heartbeat() {
 	local f id s
-	while sleep 300; do
+	while sleep 300 && kill -0 "$MAIN" 2>/dev/null; do
 		for f in "$BASE"/running/*; do
 			[[ -e $f ]] || continue
 			id=${f##*/}
@@ -856,8 +892,6 @@ heartbeat &
 HEARTBEAT=$!
 # SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
 [[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
-# descendants PID: the processes below PID, deepest first
-descendants() { local p; for p in $(pgrep -P "$1" 2>/dev/null); do descendants "$p"; echo "$p"; done; }
 # leaves nothing running: the lanes, their jobs and every postmaster under $BASE are stopped. The scratch directory goes when everything passed or the run was interrupted in
 # a directory of its own; a failure keeps it for the logs (and `kept` tells reap_stale), as does an explicit SIFT_CI_TMP that a cancelled job uploads
 cleanup() {

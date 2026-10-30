@@ -7,7 +7,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 2
 
-# bench-fresh, docs and plan go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
+# bench-fresh, docs, plan, portable, testing-regress and the selftests of the tools go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
 # waits for the one that is running and takes its result; CI always runs them.
 
 # bench-cases compares with the base branch: a CI checkout is shallow. Only a shallow one is given the base: in a full clone (fetch-depth 0, the macOS job) a depth-1 fetch makes
@@ -18,8 +18,8 @@ CHECKS=(
 	'syntax		for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'layout		scripts/restructure-src.sh --check'
 	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
-	'portable	scripts/check-portable.sh'
-	'testing-regress	scripts/check-testing-regress.sh'
+	'portable	scripts/lint-cache.sh portable src/portable.list src/portable-col.list $(grep -hvE '\''^[[:space:]]*(#|$)'\'' src/portable.list src/portable-col.list | sed '\''s#^#src/#'\'') src/core/host.h sqlite scripts/check-portable.sh -- scripts/check-portable.sh'
+	'testing-regress	scripts/lint-cache.sh testing-regress Makefile test/sql scripts/check-testing-regress.sh -- scripts/check-testing-regress.sh'
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host_stubs.o && make -s -C mariadb OUT=$b $b/host_stubs.o && echo "host_stubs.c compiles for the SQLite and MariaDB hosts"'
 	'neutral	scripts/check-neutral.sh'
 	'limits		scripts/gen-limits.sh --check'
@@ -30,9 +30,10 @@ CHECKS=(
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'slugs		scripts/check-slugs.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
-	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par.c src/agg/update.c bench/scaling '\''*.py'\'' -- scripts/ci.sh --selftest'
+	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par.c '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
+	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest'\'
 	'ci-claim	scripts/test-ci-claim.sh'
-	'land		scripts/land.sh --selftest'
+	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
 )
 

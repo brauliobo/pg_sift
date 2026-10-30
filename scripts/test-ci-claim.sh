@@ -26,6 +26,15 @@ claim_once() {
 	kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
 	cat "$out"; rm -f "$out"
 }
+# the watchdog ends with the run that started it, also when that run was killed without a trap (a loop that outlived its parent once kept a tree of processes alive)
+out=$("$BASH" -c '
+	eval "$(sed -n "/^watchdog() {/,/^}/p" "$1/scripts/ci.sh")"
+	BASE=$(mktemp -d) LOG=$BASE MAX_MB=999999999
+	( exit 0 ) & MAIN=$!; wait "$MAIN"
+	watchdog & w=$!
+	for _ in {1..50}; do kill -0 "$w" 2>/dev/null || { echo ended; break; }; sleep 0.2; done
+	kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; rm -rf "$BASE"' _ "$REPO" 2>&1)
+[[ $out == ended ]] || fail "the watchdog of a dead run keeps running: $out"
 # a running/ entry that cannot be read (removed between the glob and the read, here a dangling link) or is empty counts for nothing
 out=$(claim_once 'ln -s "$BASE/gone" "$BASE/running/x"; : >"$BASE/running/y"')
 [[ $out == '0 a lock=free' ]] || fail "a vanished entry of running/ stops the claim: $out"

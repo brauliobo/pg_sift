@@ -1,8 +1,10 @@
 """What the generators of scripts/ (gen-options.sh, gen-limits.sh, gen-reference.sh) share: reading C source and writing markdown cells.
 They import it with `sys.path.insert(0, 'scripts')` from the repository root (they run as `python3 -I -`, which has no script directory)."""
+import functools
 import re
 
 
+@functools.lru_cache(maxsize=None)   # the selftests of the generators parse the same sources many times
 def strip_comments(text):
     """the text with every comment replaced by blanks (same offsets and lines); strings and character constants stay"""
     def blank(m):
