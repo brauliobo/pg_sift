@@ -69,6 +69,8 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 	return id;
 }
 
+#define WIDE_PRESIZE_MAX	(1 << 22)
+
 /* from now on the ident key's ids come from the hash table; the values the range table gave ids to are in it */
 void
 ident_go_wide(AggExec *ex, KeyState *k)
@@ -78,6 +80,9 @@ ident_go_wide(AggExec *ex, KeyState *k)
 	/* a table after a spill starts with room for the keys of the one written, as its group arrays do (spill_keep) */
 	k->wcap = 1024;
 	while (k->wcap < 4 * Max(n, spill_keep(ex)))
+		k->wcap *= 2;
+	/* the only key has the groups the planner expects (a key with one group a row grows the table to them one doubling at a time otherwise): room for them, at most WIDE_PRESIZE_MAX slots */
+	while (ex->spec->nkeys == 1 && k->wcap < Min(2 * ex->spec->est_groups, WIDE_PRESIZE_MAX))
 		k->wcap *= 2;
 	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));

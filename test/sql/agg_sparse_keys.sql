@@ -13,7 +13,11 @@ CREATE TABLE sk_runs (id int PRIMARY KEY, set_id int, score float8, pad text);
 INSERT INTO sk_runs SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 100000 + ((i / 3) % 40) * 60000 + (i / 3000) * 7 END, (i % 10)::float8, repeat('x', 300)
 	FROM generate_series(1, 60000) i;
 CREATE INDEX sk_runs_col ON sk_runs USING sift_col (id, set_id, score);
-VACUUM (FREEZE, ANALYZE) sk_facts, sk_runs;
+-- many keys, far apart, one group for a few rows: the planner expects more groups than the table of the key starts with
+CREATE TABLE sk_many (id int PRIMARY KEY, set_id int, score float8, pad text);
+INSERT INTO sk_many SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i / 3) * 50000 END, (i % 10)::float8, repeat('x', 300) FROM generate_series(1, 60000) i;
+CREATE INDEX sk_many_col ON sk_many USING sift_col (id, set_id, score);
+VACUUM (FREEZE, ANALYZE) sk_facts, sk_runs, sk_many;
 
 \ir test/agg_check_pushed.sql
 
@@ -24,6 +28,9 @@ SELECT * FROM check_query('SELECT set_id, count(*) AS n FROM sk_facts WHERE kind
 SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total FROM sk_runs GROUP BY set_id');
 SELECT * FROM check_query('SELECT set_id, count(*) AS n FROM sk_runs WHERE id % 5 <> 0 GROUP BY set_id');
 
+SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total FROM sk_many GROUP BY set_id');
+SELECT * FROM check_query('SELECT set_id, count(*) AS n FROM sk_many WHERE id % 5 <> 0 GROUP BY set_id');
+
 DROP FUNCTION check_query(text);
-DROP TABLE sk_facts, sk_runs;
+DROP TABLE sk_facts, sk_runs, sk_many;
 DROP EXTENSION pg_sift;
