@@ -333,7 +333,7 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double rows_
 		return 0;
 	}
 	sift_sort_i64(s, n);
-	half = Max(1, n / nsb / 2);
+	half = (uint32) Max(1, n / nsb / 2);
 	for (int k = 0; k < AUTOCUT_KEYS; k++)
 	{
 		uint32		mid = (uint64) n * (2 * k + 1) / (2 * AUTOCUT_KEYS),
@@ -537,7 +537,7 @@ layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key, int 
 		if (key < 0)
 			bytes += sift_cunit_directory_bytes(tid + s->start[u], nsel - from, false, nused, &pages);
 	}
-	unit = key >= 0 ? Max(nsel / nsb, AUTOCUT_DIR_ROWS) : Max(1, nsel / nused);	/* a unit of the cut holds the rows of the whole heap in a range of the key, the sampled share of them */
+	unit = key >= 0 ? (uint32) Max(nsel / nsb, AUTOCUT_DIR_ROWS) : Max(1, nsel / nused);	/* a unit of the cut holds the rows of the whole heap in a range of the key, the sampled share of them */
 	narrower = Max(0, log2(nsb / nused));	/* the units of the sample are sorted slices of nused superblocks: a unit of the whole heap holds a key range this much narrower, so its gaps take this many bits fewer */
 	initStringInfo(&buf);
 	if (key >= 0)

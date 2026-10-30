@@ -189,7 +189,7 @@ scan_cost_docs(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, double docs, Sca
 	sc->docs = Min(Max(docs, rel->rows), Max(rel->tuples, 1));
 	get_tablespace_page_costs(rel->reltablespace, &random_cost, &seq_cost);
 	/* index_pages_fetched asserts, on PostgreSQL 19, that the pages of the table are within the total the planner summed with the index's */
-	fetched = Min(index_pages_fetched(sc->docs, Min((double) rel->pages, Max(root->total_table_pages + c->index->pages, 1.0)), c->index->pages, root), pages);
+	fetched = Min(index_pages_fetched(sc->docs, (BlockNumber) Min((double) rel->pages, Max(root->total_table_pages + c->index->pages, 1.0)), c->index->pages, root), pages);
 	sc->page = random_cost - (random_cost - seq_cost) * sqrt(fetched / pages);
 	sc->docs = Max(sc->docs, 1);
 	sc->tuple = cpu_tuple_cost + sc->qual + fetched / sc->docs * sc->page;

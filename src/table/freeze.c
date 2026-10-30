@@ -371,7 +371,7 @@ sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback 
 		sift_cseg_bulkdelete(seg, cb, state, &stats);
 		sift_cseg_close(seg);
 	}
-	return stats.tuples_removed;
+	return (int64) stats.tuples_removed;
 }
 
 /* The smallest groups when the directory is filling and the policy waits for more of a size (the least a merge frees: fanin - 1 entries) */

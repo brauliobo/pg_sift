@@ -361,7 +361,7 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	int64		removed;
+	double		removed;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
