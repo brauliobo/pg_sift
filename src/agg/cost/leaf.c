@@ -16,6 +16,7 @@
 
 #include "agg/agg.h"
 #include "agg/cost/int.h"
+#include "agg/dist_int.h"
 
 /* does a predicate test the leaf? `values`: its values, not only its null flags, and the leaves of a combo slot */
 bool
