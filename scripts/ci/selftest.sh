@@ -100,7 +100,7 @@ if [[ $MODE == --selftest ]]; then
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
 	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
-	fast_agg=$(areas_fast_regex src/agg/agg.c) fast_core=$(areas_fast_regex src/core/ops.c)
+	fast_agg=$(areas_fast_regex src/agg/exec/run.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	plan_of quick 18
 	while read -r id _; do
 		[[ $id == installcheck-* ]] || continue

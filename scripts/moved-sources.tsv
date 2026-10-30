@@ -19,3 +19,4 @@ src/agg/order/	src/agg/plan_order.c
 src/agg/two/	src/agg/plan_two.c	
 src/col/wbuf/	src/col/wbuf.c	wbuf_
 src/col/am/	src/col/am.c	am_
+src/agg/exec/	src/agg/agg.c	
