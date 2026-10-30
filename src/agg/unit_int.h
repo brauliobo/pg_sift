@@ -35,7 +35,7 @@ void ids_to_gids(AggExec *ex, int n, const uint32 *ids, uint32 *gid);
 void preagg_init(AggExec *ex);
 bool preagg_unit(AggExec *ex);
 
-/* group.c */
+/* group/ */
 uint32 key_null_id(AggExec *ex, int ki);
 
 /* unit.c */

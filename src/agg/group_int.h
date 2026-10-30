@@ -1,5 +1,5 @@
 /*
- * agg/group_int.h - the group keys and the group table (agg/group.c)
+ * agg/group_int.h - the group keys and the group table (agg/group/)
  */
 #ifndef SIFT_AGG_GROUP_INT_H
 #define SIFT_AGG_GROUP_INT_H
@@ -73,7 +73,7 @@ ids_hash(const uint32 *ids, int nk, uint32 nslot)
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* group.c */
+/* group/ */
 AggAcc *acc_alloc(AggExec *ex, uint32 cap);
 void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void direct_layout(AggExec *ex);

@@ -3,7 +3,9 @@ scan|analyzer|src/agg/col_filter.c|Array subscript is undefined [core.uninitiali
 scan|analyzer|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull' [core.NonNullParamChecker]
 scan|analyzer|src/agg/dist/add.c|Array access (from variable 'ocnt') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/agg/gen_run.c|Branch condition evaluates to a garbage value [core.uninitialized.Branch]
-scan|analyzer|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/agg/group/kids.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf') [core.NullDereference]
+scan|analyzer|src/agg/group/kids.c|Array access (from variable 'idx') results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/agg/group/table.c|The right operand of '==' is a garbage value [core.UndefinedBinaryOperatorResult]
 scan|analyzer|src/agg/osa.c|Dereference of null pointer [core.NullDereference]
 scan|analyzer|src/agg/pred.c|Assigned value is uninitialized [core.uninitialized.Assign]
 scan|analyzer|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
@@ -108,7 +110,8 @@ tidy|clang-analyzer-core.BitwiseShift|src/col/gpu.c|Left shift by '32' overflows
 tidy|clang-analyzer-core.CallAndMessage|src/bm25/topk.c|1st function call argument is an uninitialized value
 tidy|clang-analyzer-core.NonNullParamChecker|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull'
 tidy|clang-analyzer-core.NullDereference|src/agg/dist/add.c|Array access (from variable 'ocnt') results in a null pointer dereference
-tidy|clang-analyzer-core.NullDereference|src/agg/group.c|Array access (from variable 'idx') results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/agg/group/kids.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf')
+tidy|clang-analyzer-core.NullDereference|src/agg/group/kids.c|Array access (from variable 'idx') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/agg/osa.c|Dereference of null pointer
 tidy|clang-analyzer-core.NullDereference|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc')
 tidy|clang-analyzer-core.NullDereference|src/bm25/inv.c|Array access (via field 'pos') results in a null pointer dereference
@@ -120,6 +123,7 @@ tidy|clang-analyzer-core.NullDereference|src/core/store.h|Array access (via fiel
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/segment_int.h|Addition of a null pointer (via field 'xdl') and a probably nonzero integer value may result in undefined behavior
+tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/agg/group/table.c|The right operand of '==' is a garbage value
 tidy|clang-analyzer-core.UndefinedBinaryOperatorResult|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value
 tidy|clang-analyzer-core.uninitialized.ArraySubscript|src/agg/col_filter.c|Array subscript is undefined
 tidy|clang-analyzer-core.uninitialized.Assign|src/agg/pred.c|Assigned value is uninitialized
@@ -127,7 +131,7 @@ tidy|clang-analyzer-core.uninitialized.Branch|src/agg/gen_run.c|Branch condition
 tidy|clang-analyzer-deadcode.DeadStores|src/bm25/step.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns'
 tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory around 'live'
 tidy|clang-analyzer-security.ArrayBound|src/agg/agg_int.h|Out of bound access to memory preceding 'live'
-tidy|clang-analyzer-security.ArrayBound|src/agg/group.c|Out of bound access to memory around 'hash_group_fns'
+tidy|clang-analyzer-security.ArrayBound|src/agg/group/table.c|Out of bound access to memory around 'hash_group_fns'
 tidy|clang-analyzer-security.ArrayBound|src/agg/lookup.c|Out of bound access to memory after the end of the field 'idxval'
 tidy|clang-analyzer-security.ArrayBound|src/agg/unit.c|Out of bound access to memory preceding 'r.key'
 tidy|clang-analyzer-security.ArrayBound|src/bm25/dict.c|Out of bound access to memory after the end of the field 'inline_tf'

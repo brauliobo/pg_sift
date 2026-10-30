@@ -1,5 +1,5 @@
 /*
- * agg/acc_layout.h - the per-group arrays of AggAcc (agg/accum_int.h) an aggregate holds: acc_alloc (agg/group.c) allocates them and agg_cost
+ * agg/acc_layout.h - the per-group arrays of AggAcc (agg/accum_int.h) an aggregate holds: acc_alloc (agg/group/table.c) allocates them and agg_cost
  * (agg/cost/) prices them, from this one answer.
  */
 #ifndef SIFT_AGG_ACC_LAYOUT_H

@@ -123,7 +123,7 @@
 #define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
 #define AGG_GEN_GROUP		150.0	/* the sort of an ordered-set or sorted group */
 #define AGG_GEN_STATE		20.0	/* a group's state and final function of any other generic aggregate: 40 to 200 ns a group measured for min(text), bool_and, max(timestamptz), variance and array_agg over 100,000 to 620,000 groups (it was priced with the sort, 1.8 us) */
-#define AGG_GROUP_KEY_BYTES	40.0	/* a group key's share of the table: its id maps and the ids of the group (agg/group.c), without the value's own bytes */
+#define AGG_GROUP_KEY_BYTES	40.0	/* a group key's share of the table: its id maps and the ids of the group (agg/group/), without the value's own bytes */
 #define AGG_GROUP_SLACK		1.3		/* the group arrays grow by doubling: on average a third is room, measured 185 bytes a group for 5 aggregates and one key */
 #define AGG_PREAGG_EXACT	0.98	/* the share of exact units from which the metadata answers the query: no workers, they cost more than the answer */
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
