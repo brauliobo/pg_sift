@@ -398,10 +398,10 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 
 		if (!sift_cunit_chunk(&v, c, &ch))
 			corrupt(seg, "Unit %u has no chunk for leaf %d.", u, c);
-		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= 4 && ch.ovf != NULL))
+		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= SIFT_COL_FORMAT_TAGS && ch.ovf != NULL))
 			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->id,
 					ch.flags & SIFT_COLC_TAGS ? "has" : "lacks", seg->entry.format);
-		if ((ch.flags & SIFT_COLC_KINDS) && seg->entry.format < 4)
+		if ((ch.flags & SIFT_COLC_KINDS) && seg->entry.format < SIFT_COL_FORMAT_TAGS)
 			corrupt(seg, "The chunk of leaf %d in the unit of SB %u has kinds in a segment of column format 1.%d.", c, r->id, seg->entry.format);
 		if (ch.n !=(def->parent < 0 ? r->nrows : group_elems[def->parent]))
 			corrupt(seg, "Chunk of leaf %d in the unit of SB %u holds %u values, expected %llu.", c, r->id, ch.n,

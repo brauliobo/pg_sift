@@ -817,7 +817,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	map_dicts(w, b, w->inl);
 	count_rows(w, b);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= SIFT_COL_FORMAT_TAGS, w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
 	if (b->keyed)
 	{

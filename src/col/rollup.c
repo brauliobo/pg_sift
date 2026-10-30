@@ -322,7 +322,7 @@ process(const RollupReq *r)
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 	index = try_index_open(r->index, RowExclusiveLock);
-	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= 4)
+	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= SIFT_COL_FORMAT_TAGS)
 	{
 		gen = refresh_segment(index, r->gen);
 		ok = gen != 0;
@@ -670,7 +670,7 @@ sift_col_rollup_request(Relation index, uint64 gen)
 	if (!sift_col_is_index(index))
 		return false;
 	/* a server that writes minor 3 (sift.col_format_minor, for readers of 3.0) is not rewritten to minor 4 behind its back */
-	if (!sift_col_rollup_on_demand || !sift_col_options(index)->rollup_on_demand || RecoveryInProgress() || sift_col_format_minor < 4)
+	if (!sift_col_rollup_on_demand || !sift_col_options(index)->rollup_on_demand || RecoveryInProgress() || sift_col_format_minor < SIFT_COL_FORMAT_TAGS)
 		return false;
 	sh = shared();
 	hash = options_hash(index);

@@ -518,7 +518,7 @@ sift_col_unit_rollup_miss(const SiftColUnit *unit)
 	uint32		u;
 
 	/* a segment of minor 3 stays as written, readable by pg_sift 3.0: its rollups come with the merge that rewrites it */
-	return sift_col_unit_stored(unit, &seg, &u) && seg->entry.format >= 4 && sift_col_rollup_request(seg->index, seg->entry.gen);
+	return sift_col_unit_stored(unit, &seg, &u) && seg->entry.format >= SIFT_COL_FORMAT_TAGS && sift_col_rollup_request(seg->index, seg->entry.gen);
 }
 
 void
