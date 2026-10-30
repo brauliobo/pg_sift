@@ -106,4 +106,6 @@ fi
 node_stop gate
 mv "$LOG" "$D/postgres.deliberate"
 mv "$D/leakcheck.findings" "$D/findings.deliberate"
+# the scan reads every asan.* of the node: the reports of the deliberate leaks go under a name it does not take
+for f in "$D"/asan.*; do [[ ! -e $f ]] || mv "$f" "$D/deliberate.${f##*/}"; done
 finish
