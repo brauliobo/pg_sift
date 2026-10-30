@@ -11,6 +11,7 @@
 #   scripts/old-lib-check.sh points                     point directories: the older library (SIFT_OLD_REF, default v3.6.0) writes an index with them, this tree reads the same
 #                                                       files as it reads its own (answers, verify, writes, a merge that writes column format 33), and the older
 #                                                       library refuses the merged index with the format error, and reads it again after a REINDEX at the setting 14
+#   scripts/old-lib-check.sh gorder                      the same for the global orders (the addresses of a chunk with the bits of its largest offset; column format 38)
 #   scripts/old-lib-check.sh keyed                      the same for the units of a key-cut index (the chunk table after the directory; column format 34)
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
@@ -251,7 +252,7 @@ cycle() {
 
 # the point directories of the older library (a power of two of slots)
 points() {
-	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=37 CY_WHAT="point directories"
+	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=39 CY_WHAT="point directories"
 	local w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"	# a key present, absent, a list, two columns, and a text key
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
 	CY_SETUP=("CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g"
@@ -276,6 +277,20 @@ keyed() {
 	cycle
 }
 
+# the global orders of the older library (u32 addresses of 9 bits) beside the packed addresses of this tree (column format 38; an integer point directory, no dictionary searched in place, which is 39)
+gorder() {
+	CY_NAME=gorder CY_IDX=go_i CY_OLDMIN=30 CY_NEW=38 CY_WHAT="global orders"
+	local w="(ts >= timestamp '2025-02-01' AND ts < timestamp '2025-02-03') OR k = 777 OR k IN (1, 2, 99999, 100002)"
+	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM go WHERE $w"
+	CY_SETUP=("CREATE TABLE go AS SELECT g AS id, (g * 7919) % 100003 AS k, timestamp '2025-01-01' + ((g::bigint * 104729) % 5000000) * interval '1 second' AS ts FROM generate_series(1, 60000) g"
+		"CREATE INDEX go_i ON go USING sift_col (id, k, ts) WITH (key_cut = 'off', point_tid_columns = 'k', order_columns = 'ts', order_array_columns = 'ts')")
+	CY_FAST=("SET enable_seqscan = off" "SET enable_bitmapscan = off")
+	CY_HEAP=("SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off")
+	CY_INSERT="INSERT INTO go SELECT g, (g * 7919) % 100003, timestamp '2025-01-01' + ((g::bigint * 104729) % 5000000) * interval '1 second' FROM generate_series(60001, 90000) g"
+	CY_REFUSED="SET enable_seqscan = off; SELECT count(*) FROM go WHERE k = 777"
+	cycle
+}
+
 case ${1:-} in
 	build) build ;;
 	check) shift; check "$@"; exit $FAILED ;;
@@ -283,5 +298,6 @@ case ${1:-} in
 	upgrade) upgrade; exit $FAILED ;;
 	points) points; exit $FAILED ;;
 	keyed) keyed; exit $FAILED ;;
+	gorder) gorder; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac
