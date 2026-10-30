@@ -4,7 +4,7 @@
  * that is key-shaped (sift_col_key_shaped); when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
  * chosen when the default formula says the cut pays: the benefit of the lookups it saves (an equality on one of its values, or a range holding the rows of one unit,
  * reads the units its rows fill and not those whose zones hold the key) is at least the cost of the growth of the index and of the build; no other leaf of the index
- * follows the order of the table (key_cut would widen its zones). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
+ * follows the order of the table (key_cut would widen its zones) unless a unique b-tree of the table on that column alone answers its lookups (the primary key). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
  * units of the superblock cut and in the units of the key cut, the addresses of the rows are priced by what they measured, and the other leaves are
  * priced as unchanged. When the key would be worth cutting by and the index would grow more, the build only says so, with the command. The choice is
  * written to the option as 'auto: col', so that a promotion, a merge and a REINDEX keep it; key_cut = 'off' keeps the units by superblock. An index with
@@ -32,6 +32,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_statistic.h"
 #include "utils/snapmgr.h"
 
@@ -91,6 +92,7 @@ typedef struct Track
 	AttrNumber	hatt;
 	uint8		type;
 	bool		cand;			/* key-shaped: an equality on its values is tested */
+	bool		btree;			/* a b-tree of the table, unique and on this column alone, answers its lookups (a primary key): its zones are not worth keeping against a cut */
 	bool		time;			/* a date or timestamp that is not a key, or the start lane of a range or inet column: a range of its values is tested */
 	const SiftColDef *shape;	/* the head of the range or network whose lane this is (col/shape.c); NULL for a column's own value */
 	int			lane;			/* which lane of the head */
@@ -200,6 +202,26 @@ zone_share(const Track *t, int n, int *m)
 			point += lo[j] <= mid && mid <= hi[j];
 	}
 	return point / *m / *m;
+}
+
+/* whether a valid unique b-tree of the table has the column alone as its key: a lookup of the column is its, and the planner takes it before the scan */
+static bool
+unique_btree(Relation heap, AttrNumber att)
+{
+	bool		found = false;
+
+	foreach_oid(ioid, RelationGetIndexList(heap))
+	{
+		HeapTuple	tp = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(ioid));
+		Form_pg_index ix;
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		ix = (Form_pg_index) GETSTRUCT(tp);
+		found |= ix->indisunique && ix->indisvalid && ix->indnkeyatts == 1 && ix->indkey.values[0] == att && heap_attisnull(tp, Anum_pg_index_indpred, NULL);
+		ReleaseSysCache(tp);
+	}
+	return found;
 }
 
 /* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
@@ -634,6 +656,7 @@ typedef struct CutVerdict
 	const char *reason;
 	char		leaf[NAMEDATALEN];
 	char		second[NAMEDATALEN];	/* the date or timestamp leaf the rows of a key are sorted by, or empty */
+	char		widened[NAMEDATALEN];	/* the leaf that follows the table and whose zones the cut widens, its lookups being a unique b-tree's, or empty */
 	double		units;
 	double		sampled;
 	double		reads;
@@ -690,6 +713,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				fills[AUTOCUT_LEAVES];
 	bool		blocked[AUTOCUT_LEAVES] = {false},
 				keys_kept;
+	int			widens[AUTOCUT_LEAVES] = {0};	/* 1 + the track of the leaf a cut widens, 0 for none */
 	int			first_open;
 	uint32		cap;
 	int64	   *tmp;
@@ -725,6 +749,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		{
 			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type, .cand = cand_type(d->type) && sift_col_key_shaped(heap, index, sc, d)};
 			tr[ntr].time = !tr[ntr].cand && time_type(d->type);
+			tr[ntr].btree = unique_btree(heap, hatt);
 			ncand += tr[ntr].cand || tr[ntr].time;
 			ntr++;
 		}
@@ -899,7 +924,13 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			if (t == fire[i])
 				continue;
 			if (!scattered(&tr[t], samp->nsb))
-				what = "follows the order of the table, and the cut would widen its zones";
+			{
+				/* its zones would widen (an equality 1 unit to 36, a list of 16 to all of 178 at 1,000,000 rows), but a unique b-tree answers those lookups alone */
+				if (!tr[t].btree)
+					what = "follows the order of the table, and the cut would widen its zones";
+				else if (widens[i] == 0)
+					widens[i] = t + 1;
+			}
 			else if (tr[fire[i]].shape && zone_share(&tr[t], samp->nsb, &m) * (100 + AUTOCUT_OTHER_PCT) < 100)
 				what = "has zones that skip units, and the cut by a lane would keep them all";
 			if (what == NULL)
@@ -993,6 +1024,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			v->benefit = benefit;
 			v->cost = cost;
 			v->second[0] = '\0';
+			strlcpy(v->widened, widens[i] ? cut_name(index, sc, tr[widens[i] - 1].c) : "", sizeof(v->widened));
 			if (sec >= 0)
 				strlcpy(v->second, cut_name(index, sc, tr[sec].c), sizeof(v->second));
 			v->reason = NULL;
@@ -1047,8 +1079,10 @@ sift_col_auto_cut(Relation heap, Relation index)
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%, benefit %.0f against cost %.0f)",
 						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth, v.benefit, v.cost),
-				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
-						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
+				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table%s. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
+						   v.sampled, v.leaf,
+						   v.widened[0] ? psprintf(" but \"%s\", whose zones the cut widens and whose lookups a unique b-tree of the table answers", v.widened) : "",
+						   v.range ? "a range" : "an equality",
 						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
 						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to grow by at most %d%% more than with the key alone, counting the units of 4,096 rows into which a key of 8,192 rows or more is cut), so a range of its values skips the units outside it.", v.second, AUTOCUT_SECOND_SLACK) : ""),
 				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));

@@ -1,6 +1,7 @@
 -- The events, dims and maps tables, the statement of three arms over a shared CTE and the check of its rows against the normal plan, shared by
 -- agg_cte_inline_rows, _band and _horizon; psql variable rows is the number of events.
 \set ECHO none
+SET client_min_messages = warning;
 -- the node under test: the two-level scan (agg_two_level_arm_where) takes the same shape in one node, with no rows to group
 SET sift.agg_two_level = off;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, removed_at timestamptz, payload jsonb);

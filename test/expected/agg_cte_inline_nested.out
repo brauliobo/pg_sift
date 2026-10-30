@@ -4,6 +4,7 @@
 -- MATERIALIZED is planned both ways like the default (agg_cte_materialized): sift may compute a MATERIALIZED CTE as scans of the index, once for each aggregate that reads it, when they cost less than the shared copy; the rows are the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, payload jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO events
 SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360),

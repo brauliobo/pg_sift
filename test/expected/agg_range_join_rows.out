@@ -3,6 +3,7 @@
 -- constants the library takes the selectivity of the join from the statistics of the column, the mean over the ranges of the share of the rows they take.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
 CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, event_date date NOT NULL, pad text NOT NULL DEFAULT repeat('x', 100));
 INSERT INTO events SELECT g, 1 + g % 20, date '2024-01-01' + (g * 7919 % 730) FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, set_id, event_date);

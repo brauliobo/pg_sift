@@ -45,7 +45,7 @@ CREATE FUNCTION au_minors(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15))::text FROM sift._test_col_formats(i::regclass) $$;
 
 -- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
-CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096, point_tid_columns = 'off');
+CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (key_cut = 'off', write_buffer_limit = 4096, point_tid_columns = 'off');
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
 SELECT sift.col_verify('au_i', true);
 
@@ -59,9 +59,9 @@ REINDEX INDEX au_i;
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
 
 -- 'off', or the columns by name, is the way out; neither chooses anything
-CREATE INDEX au_off ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'off');
-CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'plain_none');
-CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, plain, val) WITH (write_buffer_limit = 4096, key_columns = 'plain');
+CREATE INDEX au_off ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096, key_columns = 'off');
+CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096, key_columns = 'plain_none');
+CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, plain, val) WITH (key_cut = 'off', write_buffer_limit = 4096, key_columns = 'plain');
 SELECT au_option('au_off') AS off_option, au_minors('au_off') AS off_minors, au_option('au_named') AS named_option, au_minors('au_named') AS named_minors;
 
 -- 'auto' by name decides again at the next build, and an index of an older release (no option) does at its REINDEX
@@ -76,7 +76,7 @@ DROP INDEX au_off, au_named;
 
 -- a setting below 15 chooses nothing (the index stays readable by the release that reads that setting) and a later REINDEX does
 SET sift.col_format_minor = 6;
-CREATE INDEX au_old ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX au_old ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
 RESET sift.col_format_minor;
 SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 REINDEX INDEX au_old;
@@ -84,7 +84,7 @@ SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 DROP INDEX au_old;
 
 -- no column of the index qualifies: nothing written, no notice
-CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, txt_id, val);
+CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, txt_id, val) WITH (key_cut = 'off');
 SELECT au_option('au_none') AS option, au_minors('au_none') AS minors;
 DROP INDEX au_none;
 
@@ -93,11 +93,11 @@ SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET parallel_setup_cost = 0;
 ALTER TABLE au SET (parallel_workers = 3);
-CREATE INDEX au_par ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX au_par ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;
-CREATE INDEX CONCURRENTLY au_conc ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX CONCURRENTLY au_conc ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
 SELECT au_option('au_par') AS par_option, au_minors('au_par') AS par_minors, au_option('au_conc') AS conc_option, au_minors('au_conc') AS conc_minors;
 SELECT sift.col_verify('au_par', true), sift.col_verify('au_conc', true);
 SELECT au_scanned('SELECT count(DISTINCT parent_id) FROM au') < 5000 AS par_from_presence, au_rows('SELECT count(DISTINCT parent_id) FROM au', true) = au_rows('SELECT count(DISTINCT parent_id) FROM au', false) AS same;
@@ -110,7 +110,7 @@ INSERT INTO au_m SELECT i, (hashint4(i) & 2147483647) % 3000, (hashint4(i + 1) &
        (hashint4(i + 4) & 2147483647) % 3000, (hashint4(i + 5) & 2147483647) % 3000, (hashint4(i + 6) & 2147483647) % 3000, (hashint4(i + 7) & 2147483647) % 3000, i % 100,
        repeat('x', 200)
 FROM generate_series(1, 60000) i;
-CREATE INDEX au_m_i ON au_m USING sift_col (id, a_id, b_id, c_id, d_id, e_id, f_id, g_id, h_id, val) WITH (write_buffer_limit = 4096);
+CREATE INDEX au_m_i ON au_m USING sift_col (id, a_id, b_id, c_id, d_id, e_id, f_id, g_id, h_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
 SELECT au_option('au_m_i') AS option;
 SELECT bytes * 100 < pg_relation_size('au_m_i') * 5 AS sets_under_5_percent FROM sift.col_sections('au_m_i') WHERE section = 'sets';
 SELECT sift.col_verify('au_m_i', true);

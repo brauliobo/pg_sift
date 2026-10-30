@@ -413,12 +413,12 @@ SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE 
 SELECT d.tier, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.memo @@> 'plug' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: scope_path_filter_in
--- expect: either 3.8 16
+-- expect: either 3.4 16
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT d.id FROM dims d WHERE d.settings ->> 'tier' = 'tier_b') AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
 -- name: scope_path_filter_join
--- expect: either 3.8 16
+-- expect: either 3.4 16
 SELECT e.kind, count(*) AS n, sum(e.amount) AS total FROM events e JOIN dims d ON d.id = e.parent_id
 WHERE d.settings ->> 'tier' = 'tier_c' AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
@@ -435,7 +435,7 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE skew_id IN (S
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE skew_id IN (SELECT id FROM dims WHERE id > 55) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: flat_list
--- expect: scan 0.11 0.34
+-- expect: scan 0.09 0.34
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN (SELECT id FROM dims WHERE id <= 5) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: any_array_subselect
@@ -443,7 +443,7 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN 
 SELECT kind, count(*) AS n FROM events WHERE parent_id = ANY (ARRAY (SELECT id FROM dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: in_constants
--- expect: scan 0.11 0.37
+-- expect: scan 0.09 0.37
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN (1, 2, 3, 4, 5, 6, 7, 8) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: range_only_by_month

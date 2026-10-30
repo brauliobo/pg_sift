@@ -12,7 +12,7 @@ SELECT i, (hashint4(i) & 2147483647) % 50, (hashint4(i + 1) & 2147483647) % 7, (
 	   timestamp '2024-01-01' + (hashint4(i + 7) & 2147483647) % 6000000 * interval '1 second',
 	   (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4], 'n' || i
 FROM generate_series(1, 200000) i;
-CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind) WITH (order_array_columns = off);
+CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind) WITH (order_array_columns = off, key_cut = 'off');
 NOTICE:  sift_col index cd_col writes a rollup of the rows by d, e
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 6 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX cd_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.

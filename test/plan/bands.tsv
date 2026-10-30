@@ -217,14 +217,14 @@ tuned	exists_element	scan	0.0049	0.015
 tuned	exists_in_table	scan	0.074	0.29
 tuned	expression_key	scan	0.030	0.097
 tuned	filter_clauses	scan	0.035	0.11
-tuned	flat_list	scan	0.096	0.38
+tuned	flat_list	scan	0.075	0.38
 tuned	float_metric	scan	0.037	0.15
 tuned	float_sum_unrounded	scan	0.037	0.15
 tuned	global	scan	0.016	0.063
 tuned	groups_over_threshold	scan	0.033	0.11
 tuned	having	either	0.19	0.77
 tuned	in_active_parents	scan	0.038	0.12
-tuned	in_constants	scan	0.047	0.19
+tuned	in_constants	scan	0.04	0.19
 tuned	join_active_filter	scan	0.035	0.11
 tuned	join_filter_on_lookup_column	scan	0.033	0.11
 tuned	join_month	scan	0.036	0.11
@@ -270,7 +270,7 @@ tuned	select_distinct	scan	0.032	0.11
 tuned	share_of_total	scan	0.030	0.097
 tuned	skew_heaviest_parents	scan	0.096	0.38
 tuned	skew_rarest_parents	scan	0.037	0.17
-tuned	spine_derived_cells	scan	0.16	0.66
+tuned	spine_derived_cells	scan	0.145	0.66
 tuned	spine_dims_cross	normal	-	-
 tuned	spine_expression_key	scan	0.029	0.093
 tuned	spine_range_join	scan	0.085	0.34
@@ -286,7 +286,7 @@ tuned	top_months	scan	0.029	0.093
 tuned	top_offset	scan	0.12	0.49
 tuned	top_parents_per_kind	scan	0.035	0.11
 tuned	top_rows_by_ts	scan	0.028	0.099
-tuned	top_rows_one_parent	normal	7.2	29
+tuned	top_rows_one_parent	normal	6.5	29
 tuned	top_rows_trailing_key	scan	0.027	0.11
 tuned	top_rows_trailing_key_desc_offset	scan	0.030	0.12
 tuned	top_rows_trailing_key_ties	normal	-	-

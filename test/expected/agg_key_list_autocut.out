@@ -1,0 +1,58 @@
+-- The default key_cut of CREATE INDEX cuts the units by a key when the rows of one key are in every unit and a lookup of a few keys (a CTE of ids, a list)
+-- would read them all. The primary key of the table is in the index and follows the order of the table; a cut by the key widens its zones, which no longer
+-- vetoes the cut: a unique b-tree answers the lookups of the primary key alone. A scan of 8 of 400 parents reads the units of the 8 keys, not all of them.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kl_parents (id int PRIMARY KEY, label text NOT NULL);
+INSERT INTO kl_parents SELECT g, 'p' || g FROM generate_series(1, 400) g;
+CREATE TABLE kl_events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO kl_events SELECT i, 1 + (i::bigint * 7919) % 400, date '2024-01-01' + i % 700, 1 + i % 17 FROM generate_series(1, 400000) i;
+CREATE INDEX kl_events_parent ON kl_events (parent_id, ts);
+CREATE INDEX kl_events_col ON kl_events USING sift_col (id, parent_id, ts, amount);
+VACUUM (FREEZE, ANALYZE) kl_events, kl_parents;
+SELECT leaf, decision FROM sift.key_cut_decision('kl_events_col');
+   leaf    | decision 
+-----------+----------
+ parent_id | cut
+(1 row)
+
+-- units read of the scan, out of the 13 of the index: the cut by the key leaves the units of the 8 keys (one or two), the layout without it reads all of them
+CREATE FUNCTION kl_units(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; m text[]; r text := 'no scan';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		m := regexp_match(l, 'Units: (\d+) read(?:, (\d+) pruned)?');
+		IF m IS NOT NULL THEN r := format('%s units of %s', CASE WHEN m[1]::int <= 2 THEN 'at most 2' ELSE m[1] END, m[1]::int + coalesce(m[2]::int, 0)); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SET sift.agg_force = on;
+SELECT kl_units($q$WITH ids AS MATERIALIZED (SELECT id FROM kl_parents WHERE id <= 8) SELECT count(*), sum(e.amount) FROM kl_events e JOIN ids ON ids.id = e.parent_id$q$) AS cte_of_ids;
+      cte_of_ids       
+-----------------------
+ at most 2 units of 13
+(1 row)
+
+SELECT kl_units($q$SELECT count(*), sum(amount) FROM kl_events WHERE parent_id IN (1, 2, 3, 4, 5, 6, 7, 8)$q$) AS list_of_ids;
+      list_of_ids      
+-----------------------
+ at most 2 units of 13
+(1 row)
+
+RESET sift.agg_force;
+-- the rows are those of PostgreSQL's plan
+SET sift.enable_agg = off;
+CREATE TEMP TABLE kl_off AS SELECT count(*) AS n, sum(amount) AS s FROM kl_events WHERE parent_id IN (1, 2, 3, 4, 5, 6, 7, 8);
+RESET sift.enable_agg;
+SET sift.agg_force = on;
+SELECT (SELECT count(*) FROM (SELECT count(*) AS n, sum(amount) AS s FROM kl_events WHERE parent_id IN (1, 2, 3, 4, 5, 6, 7, 8) EXCEPT TABLE kl_off) d) AS rows_unlike_normal;
+ rows_unlike_normal 
+--------------------
+                  0
+(1 row)
+
+RESET sift.agg_force;
+DROP FUNCTION kl_units(text);
+DROP TABLE kl_events, kl_parents;
+DROP EXTENSION pg_sift;

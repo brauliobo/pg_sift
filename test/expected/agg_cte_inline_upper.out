@@ -4,6 +4,7 @@
 -- rows of the CTE by a jsonb array of keys, the two documents of each row aggregated as two series, and the series combined with a window.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, metrics jsonb NOT NULL, payload jsonb);
 INSERT INTO events
 SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), jsonb_build_object('m_total', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1),
