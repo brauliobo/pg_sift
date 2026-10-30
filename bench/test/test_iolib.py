@@ -155,8 +155,12 @@ class Live(unittest.TestCase):
         io = iolib.measure(self.s, 'INSERT INTO t SELECT i, md5(i::text) FROM generate_series(1, 20000) i')
         self.assertGreater(io['dirtied'], 0)
         self.assertGreater(io['wal_bytes'], 0)
-        self.assertGreater(io['cpu_ms'], 0)   # the backend's CPU of the run; a statement EXPLAIN can wrap also has its execution time
         self.assertGreater(io['exec_ms'], 0)
+
+    @unittest.skipUnless(os.path.exists('/proc/self/schedstat'), 'the backend CPU is read from /proc/PID/schedstat (Linux)')
+    def test_a_write_has_the_backend_cpu(self):
+        io = iolib.measure(self.s, 'INSERT INTO t SELECT i, md5(i::text) FROM generate_series(1, 20000) i')
+        self.assertGreater(io['cpu_ms'], 0)   # the backend's CPU of the run; a statement EXPLAIN can wrap also has its execution time
 
     def test_a_script_reports_its_wal_and_size(self):
         io = iolib.measure(self.s, 'CREATE INDEX t_s ON t (s); DROP INDEX t_s', None, ['public.t'])

@@ -128,7 +128,8 @@ def tables(S, detail):
         emit(f'**VACUUM (ANALYZE)**, {s:,} orders (milliseconds, CPU, MB of WAL)', s, [('VACUUM', ('-', 'maintenance', ('maintain_s', SECONDS), 'maintain_cpu_ms', 'wal_mib'))])
     cs = S.churn_size()
     if cs:
-        emit(f'**Steady churn and inserts only** ({cs:,} orders, {S.run0['clients']} clients, {max(r["churn_seconds"] for r in S.meta["runs"].values())} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement; '
+        clients, secs = S.run0['clients'], max(r['churn_seconds'] for r in S.meta['runs'].values())   # no quote nested in the f-string: Python 3.9 (the lint job)
+        emit(f'**Steady churn and inserts only** ({cs:,} orders, {clients} clients, {secs} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement; '
              'per 1,000 transactions: the wall milliseconds, the CPU of the server and the MB of WAL)', cs,
              [('churn', ('churn', 'steady', ('tps', lambda v: 1e6 / v), ('cpu_ms_per_tx', lambda v: v * 1000), ('wal_bytes_per_tx', lambda v: v * 1000 / 2**20))), ('inserts', ('append', 'steady', ('tps', lambda v: 1e6 / v), ('cpu_ms_per_tx', lambda v: v * 1000), ('wal_bytes_per_tx', lambda v: v * 1000 / 2**20)))])
     out += triple.legend(shown, 'MB (written to the WAL by a change, read by a request)') + ['']
