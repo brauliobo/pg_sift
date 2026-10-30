@@ -89,42 +89,6 @@ sift_col_validate_compression(const char *value)
 	pfree(list);
 }
 
-void
-sift_col_validate_preagg(const char *value)
-{
-	const char *err = sift_cpagg_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_rollup(const char *value)
-{
-	const char *err = sift_cpagg_rollup_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_rollup_dims(const char *value)
-{
-	const char *err = sift_cpagg_rows_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_calendar_columns(const char *value)
-{
-	const char *err = sift_cpagg_calendar_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option \"%s\": %s", value, err)));
-}
-
 /* 'a, b': the names of the text, varchar and uuid columns a tuple scan returns; r NULL: just the syntax. Empty or 'off': none */
 static const char *
 return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
@@ -165,15 +129,6 @@ return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
 }
 
 void
-sift_col_validate_return_columns(const char *value)
-{
-	const char *err = return_walk(value, NULL, NULL);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option \"%s\": %s", value, err)));
-}
-
-void
 sift_col_validate_key_columns(const char *value)
 {
 	const char *err;
@@ -187,70 +142,38 @@ sift_col_validate_key_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option \"%s\": %s", value, err)));
 }
 
-void
-sift_col_validate_order_columns(const char *value)
-{
-	const char *err = sift_crun_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option \"%s\": %s", value, err)));
+/* An option whose value is a list with its own syntax checker: the error names the option and what is wrong */
+#define SYNTAX_VALIDATOR(option, check) \
+void \
+sift_col_validate_##option(const char *value) \
+{ \
+	const char *err = check; \
+\
+	if (err) \
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid " #option " option \"%s\": %s", value, err))); \
 }
 
-void
-sift_col_validate_order_array_group(const char *value)
-{
-	bool		autolist;
-	const char *err = sift_crun_syntax(sift_cpagg_auto_list(value, &autolist));
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_order_array_columns(const char *value)
+/* 'auto' or 'auto: a, b' stands for the columns the build chooses: the rest is a list of columns */
+static const char *
+order_array_syntax(const char *value)
 {
 	bool		autolist;
-	const char *err = sift_crun_syntax(sift_cpagg_auto_list(value, &autolist));
 
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option \"%s\": %s", value, err)));
+	return sift_crun_syntax(sift_cpagg_auto_list(value, &autolist));
 }
 
-void
-sift_col_validate_hll_columns(const char *value)
-{
-	const char *err = sift_hll_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_point_columns(const char *value)
-{
-	const char *err = sift_cpoint_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_count_columns(const char *value)
-{
-	const char *err = sift_cpoint_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option \"%s\": %s", value, err)));
-}
-
-void
-sift_col_validate_point_tid_columns(const char *value)
-{
-	const char *err = sift_cpoint_syntax(value);
-
-	if (err)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option \"%s\": %s", value, err)));
-}
+SYNTAX_VALIDATOR(preagg, sift_cpagg_syntax(value))
+SYNTAX_VALIDATOR(rollup, sift_cpagg_rollup_syntax(value))
+SYNTAX_VALIDATOR(rollup_dims, sift_cpagg_rows_syntax(value))
+SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
+SYNTAX_VALIDATOR(return_columns, return_walk(value, NULL, NULL))
+SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
+SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
+SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
+SYNTAX_VALIDATOR(hll_columns, sift_hll_syntax(value))
+SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
+SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
+SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 
 static relopt_enum_elt_def array_lengths_names[] = {
 	{"auto", SIFT_COL_ARRLEN_AUTO},
