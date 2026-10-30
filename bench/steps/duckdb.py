@@ -254,9 +254,7 @@ def build_rows(port, arm, seconds, version):
 
 
 def host():
-    cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
-    mem = int(next(l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal'))) // 1048576
-    return '%s, %d threads, %d GB memory' % (cpu, os.cpu_count(), mem)
+    return benchlib.host_label()
 
 
 def main():
@@ -276,7 +274,6 @@ def main():
     ap.add_argument('--queries', default='', help='comma separated question numbers (default all)')
     args = ap.parse_args()
     ports = {'sift': args.sift_port, 'duck': args.duck_port}
-    load_before = extras.host_load()
 
     csv = os.path.join(args.data, 'orders-%d.csv' % args.rows)
     if not os.path.exists(csv):
@@ -311,7 +308,7 @@ def main():
     cold(queries, ports, used, args, rows, boxes)
 
     meta = dict(m.split('=', 1) for m in args.meta)
-    meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings), host_load_before=load_before, host_load_after=extras.host_load())
+    meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings))
     extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (%d orders).' % args.rows, meta, rows)
     log('wrote %s' % args.out)
 

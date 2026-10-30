@@ -46,9 +46,9 @@ def inputs_key(a, cases, chosen):
 
 
 def host_words():
-    """cpu, threads and memory of this host: what an older file must have for its numbers to stand in (the kernel and docker versions are not asked)"""
+    """an id of the cpu, threads and memory of this host: what an older file must have for its numbers to stand in (the kernel and docker versions are not asked; the details are not written)"""
     fp = benchlib.host_fingerprint()
-    return '%s, %s threads, %s' % (fp['cpu'], fp['threads'], fp['ram'])
+    return benchlib.key_of(dict(cpu=fp['cpu'], threads=fp['threads'], ram=fp['ram']), 12)
 
 
 def main():
@@ -115,7 +115,7 @@ def main():
                 if note:
                     med = lo = hi = None
                     skipped.setdefault(arm, []).append('%s: %s' % (c.id, note))
-                results.append((c.id, arm, med, lo, hi, open('/proc/loadavg').read().split()[0], note))
+                results.append((c.id, arm, med, lo, hi, '', note))
 
     for eid in order:
         eng = adapters[eid].Engine(ctx)
@@ -137,15 +137,14 @@ def main():
     for arm in dict.fromkeys(r[1] for r in results):
         why = skipped.get(arm, [])
         total = sum(1 for r in results if r[1] == arm)
-        loads = [float(r[5]) for r in results if r[1] == arm]
-        log('%-17s %2d of %2d compared, host load %.1f to %.1f%s' % (arm, total - len(why), total, min(loads), max(loads), ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
+        log('%-17s %2d of %2d compared%s' % (arm, total - len(why), total, ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
     if a.out and runs:
         with open(a.out, 'w') as f:
             f.write('# The generic suites on the other engines (steps/generic.py, bench/engines.tsv): %s against PostgreSQL 18 (the pg_duckdb image), the same rows, answers compared before any time.\n' % ', '.join(order))
             f.write('# inputs: %s\n# host: %s\n# sha: %s\n' % (key, host, subprocess.run(['git', '-C', REPO, 'describe', '--tags', '--always'], capture_output=True, text=True).stdout.strip()))
             f.write('# rows: %d\n# date: %s\n# method: client-side milliseconds, warm median of %d runs after one untimed; %d CPUs and %s per engine, one engine at a time; pg is PostgreSQL 18.1 of the pg_duckdb image\n'
                     % (a.rows, time.strftime('%Y-%m-%d'), runs, a.cpus, a.memory))
-            f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')
+            f.write('# NA: the engine did not run the case, the reason is in note; load: always empty (the column is kept for the older files)\n')
             f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
             for case, arm, med, lo, hi, load, note in results:
                 f.write('\t'.join([str(x) for x in (VERSION, case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')

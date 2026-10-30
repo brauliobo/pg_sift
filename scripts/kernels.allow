@@ -8,22 +8,22 @@ agg	avx512	count_gid	scatter-add of rows into per-group accumulators: the lanes 
 agg	avx512	sum_gid_f64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
 agg	avx512	sum_gid_i32	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
 agg	avx512	sum_gid_i64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
-agg	neon	absmax_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
-agg	neon	sum_i64	the shared two-lane form is slower than the scalar loop on an arm64 core: 875 against 219 ns per 4096 rows unmasked, 906 against 859 at 50 % (2026-10-26)
-agg	neon	cmp2_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
+agg	neon	absmax_i64	the scalar loop is faster than two 64-bit lanes on the a test host (src/agg/kern_neon.c)
+agg	neon	sum_i64	the shared two-lane form is slower than the scalar loop on the a test host: 875 against 219 ns per 4096 rows unmasked, 906 against 859 at 50 % (2026-10-26)
+agg	neon	cmp2_i64	the scalar loop is faster than two 64-bit lanes on the a test host (src/agg/kern_neon.c)
 agg	neon	count_gid	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
 agg	neon	gather_bits	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
 agg	neon	gid_i32	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
 agg	neon	lut_i32	a byte load per row indexed by the value, and NEON has no gather: a vector form issues the same loads as the scalar loop
-agg	neon	minmax_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
+agg	neon	minmax_i64	the scalar loop is faster than two 64-bit lanes on the a test host (src/agg/kern_neon.c)
 agg	neon	sum_gid_f64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
 agg	neon	sum_gid_i32	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
 agg	neon	sum_gid_i64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
-bm25	neon	bm25_sel	0.86x of the scalar loop at d = 0.25 on an arm64 core, where most bytes hold one or two slots; no end-to-end gain
+bm25	neon	bm25_sel	0.86x of the scalar loop at d = 0.25 on the a test host, where most bytes hold one or two slots; no end-to-end gain
 bm25	neon	expand	a deposit of tf values into slots, for which NEON has no instruction
 bm25	neon	select_gt	a compaction, for which NEON has no instruction
 bm25	neon	tf_decode	a variable length decode, for which NEON has no instruction
-bm25	neon	ub_accum	1.0x on an arm64 core: the compiler vectorizes the scalar loop as well
+bm25	neon	ub_accum	1.0x on the a test host: the compiler vectorizes the scalar loop as well
 bm25	neon	vm_allvisible	a bit gather, for which NEON has no instruction
 col	avx2	for_i64_sel[]	x86 gathers were slower than the scalar loads they replace
 col	avx512	for_i64_sel[]	x86 gathers were slower than the scalar loads they replace

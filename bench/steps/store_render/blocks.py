@@ -30,9 +30,8 @@ def readme_block(R):
 
 
 def host_noise(part):
-    """how busy the host was at the start of a part: its pressure (scripts/quiet.sh), the load average for results made before; the NOISY batches"""
-    out = part['pressure'] if part.get('pressure') else 'load average ' + ' '.join(part['loadavg'])
-    return out + (f' (NOISY: {", ".join(part["noisy"])})' if part.get('noisy') else '')
+    """which batches of a part were NOISY: the other work of the host above its idle level (the load and the pressure numbers are not published)"""
+    return f'NOISY: {", ".join(part["noisy"])}' if part.get('noisy') else 'no NOISY batch'
 
 
 def thread_table(R, tiers):
@@ -73,7 +72,7 @@ def benchmarks_block(R):
     engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'sift_table_ord', 'es', 'ch', 'citus'])
     out = [f'{t["rows"]:,} orders and {len(R.queries(tier))} aggregate questions (the {len(R.queries(tier, search=True))} full-text ones are in the search section), {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs, three measures in each cell (the fastest and slowest run of every time are in bench/results/store.json); the fastest system of a question and anything within 5% of its time in bold, the factors are against the faster pg_sift layout. '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")}, PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}'
-           + (f', Citus {s["citus_columnar"]}' if 'citus' in engines else '') + f'; seeded data sha256 `{t["data_sha256"][:16]}`; {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared).', '']
+           + (f', Citus {s["citus_columnar"]}' if 'citus' in engines else '') + f'; seeded data sha256 `{t["data_sha256"][:16]}`; {host_noise(t["parts"]["warm"])} in the runs (the host is shared).', '']
     out += triple_table(R, tier, engines, dagger(R, tier, labels)) + [''] + md_table(['measure'] + [dagger(R, tier, labels)[e] for e in engines], load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
                                                                    picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]

@@ -70,9 +70,9 @@ build_psql() { psql -X -q -v ON_ERROR_STOP=1 -U postgres "$@"; }
 
 # ---- results ------------------------------------------------------------------------------------------------------------------------------
 ROWS_FILE=''
-begin_item() { ROWS_FILE=$OUT/$1.rows; : >"$ROWS_FILE"; LOAD0=$(python3 -I -c "import sys; sys.path.insert(0, '$HERE'); import extras; print(extras.host_load())"); }
+begin_item() { ROWS_FILE=$OUT/$1.rows; : >"$ROWS_FILE"; }
 emit() { # CASE ARM METRIC VALUE [NOTE]   (MIN, MAX, N from the environment)
-	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${VERSION:-?}" "$1" "$2" "$3" "$4" "${MIN:-}" "${MAX:-}" "${N:-}" "$(cut -d' ' -f1 /proc/loadavg)" "${5:-}" >>"$ROWS_FILE"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${VERSION:-?}" "$1" "$2" "$3" "$4" "${MIN:-}" "${MAX:-}" "${N:-}" "" "${5:-}" >>"$ROWS_FILE"
 }
 emit_rows() { # parse `ROW case arm metric value note` lines (psql, tab separated) from stdin into rows, ARM_PREFIX before the arm
 	local tag cs arm metric value note
@@ -83,9 +83,9 @@ emit_rows() { # parse `ROW case arm metric value note` lines (psql, tab separate
 }
 finish_item() { # NAME TITLE [KEY=VALUE ...]
 	local name=$1 title=$2; shift 2
-	python3 -I "$HERE/extras.py" wrap --name "$name" --title "$title" --rows "$ROWS_FILE" --out "$OUT/$name.tsv" --load-before "$LOAD0" \
+	python3 -I "$HERE/extras.py" wrap --name "$name" --title "$title" --rows "$ROWS_FILE" --out "$OUT/$name.tsv" \
 		--meta "date=$(date -u +%Y-%m-%d)" \
-		--meta "cpu=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/, "", $2); n=$2} /^CPU\(s\)/ {gsub(/ /, "", $2); t=$2} END {printf "%s (%s threads)", n, t}')" \
+		--meta "cpu=$(host_label)" \
 		--meta "noisy_starts=$(cat "$OUT/noisy.txt" 2>/dev/null | wc -l) of the timed runs started while the pressure was above ${SIFT_QUIET_MAX:-15}% for ${SIFT_QUIET_TIMEOUT:-300} s" \
 		--meta "postgresql=PostgreSQL $(pg_config --version | awk '{print $2}')" --meta "scope=$(cat /proc/self/cgroup | sed 's,.*/,,' | head -1)" "$@"
 	echo "extras: $OUT/$name.tsv" >&2
@@ -271,7 +271,6 @@ item_gpu() { # bench/results/gpu.tsv keeps its own layout: rows, query, mode (cp
 	[[ -n $dev ]] || { echo "gpu: no device, skipped" >&2; return 0; }
 	build_up gpu v310-vk
 	export PGOPTIONS='-c sift.gpu_min_rows=0'
-	local load0; load0=$(python3 -I -c "import sys; sys.path.insert(0, '$HERE'); import extras; print(extras.host_load())")
 	printf 'rows\tquery\tmode\tfirst_ms\tmedian_ms\n' >"$OUT/gpu.body"
 	for rows in ${GPU_ROWS:-1000000 10000000}; do
 		echo "gpu: $VERSION, $rows rows" >&2
@@ -281,7 +280,6 @@ item_gpu() { # bench/results/gpu.tsv keeps its own layout: rows, query, mode (cp
 	unset PGOPTIONS
 	{
 		echo "# Vulkan aggregate path against the CPU on the store table (bench/gpu/bench-pg.sh ROWS ${GPU_REPS:-9}), pg_sift $VERSION built with VULKAN=1, one backend, one core on the CPU side, $dev, measured $(date -u +%Y-%m-%d) under the perf lock."
-		echo "# host load before: $load0; after: $(python3 -I -c "import sys; sys.path.insert(0, '$HERE'); import extras; print(extras.host_load())")."
 		echo "# first_ms: the first query (cpu_1core: sift.gpu off) or the first query after the device is open, chunks uploaded (gpu_cold_resident); median_ms: median of the ${GPU_REPS:-9} repeats (chunks resident for the device)."
 		cat "$OUT/gpu.body"
 	} >"$out"

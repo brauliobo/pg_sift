@@ -106,8 +106,8 @@ if __name__ == '__main__':
 
 class Takeaway(unittest.TestCase):
     def fig(self, case, native, sift, others, plan):
-        c = type('C', (), dict(id=case))
-        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False)
+        c = type('C', (), dict(id=case, metrics=['ms']))
+        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False, forced=None, forced_note='')
 
     def test_wins_ties_kept_plans_and_settings_that_do_not_help(self):
         import cases_render as r
@@ -116,17 +116,17 @@ class Takeaway(unittest.TestCase):
         text = r.takeaway(figs)
         self.assertIn('faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 2 of 2 numbers (10x to 10x)', text)
         self.assertIn('brings no gain (its variant is as fast, within 5%) on 1: b ms `zone_off`', text)
-        self.assertIn("on 1: c ms", text)
-        slow = self.fig('d', 1.0, 1.5, {}, 'Seq Scan')
-        slow['kept'] = True
-        self.assertEqual(r.same_plan(slow), 'same plan (1.5x slower)')
-        self.assertEqual(r.same_plan(figs[2]), 'same plan')
+        self.assertIn("ran PostgreSQL's plan on 1 (no ratio for those); with the scan forced (`sift.agg_force`) it is not measured on 1 (c)", text)
+        for forced, note, want in ((0.5, '', "forced scan **2.0x**"), (2.0, '', 'forced scan 2.0x slower'), (None, '', 'forced scan not measured'), (None, 'no scan: x', 'the scan cannot run it')):
+            kept = self.fig('d', 1.0, 1.0, {}, 'Seq Scan')
+            kept.update(kept=True, forced=forced, forced_note=note)
+            self.assertIn(want, r.declined(kept))
 
     def test_ranked_puts_losses_before_ties_and_wins(self):
         import cases_render as r
         win, loss, tie = self.fig('w', 20.0, 2.0, {}, 'Top-N'), self.fig('l', 1.0, 2.0, {}, 'Top-N'), self.fig('t', 1.0, 1.0, {}, 'Seq Scan')
         slow_kept = self.fig('k', 1.0, 1.5, {}, 'Seq Scan')
-        slow_kept['kept'] = True
+        slow_kept['kept'], slow_kept['forced'] = True, 0.5   # the planner keeps PostgreSQL's plan where the forced scan is 2x faster: a gap
         self.assertEqual([r.ranked(f) for f in (win, loss, tie, slow_kept)], [2, 0, 1, 0])
 
 

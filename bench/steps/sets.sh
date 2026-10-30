@@ -102,7 +102,7 @@ if [[ -n $CH ]]; then
 	chq -n --query 'OPTIMIZE TABLE facts_ins FINAL; OPTIMIZE TABLE facts_tuned FINAL'
 fi
 
-meta=(--meta "date=$(date -u +%Y-%m-%d)" --meta "cpu=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/, "", $2); n=$2} /^CPU\(s\)/ {gsub(/ /, "", $2); t=$2} END {printf "%s (%s threads)", n, t}'), scope 3 CPUs 12G" \
+meta=(--meta "date=$(date -u +%Y-%m-%d)" --meta "cpu=$(host_label), scope 3 CPUs 12G" \
 	--meta "postgresql=PostgreSQL $(sq -d sets -c 'SHOW server_version')" --meta "build=$(git -C "$SIFT_BUILD" describe --tags --always)" \
 	--meta "clickhouse=$([[ -n $CH ]] && docker exec "$CHC" clickhouse-client -q 'select version()' || echo none)" --meta "shared_buffers=$(sq -d sets -c 'SHOW shared_buffers')")
 python3 -I "$HERE/sets.py" run --db sets --out "$OUT" --reps "$REPS" ${CH:+--ch "$CHC"} "${meta[@]}"

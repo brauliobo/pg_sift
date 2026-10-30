@@ -10,6 +10,7 @@ budgets, the number of runs and the fingerprint of the host that measured it; on
 measured again, and what is read from the cache is labelled with its date, its key and its fingerprint wherever the numbers are published."""
 import hashlib, json, math, os, random, statistics, sys, tempfile, time
 
+PRIVATE_HOST = os.environ.get('BENCH_HOST_FILE')   # a file outside the tree for the details of the host (CPU model, threads, RAM, kernel); unset: they are not kept
 EPOCH = 1    # bumped when the way a cell is measured changes so that older entries no longer describe what is measured now
 
 
@@ -74,10 +75,26 @@ def host_fingerprint(read=read_text, docker_version='', kernel=None):
     return fp
 
 
+def host_label():
+    """what a result file or a page says about the machine: its architecture only, never the model, the thread count, the memory, the kernel or the load"""
+    m = os.uname().machine.lower()
+    return 'one %s host' % {'x86_64': 'x86-64', 'amd64': 'x86-64', 'aarch64': 'arm64'}.get(m, m)
+
+
+def public_host(fp):
+    """the `host` record that a result file keeps: the label, the docker version and the id (12 hex digits of the whole fingerprint). The fingerprint itself is written to
+    PRIVATE_HOST, outside the tree"""
+    if PRIVATE_HOST:
+        os.makedirs(os.path.dirname(PRIVATE_HOST), exist_ok=True)
+        write_text(PRIVATE_HOST, json.dumps(fp, indent=1) + '\n')
+    return dict(cpu=host_label(), docker=fp.get('docker', ''), id=fp['id'])
+
+
 def same_host(meta_host, fp):
-    """whether the `host` record of an older result file describes this host (the fields both have)"""
-    keys = [k for k in ('cpu', 'threads', 'ram', 'kernel', 'docker') if meta_host.get(k) not in (None, '') and fp.get(k) not in (None, '')]
-    return bool(keys) and all(str(meta_host[k]) == str(fp[k]) for k in keys)
+    """whether the `host` record of an older result file describes this host: the id when the file has one, else the docker version"""
+    if meta_host.get('id') and fp.get('id'):
+        return meta_host['id'] == fp['id']
+    return bool(meta_host.get('docker')) and meta_host['docker'] == fp.get('docker')
 
 
 def now_iso(t=None):
@@ -195,7 +212,7 @@ def cpu_list(text):
 
 
 def physical_cores(read=read_text, names=None):
-    """the first logical CPU of each physical core, from the sibling lists of the kernel (with two threads per core, cpus i and i + 8 are one core): the CPUs a set of cores uses
+    """the first logical CPU of each physical core, from the sibling lists of the kernel (on a CPU with two threads per core, cpus i and i + N/2 can be one core): the CPUs a set of cores uses
     without two engines sharing a core's execution units"""
     names = os.listdir('/sys/devices/system/cpu') if names is None else names
     firsts = {min(cpu_list(read(f'/sys/devices/system/cpu/{d}/topology/thread_siblings_list'))) for d in names if d[:3] == 'cpu' and d[3:].isdigit()

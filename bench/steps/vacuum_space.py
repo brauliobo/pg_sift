@@ -8,12 +8,10 @@ Run the same command against the baseline and candidate installations.
 """
 import argparse
 import json
-import os
-import platform
-import subprocess
 import time
 from types import SimpleNamespace
 
+import benchlib
 import store
 
 
@@ -62,12 +60,11 @@ def main():
     store.cmd_gen(cfg)
     result = dict(label=args.label, date=time.strftime('%Y-%m-%d'), rows=args.rows,
                   method=f'store.py load_pg/update_engine; native transport; 15 latency samples; 3 warmups; 20 probes; {args.load_seconds}s rate windows',
-                  host=dict(cpu=subprocess.check_output(['lscpu'], text=True).split('Model name:')[1].splitlines()[0].strip(),
-                            kernel=platform.release(), threads=os.cpu_count(), ram_bytes=os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'), cpus=sorted(os.sched_getaffinity(0))), repetitions=[])
+                  host=benchlib.host_label(), repetitions=[])
     real_size = store.Writer.size_mib
     for repetition in range(args.repetitions):
         rows, reference, states = store.Rows(cfg.tier), {}, {}
-        record = dict(run=repetition + 1, load_start=os.getloadavg(), states=states, cells=rows.rows)
+        record = dict(run=repetition + 1, states=states, cells=rows.rows)
         result['repetitions'].append(record)
         for eid in ('pg', 'sift', 'sift_table'):
             store.load_pg(eid, cfg, rows)
@@ -89,7 +86,6 @@ def main():
             rows.add(eid, '02', 'after maintenance', 'latency_ms', 'ms', st=store.summary(times))
             client.close()
         store.Writer.size_mib = real_size
-        record['load_end'] = os.getloadavg()
         with open(args.out, 'w') as f:
             json.dump(result, f, indent=2)
             f.write('\n')

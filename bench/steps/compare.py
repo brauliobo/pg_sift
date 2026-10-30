@@ -225,7 +225,7 @@ def sources(results):
     p = os.path.join(results, 'duckdb.tsv')
     if os.path.exists(p):
         duck_meta = store_charts.read_tsv(p)[0]
-    host = f'{h["cpu"].replace(" 8-Core Processor", "")}, {h["threads"]} threads, {h["ram"]} RAM'
+    host = h['cpu']
     lines = [
         '| system | version | data | host and settings | warm or cold | date | results |',
         '|---|---|---|---|---|---|---|',
@@ -284,10 +284,9 @@ def port_lines():
             if m:
                 vals += [int(g.replace(',', '')) for g in m.groups()[1:] if g]
         hist = re.search(r'\*\*Historical baseline \(([\d-]+), ([^;)]*?)(?:;[^)]*)?\)', sec)
-        load = re.search(r'load average ([\d ]+(?:to \d+)?)', sec)
         size = re.search(r'\|[^|]*index, with positions[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*([\d.]+x (?:larger|smaller))\s*\|', sec) or re.search(r'Index size: .*?: ([\d.]+x smaller)', sec)
         if vals:
-            out.append((name, what, f'{min(vals):,}x to {max(vals):,}x', hist.group(1) + ', ' + hist.group(2) if hist else '?', load.group(1) if load else '?',
+            out.append((name, what, f'{min(vals):,}x to {max(vals):,}x', hist.group(1) + ', ' + hist.group(2) if hist else '?',
                         size.group(1) if size else NOT, path))
     return out
 
@@ -296,9 +295,9 @@ def ports_table():
     ports = port_lines()
     if not ports:
         return []
-    rows = ['| the port against | measured | pg_sift faster by | index size | when and on what | host load | source |', '|---|---|---:|---|---|---|---|']
-    for name, what, rng_, when, load, size, path in ports:
-        rows.append(f'| {name} | {what}, 218,058 articles | {rng_} | {size} | **historical baseline**, {when} | load average {load} | [{path}]({path}) |')
+    rows = ['| the port against | measured | pg_sift faster by | index size | when and on what | source |', '|---|---|---:|---|---|---|']
+    for name, what, rng_, when, size, path in ports:
+        rows.append(f'| {name} | {what}, 218,058 articles | {rng_} | {size} | **historical baseline**, {when} | [{path}]({path}) |')
     return rows
 
 

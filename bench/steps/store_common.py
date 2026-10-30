@@ -8,7 +8,7 @@ import subprocess
 import time
 from stats import number
 from store_engine import BASE, docker
-from store_lib import NOISY, NULL, START_LOAD, START_PRESSURE, TOL, is_es, log, read
+from store_lib import NOISY, NULL, TOL, is_es, log, read
 
 
 def csv_path(args):
@@ -55,7 +55,7 @@ def write(args, rows, part, extra=None):
     if util and part != 'load' and util['wall_s'] >= 60 and util['timed_pct'] < 70:
         log(f'WARN: {part}: timed windows are {util["timed_pct"]}% of the {util["wall_s"]} s of the command (below 70%): the rest was waiting for restarts, cache drops, gates; '
             f'{util["low_busy_pct"]}% of the time fewer than {util["low_busy_below"]} cores were busy')
-    meta = dict(key=part_key(args, part), date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], loadavg=START_LOAD, loadavg_end=open('/proc/loadavg').read().split()[:3], pressure=START_PRESSURE, noisy=NOISY, **(extra or {}))
+    meta = dict(key=part_key(args, part), date=time.strftime('%FT%TZ', time.gmtime()), baseline=BASE, utilization=util, parallel=getattr(args, 'parallel', 1), tier=args.tier, rows=args.rows, cpus=args.cpus, threads=args.threads, data_sha256=open(csv_path(args) + '.stamp').read().split()[2], noisy=NOISY, **(extra or {}))
     benchlib.write_text(path, '{"meta": ' + json.dumps(meta) + ',\n "rows": [\n' + ',\n'.join(' ' + json.dumps(r) for r in rows.rows) + '\n]}\n')
     log(f'written: {path}')
 
@@ -109,8 +109,8 @@ def host_fp():
 
 
 def host():
-    """the fingerprint of this host (steps/benchlib.py) and the budgets of the run"""
-    return dict(host_fp(), cpus=os.environ.get('STORE_CPUS', '?'), cpus_list=os.environ.get('STORE_CPUS_LIST', '?'), memory=os.environ.get('STORE_MEMORY', '?'))
+    """the public record of this host (steps/benchlib.py) and the budgets of the run"""
+    return dict(benchlib.public_host(host_fp()), cpus=os.environ.get('STORE_CPUS', '?'), cpus_list=os.environ.get('STORE_CPUS_LIST', '?'), memory=os.environ.get('STORE_MEMORY', '?'))
 
 
 def make_cache(args):

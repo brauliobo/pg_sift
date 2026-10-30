@@ -222,7 +222,7 @@ if [[ $cold ]]; then
 fi
 
 cells_begin $'round\tload\tclass\tengine\tmetric\tvalue\tse\tn\tsecs'
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$2" "$3" "$4" "$5" "${6:-NA}" "${7:-NA}" "${8:-NA}" >>"$DEST/cells.tsv"; }   # round class engine metric value [stderr n seconds]
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "" "$2" "$3" "$4" "$5" "${6:-NA}" "${7:-NA}" "${8:-NA}" >>"$DEST/cells.tsv"; }   # round class engine metric value [stderr n seconds]
 qps_cells() { awk -F'\t' 'NR == 1 || $5 == "qps"' "$DEST/cells.tsv"; }
 stable() { [[ -z $(rse_cells <(qps_cells) 3,4 6 7) ]]; }   # no cell needs another round
 cell_engines() { # ROUND CLASS: the engines to measure: all up to MINR rounds, then those whose cell is above the error target

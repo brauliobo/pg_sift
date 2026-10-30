@@ -61,7 +61,7 @@ def host_lines(results):
     first = extras.read(raw(results, 'cases-pass1.tsv'))[0]
     store = json.load(open(os.path.join(results, 'store.json')))['meta']['host']
     upd = json.load(open(os.path.join(results, 'updates.json')))['meta']
-    rows_ = [('measured', meta['date']), ('hardware', '%s; kernel %s; Docker %s; governor %s' % (meta['cpu'], store['kernel'], store['docker'], store['governor'])),
+    rows_ = [('measured', meta['date']), ('hardware', '%s; Docker %s' % (meta['cpu'], store['docker'])),
              ('PostgreSQL', meta['postgresql']), ('pg_sift', meta['pg_sift']),
              ('build of the final run of the cases', meta['build']), ('build of the first run of the cases', first['build']),
              ('build of the stages run before the fix of the cold run (updates, pg_duckdb; the pass was pinned at it)', upd['sha']), ('build of the cases by size', extras.read(os.path.join(results, 'cases-scale.tsv'))[0]['build']), ('orders', '{:,}'.format(int(meta['orders']))), ('work_mem', meta['work_mem']), ('method of the cases', meta['method']),
@@ -129,11 +129,6 @@ def io_lines(results):
             '| mode | seconds of the four runs | mean |', '|---|---|---:|'] + ['| `--io %s` | %s | %.2f |' % (m, ', '.join(t[1][:5] for t in times if t[0] == m), mean(m)) for m in ('cold', 'off')]
 
 
-def load_lines(results):
-    _, rows = tsv(raw(results, 'load.tsv'))
-    return table(['stage', 'part', 'when', 'load at the start', 'load at the end', 'pressure (CPU and IO)', 'noisy', 'note'], [[r[k] for k in ('stage', 'part', 'when', 'load_start', 'load_end', 'pressure', 'noisy', 'note')] for r in rows])
-
-
 def disk_lines(results):
     notes, rows = tsv(raw(results, 'disk-growth.tsv'))
     return ['%d samples, a minute apart: the data volume grew by at most %d MB and the root volume by at most %d MB during the pass; %s' % (
@@ -181,8 +176,8 @@ def big_lines(results, name, before, ratio):
               if fig(rows, c, 'sift', 'ms') and fig(rows, c, 'native', 'ms') and fig(rows, c, 'sift', 'ms') > 1.05 * fig(rows, c, 'native', 'ms')]
     failed = ['`%s`: %s' % (r['case'], r['note']) for r in rows if r['arm'] == 'sift' and r['metric'] == 'ms' and r['value'] == 'error']
     head = ['case', 'PostgreSQL ms', 'pg_sift ms', 'PostgreSQL MB cold', 'pg_sift MB cold', 'slope PostgreSQL', 'slope pg_sift', 'plan of pg_sift']
-    return ['%d headline cases at %s orders, build %s, host %s at the start and %s at the end, rows measured while the host was busy: %s. The slope is log(time / time at %s orders) / log(%g).' % (
-        len(body), '{:,}'.format(int(meta['orders'])), meta['build'], meta['host_load_before'], meta['host_load_after'], ', '.join(noisy) or 'none', '{:,}'.format(int(meta['orders']) // ratio), ratio), ''] + table(head, body, ['---'] + ['---:'] * 6 + ['---']) + (
+    return ['%d headline cases at %s orders, build %s, rows measured while the host was busy: %s. The slope is log(time / time at %s orders) / log(%g).' % (
+        len(body), '{:,}'.format(int(meta['orders'])), meta['build'], ', '.join(noisy) or 'none', '{:,}'.format(int(meta['orders']) // ratio), ratio), ''] + table(head, body, ['---'] + ['---:'] * 6 + ['---']) + (
         [''] + ['CPU time of the load cases: ' + '; '.join(load) + '.'] if load else []) + (
         [''] + ['pg_sift slower than PostgreSQL by more than 5%%: %s.' % '; '.join(slower)] if slower else []) + (
         [''] + ['A case that failed on pg_sift: %s.' % '; '.join(failed)] if failed else [])
@@ -196,7 +191,7 @@ def big30_lines(results):
     return big_lines(results, 'cases-30M.tsv', 'cases-10M.tsv', 3)
 
 
-BLOCKS = {'release-host': host_lines, 'release-stages': stage_lines, 'release-cases': case_lines, 'release-triage': triage_lines, 'release-io': io_lines, 'release-load': load_lines,
+BLOCKS = {'release-host': host_lines, 'release-stages': stage_lines, 'release-cases': case_lines, 'release-triage': triage_lines, 'release-io': io_lines,
           'release-10m': big10_lines, 'release-30m': big30_lines, 'release-disk': disk_lines, 'release-extra': extra_stage_lines, 'release-after': after_lines, 'release-not-again': not_again_lines}
 
 

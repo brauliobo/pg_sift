@@ -106,7 +106,6 @@ def cmd_run(args):
             c.share = None
     runcfg.TIMEOUT = args.timeout
     engines = args.engines.split(',')
-    load_before = host_load()
     results, failed = [], []
     for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
         run_point(args, cases, args.rows * scale, engines, results, failed)
@@ -114,7 +113,7 @@ def cmd_run(args):
         sum(b for b, _ in TIMES.values()), sum(r for _, r in TIMES.values()), len(cases), len({c.schema() for c in cases if c.dataset not in DATASETS})))
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
-    write_results(args, cases, results, load_before)
+    write_results(args, cases, results)
     if args.budget:
         from . import budget
         if args.budget_update:
@@ -153,23 +152,14 @@ def cmd_plan(args):
     return 0 if free > peak else 1
 
 
-def host_load():
-    pressure = ''
-    try:
-        pressure = ' cpu_pressure %s%%' % re.search(r'some avg10=([0-9.]+)', open('/proc/pressure/cpu').read()).group(1)
-    except (OSError, AttributeError):
-        pass
-    return 'load %s%s' % (' '.join(open('/proc/loadavg').read().split()[:3]), pressure)
-
-
-def write_results(args, cases, results, load_before):
+def write_results(args, cases, results):
     import extras
     version = re.search(r"default_version\s*=\s*'([^']*)'", open(os.path.join(REPO, 'pg_sift.control')).read()).group(1)
     sha = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()
     meta = {'orders': args.rows, 'postgresql': psql('SHOW server_version', 'postgres'), 'pg_sift': version, 'build': sha, 'date': datetime.date.today().isoformat(),
             'cpu': host(), 'method': 'client-side milliseconds of one psql session per lane, interleaved: %d rounds of 1 untimed and %d timed runs, median of all; the sift lane is the '
             'planner\'s own choice, native is sift.enable_agg = off on the same table; %s parallel workers; every answer compared with native' % (args.rounds, args.runs, os.environ.get('CASES_WORKERS', '2')),
-            'host_load_before': load_before, 'host_load_after': host_load(), 'work_mem': os.environ.get('CASES_WORK_MEM', '64MB')}
+            'work_mem': os.environ.get('CASES_WORK_MEM', '64MB')}
     if IO_HOW:
         meta['io_cold'] = '; '.join(sorted(IO_HOW)) + ' (the cold run is the first after the relations of the case were emptied; io_warm is the run after it; steps/iolib.py)'
     for r in results:
@@ -207,7 +197,7 @@ def write_times(args, cases):
         old[k] = [k, str(args.rows), str(b), str(r)]
     lines = ['# Seconds of each case of bench/cases.tsv (steps/cases.py, bench/bench cases --docs): build (the table, its indexes and setup; 0 for a case that reads the table of an earlier one), run (the timed runs of every lane,',
              '# %d rounds of %d runs, a lane stops repeating after %g s), at the orders of the row. (dataset): generating the orders; (pg_duckdb load): the copy in the container.' % (args.rounds, args.runs, args.lane_budget),
-             '# measured %s on %s, host load before %s.' % (datetime.date.today().isoformat(), host(), host_load()),
+             '# measured %s on %s.' % (datetime.date.today().isoformat(), host()),
              'case\torders\tbuild_s\trun_s'] + ['\t'.join(v) for v in old.values()]
     open(path, 'w').write('\n'.join(lines) + '\n')
     log('wrote %s' % path)

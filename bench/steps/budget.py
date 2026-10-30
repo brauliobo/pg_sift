@@ -217,7 +217,7 @@ def block(results):
     win, full = window_table(results, total)
     out = ['Minutes of the release window on the reference host: the stages of `bench/bench final --size standard` (`bench/presets.env`), then the runs at 10,000,000 orders and the build of the extension. '
            'The window is **%d minutes** against the one to two hours the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
-           'the others are the stored times of the pass of 2026-10-22 (a test host) with the cuts applied, to be replaced by the first pass on the release host.' % full, ''] + st
+           'the others are the stored times of the pass of 2026-10-22 (an x86-64 host) with the cuts applied, to be replaced by the first pass on the release host.' % full, ''] + st
     out += ['', win[0], win[1]] + win[2:]
     out += ['', '**Done ahead, outside the window.** The data (`bench store prepare`: the CSV of 1,000,000 and 10,000,000 orders; every result records the hash of the data it used) and the pulled images of the other engines '
             'do not depend on the commit under test and are made the day before (`bench refresh --prepare` builds the image and generates the data, bench/README.md); only the extension is built in the window.',

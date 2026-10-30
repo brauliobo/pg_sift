@@ -43,7 +43,7 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd: -)
 
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
-loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the result tables, kept for the older runs; noise is judged by quiet_report
+host_label() { echo "one $(uname -m | sed 's/_/-/; s/aarch64/arm64/') host"; }   # all that a result file says about the machine; the details go to machine.sh's private copy
 # The noise of a timed batch is judged by what others did in its window, not by waiting for a quiet host: the pressure stall information cannot tell the
 # run's own servers and clients from other users, and waiting for it idled the run. A window is the time from one `batch` call to the next: the CPU the host
 # spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody

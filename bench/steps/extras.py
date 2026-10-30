@@ -106,8 +106,7 @@ def table(head, body, align=None):
 
 
 def footer(meta):
-    return ('Measured %s on %s, %s; host %s at the start and %s at the end.' % (
-        meta.get('date', '?'), meta.get('cpu', '?'), meta.get('postgresql', '?'), meta.get('host_load_before', '?'), meta.get('host_load_after', '?')))
+    return 'Measured %s on %s, %s.' % (meta.get('date', '?'), meta.get('cpu', '?'), meta.get('postgresql', '?'))
 
 
 # ---- sets -------------------------------------------------------------------------------------------------------------------------------
@@ -506,8 +505,6 @@ def duckdb_section(meta, rows):
 def wrap(a):
     """rows of a runner (no header) -> a results file: title, the run's meta, the host load at the start and now"""
     meta = dict(m.split('=', 1) for m in a.meta or [])
-    meta['host_load_before'] = a.load_before
-    meta['host_load_after'] = host_load()
     rows = [dict(zip(COLUMNS, line.rstrip('\n').split('\t'))) for line in open(a.rows) if line.strip()]
     write(a.out, a.title, meta, rows)
 
@@ -522,7 +519,6 @@ def main():
     ap.add_argument('--title')
     ap.add_argument('--rows')
     ap.add_argument('--out')
-    ap.add_argument('--load-before', default='')
     ap.add_argument('--meta', action='append')
     ap.add_argument('--log')
     ap.add_argument('--raw')

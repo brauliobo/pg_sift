@@ -430,8 +430,8 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
         out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows)%s:' % (results_dir, ', and a cold row is the MB read by the first run after the tables were emptied from memory' if any(m in ' '.join(table) for m in IO_MEASURES) else ''), ''] + table + ['']
     out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="bench/out/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="bench/out/img/cases-ecdf-light.svg"></picture>', '',
             'Every case with its plan and variants: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
-            '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
-                meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'), meta.get('host_load_before', '?'))]
+            '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
+                meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'))]
     return out
 
 

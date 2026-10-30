@@ -156,18 +156,6 @@ def engines_of(rows, tier, datasets):
     return [e for e in ENGINES if any(k[:3] == (d, tier, e) for k in rows for d in datasets)]
 
 
-def load_range(rows, tier, datasets):
-    lo = min(float(rows[(d, tier, '-', '-', '-', 'load_1m')][1]) for d in datasets)
-    hi = max(float(rows[(d, tier, '-', '-', '-', 'load_1m')][2]) for d in datasets)
-    return f'{lo:.0f}-{hi:.0f}'
-
-
-def late_notes(rows, tier, dataset):
-    """the classes merged from a later run (bench --merge) and the load of its cells"""
-    return [f"{k[4].replace(',', ', ')}: measured in a later run (load avg {float(v[1]):.0f}-{float(v[2]):.0f})."
-            for k, v in rows.items() if k[:4] == (dataset, tier, '-', '-') and k[4] != '-' and k[5] == 'load_1m']
-
-
 def nice_axis(vmax, max_ticks=6):
     """(step, count): the smallest step in 1, 2, 2.5, 5 x 10^k with count = ceil(vmax / step) <= max_ticks."""
     k = math.floor(math.log10(vmax / max_ticks)) - 1
@@ -263,17 +251,17 @@ def grouped(title, direction, groups, series, fmt, ylabel, caption, baseline=Non
 
 
 def host(rows, tier, datasets):
-    """the machine behind a chart (the session row of tables.py): CPU model and threads"""
+    """the machine behind a chart (the session row of tables.py): the host label"""
     for (d, t, e, _c, var, metric) in rows:
         if (t, e, metric) == (tier, '-', 'session') and d in datasets:
             kv = dict(w.split('=', 1) for w in var.split(';') if '=' in w)
             if kv.get('cpu'):
-                return f"{kv['cpu']}, {kv.get('threads', '?')} threads"
+                return kv['cpu']
     return 'host not recorded'
 
 
 def caption(rows, tier, datasets, what):
-    return f'{what}; {host(rows, tier, datasets)} (load avg {load_range(rows, tier, datasets)}); {session_date(rows, tier)}.'
+    return f'{what}; {host(rows, tier, datasets)}; {session_date(rows, tier)}.'
 
 
 def errors_of(rows, tier, dataset, engines, keys, metric):
@@ -319,7 +307,7 @@ def make(rows, tier):
     lat = {e: [value(rows, tier, 'places', e, c, 'top', 'p50_ms') for c in PLACE_CLASSES] for e in engines}
     cap = caption(rows, tier, ['places'], f"{p['name']}, top-20, 1 client, median of {p['rounds']} rounds")
     out['places-latency.svg'] = grouped('Autocomplete latency by query class', 'p50 milliseconds, logarithmic axis, lower is better', [(c, '') for c in PLACE_CLASSES],
-                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES + (ES_PLACE_NOTES if 'elasticsearch' in engines else []) + late_notes(rows, tier, 'places'),
+                                        list(lat.items()), lambda v: f'{v:,.0f}' if v >= 100 else f'{v:.2f}', 'p50 latency (ms)', cap, notes=[PLACE_KEY] + PLACE_NOTES + (ES_PLACE_NOTES if 'elasticsearch' in engines else []),
                                         log=True, errors=errors_of(rows, tier, 'places', engines, keys, 'p50_ms'))
     return out
 

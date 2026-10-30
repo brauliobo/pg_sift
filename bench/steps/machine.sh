@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Usage: bench/steps/machine.sh > machine.txt
 # Describes the machine and the engines of a run as `key: value` lines so results from different
-# hosts and sessions can be compared. No host name or user path is printed. articles.sh and places.sh
+# hosts and sessions can be compared. No host name, user path, CPU model, core count, memory size or kernel is printed (benchlib.py records them in a private file). articles.sh and places.sh
 # store it next to their results.
 . "$(dirname "$0")/lib.sh"
 
-cpu() { grep -m1 -oP 'model name\s+: \K.*' /proc/cpuinfo; }
 simd() { local f; for f in avx2 avx512f avx512bw avx512vl; do grep -qw "$f" /proc/cpuinfo && printf '%s ' "$f"; done; }
 os() { if . /etc/os-release 2>/dev/null; then echo "$PRETTY_NAME"; else uname -o; fi; }
 # default_version of an extension, looked up in the order the bench cluster searches (bench/steps/cluster.sh)
@@ -36,11 +35,9 @@ cpu_quota() {
   echo none
 }
 echo "date: $(date -u +%FT%TZ)"
-echo "cpu: $(cpu)"
+echo "cpu: $(host_label)"
 echo "cpu quota: $([[ -n ${SERVER_BUDGET:-} ]] && echo "${SERVER_BUDGET} CPUs" || cpu_quota)"${SERVER_BUDGET:+" (servers only: cores $SERVER_CPUS; the clients run outside the cap)"}
-echo "cpu threads: $(nproc --all), cores: $(lscpu -p=core,socket 2>/dev/null | grep -v '^#' | sort -u | wc -l), simd: $(simd)"
-echo "memory: $(awk '/MemTotal/ {printf "%.0f GiB", $2 / 1048576}' /proc/meminfo)"
-echo "kernel: $(uname -sr)"
+echo "simd: $(simd)"
 echo "os: $(os)"
 echo "bench root: $(stat -f -c %T "$ROOT") (free: $(df -h --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -d ' '))"
 echo "postgres: $(pg_config --version)"

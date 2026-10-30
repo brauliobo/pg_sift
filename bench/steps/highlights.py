@@ -188,7 +188,7 @@ def block(results):
     ch_size = sz['ch'][2]
     fourth = ('Where it does not win: ' + (f'cold (caches emptied) it is not the fastest on {len(cold)} of {len(qs)} questions: {"; ".join(cold)}. ' if cold else '')
               + f'ClickHouse loads faster ({load["ch"]:.1f} s) and tenants the table in less space ({ch_size:.0f} MiB against {sz["sift"][2]:.0f} MiB for sift_col, whose heap stays). ' + btree_loss(results))
-    foot = (f'[^bench]: Measured {t["parts"]["warm"]["date"][:10]} on {h["cpu"]} ({h["threads"]} threads), PostgreSQL {v["pg"]}, {t["cpus"]} CPUs per server, one client, warm medians, every result checked against PostgreSQL\'s; '
+    foot = (f'[^bench]: Measured {t["parts"]["warm"]["date"][:10]} on {h["cpu"]}, PostgreSQL {v["pg"]}, {t["cpus"]} CPUs per server, one client, warm medians, every result checked against PostgreSQL\'s; '
             'the method, the other systems\' versions and every table are in [bench/out/BENCHMARKS.md].')
     return [first, '', second, '', third, '', fourth, '', foot]
 

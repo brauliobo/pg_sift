@@ -189,8 +189,7 @@ class Store:
         return [e for e in ORDER if any(k[0] == tier and k[1] == e and k[4] == 'latency_ms' for k in self.rows)]
 
     def host(self):
-        h = self.meta['host']
-        return f'{h["cpu"].replace(" 8-Core Processor", "")}, {h["threads"]} threads'
+        return self.meta['host']['cpu']
 
 
 def picture(name, alt, prefix='bench/out/img/'):

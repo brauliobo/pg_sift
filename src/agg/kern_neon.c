@@ -112,7 +112,7 @@ agk_sum_i32_neon(const int32 *v, const uint64 *mask, int n)
 	return vaddvq_s64(vaddq_s64(vaddq_s64(acc[0], acc[1]), vaddq_s64(acc[2], acc[3])));
 }
 
-/* the scalar loop is faster than two 64-bit lanes on an arm64 core: both stay scalar */
+/* the scalar loop is faster than two 64-bit lanes on the a test host: both stay scalar */
 #define AKV_NO_ABSMAX
 #define AKV_RFN(x) agk_##x##_v_neon
 #define AKV_NO_SUM_I32

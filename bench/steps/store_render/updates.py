@@ -181,7 +181,7 @@ def updates_benchmarks(R):
     t = R.meta['tiers'][tier]
     part = t['parts']['updates']
     host = R.meta.get('host', {})
-    out = [f'{t["rows"]:,} orders, after the read tests, {part["date"][:10]} on {host.get("cpu", "?")}, {cpu_name(R.cpus(tier))} per container, {host_noise(part)} at the start. Each system changes rows through the path its documentation recommends; '
+    out = [f'{t["rows"]:,} orders, after the read tests, {part["date"][:10]} on {host.get("cpu", "?")}, {cpu_name(R.cpus(tier))} per container, {host_noise(part)}. Each system changes rows through the path its documentation recommends; '
            'after each step the state (rows and sum of the amount per status) is compared with PostgreSQL\'s and the run stops on a difference. Medians; the best of a row in bold. '
            f'Steps: update 1% (`id % 100 = 0`), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`), {t.get("probes", "?")} single-row changes timed until a query sees them, the revenue-per-month query for {t.get("load_seconds", "?")} s '
            'while a second connection updates 0, 1,000 and 10,000 rows per second, then one maintenance step per system.', '']

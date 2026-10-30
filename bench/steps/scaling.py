@@ -89,7 +89,7 @@ def time_cells(db, cs, reps, rows):
     ref = {}
     for c in cs:   # the untimed run of each cell; the result of the normal plan (the first arm of a question) is the reference
         ref.setdefault(c[1][:3], sorted(psql(db, c[2] + [c[3]], False)[1].splitlines()))
-    times, ok, loads = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): True for c in cs}, {(c[0], c[1]): [] for c in cs}
+    times, ok = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): True for c in cs}
     cpus, mbs, pid = {(c[0], c[1]): [] for c in cs}, {(c[0], c[1]): read_mb(db, c[2], c[3]) for c in cs}, server_pid(db)
     idle = idle_cpu(db, pid)
     with open(LOCK, 'a') as lock:
@@ -104,7 +104,6 @@ def time_cells(db, cs, reps, rows):
                 c0 = meter.cpu_ms(pid)
                 ms, out = psql(db, gucs + [stmt])
                 cpu = meter.cpu_ms(pid) - c0 - idle
-                loads[(case, arm)].append(float(open('/proc/loadavg').read().split()[0]))
                 if rep:
                     times[(case, arm)].append(ms)
                     cpus[(case, arm)].append(max(cpu, 0.0))
@@ -113,7 +112,7 @@ def time_cells(db, cs, reps, rows):
         t = times[(case, arm)]
         note = plans[(case, arm)] + ('' if ok[(case, arm)] else ' RESULT DIFFERS')
         rows.append(dict(case=case, arm=arm, metric='median_ms', value='%.2f' % statistics.median(t), min='%.2f' % min(t), max='%.2f' % max(t), n=str(len(t)),
-                         load='%.2f' % statistics.mean(loads[(case, arm)]), note=note))
+                         load='', note=note))
         c = cpus[(case, arm)]
         rows.append(dict(case=case, arm=arm, metric='cpu_ms', value='%.2f' % statistics.median(c), min='%.2f' % min(c), max='%.2f' % max(c), n=str(len(c)), load=rows[-1]['load'], note='the processes of the server, net of an empty session'))
         rows.append(dict(case=case, arm=arm, metric='read_mb', value='%.3f' % mbs[(case, arm)], min='%.3f' % mbs[(case, arm)], max='%.3f' % mbs[(case, arm)], n='1', load=rows[-1]['load'], note='buffers hit and read'))
@@ -133,7 +132,7 @@ def run(a):
         for w in [int(x) for x in a.workers.split(',') if x]:
             time_cells(db, cells(f'workers {w}', w, a.rows), a.reps, rows)
     meta = dict(m.split('=', 1) for m in a.meta or [])
-    meta.update({'bench': 'scaling', 'sift': version, 'orders': a.rows, 'host_load_after': extras.host_load(),
+    meta.update({'bench': 'scaling', 'sift': version, 'orders': a.rows,
                  'method': 'psql \\timing of one statement, planning included, one client, %d timed runs after one untimed, cells interleaved in random order; jit off; partitions: 2 workers' % a.reps})
     for r in rows:
         r['version'] = version

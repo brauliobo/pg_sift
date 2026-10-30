@@ -182,7 +182,7 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 
 `expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast or faster than AVX-512 (memory bound on this host).
 
-On AArch64 (clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
+On AArch64 (a test host, clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
 
 | kernel | 4096 | 4 Mi |
 |---|---|---|

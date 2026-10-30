@@ -10,6 +10,7 @@ import threading
 import time
 from collections import Counter
 
+import benchlib
 import iolib
 
 from . import runcfg
@@ -233,9 +234,7 @@ def measure_load(case, csv, rounds, rows, instr=False):
 
 
 def host():
-    cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
-    mem = int(next(l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal'))) // 1048576
-    return '%s, %d threads, %d GB memory' % (cpu, os.cpu_count(), mem)
+    return benchlib.host_label()
 
 
 def summarize(results, cases):
