@@ -196,6 +196,7 @@ extern void _PG_init(void);
 
 #ifdef SIFT_TESTING
 extern void sift_leak_test_init(void);
+extern void sift_handler_test_gucs(void);
 #endif
 
 #endif							/* SIFT_H */
