@@ -4,9 +4,10 @@ export LC_ALL=C
 # host, 1,000,000 rows, three tables (`pk`: primary key; `bt`: plus btrees on (prop, rdate) and (rdate); `sd`: primary key plus one sift_col index over five columns).
 # Cells: backend instructions, WAL bytes, standby replay instructions per row (perf stat, user mode, attached to the backend and to the standby's startup
 # process), 2,000 single-row INSERTs, 4,000 rows in statements of 100, COPY of 50,000 rows, 2,000 UPDATEs of a column no index covers / only the sift_col
-# covers / every index covers, 2,000 DELETEs, VACUUM; then 20 s of pgbench inserters (1, 4 and 16 clients): WAL and standby replay per row (the backend instructions of the inserters are n/a: perf does not follow the backends a pgbench run forks).
+# covers / every index covers, 2,000 DELETEs, VACUUM; then 20 s of pgbench inserters (1, 4 and 16 clients): instructions of the server (postmaster and its children), WAL and standby replay per row.
 #   bench/steps/writecost.sh OUTDIR [ROWS]    writes OUTDIR/write-single-statements.tsv and OUTDIR/write-concurrent-inserts.tsv
 # PGBIN: the server's bin directory (default: pg_config --bindir); EXT_SHARE and EXT_LIB: the extension_control_path and dynamic_library_path of a staged build.
+# FILLFACTOR (default 90): a table loaded at 100 has no room on its pages, so the first UPDATE cell is never HOT and writes two full-page images a row.
 # Needs perf (kernel.perf_event_paranoid <= 1). The scratch directory (SCRATCH, default $OUTDIR/scratch) is removed at the end.
 set -euo pipefail
 OUT=${1:?output directory}; N=${2:-1000000}
@@ -26,6 +27,7 @@ hot_standby = on
 wal_level = replica
 max_wal_senders = 4
 autovacuum = off
+${WRITECOST_CONF:-}
 ${EXT_SHARE:+extension_control_path = '$EXT_SHARE:\$system'}
 ${EXT_LIB:+dynamic_library_path = '$EXT_LIB:\$libdir'}
 "
@@ -35,23 +37,27 @@ echo "host replication all samehost trust" >>"$SCRATCH/p/pg_hba.conf"
 pg_ctl -D "$SCRATCH/p" -l "$SCRATCH/p.log" -w start >/dev/null
 P() { psql -X -q -At -U postgres -h "$SCRATCH" -p "$PP" -d postgres "$@"; }
 S() { psql -X -q -At -U postgres -h "$SCRATCH" -p "$SP" -d postgres "$@"; }
-P -c "CREATE EXTENSION pg_sift"
-pg_basebackup -D "$SCRATCH/s" -U postgres -h "$SCRATCH" -p "$PP" -R -X stream >/dev/null
+P -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION pg_visibility"
+pg_basebackup -D "$SCRATCH/s" -U postgres -h "$SCRATCH" -p "$PP" -R -X stream -C -S standby >/dev/null
 sed -i '/^port = /d' "$SCRATCH/s/postgresql.conf"; printf "$conf" "$SP" | grep -v "^max_wal_senders" >>"$SCRATCH/s/postgresql.conf"
 pg_ctl -D "$SCRATCH/s" -l "$SCRATCH/s.log" -w start >/dev/null
 child() { ps --ppid "$(head -1 "$1/postmaster.pid")" -o pid=,args= | awk -v w="$2" '$0 ~ w {print $1; exit}'; }
 spid=$(child "$SCRATCH/s" "startup")
+ppm=$(head -1 "$SCRATCH/p/postmaster.pid")
 caught_up() { local l; l=$(P -c "select pg_current_wal_lsn()"); until [[ $(S -c "select pg_last_wal_replay_lsn() >= '$l'::pg_lsn") == t ]]; do sleep 0.2; done; }
 instr() { awk -F, '/instructions/ {printf "%d", $1}' "$1"; }
 cols="id bigint primary key, prop int, rdate date, a int, b int, c int, d text"
 ddl() { # variant
-  P -c "DROP TABLE IF EXISTS t" -c "CREATE TABLE t ($cols)"
+  P -c "DROP TABLE IF EXISTS t" -c "CREATE TABLE t ($cols) WITH (fillfactor = ${FILLFACTOR:-90})"
   P -c "INSERT INTO t SELECT g, g % 1000, date '2020-01-01' + (g % 1500), g % 97, g % 8191, g % 31, repeat('x', 40) FROM generate_series(1, $N) g"
   case $1 in
     bt) P -c "CREATE INDEX t_pr ON t (prop, rdate)" -c "CREATE INDEX t_r ON t (rdate)" ;;
     sd) P -c "CREATE INDEX t_sift ON t USING sift_col (prop, rdate, a, b, c)" ;;
   esac
-  P -c "VACUUM ANALYZE t" -c "CHECKPOINT"; caught_up
+  # (with synchronous_commit = off the hint bits of the rows of a commit that is not on disk yet are not set, and VACUUM leaves their pages not all-visible:
+  # a different share of the table per variant, so the first VACUUM of a cell would not start from the same state)
+  P -c "CHECKPOINT" -c "VACUUM ANALYZE t" -c "CHECKPOINT"; caught_up
+  [[ -z ${WRITECOST_DEBUG:-} ]] || echo "$1 ddl: all-visible pages $(P -c "select count(*) from pg_visibility_map('t') where all_visible") of $(P -c "select relpages from pg_class where relname = 't'")" >&2
 }
 idxsize() { P -c "select pg_indexes_size('t')"; }
 TSV1="$OUT/write-single-statements.tsv"; TSV2="$OUT/write-concurrent-inserts.tsv"
@@ -59,6 +65,7 @@ printf 'N\tvariant\tcell\trows\tinstr_backend/row\twal_B/row\tfpi_B/row\twal_rec
 printf 'N\tvariant\tclients\trows\tinstr/row\twal_B/row\treplay_instr/row\tload1\ttiming\n' >"$TSV2"
 cell() { # variant cell rows file-of-statements
   local v=$1 c=$2 rows=$3 f=$4 d; d=$(mktemp -d "$SCRATCH/c.XXXXXX")
+  P -c "CHECKPOINT" >/dev/null; caught_up
   local l0 w0 f0 i0; read -r l0 w0 f0 < <(P -F' ' -c "select pg_current_wal_lsn(), wal_records, wal_fpi from pg_stat_wal"); i0=$(idxsize)
   perf stat -x, -e instructions:u -p "$spid" -o "$d/rep" & local rp=$!
   { echo '\set ON_ERROR_STOP on'; echo 'select pg_backend_pid() as pid \gset'; echo '\o '"$d/pid"; echo 'select :pid;'; echo '\o'
@@ -71,6 +78,7 @@ cell() { # variant cell rows file-of-statements
   local wal; wal=$(P -c "select ('$l1'::pg_lsn - '$l0'::pg_lsn)::bigint")
   printf '%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.1f\t%d\t%s\t\t\t%s\tinstructions only\n' "$N" "$v" "$c" "$rows" "$(( $(instr "$d/be") / rows ))" "$(( wal / rows ))" "$(( (f1 - f0) * 8192 / rows ))" \
     "$(awk -v a="$w0" -v b="$w1" -v r="$rows" 'BEGIN {print (b - a) / r}')" "$(awk -v a="$i0" -v b="$i1" -v r="$rows" 'BEGIN {print (b - a) / r}')" "$(( $(instr "$d/rep") / rows ))" "$i1" "$(cut -d' ' -f1 /proc/loadavg)" >>"$TSV1"
+  [[ -z ${WRITECOST_DEBUG:-} ]] || echo "$v $c: $(P -F' ' -c "select 'upd', n_tup_upd, 'hot', n_tup_hot_upd, 'vacuums', vacuum_count + autovacuum_count, 'dead', n_dead_tup, 'vm_pages', (select count(*) from pg_visibility_map('t') where all_visible) from pg_stat_user_tables where relname = 't'" 2>&1)" >&2
   rm -rf "$d"
 }
 gen() { # kind -> file of statements
@@ -103,10 +111,12 @@ for v in pk bt sd; do
     caught_up
     l0=$(P -c "select pg_current_wal_lsn()")
     perf stat -x, -e instructions:u -p "$spid" -o "$SCRATCH/rep" & rp=$!
+    perf stat -x, -e instructions:u -p "$ppm" -o "$SCRATCH/be" & bp=$!; sleep 0.5
     tx=$(pgbench -n -T 20 -D n=0 -D base=$(( N * 4 + c * 400000000 )) -c "$c" -j "$(( c > 3 ? 3 : c ))" -f "$SCRATCH/w.pgb" -h "$SCRATCH" -p "$PP" -U postgres postgres | grep -oE 'processed: [0-9]+' | grep -oE '[0-9]+')
+    kill -INT $bp; wait $bp 2>/dev/null || true
     caught_up; kill -INT $rp; wait $rp 2>/dev/null || true
     wal=$(P -c "select (pg_current_wal_lsn() - '$l0'::pg_lsn)::bigint")
-    printf '%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\tinstructions only\n' "$N" "$v" "$c" "$tx" n/a "$(( wal / tx ))" "$(( $(instr "$SCRATCH/rep") / tx ))" "$(cut -d' ' -f1 /proc/loadavg)" >>"$TSV2"
+    printf '%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\tinstructions only\n' "$N" "$v" "$c" "$tx" "$(( $(instr "$SCRATCH/be") / tx ))" "$(( wal / tx ))" "$(( $(instr "$SCRATCH/rep") / tx ))" "$(cut -d' ' -f1 /proc/loadavg)" >>"$TSV2"
   done
 done
 echo "wrote $TSV1 and $TSV2" >&2
