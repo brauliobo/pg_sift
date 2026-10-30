@@ -36,6 +36,24 @@ key_relabel(Node *n)
 	return n;
 }
 
+/* the members of a class that matter to the entry rti: the class's own and, for an arm of a UNION ALL, the one the class got for the arm (PostgreSQL 18 keeps those out of ec_members) */
+static List *
+class_members(EquivalenceClass *ec, Index rti)
+{
+#if PG_VERSION_NUM >= 180000
+	EquivalenceMemberIterator it;
+	EquivalenceMember *em;
+	List	   *out = NIL;
+
+	setup_eclass_member_iterator(&it, ec, bms_make_singleton(rti));
+	while ((em = eclass_member_iterator_next(&it)) != NULL)
+		out = lappend(out, em);
+	return out;
+#else
+	return ec->ec_members;
+#endif
+}
+
 /* the group key (position in keys) a pathkey is on, with its sort operator; -1: it is none of them */
 static int
 pathkey_key(PathKey *pk, List *keys, Oid *sortop)
@@ -180,7 +198,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		Const	   *subst;
 
 		/* the column of this sub-select the pathkey is on: the entry's Var, or for an arm of a UNION ALL the member the class got for the arm */
-		foreach_node(EquivalenceMember, em, pk->pk_eclass->ec_members)
+		foreach_node(EquivalenceMember, em, class_members(pk->pk_eclass, rti))
 		{
 			Node	   *x = key_relabel((Node *) em->em_expr);
 

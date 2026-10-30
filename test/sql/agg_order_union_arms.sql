@@ -1,0 +1,31 @@
+-- the arms of a UNION ALL under an ORDER BY or a window: each arm gives its groups in the order the parent asks for and the parent merges them, with no Sort
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE ua (id int, g int, h int, d date, v int);
+INSERT INTO ua SELECT i, i % 37, i % 5, date '2024-01-01' + i % 60, i % 11 FROM generate_series(1, 20000) i;
+CREATE INDEX ua_col ON ua USING sift_col (id, g, h, d, v);
+VACUUM (FREEZE, ANALYZE) ua;
+SET sift.agg_force = on;
+SET enable_sort = off;
+
+CREATE FUNCTION plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$ DECLARE l text; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP RETURN NEXT regexp_replace(l, '^\s+', ''); END LOOP; END $$;
+
+-- (enable_sort is off: the merge is there whether or not the sort of so few groups is cheaper)
+-- two arms, the second with a column the first has as a constant
+SELECT l FROM plan($q$SELECT * FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u ORDER BY g, h$q$) l
+WHERE l ~ '(Sort|Merge Append|SiftAgg)';
+-- the window of the statement: the previous value of a group
+SELECT l FROM plan($q$SELECT u.*, lag(n) OVER (PARTITION BY g ORDER BY h) AS prev FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u$q$) l
+WHERE l ~ '(Sort|Merge Append|SiftAgg|WindowAgg)';
+
+-- the rows are the normal plan's
+CREATE TABLE ua_scan AS SELECT * FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u ORDER BY g, h;
+SET sift.enable_agg = off;
+CREATE TABLE ua_norm AS SELECT * FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u ORDER BY g, h;
+SELECT (SELECT count(*) FROM ua_scan) AS rows, (SELECT count(*) FROM (SELECT * FROM ua_scan EXCEPT SELECT * FROM ua_norm) x) AS only_scan,
+       (SELECT count(*) FROM (SELECT * FROM ua_norm EXCEPT SELECT * FROM ua_scan) x) AS only_norm;
+DROP TABLE ua_scan, ua_norm, ua;
+DROP FUNCTION plan(text);
+DROP EXTENSION pg_sift;
