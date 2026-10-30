@@ -101,7 +101,7 @@ class Live(unittest.TestCase):
         subprocess.run([which('pg_ctl'), '-D', data, '-w', '-l', os.path.join(cls.dir, 'log'), '-o', "-p %d -k %s -c listen_addresses='' -c shared_buffers=32MB -c fsync=off" % (cls.port, cls.dir), 'start'],
                        check=True, capture_output=True)
         cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
-        if cls.s.run("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_buffercache'")[1] == ['0']:   # a server without its contrib package (the lint runner's) cannot evict
+        if cls.s.run("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_buffercache' AND current_setting('server_version_num')::int >= 170000")[1] == ['0']:   # the eviction functions are PostgreSQL 17's (the lint runner's server is 16, with the extension)
             cls.tearDownClass()
             raise unittest.SkipTest('needs the pg_buffercache extension')
         for sql in ('CREATE TABLE t AS SELECT i, md5(i::text) AS s FROM generate_series(1, 50000) i', 'CREATE INDEX ON t (i)', 'VACUUM (ANALYZE, FREEZE) t', 'SET max_parallel_workers_per_gather = 0'):
@@ -134,9 +134,11 @@ class Live(unittest.TestCase):
         for path in ('lane_one', 'lane_two'):
             self.s.run('CREATE SCHEMA IF NOT EXISTS %s' % path)
             self.s.run('SET search_path = %s' % path)
-            how = iolib.cool(self.s, ['public.t'])
-            self.assertTrue(how.startswith('evict'), '%s: %s' % (path, how))
-        self.s.run('RESET search_path')
+            try:
+                how = iolib.cool(self.s, ['public.t'])
+                self.assertTrue(how.startswith('evict'), '%s: %s' % (path, how))
+            finally:
+                self.s.run('RESET search_path')
 
     def test_workers_reads_are_counted(self):
         # a parallel scan: the workers read in other backends, which pg_stat_io names `background worker`; the blocks of the plan and its bytes are one measure
