@@ -20,6 +20,7 @@
 #define SIFT_MAINT_LOCK_BLKNO	0	/* LockPage() target for maintenance */
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
 #define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
+#define SIFT_LOAD_LOCK_BLKNO	5	/* LockPage() target: a load whose segments are written and not yet in the directory shares it, the orphan sweep tries for it exclusive */
 
 typedef enum SiftPageType
 {

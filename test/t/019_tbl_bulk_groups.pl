@@ -67,14 +67,15 @@ subtest 'a backend killed in the middle of a COPY leaves none of its rows, and w
 	my $want = digest($primary, 'ktwin');
 	is(digest($primary, 'k'), $want, 'the committed rows');
 	my $before = $primary->safe_psql('postgres', "SELECT count(*) FROM sift.table_segments('k') WHERE kind = 'columns'");
-	# the program sends rows for groups to be written, then stops sending: the COPY waits with rows in the backend. A run is 8 units of 2 MB (6,500 rows) for
-	# each participant of the parallel context that writes its groups (3 at the defaults): 170,000 rows fill one run at any of them and leave rows waiting
+	# the program sends rows for groups to be written, then stops sending: the COPY waits with rows in the backend. The ring of the COPY (3 participants at the
+	# defaults) takes a group of 4 units of 2 MB (6,500 rows each) at a time and publishes the segments written every 8 groups, after every one with
+	# sift.test_load_publish = 1: 170,000 rows hand over six groups and leave rows waiting
 	my ($out, $err) = ('', '');
 	my $h = start([ 'psql', '-X', '-q', '-h', $primary->host, '-p', $primary->port, '-d', 'postgres', '-c',
-			"COPY k FROM PROGRAM \$\$(seq 100001 270000 | $awk; sleep 20)\$\$" ], '>', \$out, '2>', \$err);
+			"SET sift.test_load_publish = 1", '-c', "COPY k FROM PROGRAM \$\$(seq 100001 270000 | $awk; sleep 60)\$\$" ], '>', \$out, '2>', \$err);
 	ok($primary->poll_query_until('postgres', "SELECT count(*) > $before FROM sift.table_segments('k') WHERE kind = 'columns'"), 'groups of the COPY are published while it runs');
 	is(digest($primary, 'k'), $want, 'and a reader sees none of its rows');
-	my $pid = $primary->safe_psql('postgres', q{SELECT pid FROM pg_stat_activity WHERE query LIKE 'COPY k FROM PROGRAM%' AND pid <> pg_backend_pid()});
+	my $pid = $primary->safe_psql('postgres', q{SELECT pid FROM pg_stat_activity WHERE query LIKE 'COPY k FROM PROGRAM%' AND backend_type = 'client backend' AND pid <> pg_backend_pid()});
 	ok($pid, 'the backend of the COPY');
 	my $log_offset = -s $primary->logfile;
 	kill_expected($pid);

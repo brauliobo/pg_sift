@@ -10,6 +10,7 @@
 #include "bm25/prefix.h"
 #include "core/visibility.h"
 #include "core/parbuild.h"
+#include "table/table.h"
 
 void
 sift_handler_test_gucs(void)
@@ -33,6 +34,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_par_workers",
 							"Testing: parallel workers the last CREATE INDEX of this session launched (a test sets it to 0 before the build).",
 							NULL, &sift_test_par_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_load_publish",
+							"Testing: segments of a COPY's ring the backend takes before it publishes them (0 = the default of 8).",
+							NULL, &sift_test_load_publish, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_fanin",
 							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
 							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

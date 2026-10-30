@@ -11,11 +11,15 @@
 #include "access/genam.h"
 #include "access/transam.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/readfuncs.h"
 #include "optimizer/paths.h"
+#include "port/atomics.h"
+#include "utils/wait_event.h"
+#include "storage/condition_variable.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 #include "utils/memutils.h"
@@ -36,6 +40,11 @@
 #include "table/seg_int.h"
 
 bool		sift_tbl_bulk_groups = true;
+bool		sift_tbl_load_from_copy = false;
+#ifdef SIFT_TESTING
+int			sift_test_load_publish = 0;
+#endif
+
 
 /* Does the expression call a function (or operator) a user defined? Those can read the table; the built-in ones cannot */
 static bool
@@ -62,6 +71,49 @@ calls_user_function(Node *node, void *context)
 			return true;
 	}
 	return expression_tree_walker(node, calls_user_function, context);
+}
+
+/* Does the expression call a function that must not run in parallel mode (nextval is one)? */
+static bool
+calls_parallel_unsafe(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, FuncExpr) && func_parallel(((FuncExpr *) node)->funcid) == PROPARALLEL_UNSAFE)
+		return true;
+	if (IsA(node, OpExpr) || IsA(node, DistinctExpr) || IsA(node, NullIfExpr))
+	{
+		OpExpr	   *op = (OpExpr *) node;
+
+		set_opfuncid(op);
+		if (func_parallel(op->opfuncid) == PROPARALLEL_UNSAFE)
+			return true;
+	}
+	return expression_tree_walker(node, calls_parallel_unsafe, context);
+}
+
+/*
+ * The backend that reads the rows of a COPY is in parallel mode while the workers of the ring write: a default, a generated column or an identity
+ * column that calls nextval would fail there. Such a table has its groups written one run at a time, without the ring.
+ */
+static bool
+row_expressions_unsafe_in_parallel_mode(Relation rel)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	TupleConstr *constr = desc->constr;
+
+	for (int i = 0; i < desc->natts; i++)
+		if (TupleDescAttr(desc, i)->attidentity != '\0')
+			return true;
+	if (constr == NULL)
+		return false;
+	for (int i = 0; i < constr->num_defval; i++)
+		if (calls_parallel_unsafe(stringToNode(constr->defval[i].adbin), NULL))
+			return true;
+	for (int i = 0; i < constr->num_check; i++)
+		if (calls_parallel_unsafe(stringToNode(constr->check[i].ccbin), NULL))
+			return true;
+	return false;
 }
 
 /* The expressions the executor evaluates for every row of the table (defaults, generated columns, CHECK constraints) */
@@ -143,6 +195,7 @@ sift_tbl_bulk_refusal(Relation rel)
  * so a row never outlives its transaction in memory.
  */
 #define LOAD_SBS		8
+#define LOAD_RING_UNITS	4
 #define LOAD_SB_ROWS	((uint64) SIFT_TBL_VBLOCKS_SB * SIFT_TBL_MAX_OFF)
 /* The backend and three workers: the buffer of a run is LOAD_MAX_GROUPS * LOAD_SBS write buffers */
 #define LOAD_MAX_GROUPS	4
@@ -188,6 +241,9 @@ typedef struct Load
 	int			maxunits;		/* units of a run: LOAD_SBS for each group written at once */
 	uint32		n;				/* rows of the current unit */
 	Size		bytes;			/* their size in row format: a unit stops at the bytes of a write buffer */
+	bool		ring_ok;		/* the rows come from COPY: the workers may outlive a run */
+	bool		noring;
+	struct LoadRingLeader *rl;	/* the ring of the workers that write the groups while the command reads on */
 } Load;
 
 static List *loads = NIL;
@@ -201,6 +257,9 @@ find_load(Oid relid)
 			return ld;
 	return NULL;
 }
+
+static void ring_take_slot(Load *ld, Relation rel);
+
 
 static void
 drop_load(Load *ld)
@@ -224,13 +283,22 @@ load_groups(Relation rel)
 	return Max(1, Min(Min(1 + max_parallel_maintenance_workers, LOAD_MAX_GROUPS), maintenance_work_mem / (LOAD_SBS * sift_tbl_write_buffer_limit)));
 }
 
+/* Does the load of this table hand its groups to workers that stay for the command? */
+static bool
+ring_wanted(Load *ld, Relation rel)
+{
+	return ld->ring_ok && !ld->noring && load_groups(rel) > 1;
+}
+
 /* The next run of superblocks, taken under the lock that serializes the write buffers' own reservations */
 static void
 reserve_run(Load *ld, Relation rel, SiftTblRel *st)
 {
 	uint64		end;
 
-	ld->maxunits = LOAD_SBS * load_groups(rel);
+	ld->maxunits = ld->rl || ring_wanted(ld, rel) ? LOAD_RING_UNITS : LOAD_SBS * load_groups(rel);
+	if (ld->rl)
+		ring_take_slot(ld, rel);
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(rel, &st->dir);
 	ld->run.first = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
@@ -247,7 +315,8 @@ reserve_run(Load *ld, Relation rel, SiftTblRel *st)
 	ld->run.uoff[0] = 0;
 	ld->n = 0;
 	ld->bytes = 0;
-	resetStringInfo(&ld->rows);
+	if (!ld->rl)
+		resetStringInfo(&ld->rows);
 }
 
 /* The segments of the groups of a run, in the order of their superblocks */
@@ -281,6 +350,40 @@ make_room(Relation rel, SiftTblRel *st)
 	if (st->dir.nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
 							   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
+}
+
+/* The lock of the active segment, held with room in the directory for n segments (made by settling, as often as writers that waited for it take it) */
+static void
+lock_with_room(Relation rel, SiftTblRel *st, int n)
+{
+	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and give up only when it stays full */
+	for (int tries = 0;; tries++)
+	{
+		make_room(rel, st);
+		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		sift_dir_read(rel, &st->dir);
+		if (st->dir.nsegs + n <= sift_tbl_max_segments - 2 || tries == LOAD_ROOM_TRIES)
+			break;
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	}
+	if (st->dir.nsegs + n > sift_tbl_max_segments - 2)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
+				 errdetail("The groups of a load cannot be merged as fast as it writes them: rows of running transactions are in the way."),
+				 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
+}
+
+/* The segments of groups already written, published in one change */
+static void
+publish_all(Relation rel, SiftTblRel *st, Published *pub)
+{
+	lock_with_room(rel, st, pub->n);
+	sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = pub,.extra = InvalidBuffer});
+	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	sift_tbl_refresh(rel, st);
+	if (sift_tbl_inline_promote)
+		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 }
 
 /* The unit of the current superblock is full: the rows go into the next one */
@@ -422,9 +525,357 @@ share_units(LoadRun *r, Size bytes, int participants)
 	return (r->units + r->per - 1) / r->per;
 }
 
+/*
+ * The ring: the workers of a COPY that stay for the command. A run of one group (LOAD_SBS units) is written by the backend straight into a slot
+ * of the ring in shared memory; when the group is full the slot is handed over and a worker writes its segment while the backend goes on
+ * reading the input. A slot is claimed group by group with one atomic word (sequence, groups, next group): a late claim of an earlier use of the
+ * slot fails on the sequence.
+ *
+ * The blocks a group takes are in no directory until its segment is published, so for as long as the ring runs the backend holds
+ * SIFT_LOAD_LOCK_BLKNO in ShareLock, which the orphan sweep of a VACUUM only tries for (and leaves the sweep for the next VACUUM when it is
+ * not free). The segments are published in order every LOAD_PUBLISH groups and at the end, each time in one change of the directory, under
+ * the lock of the active segment only for that change: the load blocks neither the writers of the table nor its maintenance.
+ */
+#define RING_SLOTS_MAX	8
+#ifdef SIFT_TESTING
+/* the phases the leader of the ring waits in for the advisory lock of sift.test_phase_gate + this: before it publishes segments, and before it publishes the last ones */
+#define SIFT_TBL_PHASE_PUBLISH	5
+#define SIFT_TBL_PHASE_STOP		6
+#define load_publish()			(sift_test_load_publish > 0 ? sift_test_load_publish : LOAD_PUBLISH)
+#else
+#define load_publish()			LOAD_PUBLISH
+#endif
+#define LOAD_PUBLISH	8		/* segments from which the backend publishes the ones written */
+
+typedef struct LoadSlot
+{
+	pg_atomic_uint64 claim;		/* seq << 16 | ngroups << 8 | next group; next == ngroups: nothing to take */
+	pg_atomic_uint32 done;		/* groups written */
+	LoadRun		run;
+	SiftSegEntry segs[LOAD_MAX_GROUPS];
+} LoadSlot;
+
+typedef struct LoadRing
+{
+	SiftParCommon common;
+	ConditionVariable cv;		/* a group is ready, or a group is written */
+	pg_atomic_uint32 closed;	/* the command has no more groups */
+	int			nslots;
+	Size		cap;			/* bytes of the rows of a slot */
+	Size		data_off;
+	LoadSlot	slots[FLEXIBLE_ARRAY_MEMBER];
+} LoadRing;
+
+typedef struct LoadRingLeader
+{
+	SiftParLeader *ldr;
+	LoadRing   *rg;
+	int			participants;
+	uint64		head;			/* slots handed over; the next to fill is head % nslots */
+	uint64		tail;			/* slots whose segments are taken */
+	uint32		seq;
+	int			nsegs;
+	SiftSegEntry *segs;			/* the segments of the groups taken and not yet published, in the order of their superblocks */
+	int			maxsegs;
+} LoadRingLeader;
+
+static char *
+slot_rows(LoadRing *rg, int i)
+{
+	return (char *) rg + rg->data_off + (Size) i * rg->cap;
+}
+
+/* The next group nobody has taken, or NULL */
+static LoadSlot *
+ring_claim(LoadRing *rg, int *g)
+{
+	for (int i = 0; i < rg->nslots; i++)
+	{
+		LoadSlot   *sl = &rg->slots[i];
+		uint64		c = pg_atomic_read_u64(&sl->claim);
+
+		while ((c & 0xff) < ((c >> 8) & 0xff))
+			if (pg_atomic_compare_exchange_u64(&sl->claim, &c, c + 1))
+			{
+				*g = (int) (c & 0xff);
+				return sl;
+			}
+	}
+	return NULL;
+}
+
+static void
+ring_write(LoadRing *rg, LoadSlot *sl, int g, Relation rel)
+{
+	int			i = (int) (sl - rg->slots);
+
+	write_group(&sl->run, slot_rows(rg, i), rel, g, &sl->segs[g]);
+	if (pg_atomic_add_fetch_u32(&sl->done, 1) == ((pg_atomic_read_u64(&sl->claim) >> 8) & 0xff))
+		ConditionVariableBroadcast(&rg->cv);
+}
+
+PGDLLEXPORT void sift_tbl_load_ring_worker(dsm_segment *seg, shm_toc *toc);
+
+void
+sift_tbl_load_ring_worker(dsm_segment *seg, shm_toc *toc)
+{
+	SiftParWorker w;
+	LoadRing   *rg;
+
+	sift_par_worker_begin(&w, toc);
+	rg = w.shared;
+	for (;;)
+	{
+		LoadSlot   *sl = NULL;
+		int			g = 0;
+
+		ConditionVariablePrepareToSleep(&rg->cv);
+		while ((sl = ring_claim(rg, &g)) == NULL && !pg_atomic_read_u32(&rg->closed))
+			ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+		ConditionVariableCancelSleep();
+		if (sl == NULL)
+			break;
+		ring_write(rg, sl, g, w.heap);
+	}
+	sift_par_worker_end(&w);
+}
+
+static bool
+slot_done(LoadSlot *sl)
+{
+	uint64		c = pg_atomic_read_u64(&sl->claim);
+
+	return pg_atomic_read_u32(&sl->done) == ((c >> 8) & 0xff);
+}
+
+/* Takes the segments of the oldest slot once it is written (waits for it, writing groups meanwhile, when wait); false if it is not */
+static bool
+ring_reap(Load *ld, Relation rel, bool wait)
+{
+	LoadRingLeader *rl = ld->rl;
+	LoadRing   *rg = rl->rg;
+	LoadSlot   *sl = &rg->slots[rl->tail % rg->nslots];
+	int			g;
+	int			ng;
+
+	if (!wait && !slot_done(sl))
+		return false;
+	ConditionVariablePrepareToSleep(&rg->cv);
+	while (!slot_done(sl))
+	{
+		LoadSlot   *other = ring_claim(rg, &g);
+
+		if (other != NULL)
+		{
+			ConditionVariableCancelSleep();
+			ring_write(rg, other, g, rel);
+			ConditionVariablePrepareToSleep(&rg->cv);
+			continue;
+		}
+		ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+	}
+	ConditionVariableCancelSleep();
+	pg_read_barrier();
+	ng = (int) ((pg_atomic_read_u64(&sl->claim) >> 8) & 0xff);
+	if (rl->nsegs + ng > rl->maxsegs)
+	{
+		rl->maxsegs = Max(rl->maxsegs * 2, rl->nsegs + ng);
+		rl->segs = repalloc(rl->segs, rl->maxsegs * sizeof(SiftSegEntry));
+	}
+	memcpy(rl->segs + rl->nsegs, sl->segs, ng * sizeof(SiftSegEntry));
+	rl->nsegs += ng;
+	rl->tail++;
+	return true;
+}
+
+/* The slot the backend fills next: waits for a free one */
+static void
+ring_take_slot(Load *ld, Relation rel)
+{
+	LoadRingLeader *rl = ld->rl;
+	LoadRing   *rg = rl->rg;
+
+	while (rl->head - rl->tail >= (uint64) rg->nslots)
+		(void) ring_reap(ld, rel, true);
+	ld->rows.data = slot_rows(rg, (int) (rl->head % rg->nslots));
+	ld->rows.maxlen = (int) Min(rg->cap, (Size) INT_MAX);
+	ld->rows.len = 0;
+}
+
+/* The segments taken become part of the directory in one change; false, with nothing published, when it has no room for them (the ring is then stopped) */
+static bool
+ring_publish(Load *ld, Relation rel, SiftTblRel *st)
+{
+	LoadRingLeader *rl = ld->rl;
+	Published	pub = {rl->segs, rl->nsegs};
+
+	if (rl->nsegs == 0)
+		return true;
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_TBL_PHASE_PUBLISH);
+#endif
+	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	sift_dir_read(rel, &st->dir);
+	if (st->dir.nsegs + pub.n > sift_tbl_max_segments - 2 || dir_backpressure(st))
+	{
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		return false;
+	}
+	sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = &pub,.extra = InvalidBuffer});
+	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	rl->nsegs = 0;
+	return true;
+}
+
+static void ring_stop(Load *ld, Relation rel, SiftTblRel *st);
+
+/* The group the backend filled is handed over to the workers; last: the groups of the rest of the load are shared out between the participants */
+static void
+ring_hand_over(Load *ld, Relation rel, SiftTblRel *st, bool last)
+{
+	LoadRingLeader *rl = ld->rl;
+	LoadRing   *rg = rl->rg;
+	LoadSlot   *sl = &rg->slots[rl->head % rg->nslots];
+	int			ngroups = 1;
+
+	sl->run = ld->run;
+	sl->run.xid = sl->run.vers ? GetCurrentTransactionId() : InvalidTransactionId;
+	sl->run.per = LOAD_RING_UNITS;
+	if (last)
+		ngroups = share_units(&sl->run, ld->rows.len, rl->participants);
+	pg_atomic_write_u32(&sl->done, 0);
+	pg_write_barrier();
+	pg_atomic_write_u64(&sl->claim, ((uint64) ++rl->seq << 16) | ((uint64) ngroups << 8));
+	rl->head++;
+	ld->open = false;
+	ConditionVariableBroadcast(&rg->cv);
+	if (last)
+		return;
+	while (ring_reap(ld, rel, false))
+		;
+	if (rl->nsegs >= load_publish() && !ring_publish(ld, rel, st))
+	{
+		/* the directory is full: the rest of the load goes the way of a load without workers, which makes room between its runs */
+		ld->noring = true;
+		ring_stop(ld, rel, st);
+	}
+}
+
+/*
+ * Starts the workers and hands them the first group of the load (the rows of the run already read): false, with nothing changed, when they cannot
+ * be had.
+ */
+static bool
+ring_start(Load *ld, Relation rel, SiftTblRel *st)
+{
+	int			nworkers = Min(max_parallel_maintenance_workers, LOAD_MAX_GROUPS - 1);
+	Size		cap = (Size) LOAD_RING_UNITS * sift_tbl_write_buffer_limit * 1024 / 4 * 5;
+	int			nslots = Max(2, Min(Min(nworkers + 1, RING_SLOTS_MAX), (int) (((Size) maintenance_work_mem * 1024) / cap)));
+	Size		head = MAXALIGN(offsetof(LoadRing, slots) + nslots * sizeof(LoadSlot));
+	SiftParLeader *ldr;
+	LoadRingLeader *rl;
+	LoadRing   *rg;
+	MemoryContext old;
+
+	if (!ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
+		return false;
+	(void) GetCurrentTransactionId();
+	old = MemoryContextSwitchTo(ld->cxt);
+	ldr = sift_par_enter(false);
+	if (!sift_par_setup(ldr, "sift_tbl_load_ring_worker", nworkers, head + nslots * cap, sizeof(uint64), false))
+	{
+		MemoryContextSwitchTo(old);
+		UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
+		return false;
+	}
+	rg = ldr->shared;
+	rg->common = (SiftParCommon) {RelationGetRelid(rel), InvalidOid, false};
+	ConditionVariableInit(&rg->cv);
+	pg_atomic_init_u32(&rg->closed, 0);
+	rg->nslots = nslots;
+	rg->cap = cap;
+	rg->data_off = head;
+	for (int i = 0; i < nslots; i++)
+	{
+		pg_atomic_init_u64(&rg->slots[i].claim, 0);
+		pg_atomic_init_u32(&rg->slots[i].done, 0);
+	}
+	LaunchParallelWorkers(ldr->pcxt);
+#ifdef SIFT_TESTING
+	sift_test_par_workers = ldr->pcxt->nworkers_launched;
+#endif
+	if (ldr->pcxt->nworkers_launched == 0)
+	{
+		sift_par_end(ldr);
+		MemoryContextSwitchTo(old);
+		UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
+		return false;
+	}
+	rl = palloc0(sizeof(LoadRingLeader));
+	rl->ldr = ldr;
+	rl->rg = rg;
+	rl->participants = 1 + ldr->pcxt->nworkers_launched;
+	rl->maxsegs = 16;
+	rl->segs = palloc(rl->maxsegs * sizeof(SiftSegEntry));
+	MemoryContextSwitchTo(old);
+	/* the rows already read are the first group */
+	memcpy(slot_rows(rg, 0), ld->rows.data, ld->rows.len);
+	pfree(ld->rows.data);
+	ld->rows.data = slot_rows(rg, 0);
+	ld->rows.maxlen = (int) Min(cap, (Size) INT_MAX);
+	ld->rl = rl;
+	ring_hand_over(ld, rel, st, false);
+	return true;
+}
+
+/*
+ * The end of the ring, at the end of the load or when the rest of it goes without the workers: the rows of the open run are shared out, the backend
+ * writes with the workers, the workers end, and the segments not yet published are, with the room the directory needs made when it has none
+ */
+static void
+ring_stop(Load *ld, Relation rel, SiftTblRel *st)
+{
+	LoadRingLeader *rl = ld->rl;
+	LoadRing   *rg = rl->rg;
+	int			g;
+	LoadSlot   *sl;
+	Published	pub;
+
+	if (ld->open && (ld->n > 0 || ld->run.units > 0))
+	{
+		if (ld->n > 0)
+			end_unit(ld);
+		if (ld->run.units > 0)
+			ring_hand_over(ld, rel, st, true);
+	}
+	ld->open = false;
+	pg_atomic_write_u32(&rg->closed, 1);
+	ConditionVariableBroadcast(&rg->cv);
+	while ((sl = ring_claim(rg, &g)) != NULL)
+		ring_write(rg, sl, g, rel);
+	while (rl->tail < rl->head)
+		(void) ring_reap(ld, rel, true);
+	sift_par_wait(rl->ldr);
+	sift_par_end(rl->ldr);
+	UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
+	ld->rl = NULL;
+	{
+		MemoryContext old = MemoryContextSwitchTo(ld->cxt);
+
+		initStringInfo(&ld->rows);
+		MemoryContextSwitchTo(old);
+	}
+	pub = (Published) {rl->segs, rl->nsegs};
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_TBL_PHASE_STOP);
+#endif
+	if (pub.n > 0)
+		publish_all(rel, st, &pub);
+}
+
 /* The groups of the run are written and become segments in the directory. parallel: the command is still running, so a parallel context may be used */
 static void
-end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel)
+end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 {
 	LoadRun    *r = &ld->run;
 	int			participants = parallel ? load_groups(rel) : 1;
@@ -432,26 +883,24 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel)
 	SiftSegEntry segs[LOAD_MAX_GROUPS];
 	Published	pub = {segs};
 
+	if (ld->rl)
+	{
+		ring_hand_over(ld, rel, st, false);
+		return;
+	}
 	ld->open = false;
 	if (r->units == 0)
 		return;
-	pub.n = ngroups = share_units(r, ld->rows.len, participants);
-	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and give up only when it stays full */
-	for (int tries = 0;; tries++)
+	if (more && parallel && ring_wanted(ld, rel) && participants > 1 && r->units == LOAD_RING_UNITS && ld->rows.len >= LOAD_PARALLEL_BYTES * LOAD_RING_UNITS / LOAD_SBS)
 	{
-		make_room(rel, st);
-		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-		sift_dir_read(rel, &st->dir);
-		if (st->dir.nsegs + ngroups <= sift_tbl_max_segments - 2 || tries == LOAD_ROOM_TRIES)
-			break;
-		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		ld->open = true;
+		if (ring_start(ld, rel, st))
+			return;
+		ld->open = false;
+		ld->noring = true;
 	}
-	if (st->dir.nsegs + ngroups > sift_tbl_max_segments - 2)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
-				 errdetail("The groups of a load cannot be merged as fast as it writes them: rows of running transactions are in the way."),
-				 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
+	pub.n = ngroups = share_units(r, ld->rows.len, participants);
+	lock_with_room(rel, st, ngroups);
 	r->xid = r->vers ? GetCurrentTransactionId() : InvalidTransactionId;
 	if (!(participants > 1 && ngroups > 1 && write_parallel(r, ld->rows.data, rel, ngroups, segs)))
 		for (int g = 0; g < ngroups; g++)
@@ -469,11 +918,16 @@ flush_load(Load *ld, Relation rel, bool parallel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
+	if (ld->rl)
+	{
+		ring_stop(ld, rel, st);
+		return;
+	}
 	if (!ld->open)
 		return;
 	if (ld->n > 0)
 		end_unit(ld);
-	end_run(ld, rel, st, parallel);
+	end_run(ld, rel, st, parallel, false);
 }
 
 static void
@@ -493,6 +947,7 @@ flush_and_drop(Load *ld)
 static void
 load_xact_event(XactEvent event, void *arg)
 {
+	sift_tbl_load_from_copy = false;
 	switch (event)
 	{
 		case XACT_EVENT_PRE_COMMIT:
@@ -556,6 +1011,7 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 	{
 		MemoryContextSwitchTo(cxt);
 		ld->run.vers = !frozen;
+		ld->ring_ok = sift_tbl_load_from_copy && !row_expressions_unsafe_in_parallel_mode(rel);
 		(void) layout_of(rel, st);
 		ld->desc = RelationGetDescr(rel);
 		ld->flat = palloc(ld->desc->natts * sizeof(Datum));
@@ -565,8 +1021,8 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 	return !ld->refused;
 }
 
-/* The row as a record at the end of the buffer of the run */
-static void
+/* The row as a record at the end of the buffer of the run; false, with nothing written, when the buffer is a slot of the ring and the row does not fit */
+static bool
 put_row(Load *ld, const Datum *values, const bool *isnull, CommandId cid, Size datasize)
 {
 	TupleDesc	desc = ld->desc;
@@ -598,7 +1054,11 @@ put_row(Load *ld, const Datum *values, const bool *isnull, CommandId cid, Size d
 		datasize = heap_compute_data_size(desc, (Datum *) vals, (bool *) isnull);
 	len = sizeof(LoadRec) + hoff + datasize;
 	if (ld->rows.maxlen - ld->rows.len <= MAXALIGN(len))
+	{
+		if (ld->rl)
+			return false;
 		enlargeStringInfo(&ld->rows, MAXALIGN(len));
+	}
 	rec = (LoadRec *) (ld->rows.data + ld->rows.len);
 	rec->len = len;
 	rec->cid = cid;
@@ -608,6 +1068,7 @@ put_row(Load *ld, const Datum *values, const bool *isnull, CommandId cid, Size d
 	th->t_hoff = hoff;
 	heap_fill_tuple(desc, vals, isnull, (char *) th + hoff, len - sizeof(LoadRec) - hoff, &th->t_infomask, hasnull ? th->t_bits : NULL);
 	ld->rows.len += MAXALIGN(len);
+	return true;
 }
 
 void
@@ -617,19 +1078,35 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool 
 	Size		hoff = offsetof(MinimalTupleData, t_bits);
 	Size		datasize = heap_compute_data_size(ld->desc, (Datum *) values, (bool *) isnull);
 
-	if (!ld->open)
-		reserve_run(ld, rel, st);
-	else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= (Size) sift_tbl_write_buffer_limit * 1024)
+	for (;;)
 	{
-		end_unit(ld);
-		if (ld->run.units == ld->maxunits)
-		{
-			end_run(ld, rel, st, true);
+		if (!ld->open)
 			reserve_run(ld, rel, st);
+		else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= (Size) sift_tbl_write_buffer_limit * 1024)
+		{
+			end_unit(ld);
+			if (ld->run.units == ld->maxunits)
+			{
+				end_run(ld, rel, st, true, true);
+				reserve_run(ld, rel, st);
+			}
+		}
+		if (put_row(ld, values, isnull, cid, datasize))
+			break;
+		/* the slot of the ring is full: the group is handed over with the units it has, and a row that no slot holds goes the way of a load without workers */
+		if (ld->n == 0 && ld->run.units == 0)
+		{
+			ld->noring = true;
+			ring_stop(ld, rel, st);
+		}
+		else
+		{
+			if (ld->n > 0)
+				end_unit(ld);
+			end_run(ld, rel, st, true, true);
 		}
 	}
 	ItemPointerSet(tid, ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
-	put_row(ld, values, isnull, cid, datasize);
 	ld->n++;
 	/* the bytes the row has as a minimal tuple (the write buffer limit counts them) */
 	for (int a = 0; a < ld->desc->natts; a++)

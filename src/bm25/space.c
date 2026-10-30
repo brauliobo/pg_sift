@@ -76,6 +76,9 @@ sift_maint_orphan_sweep(Relation index)
 
 	if (bms_is_empty(cand))
 		return 0;
+	/* a load of a table whose workers write groups that are in no directory yet: its blocks look like orphans, the next VACUUM sweeps */
+	if (!ConditionalLockPage(index, SIFT_LOAD_LOCK_BLKNO, ExclusiveLock))
+		return 0;
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	sift_dir_read(index, snap);
 	ref = sift_store_referenced_blocks(index, snap);
@@ -85,6 +88,7 @@ sift_maint_orphan_sweep(Relation index)
 	if (n > 0)
 		sift_dir_update(index, &(SiftDirChange) {.release = ext,.nrelease = n,.extra = InvalidBuffer});
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	UnlockPage(index, SIFT_LOAD_LOCK_BLKNO, ExclusiveLock);
 	return freed;
 }
 

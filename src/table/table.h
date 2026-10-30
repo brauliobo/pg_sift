@@ -603,6 +603,10 @@ extern const char *sift_tbl_bulk_refusal(Relation rel);
  * finish: writes the rows that wait (the end of the command; the end of the transaction is the last chance). frozen: rows with no writer.
  */
 extern PGDLLIMPORT bool sift_tbl_bulk_groups;
+extern PGDLLIMPORT bool sift_tbl_load_from_copy;
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_load_publish;
+#endif
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
 extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);
 extern void sift_tbl_load_finish(Relation rel);

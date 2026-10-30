@@ -306,9 +306,11 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 static void
 tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
+	sift_tbl_load_from_copy = true;
 	for (int i = 0; i < nslots; i++)
 		if (!insert_bulk(rel, slots[i], cid, options, bistate))
 			insert_one(rel, slots[i], cid, options, 0);
+	sift_tbl_load_from_copy = false;
 }
 
 /*
