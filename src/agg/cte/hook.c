@@ -402,7 +402,10 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	{
 		sift_json_build_object_swap(parse);
 		if (parse->rowMarks == NIL)
+		{
 			sift_agg_preinline(parse);
+			sift_agg_drop_unused_laterals(parse);
+		}
 	}
 	PG_TRY();
 	{

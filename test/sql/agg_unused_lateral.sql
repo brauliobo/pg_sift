@@ -1,0 +1,79 @@
+-- A LEFT JOIN LATERAL (.. LIMIT 1) whose columns nothing reads keeps every row of its left side once, so it is not run (agg/flat/unused.c). The shapes where it must stay:
+-- a column read, LIMIT 2 (a row more), an INNER join (it drops rows), WITH TIES, a volatile function, a read through a later lateral sub-select or a join alias, a
+-- DELETE or UPDATE, and the body of a security_barrier view. The fixture has NULL join keys, keys with no row in the map, keys with two rows (duplicates) and an ORDER BY
+-- inside the LIMIT 1; every statement answers as the one planned without the extension's rewrite (sift.enable_agg off).
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE ul_fact (id int PRIMARY KEY, dim_a_id int NOT NULL, kind int, v int NOT NULL);
+INSERT INTO ul_fact SELECT g, 1 + g % 20, CASE WHEN g % 50 = 0 THEN NULL ELSE 1 + g % 40 END, g % 100 FROM generate_series(1, 20000) g;
+-- kinds 1..30 have two labels, kinds 31..40 and the NULL kind none: an inner join would drop their rows, LIMIT 2 would double the others
+CREATE TABLE ul_map (id serial PRIMARY KEY, kind int NOT NULL, label text NOT NULL);
+INSERT INTO ul_map (kind, label) SELECT k, 'label ' || k || '/' || n FROM generate_series(1, 30) k, generate_series(1, 2) n;
+CREATE INDEX ul_map_kind ON ul_map (kind);
+CREATE INDEX ul_fact_col ON ul_fact USING sift_col (id, dim_a_id, kind, v);
+ANALYZE ul_fact;
+ANALYZE ul_map;
+
+-- the plan keeps the map table or not: the number of plan lines that name it
+CREATE FUNCTION ul_lines(q text) RETURNS int LANGUAGE plpgsql AS $f$
+DECLARE r text; n int := 0;
+BEGIN
+	FOR r IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF r LIKE '%ul_map%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $f$;
+
+-- the answer is the one of the statement planned without the extension's rewrite
+CREATE FUNCTION ul_same(q text) RETURNS bool LANGUAGE plpgsql AS $f$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT coalesce(jsonb_agg(t ORDER BY t::text), ''[]'')::text FROM (%s) t', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(t ORDER BY t::text), ''[]'')::text FROM (%s) t', q) INTO b;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN a = b AND a <> '[]';
+END $f$;
+
+CREATE VIEW ul_plain_view AS SELECT f.id, f.dim_a_id FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true;
+CREATE VIEW ul_barrier_view WITH (security_barrier) AS SELECT f.id, f.dim_a_id FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true;
+
+CREATE TABLE ul_case (name text, q text);
+INSERT INTO ul_case VALUES
+ ('unread',        $q$SELECT f.dim_a_id, count(*) AS n, sum(f.v) AS s FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY f.dim_a_id$q$),
+ ('unread_in_on',  $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON x.label IS NULL GROUP BY f.dim_a_id$q$),
+ ('nested_unread', $q$SELECT t.dim_a_id, count(*) AS n FROM (SELECT f.* FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) t GROUP BY t.dim_a_id$q$),
+ ('read_select',   $q$SELECT f.dim_a_id, count(x.label) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY f.dim_a_id$q$),
+ ('read_group',    $q$SELECT x.label IS NULL AS missing, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY 1$q$),
+ ('read_where',    $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true WHERE x.label IS NULL GROUP BY f.dim_a_id$q$),
+ ('read_later',    $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true LEFT JOIN LATERAL (SELECT length(x.label) AS len) y ON true WHERE y.len > 7 GROUP BY f.dim_a_id$q$),
+ ('read_star',     $q$SELECT count(*) FROM (SELECT * FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) t$q$),
+ ('limit_two',     $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 2) x ON true GROUP BY f.dim_a_id$q$),
+ ('inner',         $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY f.dim_a_id$q$),
+ ('with_ties',     $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind ORDER BY m.kind FETCH FIRST 1 ROW WITH TIES) x ON true GROUP BY f.dim_a_id$q$),
+ ('rows_unread',   $q$SELECT f.id, f.dim_a_id, f.kind FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true WHERE f.id <= 300$q$),
+ ('order_unread',  $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind ORDER BY m.id DESC LIMIT 1) x ON true GROUP BY f.dim_a_id$q$),
+ ('order_read',    $q$SELECT f.id, x.label FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind ORDER BY m.id DESC LIMIT 1) x ON true WHERE f.id <= 300$q$),
+ ('null_key_read', $q$SELECT f.kind IS NULL AS null_key, count(x.label) AS labelled, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true GROUP BY 1$q$),
+ ('plain_view',    $q$SELECT dim_a_id, count(*) AS n FROM ul_plain_view GROUP BY dim_a_id$q$),
+ ('barrier_view',  $q$SELECT dim_a_id, count(*) AS n FROM ul_barrier_view GROUP BY dim_a_id$q$),
+ ('volatile',      $q$SELECT f.dim_a_id, count(*) AS n FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind AND random() < 2 LIMIT 1) x ON true GROUP BY f.dim_a_id$q$);
+
+SELECT name, ul_lines(q) = 0 AS dropped FROM ul_case ORDER BY name;
+-- the dropped and the kept answer as the statement without the extension (and none is empty)
+SELECT name, ul_same(q) AS same_answer FROM ul_case ORDER BY name;
+
+-- a DELETE or UPDATE keeps its sub-selects as they are, and changes the rows the statement without the extension changes
+CREATE TABLE ul_dml AS SELECT id, 0 AS n FROM ul_fact;
+SELECT ul_lines($q$UPDATE ul_dml d SET n = s.one FROM (SELECT f.id, 1 AS one FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) s WHERE s.id = d.id$q$) > 0 AS update_keeps_it;
+SELECT ul_lines($q$DELETE FROM ul_dml d USING (SELECT f.id FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) s WHERE s.id = d.id AND d.id > 19000$q$) > 0 AS delete_keeps_it;
+UPDATE ul_dml d SET n = s.one FROM (SELECT f.id, 1 AS one FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) s WHERE s.id = d.id;
+DELETE FROM ul_dml d USING (SELECT f.id FROM ul_fact f LEFT JOIN LATERAL (SELECT m.label FROM ul_map m WHERE m.kind = f.kind LIMIT 1) x ON true) s WHERE s.id = d.id AND d.id > 19000;
+SELECT count(*) AS rows_left, sum(n) AS updated FROM ul_dml;
+DROP TABLE ul_dml;
+
+DROP VIEW ul_plain_view, ul_barrier_view;
+DROP TABLE ul_case;
+DROP FUNCTION ul_lines(text), ul_same(text);
+DROP TABLE ul_fact, ul_map;
+DROP EXTENSION pg_sift CASCADE;

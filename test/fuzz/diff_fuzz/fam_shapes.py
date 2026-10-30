@@ -307,3 +307,26 @@ def render_topn(p):
         win = ''.join(f', {w} OVER () AS w{i}' for i, w in enumerate(p['windows']))
         sql = f"SELECT e.id, e.kind, e.ts, e.amount, e.val{win} FROM events e {where(p)} ORDER BY {order} LIMIT {p['limit']} OFFSET {p['offset']}"
     return sql, True
+
+
+def gen_unusedlat(r, ctx):
+    """A LEFT (or INNER) JOIN LATERAL (.. LIMIT n) into a lookup table (NULL keys, duplicates, an empty table) that the statement reads or not."""
+    p = dict(tbl=r.choice(['lookup', 'lookup_dup', 'lookup_empty']), lim=r.choice([1, 1, 1, 2]), order=r.choice(['', '', 'ORDER BY l.derived_cat', 'ORDER BY l.cat DESC, l.derived_cat']),
+             inner=r.random() < 0.15, read=r.choice(['none', 'none', 'none', 'select', 'where', 'group', 'on']), volatile=r.random() < 0.1,
+             keys=keys(r, 'e', EVENTS, r.randrange(0, 3)), aggs=['count(*)'] + aggs(r, 'e', EVENTS, r.randrange(0, 3)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)),
+             having=[], ordered=True)
+    return p
+
+
+def render_unusedlat(p):
+    cond = 'l.kind = e.kind' + (' AND random() < 2' if p['volatile'] else '')
+    on = 'x.derived_cat IS NOT NULL' if p['read'] == 'on' and not p['inner'] else 'true'
+    frm = f"events e {'JOIN' if p['inner'] else 'LEFT JOIN'} LATERAL (SELECT l.derived_cat FROM {p['tbl']} l WHERE {cond} {p['order']} LIMIT {p['lim']}) x ON {on}"
+    q = dict(p, keys=list(p['keys']), aggs=list(p['aggs']), where=list(p['where']))
+    if p['read'] == 'select':
+        q['aggs'].append('count(x.derived_cat)')
+    elif p['read'] == 'where':
+        q['where'].append('x.derived_cat IS NOT NULL')
+    elif p['read'] == 'group':
+        q['keys'].append('x.derived_cat')
+    return grouped(q, frm), bool(q['keys'])

@@ -5,7 +5,7 @@ import re
 
 from .db import BASE
 from .fam_basic import gen_colcmp, gen_distleaf, gen_keys, gen_lookup, gen_numsum, gen_oneleaf, gen_partition, gen_placeholder, gen_preagg, gen_setkeys, gen_widew, render_lookup, render_oneleaf, render_partition, render_placeholder, render_preagg, render_setkeys
-from .fam_shapes import gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_topn, render_union
+from .fam_shapes import gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_topn, render_union
 from .fam_lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point, gen_pointagg, gen_same, gen_trail, gen_twolevel, gen_txnmix, render_distinctrows, render_listpage, render_oneentity, render_point, render_pointagg, render_same, render_trail, render_twolevel, render_txnmix
 from .fam_units import gen_arrlen, gen_dead, gen_floor, gen_keycut, gen_nullzone, gen_window, render_keycut, render_window
 from .fam_cte import gen_ctecopies, gen_dictcount, gen_exceptions, gen_flatkeys, gen_gorder, gen_keylist, gen_keytable, gen_zonekey, render_ctecopies, render_exceptions, render_flatkeys, render_gorder, render_keylist
@@ -18,7 +18,7 @@ FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
+    'unusedlat': (gen_unusedlat, render_unusedlat, 3), 'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
     'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'toplat': (gen_toplat, render_toplat, 4), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4), 'arrlen': (gen_arrlen, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
