@@ -193,35 +193,61 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live,
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
-	const MapTab *m = ex->cs[ci].map;
+	MapTab	   *m = ex->cs[ci].map;
 	PredState  *st = &ex->ps[id];
 	SiftAggPred *p;
-	int64	   *vals = palloc(Max(m->nrow, 1) * sizeof(int64));
+	int64	   *vals;
 	int64		lo = PG_INT64_MAX,
 				hi = PG_INT64_MIN;
 	int			nv = 0;
 	JoinKeys   *jk = NULL;
+	bool		i32 = ex->lay->leaf[leaf].vtype == SCV_I32;
+	/* the keys of every row of a table with one key: the same rows give the same keys, whatever the statement */
+	bool		all = live == NULL && k == 0 && j->nkey == 1;
+	bool		kept = all && m->fvals != NULL && m->fi32 == i32;
 
-	for (uint32 r = 0; r < m->nrow; r++)
+	if (kept)
 	{
-		int64		v = map_kint(m, r, k);
+		vals = m->fvals;
+		nv = m->fn;
+		lo = m->flo;
+		hi = m->fhi;
+	}
+	else
+	{
+		vals = palloc(Max(m->nrow, 1) * sizeof(int64));
+		for (uint32 r = 0; r < m->nrow; r++)
+		{
+			int64		v = map_kint(m, r, k);
 
-		if ((live && !live[r]) || (ex->lay->leaf[leaf].vtype == SCV_I32 && (v < PG_INT32_MIN || v > PG_INT32_MAX)))
-			continue;				/* no int4 value equals it, or no tuple of the row survives the joins after it */
-		vals[nv++] = v;
-		lo = Min(lo, v);
-		hi = Max(hi, v);
+			if ((live && !live[r]) || (i32 && (v < PG_INT32_MIN || v > PG_INT32_MAX)))
+				continue;			/* no int4 value equals it, or no tuple of the row survives the joins after it */
+			vals[nv++] = v;
+			lo = Min(lo, v);
+			hi = Max(hi, v);
+		}
+		if (all)
+		{
+			m->fvals = MemoryContextAlloc(m->cxt, Max(nv, 1) * sizeof(int64));
+			memcpy(m->fvals, vals, nv * sizeof(int64));
+			m->fn = nv;
+			m->flo = lo;
+			m->fhi = hi;
+			m->fi32 = i32;
+		}
 	}
 	/* a top-N is only these filters: each stays */
 	if (!ex->spec->topn && join_keys_covered(seen, add, leaf, vals, nv, &jk))
 	{
-		pfree(vals);
+		if (!kept)
+			pfree(vals);
 		return NULL;
 	}
 	in_build(st, vals, nv, lo, hi);
 	if (ex->spec->nparts > 0 && !IsParallelWorker() && ex->lay->leaf[leaf].path == NIL)
 		ex->parts_pruned += sift_aggpart_prune_keys(ex->src, ex->spec->heapoid, list_nth(ex->lay->attexprs, ex->lay->leaf[leaf].attno - 1), vals, nv);
-	pfree(vals);
+	if (!kept)
+		pfree(vals);
 	st->ready = true;
 	p = palloc0(sizeof(SiftAggPred));
 	p->kind = SAP_IN;

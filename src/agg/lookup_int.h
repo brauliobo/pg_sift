@@ -63,6 +63,11 @@ typedef struct MapTab
 	int32		slo;
 	uint32		snlut;
 	int			slut_kind;
+	int64	   *fvals;			/* the keys of the rows that join_filter_pred makes a filter of (fn of them within [flo, fhi]; fi32: those outside int32 were left out), kept for the next statement */
+	int			fn;
+	int64		flo;
+	int64		fhi;
+	bool		fi32;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
 	ExprContext *kcx;
 } MapTab;
