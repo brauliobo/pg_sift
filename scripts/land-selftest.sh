@@ -249,11 +249,11 @@ wait "$hold"
 [[ $(lslot 10 echo ran) == ran ]] || fail "lint_slot did not run the command with a free slot"
 [[ $(lslot 10 echo ran-again) == *cached* ]] || fail "lint_slot linted a tree that passed before"
 
-# 13. lint-cache.sh: a pass recorded by the caller (LINT_CACHE_RECORD, after gen-docs wrote the tree) is taken by the next run without running the command, and a check never recorded runs it
+# 13. lint-cache.sh (env -u CI: with CI set it runs the command as it is): a pass recorded by the caller (LINT_CACHE_RECORD, after gen-docs wrote the tree) is taken by the next run without running the command, and a check never recorded runs it
 LC=$T/lint-cache; mkdir -p "$LC"
-(cd "$HERE/.." && SIFT_LINT_CACHE=$LC LINT_CACHE_RECORD=1 scripts/lint-cache.sh rec scripts/lint-cache.sh -- false >/dev/null) || fail "lint-cache.sh did not record a pass"
-[[ $(cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
-(cd "$HERE/.." && SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
+(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC LINT_CACHE_RECORD=1 scripts/lint-cache.sh rec scripts/lint-cache.sh -- false >/dev/null) || fail "lint-cache.sh did not record a pass"
+[[ $(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
+(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
 
 # 14. settle_mergeable: GitHub answers UNKNOWN for a few polls after a push to the base, the answer that follows is taken; an answer that never comes is UNKNOWN
 mkdir -p "$T/fakebin"
