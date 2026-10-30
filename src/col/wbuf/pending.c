@@ -4,6 +4,7 @@
  * flags a vacuum or a promotion reads
  */
 #include "postgres.h"
+#include "access/relation.h"
 #include "utils/relfilenumbermap.h"
 #include "utils/syscache.h"
 #include "col/am.h"
