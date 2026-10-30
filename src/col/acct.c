@@ -120,6 +120,11 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	if (!(rel->rd_rel->relkind == RELKIND_INDEX ? sift_col_is_index(rel) : rel->rd_rel->relkind == RELKIND_RELATION && sift_tbl_is_table(rel)))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index or a sift_table", RelationGetRelationName(rel))));
 	InitMaterializedSRF(fcinfo, 0);
+	if (RelationGetNumberOfBlocks(rel) == 0)	/* a sift_table nothing was written to has no metapage */
+	{
+		relation_close(rel, AccessShareLock);
+		return (Datum) 0;
+	}
 	sift_dir_read(rel, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{

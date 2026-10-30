@@ -130,7 +130,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 
 	sift_tbl_require(rel);
 	sift_tbl_refresh_full(rel, st);
-	fs = sift_store_free_stats(rel);
+	fs = RelationGetNumberOfBlocks(rel) > 0 ? sift_store_free_stats(rel) : (SiftFreeStats) {0};	/* nothing written yet: no metapage */
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
 	v[1] = Int64GetDatum(st->dir.meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);

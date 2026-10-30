@@ -5,6 +5,19 @@
 -- grow it. vacuum_truncate = false keeps the file as it was.
 CREATE EXTENSION pg_sift;
 CREATE TABLE sp (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
+-- a table nothing was written to has no metapage yet: no blocks, no sections
+SELECT relation_blocks, high_water, free_blocks, reusable_blocks, free_extents FROM sift.table_space('sp');
+ relation_blocks | high_water | free_blocks | reusable_blocks | free_extents 
+-----------------+------------+-------------+-----------------+--------------
+               0 |          0 |           0 |               0 |            0
+(1 row)
+
+SELECT count(*) AS sections FROM sift.col_sections('sp');
+ sections 
+----------
+        0
+(1 row)
+
 CREATE TEMP TABLE hw (round int, blocks bigint);
 \set fill 'INSERT INTO sp SELECT g, g * 3, ''text '' || md5(g::text) FROM generate_series(1, 30000) g'
 :fill;
