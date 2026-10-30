@@ -31,7 +31,7 @@ HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/compress.h $(SRC)/bm25/kern
 
 all: $(OUT)/test $(OUT)/bench
 
-$(OUT)/research: research.c research_enc.h research_float.h gen.h
+$(OUT)/research: research.c research_decode.h research_enc.h research_float.h gen.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ research.c $(LDLIBS)
 
@@ -51,7 +51,7 @@ $(OUT)/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/test: test.c $(SRC)/col/codec_gen.h $(OBJ) $(HDR)
+$(OUT)/test: test.c test_kernels.h test_fuzz.h $(SRC)/col/codec_gen.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ test.c $(OBJ) $(PGLIB) -lpgport $(LDLIBS)
 
 $(OUT)/bench: bench.c gen.h $(OBJ) $(HDR)

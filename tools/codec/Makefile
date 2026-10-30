@@ -32,7 +32,7 @@ $(ROAR_OBJ): $(ROARING)/roaring.c
 	$(CC) -O2 -g -c -o $@ $<
 endif
 
-$(OUT)/bench: bench.c data.h baselines.h $(OBJ) $(ROAR_OBJ) $(HDR)
+$(OUT)/bench: bench.c bench_rank.h data.h baselines.h $(OBJ) $(ROAR_OBJ) $(HDR)
 	$(CC) $(CFLAGS) $(ROAR_CFLAGS) -o $@ bench.c $(OBJ) $(ROAR_OBJ) -lm
 
 $(OUT)/fuzz: fuzz.c $(OBJ) $(HDR)
