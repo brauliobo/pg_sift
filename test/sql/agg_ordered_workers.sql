@@ -1,0 +1,47 @@
+-- The leader merges the values an ordered-set aggregate keeps (percentile, mode) one by one, as costly as the worker was to insert them: 40 ns a
+-- distinct (group, value) pair, 25 ms of the leader for the 600,000 pairs of two percentiles over 300,000 rows, which the scan alone does in 70 ms.
+-- Priced at the pairs, a scan with workers costs more than the scan alone when the values are all different, and stays cheap when a column has few.
+CREATE EXTENSION pg_sift;
+
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+
+CREATE TABLE ow (id int, g int, amount float8, grade int);
+INSERT INTO ow SELECT i, i % 40, i * 0.37, i % 5 FROM generate_series(1, 30000) i;
+CREATE INDEX ow_col ON ow USING sift_col (id, g, amount, grade);
+VACUUM ANALYZE ow;
+
+CREATE FUNCTION ow_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false; workers bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scan := scan OR l LIKE '%SiftAgg%';
+		workers := workers OR l LIKE '%Workers Planned%';
+	END LOOP;
+	RETURN CASE WHEN NOT scan THEN 'normal' WHEN workers THEN 'scan, workers' ELSE 'scan' END;
+END $$;
+
+CREATE TABLE ow_q (tag text, q text);
+INSERT INTO ow_q VALUES
+	('all_distinct', 'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY amount), mode() WITHIN GROUP (ORDER BY amount) FROM ow GROUP BY g'),
+	('few_distinct', 'SELECT g, mode() WITHIN GROUP (ORDER BY grade) FROM ow GROUP BY g');
+
+SELECT tag, ow_plan(q) FROM ow_q ORDER BY tag;
+
+-- the answer is the same with and without the scan
+CREATE FUNCTION ow_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+SELECT tag, md5(ow_rows(q, true)) = md5(ow_rows(q, false)) AS same FROM ow_q ORDER BY tag;
+
+DROP FUNCTION ow_rows(text, bool);
+DROP FUNCTION ow_plan(text);
+DROP TABLE ow_q, ow;
+DROP EXTENSION pg_sift;

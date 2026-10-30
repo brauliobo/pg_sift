@@ -48,7 +48,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
-			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
 		{
 			double		nd = distinct_text_values(c, &s->agg[i], k);

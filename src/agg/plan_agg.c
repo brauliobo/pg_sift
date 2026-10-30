@@ -308,6 +308,7 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 			return false;
 	}
 	out->share = -1;
+	out->est_distinct = Max(estimate_num_groups(c->root, list_make1(arg), Max(c->rel->tuples, 1.0), NULL, NULL), 1.0);
 	out->desc = is_mode ? psprintf("mode() WITHIN GROUP (ORDER BY %s%s)", expr_text(c, arg), out->desc_order ? " DESC" : "") :
 		psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg), out->desc_order ? " DESC" : "");
 	return true;

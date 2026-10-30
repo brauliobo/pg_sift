@@ -62,7 +62,7 @@
 #define AGG_ARM_HIDDEN		80.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_MERGE_KEY		25.0	/* ... and, when the workers are priced, each key of it: 35 ns with one key over 30,000 groups and 85 ns with three over 100,000 per table measured (the CPU two workers add beyond their 3.35 ms start) */
-#define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
+#define AGG_ORDERED_MERGE	90.0	/* a distinct (group, value) pair kept for an ordered-set aggregate, as the leader merges the histograms of the workers: 40 ns, 25 ms of the leader for the 600,000 pairs of two percentiles over 300,000 rows (perf: osa_add_n, blob_dump_with and the growth of the leader's table), which the scan alone does in 70 ms */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
 #define AGG_HASH_ENTRY		64.0	/* the bytes of an entry of a hash aggregate besides its key: the bucket, the stored tuple's header, its allocation */
 #define AGG_HASH_CACHE		1048576.0	/* the hash table that stays in the cache of a core */
