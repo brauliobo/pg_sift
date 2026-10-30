@@ -122,8 +122,12 @@ BEGIN
 	RETURN false;
 END
 $$;
-SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%SiftAgg%') AS reads_the_table,
-       plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%vetted by heap%') AS vets_rows;
+CREATE EXTENSION pg_sift_test;
+-- the chains of the matches are found from the entries of the log, one walk for the statement: no probe of the log for each page the matches lie in
+SELECT sift._test_tbl_hot_probes() >= 0 AS probes_reset;
+SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%SiftAgg%') AS reads_the_table;
+SELECT sift._test_tbl_hot_probes() = 0 AS probes_no_page;
+SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%vetted by heap%') AS vets_rows;
 SELECT count(*), sum(v) FROM big WHERE body @@> 'smart';
 DROP FUNCTION plan_has(text, text);
 DROP TABLE big;
@@ -156,4 +160,5 @@ SELECT (SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM h) x) = 0
 DROP FUNCTION same_all();
 DROP FUNCTION same(text);
 DROP TABLE t, h;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -211,6 +211,18 @@ page_rec_found(uint32 slot, uint32 inline_len)
 	return found;
 }
 
+PG_FUNCTION_INFO_V1(sift_test_tbl_hot_probes);
+
+/* The calls of sift_tbl_hot_offsets of this backend since the last call */
+Datum
+sift_test_tbl_hot_probes(PG_FUNCTION_ARGS)
+{
+	int64		n = (int64) sift_tbl_hot_probes;
+
+	sift_tbl_hot_probes = 0;
+	PG_RETURN_INT64(n);
+}
+
 PG_FUNCTION_INFO_V1(sift_test_tbl_page_rec);
 
 Datum

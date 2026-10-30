@@ -327,27 +327,55 @@ tomb_run_in(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi)
 	return false;
 }
 
-/* Sets the bit of the offset of each row of vblock that has a HOT update entry (a root or a member of a chain) */
-static void
-hot_offsets(const SiftTblTomb *a, uint32 na, uint64 lo, uint64 hi, uint64 *mask)
+/* The first index from from on whose key is >= key (a[from..] is sorted): the exponential steps keep a walk over ascending pages from paying a bisection of the whole log for each */
+static uint32
+gallop(const SiftTblTomb *a, uint32 na, uint32 from, uint64 key)
 {
-	uint32		n;
-	const SiftTblTomb *f;
+	uint32		step = 1,
+				lo = from,
+				hi;
+
+	if (from >= na || a[from].key >= key)
+		return Min(from, na);
+	while (lo + step < na && a[lo + step].key < key)
+		lo += step, step <<= 1;
+	hi = Min(lo + step, na);
+	SIFT_BISECT(uint32, mid, lo, hi, a[mid].key < key);
+	return lo;
+}
+
+/* Sets the bit of the offset of each row of vblock that has a HOT update entry (a root or a member of a chain); *pos, when given, is where the walk over ascending pages stands in a */
+static void
+hot_offsets(const SiftTblTomb *a, uint32 na, uint32 *pos, uint64 lo, uint64 hi, uint64 *mask)
+{
+	uint32		i,
+				n;
 
 	if (na == 0)
 		return;
-	for (f = find_run(a, na, lo, &n); f < a + na && f->key <= hi; f++)
-		if (f->kind == SIFT_TBL_TOMB_UPDATE && (f->flags & SIFT_TBL_TOMB_HOT))
-			mask[((f->key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((f->key & 0xFFFF) - 1) % 64);
+	if (pos)
+		i = *pos = gallop(a, na, *pos, lo);
+	else
+		i = find_run(a, na, lo, &n) - a;
+	for (; i < na && a[i].key <= hi; i++)
+		if (a[i].kind == SIFT_TBL_TOMB_UPDATE && (a[i].flags & SIFT_TBL_TOMB_HOT))
+			mask[((a[i].key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((a[i].key & 0xFFFF) - 1) % 64);
 }
 
+#ifdef SIFT_TESTING
+uint64		sift_tbl_hot_probes = 0;
+#endif
+
 void
-sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint64 *mask)
+sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint32 *pos, uint64 *mask)
 {
 	uint64		lo = (uint64) vblock << 16;
 
-	hot_offsets(st->ents, st->nents, lo, lo | 0xFFFF, mask);
-	hot_offsets(st->recent, st->nrecent, lo, lo | 0xFFFF, mask);
+#ifdef SIFT_TESTING
+	sift_tbl_hot_probes += pos == NULL;
+#endif
+	hot_offsets(st->ents, st->nents, pos, lo, lo | 0xFFFF, mask);
+	hot_offsets(st->recent, st->nrecent, pos ? pos + 1 : NULL, lo, lo | 0xFFFF, mask);
 }
 
 bool

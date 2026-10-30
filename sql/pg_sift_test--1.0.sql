@@ -375,6 +375,10 @@ CREATE FUNCTION sift._test_tbl_verify(tbl regclass) RETURNS int8
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_tagged' LANGUAGE C STRICT;
 
+-- the page probes of the HOT entries of the log made by this backend since the last call
+CREATE FUNCTION sift._test_tbl_hot_probes() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_hot_probes' LANGUAGE C STRICT;
+
 -- the record of a write buffer page of one row whose slot and record length are given: true when it is handed out, an error when it reaches past the page
 CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec' LANGUAGE C STRICT;

@@ -304,8 +304,8 @@ extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTbl
 /* Does the table have HOT chains (as the log this backend has read tells) */
 extern bool sift_tbl_has_chains(Relation rel);
 typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
-/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members */
-extern void sift_tbl_chain_members(Relation rel, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
+/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tbl_hot_offsets, for the vblocks of a search in ascending order */
+extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
 extern int	sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain);
@@ -350,8 +350,15 @@ extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, i
 /* Is the version a member of a chain (the next of a HOT update: no index has an entry for it); *pred: the version the update was of */
 extern bool sift_tbl_hot_pred(const SiftTblRel *st, uint64 key, uint64 *pred);
 #define sift_tbl_hot_member(st, key)	sift_tbl_hot_pred((st), (key), NULL)
-/* The offsets of the rows of vblock a HOT update entry names, as bits (SIFT_OFFMASK_WORDS words) */
-extern void sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint64 *mask);
+/*
+ * The offsets of the rows of vblock a HOT update entry names, as bits (SIFT_OFFMASK_WORDS words). pos: two indexes (the main and the recent array of the log)
+ * of a walk over ascending vblocks, zeroed at its start; NULL looks each vblock up alone
+ */
+extern void sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint32 *pos, uint64 *mask);
+#ifdef SIFT_TESTING
+/* Test only: the lookups of a vblock alone in the log (pos NULL) by this backend: a walk over the pages of a search makes none */
+extern PGDLLIMPORT uint64 sift_tbl_hot_probes;
+#endif
 
 extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
 extern bool sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key);

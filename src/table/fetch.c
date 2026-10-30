@@ -255,12 +255,12 @@ sift_tbl_has_chains(Relation rel)
 }
 
 void
-sift_tbl_chain_members(Relation rel, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg)
+sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	uint64		roots[SIFT_OFFMASK_WORDS] = {0};
 
-	sift_tbl_hot_offsets(st, blk, roots);
+	sift_tbl_hot_offsets(st, blk, pos, roots);
 	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 		for (uint64 m = roots[wd] & offmask[wd]; m; m &= m - 1)
 		{
@@ -442,7 +442,7 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
 
 	if (n < 0)
 	{
-		sift_tbl_hot_offsets(s->st, vblock, roots);
+		sift_tbl_hot_offsets(s->st, vblock, NULL, roots);
 		cnt = SIFT_TBL_MAX_OFF;
 	}
 	for (int i = 0; i < cnt; i++)

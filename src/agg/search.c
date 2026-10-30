@@ -555,6 +555,7 @@ search_with_chains(SiftSearch *s)
 	HotPage    *p,
 			   *roots = palloc(256 * sizeof(HotPage)),
 			   *later;
+	uint32		pos[2] = {0, 0};
 	int			nroots = 0,
 				maxroots = 256,
 				nlater = 0,
@@ -576,7 +577,7 @@ search_with_chains(SiftSearch *s)
 			roots = repalloc(roots, (maxroots *= 2) * sizeof(HotPage));
 		roots[nroots].blk = blk;
 		memcpy(roots[nroots++].mask, mask, sizeof(mask));
-		sift_vis_chain_members(s->heap, blk, mask, hot_member, members);
+		sift_vis_chain_members(s->heap, pos, blk, mask, hot_member, members);
 	}
 	later = palloc(hash_get_num_entries(members) * sizeof(HotPage) + 1);
 	hash_seq_init(&seq, members);

@@ -453,9 +453,9 @@ sift_vis_has_chains(Relation heap)
 }
 
 void
-sift_vis_chain_members(Relation heap, BlockNumber blk, const uint64 *offmask, SiftVisKeyFn fn, void *arg)
+sift_vis_chain_members(Relation heap, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftVisKeyFn fn, void *arg)
 {
-	sift_tbl_chain_members(heap, blk, offmask, fn, arg);
+	sift_tbl_chain_members(heap, pos, blk, offmask, fn, arg);
 }
 
 int
