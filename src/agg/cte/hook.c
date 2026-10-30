@@ -301,8 +301,6 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	first_plan.set = planning_second = false;
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
-		flat = copyObject(parse);
-		by_cost = sift_agg_flatten_laterals(flat);
 		/* the two forms are both planned where the flat plan is no better in every scan, and the inline plan of a shared CTE costs most of it: their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		if (has_shared_cte(parse))
 		{
@@ -310,9 +308,16 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			if (fv.known)
 			{
 				/* a verdict holds for the size of the request it was made for: the plan of the form that won is checked against it, else the statement is planned in full */
-				Query	   *again = copyObject(parse);
+				Query	   *again = fv.won ? parse : copyObject(parse);
 				MemoryContext cx;
-				PlannedStmt *stmt = fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &cx);
+				PlannedStmt *stmt;
+
+				if (fv.won)
+				{
+					flat = copyObject(parse);
+					by_cost = sift_agg_flatten_laterals(flat);
+				}
+				stmt = plan_cte(SIFT_PLANNER_ARGS(fv.won ? flat : parse), &cx);
 
 				/* verdict_accept reads the verdict of the band of this size into fv, which may be the other form's */
 				if (verdict_accept(&fv, cte_size(stmt)) == VERDICT_TAKE)
@@ -322,6 +327,11 @@ plan_flat(SIFT_PLANNER_PARAMS)
 				flat = copyObject(parse);
 				by_cost = sift_agg_flatten_laterals(flat);
 			}
+		}
+		if (flat == NULL)
+		{
+			flat = copyObject(parse);
+			by_cost = sift_agg_flatten_laterals(flat);
 		}
 		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 		flat_inlined = inline_won;
@@ -374,6 +384,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 {
 	MemoryContext memo = sift_agg_memo_begin();
 	bool		col_plan = sift_col_plan_begin();
+	bool		reads;
 	PlannedStmt *stmt;
 
 	hook_ran = true;
@@ -381,10 +392,13 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	forget_discarded();			/* those of a plan that failed are gone with its context */
 	/*
 	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
-	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards).
+	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards). A statement that
+	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
 	 */
-	parse = copyObject(parse);
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse))
+	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
+	if (reads || (sift_enable_agg && has_shared_cte(parse)))
+		parse = copyObject(parse);
+	if (reads)
 	{
 		sift_json_build_object_swap(parse);
 		if (parse->rowMarks == NIL)
