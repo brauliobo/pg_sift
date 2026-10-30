@@ -2,7 +2,7 @@
 """The set-filter benchmark: a fact table filtered by a set of entity ids (bench/steps/sets.sh runs it on a scratch cluster).
 
     sets.py run --db DB --out FILE [--reps 9] [--ch CONTAINER] [--only REGEX] [--meta KEY=VALUE ...]
-    sets.py render [--results bench/results/sets.tsv] [--benchmarks docs/BENCHMARKS.md]
+    sets.py render [--results bench/results/sets.tsv] [--benchmarks bench/out/BENCHMARKS.md]
 
 `run` times every cell of the table below on the PostgreSQL named by PGHOST / PGPORT / PGUSER (and, with --ch, on a ClickHouse container), in random
 order interleaved over the cells, one untimed run first, and writes the rows of bench/results/sets.tsv (columns in extras.py). The time is the wall

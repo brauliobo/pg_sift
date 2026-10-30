@@ -193,7 +193,7 @@ class Store:
         return f'{h["cpu"].replace(" 8-Core Processor", "")}, {h["threads"]} threads'
 
 
-def picture(name, alt, prefix='docs/img/'):
+def picture(name, alt, prefix='bench/out/img/'):
     """a chart in its light and dark variant (the one of the reader's GitHub theme is shown); prefix: where the images are, seen from the page"""
     return f'<picture><source media="(prefers-color-scheme: dark)" srcset="{prefix}{name}-dark.svg"><img alt="{alt}" src="{prefix}{name}-light.svg"></picture>'
 

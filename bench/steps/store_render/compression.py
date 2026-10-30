@@ -33,7 +33,7 @@ def compression_block(R):
         enc = 'sift_enc' in lanes and all(leaves['sift'][k]['bytes'] == leaves['sift_enc'][k]['bytes'] for k in leaves['sift'])
         lz = 'sift_lz4' in lanes and all(leaves['sift'][k]['bytes'] == leaves['sift_lz4'][k]['bytes'] for k in leaves['sift'])
         out += [f'- The chunk bytes of every column ({"identical" if same else "NOT identical"} to an explicit `auto`, {"identical" if enc else "different"} to the encodings alone, {"identical" if lz else "different"} to `lz4`; `sift.col_leaves`) '
-                'show that `auto` layered no LZ4 or zstd over the encodings on this data (the cost rule of [docs/perf/COMPRESSION.md](perf/COMPRESSION.md) accepts a layer only when its decode time is worth the bytes); no SQL function reports the layer chunk by chunk, so it is read from the byte counts.']
+                'show that `auto` layered no LZ4 or zstd over the encodings on this data (the cost rule of [bench/out/perf/COMPRESSION.md](perf/COMPRESSION.md) accepts a layer only when its decode time is worth the bytes); no SQL function reports the layer chunk by chunk, so it is read from the byte counts.']
     qs = R.queries(tier)
     spread = [max(v) / min(v) for q in qs if len(v := [R.num(tier, e, q, 'warm', 'latency_ms') for e in lanes]) and all(v)]
     out += [f'- Warm time of a question across the {len(lanes)} settings: the slowest against the fastest {min(spread):.2f}x to {max(spread):.2f}x, in no fixed order, so the differences are run-to-run noise (the medians are in `store-compression.json`).']

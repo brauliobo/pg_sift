@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stored results of the 3.1 and 3.2 benchmarks (bench/results/*.tsv, one file per benchmark) and the generated blocks of docs/BENCHMARKS.md and README.md.
+"""Stored results of the 3.1 and 3.2 benchmarks (bench/results/*.tsv, one file per benchmark) and the generated blocks of bench/out/BENCHMARKS.md and README.md.
 
     extras.py render [--results DIR] [--benchmarks FILE] [--readme FILE]      rewrite every block that has a results file (bench/bench extras report)
 

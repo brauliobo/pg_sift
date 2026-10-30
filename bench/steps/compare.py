@@ -329,7 +329,7 @@ def compare_block(results):
 
 
 def generic_block(results):
-    """docs/BENCHMARKS.md, block generic: per engine and arm of bench/results/generic.tsv what is compared with pg_sift and what is not, with the reason of each case an engine did not run"""
+    """bench/out/BENCHMARKS.md, block generic: per engine and arm of bench/results/generic.tsv what is compared with pg_sift and what is not, with the reason of each case an engine did not run"""
     rows = generic_rows(results)
     if not rows:
         return ['Not measured at this build yet: `bench/bench generic --docs` writes bench/results/generic.tsv.']

@@ -155,7 +155,7 @@ def upd_sentences(R, tier, engines):
 
 
 def updates_readme(R):
-    """the README's changes of data: the cost chart (rows/s of the 10% update is in it), the size growth chart, the takeaway and the losses; the table is in docs/BENCHMARKS.md"""
+    """the README's changes of data: the cost chart (rows/s of the 10% update is in it), the size growth chart, the takeaway and the losses; the table is in bench/out/BENCHMARKS.md"""
     tier = upd_tier(R)
     if not tier:
         return ['No update numbers yet: `bench/bench store all` measures them.']
@@ -169,7 +169,7 @@ def updates_readme(R):
     loss = upd_losses(R, tier, engines)
     if loss:
         out += ['- **Where pg_sift loses:** ' + '; '.join(loss) + '.']
-    out += ['', 'Every row, the update path of each system and the official pages: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
+    out += ['', 'Every row, the update path of each system and the official pages: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
     return out
 
 

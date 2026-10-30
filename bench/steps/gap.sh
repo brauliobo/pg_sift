@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench store gap-profile [--sizes N,N]   (bench/steps/gap.sh, called by bench/bench)
-# The profile behind docs/BENCH-GAP.md: a private PostgreSQL cluster with pg_sift (scripts/pgtest.sh, release build) under a memory cap
+# The profile behind bench/out/BENCH-GAP.md: a private PostgreSQL cluster with pg_sift (scripts/pgtest.sh, release build) under a memory cap
 # (systemd-run MemoryMax, no swap: a runaway query dies alone), the store `orders` table loaded from the same generator, and per question
 # EXPLAIN ANALYZE, the planning time with and without the planner hook, perf stat and perf record of one backend (bench/steps/gap.py).
 # Settings: S_SIZES (default 1000000,10000000), GAP_TMP (cluster directory, default /tmp/sift-gap), GAP_PORT (56100-56299, default 56250),

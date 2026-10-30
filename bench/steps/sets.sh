@@ -4,7 +4,7 @@
 # plan, as IN (SELECT ... FROM membership), and on ClickHouse.
 #   --build DIR   the checkout whose sift is measured (default: this one; its scripts/pgtest.sh stages it): `git worktree add /tmp/x vX.Y.Z` measures a release
 #   --root DIR    a staged install of that build (pgtest.sh install, SIFT_TESTING= for the release library) instead of building it
-#   --docs        also write bench/results/sets.tsv and the generated block of docs/BENCHMARKS.md
+#   --docs        also write bench/results/sets.tsv and the generated block of bench/out/BENCHMARKS.md
 #   --keep        keep the scratch cluster (the data is also cached as a dump in $BENCH_STORE/cache, so a rerun only restores it)
 # Everything runs on a scratch cluster of its own under $SCRATCH_ROOT in a systemd scope (12G, 3 CPUs), ClickHouse in a container of 3 CPUs and 8g; the timed part
 # takes /tmp/sift-perf.lock (blocking), and the host load is recorded with every cell. The data is bench/sql/sets/gen.sql (deterministic).

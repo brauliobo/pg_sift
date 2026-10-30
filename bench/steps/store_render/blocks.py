@@ -1,4 +1,4 @@
-# The README block and the docs/BENCHMARKS.md block of the orders benchmark, with the thread and Citus tables.
+# The README block and the bench/out/BENCHMARKS.md block of the orders benchmark, with the thread and Citus tables.
 # They join the tables and the notes of one run.
 from store_charts import picture
 from store_lib import LANES
@@ -21,11 +21,11 @@ def readme_block(R):
            picture('agg-latency', f'Median time per question and system on a logarithmic axis, {t["rows"]:,} orders'), '', takeaway(R, tier, engines), '',
            picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold'), '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels, brief=True)]
-    out += ['', 'Every table, the cold runs, sizes and the configuration: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#aggregates-an-orders-dataset); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
-            f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](docs/BENCHMARKS.md#configuration)), '
+    out += ['', 'Every table, the cold runs, sizes and the configuration: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#aggregates-an-orders-dataset); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
+            f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](bench/out/BENCHMARKS.md#configuration)), '
             f'a local connection; median of {t["runs"]} warm runs; the first run after the server\'s memory was emptied is "cold". Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), '
             f'PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}; host at the start of the warm runs: {host_noise(t["parts"]["warm"])}. '
-            'pg_duckdb is its own run (the better of its heap and Parquet modes, a different PostgreSQL build next to it, [docs/BENCHMARKS.md](docs/BENCHMARKS.md#pg_duckdb)): its factor is against the PostgreSQL of that run.']
+            'pg_duckdb is its own run (the better of its heap and Parquet modes, a different PostgreSQL build next to it, [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#pg_duckdb)): its factor is against the PostgreSQL of that run.']
     return out
 
 

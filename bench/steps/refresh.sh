@@ -7,7 +7,7 @@
 #   --stages LIST  the stages to measure (space or comma separated; default "updates search store")
 #   --calm [S]     for a timer: measure only on a calm host. Exit 75 at once when the host lock is held or the pressure stays above the quiet gate
 #                  (scripts/quiet.sh, 10%) for S seconds (default 1800); without it the run waits for the lock and starts anyway
-#   --pr BASE      commit bench/results, docs/img, README.md and docs/BENCHMARKS.md on the branch bench/refresh-DATE and open a pull request against BASE
+#   --pr BASE      commit bench/results, bench/out/img, README.md and bench/out/BENCHMARKS.md on the branch bench/refresh-DATE and open a pull request against BASE
 #                  (a new branch from the checkout, never pushed to BASE, never merged here); needs a clean tree and `gh`
 #   --dry-run      print the plan of `bench final` and start nothing
 #   --prepare      build the image of this checkout and generate the data of the update, delete and VACUUM section (nice, no host lock, nothing timed), so that the
@@ -49,10 +49,10 @@ log "refresh: stages ${STAGES} at pg_sift $version ($sha), $(quiet_report || tru
 "$BENCH/bench" final --size standard --docs --stages "${STAGES// /,}" --budget "$BUDGET" ${FWD[@]+"${FWD[@]}"}
 [[ -z $DRY ]] || exit 0
 
-[[ -n $PR ]] || { log "refresh: git diff shows README.md, docs/img and bench/results"; exit 0; }
+[[ -n $PR ]] || { log "refresh: git diff shows README.md, bench/out/img and bench/results"; exit 0; }
 branch=bench/refresh-$(date -u +%F)
 git switch -q -c "$branch"
-git add -- bench/results docs/img README.md docs/BENCHMARKS.md docs/BENCH-GAP.md
+git add -- bench/results bench/out/img README.md bench/out/BENCHMARKS.md bench/out/BENCH-GAP.md
 git commit -q -m "bench: refresh: the README and docs numbers measured at pg_sift $version ($sha), $(date -u +%F)"
 git push -q -u origin "$branch"
 gh pr create --base "$PR" --head "$branch" --title "bench: refresh: the README and docs numbers at pg_sift $version" \

@@ -1,4 +1,4 @@
-"""The generated parts of README.md and docs/BENCHMARKS.md, from the rows of bench/results/*.tsv of one tier (the slim tier by default).
+"""The generated parts of README.md and bench/out/BENCHMARKS.md, from the rows of bench/results/*.tsv of one tier (the slim tier by default).
 
     python3 -I bench/steps/readme.py [--results DIR] [--readme FILE] [--benchmarks FILE] [--tier slim]
                                      (bench/bench readme; bench/bench report --docs and bench/bench all --docs run it)
@@ -6,8 +6,8 @@
 Prints the Benchmarks block of README.md and rewrites, in place, the blocks between these marker lines (a file without them is left alone,
 with an error):
 
-                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the articles table, the bullets, the charts of the Search benchmark (the places table is in docs/BENCHMARKS.md)
-  docs/BENCHMARKS.md  <!-- bench:slim:begin -->   ... <!-- bench:slim:end -->      the tier's tables (the Markdown of steps/tables.py)
+                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the articles table, the bullets, the charts of the Search benchmark (the places table is in bench/out/BENCHMARKS.md)
+  bench/out/BENCHMARKS.md  <!-- bench:slim:begin -->   ... <!-- bench:slim:end -->      the tier's tables (the Markdown of steps/tables.py)
 
 Nothing in a block is typed by hand: every number is a row of bench/results (tables.py writes the corpus size, the seconds of the phases and
 the host as rows too), the engines are those of bench/engines.tsv that have rows for the tier, in its order, so a new row of the registry
@@ -165,19 +165,19 @@ def positions_bullet(t):
 
 
 def benchmarks_block(t, timing):
-    """the README's search block: the findings and the charts; the scope, method, CPU budget and host are the footnote [^search], every cell with its standard error is in docs/BENCHMARKS.md"""
+    """the README's search block: the findings and the charts; the scope, method, CPU budget and host are the footnote [^search], every cell with its standard error is in bench/out/BENCHMARKS.md"""
     s, p = t.session, t.load()
     articles, places = format(t.corpus('articles'), ','), format(t.corpus('places'), ',')
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
     budget, details = tables.cpus_parts(s.get('quota', ''))
     out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client), every engine on the same data, queries and clients[^search]. Throughput in queries per second, higher is better; '
            'the error bars are one standard error over the interleaved rounds.' % (articles, places), '',
-           '![Throughput by workload](docs/img/articles-throughput.svg)', '', '![Index size](docs/img/index-size.svg)', '']
+           '![Throughput by workload](bench/out/img/articles-throughput.svg)', '', '![Index size](bench/out/img/index-size.svg)', '']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
-    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).', '',
-            '![Autocomplete latency](docs/img/places-latency.svg)', '',
-            'Every cell with its standard error, the cold-cache tables and the method: [docs/BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
+    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](bench/out/BENCHMARKS.md#correctness)).', '',
+            '![Autocomplete latency](bench/out/img/places-latency.svg)', '',
+            'Every cell with its standard error, the cold-cache tables and the method: [bench/out/BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
     foot = ['[^search]: Scope: every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus (the slim tier, the default of `bench/bench all`); cells stop at a 5%% relative standard error (at most 1 s). '
             'Method: one engine at a time, median of %s interleaved rounds. CPUs: %s%s' % ('2-%d' % rounds if rounds > 2 else '2', budget, (': ' + '; '.join(details) + '.') if details else '.')]
     if s:

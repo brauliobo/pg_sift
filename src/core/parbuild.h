@@ -17,7 +17,7 @@
 typedef struct SiftParCommon
 {
 	Oid			heaprelid;
-	Oid			indexrelid;
+	Oid			indexrelid;		/* InvalidOid: the workers write into the table (the load of a sift_table, table/load.c) and open no index */
 	bool		isconcurrent;
 } SiftParCommon;
 

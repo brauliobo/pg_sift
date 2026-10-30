@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench extras ITEM... [--docs] [--out DIR]     ITEM: rollup tablewrites writepath bm25size leaftypes fields buildcost gpu all   (steps/extras.sh)
-# The measurements behind the 3.1 and 3.2 rows of docs/BENCHMARKS.md that the search and store passes do not make. Each item measures the builds it compares on a
+# The measurements behind the 3.1 and 3.2 rows of bench/out/BENCHMARKS.md that the search and store passes do not make. Each item measures the builds it compares on a
 # scratch cluster of its own (steps/scratch.sh: systemd scope, never an existing cluster), holds /tmp/sift-perf.lock (blocking) for its timed part, writes
 # bench/results/<name>.tsv (steps/extras.py: one row per number, with the load average while it ran) and, with --docs, the generated blocks.
 #

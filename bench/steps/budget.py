@@ -43,7 +43,7 @@ BASIS = {  # where the minutes of a stage come from
 SIFT_BUILD = 3  # minutes: the one step of the preparation that depends on the commit under test (the extension built into the image)
 OUTSIDE = [  # what the pass does not run: a release runs it by name when its code changed
     ('scale', 'the slopes of the cases of the README table (bench/results/cases-scale.tsv)', '`bench cases --cases ID,ID,ID --rows 100000 --scales 1,3,10 --docs` for the cases that changed, about 5 minutes for 3 cases (measured); the stage `scale` (`--scales 1,10,100` of 200,000 orders, 20 million at the top) is hours and stays opt-in'),
-    ('sets, extras', 'the set-filter benchmark (25 min) and the release-to-release items (100 min: tags are rebuilt)', 'docs/BENCHMARKS.md only; `bench final --stages sets,extras`'),
+    ('sets, extras', 'the set-filter benchmark (25 min) and the release-to-release items (100 min: tags are rebuilt)', 'bench/out/BENCHMARKS.md only; `bench final --stages sets,extras`'),
 ]
 
 
@@ -261,7 +261,7 @@ def block(results):
             '4. The host is quiet: nobody works on it, no other benchmark or heavy job (CPU and IO pressure `some avg10` under 10% in `/proc/pressure`). The run holds the perf lock for the whole pass; nothing else may time on the host.', '',
             'Abort (`ssh HOST \'kill $(cat ~/release-run.pid); cd DIR && bench/bench store clean\'`) on: a `MISSING` precondition or a plan over 120 minutes (the run stops by itself); two `OVER BUDGET` stage lines in a row or more than 120 minutes of wall time; less than 5 GB free on the disk of the host; another job starting there. A stage that fails does not stop the pass: the others continue, the log ends with `FAILED stages: ...`, and `bench/bench resume` runs only those.', '',
             'It is finished when the log ends with the table of stage minutes and `release run of TAG: N min wall, exit 0` and `pgrep -f bench/steps/final.sh` finds nothing on the host. A `FAILED stages:` line or an exit other than 0 is not a clean finish.', '',
-            'The docs diff lands in the working tree of `DIR` on the host (README.md, bench/results, docs/img); nothing is committed there. '
+            'The docs diff lands in the working tree of `DIR` on the host (README.md, bench/results, bench/out/img); nothing is committed there. '
             'The owner of the bench tables copies it (`ssh HOST \'cd DIR && git diff --binary\' | git apply` on a branch of the integration tip), runs `scripts/lint.sh readme-tables docs bench-fresh neutral` (a sentence that quotes an old number is listed there with "the results say"; the sift_table sizes and the `sift_table_ord` lane arrive in the same diff, every pg_sift cell being measured in the pass), and opens one pull request, "bench: results: the release run of TAG", which is landed with `mergeup-merge.sh` once the user has read the diff.']
     return out
 

@@ -1,4 +1,4 @@
-"""The update, delete and VACUUM section of README.md and docs/BENCHMARKS.md and its chart, from bench/results/updates.json (store.py section, store.py render).
+"""The update, delete and VACUUM section of README.md and bench/out/BENCHMARKS.md and its chart, from bench/results/updates.json (store.py section, store.py render).
 Every number is a row of the results; the sentences only choose which rows to state."""
 import json
 import os
@@ -124,7 +124,7 @@ def tables(S, detail):
         emit(f'**The read around a churn**, {s:,} orders (the monthly revenue query' + (' and the average shipped order' if detail else '') + ': p50 milliseconds, CPU and MB read of a request; lower is better)', s,
              [(f'{label}: {name}' if detail else name, (q, v, 'latency_ms', 'cpu_ms', 'read_mb')) for q, label in qs for v, name in STATES]
              + [('a single-row change seen by the next query', ('-', 'commit', 'visible_ms', PROBE, PROBE))])
-    for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of docs/BENCHMARKS.md every size
+    for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of bench/out/BENCHMARKS.md every size
         emit(f'**VACUUM (ANALYZE)**, {s:,} orders (milliseconds, CPU, MB of WAL)', s, [('VACUUM', ('-', 'maintenance', ('maintain_s', SECONDS), 'maintain_cpu_ms', 'wal_mib'))])
     cs = S.churn_size()
     if cs:
@@ -168,11 +168,11 @@ def losses(S):
 
 
 def readme_block(S):
-    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](docs/img/updates-reads.svg)', '']
+    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](bench/out/img/updates-reads.svg)', '']
     ls = losses(S)
     out += ['**What is slower, and why**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL, and no read is slowed more than tenfold by the changes.']
     out += ['']
-    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).']
+    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#updates-and-deletes).']
     return out
 
 

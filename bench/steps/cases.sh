@@ -9,7 +9,7 @@
 # perf lock. Small by default (--rows 200000); the published size is `bench/bench cases --docs --rows 1000000`.
 #   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "Benchmark cases, by size"
 #               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
-#   --docs      write bench/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and docs/BENCHMARKS.md
+#   --docs      write bench/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and bench/out/BENCHMARKS.md
 #   --no-wait   do not wait for a quiet host (the rows say NOISY when it was busy)       --keep   leave the cluster and the container up
 # Settings: CASES_TMP (cluster directory, default /dev/shm/sift-cases: tmpfs, the clusters are scratch and run with fsync off; a run that needs more than 4 GB points it elsewhere), CASES_PORT (56100-56299, default 56262; pg_duckdb 56263), CASES_MEM (memory cap, default 8G).
 set -euo pipefail

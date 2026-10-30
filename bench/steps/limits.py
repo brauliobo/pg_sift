@@ -32,7 +32,7 @@ def case_losses(results):
     rows, out = extras.read(path)[1], []
     ms = {(f['case'].id, f['metric']): f for f in cases_render.collect(rows, cases_mod.read_registry())}
     for f in ms.values():
-        if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of docs/BENCHMARKS.md
+        if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of bench/out/BENCHMARKS.md
             c = f['case'].id
             time = lambda arm: (ms[c, 'ms'][arm] if (c, 'ms') in ms else f[arm])   # noqa: E731  (the time of the case beside a loss in another measure)
             out.append((f['sift'] / f['native'], '`%s` %s' % (c, cases_render.UNIT[f['metric']]), 'PostgreSQL', cases_render.case_fig(rows, c, 'sift', time('sift')), cases_render.case_fig(rows, c, 'native', time('native'))))

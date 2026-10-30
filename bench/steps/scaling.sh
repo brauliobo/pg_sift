@@ -4,7 +4,7 @@
 # the same server (steps/scaling.py). Everything runs on a scratch cluster of its own under $SCRATCH_ROOT in a systemd scope (SCRATCH_MEM 12G, SCRATCH_CPU 400% so that 3
 # workers and the leader have a CPU each); the timed groups of cells take PERF_LOCK (default /tmp/sift-perf.lock), and the host load is recorded with every cell.
 #   --ref TAG      a release of sift built once under $EXTRAS_SRC (steps/builds.sh), instead of --build and --root
-#   --docs         also write bench/results/scaling.tsv, redraw docs/img and rewrite the generated blocks
+#   --docs         also write bench/results/scaling.tsv, redraw bench/out/img and rewrite the generated blocks
 set -euo pipefail
 export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)

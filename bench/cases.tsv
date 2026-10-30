@@ -7,7 +7,7 @@
 # baselines: engines besides sift and native (PostgreSQL with sift.enable_agg = off) that can answer it: pg_duckdb (the others: bench/engines.tsv, steps/store_engine.py)
 # variants: name:SET a = b;SET c = d, further sift lanes with settings (the optimization turned off, or a lane without a pre-aggregate)
 # metric: the number the README table shows: ms (warm median) or wal_bytes (per row)
-# block: the generated block of README.md / docs/BENCHMARKS.md the case feeds (<!-- bench:NAME:begin -->)
+# block: the generated block of README.md / bench/out/BENCHMARKS.md the case feeds (<!-- bench:NAME:begin -->)
 # headline: yes puts the case in the README's table of application-shaped cases
 topn_page_totals	a page of rows with the total of its set	orders	default	Top-N: created_at DESC.*Pushed Aggregates: count\(\*\), sum	native,pg_duckdb	-	ms	faster33	yes
 topn_coalesce	`ORDER BY coalesce(<int2, int4, int8, date, timestamp or timestamptz column>	orders	default	Top-N: coalesce\(customer_id, 0\) DESC	native,pg_duckdb	-	ms	faster33	yes

@@ -170,7 +170,7 @@ def cmd_profile(args):
     return 0
 
 
-# --- docs/BENCH-GAP.md: the generated blocks
+# --- bench/out/BENCH-GAP.md: the generated blocks
 
 def human(v):
     for unit, div in (('GiB', 2**30), ('MiB', 2**20), ('KiB', 2**10)):

@@ -1,4 +1,4 @@
-"""The "Benchmark cases" block of README.md (the chart, the takeaway and the application-shaped cases) and docs/BENCHMARKS.md (every case), from bench/results/cases.tsv (bench/bench cases --docs).
+"""The "Benchmark cases" block of README.md (the chart, the takeaway and the application-shaped cases) and bench/out/BENCHMARKS.md (every case), from bench/results/cases.tsv (bench/bench cases --docs).
 
     python3 -I bench/steps/cases_render.py [--results DIR] [--readme FILE] [--benchmarks FILE]      (bench/bench readme)
 
@@ -154,14 +154,14 @@ def takeaway(figs, brief=False):
         text += ', slower on %d: %s' % (len(slower), ', '.join('%s %s (%s slower)' % (f['case'].id, UNIT[f['metric']], speed(r)) for f, r in slower))
     flat = [(f, a) for f, _ in rs for a in OFF if isinstance(f['others'].get(a), float) and f['sift'] and f['others'][a] <= f['sift'] * (1 + TIE)]
     if brief:
-        return text + '; ' + kept_text(figs, ids=False) + '. The gap list per case and the setting of a variant that brings no gain are in docs/BENCHMARKS.md.'
+        return text + '; ' + kept_text(figs, ids=False) + '. The gap list per case and the setting of a variant that brings no gain are in bench/out/BENCHMARKS.md.'
     if flat:
         text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
     return text + '; ' + kept_text(figs) + '.'
 
 
 def gap_lines(figs, rows):
-    """docs/BENCHMARKS.md, block gaps: one row per case that runs PostgreSQL's plan, with the lane that forces the scan beside it and the reasons sift.explain_why gives; the key_sets work from this list"""
+    """bench/out/BENCHMARKS.md, block gaps: one row per case that runs PostgreSQL's plan, with the lane that forces the scan beside it and the reasons sift.explain_why gives; the key_sets work from this list"""
     owner = {'cost': 'cost model', 'feature': 'feature breadth', 'declined': 'none (the planner is right)', 'unmeasured': '-'}
     rows_ = [f for f in figs if f['kept'] and f['metric'] == f['case'].metrics[0]]
     if not rows_:
@@ -423,13 +423,13 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
     n = len({f['case'].id for f in figs})
     out = ['%d cases, each a query shape the planner has to recognize (a report with grouping sets, a ranked top-N per group, an anti join, a keyset page, a lookup by key, a JSON array and more), on %s rows, one backend[^cases]. '
            'Every case runs on pg_sift and on PostgreSQL on the same table and indexes (`sift.enable_agg = off`) and every answer is compared before it is timed.' % (n, '{:,}'.format(int(meta.get('orders', 0)))), '',
-           '<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="docs/img/cases-speedup-light.svg"></picture>', '',
+           '<picture><source media="(prefers-color-scheme: dark)" srcset="bench/out/img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="bench/out/img/cases-speedup-light.svg"></picture>', '',
            '**Takeaway:** ' + takeaway(figs, brief=True), '']
     table = featured(rows, registry, scale_rows)
     if table:
         out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows)%s:' % (results_dir, ', and a cold row is the MB read by the first run after the tables were emptied from memory' if any(m in ' '.join(table) for m in IO_MEASURES) else ''), ''] + table + ['']
-    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
-            'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
+    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="bench/out/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="bench/out/img/cases-ecdf-light.svg"></picture>', '',
+            'Every case with its plan and variants: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
             '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
                 meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'), meta.get('host_load_before', '?'))]
     return out

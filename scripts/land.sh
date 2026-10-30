@@ -83,7 +83,7 @@ resolve_conflicts() {
 			Makefile|scripts/focus.tsv)
 				# both sides only add list lines (TESTING_REGRESS += ..., focus rows): keep both once; anything else is the owner's
 				if python3 "$HERE/land-union.py" "$f"; then git add "$f"; else echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2; fi ;;
-			README.md|bench/results/*|docs/OPTIONS.md|docs/LIMITS.md|docs/REFERENCE.md|docs/COL-TAM.md|docs/img/*|bench/*)
+			README.md|bench/results/*|docs/OPTIONS.md|docs/LIMITS.md|docs/REFERENCE.md|docs/COL-TAM.md|bench/out/img/*|bench/*)
 				git checkout -q --theirs -- "$f" 2>/dev/null; git add "$f" ;;
 			*) echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2 ;;
 		esac

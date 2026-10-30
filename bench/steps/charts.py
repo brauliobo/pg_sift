@@ -4,7 +4,7 @@
 Usage: python3 -I bench/steps/charts.py [--results DIR] [--out DIR] [--tier slim]
        (bench/bench charts; bench/bench report --docs runs it after writing the tables)
 
-Writes into the output directory (default docs/img), all of them grouped bars drawn by one helper (`grouped`):
+Writes into the output directory (default bench/out/img), all of them grouped bars drawn by one helper (`grouped`):
   index-size.svg          index size per engine and dataset
   build-time.svg          CREATE INDEX time per engine and dataset
   articles-throughput.svg queries per second per workload on the articles dataset (higher is better)
@@ -72,7 +72,7 @@ ARTICLE_CLASSES = [('and', 'and'), ('or', 'or'), ('phrase', 'phrase'), ('mixed',
                    ('filter', 'filter'), ('join', 'join')]
 PLACE_CLASSES = ['prefix-1', 'prefix-2', 'prefix-3', 'prefix-4', 'whole-word', 'word-prefix-2', 'word-prefix-1', 'name-region-country', 'name-country']
 PLACE_KEY = 'prefix-1..4: 1-4 letter prefix; whole-word; word-prefix-2/1: word + 2 or 1 letters; name-region-country, name-country: 3 or 2 words'
-PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see docs/BENCHMARKS.md.']
+PLACE_NOTES = ['pg_textsearch: emulation (edge n-gram text, it has no native prefix scoring), see bench/out/BENCHMARKS.md.']
 BUILD_NOTES = ['places: pg_textsearch and rum show the native index; their emulated workloads add indexes.']
 BM25_BUILD_NOTES = ['places: pgx-bm25 also tenants two generated columns, the table grows.']
 ES_BUILD_NOTES = ['Elasticsearch: bulk load and refresh; its force-merge to one segment is not in the build time.']

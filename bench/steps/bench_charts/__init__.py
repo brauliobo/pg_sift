@@ -2,7 +2,7 @@
 # Each module states its own responsibility in its first two lines.
 """The charts of the README's benchmarks, standard library only: wide, one message each, direct labels, light and dark.
 
-Called by steps/charts.py (bench/bench charts), which writes every `NAME-light.svg` and `NAME-dark.svg` into docs/img. The systems keep the colour and
+Called by steps/charts.py (bench/bench charts), which writes every `NAME-light.svg` and `NAME-dark.svg` into bench/out/img. The systems keep the colour and
 marker of store_charts.SYSTEMS in every chart (pg_duckdb is one more system among them); every chart names its data files and the host in its foot. Same results, same bytes.
 
   agg-latency      the seven aggregate questions, one dot per system on a log axis (store.json, duckdb.tsv)
