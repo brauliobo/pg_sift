@@ -47,7 +47,8 @@ sets_fold_begin(AggExec *ex)
 	if (s->nsets < 2 || s->narms > 0 || s->spine || s->setaggs || s->setpred || s->nhidden > 0)
 		return;
 	for (int i = 0; i < s->naggs; i++)
-		if (!fold_kind(&s->agg[i]) || s->agg[i].filter)
+		/* count(DISTINCT id) of a unique id over the elements of an array (s->group): a row with elements in two groups is in both, and once in a coarser group, which is no sum of them */
+		if (!fold_kind(&s->agg[i]) || s->agg[i].filter || (s->agg[i].kind == SAA_COUNT_ROWS && s->group >= 0))
 			return;
 	for (int set = 0; set < s->nsets; set++)
 	{
