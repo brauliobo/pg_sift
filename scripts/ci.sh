@@ -260,7 +260,12 @@ if [[ $MODE == --selftest ]]; then
 	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -qvE '^\s*#|echo' && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
 	before=" $(descendants $$ | tr '\n' ' ')"
 	plan_of() {
-		local k="$1 $2 ${3:-} ${4:-}" out
+		local k="$1 $2 ${3:-} ${4:-}" out i n
+		if [[ -z ${PLANS[$k]+x} && ${4:-} =~ ^[0-9]+/([0-9]+)$ ]]; then   # a shard: the plans of all its shards in one run
+			n=${BASH_REMATCH[1]}
+			out=$(env SIFT_CI_DEEP="${3:-}" SIFT_CI_SHARD=all/$n SIFT_CI_PG_MAJOR="$2" "$0" --plan full) || return 1
+			for (( i = 1; i <= n; i++ )); do PLANS["full $2 ${3:-} $i/$n"]=$(awk -v k=$i '$1 == k { sub(/^[0-9]+ /, ""); print }' <<<"$out"); done
+		fi
 		if [[ -z ${PLANS[$k]+x} ]]; then
 			out=$(env SIFT_CI_DEEP="${3:-}" ${4:+SIFT_CI_SHARD=$4} SIFT_CI_PG_MAJOR="$2" "$0" --plan "$1") || return 1
 			PLANS[$k]=$out
@@ -422,6 +427,11 @@ if [[ $MODE == --selftest ]]; then
 		done
 		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
+	done
+	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
+	for k in 3 9; do
+		plan_of full 18 1 $k/9
+		[[ $PLAN_OUT == "$(env SIFT_CI_DEEP=1 SIFT_CI_SHARD=$k/9 SIFT_CI_PG_MAJOR=18 "$0" --plan full)" ]] || { echo "FAIL: the plan of shard $k/9 made with all the shards differs from the plan of that shard alone"; bad=1; }
 	done
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 	(cd "$REPO" && scripts/sha256.sh --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
@@ -681,13 +691,14 @@ else
 	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
-		local t p f pats
-		local -A guarded=()   # the tests that name a test-only object, found in one grep
+		local t p f pats globs=()
+		local -A guarded=() named=()   # guarded: the tests that name a test-only object, found in one grep; named: the names of the Makefile that are no pattern
 		read -ra pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
-		pats=("${pats[@]//%/*}")   # one regular expression for all of them is slower to match (4 s of CPU for the plan instead of 0.7)
+		for p in "${pats[@]}"; do if [[ $p == *%* ]]; then globs+=("${p//%/*}"); else named[$p]=1; fi; done   # one regular expression for all of them is slower to match (4 s of CPU for the plan instead of 0.7)
 		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO"/test/sql/*.sql)
 		for t in $(rest sql .sql $SLOW_REGRESS); do
-			for p in "${pats[@]}"; do [[ $t == $p ]] && continue 2; done
+			[[ ! -v named[$t] ]] || continue
+			for p in "${globs[@]}"; do [[ $t == $p ]] && continue 2; done
 			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* || -v guarded[$t] ]] || continue
 			echo "$t"
 		done
@@ -759,6 +770,16 @@ shard_loads() {
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
 	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 }
+# --plan with SIFT_CI_SHARD=all/N (full tier): the plans of the N shards in one run, each line prefixed with the number of its shard (--selftest asks for them all)
+if [[ -n $PLAN && $MODE == full && ${SIFT_CI_SHARD:-} =~ ^all/([0-9]+)$ ]]; then
+	NSHARDS=${BASH_REMATCH[1]}
+	shard_loads "$NSHARDS"
+	for id in "${J_ID[@]}"; do
+		if [[ -v J_AFTER[$id] ]]; then k=$NSHARDS where=after; else k=$(( SHARD_OF[$id] + 1 )) where=pool; fi
+		echo "$k $id ${J_SUITE[$id]} $where ${J_CMD[$id]}"
+	done
+	exit 0
+fi
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
@@ -777,7 +798,7 @@ if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 fi
 (( LANES <= ${#J_ID[@]} )) || LANES=$(( ${#J_ID[@]} > 0 ? ${#J_ID[@]} : 1 ))   # a shard with no job still builds
 if [[ -n $PLAN ]]; then
-	for id in "${J_ID[@]}"; do echo "$id ${J_SUITE[$id]} $([[ -v J_AFTER[$id] ]] && echo after || echo pool) ${J_CMD[$id]}"; done
+	for id in "${J_ID[@]}"; do where=pool; [[ -v J_AFTER[$id] ]] && where=after; echo "$id ${J_SUITE[$id]} $where ${J_CMD[$id]}"; done   # no $(...) here: a fork for each of 400 jobs
 	exit 0
 fi
 # a run that selects no job would build, run the harness and exit 0 with no test run (a shard may be empty and still builds)
