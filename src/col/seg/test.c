@@ -33,7 +33,7 @@ sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 		return false;
 	*off = seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_RUNS(h);
 	*len = PAGG_RUNS_BYTES(h);
-	seg_seg_read(seg, *off, sizeof(rh), &rh);
+	seg_read(seg, *off, sizeof(rh), &rh);
 	*used = palloc0(*len);
 	memset(*used, 2, sizeof(rh) + (uint64) rh.nleaves * sizeof(RunsLeaf));
 	for (int c = 0; c < seg->schema->ncols; c++)
@@ -68,7 +68,7 @@ sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 		return false;
 	*off = seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SETS(h);
 	*len = PAGG_SETS_BYTES(h);
-	seg_seg_read(seg, *off, sizeof(sh), &sh);
+	seg_read(seg, *off, sizeof(sh), &sh);
 	*used = palloc0(*len);
 	memset(*used, 2, sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf));
 	for (int c = 0; c < seg->schema->ncols; c++)
@@ -89,7 +89,7 @@ sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 
 			if (blob == NULL)
 				continue;
-			seg_seg_read(seg, *off + dir + (uint64) u * sizeof(uint64), sizeof(o), &o);
+			seg_read(seg, *off + dir + (uint64) u * sizeof(uint64), sizeof(o), &o);
 			memset(*used + start + o, 2, SIFT_CSET_HDR);
 		}
 	}
@@ -108,7 +108,7 @@ sift_cseg_test_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "key table damage map", ALLOCSET_SMALL_SIZES);
 		uint8 *buf = MemoryContextAlloc(cx, *len);
 
-		seg_seg_read(seg, *off, *len, buf);
+		seg_read(seg, *off, *len, buf);
 		for (uint64 at = 0; at < *len;)
 		{
 			SiftCHistDim d;
@@ -138,7 +138,7 @@ sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 *
 	*off = s->off + PRIV(seg)->dict_end;
 	*len = s->len - PRIV(seg)->dict_end;
 	hat = seg->entry.format >= SIFT_COL_FORMAT_ROOT ? *len - 2 * sizeof(hdr) : 0;
-	seg_seg_read(seg, *off + hat, sizeof(hdr), hdr);
+	seg_read(seg, *off + hat, sizeof(hdr), hdr);
 	*used = palloc0(*len);
 	memset(*used + hat, 2, sizeof(hdr));
 	memset(*used + (hat > 0 ? hat - (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN : sizeof(hdr)), 2, (uint64) hdr[2] * SIFT_CPOINT_RECLEN);

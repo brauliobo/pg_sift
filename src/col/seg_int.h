@@ -462,7 +462,7 @@ extern SiftCBisect *sift_cseg_bisect_find(SiftColSegment *seg, int col);
 #define HEAD_CACHED()	true
 #endif
 
-extern void	seg_seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst);
+extern void	seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst);
 extern const SiftSectionRef *	seg_sec(const SiftColSegment *seg, SiftSection s);
 extern const PointLeaf *	seg_points_read(SiftColSegment *seg);
 extern DictLook *	seg_dict_look(SiftColSegment *seg, int col);

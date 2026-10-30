@@ -44,7 +44,7 @@ seg_pagg_header(SiftColSegment *seg)
 		if (end + hsz > s->len)
 			corrupt(seg, "The ZONES section holds %llu bytes, no room for the pre-aggregates after %zu.", ULL(s->len), end);
 		h = MemoryContextAlloc(seg->mcxt, hsz);
-		seg_seg_read(seg, s->off + end, hsz, h);
+		seg_read(seg, s->off + end, hsz, h);
 		if (h->magic != PAGG_MAGIC || h->version != ver || h->ncols != (uint32) ncols || h->nsb != seg->nsb)
 			corrupt(seg, "The pre-aggregates start with 0x%08x, version %u, %u leaves, %u units; a segment of column format 1.%d has version %d.",
 					h->magic, h->version, h->ncols, h->nsb, seg->entry.format, ver);
@@ -109,7 +109,7 @@ sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a)
 		{
 			uint64	   *blk = MemoryContextAlloc(seg->mcxt, lagg_block_size(seg->nsb));
 
-			seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->lagg_off[col], lagg_block_size(seg->nsb), blk);
+			seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + h->lagg_off[col], lagg_block_size(seg->nsb), blk);
 			pv->lagg[col] = b = blk;
 		}
 		a->sum = (SiftCI128) (((unsigned __int128) b[seg->nsb + u] << 64) | b[u]);
@@ -133,7 +133,7 @@ seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 by
 	if (*dir == NULL)
 	{
 		*dir = MemoryContextAlloc(seg->mcxt, (n + 1) * sizeof(uint64));
-		seg_seg_read(seg, at, (n + 1) * sizeof(uint64), *dir);
+		seg_read(seg, at, (n + 1) * sizeof(uint64), *dir);
 		for (uint32 i = 0; i < n; i++)
 			if ((*dir)[i] > (*dir)[i + 1] || (*dir)[i + 1] > bytes)
 				corrupt(seg, "The cube directory is out of order at unit %u.", i);
@@ -147,7 +147,7 @@ seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 by
 		*cap = Max(b1 - b0, 2 * *cap);
 		*buf = *buf ? repalloc(*buf, *cap) : MemoryContextAlloc(seg->mcxt, *cap);
 	}
-	seg_seg_read(seg, at + (n + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
+	seg_read(seg, at + (n + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
 	*len = b1 - b0;
 	return *buf;
 }
@@ -248,7 +248,7 @@ super_header(SiftColSegment *seg)
 						need;
 			uint32		nleaf = 0;
 
-			seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(ph), sizeof(SuperHeader), h);
+			seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(ph), sizeof(SuperHeader), h);
 			for (int c = 0; c < seg->schema->ncols; c++)
 				nleaf += super_leaf_ok(&seg->schema->cols[c]);
 			if (h->magic != SUPER_MAGIC || h->fan < SIFT_SUPER_MIN_FAN || h->fan > SIFT_SUPER_MAX_FAN || h->nsu != (seg->nsb + h->fan - 1) / h->fan ||
@@ -283,7 +283,7 @@ sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm)
 
 	if (h == NULL || k >= h->nsu || n > h->fan || (uint64) k * h->fan + n > seg->nsb)
 		corrupt(seg, "The page masks of superunit %u were asked for %u units.", k, n);
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
+	seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
 			 (uint64) k * h->fan * SIFT_PAGEMASK_WORDS * sizeof(uint64), (Size) n * SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
 }
 
@@ -295,7 +295,7 @@ sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm)
 
 	if (h == NULL || u >= seg->nsb)
 		return false;
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
+	seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
 			 (uint64) u * SIFT_PAGEMASK_WORDS * sizeof(uint64), SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
 	return true;
 }
@@ -373,7 +373,7 @@ sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
 
 		for (int c = 0; c < col; c++)
 			slot += super_leaf_ok(&seg->schema->cols[c]);
-		seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(pv->pagg) + sizeof(SuperHeader) +
+		seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(pv->pagg) + sizeof(SuperHeader) +
 				 (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) slot * h->nsu * sizeof(SiftCSuperLeaf),
 				 (Size) h->nsu * sizeof(SiftCSuperLeaf), blk);
 		for (uint32 i = 0; i < h->nsu; i++)

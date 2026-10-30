@@ -26,7 +26,7 @@ uint8		sift_test_seg_flip_mask;
 #endif
 
 void
-seg_seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
+seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 {
 	char	   *p = dst;
 #ifdef SIFT_TESTING
@@ -74,7 +74,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	hd->hdrlen = SEG_HDRLEN(h);
 	hd->hdr = MemoryContextAlloc(cx, hd->hdrlen);
 	memcpy(hd->hdr, h, hd->hdrlen);
-	seg_seg_read(seg, s[SIFT_SEC_DOCMAP].off, h->dictroot_off, schema);
+	seg_read(seg, s[SIFT_SEC_DOCMAP].off, h->dictroot_off, schema);
 	hd->schema = sift_cschema_parse(cx, schema, h->dictroot_off);
 	if (hd->schema == NULL || hd->schema->ncols != (int) h->nterms)
 		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
@@ -83,7 +83,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
 	pfree(schema);
-	seg_seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
+	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
 	for (uint32 i = 0; i < h->dictroot_n; i++)
 	{
 		const SiftColSBRef *r = &dir[i];
@@ -288,7 +288,7 @@ sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len)
 	const SiftColSBRef *r = &seg->sbdir[u];
 
 	unit_room(seg, pv, r->len);
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_POSTINGS)->off + r->off, r->len, pv->unitbuf);
+	seg_read(seg, seg_sec(seg, SIFT_SEC_POSTINGS)->off + r->off, r->len, pv->unitbuf);
 	memset(pv->unitbuf + r->len, 0, SIFT_COL_PAD);
 	*len = r->len;
 	return pv->unitbuf;
@@ -319,7 +319,7 @@ sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail)
 	*len = r->len;
 	sift_cseg_unit_head_span(seg, u, &off, &n);
 	*avail = n;
-	seg_seg_read(seg, off, *avail, pv->unitbuf);
+	seg_read(seg, off, *avail, pv->unitbuf);
 	/* the directory and the chunk table of a unit of many pages, or of a key-cut unit of many rows, end beyond the head */
 	for (uint32 need; *avail < r->len && (need = sift_cunit_head_need(pv->unitbuf, *avail, r->len, seg->schema->ncols)) > 0;)
 	{
@@ -337,7 +337,7 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 	SegPriv    *pv = PRIV(seg);
 
 	Assert((uint64) off + len <= seg->sbdir[u].len);
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off + off, len, pv->unitbuf + off);
+	seg_read(seg, seg_sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off + off, len, pv->unitbuf + off);
 	memset(pv->unitbuf + seg->sbdir[u].len, 0, SIFT_COL_PAD);
 }
 
@@ -402,14 +402,14 @@ seg_points_read(SiftColSegment *seg)
 	pv->dict_end = s->len;
 	if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX || s->len < sizeof(foot) + sizeof(hdr))
 		return NULL;
-	seg_seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
+	seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
 	memcpy(tail, &foot[1], sizeof(tail));
 	if (tail[0] != SIFT_CPOINT_MAGIC || !point_version_ok(tail[1]))
 	{
 		/* a footer of another version is no directory; a header of a known version where the offset says is a footer that was damaged */
 		if (rooted || (foot[0] % 8 == 0 && foot[0] + sizeof(hdr) <= s->len - sizeof(foot)))
 		{
-			seg_seg_read(seg, s->off + (rooted ? s->len - sizeof(foot) - sizeof(hdr) : foot[0]), sizeof(hdr), hdr);
+			seg_read(seg, s->off + (rooted ? s->len - sizeof(foot) - sizeof(hdr) : foot[0]), sizeof(hdr), hdr);
 			if (hdr[0] == SIFT_CPOINT_MAGIC && point_version_ok(hdr[1]))
 				corrupt(seg, "The footer of the point directories of the DICT section has the magic 0x%08x, version %u.", tail[0], tail[1]);
 		}
@@ -420,7 +420,7 @@ seg_points_read(SiftColSegment *seg)
 	hat = rooted ? s->len - sizeof(foot) - sizeof(hdr) : foot[0];
 	if (foot[0] % 8 != 0 || (rooted ? s->len < sizeof(foot) + sizeof(hdr) || foot[0] > hat : foot[0] + sizeof(hdr) > s->len - sizeof(foot)))
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
-	seg_seg_read(seg, s->off + hat, sizeof(hdr), hdr);
+	seg_read(seg, s->off + hat, sizeof(hdr), hdr);
 	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] > (hdr[1] == SIFT_CPOINT_VERSION_ORD ? 2 * (uint32) seg->schema->ncols : 0) ||
 		(rooted ? (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > hat - foot[0] : foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > s->len - sizeof(foot)))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
@@ -428,7 +428,7 @@ seg_points_read(SiftColSegment *seg)
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
 	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
-	seg_seg_read(seg, s->off + rat, (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
+	seg_read(seg, s->off + rat, (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	/* the parameters of the packed tables are next to the records, one for each, in the order of the leaves */
 	for (uint32 i = 0; i < hdr[2]; i++)
 	{
@@ -445,7 +445,7 @@ seg_points_read(SiftColSegment *seg)
 		if (rooted ? (uint64) npk * SIFT_CPOINT_PK_PAR > rat - foot[0] : first > end)
 			corrupt(seg, "The packed point directories of the DICT section have no room for their parameters.");
 		pars = palloc(npk * sizeof(SiftCPackPar));
-		seg_seg_read(seg, s->off + par, npk * SIFT_CPOINT_PK_PAR, pars);
+		seg_read(seg, s->off + par, npk * SIFT_CPOINT_PK_PAR, pars);
 	}
 	next = first;
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
@@ -536,12 +536,12 @@ blob_records(SiftColSegment *seg, const char *what, uint32 magic, uint64 off, ui
 			   *out;
 	int			prev = -1;
 
-	seg_seg_read(seg, at, sizeof(sh), &sh);
+	seg_read(seg, at, sizeof(sh), &sh);
 	if (sh.magic != magic || sh.version != 1 || sh.nsb != seg->nsb || sh.nleaves < 1 || sh.nleaves > (uint32) ncols ||
 		sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf) > room)
 		corrupt(seg, "The %s start with 0x%08x, version %u, %u leaves, %u units.", what, sh.magic, sh.version, sh.nleaves, sh.nsb);
 	rec = palloc(sh.nleaves * sizeof(SetsLeaf));
-	seg_seg_read(seg, at + sizeof(sh), sh.nleaves * sizeof(SetsLeaf), rec);
+	seg_read(seg, at + sizeof(sh), sh.nleaves * sizeof(SetsLeaf), rec);
 	lowest = off + sizeof(sh) + sh.nleaves * sizeof(SetsLeaf);
 	out = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(SetsLeaf));
 	for (uint32 i = 0; i < sh.nleaves; i++)
@@ -696,7 +696,7 @@ sift_cseg_ktab(SiftColSegment *seg, int col)
 		uint8	   *buf = palloc(len);
 		SiftCHistDim **dim = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(SiftCHistDim *));
 
-		seg_seg_read(seg, off, len, buf);
+		seg_read(seg, off, len, buf);
 		for (uint64 at = 0; at < len;)
 		{
 			SiftCHistDim *d = MemoryContextAlloc(seg->mcxt, sizeof(SiftCHistDim));
@@ -760,7 +760,7 @@ sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at)
 	{
 		uint64	   *dir = MemoryContextAlloc(seg->mcxt, (seg->nsb + 1) * sizeof(uint64));
 
-		seg_seg_read(seg, base, (seg->nsb + 1) * sizeof(uint64), dir);
+		seg_read(seg, base, (seg->nsb + 1) * sizeof(uint64), dir);
 		for (uint32 i = 0; i < seg->nsb; i++)
 			if (dir[i] > dir[i + 1] || dir[i + 1] > rl->bytes)
 				corrupt(seg, "The sorted-run directory of leaf %d is out of order at unit %u.", col, i);
@@ -773,7 +773,7 @@ sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at)
 	*at = base + (seg->nsb + 1) * sizeof(uint64) + b0;
 	if (b1 - b0 > UINT32_MAX)
 		corrupt(seg, "The sorted run of leaf %d in unit %u is %llu bytes.", col, u, ULL(b1 - b0));
-	seg_seg_read(seg, *at, SIFT_CRUN_HDR < b1 - b0 ? SIFT_CRUN_HDR : b1 - b0, hdr);
+	seg_read(seg, *at, SIFT_CRUN_HDR < b1 - b0 ? SIFT_CRUN_HDR : b1 - b0, hdr);
 	if (!sift_crun_head(hdr, (uint32) (b1 - b0), seg->sbdir[u].nrows, r))
 		corrupt(seg, "The sorted run of leaf %d in unit %u is malformed.", col, u);
 	return true;
@@ -798,7 +798,7 @@ sift_cseg_run_kinds(SiftColSegment *seg, int col)
 void
 sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst)
 {
-	seg_seg_read(seg, at, sift_crun_total(r), dst);
+	seg_read(seg, at, sift_crun_total(r), dst);
 }
 
 /* The head of the run (r->heads > 0): the entries nlo from the low end, then nhi from the high end, the last of the run first */
@@ -809,14 +809,14 @@ sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHead
 				nhi;
 
 	sift_crun_head_counts(r->heads, r->n, &nlo, &nhi);
-	seg_seg_read(seg, at + sift_crun_bytes(r->kind, r->n), (nlo + nhi) * sizeof(SiftCHeadEnt), out);
+	seg_read(seg, at + sift_crun_bytes(r->kind, r->n), (nlo + nhi) * sizeof(SiftCHeadEnt), out);
 }
 
 /* The raw entry bytes [pos, pos + cnt) of an ORD run (width bytes each), for the caller's own search */
 void
 sift_cseg_run_bytes_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint8 *dst)
 {
-	seg_seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, dst);
+	seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, dst);
 }
 
 void
@@ -827,7 +827,7 @@ sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos
 	if (r->kind == SIFT_CRUN_ORD)
 	{
 		buf = palloc((Size) cnt * r->width + 1);
-		seg_seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, buf);
+		seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, buf);
 	}
 	if (!sift_crun_entries(r, buf, pos, cnt, out))
 		corrupt(seg, "The sorted run entries %u to %u are not rows of its unit of %u.", pos, pos + cnt, r->n);
@@ -1002,7 +1002,7 @@ point_list_read(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off, u
 	if (off >= pl->words || pl->words - off < 2)
 		corrupt(seg, "The point directory of leaf %d has a list at word %u of %u.", col, off, pl->words);
 	base = pl->at + (uint64) pl->nslots * sizeof(uint64) + (uint64) off * sizeof(uint32);
-	seg_seg_read(seg, base, sizeof(hdr), hdr);
+	seg_read(seg, base, sizeof(hdr), hdr);
 	if (hdr[0] < 2 || hdr[0] > pl->count || hdr[1] < hdr[0] || hdr[1] > 6 * hdr[0] || (uint64) off + 2 + (hdr[1] + 3) / 4 > pl->words)
 		corrupt(seg, "The point directory of leaf %d has a list of %u codes in %u bytes at word %u of %u.", col, hdr[0], hdr[1], off, pl->words);
 	*cnt = hdr[0];
@@ -1012,7 +1012,7 @@ point_list_read(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off, u
 		return NULL;
 	pad = (hdr[1] + 3) / 4 * 4;
 	buf = palloc(pad);
-	seg_seg_read(seg, base + sizeof(hdr), pad, buf);
+	seg_read(seg, base + sizeof(hdr), pad, buf);
 	for (uint32 i = hdr[1]; i < pad; i++)
 		if (buf[i] != 0)
 			corrupt(seg, "The point directory of leaf %d has a list at word %u whose padding is not zero.", col, off);
@@ -1041,7 +1041,7 @@ point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off)
 
 	if (off >= pl->words)
 		corrupt(seg, "The point directory of leaf %d has a list at word %u of %u.", col, off, pl->words);
-	seg_seg_read(seg, pl->at + (uint64) pl->nslots * sizeof(uint64) + (uint64) off * sizeof(uint32), sizeof(cnt), &cnt);
+	seg_read(seg, pl->at + (uint64) pl->nslots * sizeof(uint64) + (uint64) off * sizeof(uint32), sizeof(cnt), &cnt);
 	if (cnt < 2 || cnt > pl->count || (uint64) off + 1 + cnt > pl->words)
 		corrupt(seg, "The point directory of leaf %d has a list of %u rows at word %u of %u.", col, cnt, off, pl->words);
 	return cnt;
@@ -1066,7 +1066,7 @@ point_probe_packed(SiftColSegment *seg, int col, const PointLeaf *pl, int64 key,
 
 	if (!sift_cpoint_pk_locate(par, key, h, &bucket, &rem))
 		return;
-	seg_seg_read(seg, pl->at + (uint64) bucket * sizeof(uint32), sizeof(se), se);
+	seg_read(seg, pl->at + (uint64) bucket * sizeof(uint32), sizeof(se), se);
 	if (se[0] > se[1] || se[1] > pl->nslots)
 		corrupt(seg, "The packed point directory of leaf %d has the bucket %u from entry %u to %u of %u.", col, bucket, se[0], se[1], pl->nslots);
 	if ((nent = se[1] - se[0]) == 0)
@@ -1074,7 +1074,7 @@ point_probe_packed(SiftColSegment *seg, int col, const PointLeaf *pl, int64 key,
 	first = (uint64) se[0] * width / 8;
 	buf = palloc((uint64) (((uint64) se[1] * width + 7) / 8 - first) + 8);
 	memset(buf + (((uint64) se[1] * width + 7) / 8 - first), 0, 8);
-	seg_seg_read(seg, pl->at + dir + first, ((uint64) se[1] * width + 7) / 8 - first, buf);
+	seg_read(seg, pl->at + dir + first, ((uint64) se[1] * width + 7) / 8 - first, buf);
 	for (uint32 j = 0; j < nent; j++)
 	{
 		uint64		at = (uint64) (se[0] + j) * width - first * 8;
@@ -1111,7 +1111,7 @@ point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, int64 key, void (
 
 		if (steps > pl->nslots / 8 + 1)
 			corrupt(seg, "The point directory of leaf %d has no empty slot.", col);
-		seg_seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
+		seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
 		for (j = 0; j < m && win[j] != SIFT_CPOINT_EMPTY; j++)
 			if (pl->tids ? sift_cpoint_tid_slot_is(win[j], h) : sift_cpoint_slot_is(win[j], h))
 				fn(arg, win[j], p + j);
@@ -1173,7 +1173,7 @@ point_add_rows(void *arg, uint64 slot, uint32 pos)
 		pfree(code);
 	}
 	else if (payload & SIFT_CPOINT_LIST)
-		seg_seg_read(pr->seg, pr->pl->at + (uint64) pr->pl->nslots * sizeof(uint64) + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1) * sizeof(uint32), cnt * sizeof(uint32), pr->r + pr->n);
+		seg_read(pr->seg, pr->pl->at + (uint64) pr->pl->nslots * sizeof(uint64) + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1) * sizeof(uint32), cnt * sizeof(uint32), pr->r + pr->n);
 	else
 		pr->r[0 + pr->n] = payload;
 	for (uint32 i = pr->n; i < pr->n + cnt; i++)
@@ -1255,7 +1255,7 @@ point_find_row(void *arg, uint64 slot, uint32 pos)
 		uint32		mid = lo + (hi - lo) / 2,
 					v;
 
-		seg_seg_read(ph->seg, base + (uint64) (off + 1 + mid) * sizeof(uint32), sizeof(v), &v);
+		seg_read(ph->seg, base + (uint64) (off + 1 + mid) * sizeof(uint32), sizeof(v), &v);
 		if (v < ph->row)
 			lo = mid + 1;
 		else
@@ -1265,7 +1265,7 @@ point_find_row(void *arg, uint64 slot, uint32 pos)
 	{
 		uint32		v;
 
-		seg_seg_read(ph->seg, base + (uint64) (off + 1 + lo) * sizeof(uint32), sizeof(v), &v);
+		seg_read(ph->seg, base + (uint64) (off + 1 + lo) * sizeof(uint32), sizeof(v), &v);
 		ph->found |= v == ph->row;
 	}
 }
@@ -1542,7 +1542,7 @@ tcur_advance(SiftPointStream *s, TidCur *t)
 					take = Min(t->unread, Min(t->chunk, TCUR_BUF - rem));
 
 		memmove(t->buf, t->buf + t->bpos, rem);
-		seg_seg_read(s->seg, t->at, take, t->buf + rem);
+		seg_read(s->seg, t->at, take, t->buf + rem);
 		t->at += take;
 		t->unread -= take;
 		t->bpos = 0;
@@ -1586,7 +1586,7 @@ stream_chunk(SiftPointStream *s)
 			DictLook   *l = seg_dict_look(s->seg, s->col);
 			uint32	   *codes = palloc(k * sizeof(uint32));
 
-			seg_seg_read(s->seg, l->perm_at + ((uint64) s->pfrom + s->kpos) * sizeof(uint32), k * sizeof(uint32), codes);
+			seg_read(s->seg, l->perm_at + ((uint64) s->pfrom + s->kpos) * sizeof(uint32), k * sizeof(uint32), codes);
 			/* in the order of the codes, which follows that of the rows: the addresses of the keys come nearly in order of the heap, and the sort of them finds it so */
 			sort_u32(codes, k);
 			places = palloc(k * sizeof(int64));
@@ -1667,7 +1667,7 @@ sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int
 		base = pl[col].at + (uint64) pl[col].nslots * sizeof(uint64) + (uint64) off * sizeof(uint32);
 		if (pay >> 48 || off >= pl[col].words || pl[col].words - off < 2)
 			corrupt(seg, "The point directory of leaf %d has a list at word %llu of %u.", col, (unsigned long long) (pay >> 16), pl[col].words);
-		seg_seg_read(seg, base, sizeof(hdr), hdr);
+		seg_read(seg, base, sizeof(hdr), hdr);
 		if (hdr[0] < 2 || hdr[0] > pl[col].count || hdr[1] < hdr[0] || hdr[1] > 6 * hdr[0] || (uint64) off + 2 + (hdr[1] + 3) / 4 > pl[col].words)
 			corrupt(seg, "The point directory of leaf %d has a list of %u addresses in %u bytes at word %u of %u.", col, hdr[0], hdr[1], off, pl[col].words);
 		t = palloc(sizeof(TidCur));
@@ -1731,7 +1731,7 @@ sift_cseg_dict_codes(SiftColSegment *seg, int col, uint32 from, uint32 to, int64
 	DictLook   *l = seg_dict_look(seg, col);
 	uint32	   *codes = palloc((Size) (to - from) * sizeof(uint32));
 
-	seg_seg_read(seg, l->perm_at + (uint64) from * sizeof(uint32), (Size) (to - from) * sizeof(uint32), codes);
+	seg_read(seg, l->perm_at + (uint64) from * sizeof(uint32), (Size) (to - from) * sizeof(uint32), codes);
 	for (uint32 i = 0; i < to - from; i++)
 		keys[i] = codes[i];
 	pfree(codes);
@@ -1870,7 +1870,7 @@ seg_gord_leaf(SiftColSegment *seg, int col)
 		return g;
 	front = SIFT_CGORD_HDR + (Size) g->hdr.chunks * SIFT_CGORD_DIRENT;
 	raw = MemoryContextAlloc(seg->mcxt, SIFT_CGORD_HDR + SIFT_CGORD_DIRENT);
-	seg_seg_read(seg, g->at, SIFT_CGORD_HDR, raw);
+	seg_read(seg, g->at, SIFT_CGORD_HDR, raw);
 	if (!sift_cgord_head(raw, g->bytes, &h) || h.entries != g->hdr.entries || h.values != g->hdr.values || h.chunks != g->hdr.chunks ||
 		(h.gcol >= 0 && h.gcol >= seg->schema->ncols))
 		corrupt(seg, "The global order of leaf %d has a malformed header.", col);
@@ -1880,7 +1880,7 @@ seg_gord_leaf(SiftColSegment *seg, int col)
 	{
 		SiftCGOrdDir last;
 
-		seg_seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
+		seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
 		if (!sift_cgord_dirent(raw + SIFT_CGORD_HDR, &h, g->bytes, h.chunks - 1, &last))
 			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, h.chunks - 1);
 		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen);
@@ -1901,7 +1901,7 @@ gord_dir_read(SiftColSegment *seg, GOrdLeaf *g)
 		Size		len = (Size) g->hdr.chunks * SIFT_CGORD_DIRENT;
 
 		g->ents = MemoryContextAlloc(seg->mcxt, Max(len, 1));
-		seg_seg_read(seg, g->at + SIFT_CGORD_HDR, len, g->ents);
+		seg_read(seg, g->at + SIFT_CGORD_HDR, len, g->ents);
 	}
 }
 
@@ -1918,7 +1918,7 @@ gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c)
 	if (g->ents != NULL)
 		ent = g->ents + (uint64) c * SIFT_CGORD_DIRENT;
 	else
-		seg_seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) c * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, one);
+		seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) c * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, one);
 	if (!sift_cgord_dirent(ent, &g->hdr, g->bytes, c, &d))
 		corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
 	return d;
@@ -1944,7 +1944,7 @@ gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col)
 		uint8		head[16];
 		uint32		nblk;
 
-		seg_seg_read(seg, seg_sec, sizeof(head), head);
+		seg_read(seg, seg_sec, sizeof(head), head);
 		if (!sift_cgord_str_head(head, &g->hdr, &g->nstr, &nblk))
 			corrupt(seg, "The strings of the global order of leaf %d are malformed.", col);
 		g->sbno = UINT32_MAX;
@@ -1970,12 +1970,12 @@ sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
 	if (g->sbno != b)
 	{
 		/* the offsets of the block and of the next, read where they are: a segment of 200,000 strings has 12,000 blocks */
-		seg_seg_read(seg, seg_sec + 16 + (uint64) b * sizeof(uint32), sizeof(off), off);
+		seg_read(seg, seg_sec + 16 + (uint64) b * sizeof(uint32), sizeof(off), off);
 		if (off[0] > off[1] || off[1] > g->hdr.strbytes || off[1] - off[0] > (uint32) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8))
 			corrupt(seg, "The strings of the global order of leaf %d have a malformed block %u.", col, b);
 		if (g->sblk == NULL)
 			g->sblk = MemoryContextAlloc(seg->mcxt, (Size) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8) + SIFT_CGORD_STR_MAX);
-		seg_seg_read(seg, seg_sec + off[0], off[1] - off[0], g->sblk);
+		seg_read(seg, seg_sec + off[0], off[1] - off[0], g->sblk);
 		g->sbno = b;
 		g->sblen = off[1] - off[0];
 		g->spos = (SiftCStrPos) {0, 0, 0};
@@ -2049,7 +2049,7 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 	d = gord_dirent(seg, g, col, c);
 	m = sift_cgord_chunk_rows(&g->hdr, c);
 	buf = palloc(ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen) + SIFT_COL_PAD);
-	seg_seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
+	seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
 	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, m, w, key, addr))
 		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
 	pfree(buf);
@@ -2113,7 +2113,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		uint32		mid = lo + (hi - lo) / 2;
 		SiftCGOrdGrp e;
 
-		seg_seg_read(seg, g->at + g->gat + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		seg_read(seg, g->at + g->gat + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group < group)
 			lo = mid + 1;
 		else
@@ -2123,7 +2123,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	{
 		SiftCGOrdGrp e;
 
-		seg_seg_read(seg, g->at + g->gat + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		seg_read(seg, g->at + g->gat + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group == group)
 		{
 			if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
@@ -2297,7 +2297,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 		uint8	   *gb = palloc((Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
 
 		grp = palloc((Size) g->hdr.ngroups * sizeof(SiftCGOrdGrp));
-		seg_seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, gb);
+		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, gb);
 		if (!sift_cgord_groups(gb, &g->hdr, (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT, grp))
 			corrupt(seg, "The global order of leaf %d has malformed groups.", col);
 		pfree(gb);
@@ -2370,7 +2370,7 @@ verify_packed(SiftColSegment *seg, int c, const PointLeaf *pl, uint32 total)
 	uint8	   *buf = palloc((uint64) chunk * width / 8 + 24);
 	uint32		b = 0;
 
-	seg_seg_read(seg, pl->at, (uint64) (par->nbuckets + 1) * sizeof(uint32), starts);
+	seg_read(seg, pl->at, (uint64) (par->nbuckets + 1) * sizeof(uint32), starts);
 	if (starts[0] != 0 || starts[par->nbuckets] != pl->nslots)
 		corrupt(seg, "The packed point directory of leaf %d starts at entry %u and ends at %u of %u.", c, starts[0], starts[par->nbuckets], pl->nslots);
 	for (uint32 i = 0; i < par->nbuckets; i++)
@@ -2383,7 +2383,7 @@ verify_packed(SiftColSegment *seg, int c, const PointLeaf *pl, uint32 total)
 					last = ((uint64) (e + m) * width + 7) / 8;
 
 		memset(buf, 0, last - first + 8);
-		seg_seg_read(seg, pl->at + dir + first, last - first, buf);
+		seg_read(seg, pl->at + dir + first, last - first, buf);
 		for (uint32 j = 0; j < m; j++)
 		{
 			uint64		at = (uint64) (e + j) * width - first * 8,
@@ -2446,7 +2446,7 @@ sift_cseg_verify_points(SiftColSegment *seg)
 		{
 			uint32		m = Min(lengthof(win), pl[c].nslots - p);
 
-			seg_seg_read(seg, pl[c].at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
+			seg_read(seg, pl[c].at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
 			for (uint32 j = 0; j < m; j++)
 			{
 				uint32		payload = (uint32) win[j],
@@ -2483,7 +2483,7 @@ sift_cseg_verify_points(SiftColSegment *seg)
 					for (uint32 i = 0, got; i < cnt; i += got)
 					{
 						got = Min(lengthof(rows), cnt - i);
-						seg_seg_read(seg, lists + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1 + i) * sizeof(uint32), got * sizeof(uint32), rows);
+						seg_read(seg, lists + (uint64) ((payload & ~SIFT_CPOINT_LIST) + 1 + i) * sizeof(uint32), got * sizeof(uint32), rows);
 						for (uint32 k = 0; k < got; k++)
 						{
 							if (rows[k] >= total || (i + k > 0 && rows[k] <= prev))
@@ -2833,12 +2833,12 @@ vers_units(SiftColSegment *seg)
 
 		if (pv->vers_len == 0)
 			corrupt(seg, "The segment has no version section.");
-		seg_seg_read(seg, at, sizeof(h), &h);
+		seg_read(seg, at, sizeof(h), &h);
 		if (h.magic != VERS_MAGIC || h.version != 1 || h.nsb != seg->nsb || sizeof(h) + dirsz + h.blob_bytes > pv->vers_len)
 			corrupt(seg, "The version section starts with 0x%08x, version %u, %u units, %llu bytes of vectors.", h.magic, h.version, h.nsb,
 					ULL(h.blob_bytes));
 		vu = MemoryContextAlloc(seg->mcxt, dirsz);
-		seg_seg_read(seg, at + sizeof(h), dirsz, vu);
+		seg_read(seg, at + sizeof(h), dirsz, vu);
 		for (uint32 u = 0; u < seg->nsb; u++)
 			if ((vu[u].flags & ~(VU_VEC | VU_FROZEN)) != 0 || (!(vu[u].flags & VU_VEC) && (vu[u].xlen || vu[u].clen)) ||
 				vu[u].off > h.blob_bytes || (uint64) vu[u].xlen + vu[u].clen > h.blob_bytes - vu[u].off)
@@ -2905,7 +2905,7 @@ sift_cseg_ver_unit(SiftColSegment *seg, uint32 u, uint32 *xmin, uint32 *cmin)
 		const VersUnit *vu = &vers_units(seg)[u];
 		uint8	   *buf = palloc(vu->xlen + vu->clen);
 
-		seg_seg_read(seg, PRIV(seg)->vblob_at + vu->off, vu->xlen + vu->clen, buf);
+		seg_read(seg, PRIV(seg)->vblob_at + vu->off, vu->xlen + vu->clen, buf);
 		if (!sift_cver_decode(buf, vu->xlen, n, xmin) || !sift_cver_decode(buf + vu->xlen, vu->clen, n, cmin))
 			corrupt(seg, "The versions of unit %u (SB %u) do not decode as %u rows.", u, seg->sbdir[u].id, n);
 		pfree(buf);

@@ -19,10 +19,10 @@ dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len)
 	seg_points_read(seg);
 	next = PRIV(seg)->dict_end;
 
-	seg_seg_read(seg, s->off, sizeof(hdr), hdr);
+	seg_read(seg, s->off, sizeof(hdr), hdr);
 	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
 		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-	seg_seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
 	*off = tab[col];
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (tab[c] > *off && tab[c] < next)
@@ -61,21 +61,21 @@ dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
 		uint32		head[2];
 		uint64		at = seg_sec(seg, SIFT_SEC_DICT)->off + off;
 
-		seg_seg_read(seg, at, sizeof(head), head);
+		seg_read(seg, at, sizeof(head), head);
 		if (head[0] == DICT_PLAIN && (len - DICT_HEAD) / sizeof(uint32) >= (uint64) head[1] + 1)
 		{
 			d = sift_cdict_plain_begin(mcxt, head[1]);
-			seg_seg_read(seg, at + DICT_HEAD, ((Size) head[1] + 1) * sizeof(uint32), d->off);
+			seg_read(seg, at + DICT_HEAD, ((Size) head[1] + 1) * sizeof(uint32), d->off);
 			if (!sift_cdict_plain_bytes(d, mcxt, len - DICT_HEAD - ((uint64) head[1] + 1) * sizeof(uint32)))
 				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-			seg_seg_read(seg, at + DICT_HEAD + ((uint64) head[1] + 1) * sizeof(uint32), d->nbytes, d->bytes);
+			seg_read(seg, at + DICT_HEAD + ((uint64) head[1] + 1) * sizeof(uint32), d->nbytes, d->bytes);
 			if (!sift_cdict_plain_valid(d))
 				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 			return d;
 		}
 	}
 	data = palloc(len);
-	seg_seg_read(seg, seg_sec(seg, SIFT_SEC_DICT)->off + off, len, data);
+	seg_read(seg, seg_sec(seg, SIFT_SEC_DICT)->off + off, len, data);
 	d = sift_cdict_parse(mcxt, data, len, &used);
 	if (d == NULL)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
@@ -104,10 +104,10 @@ look_load_block(DictLook *l, uint32 b)
 				rawlen,
 				pos = 0;
 
-	seg_seg_read(l->seg, l->boff_at + (uint64) b * sizeof(uint32), sizeof(o), o);
+	seg_read(l->seg, l->boff_at + (uint64) b * sizeof(uint32), sizeof(o), o);
 	if (o[1] < o[0] + DICT_BLOCK_HEAD || o[1] - o[0] > sizeof(l->blkz) || o[1] > l->blk_len)
 		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
-	seg_seg_read(l->seg, l->blk_at + o[0], o[1] - o[0], l->blkz);
+	seg_read(l->seg, l->blk_at + o[0], o[1] - o[0], l->blkz);
 	rawlen = l->blkz[2] | (uint32) l->blkz[3] << 8;
 	if (rawlen > DICT_BLOCK_RAW_MAX)
 		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
@@ -174,13 +174,13 @@ look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 	{
 		uint32		o[2];
 
-		seg_seg_read(l->seg, l->offs_at + (uint64) code * sizeof(uint32), sizeof(o), o);
+		seg_read(l->seg, l->offs_at + (uint64) code * sizeof(uint32), sizeof(o), o);
 		if (o[1] < o[0] || o[1] > l->nbytes || o[1] - o[0] > SIFT_COL_DICT_MAX_ENTRY)
 			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
 		*len = o[1] - o[0];
 		at = l->bytes_at + o[0];
 	}
-	seg_seg_read(l->seg, at, *len, buf);
+	seg_read(l->seg, at, *len, buf);
 	return buf;
 }
 
@@ -200,7 +200,7 @@ look_perm(const DictLook *l, uint32 pos)
 		return s->code;
 	if (l->bc != NULL)
 		l->bc->spent += DICT_READ_COST;
-	seg_seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), sizeof(code), &code);
+	seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), sizeof(code), &code);
 	if (code >= l->n)
 		corrupt(l->seg, "The order of the dictionary of leaf %d names code %u of %u.", l->col, code, l->n);
 	return code;
@@ -275,7 +275,7 @@ look_find_hash(DictLook *l, const char *s, uint32 len)
 	{
 		uint32		k = Min(HASH_WINDOW, ns - i);
 
-		seg_seg_read(l->seg, l->hash_at + (uint64) i * sizeof(uint32), k * sizeof(uint32), win);
+		seg_read(l->seg, l->hash_at + (uint64) i * sizeof(uint32), k * sizeof(uint32), win);
 		for (uint32 j = 0; j < k; j++, probed++)
 		{
 			uint32		code,
@@ -358,7 +358,7 @@ look_contains(DictLook *l, SiftColOp op, const SiftColValue *c, int nvals, uint6
 			{
 				first = b;
 				got = Min(per, (l->n + DICT_BLOCK - 1) / DICT_BLOCK - b);
-				seg_seg_read(l->seg, l->sig_at + (uint64) b * sigbytes, (Size) got * sigbytes, sig);
+				seg_read(l->seg, l->sig_at + (uint64) b * sigbytes, (Size) got * sigbytes, sig);
 			}
 			s = sig + (Size) (b - first) * sigbytes;
 			for (uint32 j = 0; j < nbits && may; j++)
@@ -410,7 +410,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int n
 		uint32		codes[1024],
 					k = Min(to - pos, lengthof(codes));
 
-		seg_seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), k * sizeof(uint32), codes);
+		seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), k * sizeof(uint32), codes);
 		for (uint32 i = 0; i < k; i++)
 		{
 			if (codes[i] >= l->n)
@@ -453,7 +453,7 @@ look_sig(DictLook *l, uint64 off, uint64 len, uint64 end)
 
 	if (at + DICT_TSIG_HEAD > off + len)
 		return;
-	seg_seg_read(l->seg, at, sizeof(hdr), hdr);
+	seg_read(l->seg, at, sizeof(hdr), hdr);
 	if (hdr[0] != DICT_TSIG_MAGIC)
 		return;
 	if (hdr[1] < DICT_TSIG_LO_LG || hdr[1] > DICT_TSIG_HI_LG || at + DICT_TSIG_HEAD + nblk * ((1u << hdr[1]) / 8) > off + len)
@@ -516,7 +516,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 	off += seg_sec(seg, SIFT_SEC_DICT)->off;
 	if (len < DICT_HEAD)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-	seg_seg_read(seg, off, DICT_HEAD, head);
+	seg_read(seg, off, DICT_HEAD, head);
 	hashed = (head[0] & DICT_HASHED) != 0;
 	head[0] &= ~DICT_HASHED;
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
@@ -530,7 +530,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 		if (len - DICT_HEAD < ((uint64) l->n + 1) * sizeof(uint32))
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		l->offs_at = off + DICT_HEAD;
-		seg_seg_read(seg, l->offs_at + (uint64) l->n * sizeof(uint32), sizeof(l->nbytes), &l->nbytes);
+		seg_read(seg, l->offs_at + (uint64) l->n * sizeof(uint32), sizeof(l->nbytes), &l->nbytes);
 		l->bytes_at = l->offs_at + ((uint64) l->n + 1) * sizeof(uint32);
 		if (len - DICT_HEAD - ((uint64) l->n + 1) * sizeof(uint32) < l->nbytes)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
@@ -539,7 +539,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 	{
 		if (len < DICT_HEAD_LOOKUP)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-		seg_seg_read(seg, off, DICT_HEAD_LOOKUP, head);
+		seg_read(seg, off, DICT_HEAD_LOOKUP, head);
 		head[0] &= ~DICT_HASHED;
 		l->fixed = head[2];
 		l->nbytes = head[3];
@@ -551,7 +551,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 		if (l->n == 0 || l->fixed > SIFT_COL_DICT_MAX_ENTRY || (l->fixed != 0 && (uint64) l->n * l->fixed != l->nbytes) ||
 			l->blk_at > off + len)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-		seg_seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
+		seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
 		l->blk_len = blen;
 		end = l->blk_at + blen;
 		if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT)
@@ -567,7 +567,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 				l->cum_at = l->perm_at + (uint64) l->n * sizeof(uint32);
 				if (l->cum_at + DICT_COUNT_HEAD(l->n) > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
-				seg_seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
+				seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
 				if (l->cum_at + DICT_COUNT_HEAD(l->n) + last > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 				end = l->cum_at + DICT_COUNT_HEAD(l->n) + last;
@@ -579,7 +579,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 				{
 					uint32		last;
 
-					seg_seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
+					seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
 					l->hash_at += last;
 				}
 				if (l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32) > off + len)
@@ -651,7 +651,7 @@ sift_cseg_dict_verify_hash(SiftColSegment *seg, int col, SiftCDict *d)
 
 	if (l == NULL || l->hash_at == 0)
 		corrupt(seg, "The dictionary of leaf %d has no hash.", col);
-	seg_seg_read(seg, l->hash_at, (Size) ns * sizeof(uint32), slot);
+	seg_read(seg, l->hash_at, (Size) ns * sizeof(uint32), slot);
 	for (uint32 i = 0; i < ns; i++)
 		used += slot[i] != 0;
 	if (used != d->n)
@@ -683,13 +683,13 @@ count_block(DictLook *l, uint32 b, uint32 *base, uint32 *vals)
 	uint8		cmin,
 				buf[COUNT_PACKED_MAX + 8] = {0};
 
-	seg_seg_read(seg, l->cum_at + (uint64) b * 8, sizeof(rec), rec);
-	seg_seg_read(seg, l->cum_at + (uint64) 8 * (DICT_COUNT_NB(l->n) + 1) + b, 1, &cmin);
+	seg_read(seg, l->cum_at + (uint64) b * 8, sizeof(rec), rec);
+	seg_read(seg, l->cum_at + (uint64) 8 * (DICT_COUNT_NB(l->n) + 1) + b, 1, &cmin);
 	bytes = rec[3] - rec[1];
 	if (rec[3] < rec[1] || bytes % 8 || bytes > COUNT_PACKED_MAX || rec[2] < rec[0])
 		corrupt(seg, "The row counts of the dictionary of leaf %d are malformed at block %u.", l->col, b);
 	if (bytes > 0)
-		seg_seg_read(seg, l->cum_at + DICT_COUNT_HEAD(l->n) + rec[1], bytes, buf);
+		seg_read(seg, l->cum_at + DICT_COUNT_HEAD(l->n) + rec[1], bytes, buf);
 	*base = rec[0];
 	for (uint32 i = 0; i < DICT_BLOCK; i++)
 		vals[i] = cmin;
@@ -713,7 +713,7 @@ look_cum(DictLook *l, uint32 pos)
 
 	if (pos % DICT_BLOCK == 0)
 	{
-		seg_seg_read(l->seg, l->cum_at + (uint64) b * 8, sizeof(base), &base);
+		seg_read(l->seg, l->cum_at + (uint64) b * 8, sizeof(base), &base);
 		return base;
 	}
 	count_block(l, b, &base, vals);
@@ -744,7 +744,7 @@ sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows)
 		count_block(l, b, &base, vals);
 		if (base != cum)
 			corrupt(seg, "The row counts of the dictionary of leaf %d start block %u at %u rows, not the %u before it.", col, b, base, cum);
-		seg_seg_read(seg, l->perm_at + (uint64) lo * sizeof(uint32), k * sizeof(uint32), codes);
+		seg_read(seg, l->perm_at + (uint64) lo * sizeof(uint32), k * sizeof(uint32), codes);
 		for (uint32 i = 0; i < DICT_BLOCK; i++)
 		{
 			if (i >= k)
@@ -755,7 +755,7 @@ sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows)
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
-	seg_seg_read(seg, l->cum_at + (uint64) nb * 8, sizeof(last), last);
+	seg_read(seg, l->cum_at + (uint64) nb * 8, sizeof(last), last);
 	if (last[0] != cum)
 		corrupt(seg, "The row counts of the dictionary of leaf %d end at %u rows, not the %u they add up to.", col, last[0], cum);
 }
@@ -848,7 +848,7 @@ sift_cseg_dict_tsig_check(SiftColSegment *seg, int col, const SiftCDict *d)
 	want = palloc(bytes);
 	have = palloc(bytes);
 	sift_cdict_tsig_fill(d, l->sig_lg, want);
-	seg_seg_read(seg, l->sig_at, bytes, have);
+	seg_read(seg, l->sig_at, bytes, have);
 	if (memcmp(want, have, bytes) != 0)
 		corrupt(seg, "The trigram signatures of the dictionary of leaf %d are not those of its strings.", col);
 	pfree(want);

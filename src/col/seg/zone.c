@@ -56,15 +56,15 @@ zone_arrays(SiftColSegment *seg, int col)
 		MemoryContext cx = AllocSetContextCreate(seg->mcxt, "sift cache segment zones", ALLOCSET_SMALL_SIZES);
 		ZoneArrays *z = MemoryContextAllocZero(cx, sizeof(ZoneArrays));
 
-		seg_seg_read(seg, s->off, sizeof(hdr), hdr);
+		seg_read(seg, s->off, sizeof(hdr), hdr);
 		if (hdr[0] != ZONES_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
 			corrupt(seg, "ZONES section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-		seg_seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+		seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
 		off = tab[col];
 		if (off % 8 != 0 || off + sz > s->len)
 			corrupt(seg, "The zones of leaf %d (%llu, %zu bytes) lie outside the section.", col, ULL(off), sz);
 		blk = MemoryContextAlloc(cx, sz);
-		seg_seg_read(seg, s->off + off, sz, blk);
+		seg_read(seg, s->off + off, sz, blk);
 		z->min = (const int64 *) blk;
 		z->max = z->min + seg->nsb;
 		z->sum = z->max + seg->nsb;
@@ -113,13 +113,13 @@ dict_count(SiftColSegment *seg, int col)
 				n;
 	uint64		tab[SIFT_COL_MAX_COLS];
 
-	seg_seg_read(seg, s->off, sizeof(hdr), hdr);
+	seg_read(seg, s->off, sizeof(hdr), hdr);
 	if (hdr[0] != DICTS_MAGIC || hdr[1] != (uint32) seg->schema->ncols)
 		corrupt(seg, "DICTS section starts with 0x%08x, %u leaves.", hdr[0], hdr[1]);
-	seg_seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
+	seg_read(seg, s->off + sizeof(hdr), seg->schema->ncols * sizeof(uint64), tab);
 	if (tab[col] == 0 || tab[col] + 2 * sizeof(n) > s->len)
 		corrupt(seg, "Leaf %d has no dictionary.", col);
-	seg_seg_read(seg, s->off + tab[col] + sizeof(n), sizeof(n), &n);
+	seg_read(seg, s->off + tab[col] + sizeof(n), sizeof(n), &n);
 	return n;
 }
 
@@ -321,12 +321,12 @@ lst_block(SiftColSegment *seg)
 
 			if (at + sizeof(h) > size)
 				corrupt(seg, "The directory entry says the segment has leaf statistics, the stream ends at %llu.", ULL(size));
-			seg_seg_read(seg, at, sizeof(h), &h);
+			seg_read(seg, at, sizeof(h), &h);
 			if (h.magic != LST_MAGIC || h.ncols != (uint32) seg->schema->ncols || h.nsb != seg->nsb || h.nsample != sift_lst_nsample(seg->nsb) ||
 				h.len < sizeof(h) + h.ncols * sizeof(LstLeaf) || at + h.len > size)
 				corrupt(seg, "The leaf statistics (0x%08x, %u leaves, %u units, %llu bytes) do not fit the segment.", h.magic, h.ncols, h.nsb, ULL(h.len));
 			blk = MemoryContextAlloc(seg->mcxt, h.len);
-			seg_seg_read(seg, at, h.len, blk);
+			seg_read(seg, at, h.len, blk);
 			pv->lst = blk;
 		}
 	}
