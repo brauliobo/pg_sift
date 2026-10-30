@@ -174,7 +174,11 @@ child_keys(PlannerInfo *root, Path *p)
 	for (;;)
 	{
 		if (IsA(p, SubqueryScanPath))
+		{
+			/* the paths of a sub-select refer to the range table of its own root */
+			root = p->parent->subroot;
 			p = ((SubqueryScanPath *) p)->subpath;
+		}
 		else if (IsA(p, ProjectionPath))
 			p = ((ProjectionPath *) p)->subpath;
 		else if (sift_is_sorted_unique_path(p))

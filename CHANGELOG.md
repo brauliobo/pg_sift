@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: planning a statement with a `MATERIALIZED` CTE, a `DISTINCT` sub-select joined to it and a second read of a table with a column index could crash the backend (SIGSEGV; 3.7.0 and 3.6.3 too): the rows of a lookup were read through the sub-select with the range table of the outer query.
+
 ## 3.7.0 - 2026-10-30
 
 - Improved: pg_sift: the fetch scans of a `sift_table` (index scans, bitmap, UPDATE, DELETE by TID) keep 256 superblocks and 64 MB per table, where they kept 32 and 8 MB, so the UPDATEs of a table that has more superblocks than that no longer parse the heads of a superblock again on every fetch: the 40,000 UPDATEs by key of `tbl_update_keys` on 1,000,000 rows take 3,538 M instructions to 2,381 M once the write buffer is settled (300,000 rows 2,320 M to 2,336 M, 600,000 rows 2,803 M to 2,336 M: the loop no longer grows with the table; the heap twin 4.2 G), and 5,621 M to 4,451 M with the 166,000 rows the case leaves in the write buffer, whose promotion is the rest of the growth. Test: `scripts/instr-budget-fetch.sh` (836 M to 691 M callgrind instructions, budget 760 M).

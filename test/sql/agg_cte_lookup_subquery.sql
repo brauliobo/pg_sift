@@ -1,0 +1,16 @@
+-- The rows a lookup of a CTE yields are read down its plan, through the sub-selects it joins: a sub-select's paths belong to the range table of its own planner root.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sites (id int PRIMARY KEY, kind int NOT NULL);
+INSERT INTO sites SELECT g, g % 5 FROM generate_series(1, 200) g;
+CREATE INDEX sites_col ON sites USING sift_col (id, kind);
+CREATE TABLE rivals (from_id int NOT NULL, to_id int NOT NULL);
+INSERT INTO rivals SELECT g, g % 200 + 1 FROM generate_series(1, 200) g;
+VACUUM (FREEZE, ANALYZE) sites, rivals;
+WITH ids AS MATERIALIZED (SELECT s.id FROM sites s WHERE s.id IN (1)),
+	base AS (SELECT s.* FROM ids p JOIN sites s ON s.id = p.id),
+	rival AS (SELECT s.* FROM (SELECT DISTINCT t.id FROM sites t JOIN rivals r ON r.to_id = t.id JOIN base b ON b.id = r.from_id) c JOIN sites s ON s.id = c.id)
+SELECT b.id, (SELECT count(*) FROM rival) AS rivals FROM base b;
+DROP TABLE rivals, sites;
+DROP EXTENSION pg_sift;
