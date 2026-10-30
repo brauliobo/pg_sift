@@ -56,14 +56,15 @@ perf_session() {
 	echo "SELECT pg_backend_pid();" >&"${PSQ[1]}"
 	read -r -u "${PSQ[0]}" pid
 }
-wait_for() { while IFS= read -r -u "${PSQ[0]}" x; do [[ $x == "$1" ]] && break; done; }
+# a marker from the psql session within 300 s, else the run stops: a lost marker is a hang of the whole gate
+wait_for() { while IFS= read -r -t 300 -u "${PSQ[0]}" x; do [[ $x == "$1" ]] && return 0; done; log "no '$1' from the psql session in 300 s"; return 1; }
 instr() {
-	printf "SELECT plangate.cal_set('%s');\nSELECT 'ready';\n" "$2" >&"${PSQ[1]}"; wait_for ready
+	printf "SELECT plangate.cal_set('%s');\nSELECT 'ready';\n" "$2" >&"${PSQ[1]}"; wait_for ready || return 1
 	perf stat -x, -e instructions:u -p "$pid" -o "$pf" & p=$!
 	# a plan takes milliseconds: started before perf has opened its counter, it is not counted ("<not counted>"), and a SIGINT sent before perf has its handler is ignored and perf runs on
 	local i n
 	for i in $(seq 500); do [[ $(readlink "/proc/$p/fd/"* 2>/dev/null) == *perf_event* ]] && break; sleep 0.02; done
-	printf "SELECT plangate.cal_run('%s', 3, %s);\nSELECT 'done';\n" "$1" "$3" >&"${PSQ[1]}"; wait_for done
+	printf "SELECT plangate.cal_run('%s', 3, %s);\nSELECT 'done';\n" "$1" "$3" >&"${PSQ[1]}"; wait_for done || { kill -KILL "$p" 2>/dev/null; return 1; }
 	kill -INT "$p"; wait "$p" 2>/dev/null || true
 	n=$(awk -F, '/instructions/ { print $1 }' "$pf")
 	[[ $n =~ ^[0-9]+$ ]] || { log "perf stat counted no instructions of $1 ($2): ${n:-nothing}"; return 1; }
@@ -86,8 +87,8 @@ planning() {
 	cal_load
 	out=$(mktemp)
 	while read -r name; do
-		printf "SELECT plangate.cal_set('chosen');\nSELECT plangate.cal_run('%s', 1, true);\nSELECT 'ready';\n" "$name" >&"${PSQ[1]}"; wait_for ready
-		on=$(instr "$name" chosen true); off=$(instr "$name" native true)
+		printf "SELECT plangate.cal_set('chosen');\nSELECT plangate.cal_run('%s', 1, true);\nSELECT 'ready';\n" "$name" >&"${PSQ[1]}"; wait_for ready || return 1
+		on=$(instr "$name" chosen true) || return 1; off=$(instr "$name" native true) || return 1
 		printf '%s\t%s\t%s\t%s\n' "$name" $(( on / 3000 )) $(( off / 3000 )) "$(sql -qAt -c "SELECT plangate.cal_taken('$name')")" >>"$out"
 	done < <(sql -qAt -c "SELECT name FROM plangate.cal_shapes ORDER BY name")
 	perf_close
@@ -123,8 +124,8 @@ calibrate() {
 	sql -qAt -c "SELECT plangate.cal_estimate()" >/dev/null
 	local rows=""
 	while IFS=$'\t' read -r name sig variant; do
-		printf "SELECT plangate.cal_set('%s');\nSELECT plangate.cal_run('%s', 1, false);\nSELECT 'ready';\n" "$variant" "$name" >&"${PSQ[1]}"; wait_for ready
-		x=$(instr "$name" "$variant" false); p=$(instr "$name" "$variant" true)
+		printf "SELECT plangate.cal_set('%s');\nSELECT plangate.cal_run('%s', 1, false);\nSELECT 'ready';\n" "$variant" "$name" >&"${PSQ[1]}"; wait_for ready || return 1
+		x=$(instr "$name" "$variant" false) || return 1; p=$(instr "$name" "$variant" true) || return 1
 		rows+="('$name', '$sig', $(( (x - p) / 3 ))),"
 	done < <(sql -qAt -F $'\t' -c "SELECT name, sig, min(variant) FROM plangate.cal_plans GROUP BY name, sig ORDER BY name, sig")
 	perf_close
@@ -134,8 +135,39 @@ calibrate() {
 	sql -q -P footer=off -c "SELECT class, name, estimated_cheaper, estimated_dearer, cost_a, cost_b, m_a AS minstr_a, m_b AS minstr_b, CASE WHEN sift THEN 'sift' END AS check FROM plangate.cal_pairs ORDER BY class, name, cost_a" | sed '1s/^/mis-ranked pairs (the dearer by estimate takes 20% and 1M instructions fewer):\n/'
 	sql -qAt -c "SELECT format('plangate --calibrate: %s of %s pairs of plans with a scan ranked the wrong way round, in %s of %s shapes', (SELECT count(*) FROM plangate.cal_pairs WHERE sift), (SELECT count(*) FROM plangate.cal_verdicts a JOIN plangate.cal_verdicts b ON a.name = b.name AND NOT a.chosen AND NOT b.chosen AND a.cost < b.cost AND (a.sift OR b.sift)), (SELECT count(DISTINCT name) FROM plangate.cal_pairs WHERE sift), (SELECT count(*) FROM plangate.cal_shapes))"
 	sql -qAt -c "SELECT format('plangate --calibrate: %s shapes, %s plans, %s chosen plans slower than the best by over 20%% and 1M instructions', count(DISTINCT name), count(*), count(*) FILTER (WHERE wrong)) FROM plangate.cal_verdicts"
-	sql -qAt -c "SELECT 'WRONG ' || name || ' (' || class || '): the planner chooses ' || variants || ' at ' || m_instr || 'M instructions, the best is ' || best_m_instr || 'M' FROM plangate.cal_verdicts WHERE wrong ORDER BY class, name"
-	(( $(sql -qAt -c "SELECT count(*) FROM plangate.cal_verdicts WHERE wrong AND class <> 'known'") == 0 ))
+	estimate_misses
+}
+
+# the chosen plans that lose to the best by over 20% and 1M instructions, as rows of test/plan/estimate-misses.tsv: shape, lane, rows, the plan chosen and its price, the best
+# plan and its price, M instructions of both, their ratio, state (known: class known in calibrate.tsv, else new), note. Prints WRONG lines and the count of known and new misses; a
+# new one fails, so does a known one whose ratio grew over 25% beyond the ratio recorded in calibrate.tsv. --update writes the rows of this lane and size into the ledger (the
+# notes of a row stay; a pending or timed-out row of the lane and size goes) and the worst ratio of each known shape into calibrate.tsv
+estimate_misses() {
+	local led=$REPO/test/plan/estimate-misses.tsv cal=$REPO/test/plan/calibrate.tsv miss rc=0
+	miss=$(mktemp)
+	sql -qAt -F $'\t' -c "SELECT w.name, '$LANE', $ROWS, w.variants, w.cost, b.variants, b.cost, w.m_instr, b.m_instr, round(w.m_instr / b.m_instr, 2), CASE WHEN w.class = 'known' THEN 'known' ELSE 'new' END
+		FROM plangate.cal_verdicts w JOIN LATERAL (SELECT x.variants, x.cost, x.m_instr FROM plangate.cal_verdicts x WHERE x.name = w.name ORDER BY x.m_instr LIMIT 1) b ON true
+		WHERE w.wrong ORDER BY w.name" >"$miss"
+	awk -F'\t' 'NR == FNR { if ($0 !~ /^#/ && $3 != "") rec[$1] = $3; next }
+		{ printf "WRONG %s: the planner chooses %s at %s M instructions, the best is %s at %s M (x%s, %s)\n", $1, $4, $8, $6, $9, $10, $11
+		  if ($11 == "new") { nw++; bad = 1 }
+		  else { kn++; if (!($1 in rec)) { print "GREW " $1 ": no ratio in calibrate.tsv, run --update"; bad = 1 }
+		         else if ($10 > 1.25 * rec[$1]) { print "GREW " $1 ": x" $10 " against x" rec[$1] " recorded in calibrate.tsv"; bad = 1 } } }
+		END { printf "plangate --calibrate: wrong: %d known, %d new\n", kn, nw; exit bad }' "$cal" "$miss" || rc=1
+	if [[ -n $UPDATE ]]; then
+		{ awk -F'\t' -v lane="$LANE" -v rows="$ROWS" '/^#/ || !($2 == lane && $3 == rows)' "$led"
+		  awk -F'\t' -v OFS='\t' 'NR == FNR { if ($0 !~ /^#/) note[$1 FS $2 FS $3] = $12; next } { print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, note[$1 FS $2 FS $3] }' "$led" "$miss"
+		} | LC_ALL=C sort -t $'\t' -s -k1,1 -k2,2 -k3,3n >"$miss.led"
+		{ grep '^#' "$led"; awk '!/^#/' "$miss.led"; } >"$miss.out"
+		cat "$miss.out" >"$led"
+		awk -F'\t' -v OFS='\t' 'NR == FNR { if ($0 !~ /^#/ && $11 == "known" && $10 + 0 > worst[$1] + 0) worst[$1] = $10; next }
+			/^#/ || !($2 == "known") { print; next } { print $1, $2, ($1 in worst) ? worst[$1] : $3 }' "$led" "$cal" >"$miss.cal"
+		cat "$miss.cal" >"$cal"
+		rm -f "$miss.led" "$miss.cal" "$miss.out"
+		log "updated test/plan/estimate-misses.tsv and the ratios of test/plan/calibrate.tsv"
+	fi
+	rm -f "$miss"
+	return $rc
 }
 
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"

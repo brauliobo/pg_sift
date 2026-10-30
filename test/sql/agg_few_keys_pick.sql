@@ -15,7 +15,8 @@ INSERT INTO fk_facts SELECT i, 1 + (i * 7919) % 600, date '2024-01-01' + (i % 70
 	FROM generate_series(1, 60000) i;
 CREATE INDEX fk_facts_parent ON fk_facts (parent_id, ts, deleted_at);
 CREATE INDEX fk_facts_col ON fk_facts USING sift_col (id, parent_id, ts, deleted_at, metrics_a) WITH (paths = 'metrics_a.* float8');
--- scope 1: one parent, 2: three, 3: forty
+-- scope 1: one parent, 2: three, 3: forty. The window is a month for the one parent (the normal plan 124 against the scan's 331, a gap of 62%: a year was 361 against 422, 14%, a tie
+-- that the statistics could turn) and a year for the others (the scan 474, 999 and 623 against 1,020, 8,016 and 1,967: 54%, 88% and 68%)
 CREATE TABLE fk_scope (scope_id int NOT NULL, parent_id int NOT NULL);
 INSERT INTO fk_scope SELECT 1, 11;
 INSERT INTO fk_scope SELECT 2, p FROM generate_series(21, 23) p;
@@ -33,10 +34,10 @@ WITH parent_ids AS MATERIALIZED (%s),
      parents AS MATERIALIZED (SELECT p.id FROM fk_parents p JOIN parent_ids i ON i.id = p.id)
 SELECT split_part(r.key, '_', 1) AS kind, round(avg((r.value #>> '{}')::float8)::numeric, 6) AS score, count(*) AS n
 FROM fk_facts v JOIN parents p ON p.id = v.parent_id, jsonb_each(v.metrics_a) r
-WHERE v.deleted_at IS NULL AND v.ts >= date '2024-03-01' AND v.ts < date '2025-03-01'
+WHERE v.deleted_at IS NULL AND v.ts >= date '2024-03-01' AND v.ts < date '2024-03-01' + %s
 GROUP BY 1 ORDER BY 1$f$, CASE WHEN sub < 4 THEN format('SELECT DISTINCT parent_id AS id FROM fk_scope WHERE scope_id = %s', sub)
        ELSE $s$SELECT DISTINCT p.id FROM fk_parents p WHERE p.id = ANY ('{201,205,210,215,220,225,230,233,236,239}'::int[])
-       AND p.id IN (SELECT parent_id FROM fk_group WHERE grp = 4)$s$ END) $$;
+       AND p.id IN (SELECT parent_id FROM fk_group WHERE grp = 4)$s$ END, CASE WHEN sub = 1 THEN 31 ELSE 365 END) $$;
 
 CREATE FUNCTION fk_plan(sub int, agg text DEFAULT 'on') RETURNS TABLE (plan text, total_cost float8) LANGUAGE plpgsql AS $$
 DECLARE j jsonb;

@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+-- the scan is asked for: its price against the normal plan's is a tie at times (a gap of a few percent), the test is of its answers and of the plans it refuses
+SET sift.agg_force = on;
 CREATE TABLE items (id int PRIMARY KEY, kind text, enabled bool) WITH (autovacuum_enabled = false);
 INSERT INTO items SELECT i, 'k' || i % 5, i % 7 <> 3 FROM generate_series(0, 599) i;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, doc jsonb) WITH (autovacuum_enabled = false);

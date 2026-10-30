@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+-- the scan is asked for: its price against the normal plan's is a tie at times (a gap of a few percent), the test is of its answers and of the plans it refuses
+SET sift.agg_force = on;
 CREATE TABLE items (id int PRIMARY KEY, parent_id int, region text, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO items
 SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, CASE WHEN i % 17 = 0 THEN NULL ELSE 'r' || i % 9 END,

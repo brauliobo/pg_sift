@@ -41,19 +41,21 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
-CREATE FUNCTION in_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+CREATE FUNCTION in_scope(filter text, days int DEFAULT 7) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
-WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+WHERE f.parent_id IN (SELECT d.id FROM sc_dims d WHERE %s) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-01' + %s GROUP BY 1 ORDER BY 1$f$, filter, days) $$;
 
-CREATE FUNCTION cte_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+CREATE FUNCTION cte_scope(filter text, days int DEFAULT 7) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 WITH scope AS MATERIALIZED (SELECT DISTINCT d.id FROM sc_dims d WHERE %s)
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f
-WHERE f.parent_id IN (SELECT id FROM scope) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+WHERE f.parent_id IN (SELECT id FROM scope) AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-01' + %s GROUP BY 1 ORDER BY 1$f$, filter, days) $$;
 
-CREATE FUNCTION join_scope(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
+CREATE FUNCTION join_scope(filter text, days int DEFAULT 7) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM sc_facts f JOIN sc_dims d ON d.id = f.parent_id
-WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$, filter) $$;
+WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-01' + %s GROUP BY 1 ORDER BY 1$f$, filter, days) $$;
 
+-- the statements that keep the normal plan read one day (days = 1): it prices at 18 to 34 against the scan's 286 to 289 (a gap of 88 to 94%; a week was 227 against 289, 21%, a tie that
+-- the statistics could turn), and the ones that take the scan a week, where the normal plan is priced at 888 to 897 against 294 (67%)
 -- a filter on a jsonb path or an expression: no statistics, so PostgreSQL's one row is a guess and the scan reads the units of the parents
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_b'''));
@@ -69,21 +71,21 @@ WHERE d.settings ->> 'tier' = 'tier_b' AND f.deleted_at IS NULL AND f.ts >= date
 -- no parent: the same answer from either plan
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_none'''));
 -- a filter PostgreSQL has statistics for (the primary key and its values): its estimate stands and the btree plan reads the few parents
-SELECT * FROM same(in_scope('d.id IN (3, 4)'));
-SELECT * FROM same(join_scope('d.id IN (3, 4)'));
+SELECT * FROM same(in_scope('d.id IN (3, 4)', 1));
+SELECT * FROM same(join_scope('d.id IN (3, 4)', 1));
 -- a CTE of a literal list is a count the planner knows: the btree plan reads the few parents
-SELECT * FROM same(cte_scope('d.id IN (3, 4)'));
+SELECT * FROM same(cte_scope('d.id IN (3, 4)', 1));
 -- the switch: the normal plan keeps the estimate
 SET sift.agg_param_set_size = 0;
-SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b'''))).plan AS plan_off;
+SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b''', 1))).plan AS plan_off;
 RESET sift.agg_param_set_size;
 
 -- the price of the list PostgreSQL knows does not move with the switch
 SET sift.agg_param_set_size = 0;
-CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)'));
+CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)', 1));
 RESET sift.agg_param_set_size;
-SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)'))) = known AS known_unchanged FROM c_est;
+SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)', 1))) = known AS known_unchanged FROM c_est;
 
-DROP FUNCTION in_scope(text), cte_scope(text), join_scope(text), plan_of(text), same(text);
+DROP FUNCTION in_scope(text, int), cte_scope(text, int), join_scope(text, int), plan_of(text), same(text);
 DROP TABLE sc_facts, sc_dims, sc_kinds;
 DROP EXTENSION pg_sift;

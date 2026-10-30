@@ -67,6 +67,7 @@
 ^scripts/isolation\.sh$	^isolation
 ^scripts/static\.sh$	^static$
 ^scripts/plangate\.sh$	^plan-gate
+^scripts/plan-margin\.sh$	-
 ^bench/steps/plan_budget\.py$	^plan-budget$
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
