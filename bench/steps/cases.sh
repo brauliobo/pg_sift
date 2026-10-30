@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--io cold|warm|off] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--no-share] [--any-plan] [--no-wait] [--keep]
+# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--io cold|warm|off] [--minstr] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--no-share] [--any-plan] [--no-wait] [--keep]
 #        bench/bench cases --list | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
@@ -30,12 +30,14 @@ while (( $# )); do
     --docs) DOCS=1 ;;
     --keep) KEEP=1 ;;
     --cases|--out|--wait|--scales|--timeout|--work-mem|--times|--lane-budget|--io) PY+=("$1" "$2"); shift ;;
+    --minstr) PY+=("$1") ;;
     --no-wait|--no-share|--any-plan) PY+=("$1") ;;
     *) sed -n '2,11p' "$0"; exit 1 ;;
   esac
   shift
 done
 need psql python3 flock
+[[ -z $KEEP ]] || export CASES_KEEP=1   # the tables stay with the cluster
 [[ $CPUS =~ ^[1-9][0-9]*$ && $ROWS =~ ^[1-9][0-9]*$ ]] || die "--cpus and --rows take whole numbers"
 
 export SIFT_TMP=${CASES_TMP:-/dev/shm/sift-cases} SIFT_PORT=${CASES_PORT:-56262} SIFT_TESTING= CASES_TMP=${CASES_TMP:-/dev/shm/sift-cases} CASES_WORKERS=$((CPUS - 1))

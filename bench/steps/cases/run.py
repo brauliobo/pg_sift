@@ -45,7 +45,7 @@ def run_point(args, cases, rows, engines, results, failed):
         load = server_load()
         if c.load:
             t1 = time.time()
-            out, plans, errors = measure_load(c, csv, args.rounds, rows)
+            out, plans, errors = measure_load(c, csv, args.rounds, rows, args.minstr)
             TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
@@ -66,7 +66,7 @@ def run_point(args, cases, rows, engines, results, failed):
             else:
                 if 'ms' in c.metrics:
                     point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
-                if 'minstr' in c.metrics and lane in ('sift', 'native', 'base') and not isinstance(lanes[lane], Fresh):
+                if ('minstr' in c.metrics or args.minstr) and lane in ('sift', 'native', 'base') and not isinstance(lanes[lane], Fresh):
                     mi = minstr(lanes[lane], expand(c.statement(lane), c))
                     if mi is not None:
                         point.append(dict(case=c.id, arm=lane, metric='minstr', value='%.1f' % mi, note=notes[lane], load=load))
@@ -89,7 +89,7 @@ def run_point(args, cases, rows, engines, results, failed):
             point.append(dict(case=c.id, arm='why', metric='ms', value='', note=notes['why'], load=load))
         if c.share:
             left[c.schema()] -= 1
-        if c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
+        if not os.environ.get('CASES_KEEP') and c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
             psql('DROP SCHEMA IF EXISTS %s CASCADE; DROP SCHEMA IF EXISTS %s_base CASCADE' % (c.schema(), c.schema()))
             BUILT.discard((c.schema(), rows))
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))

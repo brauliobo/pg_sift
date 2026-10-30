@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The benchmark cases of the optimizations (bench/cases.tsv, bench/cases/*.sql; bench/bench cases, steps/cases.sh).
 
-    python3 -I cases.py run   [--cases ID,..] [--engines LIST] [--rows N] [--rounds R] [--runs N] [--duck-port P] [--io cold|warm|off] [--out FILE] [--docs]
+    python3 -I cases.py run   [--cases ID,..] [--engines LIST] [--rows N] [--rounds R] [--runs N] [--duck-port P] [--io cold|warm|off] [--minstr] [--out FILE] [--docs]
     python3 -I cases.py list
     python3 -I cases.py plan  [--cases ..] [--rows N] [--scales L]      (what a run needs, no server)
 

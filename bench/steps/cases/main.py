@@ -28,6 +28,7 @@ def main(doc):
     ap.add_argument('--any-plan', action='store_true', help='the planner\'s plan at this size is what the rows show, not a failure (a smoke run: at a few thousand rows it keeps PostgreSQL\'s plan)')
     ap.add_argument('--io', choices=['cold', 'warm', 'off'], default='cold', help='the IO rows of every lane (steps/iolib.py): cold empties the case\'s tables from the shared buffers and the OS cache first (io_cold_*, then io_warm_*), warm measures the warm run only, '
                     'off writes no io_* rows. A run of a case replaces all of its rows in bench/results, so --io off (or warm) drops the io_cold_* rows the file had')
+    ap.add_argument('--minstr', action='store_true', help='the user instructions of every case\'s statement (minstr rows), not only of the cases whose registry metric names them: the ledger and the instruction ceilings')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')

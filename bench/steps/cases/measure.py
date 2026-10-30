@@ -124,11 +124,15 @@ def minstr(session, sql, runs=3):
     session.run(sql)
     counts = []
     for _ in range(runs):
-        p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        time.sleep(0.3)
+        p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        time.sleep(1)   # perf.sh traps SIGTERM only once bash has started: on a loaded host 0.3 s was too short and the signal killed bash, leaving perf to count to the end of the backend
         session.run(sql)
         p.send_signal(signal.SIGTERM)
-        fields = p.communicate()[0].split()
+        try:
+            fields = p.communicate(timeout=60)[0].split()   # a SIGTERM that lands before perf.sh traps it leaves perf counting for ever
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            return None
         if len(fields) != 3 or not fields[1].isdigit():
             return None
         counts.append(int(fields[1]) / 1e6)
@@ -148,12 +152,12 @@ def cpu_ns(pid):
         return int(f.read().split()[0])
 
 
-def measure_load(case, csv, rounds, rows):
-    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms"""
+def measure_load(case, csv, rounds, rows, instr=False):
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, and with INSTR the backend's user instructions of the whole load (minstr)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
-    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': []} for lane in lanes}, {}, {}
+    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': []} | ({'minstr': []} if instr else {}) for lane in lanes}, {}, {}
     for r in range(rounds):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
@@ -169,6 +173,9 @@ def measure_load(case, csv, rounds, rows):
             s.run('CHECKPOINT')
             io0 = iolib.snapshot(s)
             lsn, cpu = wal_lsn(s), cpu_ns(pid)
+            counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if instr else None
+            if counter:
+                time.sleep(1)
             ms = 0
             for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
                 took, _, err, _ = s.run(stmt.replace('{csv}', csv))
@@ -176,6 +183,11 @@ def measure_load(case, csv, rounds, rows):
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
             cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
+            if counter:
+                counter.send_signal(signal.SIGTERM)
+                fields = counter.communicate()[0].split()
+                if len(fields) == 3 and fields[1].isdigit():
+                    out[lane]['minstr'].append(int(fields[1]) / 1e6)
             for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
                 out[lane][metric].append(mb)
             checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''

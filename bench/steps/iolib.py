@@ -17,6 +17,7 @@ What one run reports (`measure`; every figure is a difference over the run, None
     exec_ms, cpu_ms            the run's execution time (EXPLAIN's, planning not included) and the CPU the backend used in it (/proc/PID/schedstat, ns): parallel workers are other processes and not in it,
                                so run with max_parallel_workers_per_gather = 0 for a CPU figure that is the statement's. A statement EXPLAIN cannot wrap has the CPU and no exec_ms
     wal_bytes                  WAL written in the run (pg_current_wal_lsn difference)
+    peak_rss_mb                the backend's peak resident memory in the run (VmHWM after 5 written to /proc/PID/clear_refs; Linux; parallel workers are other processes)
     size_bytes                 growth of the total size of the tables passed as `sized` (a build's files: bulk index builds bypass the write counters of pg_stat_io)
     cache, how                 `cold` after `cool` emptied the relations of TABLES, else `warm`; how says what was emptied
 
@@ -85,6 +86,28 @@ def backend_cpu_ns(pid):
             return int(f.read().split()[0])
     except (OSError, ValueError):
         return None
+
+
+def reset_peak_rss(pid):
+    """start a new peak of the backend's resident memory (Linux: 5 written to /proc/PID/clear_refs); False where it cannot"""
+    try:
+        with open('/proc/%s/clear_refs' % pid, 'w') as f:
+            f.write('5')
+        return True
+    except OSError:
+        return False
+
+
+def peak_rss_mb(pid):
+    """VmHWM of the backend in MB since `reset_peak_rss`; None where /proc does not say"""
+    try:
+        with open('/proc/%s/status' % pid) as f:
+            for line in f:
+                if line.startswith('VmHWM:'):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return None
 
 
 def snapshot(s):
@@ -211,7 +234,9 @@ def measure(s, sql, tables=None, sized=None):
     try:
         size = total_size(s, sized) if sized else None
         before = snapshot(s)
-        cpu = backend_cpu_ns(setup(s)[0])
+        pid = setup(s)[0]
+        cpu = backend_cpu_ns(pid)
+        peak = reset_peak_rss(pid)
         plan = plan_blocks(s, sql) if explainable(sql) else None
         if plan is None:
             err = s.run(sql)[2]
@@ -219,6 +244,7 @@ def measure(s, sql, tables=None, sized=None):
                 raise RuntimeError(err)
         cpu = None if cpu is None else (backend_cpu_ns(setup(s)[0]) - cpu) / 1e6
         d = delta(before, snapshot(s))
+        d['peak_rss_mb'] = peak_rss_mb(pid) if peak else None
         d['size_bytes'] = total_size(s, sized) - size if sized else None
     finally:
         s.run('RESET track_io_timing')
@@ -239,10 +265,10 @@ def metrics(io):
     _device_mb (the backend's /proc read_bytes) and _read_ms; absent where the figure is None"""
     c = 'io_' + io['cache'] + '_'
     mb = lambda b: None if b is None else b / MB  # noqa: E731
-    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct'], c + 'ms': io.get('exec_ms'), c + 'cpu_ms': io.get('cpu_ms')}
+    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct'], c + 'ms': io.get('exec_ms'), c + 'cpu_ms': io.get('cpu_ms'), c + 'peak_mb': io.get('peak_rss_mb'), c + 'wal_bytes': io.get('wal_bytes')}
     if io['cache'] == 'cold':
         out.update({c + 'read_mb': mb(io['read_bytes']), c + 'device_mb': mb(io['proc_read_bytes']), c + 'read_ms': io['read_ms']})
-    return {k: ('%d' % v if k.endswith('blocks') else '%.3f' % v if k in (c + 'ms', c + 'cpu_ms') else '%.2f' % v) for k, v in out.items() if v is not None}
+    return {k: ('%d' % v if k.endswith('blocks') else '%.3f' % v if k in (c + 'ms', c + 'cpu_ms') else '%d' % v if k == c + 'wal_bytes' else '%.2f' % v) for k, v in out.items() if v is not None}
 
 
 def load_metrics(d):
