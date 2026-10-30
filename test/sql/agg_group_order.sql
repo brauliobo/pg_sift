@@ -19,6 +19,18 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
 VACUUM ANALYZE o;
 
+-- jsonb keys (a dimension built from columns): many distinct values, so the ranks come from the byte keys (gorder.c) and the check of the comparator; numbers that are one double
+-- (9007199254740992 and 9007199254740993), integers and fractions, strings of both cases, with accents and empty, true, false and null elements, nested arrays and objects
+CREATE TABLE oj (id int, a int, b text, c numeric, d bool, e int) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO oj
+SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 19 - 9 END,
+       (ARRAY['a', 'A', 'b', 'B', 'é', 'e', '', 'z', 'Z', '10', '9', '_', 'ab', 'aB', 'Ab'])[1 + i % 15],
+       (ARRAY[9007199254740992, 9007199254740993, 9007199254740994, 0, -1.5, 2.25, 1e20, -1e20, 0.1, 0.5])[1 + i % 10]::numeric,
+       CASE i % 3 WHEN 0 THEN true WHEN 1 THEN false END, i % 3
+FROM generate_series(1, 30000) i;
+CREATE INDEX oj_col ON oj USING sift_col (id, a, b, c, d, e);
+VACUUM ANALYZE oj;
+
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
 CREATE FUNCTION o_keys(q text, k int, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -62,6 +74,11 @@ INSERT INTO o_q VALUES
 	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
 	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
+	-- jsonb keys: the rank of the 3,000 distinct values, ascending, descending, nulls first, with a window on top
+	(30, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1', 'ordered'),
+	(31, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1 DESC', 'ordered'),
+	(32, 0, 'SELECT jsonb_build_array(jsonb_build_object(''k'', c), jsonb_build_array(b, d)) AS c1, e AS c2, count(*) AS n FROM oj GROUP BY 1, 2 ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
+	(33, 0, 'WITH g AS (SELECT to_jsonb(b) AS c1, to_jsonb(c) AS c2, jsonb_build_object(''a'', a, ''d'', d) AS c3, count(*) AS n FROM oj GROUP BY to_jsonb(b), to_jsonb(c), jsonb_build_object(''a'', a, ''d'', d)) SELECT c1, c2, c3, n, lag(n) OVER (PARTITION BY c3 ORDER BY c1 DESC, c2) AS l FROM g', 'ordered'),
 	-- a CTE read twice or materialized is a scan of its own: the Sort stays
 	(13, 0, 'WITH g AS MATERIALIZED (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2) AS l FROM g', 'sorted above'),
 	-- an order the keys do not decide (an Incremental Sort on the prefix, or a Sort): a Sort stays above
@@ -166,7 +183,7 @@ END $$;
 SELECT col, dir, (o3_check(col, canon, dir)).*
 FROM (VALUES ('n', 'c1::float8'), ('f', 'c1 + 0'), ('s', 'translate(c1 COLLATE "C", ''ABÁ'', ''abá'')')) k(col, canon), unnest(ARRAY['ASC', 'DESC']) dir ORDER BY 1, 2;
 
-DROP TABLE o_q, o, o2, o3;
+DROP TABLE o_q, o, o2, o3, oj;
 DROP COLLATION o3_ci;
 DROP FUNCTION o_keys(text, int, bool, int), o_plan(text), o_rows(text, bool), o2_check(text, text, text, text, text), o3_check(text, text, text);
 DROP EXTENSION pg_sift;

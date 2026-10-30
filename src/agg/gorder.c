@@ -8,8 +8,15 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
+#include "lib/stringinfo.h"
 #include "port/pg_bitutils.h"
+#include "utils/jsonb.h"
+#include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
 #include "utils/sortsupport.h"
 
 #include "agg/agg.h"
@@ -26,6 +33,153 @@ static int
 idval_cmp(const void *a, const void *b, void *arg)
 {
 	return ApplySortComparator(((const IdVal *) a)->val, false, ((const IdVal *) b)->val, false, (SortSupport) arg);
+}
+
+
+/*
+ * jsonb keys. Comparing two jsonb values takes the comparator of the type about 400 ns (an iterator for each, allocated), and ranking the 38,000 distinct
+ * values of a dimension by it was 240 ms of a scan of 224,000 groups. Each value is written once as a string of bytes whose memcmp order follows the rules of
+ * compareJsonbContainers (the tokens of an iterator in turn: the kind, the type, and the length, number of elements or bytes; a number as a double), the values
+ * are sorted by it, and the order is then CHECKED with the comparator of the pathkey and repaired by insertion where it differs (a string ordered by a collation, two
+ * numbers that are one double), so the ranks are those of the comparator whatever the bytes got wrong. A repair that moves more than JKEY_REPAIR_MOVES values for each
+ * value gives up for the full sort.
+ */
+#define JKEY_REPAIR_MOVES 4
+
+typedef struct JKey
+{
+	const unsigned char *p;
+	uint32		len;
+	uint32		idx;
+} JKey;
+
+static void
+jkey_put_u32(StringInfo b, uint32 v)
+{
+	unsigned char c[4] = {v >> 24, v >> 16, v >> 8, v};
+
+	appendBinaryStringInfo(b, (char *) c, 4);
+}
+
+/* the order-preserving bytes of a double: the sign bit flipped for a positive number, all the bits for a negative one; NaN last */
+static void
+jkey_put_double(StringInfo b, double d)
+{
+	uint64		u;
+	unsigned char c[8];
+
+	if (isnan(d))
+		u = PG_UINT64_MAX;
+	else
+	{
+		memcpy(&u, &d, sizeof(u));
+		u = (u >> 63) ? ~u : (u | ((uint64) 1 << 63));
+	}
+	for (int i = 0; i < 8; i++)
+		c[i] = u >> (56 - 8 * i);
+	appendBinaryStringInfo(b, (char *) c, 8);
+}
+
+static void
+jkey_make(StringInfo b, Jsonb *jb)
+{
+	JsonbIterator *it = JsonbIteratorInit(&jb->root);
+	JsonbValue	v;
+	JsonbIteratorToken tok;
+
+	while ((tok = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
+	{
+		appendStringInfoChar(b, (char) tok);
+		if (tok == WJB_END_ARRAY || tok == WJB_END_OBJECT)
+			continue;
+		appendStringInfoChar(b, (char) v.type);
+		switch (v.type)
+		{
+			case jbvString:
+				appendBinaryStringInfo(b, v.val.string.val, v.val.string.len);
+				appendStringInfoChar(b, '\0');
+				break;
+			case jbvNumeric:
+				jkey_put_double(b, DatumGetFloat8(DirectFunctionCall1(numeric_float8_no_overflow, NumericGetDatum(v.val.numeric))));
+				break;
+			case jbvBool:
+				appendStringInfoChar(b, v.val.boolean ? 1 : 0);
+				break;
+			case jbvArray:
+				appendStringInfoChar(b, v.val.array.rawScalar ? 0 : 1);
+				jkey_put_u32(b, v.val.array.nElems);
+				break;
+			case jbvObject:
+				jkey_put_u32(b, v.val.object.nPairs);
+				break;
+			default:
+				break;
+		}
+	}
+}
+
+static int
+jkey_cmp(const void *a, const void *b)
+{
+	const JKey *x = a,
+			   *y = b;
+	int			r = memcmp(x->p, y->p, Min(x->len, y->len));
+
+	return r != 0 ? r : (x->len > y->len) - (x->len < y->len);
+}
+
+/* vals sorted as the comparator of ssup sorts them, by the bytes and a checked repair; false: it was left for the full sort */
+static bool
+jsonb_presort(IdVal *vals, uint32 nd, SortSupport ssup)
+{
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift agg jsonb ranks", ALLOCSET_DEFAULT_SIZES),
+				old = MemoryContextSwitchTo(tmp);
+	StringInfoData bytes;
+	uint32	   *at = palloc((nd + 1) * sizeof(uint32));
+	JKey	   *key = palloc(nd * sizeof(JKey));
+	IdVal	   *sorted = palloc(nd * sizeof(IdVal));
+	uint64		moves = 0;
+	bool		ok = true;
+
+	initStringInfo(&bytes);
+	for (uint32 i = 0; i < nd; i++)
+	{
+		at[i] = bytes.len;
+		jkey_make(&bytes, DatumGetJsonbP(vals[i].val));
+	}
+	at[nd] = bytes.len;
+	for (uint32 i = 0; i < nd; i++)
+	{
+		key[i].p = (const unsigned char *) bytes.data + at[i];
+		key[i].len = at[i + 1] - at[i];
+		key[i].idx = i;
+	}
+	qsort(key, nd, sizeof(JKey), jkey_cmp);
+	for (uint32 i = 0; i < nd; i++)
+		sorted[i] = vals[ssup->ssup_reverse ? key[nd - 1 - i].idx : key[i].idx];
+	/* the comparator of the pathkey decides: an insertion sort moves a value only past the ones it is out of order with */
+	for (uint32 i = 1; i < nd && ok; i++)
+	{
+		IdVal		v = sorted[i];
+		uint32		j = i;
+
+		while (j > 0 && idval_cmp(&sorted[j - 1], &v, ssup) > 0)
+		{
+			sorted[j] = sorted[j - 1];
+			j--;
+			if (++moves > (uint64) JKEY_REPAIR_MOVES * nd)
+			{
+				ok = false;
+				break;
+			}
+		}
+		sorted[j] = v;
+	}
+	MemoryContextSwitchTo(old);
+	if (ok)
+		memcpy(vals, sorted, nd * sizeof(IdVal));
+	MemoryContextDelete(tmp);
+	return ok;
 }
 
 typedef struct RankTuples
@@ -115,7 +269,8 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 	ssup.ssup_collation = o->collation;
 	ssup.ssup_nulls_first = o->nulls_first;
 	PrepareSortSupportFromOrderingOp(o->sortop, &ssup);
-	qsort_arg(vals, nd, sizeof(IdVal), idval_cmp, &ssup);
+	if (!(ex->spec->key[o->key].typid == JSONBOID && nd > 64 && jsonb_presort(vals, nd, &ssup)))
+		qsort_arg(vals, nd, sizeof(IdVal), idval_cmp, &ssup);
 	/* NULLs rank before every value or after all of them; the values from 1 */
 	for (uint32 i = 0; i < nd; i++)
 	{

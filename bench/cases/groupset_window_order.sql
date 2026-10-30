@@ -1,10 +1,10 @@
 -- the daily breakdown of an entity by a jsonb dimension, grouping sets with and without the dimension, and the change against the previous day by a window: the groups come out of the scan in the order of the window
--- label: 400,000 events over 600 days, 6 categories and 371 dimensions (a jsonb array built from two columns), about 300,000 groups, a lag over the days of each category and dimension
+-- label: 400,000 events over 600 days, 6 categories and 37,100 dimensions (a jsonb array built from two columns), about 300,000 groups, a lag over the days of each category and dimension
 -- ordered: yes
 --@ setup
 DO $do$ BEGIN
 	IF to_regclass('gw_events') IS NULL THEN
-		CREATE TABLE gw_events AS SELECT i AS id, date '2024-01-01' + i % 600 AS day, i % 6 AS cat, i % 7 AS kind, i % 53 AS code, (i % 11)::float AS v
+		CREATE TABLE gw_events AS SELECT i AS id, date '2024-01-01' + i % 600 AS day, i % 6 AS cat, i % 7 AS kind, i % 5300 AS code, (i % 11)::float AS v
 			FROM generate_series(1, 400000) i;
 		ALTER TABLE gw_events ADD PRIMARY KEY (id);
 		CREATE INDEX gw_events_col ON gw_events USING sift_col (id, day, cat, kind, code, v);
