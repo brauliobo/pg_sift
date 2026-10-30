@@ -1,0 +1,164 @@
+-- A differential over the layouts of a column index: random predicates on a date, a timestamp, a key and a nullable column, answered by a bitmap scan, an index scan and the
+-- aggregate pushdown, against the heap, for an index cut by a key with order arrays and for one cut by superblock, in the states the segments go through (built,
+-- dirty, promoted, vacuumed, merged, reindexed). The statements come from a fixed seed; the output counts only the statements that differ, which is none.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE kc (id int, ent int, d date, ts timestamp, del timestamp, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+SELECT setseed(0.42);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kc SELECT i, 1 + (random() * 39)::int, date '2024-01-01' + (random() * 1000)::int, timestamp '2024-01-01' + random() * 1000 * interval '1 day',
+	CASE WHEN random() < 0.05 THEN now() END, repeat('x', 100) FROM generate_series(1, 20000) i;
+VACUUM (FREEZE, ANALYZE) kc;
+CREATE FUNCTION fz_rows(q text, how text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint := 0; r record;
+BEGIN
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_indexscan = on; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = on;
+	IF how = 'bitmap' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSIF how = 'index' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+	ELSE SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; END IF;
+	FOR r IN EXECUTE q LOOP n := n + 1; END LOOP;
+	RETURN n;
+END $$;
+-- the bitmap plan of the statement reads the index: without this a scan the index cannot serve falls back to the heap and the comparison proves nothing
+CREATE FUNCTION fz_uses(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%kc_i%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION fz_agg(w text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint; BEGIN EXECUTE 'SELECT count(*) FROM kc WHERE ' || w INTO n; RETURN n; END $$;
+CREATE FUNCTION fz_pred() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE parts text[] := '{}'; k int := 1 + (random() * 2)::int; a date; w int; p int;
+BEGIN
+	FOR i IN 1..k LOOP
+		p := (random() * 11)::int; a := date '2024-01-01' + (random() * 1000)::int; w := CASE WHEN random() < 0.5 THEN (random() * 10)::int ELSE (random() * 120)::int END;
+		parts := parts || CASE p
+			WHEN 0 THEN format('d BETWEEN %L AND %L', a, a + w)
+			WHEN 1 THEN format('d = %L', a)
+			WHEN 2 THEN format('d >= %L', a + 800)
+			WHEN 3 THEN format('d < %L', date '2024-01-01' + w)
+			WHEN 4 THEN format('ts >= %L AND ts < %L', a, a + w + 1)
+			WHEN 5 THEN format('ts >= %L', a + 850)
+			WHEN 6 THEN 'del IS NULL'
+			WHEN 7 THEN format('ent = %s', 1 + (random() * 39)::int)
+			WHEN 8 THEN format('ent IN (%s, %s, %s)', 1 + (random() * 39)::int, 1 + (random() * 39)::int, 1 + (random() * 39)::int)
+			WHEN 9 THEN format('id < %s', 1000 + (random() * 20000)::int)
+			WHEN 10 THEN format('d > %L AND d <= %L AND id > %s', a, a + w, (random() * 10000)::int)
+			ELSE format('del IS NULL AND d BETWEEN %L AND %L', a, a + w) END;
+	END LOOP;
+	RETURN array_to_string(parts, ' AND ');
+END $$;
+-- n statements of the seed: how many ran and how many differ between the scans and the heap
+CREATE FUNCTION fz_run(n int, OUT ran int, OUT used int, OUT differ int) LANGUAGE plpgsql AS $$
+DECLARE w text; q text; h bigint;
+BEGIN
+	ran := 0; used := 0; differ := 0;
+	PERFORM setseed(0.7);
+	FOR i IN 1..n LOOP
+		w := fz_pred(); q := 'SELECT id FROM kc WHERE ' || w;
+		h := fz_rows(q, 'heap');
+		CONTINUE WHEN h = 0;
+		ran := ran + 1;
+		IF fz_uses(q) THEN used := used + 1; END IF;
+		IF fz_rows(q, 'bitmap') <> h OR fz_rows(q, 'index') <> h OR fz_agg(w) <> h THEN differ := differ + 1; END IF;
+	END LOOP;
+END $$;
+CREATE PROCEDURE fz_layout(opts text) LANGUAGE plpgsql AS $$
+BEGIN
+	DROP INDEX IF EXISTS kc_i;
+	EXECUTE 'CREATE INDEX kc_i ON kc USING sift_col (id, ent, d, ts, del) WITH (' || opts || ')';
+END $$;
+-- the states, by layout: enough statements ran, enough of them read the index, and none differs
+CREATE FUNCTION fz_state(label text) RETURNS TABLE (state text, covered bool, indexed bool, differ int) LANGUAGE sql AS $$
+	SELECT label, ran > 20, used > 10, differ FROM fz_run(60)
+$$;
+CALL fz_layout('key_cut = ''ent'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+SELECT * FROM fz_state('key cut: built');
+     state      | covered | indexed | differ 
+----------------+---------+---------+--------
+ key cut: built | t       | t       |      0
+(1 row)
+
+INSERT INTO kc SELECT 100000 + i, 1 + (random() * 39)::int, date '2024-01-01' + (random() * 1000)::int, timestamp '2024-01-01' + random() * 1000 * interval '1 day',
+	CASE WHEN random() < 0.05 THEN now() END, repeat('x', 100) FROM generate_series(1, 2000) i;
+UPDATE kc SET d = d + 1, ts = ts + interval '1 day' WHERE id % 9 = 0;
+DELETE FROM kc WHERE id % 13 = 0;
+SELECT * FROM fz_state('key cut: dirty');
+     state      | covered | indexed | differ 
+----------------+---------+---------+--------
+ key cut: dirty | t       | t       |      0
+(1 row)
+
+SELECT sift.col_promote('kc_i') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM fz_state('key cut: promoted');
+       state       | covered | indexed | differ 
+-------------------+---------+---------+--------
+ key cut: promoted | t       | t       |      0
+(1 row)
+
+VACUUM kc;
+SELECT * FROM fz_state('key cut: vacuumed');
+       state       | covered | indexed | differ 
+-------------------+---------+---------+--------
+ key cut: vacuumed | t       | t       |      0
+(1 row)
+
+SELECT sift.col_merge('kc_i', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT * FROM fz_state('key cut: merged');
+      state      | covered | indexed | differ 
+-----------------+---------+---------+--------
+ key cut: merged | t       | t       |      0
+(1 row)
+
+REINDEX INDEX kc_i;
+SELECT * FROM fz_state('key cut: reindexed');
+       state        | covered | indexed | differ 
+--------------------+---------+---------+--------
+ key cut: reindexed | t       | t       |      0
+(1 row)
+
+CALL fz_layout('key_cut = ''off'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+SELECT * FROM fz_state('by superblock: built');
+        state         | covered | indexed | differ 
+----------------------+---------+---------+--------
+ by superblock: built | t       | t       |      0
+(1 row)
+
+SELECT sift.col_promote('kc_i') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM fz_state('by superblock: promoted');
+          state          | covered | indexed | differ 
+-------------------------+---------+---------+--------
+ by superblock: promoted | t       | t       |      0
+(1 row)
+
+DROP PROCEDURE fz_layout(text);
+DROP FUNCTION fz_state(text), fz_run(int), fz_pred(), fz_agg(text), fz_uses(text), fz_rows(text, text);
+DROP TABLE kc;
+DROP EXTENSION pg_sift;
