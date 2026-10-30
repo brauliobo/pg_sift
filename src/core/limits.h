@@ -82,9 +82,9 @@
 	  "UNION ALL arms of a fused or two-level scan", "normal plan (slug shape_width)", "-", 1) \
 	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec.h", SIFT_AGG_MAX_VLEAVES, "leaves", \
 	  "virtual leaves (expressions) per scan", "normal plan (slug shape_width)", "-", 1) \
-	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "agg/colsrc.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
+	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "agg/colsrc/meta.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
 	  "leaves of the layout of one scan", "normal plan", "-", 0) \
-	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "agg/colsrc.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
+	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "agg/colsrc/exec.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
 	  "filters of a scan that skip units", "the others do not skip units", "-", 0) \
 	X(wide_conjuncts, "SIFT_AGG_MAX_WIDE", "agg/spec.h", SIFT_AGG_MAX_WIDE, "conjuncts", \
 	  "conjuncts on wide leaves per scan", "normal plan", "-", 0) \

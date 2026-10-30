@@ -41,8 +41,8 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `dist_narrow_words` | words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off | 8 | words | the set is a bitmap, a directory and chunks of 4096 bits a group |  | `agg/dist_int.h` `DIST_NARROW_WORDS` | yes |
 | `arms` | UNION ALL arms of a fused or two-level scan | 16 | arms | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_ARMS` | yes |
 | `virtual_leaves` | virtual leaves (expressions) per scan | 16 | leaves | normal plan (slug shape_width) |  | `agg/spec.h` `SIFT_AGG_MAX_VLEAVES` | yes |
-| `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_LEAVES` |  |
-| `scan_filters` | filters of a scan that skip units | 64 | filters | the others do not skip units |  | `agg/colsrc.h` `SIFT_COLSRC_MAX_FILTERS` |  |
+| `layout_leaves` | leaves of the layout of one scan | 128 | leaves | normal plan |  | `agg/colsrc/meta.h` `SIFT_COLSRC_MAX_LEAVES` |  |
+| `scan_filters` | filters of a scan that skip units | 64 | filters | the others do not skip units |  | `agg/colsrc/exec.h` `SIFT_COLSRC_MAX_FILTERS` |  |
 | `wide_conjuncts` | conjuncts on wide leaves per scan | 8 | conjuncts | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_WIDE` |  |
 | `generic_leaves` | leaves one argument of a generic aggregate reads | 4 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GLEAVES` |  |
 | `generic_args` | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | 100 | arguments | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_GARGS` |  |
