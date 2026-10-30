@@ -5,6 +5,8 @@
  */
 #include "postgres.h"
 
+#include <float.h>
+
 #include "utils/float.h"
 
 #include "agg/dense_int.h"

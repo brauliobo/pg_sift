@@ -108,11 +108,11 @@ INSERT INTO jt_shapes VALUES
 	(5, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g WHERE f.k_mix > 5 AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(6, 'SELECT f.id, f.k_rand FROM jd d JOIN jf f ON f.g = d.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(7, 'SELECT f.id, f.k_rand FROM jf f JOIN jd2 e ON e.h = f.h WHERE e.tier = 1 ORDER BY f.k_rand, f.id LIMIT 10'),
-	-- refused: a column of the table in the result, a table with no unique index on the key, an outer join, a condition that reads the scanned row,
+	-- refused: a column of the table in the result, a table with no unique index on the key, an outer join (to a table without a unique index: PostgreSQL 19 removes one to a unique key that nothing reads), a condition that reads the scanned row,
 	-- a text key, an expression of the scanned column as the key, a second key, a join to a sub-select, an aggregate
 	(11, 'SELECT f.id, d.label FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(12, 'SELECT f.id, f.k_rand FROM jf f JOIN jn d ON d.g = f.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
-	(13, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN jd d ON d.g = f.g AND d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
+	(13, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN jn d ON d.g = f.g AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(14, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region > f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(15, 'SELECT f.id, f.k_rand FROM jf f JOIN jl d ON d.label = f.lab WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(16, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g + 1 WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
