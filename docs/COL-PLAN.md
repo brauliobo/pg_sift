@@ -179,7 +179,7 @@ The groups leave as the rows of `custom_scan_tlist` (keys, then aggregates); the
 
 ### One pass for the arms
 
-The inlined arms of time-series-granularities scan the same rows for the same aggregates and differ in their keys. Nodes of one executor state register when they begin (`fuse_register`); the first to run takes every registered node whose spec equals its own once keys are left out, uniting the leaves, joined-table columns and combo slots only some read (`agg/spec_fuse.c`, `sift_aggspec_fusable`). It scans once with the arms' distinct keys and the arm as the set key (the grouping-set machinery, `sift_aggspec_fuse`); each node returns the groups of its set. `sift.agg_fuse` turns the pass off. Each set's tuples are those of the node alone, in the same order, so rows and float sums equal separate passes. `EXPLAIN ANALYZE` shows `Arms In One Pass` and the shared scan's counters on each node.
+The inlined arms of time-series-granularities scan the same rows for the same aggregates and differ in their keys. Nodes of one executor state register when they begin (`fuse_register`); the first to run takes every registered node whose spec equals its own once keys are left out, uniting the leaves, joined-table columns and combo slots only some read (`agg/spec_fuse/`, `sift_aggspec_fusable`). It scans once with the arms' distinct keys and the arm as the set key (the grouping-set machinery, `sift_aggspec_fuse`); each node returns the groups of its set. `sift.agg_fuse` turns the pass off. Each set's tuples are those of the node alone, in the same order, so rows and float sums equal separate passes. `EXPLAIN ANALYZE` shows `Arms In One Pass` and the shared scan's counters on each node.
 
 Fusable arms:
 

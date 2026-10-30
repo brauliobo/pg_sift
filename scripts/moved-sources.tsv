@@ -22,3 +22,4 @@ src/col/am/	src/col/am.c	am_
 src/agg/exec/	src/agg/agg.c	
 src/agg/topn/	src/agg/topn.c	
 src/agg/flat/	src/agg/flat.c	
+src/agg/spec_fuse/	src/agg/spec_fuse.c	
