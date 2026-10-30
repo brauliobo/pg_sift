@@ -6,7 +6,9 @@ import re
 import signal
 import statistics
 import subprocess
+import threading
 import time
+from collections import Counter
 
 import iolib
 
@@ -152,6 +154,30 @@ def cpu_ns(pid):
         return int(f.read().split()[0])
 
 
+def wait_sampler(pid):
+    """the kernel wait (state:function) of the backend every 2 ms while it does not run, until stop() returns: where the time of a load beyond its CPU went"""
+    seen, done = Counter(), threading.Event()
+
+    def sample():
+        while not done.wait(0.002):
+            try:
+                with open('/proc/%s/stat' % pid) as f:
+                    state = f.read().rsplit(')', 1)[1].split()[0]
+                if state in ('S', 'D'):
+                    with open('/proc/%s/wchan' % pid) as f:
+                        seen[state + ':' + f.read()] += 1
+            except OSError:
+                return
+    thread = threading.Thread(target=sample)
+    thread.start()
+
+    def stop():
+        done.set()
+        thread.join()
+        return seen
+    return stop
+
+
 def measure_load(case, csv, rounds, rows, instr=False):
     """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, and with INSTR the backend's user instructions of the whole load (minstr)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
@@ -177,12 +203,16 @@ def measure_load(case, csv, rounds, rows, instr=False):
             if counter:
                 time.sleep(1)
             ms = 0
+            stop = wait_sampler(pid)
             for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
                 took, _, err, _ = s.run(stmt.replace('{csv}', csv))
                 if err:
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
+            waits = stop()
             cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
+            if ms - cpu / 1e6 > max(20, ms / 5):
+                log('%s %s: %.0f of %.0f ms off the CPU, 2 ms samples of the kernel wait: %s' % (case.id, lane, ms - cpu / 1e6, ms, ', '.join('%s %d' % kv for kv in waits.most_common(4))))
             if counter:
                 counter.send_signal(signal.SIGTERM)
                 fields = counter.communicate()[0].split()
