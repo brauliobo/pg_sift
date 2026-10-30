@@ -93,6 +93,53 @@ rescan_floor(PlannerInfo *root, IndexPath *path)
 }
 
 /*
+ * The scans genericcostestimate counts for the lists of a leaf that the scan cuts to the keys all of its equalities hold (narrow_lists): the product of their lengths over
+ * the fewest keys of any of them, 1 for an equality; *narrowed = the leaves.
+ */
+static double
+redundant_scans(PlannerInfo *root, IndexPath *path, Bitmapset **narrowed)
+{
+	IndexOptInfo *index = path->indexinfo;
+	double		redundant = 1.0;
+
+	for (int col = 0; col < index->nkeycolumns; col++)
+	{
+		double		product = 1.0,
+					fewest = 0.0;
+		int			tests = 0;
+
+		foreach_node(IndexClause, ic, path->indexclauses)
+		{
+			if (ic->indexcol != col)
+				continue;
+			foreach_node(RestrictInfo, ri, ic->indexquals)
+			{
+				double		keys = 0.0;
+
+				if (IsA(ri->clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) ri->clause)->useOr &&
+					get_op_opfamily_strategy(((ScalarArrayOpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber)
+				{
+					keys = Max(1.0, estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args)));
+					product *= keys;
+				}
+				else if (IsA(ri->clause, OpExpr) && get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber)
+					keys = 1.0;
+				if (keys > 0.0)
+				{
+					fewest = tests++ == 0 ? keys : Min(fewest, keys);
+				}
+			}
+		}
+		if (tests > 1)
+		{
+			redundant *= product / fewest;
+			*narrowed = bms_add_member(*narrowed, col);
+		}
+	}
+	return redundant;
+}
+
+/*
  * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
  * values (only the rows the directory lists, when it is what keeps them) and handing the rows over. The start is separate so that a LIMIT stops the scan early: the units are read one at a time.
@@ -115,7 +162,9 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				row_cost,
 				scale = cpu_operator_cost / 0.0025;
 	Bitmapset  *cols = NULL,
-			   *slow = NULL;
+			   *slow = NULL,
+			   *narrowed = NULL;
+	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
 
 	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one */
@@ -126,7 +175,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		{
 			int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[ic->indexcol]) : 0;
 
-			if (strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber)
+			if ((strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber) && !(IsA(ri->clause, ScalarArrayOpExpr) && bms_is_member(ic->indexcol, narrowed)))
 				slow = bms_add_member(slow, ic->indexcol);
 		}
 	}
@@ -142,8 +191,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	kept = Min(Min(zones_kept(root, path, irel), sets_kept(root, path, irel)), pkept);
 	index_close(irel, AccessShareLock);
 	kept_units = kept * units;
-	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one */
-	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans, 1);
+	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one: the lists of a leaf that has an equality, or another list, are one test of the fewest keys (narrow_lists) */
+	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans / redundant, 1);
 	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
 		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)

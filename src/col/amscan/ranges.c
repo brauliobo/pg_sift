@@ -325,7 +325,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				continue;
 			share = 1.0 - exp(-rows / units);
 			/* equal counts: a key that is in every unit still has its rows listed, and the scan filters those, not the rows of the units */
-			if (1.0 - cover + cover * share <= kept)
+			/* an IN list and an equality on one leaf are one test of the fewer keys (narrow_lists): the one with fewer keys is the one priced */
+			if (1.0 - cover + cover * share < kept || (1.0 - cover + cover * share <= kept && (*nprobes == 0 || nkeys < *nprobes)))
 			{
 				kept = 1.0 - cover + cover * share;
 				*nprobes = (int) ceil(nkeys);
