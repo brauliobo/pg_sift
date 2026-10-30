@@ -426,8 +426,8 @@ space_shift(Relation rel, SiftWriteTarget *wt, const void *arg)
 
 /*
  * No segment fits the allowance whole (the one that ends the file is larger than it): the highest runs of that one go down a round at a time,
- * when the free blocks below it are worth the lock, and on to the end once a round has begun, so that the last of them is not left above a few free blocks. An index only; the segment keeps its generation and the cached state of a backend
- * holds no block, and the relation lock keeps every reader out.
+ * when the free blocks below it are worth the lock, and on to the end once a round has begun, so that the last of them is not left above a few free blocks. The segment keeps its generation and the cached state of a backend
+ * holds no block, and the relation lock keeps every reader out; the column segments of a sift_table are the same segments.
  */
 static bool
 space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg, uint64 *budget)
@@ -435,7 +435,7 @@ space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg
 	const SiftSegEntry *e;
 	SpaceShift shift;
 
-	if (rel->rd_rel->relkind != RELKIND_INDEX || snap->nsegs == 0 || (e = space_entry(snap, seg[0].gen)) == NULL ||
+	if (snap->nsegs == 0 || (e = space_entry(snap, seg[0].gen)) == NULL ||
 		e->kind != SIFT_SEG_IMMUTABLE ||
 		(!space_resume && space_copied == 0 && !space_worth(sift_store_free_below(rel, seg[0].end, SPACE_MIN_RUN), snap->meta.high_water)))
 		return false;

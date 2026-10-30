@@ -104,6 +104,35 @@ subtest 'col shift crash after a round' => sub {
 	cmp_ok(size($primary, 'col'), '<=', $before, 'the file did not grow');
 };
 
+# A sift_table loaded in batches: the merge of the batches lies above holes that its own VACUUM released, in pieces. Like an index, the highest pieces go down a round at a time
+# (a table that is shifted as well as an index: the crash after the first round leaves the segment whole), a session that had read the table sees the same rows after, and the file is cut
+subtest 'tbl shift crash after a round' => sub {
+	$primary->safe_psql('postgres', "DROP TABLE IF EXISTS s; CREATE TABLE s (id int, v bigint, body text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)");
+	$primary->safe_psql('postgres', "INSERT INTO s SELECT g, g * 3, md5(g::text) || md5((g * 7)::text) FROM generate_series($_ * 80000 + 1, ($_ + 1) * 80000) g") for 0 .. 1;
+	$primary->safe_psql('postgres', 'VACUUM s');
+	$primary->safe_psql('postgres', 'ALTER TABLE s RESET (vacuum_truncate)');
+	my $expected = digest($primary);
+	my $before = size($primary, 'tbl');
+	my $offset = -s $primary->logfile;
+	system("$ENV{SIFT_REPO}/scripts/leakcheck.sh", 'expect', 1, 'terminated by signal 9');
+	my ($out, $err) = ('', '');
+	my $rc = $primary->psql('postgres', "SET sift.vacuum_rewrite_limit = 1; SET sift.test_space_crash = 4; VACUUM s", stdout => \$out, stderr => \$err);
+	ok($rc != 0, 'the injected boundary killed VACUUM');
+	ok($primary->log_contains(qr/sift test: space crash phase 4/, $offset), 'the boundary after the first round was reached');
+	$primary->wait_for_log(qr/database system is ready to accept connections/, $offset);
+	healthy($primary, 'tbl', $expected);
+	$primary->safe_psql('postgres', 'SET sift.vacuum_rewrite_limit = 1; VACUUM s');
+	is($primary->safe_psql('postgres', "SELECT sift._test_check('s')"), '0', 'VACUUM also reclaimed any crash orphans');
+	healthy($primary, 'tbl', $expected);
+	cmp_ok(size($primary, 'tbl'), '<=', $before, 'the file did not grow');
+	my $bg = $primary->background_psql('postgres');
+	my $rows = $bg->query_safe('SELECT count(*) || chr(58) || sum(v) FROM s');
+	$primary->safe_psql('postgres', 'VACUUM s');
+	is($primary->safe_psql('postgres', 'SELECT free_blocks * 20 < relation_blocks FROM sift.table_space(\'s\')'), 't', 'the holes are gone: under 5% of the file is free');
+	is($bg->query_safe('SELECT count(*) || chr(58) || sum(v) FROM s'), $rows, 'the session that read the table before the last rounds reads the same rows after them');
+	$bg->quit;
+};
+
 for my $kind (qw(col tbl))
 {
 	subtest "$kind primary cursor and disabled truncation" => sub {

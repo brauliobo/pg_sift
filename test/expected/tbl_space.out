@@ -166,4 +166,23 @@ SELECT count(*), sum(v) FROM sc;
 (1 row)
 
 DROP TABLE sc;
+-- a load in batches: each batch promotes its write buffers into a segment, the VACUUM merges them into one above the holes the buffers leave, in pieces that
+-- skip past holes that this VACUUM released itself; the highest pieces go down into those holes and the free end is cut, as for an index
+CREATE TABLE sb (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO sb SELECT g, g * 3, md5(g::text) || md5((g * 7)::text) FROM generate_series(1, 150000) g;
+INSERT INTO sb SELECT g, g * 3, md5(g::text) || md5((g * 7)::text) FROM generate_series(150001, 300000) g;
+VACUUM sb;
+SELECT free_blocks * 20 < relation_blocks AS little_free, relation_blocks = high_water AS at_mark FROM sift.table_space('sb');
+ little_free | at_mark 
+-------------+---------
+ t           | t
+(1 row)
+
+SELECT count(*), sum(v) FROM sb;
+ count  |     sum      
+--------+--------------
+ 300000 | 135000450000
+(1 row)
+
+DROP TABLE sb;
 DROP EXTENSION pg_sift;
