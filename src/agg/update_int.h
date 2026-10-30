@@ -1,5 +1,5 @@
 /*
- * agg/update_int.h - the update of the aggregates per chunk (agg/update.c)
+ * agg/update_int.h - the update of the aggregates per chunk (agg/update/)
  */
 #ifndef SIFT_AGG_UPDATE_INT_H
 #define SIFT_AGG_UPDATE_INT_H
@@ -10,7 +10,7 @@
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* update.c */
+/* update/ */
 void agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all);
 const double *eval_vx(AggExec *ex, SiftAggAgg *a, int nsel);
 void agg_tuples(AggExec *ex, Tup *t);

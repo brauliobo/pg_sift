@@ -1,5 +1,5 @@
 /*
- * agg/tup_int.h - the tuples of a chunk that reach the aggregates (agg/update.c)
+ * agg/tup_int.h - the tuples of a chunk that reach the aggregates (agg/update/)
  */
 #ifndef SIFT_AGG_TUP_INT_H
 #define SIFT_AGG_TUP_INT_H

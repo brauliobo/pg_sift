@@ -245,7 +245,7 @@ if [[ $MODE == --selftest ]]; then
 	# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
 	out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
-	for f in "docs/USAGE.md false" "docs/COL-PLAN.md false" "src/agg/update.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
+	for f in "docs/USAGE.md false" "docs/COL-PLAN.md false" "src/agg/update/upd.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
 		fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 	done

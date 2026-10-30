@@ -8,7 +8,7 @@ Files:
 |---|---|
 | `src/agg/plan/`, `src/agg/plan_*.c` | shape matcher, cost |
 | `src/agg/spec.[ch]` | what the planner proved, serialized into `custom_private` |
-| `src/agg/exec/` and neighbours (`agg_int.h`, `unit.c`, `update.c`, `init.c`, `par.c`, ...) | executor, EXPLAIN |
+| `src/agg/exec/` and neighbours (`agg_int.h`, `unit.c`, `update/`, `init.c`, `par.c`, ...) | executor, EXPLAIN |
 | `src/agg/kern*.c` | vectorized operators |
 | `src/agg/colsrc.h`, `src/agg/colsrc.c` | the seam to the column data and its provider registry |
 | `src/agg/col.c` | provider over the `sift_col` index |

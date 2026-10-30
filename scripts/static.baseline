@@ -8,6 +8,10 @@ scan|analyzer|src/agg/group/kids.c|Array access (from variable 'idx') results in
 scan|analyzer|src/agg/group/table.c|The right operand of '==' is a garbage value [core.UndefinedBinaryOperatorResult]
 scan|analyzer|src/agg/osa.c|Dereference of null pointer [core.NullDereference]
 scan|analyzer|src/agg/pred.c|Assigned value is uninitialized [core.uninitialized.Assign]
+scan|analyzer|src/agg/update/sums.c|Access to field 'num' results in a dereference of a null pointer (loaded from variable 'ds') [core.NullDereference]
+scan|analyzer|src/agg/update/upd.c|Access to field 'data' results in a dereference of a null pointer (loaded from field 'v') [core.NullDereference]
+scan|analyzer|src/agg/update/upd.c|Access to field 'data' results in a dereference of a null pointer (loaded from variable 'v') [core.NullDereference]
+scan|analyzer|src/agg/update/upd.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf') [core.NullDereference]
 scan|analyzer|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc') [core.NullDereference]
 scan|analyzer|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t' [core.BitwiseShift]
 scan|analyzer|src/bm25/bitmap_int.h|The left operand of '|' is a garbage value [core.UndefinedBinaryOperatorResult]
@@ -113,6 +117,10 @@ tidy|clang-analyzer-core.NullDereference|src/agg/dist/add.c|Array access (from v
 tidy|clang-analyzer-core.NullDereference|src/agg/group/kids.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf')
 tidy|clang-analyzer-core.NullDereference|src/agg/group/kids.c|Array access (from variable 'idx') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/agg/osa.c|Dereference of null pointer
+tidy|clang-analyzer-core.NullDereference|src/agg/update/sums.c|Access to field 'num' results in a dereference of a null pointer (loaded from variable 'ds')
+tidy|clang-analyzer-core.NullDereference|src/agg/update/upd.c|Access to field 'data' results in a dereference of a null pointer (loaded from field 'v')
+tidy|clang-analyzer-core.NullDereference|src/agg/update/upd.c|Access to field 'data' results in a dereference of a null pointer (loaded from variable 'v')
+tidy|clang-analyzer-core.NullDereference|src/agg/update/upd.c|Access to field 'vtype' results in a dereference of a null pointer (loaded from variable 'lf')
 tidy|clang-analyzer-core.NullDereference|src/bm25/bitmap.c|Dereference of null pointer (loaded from variable 'acc')
 tidy|clang-analyzer-core.NullDereference|src/bm25/inv.c|Array access (via field 'pos') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru')
