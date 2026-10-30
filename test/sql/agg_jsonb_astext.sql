@@ -2,6 +2,7 @@
 -- false), so a regular expression or any text function on the text of a number runs on the column. Every query runs with and without the
 -- pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 
@@ -21,23 +22,9 @@ FROM generate_series(1, 3000) i;
 CREATE INDEX a_col ON a_t USING sift_col (id, grp, doc, metrics_a, items) WITH (paths = 'doc->label astext, metrics_a.* astext, items[]{kind text, score astext}');
 VACUUM ANALYZE a_t;
 
-CREATE FUNCTION a_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION a_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
-CREATE FUNCTION a_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION a_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_agg_scan(q) $$;
 
 CREATE TABLE a_q (q text);
 INSERT INTO a_q VALUES
@@ -94,4 +81,5 @@ SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1 ORDER BY 1;
 
 DROP TABLE a_t, a_q, a_bad;
 DROP FUNCTION a_rows(text, bool), a_pushed(text), a_compare();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

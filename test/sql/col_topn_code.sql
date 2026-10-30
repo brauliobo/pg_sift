@@ -3,6 +3,7 @@
 -- position in byte order once it is sorted). Every query runs twice, the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows are
 -- compared in order, after the build, after promotions that make more segments, with rows in the write buffer, after updates and deletes, a merge and VACUUM.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 
@@ -23,17 +24,7 @@ SELECT oc_rows(1, 6000);
 CREATE INDEX oc_col ON oc USING sift_col (id, g, u, b, w, s, sp);
 VACUUM (ANALYZE) oc;
 
-CREATE FUNCTION oc_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION oc_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+stored' when it reads the first key as the stored dictionary, and the rows
 CREATE FUNCTION oc_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -206,4 +197,5 @@ SELECT oc_check($q$SELECT id, b FROM ov ORDER BY b DESC, id LIMIT 10$q$) AS over
 DROP FUNCTION oc_check, oc_mode, oc_path, oc_rows, oc_stage;
 DROP TABLE oc, oc_q, ov, ox, ot, otd, ob;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

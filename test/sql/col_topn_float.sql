@@ -3,6 +3,7 @@
 -- ties), a column that follows the table, one that does not, one of few values and one with many NULLs, both directions, NULLS FIRST and LAST, under
 -- filters that leave most, some and few rows of a unit, compared with the plain plan; again after deletes, moved rows and rows in the write buffer.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks of about 1250 rows
@@ -21,14 +22,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX tf_col ON tf USING sift_col (id, g, f_clu, f_rand, f_edge, f_ties, f_nul, r_edge, r_rand);
 VACUUM (ANALYZE) tf;
 
-CREATE FUNCTION tf_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION tf_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- one query in both plans: the md5 of its rows in order and whether the pushed plan is the top-N scan
 CREATE FUNCTION tf_run(q text, OUT pushed_md5 text, OUT plain_md5 text, OUT topn bool) LANGUAGE plpgsql AS $$
@@ -73,4 +67,5 @@ DROP FUNCTION tf_stage();
 DROP FUNCTION tf_run(text);
 DROP FUNCTION tf_mode(bool);
 DROP TABLE tf;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

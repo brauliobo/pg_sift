@@ -1,18 +1,13 @@
 -- SiftAgg over a sift_table: a WHERE conjunct on numeric(p > 18), unconstrained numeric, money and interval is tested in the source on the
 -- exact values. Every query runs with and without the pushdown; the results must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE wd (id int, g int, n38 numeric(38, 6), nf numeric, m money, iv interval, i4 int) USING sift_table;
 
-CREATE FUNCTION wd_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION wd_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
 CREATE FUNCTION wd_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -88,4 +83,5 @@ SELECT * FROM wd_compare();
 
 DROP TABLE wd, wd_q;
 DROP FUNCTION wd_rows, wd_pushed, wd_compare;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

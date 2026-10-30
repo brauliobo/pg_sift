@@ -3,6 +3,7 @@
 -- without the pushdown and the rows must be the same (the floats are multiples of 0.25, so a sum does not depend on the order of its
 -- additions); `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 -- the element cubes of the pre-aggregates answer the grouped element queries without a scan; the chunks are the point here
@@ -62,15 +63,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION d_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION d_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_agg_scan(q) $$;
 
 -- did the scan aggregate a chunk from its bitmap
 CREATE FUNCTION d_dense(q text, dense bool) RETURNS bool LANGUAGE plpgsql AS $$
@@ -177,4 +170,5 @@ FROM (VALUES ('SELECT sum(amt) FROM d_big'), ('SELECT avg(amt) FROM d_big'), ('S
 
 DROP TABLE d_t, d_j, d_nv, d_f, d_big, d_q;
 DROP FUNCTION d_rows(text, bool, bool), d_pushed(text), d_dense(text, bool), d_compare(), d_err(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

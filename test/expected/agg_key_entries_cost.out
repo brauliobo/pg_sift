@@ -4,6 +4,7 @@
 -- is kept (a filter that keeps a few rows in a unit maps those only: agg_group_key_cost); a key of a few values has few entries and costs what an integer key does.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, part int NOT NULL, amount float8 NOT NULL);
 SELECT setseed(0.42);
@@ -17,17 +18,7 @@ CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount) WITH
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
 CREATE FUNCTION scan_used(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT bool_or(used) FROM sift.explain_why(q) $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 -- the entries of the near-unique key cost the scan well over the integer key of the same groups; the 17 values of the other cost it the same
 SELECT key,
        scan_cost(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) /
@@ -51,4 +42,5 @@ FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, 
 
 DROP FUNCTION scan_cost(text), scan_used(text), differences(text);
 DROP TABLE items;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -1,6 +1,7 @@
 -- The limits of the top-N heap lowered (sift.test_limits: topn_rows, topn_keys), so that the sort of every row that passes runs on a few rows:
 -- the pushed plan and the plain plan give the same rows in the same order, at the cap, over it, with ties and NULLs, for a generic plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 CREATE TABLE cl (id int PRIMARY KEY, a int, b int, c int, f float8, amount numeric(10,2), ts timestamp);
@@ -13,14 +14,7 @@ FROM generate_series(1, 6000) i;
 CREATE INDEX cl_col ON cl USING sift_col (id, a, b, c, f, amount, ts);
 VACUUM (ANALYZE) cl;
 
-CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan, ' sorted' when it keeps no heap, and the number of rows
 CREATE FUNCTION cl_check(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -88,4 +82,5 @@ RESET plan_cache_mode;
 RESET sift.test_limits;
 DROP FUNCTION cl_generic(bigint, bigint), cl_check(text), cl_mode(bool);
 DROP TABLE cl, cl_q;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

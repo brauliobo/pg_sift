@@ -1,6 +1,7 @@
 -- Declared paths of a jsonb column of a sift_table (sift.table_set_paths): the path leaves are written next to the exact bytes, and a query that
 -- reads a path runs as SiftAgg once every segment has them, with the rows of the plan without it.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 CREATE TABLE ph (id int, doc jsonb);
@@ -32,13 +33,7 @@ SELECT count(*) FROM sift.table_paths;
      0
 (1 row)
 
-CREATE FUNCTION pt_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION pt_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 -- SiftAgg for a plan that has it, empty for one that has not
 CREATE FUNCTION pt_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -293,4 +288,5 @@ SELECT count(*) FROM sift.table_paths;
 
 DROP TABLE ph, pt_q;
 DROP FUNCTION pt_rows, pt_plan, pt_compare;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

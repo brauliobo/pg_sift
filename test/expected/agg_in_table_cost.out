@@ -3,6 +3,7 @@
 -- the same 256 keys in a range of 256 nothing visible. The scan is priced for the table, and a list over a wide range on a small result keeps the index plan.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, key int NOT NULL, kind int NOT NULL, amount float8 NOT NULL);
 SELECT setseed(0.42);
@@ -20,17 +21,7 @@ CREATE FUNCTION in_query(span int, n int) RETURNS text LANGUAGE sql AS $$
 	              (SELECT string_agg((1 + g * (span / n))::text, ',') FROM generate_series(0, n - 1) g))
 $$;
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) LIMIT 1 $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 -- 256 keys over a range of 1,000,000 values against 256 keys over 256 values (the table of a million bytes against none to speak of): the scan costs more
 -- by a good share of the normal plan's price, and a list of 8 keys over the same range too
 SELECT n, scan_cost(in_query(1000000, n)) - scan_cost(in_query(256, n)) > 500 AS table_priced
@@ -64,4 +55,5 @@ SELECT differences(in_query(1000000, 256)) AS differences_wide, differences(in_q
 
 DROP FUNCTION in_query(int, int), scan_cost(text), differences(text);
 DROP TABLE items;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

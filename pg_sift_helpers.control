@@ -1,0 +1,8 @@
+# SQL helpers shared by the regression tests (test/sql): installed by the test build and by scripts/release-library-check.sh, never by a normal make install
+comment = 'sift test helpers (sift_helpers.*), for tests only'
+default_version = '1.0'
+requires = 'pg_sift'
+schema = sift_helpers
+relocatable = false
+superuser = true
+trusted = false

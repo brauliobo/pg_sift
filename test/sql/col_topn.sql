@@ -2,6 +2,7 @@
 -- columns are read from the units, the heap only for the n rows of the result. Every query runs twice, the plain plan as the reference
 -- (sift.enable_agg off) and the pushed one, and the rows are compared in order: after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 
@@ -27,14 +28,7 @@ CREATE INDEX ct_bm ON ct USING sift (memo);
 CREATE INDEX ct_col ON ct USING sift_col (id, store, status, amount, placed, ts, seq, f) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) ct;
 
-CREATE FUNCTION ct_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION ct_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION ct_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
@@ -287,4 +281,5 @@ DROP TABLE cb;
 
 DROP TABLE ct_q, ct_t, ct;
 DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_generic(text, text, text), ct_stat(text, text), ct_stage(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

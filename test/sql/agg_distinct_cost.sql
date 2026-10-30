@@ -6,6 +6,7 @@
 -- The workers of a scan are priced for their start (3 ms and 0.35 ms each) and, for a count(DISTINCT), for the leader merging the pairs of the sets one by one;
 -- a parallel_setup_cost of 0 asks for them.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, grp int NOT NULL, part int NOT NULL, cat int NOT NULL, amount float8 NOT NULL, half int NOT NULL);
 SELECT setseed(0.42);
@@ -15,17 +16,7 @@ CREATE INDEX items_col ON items USING sift_col (id, grp, part, cat, amount, half
 VACUUM (FREEZE, ANALYZE) items;
 
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 
 -- 2,500 groups of 40 rows of a column of 1,000 values (one chunk a group) cost the scan well over the same groups of a column of 100,000 values, whose sets are hash
 -- sets at 40 rows a group (a bitmap of 25 chunks needs 416). With 5,000 groups of 20 rows the sets of the 1,000 values start as hash sets too (a bitmap needs 32
@@ -71,4 +62,5 @@ RESET parallel_setup_cost; RESET min_parallel_table_scan_size; RESET parallel_tu
 
 DROP FUNCTION scan_cost(text), differences(text), workers(text), workers_at(int);
 DROP TABLE items;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

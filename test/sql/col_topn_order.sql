@@ -3,6 +3,7 @@
 -- hashes) compares the pushed top-N with the plain plan (sift.enable_agg off) in order: both directions and NULLS placements, ties with and
 -- without a tie-break, offsets, filters, and after deletes, moved rows, rows in the write buffer and the promotion of the buffer.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks
@@ -17,14 +18,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX ow_col ON ow USING sift_col (id, g, k_clu, k_band, k_rand, k_mix, f) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) ow;
 
-CREATE FUNCTION ow_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION ow_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- one query in both plans: the md5 of its rows in order, and whether the pushed plan is the top-N scan
 CREATE FUNCTION ow_run(q text, OUT pushed_md5 text, OUT plain_md5 text, OUT topn bool) LANGUAGE plpgsql AS $$
@@ -151,4 +145,5 @@ RESET sift.topn_walk;
 
 DROP TABLE ow;
 DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -4,6 +4,7 @@
 -- query whose units all answer from them is serial on purpose (starting workers costs more than the answer), and the scan path is what runs
 -- in the workers here (agg_preagg_elem_parallel covers the units that answer from the element cubes).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE p_t (id int, grp int, attrs jsonb, metrics_a jsonb, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_t
 SELECT i, i % 7,
@@ -30,13 +31,7 @@ SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
 SET sift.agg_preagg = off;
-CREATE FUNCTION p_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION p_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; gather bool := false; agg bool := false;
 BEGIN
@@ -96,4 +91,5 @@ SELECT n, mode, same FROM p_compare();
 
 DROP TABLE p_t, p_q;
 DROP FUNCTION p_rows(text, bool), p_mode(text), p_compare();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

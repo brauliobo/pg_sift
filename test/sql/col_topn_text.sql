@@ -3,6 +3,7 @@
 -- and the rows are compared in order: asc and desc, NULLs first and last, ties, empty and long strings, multi-byte characters, a locale collation,
 -- the heap, the sort of every row (a deep page, a heap of keys wider than work_mem, a spilling tuplesort), workers, rows in the write buffer.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 
@@ -20,17 +21,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX tx_col ON tx USING sift_col (id, g, s, v, u, b, ip, w);
 VACUUM (ANALYZE) tx;
 
-CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION tx_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -131,5 +122,6 @@ SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS over
 DROP FUNCTION tx_check, tx_coll, tx_mode;
 DROP TABLE tx, tx_q, tr, tv;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
 DROP COLLATION tx_nd;

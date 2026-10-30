@@ -3,6 +3,7 @@
 -- shape of the kernels (negative values, the ends of the integer range, ties, NULLs and many NULLs, a column that follows the table and one
 -- that does not, both directions, NULLS FIRST and LAST) under filters that leave most, some and few rows of a unit, compared with the plain plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks of about 1250 rows
@@ -19,14 +20,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul);
 VACUUM (ANALYZE) tv;
 
-CREATE FUNCTION tv_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION tv_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- one query in both plans: the md5 of its rows in order and whether the pushed plan is the top-N scan
 CREATE FUNCTION tv_run(q text, OUT pushed_md5 text, OUT plain_md5 text, OUT topn bool) LANGUAGE plpgsql AS $$
@@ -71,4 +65,5 @@ DROP FUNCTION tv_stage();
 DROP FUNCTION tv_run(text);
 DROP FUNCTION tv_mode(bool);
 DROP TABLE tv;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

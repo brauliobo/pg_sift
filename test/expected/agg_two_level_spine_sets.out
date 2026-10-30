@@ -3,6 +3,7 @@
 -- matched is a group of NULL arm columns in every set. Every query runs as the two-level scan, as the arms alone (sift.agg_two_level off) and as
 -- the normal plan; the answers must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
@@ -25,15 +26,7 @@ VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) buckets;
 VACUUM (FREEZE, ANALYZE) ticks;
 -- the plan is the scan's: no grouping of PostgreSQL's above it and no node that groups rows
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; scan bool := false;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
-		IF l ~ '(SiftAggRows|GroupAggregate|HashAggregate)' THEN RETURN false; END IF;
-	END LOOP;
-	RETURN scan;
-END $$;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_is_agg_scan(q) $$;
 -- the rows of the two-level scan, of the arms' scans and of the normal plan are the same; empty: the answer has no row; scan: the plan is the scan's
 CREATE FUNCTION same(q text, empty bool DEFAULT false, scan bool DEFAULT true) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint; b bigint; n bigint;
@@ -161,4 +154,5 @@ SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind', 
 
 DROP TABLE buckets, events, ticks;
 DROP FUNCTION arms(), each_join(text,text,text,text), plan_lines(text), pushed(text), report(text,text,text,text,text), same(text,boolean,boolean);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

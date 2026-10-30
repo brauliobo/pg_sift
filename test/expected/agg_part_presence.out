@@ -2,6 +2,7 @@
 -- list of a column and its neighbour does not. That is no other layout: a unit without a list is read by its rows, so the table is one source and the
 -- scan counts on the lists every partition keeps (and on the measures that the key table of a column adds to its dim in the partitions that keep one). The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE pk (id int NOT NULL, g int NOT NULL, h int NOT NULL, v int NOT NULL, m numeric(10,2) NOT NULL, d date NOT NULL) PARTITION BY RANGE (id);
@@ -20,17 +21,7 @@ NOTICE:  sift_col index pk_c_id_g_h_v_m_d_idx writes a rollup of the rows by h, 
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 680 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX pk_c_id_g_h_v_m_d_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) pk;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 CREATE FUNCTION why(q text) RETURNS text LANGUAGE sql AS $$ SELECT CASE WHEN bool_or(used) THEN 'scan' ELSE max(slug) END FROM sift.explain_why(q) $$;
 CREATE TABLE queries (name text, q text);
 INSERT INTO queries VALUES
@@ -86,4 +77,5 @@ SELECT name, why(q) AS plan, differences(q) AS differences FROM queries ORDER BY
 DROP TABLE queries;
 DROP FUNCTION why(text), differences(text);
 DROP TABLE pk;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

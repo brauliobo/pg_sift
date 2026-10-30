@@ -3,6 +3,7 @@
 -- is a wrong answer. What must be the same is the key of each row of the page, the totals, and that each row is a row of the table with that key. Ordered by a
 -- total order (the key and the id) the two plans give the same rows in the same order. Found by the 30,000,000-row stage of the 3.6.0 record (topn_page_totals).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 
 -- 24,000 rows over 3,000 values of the key: every value of it is shared by 8 rows
@@ -14,14 +15,7 @@ FROM generate_series(1, 24000) i;
 CREATE INDEX tt_col ON tt USING sift_col (id, country, amount, created_at) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) tt;
 
-CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- the page by the scan (a) and by PostgreSQL's plan (b): 'same rows' when the rows equal in order (a total order must give that), 'same key and totals' when the key
 -- and the totals of each position equal and every row of a is the row of the table of that key (what ties must give; the order of the ties may be the same by chance,
@@ -52,4 +46,5 @@ SELECT tag, tt_page(q, ties) FROM tt_q ORDER BY tag;
 
 DROP TABLE tt, tt_q;
 DROP FUNCTION tt_page(text, boolean), tt_mode(boolean);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

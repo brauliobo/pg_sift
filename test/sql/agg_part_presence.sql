@@ -2,6 +2,7 @@
 -- list of a column and its neighbour does not. That is no other layout: a unit without a list is read by its rows, so the table is one source and the
 -- scan counts on the lists every partition keeps (and on the measures that the key table of a column adds to its dim in the partitions that keep one). The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE pk (id int NOT NULL, g int NOT NULL, h int NOT NULL, v int NOT NULL, m numeric(10,2) NOT NULL, d date NOT NULL) PARTITION BY RANGE (id);
@@ -12,17 +13,7 @@ INSERT INTO pk SELECT i, ((i::bigint * 7919) % 300)::int, ((i::bigint * 104729) 
 CREATE INDEX pk_col ON pk USING sift_col (id, g, h, v, m, d) WITH (key_columns = 'g, h');
 VACUUM (FREEZE, ANALYZE) pk;
 
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 CREATE FUNCTION why(q text) RETURNS text LANGUAGE sql AS $$ SELECT CASE WHEN bool_or(used) THEN 'scan' ELSE max(slug) END FROM sift.explain_why(q) $$;
 
 CREATE TABLE queries (name text, q text);
@@ -58,4 +49,5 @@ SELECT name, why(q) AS plan, differences(q) AS differences FROM queries ORDER BY
 DROP TABLE queries;
 DROP FUNCTION why(text), differences(text);
 DROP TABLE pk;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -167,7 +167,7 @@ check_package() {
 	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql; do
 		cmp "$f" "$root$(pg_config --sharedir)/extension/${f##*/}" || { echo "the install target did not preserve ${f##*/}"; return 1; }
 	done
-	[[ -f $root$(pg_config --pkglibdir)/pg_sift.so && ! -e $root$(pg_config --sharedir)/extension/pg_sift_test.control ]] || { echo "the library is missing, or the test-only extension is installed"; return 1; }
+	[[ -f $root$(pg_config --pkglibdir)/pg_sift.so && ! -e $root$(pg_config --sharedir)/extension/pg_sift_test.control && ! -e $root$(pg_config --sharedir)/extension/pg_sift_helpers.control ]] || { echo "the library is missing, or a test-only extension is installed"; return 1; }
 	( cd "$W/pkg" && SIFT_TMP=$U SIFT_ROOT=$root SIFT_PORT=$port scripts/pgtest.sh start >/dev/null ) || return 1
 	for from in "$ver" 1.0; do
 		q "$sock" $port postgres -c "CREATE DATABASE smoke_${from/./_}"

@@ -10,9 +10,9 @@ WITH o(classid, oid) AS (
 	UNION ALL SELECT 'pg_proc'::regclass, oid FROM pg_proc
 	-- the row types of relations and the array types come and go with their element
 	UNION ALL SELECT 'pg_type'::regclass, oid FROM pg_type WHERE typrelid = 0 AND typcategory <> 'A' AND typtype <> 'm'
-	-- CREATE EXTENSION makes the schema sift and DROP EXTENSION keeps it; a test empties public with DROP SCHEMA public CASCADE; CREATE SCHEMA public,
+	-- CREATE EXTENSION makes the schemas sift and sift_helpers and DROP EXTENSION keeps them; a test empties public with DROP SCHEMA public CASCADE; CREATE SCHEMA public,
 	-- which gives it an oid past the built-in ones
-	UNION ALL SELECT 'pg_namespace'::regclass, oid FROM pg_namespace WHERE nspname NOT IN ('sift', 'public') AND nspname !~ '^pg_(toast_)?temp_'
+	UNION ALL SELECT 'pg_namespace'::regclass, oid FROM pg_namespace WHERE nspname NOT IN ('sift', 'sift_helpers', 'public') AND nspname !~ '^pg_(toast_)?temp_'
 	UNION ALL SELECT 'pg_extension'::regclass, oid FROM pg_extension
 	UNION ALL SELECT 'pg_operator'::regclass, oid FROM pg_operator
 	UNION ALL SELECT 'pg_cast'::regclass, oid FROM pg_cast

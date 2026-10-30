@@ -4,6 +4,7 @@
 -- with more segments, with rows in the write buffer, after updates and deletes, a merge and VACUUM, with a dictionary cache that keeps almost nothing, with workers and a
 -- spilling sort, on a sift_table and a partitioned table.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 -- a: many values, NULL, infinities, negative, equal totals spelled differently; w: five values in all the rows
@@ -29,17 +30,7 @@ SELECT iv_rows(1, 6000);
 
 CREATE INDEX iv_col ON iv USING sift_col (id, g, a, w);
 VACUUM (ANALYZE) iv;
-CREATE FUNCTION iv_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION iv_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION iv_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;
@@ -307,4 +298,5 @@ SELECT iv_check($q$SELECT id, a FROM it ORDER BY a, id LIMIT 25$q$) AS table_a_a
 DROP FUNCTION iv_check, iv_mode, iv_rows, iv_stage;
 DROP TABLE iv, iv_q, ip, it;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

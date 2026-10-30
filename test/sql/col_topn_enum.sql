@@ -3,6 +3,7 @@
 -- reference (sift.enable_agg off) and the pushed one, and the rows are compared in order, after the build, with more segments, with rows in the write buffer, after
 -- updates and deletes, a merge and VACUUM, after values are added to the type before and after others, with workers and a spilling sort, on a partitioned table and a sift_table.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 
@@ -27,17 +28,7 @@ SELECT ev_rows(1, 6000);
 CREATE INDEX ev_col ON ev USING sift_col (id, g, s, w, b);
 VACUUM (ANALYZE) ev;
 
-CREATE FUNCTION ev_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION ev_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION ev_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
@@ -140,4 +131,5 @@ DROP FUNCTION ev_check, ev_mode, ev_rows, ev_stage;
 DROP TABLE ev, ev_q, ep, et;
 DROP TYPE sev, big;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

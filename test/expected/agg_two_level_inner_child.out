@@ -3,6 +3,7 @@
 -- table (a pulled up sub-select's WHERE) at the join in those arms and in the WHERE of the third. The arms are still one scan: its outer join, the
 -- NOT NULL test as the filter of the arms that have it. The answers are the normal plan's.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 -- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
 SET sift.agg_force = on;
 SET max_parallel_workers_per_gather = 0;
@@ -48,15 +49,7 @@ CREATE FUNCTION arms(w1 text DEFAULT 'mo.category IS NOT NULL', w2 text DEFAULT 
 	  FROM flag_a GROUP BY category, sub ORDER BY 1, 2$q$, w1, w2, w3)
 $$;
 -- the plan is the two-level scan: the joins in the node, and neither the grouping of PostgreSQL nor the node that groups rows
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; scan bool := false;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
-		IF l ~ '(SiftAggRows|GroupAggregate|HashAggregate)' THEN RETURN false; END IF;
-	END LOOP;
-	RETURN scan;
-END $$;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_is_agg_scan(q) $$;
 -- the rows of the scan and of the normal plan are the same; the plan is the scan's
 CREATE FUNCTION same(q text, scan bool DEFAULT true) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint; n bigint;
@@ -129,4 +122,5 @@ SELECT same(arms('mo.category IS NOT NULL AND mo.score > 2', 'mo.category IS NOT
 
 DROP TABLE events, lookup;
 DROP FUNCTION arms(text,text,text), pushed(text), same(text,boolean);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

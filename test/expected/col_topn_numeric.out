@@ -4,6 +4,7 @@
 -- (1.0 and 1.00 are equal and shown as stored), are compared in order, after the build, with more segments, with rows in the write buffer, after updates and
 -- deletes, a merge and VACUUM, with a dictionary cache that keeps almost nothing, with workers and a spilling sort, on a sift_table and a partitioned table.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 -- a: lanes, NULL, NaN, ties, negative, around zero; b: 38 digits at both edges; c: an image with spellings and infinities; d: five values in all the rows;
@@ -29,17 +30,7 @@ SELECT nm_rows(1, 6000);
 
 CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
 VACUUM (ANALYZE) nm;
-CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
+CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION nm_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;
@@ -368,4 +359,5 @@ SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lane
 DROP FUNCTION nm_check, nm_mode, nm_rows, nm_stage;
 DROP TABLE nm, nm_q, np, nt, nv;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

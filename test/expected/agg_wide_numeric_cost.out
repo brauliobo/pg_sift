@@ -4,6 +4,7 @@
 -- match on a large table. A column of precision 30 is a wide leaf too (its entries are built from a 128-bit lane): the same rule. Every statement is also
 -- run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, kind text NOT NULL, typed numeric(10, 2), many numeric, few numeric, wmany numeric(30, 16), wfew numeric(30, 16));
 SELECT setseed(0.42);
@@ -25,17 +26,7 @@ BEGIN
 	END LOOP;
 	RETURN 'normal';
 END $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 -- the column with a precision is a scaled integer; the one with few values has a small dictionary: the scan. The ones with many values: the scan too where it costs less than the parallel plan (the 100,000 rows of this table: 8 ms against 16), else the normal plan
 SELECT c AS col, plan_of(format('SELECT kind, sum(%I) FROM items GROUP BY kind', c)) AS plan, differences(format('SELECT kind, sum(%I) FROM items GROUP BY kind', c)) AS differences
 FROM (VALUES ('typed'), ('many'), ('few'), ('wmany'), ('wfew')) v(c) ORDER BY c;
@@ -50,4 +41,5 @@ FROM (VALUES ('typed'), ('many'), ('few'), ('wmany'), ('wfew')) v(c) ORDER BY c;
 
 DROP FUNCTION plan_of(text), differences(text);
 DROP TABLE items;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

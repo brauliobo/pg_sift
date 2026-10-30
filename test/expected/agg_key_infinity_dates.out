@@ -3,6 +3,7 @@
 -- ("invalid memory alloc request size 17179869248"). Such a key keeps its ids in a hash table, like a key of an integer column, and the rows are those of the normal plan.
 -- (the rows of the two infinities must fall in a unit of their own: the test needs more than one unit, 200,000 rows)
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dinf (id int, d date, v int);
@@ -18,17 +19,7 @@ BEGIN
 	END LOOP;
 	RETURN 'normal';
 END $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 -- the scan is forced (the table is small): every key must be answered by it, with the rows of the normal plan
 SET cpu_tuple_cost = 100;
 SELECT k, plan_of(format('SELECT %s, sum(v) FROM dinf GROUP BY 1', k)) AS plan, differences(format('SELECT %s, sum(v) FROM dinf GROUP BY 1', k)) AS differences
@@ -68,4 +59,5 @@ RESET cpu_tuple_cost;
 DROP TABLE dedge;
 DROP FUNCTION plan_of(text), differences(text);
 DROP TABLE dinf;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

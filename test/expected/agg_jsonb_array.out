@@ -2,6 +2,7 @@
 -- existence and containment tests (?, ?|, ?&, @>, <@) on it, and jsonb_array_length as a key, a filter and an argument. Every query runs
 -- with and without the pushdown, the rows must be the same, and `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 CREATE TABLE j_t (id int, grp int, attrs jsonb, items jsonb);
@@ -22,22 +23,8 @@ SELECT i, i % 7,
 FROM generate_series(1, 3000) i;
 CREATE INDEX j_col ON j_t USING sift_col (id, grp, attrs, items) WITH (paths = 'attrs.tags[] text(1024), items[]{kind text, n int4}');
 VACUUM ANALYZE j_t;
-CREATE FUNCTION j_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-CREATE FUNCTION j_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION j_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
+CREATE FUNCTION j_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_agg_scan(q) $$;
 CREATE TABLE j_q (q text);
 INSERT INTO j_q VALUES
 	-- jsonb_array_elements_text of an array of strings
@@ -140,4 +127,5 @@ SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';
 
 DROP TABLE j_t, j_q, j_bad;
 DROP FUNCTION j_rows(text, bool), j_pushed(text), j_compare();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

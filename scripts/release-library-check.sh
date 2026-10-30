@@ -9,7 +9,7 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 base=${SIFT_TMP:-/tmp/sift-release-library}
-export SIFT_TMP=$base/run SIFT_ROOT=$base/run/root SIFT_PORT=$(( ${SIFT_PORT:-56100} + 8 )) SIFT_TESTING=
+export SIFT_TMP=$base/run SIFT_ROOT=$base/run/root SIFT_PORT=$(( ${SIFT_PORT:-56100} + 8 )) SIFT_TESTING= SIFT_TEST_HELPERS=1
 src=$base/src
 mkdir -p "$src"
 tar -C "$REPO" --exclude=.git --exclude=bench --exclude=docs --exclude=sqlite --exclude=packaging --exclude='*.o' --exclude='*.d' \

@@ -2,6 +2,7 @@
 -- distinct ids of the column per outer group (a bitmap over the key's ids, a hash set or a sort as count(DISTINCT) of a column does),
 -- not the per-row groups that PostgreSQL would sort. Every query runs with and without the pushdown; the answers must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -27,15 +28,7 @@ CREATE FUNCTION report(aggs text, tail text DEFAULT '', filt text DEFAULT 'true'
 $$;
 
 -- the plan has the scan and neither the grouping of PostgreSQL nor the node that groups rows
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; scan bool := false;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
-		IF l ~ '(SiftAggRows|GroupAggregate|HashAggregate)' THEN RETURN false; END IF;
-	END LOOP;
-	RETURN scan;
-END $$;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_is_agg_scan(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint; n bigint;
@@ -92,4 +85,5 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -1,6 +1,7 @@
 -- Calendar keys of a timestamp column (date_trunc, ::date, extract) are evaluated once per second, minute, hour or day the key depends
 -- on, not once per distinct timestamp. Every query runs with and without the pushdown; the results must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
@@ -28,13 +29,7 @@ INSERT INTO b_t VALUES
 INSERT INTO b_h SELECT * FROM b_t;
 ANALYZE b_t;
 
-CREATE FUNCTION b_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION b_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
 -- the key lines of the SiftAgg plan of a query ('' when it is not one)
 CREATE FUNCTION b_keys(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -113,4 +108,5 @@ SELECT query, same FROM b_compare();
 
 DROP TABLE b_t, b_h, b_q;
 DROP FUNCTION b_rows(text, bool), b_keys(text), b_compare();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

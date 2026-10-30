@@ -1,6 +1,7 @@
 -- sift_col over char(n), bpchar (char without a length) and name: the values read back from the index are the heap's, the aggregate
 -- plans over them give the plain plan's results, and the bpchar leaf is never used by a pushed predicate or group.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
@@ -22,13 +23,7 @@ SELECT count(*) AS nm_differing FROM (SELECT tid, val FROM sift._test_col_read('
 SELECT count(*) AS nm_missing FROM (SELECT ctid, nm::text FROM ch EXCEPT SELECT tid, val FROM sift._test_col_read('ch_col', 4, '')) z;
 SELECT sift.col_verify('ch_col', true);
 
-CREATE FUNCTION chars_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION chars_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
 CREATE FUNCTION chars_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -71,4 +66,5 @@ SELECT sift.col_verify('ch_col', true);
 DROP TABLE ch, ch_q;
 DROP FUNCTION chars_rows, chars_pushed;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

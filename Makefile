@@ -84,6 +84,12 @@ PG_CPPFLAGS += -DSIFT_TESTING
 else
 REGRESS := $(filter-out $(TESTING_REGRESS),$(REGRESS))
 endif
+# The SQL helpers of the regression tests (sql/pg_sift_helpers--1.0.sql, SQL only): the test build installs them, and so does scripts/release-library-check.sh, which runs the
+# same tests on the release library (SIFT_TEST_HELPERS=1). A normal make install does not.
+ifneq ($(or $(SIFT_TESTING),$(SIFT_TEST_HELPERS)),)
+EXTENSION += pg_sift_helpers
+DATA += sql/pg_sift_helpers--1.0.sql
+endif
 
 # No LLVM bitcode: avoids a clang dependency and -march=native bitcode.
 override with_llvm := no

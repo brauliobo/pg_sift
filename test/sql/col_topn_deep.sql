@@ -2,6 +2,7 @@
 -- sort of keys and TIDs (work_mem, then disk), and the plan is priced with that sort. Every query runs twice, the plain plan as the reference
 -- (sift.enable_agg off) and the pushed one, and the rows are compared in order.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 
 CREATE TABLE cd (id int PRIMARY KEY, a int, b int, c int, d int, e int, f int, amount numeric(10,2), ts timestamp, kind text, note text);
@@ -15,14 +16,7 @@ FROM generate_series(1, 200000) i;
 CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind) WITH (order_array_columns = off);
 VACUUM (ANALYZE) cd;
 
-CREATE FUNCTION cd_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION cd_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the number of rows
 CREATE FUNCTION cd_check(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -163,4 +157,5 @@ BEGIN
 END $$;
 DROP FUNCTION cd_check, cd_choice, cd_mode, cd_plan, cd_stat, cd_workers;
 DROP TABLE cd, cd_q;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

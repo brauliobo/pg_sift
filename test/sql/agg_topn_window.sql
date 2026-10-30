@@ -4,6 +4,7 @@
 -- on a sift_col index and on a sift_table, and the rows are compared in order: after the build and after each kind of write. Any other window
 -- keeps the normal plan, with its reason.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
 
@@ -27,14 +28,7 @@ ALTER TABLE pw_t ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO pw_t SELECT * FROM pw;
 VACUUM (ANALYZE) pw_t;
 
-CREATE FUNCTION pw_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION pw_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+totals' when it computes the window functions, and the rows
 CREATE FUNCTION pw_check(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -140,4 +134,5 @@ INSERT INTO pw_t (id, kind, grp, ts, amount, score, n, note) SELECT i, 'cat_a', 
 SELECT tag, pw_check(replace(q, '{t}', 'pw')) AS sift_col, pw_check(replace(q, '{t}', 'pw_t')) AS sift_table FROM pw_q ORDER BY tag;
 DROP TABLE pw, pw_q, pw_r, pw_t;
 DROP FUNCTION pw_check(text), pw_mode(boolean), pw_why(text), pw_output(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

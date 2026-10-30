@@ -3,6 +3,7 @@
 -- starts the scan again with a heap 16 times larger, twice, then keeps every row. Every query runs twice, the plain plan as the reference (sift.enable_agg off)
 -- and the pushed one, and the rows are compared in order, after the build, with rows in the write buffer, after updates (a tie group the statistics do not know), deletes and VACUUM.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 -- k: 400 values over 6000 rows (15 rows tie), NULLs; t: seconds, so that a few rows share one; w: the key the index does not hold; s: strings
 CREATE TABLE tt (id int PRIMARY KEY, k int, k2 int, t timestamp, w bigint, x double precision, s text, pad text DEFAULT repeat('x', 600));
@@ -20,14 +21,7 @@ SELECT tt_rows(1, 6000);
 
 CREATE INDEX tt_col ON tt USING sift_col (id, k, k2, t);
 VACUUM (ANALYZE) tt;
-CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-END $$;
+CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+ties' when the pushed plan is the scan under a Sort (or '+all' when it keeps every row), '+restarts N' when it started again N times, and the number of rows
 CREATE FUNCTION tt_check(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;
@@ -351,4 +345,5 @@ DROP FUNCTION tt_check(text);
 DROP FUNCTION tt_mode(bool);
 DROP FUNCTION tt_rows(int, int);
 DROP TABLE tt;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
