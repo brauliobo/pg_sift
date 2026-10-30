@@ -224,6 +224,16 @@ preagg_zones(AggExec *ex)
 		if (z->leaf != ex->pa.dim &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
+		/* the bounds of an IN list hold for all the rows only when the unit has one value and the list has it */
+		if (z->leaf != ex->pa.dim && z->nvals > 0)
+		{
+			bool		in = false;
+
+			for (int i = 0; !in && i < z->nvals; i++)
+				in = a.min == a.max && z->vals[i] == a.min;
+			if (!in)
+				return false;
+		}
 	}
 	return true;
 }
