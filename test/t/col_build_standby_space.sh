@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
-plan 17
+plan 18
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
@@ -45,6 +45,15 @@ check "... and the rewrite of the first VACUUM does not grow it" tight
 sql primary "$OPTS" "$SMALL" "REINDEX INDEX CONCURRENTLY t_idx" >/dev/null || bail "concurrent reindex failed"
 check "REINDEX CONCURRENTLY: the file is at most 1.1 times its live bytes" tight
 check "... nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none
+# writers hold a RowExclusiveLock on the new index for the length of each statement: the cut asks for its lock again until they leave a gap
+printf 'INSERT INTO t VALUES (-1, 7, 1, $$w$$);\n' >"$(dir primary)/w.sql"
+pgbench_bg primary 2 120 -f "$(dir primary)/w.sql"
+WRITERS=$PGBENCH_PID
+sleep 1
+sql primary "$OPTS" "$SMALL" "REINDEX INDEX CONCURRENTLY t_idx" >/dev/null || bail "concurrent reindex under writers failed"
+kill "$WRITERS" 2>/dev/null; wait "$WRITERS" 2>/dev/null
+sql primary "SET sift.async_maintenance = off" "SELECT sift.col_maintain('t_idx')" >/dev/null
+check "REINDEX CONCURRENTLY under writers: the file is at most 1.4 times its live bytes (the writers add holes of their own)" tight 140
 for gap in 0 8; do
 	sql primary "SET sift.test_col_gap_blocks = $gap" "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex with gap $gap failed"
 	check "a gap of $gap blocks: nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none

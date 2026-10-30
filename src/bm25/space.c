@@ -131,6 +131,31 @@ cut_lock(Relation rel)
 	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisready ? ExclusiveLock : AccessExclusiveLock;
 }
 
+#define CUT_LOCK_TRIES		100
+#define CUT_LOCK_NAP_US		50000
+
+/*
+ * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a writer holds a RowExclusiveLock on it for the length of its
+ * statement: under a steady stream of writes the lock is rarely free at one instant. The new index has no other user, so the cut asks again for a few seconds (the
+ * writers wait behind the request only that long). The AccessExclusiveLock of a ready index is asked once: its holders are scans and steps that may run for minutes.
+ */
+static bool
+cut_lock_try(Relation rel)
+{
+	LOCKMODE	mode = cut_lock(rel);
+
+	for (int i = 0; i < CUT_LOCK_TRIES; i++)
+	{
+		if (ConditionalLockRelation(rel, mode))
+			return true;
+		if (mode == AccessExclusiveLock)
+			break;
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(CUT_LOCK_NAP_US);
+	}
+	return false;
+}
+
 /* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
 static bool
 lock_for_cut(Relation rel, const char *what, int elevel)
@@ -140,7 +165,7 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
 		return false;
 	}
-	if (!ConditionalLockRelation(rel, cut_lock(rel)))
+	if (!cut_lock_try(rel))
 	{
 		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
 		return false;
