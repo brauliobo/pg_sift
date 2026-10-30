@@ -10,6 +10,7 @@
 #include "funcapi.h"
 #include "lib/bloomfilter.h"
 #include "storage/lmgr.h"
+#include "utils/timestamp.h"
 
 #include "bm25/wbuf.h"
 #include "col/pg.h"
