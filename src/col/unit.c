@@ -199,9 +199,14 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	uint16	   *koff = palloc(Max(nrows, 1) * sizeof(uint16));
 
 	uint64		left = avail - at;		/* bytes from p to the end of the record: get_packed reads ahead inside it only */
+	uint64		blk = v->kblk0,
+				rows = 0;
+	bool		bad = false;			/* an offset out of its page, or not above the one before it in its page */
 
 	if (!get_packed(p, left, np > 0 ? np - 1 : 0, bw[0], delta))
 		return false;
+	if (np > 0)
+		delta[np - 1] = 0;		/* the block after the last page, which the running sum steps over */
 	at = ((uint64) (np > 0 ? np - 1 : 0) * bw[0] + 7) / 8;
 	p += at;
 	left -= at;
@@ -212,28 +217,30 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	left -= at;
 	if (!get_packed(p, left, nrows, bw[2], off))
 		return false;
+	/* the pages and the rows each starts at are running sums, the block of a page only grows: the ends are checked once, not at every page */
 	rowstart[0] = 0;
 	for (uint32 q = 0; q < np; q++)
 	{
-		uint64		blk = q == 0 ? v->kblk0 : (uint64) blocks[q - 1] + delta[q - 1] + 1;
-		uint32		r0,
-					r1;
-
-		if (blk >= MaxBlockNumber)
-			return false;
 		blocks[q] = (BlockNumber) blk;
-		r0 = rowstart[q];
-		r1 = rowstart[q + 1] = r0 + cnt[q] + 1;
-		if (r1 > nrows)
-			return false;
-		for (uint32 r = r0; r < r1; r++)
-		{
-			if (off[r] >= MaxHeapTuplesPerPage || (r > r0 && off[r] <= off[r - 1]))
-				return false;
-			koff[r] = (uint16) (off[r] + 1);
-		}
+		rows += (uint64) cnt[q] + 1;
+		rowstart[q + 1] = (uint32) rows;
+		blk += (uint64) delta[q] + 1;
 	}
-	if (rowstart[np] != nrows || (np > 0 && blocks[np - 1] != v->kblk1))
+	if (rows != nrows || (np > 0 && blk - 1 >= MaxBlockNumber))
+		return false;
+	for (uint32 q = 0; q < np; q++)
+	{
+		for (uint32 r = rowstart[q] + 1; r < rowstart[q + 1]; r++)
+			bad |= off[r] <= off[r - 1];
+	}
+	for (uint32 r = 0; r < nrows; r++)
+	{
+		bad |= off[r] >= MaxHeapTuplesPerPage;
+		koff[r] = (uint16) (off[r] + 1);
+	}
+	if (bad)
+		return false;
+	if (np > 0 && blocks[np - 1] != v->kblk1)
 		return false;
 	v->rowstart = rowstart;
 	v->blocks = blocks;
