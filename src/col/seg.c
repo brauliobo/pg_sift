@@ -4633,9 +4633,14 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 bool
 unit_dirty(SiftColSegment *seg, uint32 u)
 {
-	uint32		i = seg->sbdir[u].sb - seg->hdr->sb_lo;
+	uint32		i;
 	Buffer		buf = InvalidBuffer;
-	uint8		b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
+	uint8		b;
+
+	if (u >= seg->nsb || seg->sbdir[u].sb < seg->hdr->sb_lo)
+		corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, u < seg->nsb ? seg->sbdir[u].sb : 0, seg->hdr->sb_lo);
+	i = seg->sbdir[u].sb - seg->hdr->sb_lo;
+	b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
 
 	UnlockReleaseBuffer(buf);
 	return (b >> (i % 8)) & 1;
@@ -4650,9 +4655,13 @@ sift_cseg_dirty(SiftColSegment *seg, uint32 u)
 void
 sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits)
 {
-	uint32		n = seg->sbdir[u].nrows,
-				nw = SIFT_COL_NWORDS(n);
+	uint32		n,
+				nw;
 
+	if (u >= seg->nsb)
+		corrupt(seg, "Unit %u of %u is not a unit of this segment.", u, seg->nsb);
+	n = seg->sbdir[u].nrows;
+	nw = SIFT_COL_NWORDS(n);
 	if (unit_dirty(seg, u))
 	{
 		sift_live_bits(&PRIV(seg)->live, seg->sbdir[u].rank_base, n, bits, nw);
