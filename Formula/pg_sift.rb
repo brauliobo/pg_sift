@@ -1,8 +1,8 @@
 class PgSift < Formula
   desc "Full-text BM25 search and column analytics for PostgreSQL"
   homepage "https://github.com/brauliobo/pg_sift"
-  url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v3.6.1.tar.gz"
-  sha256 "327e123dc1076b3188b3099ad143313e7c8c77702b6c4bfc8cb1d964c68f04a0"
+  url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v3.6.2.tar.gz"
+  sha256 "d0dbf78c02867123687cc029baeec23e073587da6e477c5929dbbec45dcdf5c6"
   license "PostgreSQL"
   head "https://github.com/brauliobo/pg_sift.git", branch: "main"
 
