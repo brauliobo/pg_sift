@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.7.0 - 2026-10-30
 
 - Improved: pg_sift: the fetch scans of a `sift_table` (index scans, bitmap, UPDATE, DELETE by TID) keep 256 superblocks and 64 MB per table, where they kept 32 and 8 MB, so the UPDATEs of a table that has more superblocks than that no longer parse the heads of a superblock again on every fetch: the 40,000 UPDATEs by key of `tbl_update_keys` on 1,000,000 rows take 3,538 M instructions to 2,381 M once the write buffer is settled (300,000 rows 2,320 M to 2,336 M, 600,000 rows 2,803 M to 2,336 M: the loop no longer grows with the table; the heap twin 4.2 G), and 5,621 M to 4,451 M with the 166,000 rows the case leaves in the write buffer, whose promotion is the rest of the growth. Test: `scripts/instr-budget-fetch.sh` (836 M to 691 M callgrind instructions, budget 760 M).
 - Improved: pg_sift: a `LEFT JOIN LATERAL (.. LIMIT 1)` whose columns nothing else in the statement reads is not run: a left join to a sub-select of at most one row keeps each row of its left side once, so the planner hook drops it before planning (not with `FETCH FIRST .. WITH TIES`, a volatile function, a row lock or a `DELETE`/`UPDATE`; not inside a `security_barrier` view). A grouped statement over a 1,000,000-row table with a mapping lookup that the select list never reads: 81.2 to 2.4 ms with 300,000 distinct lookup keys (4.5 to 2.5 ms with 2,000), 300,000 rows 55.6 to 1.1 ms (1.9 to 0.8 ms)
