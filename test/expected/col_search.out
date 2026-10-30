@@ -73,7 +73,8 @@ INSERT INTO cs_q VALUES
 	('two',       $q$SELECT count(*) AS n, max(amount) AS m FROM cs WHERE memo @@> 'wire' AND memo @@> 'cable'$q$),
 	('filters',   $q$SELECT store, count(*) AS n, sum(amount) AS s FROM cs WHERE memo @@> 'gift' AND status = 'paid' AND amount > 100 GROUP BY store ORDER BY store$q$),
 	('global',    $q$SELECT count(*) AS n, sum(amount) AS s, min(placed) AS a, max(placed) AS b, count(DISTINCT store) AS d FROM cs WHERE memo @@> 'express OR pickup'$q$),
-	('float_sum', $q$SELECT status, round(avg(amount::float8)::numeric, 2) AS a, round(sum(amount::float8)::numeric, 1) AS s FROM cs WHERE memo @@> 'gift OR express' GROUP BY status ORDER BY status$q$),
+	-- sums of cents end in .x5 exactly: the offset keeps the rounding off that boundary, where the order of the float lanes decides (934402.7499999999 or 934402.7500000009)
+	('float_sum', $q$SELECT status, round(avg(amount::float8)::numeric + 0.0001, 2) AS a, round(sum(amount::float8)::numeric + 0.001, 1) AS s FROM cs WHERE memo @@> 'gift OR express' GROUP BY status ORDER BY status$q$),
 	('col_or',    $q$SELECT count(*) AS n FROM cs WHERE (status = 'paid' OR store < 10) AND memo @@> 'wire'$q$),
 	('nulls',     $q$SELECT status IS NULL AS no_status, count(*) AS n FROM cs WHERE memo @@> 'late' GROUP BY 1 ORDER BY 1$q$),
 	('having',    $q$SELECT store, count(*) AS n FROM cs WHERE memo @@> 'size OR color' GROUP BY store HAVING count(*) > 12 ORDER BY store$q$),
