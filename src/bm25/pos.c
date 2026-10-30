@@ -17,28 +17,6 @@ corrupt_pos(const SiftPostingCursor *c)
 					(unsigned long long) c->info.post_off)));
 }
 
-/* LEB128 at *pp; false when it runs past end */
-static inline bool
-get_v32(const uint8 **pp, const uint8 *end, uint32 *x)
-{
-	const uint8 *p = *pp;
-	uint32		v = 0;
-
-	for (int s = 0; s < 35; s += 7)
-	{
-		if (p >= end)
-			return false;
-		v |= (uint32) (*p & 0x7f) << s;
-		if (!(*p++ & 0x80))
-		{
-			*pp = p;
-			*x = v;
-			return true;
-		}
-	}
-	return false;
-}
-
 /* End of the record at p and what it holds; NULL when it is cut off by end */
 static const uint8 *
 pos_next(const uint8 *p, const uint8 *end, uint32 *n, uint32 *last)
@@ -97,33 +75,38 @@ pos_read(const SiftPostingCursor *c, uint64 off, size_t len, void *dst)
 }
 
 #define POS_WINDOW	4096
+#define POS_SLACK	8
 
-/* The window of records covering [off, off + want), refilled from off when it does not; bytes available from off */
+/*
+ * The bytes [off, off + want) of the records in w, read from off when they are not there (the window grows to hold a record
+ * longer than itself); avail: the bytes from off in the window
+ */
 static const uint8 *
-pos_window(SiftPostingCursor *c, uint64 off, uint32 want, uint32 *avail)
+pos_window(const SiftPostingCursor *c, PosWin *w, uint64 off, uint32 want, uint32 *avail)
 {
 	uint64		recs = c->poslen - (uint64) c->nck * sizeof(uint32);
 
 	if (off > recs)
 		corrupt_pos(c);
-	if (c->win == NULL)
-		c->win = MemoryContextAlloc(c->mcxt, POS_WINDOW);
-	if (c->win_len == 0 || off < c->win_lo || (off + want > c->win_lo + c->win_len && c->win_lo + c->win_len < recs))
+	if (w->buf == NULL || want > w->cap)
 	{
-		uint64		have = Min(recs - off, POS_WINDOW);
-
-		if (want > POS_WINDOW)
-		{
-			/* a record longer than the window: the caller reads it whole */
-			*avail = 0;
-			return NULL;
-		}
-		pos_read(c, (uint64) c->nck * sizeof(uint32) + off, have, c->win);
-		c->win_lo = off;
-		c->win_len = have;
+		if (w->buf)
+			pfree(w->buf);
+		w->cap = Max(want, w->cap ? w->cap : POS_WINDOW);
+		w->buf = MemoryContextAlloc(c->mcxt, (Size) w->cap + POS_SLACK);
+		memset(w->buf + w->cap, 0, POS_SLACK);
+		w->len = 0;
 	}
-	*avail = c->win_lo + c->win_len - off;
-	return c->win + (off - c->win_lo);
+	if (w->len == 0 || off < w->lo || (off + want > w->lo + w->len && w->lo + w->len < recs))
+	{
+		uint64		have = Min(recs - off, w->cap);
+
+		pos_read(c, (uint64) c->nck * sizeof(uint32) + off, have, w->buf);
+		w->lo = off;
+		w->len = have;
+	}
+	*avail = w->lo + w->len - off;
+	return w->buf + (off - w->lo);
 }
 
 static void
@@ -142,12 +125,7 @@ pos_decode(const uint8 *p, const uint8 *end, uint32 n, SiftPosBuf *out)
 	uint32		v = 0,
 				pos;
 
-	if (n > out->cap)
-	{
-		out->cap = Max(n, Max(64, out->cap * 2));
-		out->v = out->v ? repalloc_huge(out->v, (Size) out->cap * sizeof(uint32)) :
-			MemoryContextAllocHuge(out->mcxt, (Size) out->cap * sizeof(uint32));
-	}
+	sift_posbuf_reserve(out, n);
 	get_v32(&p, end, &v);
 	pos = v >> 1;
 	if (v & 1)
@@ -159,6 +137,51 @@ pos_decode(const uint8 *p, const uint8 *end, uint32 n, SiftPosBuf *out)
 		out->v[i] = pos += v + 1;
 	}
 	out->n = n;
+}
+
+/* The block blk of the term (its postings: *k), in w: the checkpoints are the offsets of the blocks */
+static const uint8 *
+pos_block(SiftPostingCursor *c, PosWin *w, uint32 blk, uint32 *k, uint32 *len)
+{
+	uint64		recs = c->poslen - (uint64) c->nck * sizeof(uint32),
+				off,
+				end;
+	uint32		avail;
+	const uint8 *p;
+
+	pos_ckpt(c);
+	off = c->ckpt[blk];
+	end = blk + 1 < c->nck ? c->ckpt[blk + 1] : recs;
+	if (end <= off || end > recs || end - off > PG_UINT32_MAX / 2)
+		corrupt_pos(c);
+	*len = end - off;
+	*k = Min(SIFT_POS_EVERY, c->info.df - blk * SIFT_POS_EVERY);
+	p = pos_window(c, w, off, *len, &avail);
+	if (avail < *len)
+		corrupt_pos(c);
+	return p;
+}
+
+static void
+pos_posting_block(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
+{
+	uint32		blk = rank >> SIFT_POS_SHIFT,
+				i = rank & (SIFT_POS_EVERY - 1);
+
+	if (c->cblk != blk + 1)
+	{
+		uint32		k,
+					len;
+		const uint8 *p = pos_block(c, &c->win, blk, &k, &len);
+
+		if (!sift_posblk_open(&c->bk, p, len, k))
+			corrupt_pos(c);
+		c->cblk = blk + 1;
+	}
+	sift_posbuf_reserve(out, c->bk.cnt[i]);
+	if (!sift_posblk_get(&c->bk, i, out->v))
+		corrupt_pos(c);
+	out->n = c->bk.cnt[i];
 }
 
 void
@@ -182,6 +205,11 @@ sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
 		pos_decode(p, end, n, out);
 		return;
 	}
+	if (c->info.flags & SIFT_TERM_POS2)
+	{
+		pos_posting_block(c, rank, out);
+		return;
+	}
 	pos_ckpt(c);
 	off = c->ckpt[rank >> SIFT_POS_SHIFT];
 	for (;; want *= 2)
@@ -189,34 +217,44 @@ sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
 		uint32		avail,
 					n = 0,
 					last;
-		const uint8 *p = pos_window(c, off, Min(want, recs - off), &avail),
+		const uint8 *p = pos_window(c, &c->win, off, Min(want, recs - off), &avail),
 				   *end,
-				   *q;
-		uint8	   *big = NULL;
+				   *q = p;
 
-		if (p == NULL)
-		{
-			/* longer than the window: read what is wanted at once */
-			avail = Min(want, recs - off);
-			big = palloc(avail);
-			pos_read(c, (uint64) c->nck * sizeof(uint32) + off, avail, big);
-			p = big;
-		}
 		end = p + avail;
-		q = p;
 		for (uint32 k = rank & (SIFT_POS_EVERY - 1); k > 0 && q; k--)
 			q = pos_next(q, end, &n, &last);
 		if (q && (end = pos_next(q, end, &n, &last)) != NULL)
 		{
 			pos_decode(q, end, n, out);
-			if (big)
-				pfree(big);
 			return;
 		}
-		if (big)
-			pfree(big);
 		if (avail >= recs - off)
 			corrupt_pos(c);
+	}
+}
+
+/* All the blocks of the term as the records of the postings in rank order, and the checkpoints of those */
+static void
+pos_stream_blocks(SiftPostingCursor *c, const uint8 *blocks, uint32 **ckpt, StringInfo recs)
+{
+	uint64		total = c->poslen - (uint64) c->nck * sizeof(uint32),
+				start = 0;
+	Size		lend[SIFT_POS_EVERY];
+	const uint32 *at = (const uint32 *) blocks;
+
+	*ckpt = MemoryContextAlloc(c->mcxt, (Size) c->nck * sizeof(uint32));
+	for (uint32 b = 0; b < c->nck; b++)
+	{
+		uint64		end = b + 1 < c->nck ? at[b + 1] : total;
+
+		if (at[b] != start || end <= start || end > total)
+			corrupt_pos(c);
+		(*ckpt)[b] = recs->len;
+		if (!sift_posblk_leb(blocks + (Size) c->nck * sizeof(uint32) + start, end - start,
+							 Min(SIFT_POS_EVERY, c->info.df - b * SIFT_POS_EVERY), recs, lend))
+			corrupt_pos(c);
+		start = end;
 	}
 }
 
@@ -232,8 +270,23 @@ sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **re
 		*len = c->poslen;
 		return;
 	}
-	buf = MemoryContextAllocHuge(c->mcxt, c->poslen);
+	buf = MemoryContextAllocHuge(c->mcxt, (Size) c->poslen + POS_SLACK);
 	pos_read(c, 0, c->poslen, buf);
+	if (c->info.flags & SIFT_TERM_POS2)
+	{
+		StringInfoData recs;
+		MemoryContext old = MemoryContextSwitchTo(c->mcxt);
+		uint32	   *ck;
+
+		initStringInfo(&recs);
+		pos_stream_blocks(c, buf, &ck, &recs);
+		MemoryContextSwitchTo(old);
+		pfree(buf);
+		*ckpt = ck;
+		*rec = (const uint8 *) recs.data;
+		*len = recs.len;
+		return;
+	}
 	*ckpt = (const uint32 *) buf;
 	*rec = buf + (Size) c->nck * sizeof(uint32);
 	*len = c->poslen - c->nck * sizeof(uint32);
@@ -248,6 +301,13 @@ struct SiftPosReader
 	Size		len;			/* bytes in the window */
 	uint64		next;			/* offset in the records of the byte after the window */
 	uint64		recs;			/* bytes of records */
+	/* position blocks: the one decoded, as records */
+	PosWin		win;
+	StringInfoData leb;
+	uint32		blk;			/* of the next block */
+	uint32		npost;			/* postings of the decoded block, and how many were given */
+	uint32		given;
+	Size		lend[SIFT_POS_EVERY];	/* end of each one's record in leb */
 };
 
 #define POS_READER_WINDOW	65536
@@ -265,14 +325,54 @@ sift_post_pos_reader(SiftPostingCursor *c, MemoryContext mcxt)
 		return r;
 	}
 	r->recs = c->poslen - (uint64) c->nck * sizeof(uint32);
+	if (c->info.flags & SIFT_TERM_POS2)
+	{
+		MemoryContext old = MemoryContextSwitchTo(mcxt);
+
+		r->win.cap = Min(POS_READER_WINDOW, r->recs);
+		initStringInfo(&r->leb);
+		MemoryContextSwitchTo(old);
+		return r;
+	}
 	r->cap = POS_READER_WINDOW;
 	r->buf = MemoryContextAlloc(mcxt, r->cap);
 	return r;
 }
 
+/* The next record of a term with position blocks: the postings of the next block turn into records when the last one was given */
+static const uint8 *
+pos_next_block(SiftPosReader *r, uint32 *len)
+{
+	if (r->given == r->npost)
+	{
+		uint32		k,
+					blen;
+		const uint8 *p;
+
+		if (r->blk >= r->c->nck)
+			corrupt_pos(r->c);
+		p = pos_block(r->c, &r->win, r->blk, &k, &blen);
+		resetStringInfo(&r->leb);
+		if (!sift_posblk_leb(p, blen, k, &r->leb, r->lend))
+			corrupt_pos(r->c);
+		r->npost = k;
+		r->blk++;
+		r->given = 0;
+	}
+	*len = r->lend[r->given] - (r->given ? r->lend[r->given - 1] : 0);
+	return (const uint8 *) r->leb.data + (r->given ? r->lend[r->given - 1] : 0);
+}
+
 const uint8 *
 sift_post_pos_next(SiftPosReader *r, uint32 *len)
 {
+	if (r->c->info.flags & SIFT_TERM_POS2)
+	{
+		const uint8 *rec = pos_next_block(r, len);
+
+		r->given++;
+		return rec;
+	}
 	for (;;)
 	{
 		const uint8 *rec = r->buf + r->pos;

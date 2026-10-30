@@ -199,8 +199,8 @@ sift_post_clone(const SiftPostingCursor *src, MemoryContext mcxt)
 	c->mcxt = mcxt;
 	c->bounds = NULL;
 	c->ckpt = NULL;
-	c->win = NULL;
-	c->win_len = 0;
+	c->win = (PosWin) {0};
+	c->cblk = 0;
 	c->curbuf = cursor_buf(mcxt, &src->info);
 	sift_post_rewind(c);
 	return c;

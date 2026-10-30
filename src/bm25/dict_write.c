@@ -5,12 +5,13 @@
 #include "dict_int.h"
 
 SiftDictWriter *
-sift_dict_writer_begin(SiftStreamWriter *sw, bool packed)
+sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2)
 {
 	SiftDictWriter *w = palloc0(sizeof(SiftDictWriter));
 
 	w->sw = sw;
 	w->packed = packed;
+	w->pos2 = pos2;
 	w->spool = BufFileCreateTemp(false);
 	w->post_end = sift_sw_tell(sw);
 	w->prevlen = -1;
@@ -32,7 +33,7 @@ flush_block(SiftDictWriter *w)
 		return;
 	hdr[0] = len & 0xff;
 	hdr[1] = len >> 8;
-	hdr[2] = w->nblk | (w->packed ? SIFT_DICT_PACKED : 0);
+	hdr[2] = w->nblk | (w->packed ? SIFT_DICT_PACKED : 0) | (w->pos2 ? SIFT_DICT_POS2 : 0);
 	BufFileWrite(w->spool, hdr, p - hdr);
 	BufFileWrite(w->spool, w->blk.data, w->blk.len);
 	w->dict_len += len;
@@ -62,7 +63,7 @@ put_entry(StringInfo b, const char *term, int len, int shared, const SiftTermInf
 			*p++ = suffix - 1;
 		memcpy(p, term + shared, suffix);
 		p += suffix;
-		*p++ = info->flags | Min(info->df, 15) << 4;
+		*p++ = (info->flags & ~SIFT_TERM_POS2) | Min(info->df, 15) << 4;
 		if (info->df >= 15)
 			p = sift_put_varint(p, info->df - 15);
 		*p++ = info->max_bound;

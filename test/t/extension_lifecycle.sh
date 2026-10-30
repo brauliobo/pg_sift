@@ -368,8 +368,8 @@ if (( PG_MAJOR >= 18 )); then
 	check "the sift_table written by 3.0 adds up the rows written after the update" test "$(q life upg "$TBLQ" | tail -n 1)" == "$(q life upg \
 		"SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM (SELECT g id, (g % 1000 / 8.0)::numeric(10,2) v FROM generate_series(1, 40000) g) s" | tail -n 1)"
 	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
-	check "the updated library writes segments of format 3 next to the format 2 one (a mixed index, verified and equal to a scan)" \
-		test "$(formats | grep -c '^2,3$')$(vq life upg "SELECT fp() = seq()")" == 1t
+	check "the updated library writes segments of format 4 next to the format 2 one (a mixed index, verified and equal to a scan)" \
+		test "$(formats | grep -c '^2,4$')$(vq life upg "SELECT fp() = seq()")" == 1t
 	crash life
 	node_start life || bail "restart failed"
 	check "inserts after the update survive a crash" test "$(vq life upg \
@@ -379,8 +379,8 @@ if (( PG_MAJOR >= 18 )); then
 	check "the sift_table with minor 3 and minor 8 segments answers the months as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
 	check "the sift_table with minor 3 and minor 8 segments answers the date range and the UTC quarters as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" "$TZQ" | tail -n 2 | tr '\n' '|')" == "$CALOFF|$TZOFF|"
 	q life upg "SELECT sift.merge('docs_idx', true)" >/dev/null
-	check "a merge rewrites the mixed index in format 3 (verified, results equal to a scan)" \
-		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
+	check "a merge rewrites the mixed index in format 4 (verified, results equal to a scan)" \
+		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 4t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
 	skip "$UPG_CHECKS" "extension_control_path needs PostgreSQL 18"

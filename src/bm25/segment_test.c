@@ -255,7 +255,7 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 			memcpy(VARDATA(blob), src, len);
 		sift_seg_close(seg);
 		v[0] = PointerGetDatum(blob);
-		v[1] = Int32GetDatum(info.flags & ~SIFT_TERM_POS);
+		v[1] = Int32GetDatum(info.flags & ~(SIFT_TERM_POS | SIFT_TERM_POS2));
 		v[2] = Int32GetDatum(info.df);
 		v[3] = Int32GetDatum(info.codec_len);
 		v[4] = Int32GetDatum(info.nnib);

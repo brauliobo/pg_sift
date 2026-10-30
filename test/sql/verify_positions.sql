@@ -23,7 +23,7 @@ BEGIN
 END $$;
 
 SELECT count(*) > 0 AS blocks_poked, bool_and(state IN ('ok', 'XX002')) AS ok_or_corrupt,
-	count(*) FILTER (WHERE msg ~ 'position record') > 0 AS position_damage_found FROM vp_verdict;
+	count(*) FILTER (WHERE msg ~ 'position (record|stream)') > 0 AS position_damage_found FROM vp_verdict;
 SELECT sift.verify('vp_idx', true);
 
 DROP TABLE vp, vp_verdict;

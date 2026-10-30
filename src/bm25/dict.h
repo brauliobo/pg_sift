@@ -31,10 +31,12 @@
 #define SIFT_INLINE_POS_MAX		256	/* longer position records are dropped: a dictionary block stays under 64 KB */
 
 #define SIFT_DICT_PACKED		0x80	/* in the term count byte of a block: entries of segment format 3 */
+#define SIFT_DICT_POS2			0x40	/* ... the position streams of its terms are coded in blocks (segment format 4) */
 
 #define SIFT_TERM_SPARSE		0x01	/* LIST codec blob (no group scores) */
 #define SIFT_TERM_INLINE		0x02	/* postings in inline_keys/inline_tf */
 #define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
+#define SIFT_TERM_POS2			0x10	/* not stored: SIFT_TERM_POS of a block with SIFT_DICT_POS2, blob not inline */
 #define SIFT_TERM_POS			0x08	/* the postings have position records (bm25/posting.h): at the end of the term blob, or inline */
 
 /* A segment's DICT section starts its last block within this many bytes (offsets are uint32); sift.test_dict_max lowers it in SIFT_TESTING builds */
@@ -91,7 +93,7 @@ typedef struct SiftDictIdx
  */
 typedef struct SiftDictWriter SiftDictWriter;
 
-extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw, bool packed);
+extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2);
 extern void sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *info);
 
 /* Terms added so far that are not inline: each has a slot (0, 1, ...) in dictionary order */

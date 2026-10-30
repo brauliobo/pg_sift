@@ -24,6 +24,7 @@ struct SiftDictWriter
 {
 	SiftStreamWriter *sw;
 	bool		packed;			/* blocks of segment format 3 (bm25/dict.h) */
+	bool		pos2;			/* and of format 4 */
 	BufFile    *spool;			/* DICT bytes */
 	uint64		dict_len;
 	StringInfoData blk;			/* entries of the open block */
@@ -62,6 +63,7 @@ typedef struct BlockIter
 	const uint8 *end;
 	int			left;
 	bool		packed;			/* the block is of segment format 3 */
+	bool		pos2;			/* and of format 4 */
 	uint64		post;
 	uint32		slot;			/* of the next term without inline postings */
 	char		term[SIFT_MAX_TERM_BYTES];

@@ -7,8 +7,8 @@
 # segments: more deletes with VACUUM, inserts with a promotion, a forced merge of everything into a new segment.
 # Column-format compatibility and legacy write buffers are covered by compat_31_column.sh.
 # COMPAT_FIXTURE names another fixture directory (compat_30_fixture.sh runs this test on the files of 3.0). The segments of the
-# fixture are older than segment format 3: they are read as they are, a promotion writes a segment of format 3 next to them (and
-# raises the metapage to 1.3), and a merge or VACUUM-driven rewrite leaves nothing but format 3.
+# fixture are older than segment format 3: they are read as they are, a promotion writes a segment of format 4 next to them (and
+# raises the metapage to 1.4), and a merge or VACUUM-driven rewrite leaves nothing but format 4.
 . "$(dirname "$0")/lib.bash"
 
 FIX=$(cd "$(dirname "$0")/../fixtures/${COMPAT_FIXTURE:-compat2x}" && pwd)
@@ -92,14 +92,14 @@ vacuumed() {
 }
 # a promotion seals the 2.x write buffer together with the new rows into a segment of this build
 promoted() {
-	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && formats_match '^[12](,[12])*(,3)+/3$' && verify && agree
+	test "$(grep -c immutable "$(dir fx)/segments.txt")" -ge 3 && formats_match '^[12](,[12])*(,4)+/4$' && verify && agree
 }
 # the 2.x segments, dirty ones included, were merged into one segment written by this build
 merged() {
 	local rows
 	rows=$(sql fx "SELECT count(*) FROM docs")
 	test "$(grep -c immutable "$(dir fx)/segments.txt")" -eq 1 && grep -q "^[0-9]*|immutable|$rows|f|0$" "$(dir fx)/segments.txt" \
-		&& formats_match '^3/3$' && verify && agree
+		&& formats_match '^4/4$' && verify && agree
 }
 
 sql fx "DELETE FROM docs WHERE id <= 1500 AND id % 10 = 7" "DELETE FROM docs WHERE id BETWEEN 1501 AND 2900 AND id % 10 = 9" \

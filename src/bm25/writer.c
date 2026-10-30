@@ -253,7 +253,9 @@ start_terms(SiftSegmentWriter *w)
 		sift_postw_spool(w->pw, w->spool_min);
 	if (w->fmt >= SIFT_SEGFMT_PACKED)
 		sift_postw_pack(w->pw);
-	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED);
+	if (w->fmt >= SIFT_SEGFMT_POSBLK)
+		sift_postw_posblk(w->pw);
+	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED, w->fmt >= SIFT_SEGFMT_POSBLK);
 	pfree(w->offmask);
 	pfree(w->dl);
 	MemoryContextSwitchTo(old);

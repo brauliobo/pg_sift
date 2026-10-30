@@ -24,6 +24,7 @@ bm25/query_match.c
 bm25/posting.c
 bm25/postw.c
 bm25/pos.c
+bm25/posblk.c
 bm25/dict.c
 bm25/dict_write.c
 bm25/segment.c

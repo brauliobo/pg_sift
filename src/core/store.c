@@ -165,7 +165,7 @@ seg_minor(Relation index, const SiftSegEntry *s)
 {
 	if (index->rd_rel->relam == sift_catalog()->am)
 		return Min(s->format, SIFT_FORMAT_MINOR);
-	return (s->flags & SIFT_SEG_VERS) ? SIFT_FORMAT_MINOR : SIFT_FORMAT_MINOR_BASE;
+	return (s->flags & SIFT_SEG_VERS) ? SIFT_FORMAT_MINOR_VERS : SIFT_FORMAT_MINOR_BASE;
 }
 
 static void

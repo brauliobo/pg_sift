@@ -78,8 +78,9 @@ block_begin(SiftDict *d, uint64 off, uint32 slot_base, uint8 *buf, BlockIter *it
 	if (src != buf)
 		memcpy(buf, src, len);
 	it->end = buf + len;
-	it->left = buf[2] & ~SIFT_DICT_PACKED;
+	it->left = buf[2] & ~(SIFT_DICT_PACKED | SIFT_DICT_POS2);
 	it->packed = (buf[2] & SIFT_DICT_PACKED) != 0;
+	it->pos2 = (buf[2] & SIFT_DICT_POS2) != 0;
 	it->p = get_varint(buf + 3, it->end, &post);
 	it->post = post;
 	it->slot = slot_base;
@@ -198,6 +199,8 @@ block_next_impl(BlockIter *it, SiftTermInfo *info, bool slots)
 		if (v == 0 || v > info->post_len - info->codec_len)
 			corrupt("Position stream of %llu bytes in a term blob of %u.", (unsigned long long) v, info->post_len);
 		info->pos_len = v;
+		if (it->pos2)
+			info->flags |= SIFT_TERM_POS2;
 	}
 	info->post_off = ALIGN4(it->post);
 	it->post = info->post_off + info->post_len;

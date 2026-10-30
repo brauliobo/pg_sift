@@ -24,6 +24,7 @@ Format major 1. The minor is what a build must read to understand an index or ta
 | 1.1 | term blobs may end with a position stream | BM25 index with positions |
 | 1.2 | segment format 2 | BM25 index |
 | 1.3 | BM25: segments of segment format 3. `sift_table`: a column group with unfrozen rows (`SIFT_SEG_VERS`) | the first such segment |
+| 1.4 | BM25: segments of segment format 4 (the position stream in blocks). A `sift_table` stays at 1.3 | the first such segment |
 
 `sift_col` indexes are never raised: their segment formats are the column engine's (section 4).
 
@@ -36,10 +37,11 @@ failure count (`SIFT_META_FAILURES_MASK`).
 |---|---|---|
 | 1 | `SIFT_SEGFMT_RANKBITS`: one liveness bit per doc in rank order | SQLite and MariaDB hosts |
 | 2 | `SIFT_SEGFMT_LIVEROWS`: liveness rows per superblock, dead-posting table | 3.0 |
-| 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers, position blocks (perf/BM25-SIZE.md section 5) | 3.1 PostgreSQL |
+| 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers (perf/BM25-SIZE.md section 5) | 3.1 PostgreSQL |
+| 4 | `SIFT_SEGFMT_POSBLK`: the position stream of a term in blocks of 32 postings, bit-packed (`bm25/posblk.c`, perf/BM25-SIZE.md section 5.4); a dictionary block says so with `SIFT_DICT_POS2` | 3.7 PostgreSQL |
 
-A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.0 refuses a segment of format 3 through the metapage minor
-(section 2).
+A 3.7 build reads 1 to 4 side by side; a merge writes the current format. 3.0 refuses a segment of format 3, and 3.6 and older one of format 4, through the metapage minor
+(section 2); `REINDEX` with the older library rewrites it.
 
 ## 4. Column segments (`SiftSegEntry.format` of access methods `sift_col` and `sift_table`)
 

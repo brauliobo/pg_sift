@@ -70,6 +70,8 @@ struct SiftPostingWriter
 	Size		poscap;
 	uint32	   *ckpt;			/* offset in pos of every SIFT_POS_EVERY-th posting (not with sp) */
 	bool		haspos;
+	bool		posblk;			/* the position stream of a term is written in blocks (segment format 4) */
+	StringInfoData blk;
 	uint8		bound1[SIFT_MAX_DL + 1];	/* bound for tf 1 by dl; 0 = not computed */
 };
 
@@ -287,6 +289,23 @@ blob_too_big(void)
 			 errhint("Partition the table so that each index holds fewer documents with the term.")));
 }
 
+/* The records of the term in w->pos as blocks in w->blk, and w->ckpt as the offsets of those */
+static void
+pos_blocks(SiftPostingWriter *w)
+{
+	uint32		nck = (w->n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY;
+
+	resetStringInfo(&w->blk);
+	for (uint32 b = 0; b < nck; b++)
+	{
+		Size		from = w->ckpt[b],
+					to = b + 1 < nck ? w->ckpt[b + 1] : w->poslen;
+
+		w->ckpt[b] = w->blk.len;
+		sift_posblk_put(w->pos + from, to - from, Min(SIFT_POS_EVERY, w->n - b * SIFT_POS_EVERY), &w->blk);
+	}
+}
+
 /*
  * Encodes the term's postings into w->out, filling info but for post_off;
  * returns the term blob, NULL for an inline term (which has none).
@@ -302,7 +321,9 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 	Size		clen,
 				side,
 				total,
-				posoff = 0;
+				posoff = 0,
+				poslen = w->poslen;
+	const uint8 *pos = w->pos;
 	uint8	   *out;
 
 	SIFT_INVARIANT(n != 0, "sift: term without postings");
@@ -348,8 +369,15 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 	total = side ? ALIGN4(clen) + side : clen;
 	if (w->haspos)
 	{
+		if (w->posblk)
+		{
+			pos_blocks(w);
+			pos = (const uint8 *) w->blk.data;
+			poslen = w->blk.len;
+			info->flags |= SIFT_TERM_POS2;
+		}
 		posoff = total;
-		total = posoff + (Size) ((n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32) + w->poslen;
+		total = posoff + (Size) ((n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32) + poslen;
 		info->flags |= SIFT_TERM_POS;
 		info->pos_len = total - posoff;
 	}
@@ -379,11 +407,22 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 		Size		nck = (Size) ((n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32);
 
 		memcpy(out + posoff, w->ckpt, nck);
-		memcpy(out + posoff + nck, w->pos, w->poslen);
+		memcpy(out + posoff + nck, pos, poslen);
 	}
 	info->post_len = total;
 	info->codec_len = clen;
 	return out;
+}
+
+/* The position stream is written in blocks (segment format 4) */
+void
+sift_postw_posblk(SiftPostingWriter *w)
+{
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+	w->posblk = true;
+	initStringInfo(&w->blk);
+	MemoryContextSwitchTo(old);
 }
 
 /* The containers of the GROUPED terms may be PACKED (segment format 3) */
@@ -505,6 +544,49 @@ spool_stage(SiftPostingWriter *w, uint32 upto)
 	w->open_start = 0;
 }
 
+/* The records of the spooled term as blocks: its files hold those, w->poslen their bytes */
+static void
+spool_blocks(SiftPostingWriter *w)
+{
+	TermSpool  *sp = w->sp;
+	uint32		nck = (sp->nstaged + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY,
+			   *ck = palloc(nck * sizeof(uint32));
+	BufFile    *blocks = BufFileCreateTemp(false);
+	uint8	   *raw = NULL;
+	Size		rawcap = 0,
+				rawlen = w->poslen;
+	StringInfoData out;
+
+	initStringInfo(&out);
+	BufFileSeek(sp->ckpt, 0, 0, SEEK_SET);
+	BufFileReadExact(sp->ckpt, ck, nck * sizeof(uint32));
+	w->poslen = 0;
+	for (uint32 b = 0; b < nck; b++)
+	{
+		Size		from = ck[b],
+					to = b + 1 < nck ? ck[b + 1] : rawlen;
+
+		if (to - from > rawcap)
+			raw = raw ? repalloc_huge(raw, rawcap = to - from) : MemoryContextAllocHuge(w->mcxt, rawcap = to - from);
+		BufFileSeek(sp->pos, 0, from, SEEK_SET);
+		BufFileReadExact(sp->pos, raw, to - from);
+		resetStringInfo(&out);
+		sift_posblk_put(raw, to - from, Min(SIFT_POS_EVERY, sp->nstaged - (uint64) b * SIFT_POS_EVERY), &out);
+		ck[b] = w->poslen;
+		BufFileWrite(blocks, out.data, out.len);
+		w->poslen += out.len;
+	}
+	BufFileClose(sp->pos);
+	BufFileClose(sp->ckpt);
+	sp->pos = blocks;
+	sp->ckpt = BufFileCreateTemp(false);
+	BufFileWrite(sp->ckpt, ck, nck * sizeof(uint32));
+	pfree(ck);
+	pfree(out.data);
+	if (raw)
+		pfree(raw);
+}
+
 /* The last groups of the term, and its blob out of the pieces, byte for byte what postw_encode makes of the term in memory */
 static pg_noinline void
 spool_end(SiftPostingWriter *w, SiftTermInfo *info)
@@ -521,6 +603,8 @@ spool_end(SiftPostingWriter *w, SiftTermInfo *info)
 	sp = w->sp;
 	n = sp->nstaged;
 	nck = (n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY;
+	if (w->haspos && w->posblk)
+		spool_blocks(w);
 	memset(info, 0, sizeof(SiftTermInfo));
 	info->df = n;
 	info->max_bound = sp->max_bound;
@@ -534,7 +618,7 @@ spool_end(SiftPostingWriter *w, SiftTermInfo *info)
 	if (w->haspos)
 	{
 		total += nck * sizeof(uint32) + w->poslen;
-		info->flags |= SIFT_TERM_POS;
+		info->flags |= SIFT_TERM_POS | (w->posblk ? SIFT_TERM_POS2 : 0);
 		info->pos_len = total - posoff;
 	}
 	if (total > SIFT_BLOB_MAX)

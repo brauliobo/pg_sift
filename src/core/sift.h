@@ -16,10 +16,12 @@
  * 1.2: segments of segment format 2 (below); segments of 1.0 and 1.1 are read as before
  * 1.3: segments of segment format 3 (below) in a BM25 index, or a column group with unfrozen rows (SIFT_SEG_VERS) in a sift_table: the first
  *      one raises the minor, nothing lowers it; all older ones are read as before
+ * 1.4: segments of segment format 4 (below) in a BM25 index
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
  * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
-#define SIFT_FORMAT_MINOR		3
+#define SIFT_FORMAT_MINOR		4
+#define SIFT_FORMAT_MINOR_VERS	3	/* what a sift_table with unfrozen rows needs: unchanged by 1.4 */
 #define SIFT_FORMAT_MINOR_BASE	2
 
 /*
@@ -27,16 +29,18 @@
  * its vacuumed docs. 2: the liveness bits are rows of live offsets per superblock, and the header and a table of dead
  * postings per term keep the statistics of the live docs. The SQLite and MariaDB hosts delete one doc
  * at a time, which cannot keep that table, so they keep writing format 1 (and read both). 3: format 2 with the narrower parts of
- * (dictionary blocks, dl rows, packed containers, position blocks), each announced where it
- * starts, so that a segment of format 3 is read by the code that reads 1 and 2 and the other way round.
+ * (dictionary blocks, dl rows, packed containers), each announced where it
+ * starts, so that a segment of format 3 is read by the code that reads 1 and 2 and the other way round. 4: the position stream of a term
+ * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c).
  */
 #define SIFT_SEGFMT_RANKBITS	1
 #define SIFT_SEGFMT_LIVEROWS	2
 #define SIFT_SEGFMT_PACKED		3
+#define SIFT_SEGFMT_POSBLK		4
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 #define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_RANKBITS
 #else
-#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_PACKED
+#define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_POSBLK
 #endif
 
 /* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages. make SIFT_TESTING=1 SIFT_SB_SHIFT=3 builds a test flavour with 8-page superblocks (and

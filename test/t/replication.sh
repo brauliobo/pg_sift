@@ -108,14 +108,14 @@ sql primary "REINDEX INDEX CONCURRENTLY docs_body" >/dev/null && catchup primary
 same "standby after REINDEX CONCURRENTLY" primary standby docs
 check "sift.verify passes on the standby" quiet sql standby "SELECT sift.verify('docs_body', true)" "SELECT sift.verify('docs_lower', true)"
 
-# the format 2 index takes a segment of format 3 next to its own (a mixed index): the standby replays both and answers alike
+# the format 2 index takes a segment of format 4 next to its own (a mixed index): the standby replays both and answers alike
 if (( TESTING )); then
 	formats() { sql "$1" "SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_segment_formats('docs2_body') WHERE kind = 'immutable'"; }
 	sql primary "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null && catchup primary standby
 	check "the index built in format 2 has format 2 segments on the standby" test "$(formats standby)" == 2
 	sql primary "INSERT INTO docs2 SELECT i, 'friendly mixed case ' || i % 7 || ' w' || i, null FROM generate_series($((ROWS * 3)), $((ROWS * 3 + 999))) i" \
 		"SELECT sift.promote('docs2_body')" >/dev/null && catchup primary standby
-	check "a promotion adds a segment of format 3 next to the format 2 one, on the standby too" test "$(formats standby)" == 2,3
+	check "a promotion adds a segment of format 4 next to the format 2 one, on the standby too" test "$(formats standby)" == 2,4
 	same "standby answers like the primary on the mixed index" primary standby docs2
 	check "sift.verify passes on the standby on the mixed index" quiet sql standby "SELECT sift.verify('docs2_body', true)"
 else

@@ -85,7 +85,7 @@ BEGIN
 				CONTINUE;
 		END;
 		-- the first release that reads it
-		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
+		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
 		detected := format('format %s.%s', maj, mnr) ||
 				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;

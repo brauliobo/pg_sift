@@ -209,7 +209,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 |---|---|
 | `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16, 3.4 up to 21, 3.5 up to 24, 3.6 up to 32 and 3.7 up to 33; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, minor 22 for an index with `key_columns` leaves unless `key_table = off` and for a `sift_table` with a foreign key or `*_id` column unless `sift.table_key_table = off`, minor 24 for an index with `count_columns`, minor 25 for a lookup dictionary of 1,024 strings or more, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
-| `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
+| `sift` (BM25) index | the segment format is the library's (3.7 writes format 4, which 3.6 and older refuse with the format error): drop the index and create it again with the older release, or keep the newer library |
 
 ## Defaults changed in 3.3
 
@@ -232,6 +232,7 @@ An existing index or table keeps what it holds; the new default applies to units
 |---|---|
 | BM25 metapage minor 1.2 (segment formats 1 and 2) | 3.0 |
 | BM25 metapage minor 1.3 (segment format 3) | 3.1 |
+| BM25 metapage minor 1.4 (segment format 4, the position stream in blocks) | 3.7 |
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |

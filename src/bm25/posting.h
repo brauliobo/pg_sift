@@ -25,6 +25,17 @@
  *                    (bm25/analyze.h). n is the true count, which tf
  *                    saturates at 255. Only word terms with df > SIFT_INLINE_MAX
  *                    of a segment written with positions have one.
+ *                    In a segment of format 4 (SIFT_TERM_POS2) the ckpt entries
+ *                    are the offsets of blocks of SIFT_POS_EVERY postings
+ *                    instead, and a block is the bit stream of bm25/posblk.c: a
+ *                    byte (width of the largest first position, 0x40 when a
+ *                    posting has several), then least significant bit first the
+ *                    flags of the postings with several, the first positions at
+ *                    that width, the Rice parameter of the gaps (4 bits), the
+ *                    gamma codes of the n - 1 of those postings, the low bits of
+ *                    all the gaps minus one and their quotients in unary. A
+ *                    posting is read alone. A dictionary block says so with
+ *                    SIFT_DICT_POS2; an inline term keeps the records.
  * LIST terms with every tf == 1 are the bare codec blob, followed by the position stream if any
  * (post_len == codec_len without). Readers copy the blob with SIFT_KERN_PAD bytes of padding.
  *
@@ -108,6 +119,7 @@ extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint
  */
 extern void sift_postw_spool(SiftPostingWriter *w, uint64 min_postings);
 extern void sift_postw_pack(SiftPostingWriter *w);
+extern void sift_postw_posblk(SiftPostingWriter *w);
 
 /*
  * Finishes the term: encodes, writes the blob (unless inline) and fills every
