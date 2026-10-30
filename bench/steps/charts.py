@@ -111,10 +111,13 @@ class Svg:
         self.parts.append(f'<line x1="{num(x1)}" y1="{num(y1)}" x2="{num(x2)}" y2="{num(y2)}" stroke="{stroke}" stroke-width="{width}"{d}/>')
 
     def caption(self, y, s, notes=()):
-        assert max(len(x) for x in (s, *notes)) * 11 * 0.56 < WIDTH - 40, f'caption too long: {s}'
+        def size(line):   # a long host name or a load range shrinks the line a little (11 px when it fits) instead of stopping the run
+            fit = (WIDTH - 40) / (len(line) * 0.56)
+            assert fit >= 9, f'caption too long: {line}'
+            return round(min(11, fit), 1)
         for i, note in enumerate(reversed(notes)):
-            self.text(20, y - 18 * (i + 1), note, 11, fill=MUTED)
-        self.text(20, y, s, 11, fill=MUTED)
+            self.text(20, y - 18 * (i + 1), note, size(note), fill=MUTED)
+        self.text(20, y, s, size(s), fill=MUTED)
 
     def render(self, height):
         head = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" '
