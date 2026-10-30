@@ -77,9 +77,9 @@ def window_table(results, total):
     return out, full
 
 
-def presets():
-    """P_ variables of the standard preset, by sourcing bench/presets.env"""
-    out = subprocess.run(['bash', '-c', '. bench/presets.env; preset standard; set | grep "^P_"'], cwd=REPO, capture_output=True, text=True).stdout
+def presets(name='standard'):
+    """P_ variables of a preset, by sourcing bench/presets.env"""
+    out = subprocess.run(['bash', '-c', f'. bench/presets.env; ALL_UPDATE_ENGINES=x; preset {name}; set | grep "^P_"'], cwd=REPO, capture_output=True, text=True).stdout
     return dict(l.split('=', 1) for l in out.splitlines() if '=' in l)
 
 
@@ -87,6 +87,34 @@ def minutes(p, stage):
     store = sum(int(p.get('P_MIN_' + k, 0)) for k in ('SETUP', 'WARM', 'COLD', 'UPDATES'))
     return {'store': store, 'updates': int(p.get('P_MIN_SECTION', 0)), 'compression': int(p.get('P_MIN_COMPRESSION', 0)), 'stats': int(p.get('P_MIN_STATS', 0)), 'gap': int(p.get('P_MIN_GAP', 0)),
             'search': int(p.get('P_MIN_SEARCH', 0)), 'cases': int(p.get('P_MIN_CASES', 0)), 'duckdb': int(p.get('P_MIN_DUCKDB', 0)), 'generic': int(p.get('P_MIN_GENERIC', 0))}[stage]
+
+
+RELEASE_WHY = {  # stage: what the release run cuts against the standard pass, and what keeps the published number
+    'store': 'the parameters of the standard pass on purpose: the key of a cached cell holds the runs, warm-ups, cold runs, thread budgets and rates, so the cells of Elasticsearch, ClickHouse and Citus that the last pass on this host measured are read from the cache (date and key in the table); the whole cost when the cache is empty, the cached figure when it is not',
+    'updates': 'one run at 200,000 and at 1,000,000 orders (standard: 3 and 2) and 5 s churn windows (10 s): the stored repetitions differ by 1.05x at the median cell (1.25x or less in 77% of 152 cells), so the table prints one run instead of the median of a few',
+    'compression': 'unchanged: one build of each variant at 1,000,000 orders, sizes and build times, no timed runs',
+    'stats': 'unchanged: counters of two servers, a minute', 'gap': 'unchanged: one profile under a memory cap, a minute',
+    'search': 'two interleaved rounds for every cell (standard: 2 to 3; a cell above the error target keeps its flag instead of a third round); the engines and classes are all there, and a second run of `fuzzy` for pg_sift and Elasticsearch merged into the tier (the README cell that has no column yet: a restore and build of two engines and two interleaved rounds, about 2 minutes, under 1 GB of scratch: the 50,000-article slim tier, 72 MiB of Elasticsearch index and 30 MiB of pg_sift)',
+    'cases': 'one round of 3 timed runs per lane (standard: 3 rounds of 5) and a lane budget of 4 s (10 s); NOT smaller: at 300,000 orders the median speed-up of the stored cases is 0.74x of the 1,000,000 one (only 9 of 26 cases within 25%), so the table stays at 1,000,000 orders, whose 15 minutes of table builds are the floor',
+    'duckdb': 'unchanged: the ten questions, 3 warm runs, both pg_duckdb lanes',
+    'generic': 'the other engines on three generated datasets, 3 runs, the answers checked first; this stage does not run pg_sift (its numbers are the cases stage\'s), so when its inputs key (harness, adapters, generators, statements, rows, runs, the CPU, threads and memory of the host) is the one in bench/results/generic.tsv the committed numbers stand in and the plan says `carried`: 0 minutes; the first pass of a host measures them',
+    'scaling': 'partitions 1, 16, 256, 4096 and workers 0, 1, 3 (standard sweeps: 7 and 4 points), 3 runs per cell: the endpoints and the middle of each curve; the chart keeps its slope',
+    'analytics': 'the 29 application shapes on 1,200,000 orders, 3 timed runs after one warm-up (5): heap, pg_sift, flat tables and ClickHouse',
+}
+RELEASE_STAGES = STAGES + [('scaling', 'the partition (1 to 4,096) and parallel worker (0 to 3) sweeps of four questions', 'PostgreSQL, pg_sift'),
+                           ('analytics', 'the application shapes: whole-table reports and reports of a set of tenants', 'PostgreSQL heap, pg_sift, PostgreSQL flat tables, ClickHouse')]
+
+
+def release_table():
+    """the release run (steps/release.sh): the minutes of every stage from the preset `release`, against the budget"""
+    p = presets('release')
+    mins = lambda s: int({'store': sum(int(p.get('P_MIN_' + k, 0)) for k in ('SETUP', 'WARM', 'COLD', 'UPDATES')), 'updates': p.get('P_MIN_SECTION', 0)}.get(s, p.get('P_MIN_' + s.upper(), 0)))
+    total = sum(mins(s) for s, _, _ in RELEASE_STAGES)
+    cached = total - mins('store') + int(p.get('P_MIN_STORE_CACHED', 0))
+    out = ['| stage | minutes | what it times | what the release run changes against the standard pass, and why the number stays |', '|---|---:|---|---|']
+    out += ['| `%s` | %d | %s | %s |' % (s, mins(s), what, RELEASE_WHY[s]) for s, what, _ in RELEASE_STAGES]
+    out += ['| **all** | **%d** | `bench/bench release`: one stage after another, the plan checked against 120 minutes before anything starts | with the cells of the engines not under test in the cache of cells: **%d** minutes (ideal: 60) |' % (total, cached)]
+    return out
 
 
 def stage_table(p):
@@ -150,6 +178,17 @@ def read_times(path):
     return out
 
 
+def scratch_table(results):
+    path = os.path.join(results, 'cases-scratch.tsv')
+    if not os.path.exists(path):
+        return []
+    rows = [l.rstrip('\n').split('\t') for l in open(path) if l.strip() and not l.startswith('#')][1:]
+    out = ['<details><summary>Scratch of the cases stage in MB: three small sizes and the line to 1,000,000 orders</summary>', '',
+           '| case | 50,000 | 100,000 | 200,000 | fixed | per 1M orders | at 1M |', '|---|---:|---:|---:|---:|---:|---:|']
+    out += ['| %s | %s |' % (r[0] if r[0].startswith('(') else '`%s`' % r[0], ' | '.join(format(int(x), ',') for x in r[1:])) for r in rows]
+    return out + ['', '</details>']
+
+
 def cases_table(results, p):
     times = read_times(os.path.join(results, 'cases-time.tsv'))
     if not times:
@@ -193,6 +232,19 @@ def block(results):
     if s:
         out += ['', 'Search (slim tier, bench/results/articles.tsv and places.tsv):', ''] + s
     out += ['', 'Cases:', ''] + cases_table(results, p)
+    out += [''] + scratch_table(results)
+    out += ['', '#### The release run: one command', '',
+            '`bench/bench release` is the one authoritative run after a release: `bench/bench final --size release --docs` with the checks of a run that publishes numbers (a clean checkout, the plan against a budget of 120 minutes before anything starts), '
+            'and it covers every table the docs print. `--dry-run` prints the plan and the preconditions; `--rehearsal` runs every stage at the smoke size in a throwaway worktree with its own work and store directories and checks that the tables render. '
+            'The preset `release` is `standard` with the repetitions cut where the stored runs show that no published number depends on them, and without the sweeps that only repeat a curve:', ''] + release_table()
+    out += ['', 'Memory and disk of the cases stage: the clusters of the cases are scratch on tmpfs with fsync off (`CASES_TMP`, default `/dev/shm/sift-cases`; the stored timings and the minutes above were taken that way, so the numbers stay comparable). '
+            'tmpfs is charged to the memory cap of the server, `CASES_MEM` (16G in this run: 8G was killed by the kernel at 6.3 GB of scratch). The plan of `bench/bench cases --plan --rows 1000000` says 5 GB; '
+            'the line through three small sizes (table above, 18 cases) puts the cases it sampled at about 4.8 GB at 1,000,000 orders, 1.4 GB of it fixed, and the full list at 50,000 orders peaked at 6.3 GB where those 18 peak at 1.5 GB, '
+            'so the other datasets add about 4.8 GB that do not grow with the orders: about 10 GB at 1,000,000 orders for the 211 cases (an estimate from the line, not a measurement at that size). '
+            '`bench/bench release` reserves twice the plan (10 GB) under `CASES_TMP` and checks the free space, the available memory (the reserve and 8 GB) and the cap (the reserve and 4 GB) before it starts, and stops with the numbers when they are short; '
+            '`CASES_TMP=/path` moves the clusters to a disk (slower builds, minutes not comparable) and `CASES_MEM` changes the cap.']
+    out += ['', 'On the benchmark host (`HOST` is the ssh name, `DIR` a checkout with the engines built by `bench/bench setup`, `SHA` the commit under test):', '', '```',
+            "ssh HOST 'cd DIR && git fetch -q && git checkout --detach SHA && nohup bench/bench release > ~/release-run.log 2>&1 &'", "ssh HOST 'tail -f ~/release-run.log'", '```']
     return out
 
 

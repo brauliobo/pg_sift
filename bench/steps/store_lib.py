@@ -50,6 +50,7 @@ LANES = {
     'pg':         ('PostgreSQL', 'pg', 0, 'store'),
     'sift':       ('pg_sift `sift_col`', 'sift', 1, 'store_col'),
     'sift_table': ('pg_sift `sift_table`', 'sift', 1, 'store_tbl'),
+    'sift_table_ord': ('pg_sift `sift_table`, loaded in `created_at` order', 'sift', 1, 'store_tbl_ord'),   # the rows of sift_table in the order of a ClickHouse ORDER BY: a date window prunes units
     'sift_maint': ('pg_sift `sift_col`, maintenance on', 'sift', 1, 'store_col_maint'),
     'sift_table_maint': ('pg_sift `sift_table`, maintenance on', 'sift', 1, 'store_tbl_maint'),
     'es':         ('Elasticsearch', 'es', 2, None),
@@ -62,16 +63,16 @@ LANES = {
 }
 
 
-DEFAULT_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint', 'es', 'es_cached', 'ch', 'citus']
+DEFAULT_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_ord', 'sift_table_maint', 'es', 'es_cached', 'ch', 'citus']
 
 
-PG_ENGINES = ['pg', 'sift', 'sift_table', 'sift_maint', 'sift_table_maint', 'citus', *COMPRESSION]
+PG_ENGINES = ['pg', 'sift', 'sift_table', 'sift_table_ord', 'sift_maint', 'sift_table_maint', 'citus', *COMPRESSION]
 
 
 UPDATE_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_maint', 'es', 'ch', 'ch_mut', 'ch_rmt']
 
 
-MODES = {'pg': 'commit', 'sift': 'commit', 'sift_maint': 'commit', 'sift_table': 'commit', 'sift_table_maint': 'commit', 'es': 'default', 'ch': 'lightweight', 'ch_mut': 'mutation', 'ch_rmt': 'insert'}   # the write mode whose acknowledgement and visibility are shown
+MODES = {'pg': 'commit', 'sift': 'commit', 'sift_maint': 'commit', 'sift_table': 'commit', 'sift_table_ord': 'commit', 'sift_table_maint': 'commit', 'es': 'default', 'ch': 'lightweight', 'ch_mut': 'mutation', 'ch_rmt': 'insert'}   # the write mode whose acknowledgement and visibility are shown
 
 
 # the lanes that are a sift lane with the background rewrite switched on in their database (ALTER DATABASE ... SET): the update, delete and VACUUM cells show
@@ -88,7 +89,7 @@ is_ch = lambda eid: eid in CH_TABLE
 is_es = lambda eid: eid in ('es', 'es_cached')
 
 
-DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'sift_maint': 'sift.sql', 'sift_table_maint': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
+DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'sift_table_ord': 'sift_table.sql', 'sift_maint': 'sift.sql', 'sift_table_maint': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
 
 
 log, die = benchlib.logger('store', False)

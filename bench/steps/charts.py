@@ -305,12 +305,13 @@ def make(rows, tier):
     notes = ES_ARTICLE_NOTES if 'elasticsearch' in engines else []
     out['articles-throughput.svg'] = grouped('Throughput by workload', 'queries per second, higher is better', groups, list(qps.items()),
                                              lambda v: f'{v:,.0f}', 'queries per second', cap, notes=notes, errors=se)
-    ratio = {e: [None if q is None else q / b for q, b in zip(vs, qps['pg_search'])] for e, vs in qps.items() if e != 'pg_search'}
-    # the standard error of a quotient: the relative errors add in quadrature
-    ratio_se = {e: [None if None in (s, t, q, b) else (q / b) * math.hypot(s / q, t / b)
-                    for q, b, s, t in zip(qps[e], qps['pg_search'], se[e], se['pg_search'])] for e in ratio}
-    out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
-                                          list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, notes=notes, errors=ratio_se)
+    if 'pg_search' in qps:  # a run of a subset of the engines has no baseline to divide by
+        ratio = {e: [None if q is None else q / b for q, b in zip(vs, qps['pg_search'])] for e, vs in qps.items() if e != 'pg_search'}
+        # the standard error of a quotient: the relative errors add in quadrature
+        ratio_se = {e: [None if None in (s, t, q, b) else (q / b) * math.hypot(s / q, t / b)
+                        for q, b, s, t in zip(qps[e], qps['pg_search'], se[e], se['pg_search'])] for e in ratio}
+        out['articles-speedup.svg'] = grouped('Throughput relative to pg_search', 'queries per second divided by pg_search, higher is better', groups,
+                                              list(ratio.items()), lambda v: f'{v:.2f}x', 'speedup over pg_search', cap, baseline=1.0, notes=notes, errors=ratio_se)
 
     p = describe(rows, tier)['places']
     keys = [(c, 'top') for c in PLACE_CLASSES]

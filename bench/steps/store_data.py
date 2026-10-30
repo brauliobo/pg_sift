@@ -115,8 +115,15 @@ def load_pg(eid, args, rows):
         psql_file(eid, sec['table'])
 
     fresh()
+    def copy():
+        if eid != 'sift_table_ord':
+            return psql_file(eid, f"\\copy orders FROM '{csv_path(args)}' CSV")
+        for sql in ('CREATE UNLOGGED TABLE orders_stage (LIKE orders)', f"\\copy orders_stage FROM '{csv_path(args)}' CSV",   # the same rows stored in the order of created_at (docs/USAGE.md): the load time holds the sort
+                    'INSERT INTO orders SELECT * FROM orders_stage ORDER BY created_at; DROP TABLE orders_stage'):
+            psql_file(eid, sql)
+
     try:   # one COPY, one transaction: what a user does first
-        timed(rows, eid, 'rows', lambda: psql_file(eid, f"\\copy orders FROM '{csv_path(args)}' CSV"))
+        timed(rows, eid, 'rows', copy)
     except RuntimeError as x:   # a failure is a result; the rows then go in transactions of CHUNK rows
         rows.add(eid, '-', 'rows', 'load_error', 'text', value=str(x)[:400])
         log(f'{eid}: {x}; loading in transactions of {CHUNK:,} rows')
@@ -132,7 +139,7 @@ def load_pg(eid, args, rows):
     if eid == 'citus':   # the settings the table was created with, read back from the server (the defaults of columnar.*)
         rows.add(eid, '-', 'orders', 'columnar_options', 'text', value=psql_value(eid, "SELECT 'chunk_group_row_limit=' || chunk_group_row_limit || ', stripe_row_limit=' || stripe_row_limit || ', compression=' || "
                                                                                        "compression || ', compression_level=' || compression_level FROM columnar.options WHERE relation = 'orders'::regclass"))
-    if eid in ('sift_table', 'sift_table_maint'):   # reusable blocks left inside the table file after the load's VACUUM
+    if eid in ('sift_table', 'sift_table_ord', 'sift_table_maint'):   # reusable blocks left inside the table file after the load's VACUUM
         rows.add(eid, '-', 'free', 'size_mib', 'MiB', value=mib(int(psql_value(eid, "SELECT free_blocks FROM sift.table_space('orders')")) * 8192))
     if eid in ('sift', 'sift_maint') or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
         rows.add(eid, '-', 'orders_col', 'reloptions', 'text', value=psql_value(eid, "SELECT coalesce(reloptions::text, '(not set)') FROM pg_class WHERE relname = 'orders_col'"))

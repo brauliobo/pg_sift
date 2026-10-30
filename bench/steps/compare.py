@@ -346,10 +346,12 @@ def generic_block(results):
         pairs = engine_pairs(results, '', arm) if arm != 'pg' else []
         body.append('| %s | %d of %d | %s | %s |' % (ARM_LABEL.get(arm, arm), len(ran), len(mine), cell(pairs) if pairs else 'the reference (see the cases)' if arm == 'pg' else 'not measured',
                                                    '; '.join('%s (%s)' % (reason.replace('|', '\\|'), ', '.join('`%s`' % c for c in cs)) for reason, cs in why.items()) or '-'))
+    meta = extras.read(os.path.join(results, 'generic.tsv'))[0]
+    stand = (f' Measured on {meta["date"]} at commit {meta["sha"]}; a release run whose inputs key (`generic.py key`: the harness, the adapters, the generators, the statements, the rows and runs, the CPU, threads and memory of the host) is the one in the file carries these numbers instead of measuring them again: this stage does not run pg_sift.' if meta.get('sha') else '')
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
-            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure not measured under 3.7 yet. '
+            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure not measured under 3.7 yet.' + stand + ' '
             'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
 
 

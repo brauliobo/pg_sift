@@ -11,7 +11,9 @@ the engine's dialect in bench/engines.tsv, replaces the statement where the dial
 Rows are `arm ms` of the warm median, like bench/results/cases.tsv; the pg_sift number of each query is the one of cases.tsv, so the comparison is made by steps/compare.py from the two files.
 """
 import argparse
+import hashlib
 import os
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import cases as cases_mod  # noqa: E402
 import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 from suite_engine import REPO, Unsupported, canon, first_diff, log, same, timed  # noqa: E402
 
 VERSION = next(l.split("'")[1] for l in open(os.path.join(REPO, 'pg_sift.control')) if l.startswith('default_version'))   # the rows carry the version they were measured at
@@ -30,9 +33,27 @@ def suite_cases(suites):
     return [c for c in cases_mod.read_registry() if c.dataset in suites and (c.dataset != 'orders' or c.headline and not c.load and not {'setup', 'prepare'} & set(c.sec))]
 
 
+def inputs_key(a, cases, chosen):
+    """what the numbers of the other engines depend on: the harness, the adapters of the engines that run and the source, the generators and the statements of the cases, the rows and the runs.
+    Not the pg_sift sources: this stage does not run pg_sift (its numbers are the cases stage's), so a commit that only changes pg_sift leaves the key alone"""
+    root = lambda *p: os.path.join(REPO, 'bench', *p)
+    files = [root('steps', f) for f in ('generic.py', 'suite_engine.py', 'engines.py')] + [root('engines.tsv'), root('versions.env')]
+    files += [root('engines', e + '.py') for e in chosen if os.path.exists(root('engines', e + '.py'))] + [root('engines', 'pg_duckdb.py')]
+    files += [root('sql', s, f) for s in a.suites.split(',') for f in ('gen.sql', 'ch.sql', 'citus.sql') if os.path.exists(root('sql', s, f))]
+    files += [root('cases', c.id + '.sql') for c in cases]
+    return benchlib.key_of({'files': [[os.path.relpath(f, REPO), hashlib.sha256(open(f, 'rb').read()).hexdigest()] for f in sorted(set(files)) if os.path.exists(f)],
+                            'cases': [[c.id, c.dataset] for c in cases], 'rows': a.rows, 'runs': a.runs, 'cpus': a.cpus, 'memory': a.memory, 'engines': sorted(chosen)})
+
+
+def host_words():
+    """cpu, threads and memory of this host: what an older file must have for its numbers to stand in (the kernel and docker versions are not asked)"""
+    fp = benchlib.host_fingerprint()
+    return '%s, %s threads, %s' % (fp['cpu'], fp['threads'], fp['ram'])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('cmd', choices=['run'])
+    ap.add_argument('cmd', choices=['run', 'key'], help='key: print the inputs key and the host of a run with these options, and whether bench/results/generic.tsv carries both (exit 0) or not (exit 1)')
     ap.add_argument('--rows', type=int, default=1000000)
     ap.add_argument('--suites', default='tpch,hits,tseries,orders')
     ap.add_argument('--engines', help='ids of bench/engines.tsv (kind analytic); default: those with default = yes')
@@ -59,6 +80,11 @@ def main():
     os.makedirs(a.work, exist_ok=True)
     ctx = SimpleNamespace(port=a.port, cpus=a.cpus, memory=a.memory, timeout=a.timeout, work=a.work)
     cases = suite_cases(suites)
+    key, host = inputs_key(a, cases, chosen), host_words()
+    if a.cmd == 'key':
+        have = {l[2:].split(':', 1)[0]: l.split(':', 1)[1].strip() for l in open(os.path.join(REPO, 'bench', 'results', 'generic.tsv')) if l.startswith('# ') and ':' in l}
+        print('inputs %s, host %s; the file has inputs %s, host %s, measured %s' % (key, host, have.get('inputs'), have.get('host'), have.get('date')))
+        sys.exit(0 if have.get('inputs') == key and have.get('host') == host else 1)
     runs = 0 if a.check_only else a.runs
     results, failures, reference, skipped = [], [], {}, {}   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
 
@@ -116,6 +142,7 @@ def main():
     if a.out and runs:
         with open(a.out, 'w') as f:
             f.write('# The generic suites on the other engines (steps/generic.py, bench/engines.tsv): %s against PostgreSQL 18 (the pg_duckdb image), the same rows, answers compared before any time.\n' % ', '.join(order))
+            f.write('# inputs: %s\n# host: %s\n# sha: %s\n' % (key, host, subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()))
             f.write('# rows: %d\n# date: %s\n# method: client-side milliseconds, warm median of %d runs after one untimed; %d CPUs and %s per engine, one engine at a time; pg is PostgreSQL 18.1 of the pg_duckdb image\n'
                     % (a.rows, time.strftime('%Y-%m-%d'), runs, a.cpus, a.memory))
             f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')

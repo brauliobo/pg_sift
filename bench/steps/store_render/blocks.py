@@ -70,7 +70,7 @@ def benchmarks_block(R):
     tier = R.tiers[-1]
     t = R.meta['tiers'][tier]
     s = t['servers']
-    engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'es', 'ch', 'citus'])
+    engines = R.engines(tier, ['pg', 'sift', 'sift_table', 'sift_table_ord', 'es', 'ch', 'citus'])
     out = [f'{t["rows"]:,} orders and {len(R.queries(tier))} aggregate questions (the {len(R.queries(tier, search=True))} full-text ones are in the search section), {cpu_name(R.cpus(tier))} per container ({thread_line(R, tier)}). Median of {t["runs"]} warm runs, three measures in each cell (the fastest and slowest run of every time are in bench/results/store.json); the fastest system of a question and anything within 5% of its time in bold, the factors are against the faster pg_sift layout. '
            f'Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")}, PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}, Elasticsearch {s["es"]}, ClickHouse {s["ch"]}'
            + (f', Citus {s["citus_columnar"]}' if 'citus' in engines else '') + f'; seeded data sha256 `{t["data_sha256"][:16]}`; {host_noise(t["parts"]["warm"])} at the start of the runs (the host is shared).', '']

@@ -34,6 +34,7 @@ while (( $# )); do
     --stages) STAGES=${2//,/ }; shift ;;
     --budget) BUDGET=$2; shift ;;
     --no-resume) export NO_RESUME=1 ;;
+    --no-carry|--remeasure-all) export NO_CARRY=1; [[ $1 == --no-carry ]] || FWD+=("$1") ;;
     --docs) DOCS=1 ;;
     --size) SIZE=$2; shift ;;
     *) FWD+=("$1") ;;
@@ -41,15 +42,16 @@ while (( $# )); do
   shift
 done
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
-[[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
+[[ -z $DOCS || -n ${REHEARSAL:-} || $SIZE == standard || $SIZE == release || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard, release or full, not $SIZE"
 FWD+=(--size "$SIZE")
-[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=125 || BUDGET=25; }; }
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=125 || { [[ $SIZE == release ]] && BUDGET=120 || BUDGET=25; }; }; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
 ALL_STAGES="store updates compression stats gap search cases duckdb generic"
+if [[ $SIZE == release || -n ${REHEARSAL:-} ]]; then ALL_STAGES="$ALL_STAGES scaling analytics"; fi   # the tables of the partition and worker sweeps and of the application shapes
 [[ -n $STAGES ]] || STAGES=$ALL_STAGES
-[[ $SIZE == standard || $SIZE == full || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
+[[ $SIZE == standard || $SIZE == release || $SIZE == full || -n ${REHEARSAL:-} || ${STAGES} != "$ALL_STAGES" ]] || STAGES=${STAGES/compression /}   # the compression variants are published at 1M: smoke and quick skip them unless named
 
 bench() { "$BENCH/bench" "$@"; }
 s_store() { bench store all "${FWD[@]}" --run-id "final-$SIZE-store" --sizes "$SIZES" ${DOCS:+--docs}; }
@@ -61,10 +63,18 @@ s_gap() {
                       python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
 }
 s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECONDS=${P_CHURN:-20} bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes "${P_SECTION_SIZES:-200000,1000000}" ${DOCS:+--docs}; }
-s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
+s_search() { # the slim tier of every engine, then `fuzzy` (not a class of the reduced matrix, so a column of the README table of its own) for pg_sift and Elasticsearch, merged into the tier
+  local fuzzy=sift,elasticsearch
+  bench all "${FWD[@]}" ${REHEARSAL:+--engines "$fuzzy"} --run-id "final-$SIZE-search" ${DOCS:+--docs}   # a rehearsal builds no other competitor extension
+  bench run "${FWD[@]}" --dataset articles --classes fuzzy --engines "$fuzzy" --run-id "final-$SIZE-search-fuzzy" ${DOCS:+--docs --merge}
+}
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
-s_cases() { bench cases --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" --lane-budget "${P_LANE_BUDGET:-20}" ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
+s_cases() { CASES_MEM=${CASES_MEM:-16G} bench cases ${P_CASES:+--cases "$P_CASES"} --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" ${P_CASE_RUNS:+--runs "$P_CASE_RUNS"} --lane-budget "${P_LANE_BUDGET:-20}" ${REHEARSAL:+--no-wait} ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
+s_scaling() { bench scaling --rows "$P_ROWS" --reps "${P_SCALING_REPS:-7}" ${P_SCALING_PARTS:+--partitions "$P_SCALING_PARTS"} ${P_SCALING_WORKERS:+--workers "$P_SCALING_WORKERS"} ${DOCS:+--docs}; }   # partitions and parallel workers
+s_analytics() { # shellcheck disable=SC2086  # $ch is one flag or nothing
+  local ch=--clickhouse; [[ -x ${CH_BIN:-/usr/bin/clickhouse} ]] || { ch=''; log 'analytics: no ClickHouse binary (CH_BIN): its column of the shapes table is n/a'; }
+  bench analytics run --engines heap,col,flat,ch --flat $ch ${P_ANALYTICS_ORDERS:+--orders "$P_ANALYTICS_ORDERS"} ${P_ANALYTICS_RUNS:+--runs "$P_ANALYTICS_RUNS"} ${DOCS:+--docs}; }   # the application shapes
 s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }
@@ -80,6 +90,8 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     cases) echo "${P_MIN_CASES:-15}" ;;
     duckdb) echo "${P_MIN_DUCKDB:-6}" ;;
     generic) echo "${P_MIN_GENERIC:-3}" ;;
+    scaling) echo "${P_MIN_SCALING:-12}" ;;
+    analytics) echo "${P_MIN_ANALYTICS:-10}" ;;
     scale) echo "${P_MIN_SCALE:-430}" ;;
     sets) echo "${P_MIN_SETS:-25}" ;;
     extras) echo "${P_MIN_EXTRAS:-100}" ;;
@@ -87,12 +99,18 @@ minutes() { # STAGE: the minutes it takes when everything is measured
 }
 key() { python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$1" "$SIZE" "${FWD[*]}" "$DOCS" "$SIZES"; }
 
+carried() { # STAGE: the stage whose committed results stand in for a new run, with the line that says why. Only `generic` (the other engines: it does not run pg_sift, so a commit that changes pg_sift leaves its inputs alone)
+  [[ -z ${NO_CARRY:-} && $1 == generic && $SIZE == release ]] || return 1
+  python3 -I "$STEPS/generic.py" key --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" 2>/dev/null
+}
+
 plan() { # the stages that will run, their minutes, the total against the budget
   local total=0 s m
   printf 'Release pass, size %s (bench/presets.env), stages one after another:\n' "$SIZE"
   for s in $STAGES; do
     m=$(minutes "$s")
-    if stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
+    if why=$(carried "$s"); then printf '  %-12s carried, 0 min: %s\n' "$s" "$why"
+    elif stage_done "$s" "$(key "$s")"; then printf '  %-12s skipped: finished before with the same code, settings and host (%s)\n' "$s" "$(cut -f3 "$STAGE_STATE/$s.state")"
     else printf '  %-12s about %2d min\n' "$s" "$m"; total=$(( total + m )); fi
   done
   [[ " $STAGES " != *" scale "* ]] || "$BENCH/bench" cases --plan --rows 200000 --scales 1,10,100 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} | sed 's/^/  /' || true   # the points, the disk and the time of the scale stage
@@ -109,6 +127,14 @@ preconditions() {
   check "docker works" docker info
   check "systemd-run --user scope works (the memory cap of the pg_sift profile)" systemd-run --user --scope -q -p MemoryMax=1G true
   check "psql, python3, flock, ss, perf, pgbench, pg_config" bash -c 'for c in psql python3 flock ss perf pgbench pg_config; do command -v $c || exit 1; done'
+  [[ $SIZE != release || -n ${REHEARSAL:-} ]] || check "a ClickHouse binary for the application shapes (CH_BIN, default /usr/bin/clickhouse)" test -x "${CH_BIN:-/usr/bin/clickhouse}"
+  if [[ " $STAGES " == *" cases "* ]]; then   # the clusters of the cases are scratch on tmpfs (CASES_TMP, default /dev/shm/sift-cases, fsync off): the largest point of the plan, twice (the rehearsal peaked at 1.6x the plan: the datasets of fixed size do not shrink), and the working memory of the server on top; tmpfs is charged to the cap of the server (CASES_MEM, 16G: 8G was killed by the kernel at 6.3 GB of scratch)
+    local cdir=${CASES_TMP:-/dev/shm/sift-cases} cap=${CASES_MEM:-16G} need fs
+    need=$("$BENCH/bench" cases --plan --rows "$P_ROWS" 2>/dev/null | sed -n 's/.*largest point needs about \([0-9]*\) GB.*/\1/p'); [[ -z $need ]] || need=$((need * 2))
+    fs=$cdir; while [[ ! -e $fs ]]; do fs=$(dirname "$fs"); done
+    check "the cases fit: ${need:-?} GB free under CASES_TMP=$cdir, $(( ${need:-0} + 8 )) GB of memory available, CASES_MEM=$cap at least $(( ${need:-0} + 4 )) GB" \
+      bash -c '[[ -n $1 ]] && (( $(df --output=avail -BG "$2" | tail -1 | tr -dc 0-9) >= $1 && $(awk "/MemAvailable/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) >= $1 + 8 && ${3} >= $1 + 4 ))' _ "$need" "$fs" "${cap%[Gg]}"
+  fi
   check "ports 56280 .. 56284 are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
   check "no containers of a store run exist (bench/bench store clean)" bash -c '[[ -z $(docker ps -a -q --filter label=sift-store) ]]'
   printf '  %s GB free in %s, %s GB in /tmp, %s GB of memory available\n' "$(df --output=avail -BG "$STORE" | tail -1 | tr -dc 0-9)" "$STORE" "$(df --output=avail -BG /tmp | tail -1 | tr -dc 0-9)" "$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)"
@@ -135,7 +161,9 @@ STAGE_STATE=$STORE/final-state/$SIZE   # finished stages are remembered across r
 T0=$SECONDS FAILED=()
 for s in $STAGES; do
   rc=0
-  if ! stage_done "$s" "$(key "$s")"; then
+  [[ -z ${REHEARSAL:-} || $s != search ]] || git -C "$REPO" checkout -- bench/results/store.json bench/results/store-scaling.json   # the smoke store stages replaced the 1,000,000-order tiers that the charts and highlights read
+  if why=$(carried "$s"); then log "stage $s: carried, $why"
+  elif ! stage_done "$s" "$(key "$s")"; then
     "$0" --stage-only "$s" "${ORIG[@]}" &
     STAGE_PID=$!
     wait "$STAGE_PID" || rc=$?

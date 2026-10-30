@@ -11,7 +11,7 @@ import mdtable
 TIE = 0.05
 SEP = ' · '
 NOT_MEASURED = 'not measured under 3.7 yet'
-MINE = ('sift', 'sift_col', 'sift_table', 'sift_maint')   # the systems that are the reference: no factors
+MINE = ('sift', 'sift_col', 'sift_table', 'sift_table_ord', 'sift_maint')   # the systems that are the reference: no factors
 MAX_COLS = 4   # a cell is about 40 characters: four of them and the system fit the 880 px of the README
 
 

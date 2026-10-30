@@ -71,6 +71,8 @@ Commands
              `cases --list` (steps/cases.sh)
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)
+  release    the one authoritative run after a release, every table of the docs, one command: `release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN]` (steps/release.sh;
+             docs/BENCHMARKS.md, "Time budget of the release pass")
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
@@ -301,7 +303,7 @@ parse() {
   if [[ -n $size ]]; then   # the size of the pass (bench/presets.env) also names the search tier
     . "$HERE/presets.env"; preset "$size" || die "unknown size $size ($PRESETS)"
     case $size in full) tier=full ;; *) tier=slim ;; esac
-    [[ -z $docs || $size == standard || $size == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $size"
+    [[ -z $docs || -n ${REHEARSAL:-} || $size == standard || $size == release || $size == full ]] || die "--docs publishes numbers: they are only measured at --size standard, release or full, not $size"
   fi
   case $tier in slim|ab|full) ;; *) die "unknown tier $tier (slim, ab or full)" ;; esac
   case $dataset in articles|places|all) ;; *) die "unknown dataset $dataset" ;; esac
@@ -659,7 +661,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases compare final resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases compare final release resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -678,6 +680,7 @@ case $cmd in
   -h|--help|help) usage; exit 0 ;;
   refresh) exec "$STEPS/refresh.sh" "$@" ;;   # its own options, the rest goes to `final`
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
+  release) exec "$STEPS/release.sh" "$@" ;;   # the authoritative run: `final --size release --docs`, its own options
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options

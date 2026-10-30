@@ -32,7 +32,7 @@ ENG=$ROOT/engines                            # engines/<name>/{dl,root}: downloa
 SIFT_ROOT=${SIFT_ROOT:-$ENG/sift/root}
 JOBS=${JOBS:-4}                              # parallel jobs of the builds in bench/steps/fetch.sh
 OUT=${OUT:-$BENCH/out/$TIER}
-LOCK=/tmp/sift-perf.lock
+LOCK=${PERF_LOCK:-/tmp/sift-perf.lock}   # PERF_LOCK=FILE: a rehearsal (steps/release.sh) takes a lock of its own, its numbers are never published
 export PGHOST=$SOCK PGPORT=${PORT:-${TIER_PORT[$TIER]}} PGDATABASE=${DB:-bench} PGUSER=${PGUSER:-${USER:-$(id -un)}}
 
 # Where the cluster looks for extensions (bench/steps/cluster.sh): every engine root first, then the system.
