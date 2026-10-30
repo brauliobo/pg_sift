@@ -51,6 +51,21 @@ areas_regex() {
 	local IFS='|'
 	echo "^\$${out[*]:+|${out[*]}}"
 }
+# areas_unmatched FILE...: the files that no row matches, found with the paths of all rows as one ERE (areas_regex runs every row on every file, which a map of
+# every tracked file makes 400,000 matches)
+areas_unmatched() {
+	local f rx
+	rx=$(printf '(%s)|' "${ROWS[@]%%$'\t'*}"); rx=${rx%|}
+	for f in "$@"; do [[ $f =~ $rx ]] || echo "$f"; done
+}
+# areas_invalid: a line for each row whose path or jobs (with the groups filled in and no captures) is not a valid ERE
+areas_invalid() {
+	local row AREA_JOBS out
+	local -a AREA_CAPTURES=("" "" "" "")
+	for row in "${ROWS[@]}" "${FAST_ROWS[@]}"; do
+		out=$( ( areas_match '' "${row%%$'\t'*}" || :; areas_expand "${row#*$'\t'}" ) 2>&1 ) || echo "$out"
+	done
+}
 # areas_fast_regex FILE...: areas_regex, except that a file a `fast:` row matches runs only the jobs of that row (the tests of its own area, not of the
 # stack above it); the other files run what areas_regex gives them
 areas_fast_regex() {

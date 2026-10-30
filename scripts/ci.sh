@@ -156,7 +156,7 @@ if [[ $MODE == affected ]]; then
 	fi
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
-	for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $RE ]] && BATCHES=1; done
+	for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
 	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
 	cassert=false
@@ -286,7 +286,19 @@ if [[ $MODE == --selftest ]]; then
 	# scripts/areas.tsv: every tracked file is in a row, and every job of the plans (batches of short tests are cut from the tests of the areas) is in a group, so that
 	# neither a file nor a test is left out of the selection; a core file selects everything
 	mapfile -t tracked < <(git -C "$REPO" ls-files)
-	miss=$(areas_regex "${tracked[@]}" 2>&1 >/dev/null) && [[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
+	mapfile -t unmatched < <(areas_unmatched "${tracked[@]}")
+	miss=$(areas_invalid; (( ! ${#unmatched[@]} )) || areas_regex "${unmatched[@]}" 2>&1 >/dev/null)   # a file in no row is named by areas_regex
+	[[ -z $miss ]] || { echo "FAIL: $miss"; bad=1; }
+	# the table of rows that areas_invalid must flag (a path, a jobs expression) and the ones it must not (a group, a capture)
+	t=$(mktemp)
+	printf '=g\tinstallcheck-a\nsrc/x/(.*)\t{g}|\\1\nsrc/(\t.\nsrc/y\t(\nsrc/z\t-\nsrc/w\tfast:{g}\n' >"$t"
+	areas_load "$t"
+	[[ $(areas_invalid | grep -c 'invalid ERE') == 2 ]] || { echo "FAIL: areas_invalid does not flag exactly the two invalid rows: $(areas_invalid)"; bad=1; }
+	printf 'src/x/.*\t.\nsrc/y\t-\n' >"$t"
+	areas_load "$t"
+	[[ $(areas_unmatched src/x/a src/y other) == other ]] || { echo "FAIL: areas_unmatched does not name the one file no row matches"; bad=1; }
+	rm -f "$t"
+	areas_load "$REPO/scripts/areas.tsv"
 	grouped=$(printf '(%s)|' "${GROUP[@]}")
 	for m in quick full; do
 		plan_of $m 18
@@ -295,7 +307,8 @@ if [[ $MODE == --selftest ]]; then
 		done <<<"$PLAN_OUT"
 	done
 	for f in "$REPO"/test/sql/*.sql; do
-		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
+		f=${f##*/}
+		[[ installcheck-${f%.sql} =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $f is in no group of scripts/areas.tsv"; bad=1; }
 	done
 	# a script of scripts/ selects every job that runs it, and a change of documentation, benchmarks or release notes selects none
 	for m in quick full; do
@@ -323,7 +336,7 @@ if [[ $MODE == --selftest ]]; then
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	[[ $(focus_regex src/agg/cte/hook.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
-	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
+	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
 	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
@@ -387,7 +400,7 @@ if [[ $MODE == --selftest ]]; then
 	plan_of quick 18
 	prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
-	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
+	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
 	(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
 	for pg in 17 18; do
@@ -666,13 +679,13 @@ else
 	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
-		local t f pats
+		local t p f pats
 		local -A guarded=()   # the tests that name a test-only object, found in one grep
-		pats=$(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
-		pats="^(${pats// /|})\$"; pats=${pats//%/.*}   # the patterns of the Makefile as one regular expression
+		read -ra pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
+		pats=("${pats[@]//%/*}")   # one regular expression for all of them is slower to match (4 s of CPU for the plan instead of 0.7)
 		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO"/test/sql/*.sql)
 		for t in $(rest sql .sql $SLOW_REGRESS); do
-			[[ $t =~ $pats ]] && continue
+			for p in "${pats[@]}"; do [[ $t == $p ]] && continue 2; done
 			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* || -v guarded[$t] ]] || continue
 			echo "$t"
 		done
