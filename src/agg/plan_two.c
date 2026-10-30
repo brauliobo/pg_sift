@@ -1087,12 +1087,45 @@ spine_item(Node *n)
 	return IsA(n, RangeTblRef) ? ((RangeTblRef *) n)->rtindex : 0;
 }
 
-/* the WHERE of the query reads the spine only (PostgreSQL moved the WHERE of a spine sub-select up): the rows of the spine are the filtered ones */
+/* a column of the arms that is NULL in every one of them (a column of a rollup whose arms have none) tested IS NULL: true of each row, matched or not */
 static bool
-spine_where(PlannerInfo *root, Index spine)
+null_in_arms(Node *q, Index arm, List *arms)
+{
+	NullTest   *nt;
+	Node	   *arg;
+	Var		   *v;
+
+	if (!IsA(q, NullTest))
+		return false;
+	nt = (NullTest *) q;
+	arg = (Node *) nt->arg;
+	/* the column of a sub-select that was pulled up arrives wrapped, to be NULL above the join that makes it so */
+	while (arg != NULL && IsA(arg, PlaceHolderVar))
+		arg = (Node *) ((PlaceHolderVar *) arg)->phexpr;
+	if (nt->nulltesttype != IS_NULL || nt->argisrow || arg == NULL || !IsA(arg, Var))
+		return false;
+	v = (Var *) arg;
+	if (v->varno != arm || v->varlevelsup != 0)
+		return false;
+	foreach_ptr(PlannerInfo, ar, arms)
+	{
+		TargetEntry *te = get_tle_by_resno(ar->parse->targetList, v->varattno);
+
+		if (te == NULL || !IsA(te->expr, Const) || !((Const *) te->expr)->constisnull)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * The WHERE of the query reads the spine only (PostgreSQL moved the WHERE of a spine sub-select up): the rows of the spine are the filtered ones. A test of
+ * a column that is NULL in every arm filters nothing and is no condition.
+ */
+static bool
+spine_where(PlannerInfo *root, Index spine, Index arm, List *arms)
 {
 	foreach_ptr(Node, q, (List *) root->parse->jointree->quals)
-		if (!bms_equal(pull_varnos(root, q), bms_make_singleton(spine)))
+		if (!bms_equal(pull_varnos(root, q), bms_make_singleton(spine)) && !null_in_arms(q, arm, arms))
 			return false;
 	return true;
 }
@@ -1129,9 +1162,11 @@ two_from(TwoLevel *t)
 		Node	   *a = side == 0 ? j->rarg : j->larg,
 				   *b = side == 0 ? j->larg : j->rarg;
 		Index		spine = spine_item(b);
+		List	   *arms = NIL;
 
-		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY &&
-			spine_where(t->root, spine) && outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates) != NIL)
+		if (IsA(a, RangeTblRef) && spine != 0 && rt_fetch(((RangeTblRef *) a)->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
+			arms = outer_arms(t->root, ((RangeTblRef *) a)->rtindex, &gates);
+		if (arms != NIL && spine_where(t->root, spine, ((RangeTblRef *) a)->rtindex, arms))
 		{
 			t->join = j;
 			t->srti = ((RangeTblRef *) a)->rtindex;
