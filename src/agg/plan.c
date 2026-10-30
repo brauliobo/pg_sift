@@ -1415,6 +1415,48 @@ scans_column_source(PlannerInfo *root, RelOptInfo *rel)
 	return found;
 }
 
+static bool
+has_subquery_rte(Query *parse)
+{
+	foreach_node(RangeTblEntry, rte, parse->rtable)
+		if (rte->rtekind == RTE_SUBQUERY)
+			return true;
+	return false;
+}
+
+/*
+ * The cheapest normal path of a stage, as the statement will pay for it: the rows a LIMIT takes of an ordered stage (the Limit node costs the same
+ * fraction). Under half of agg_floor_cost no arm of the scan can win, so the arms are not planned (0.02 to 0.06 ms of a point lookup or a keyset page).
+ * Only the top query without a CTE or sub-select: the price of those is not in the paths of the stage, and the inner levels are planned for the statement they join.
+ */
+static bool
+normal_under_floor(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *output_rel)
+{
+	double		best = HUGE_VAL;
+
+	if (sift_explain_refusals || sift_agg_force || root->query_level != 1 ||
+		(stage != UPPERREL_GROUP_AGG && stage != UPPERREL_ORDERED && stage != UPPERREL_DISTINCT) ||
+		root->parse->cteList != NIL || root->parse->hasSubLinks || root->init_plans != NIL || has_subquery_rte(root->parse) ||
+		/* the scan prices the elements of a set parameter it assumes (sift.agg_param_set_size), not the normal plan's guess */
+		query_tree_walker(root->parse, extern_param_walker, NULL, QTW_IGNORE_RT_SUBQUERIES))
+		return false;
+	foreach_ptr(Path, p, output_rel->pathlist)
+	{
+		double		cost = p->total_cost;
+
+		if (stage == UPPERREL_ORDERED && root->limit_tuples > 0 && p->rows > root->limit_tuples)
+			cost = p->startup_cost + (p->total_cost - p->startup_cost) * root->limit_tuples / p->rows;
+#if PG_VERSION_NUM >= 180000
+		/* a plan that uses a disabled path (enable_seqscan = off ..) is the one a user means the scan to replace */
+		if (p->disabled_nodes > 0)
+			continue;
+#endif
+		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
+			best = Min(best, cost);
+	}
+	return best < agg_floor_cost() / 2.0;
+}
+
 /* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -1434,6 +1476,14 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	foreach_ptr(Path, p, output_rel->pathlist)
 		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
 			agg_stage_normal = Min(agg_stage_normal, p->total_cost);
+	if (normal_under_floor(root, stage, output_rel))
+	{
+		agg_stage_end(&st);
+		agg_stage_normal = outer_normal;
+		agg_index_pick = outer_pick;
+		agg_index_usable = outer_usable;
+		return;
+	}
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
 		upper_paths_on(root, stage, input_rel, output_rel, extra);

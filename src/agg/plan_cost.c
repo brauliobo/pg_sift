@@ -3047,6 +3047,13 @@ in_tables_cost(AggCtx *c, const SiftAggPred *p)
 	return bytes;
 }
 
+/* The least any path of the scan costs in total: the start of a plain aggregate (the cheapest start there is). A normal plan under half of it has no scan to lose to. */
+Cost
+agg_floor_cost(void)
+{
+	return AGG_START_PLAIN * cpu_operator_cost;
+}
+
 /* What every path of the scan pays to start, whatever it reads: its source and the partitions it opens. No path costs less in total. */
 Cost
 agg_open_cost(int nparts)

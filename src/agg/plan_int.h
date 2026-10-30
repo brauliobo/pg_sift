@@ -451,6 +451,7 @@ extern double in_list_test_ns(AggCtx *c, const SiftAggPred *p);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);
+extern Cost agg_floor_cost(void);
 extern double hash_agg_extra(const AggPath *a);
 extern Node *topn_window_aggs(Node *n, void *context);
 extern bool spelled_wide(const SiftSrcLeaf *lf);
