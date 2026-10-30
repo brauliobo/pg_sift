@@ -42,6 +42,19 @@ class Lanes(unittest.TestCase):
         self.assertIn(e, triple.MINE)
 
 
+class CasesMemory(unittest.TestCase):
+    def reserve(self, available_gb):
+        out = subprocess.run(['bash', '-c', 'cd %s && BENCH=bench P_ROWS=1000000 && eval "$(sed -n "/^cases_memory() {/,/^}/p" bench/steps/final.sh)" && '
+                              'awk() { echo %d; } && cases_memory && echo "$CASES_X $CASES_RESERVE_GB $CASES_CAP"' % (REPO, available_gb)], capture_output=True, text=True).stdout.split()
+        return out[0], int(out[1]), out[2]
+
+    def test_the_reserve_is_3x_with_a_24g_cap_when_the_host_has_3x_the_plan_and_8_gb_else_2x_with_16g(self):
+        plan = self.reserve(1000)[1] // 3   # the plan of the cases at 1,000,000 orders, in GB
+        self.assertGreater(plan, 0)
+        for available, expected in ((3 * plan + 8, ('3', 3 * plan, '24G')), (3 * plan + 7, ('2', 2 * plan, '16G')), (4, ('2', 2 * plan, '16G'))):
+            self.assertEqual(self.reserve(available), expected, available)
+
+
 class StageList(unittest.TestCase):
     def test_final_plans_the_stages_of_every_table(self):
         out = subprocess.run(['bash', '-c', 'cd %s && bench/bench final --size release --dry-run 2>&1 | sed -n "/^Release pass/,/^Total/p"' % REPO], capture_output=True, text=True).stdout

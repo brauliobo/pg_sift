@@ -241,10 +241,22 @@ def block(results):
             'tmpfs is charged to the memory cap of the server, `CASES_MEM` (16G in this run: 8G was killed by the kernel at 6.3 GB of scratch). The plan of `bench/bench cases --plan --rows 1000000` says 5 GB; '
             'the line through three small sizes (table above, 18 cases) puts the cases it sampled at about 4.8 GB at 1,000,000 orders, 1.4 GB of it fixed, and the full list at 50,000 orders peaked at 6.3 GB where those 18 peak at 1.5 GB, '
             'so the other datasets add about 4.8 GB that do not grow with the orders: about 10 GB at 1,000,000 orders for the 211 cases (an estimate from the line, not a measurement at that size). '
-            '`bench/bench release` reserves twice the plan (10 GB) under `CASES_TMP` and checks the free space, the available memory (the reserve and 8 GB) and the cap (the reserve and 4 GB) before it starts, and stops with the numbers when they are short; '
+            '`bench/bench release` reserves 3x the plan (15 GB) under `CASES_TMP` with `CASES_MEM=24G` when the host has 3x the plan and 8 GB of memory available (23 GB), else 2x (10 GB) with 16G, choosing by itself from the measured memory and printing the numbers; it checks the free space, the available memory (the reserve and 8 GB) and the cap (the reserve and 4 GB) before it starts, and stops with the numbers when they are short; '
             '`CASES_TMP=/path` moves the clusters to a disk (slower builds, minutes not comparable) and `CASES_MEM` changes the cap.']
-    out += ['', 'On the benchmark host (`HOST` is the ssh name, `DIR` a checkout with the engines built by `bench/bench setup`, `SHA` the commit under test):', '', '```',
-            "ssh HOST 'cd DIR && git fetch -q && git checkout --detach SHA && nohup bench/bench release > ~/release-run.log 2>&1 &'", "ssh HOST 'tail -f ~/release-run.log'", '```']
+    out += ['', '#### The go: one block and a checklist', '',
+            '`HOST` is the ssh name, `DIR` a checkout with the engines built by `bench/bench setup`, `SHA` the release candidate. The first line reads, the second starts, the third follows:', '', '```',
+            "ssh HOST 'cd DIR && git fetch -q && git checkout --detach SHA && bench/bench release --dry-run'",
+            "ssh HOST 'cd DIR && nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'",
+            "ssh HOST 'tail -f ~/release-run.log'", '```', '',
+            'Read in the dry-run, before the second line:', '',
+            '1. The plan total is at most 120 minutes (the run refuses a plan over it). The `store` line says about 5 minutes when the cache of cells of this host exists and about 24 when everything is measured; `generic` is carried (a "carried from <sha>" marker in the table) when its inputs key is unchanged. No cache and no carry is the worst case, about 103 minutes in all; the cache and the carry together about 70.',
+            '2. Every precondition is `ok`. A `MISSING` line (the ClickHouse binary, a port, a leftover container of `bench/bench store clean`, the engines of `bench/bench setup`) stops the run: do not start.',
+            '3. The line `cases memory` shows the plan, the available memory and the reserve it chose by itself (3x the plan with `CASES_MEM=24G` when the host has 3x the plan and 8 GB available, else 2x with 16G); `the cases fit` is `ok`.',
+            '4. The host is quiet: no other benchmark or heavy job (CPU and IO pressure `some avg10` under 10% in `/proc/pressure`). The run holds the perf lock for the whole pass; nothing else may time on the host.', '',
+            'Abort (`ssh HOST \'kill $(cat ~/release-run.pid); cd DIR && bench/bench store clean\'`) on: a `MISSING` precondition or a plan over 120 minutes (the run stops by itself); two `OVER BUDGET` stage lines in a row or more than 120 minutes of wall time; less than 5 GB free on the disk of the host; another job starting there. A stage that fails does not stop the pass: the others continue, the log ends with `FAILED stages: ...`, and `bench/bench resume` runs only those.', '',
+            'It is finished when the log ends with the table of stage minutes and `release run of SHA: N min wall, exit 0` and `pgrep -f bench/steps/final.sh` finds nothing on the host. A `FAILED stages:` line or an exit other than 0 is not a clean finish.', '',
+            'The docs diff lands in the working tree of `DIR` on the host (README.md, bench/results, docs/img); nothing is committed there. '
+            'The owner of the bench tables copies it (`ssh HOST \'cd DIR && git diff --binary\' | git apply` on a branch of the integration tip), runs `scripts/lint.sh readme-tables docs bench-fresh neutral` (a sentence that quotes an old number is listed there with "the results say"; the sift_table sizes and the `sift_table_ord` lane arrive in the same diff, every pg_sift cell being measured in the pass), and opens one pull request, "bench: results: the release run of SHA", which is landed with `mergeup-merge.sh` once the user has read the diff.']
     return out
 
 

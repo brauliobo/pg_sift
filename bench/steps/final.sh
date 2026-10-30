@@ -70,7 +70,14 @@ s_search() { # the slim tier of every engine, then `fuzzy` (not a class of the r
 }
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
-s_cases() { CASES_MEM=${CASES_MEM:-16G} bench cases ${P_CASES:+--cases "$P_CASES"} --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" ${P_CASE_RUNS:+--runs "$P_CASE_RUNS"} --lane-budget "${P_LANE_BUDGET:-20}" ${REHEARSAL:+--no-wait} ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
+cases_memory() {   # the scratch of the cases is tmpfs charged to the memory cap of the server: reserve 3x the plan (cap 24G) when the host has 3x the plan and 8 GB of memory available, else 2x (cap 16G); the plan undercounts by up to 1.6x; CASES_MEM names the cap by hand
+  CASES_PLAN_GB=$("$BENCH/bench" cases --plan --rows "$P_ROWS" 2>/dev/null | sed -n 's/.*largest point needs about \([0-9]*\) GB.*/\1/p')
+  CASES_AVAIL_GB=$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)
+  CASES_X=2 CASES_CAP=16G
+  if [[ -n $CASES_PLAN_GB ]] && (( CASES_AVAIL_GB >= CASES_PLAN_GB * 3 + 8 )); then CASES_X=3 CASES_CAP=24G; fi
+  CASES_CAP=${CASES_MEM:-$CASES_CAP} CASES_RESERVE_GB=$(( ${CASES_PLAN_GB:-0} * CASES_X ))
+}
+s_cases() { cases_memory; CASES_MEM=$CASES_CAP bench cases ${P_CASES:+--cases "$P_CASES"} --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" ${P_CASE_RUNS:+--runs "$P_CASE_RUNS"} --lane-budget "${P_LANE_BUDGET:-20}" ${REHEARSAL:+--no-wait} ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
 s_scaling() { bench scaling --rows "$P_ROWS" --reps "${P_SCALING_REPS:-7}" ${P_SCALING_PARTS:+--partitions "$P_SCALING_PARTS"} ${P_SCALING_WORKERS:+--workers "$P_SCALING_WORKERS"} ${DOCS:+--docs}; }   # partitions and parallel workers
 s_analytics() { # shellcheck disable=SC2086  # $ch is one flag or nothing
   local ch=--clickhouse; [[ -x ${CH_BIN:-/usr/bin/clickhouse} ]] || { ch=''; log 'analytics: no ClickHouse binary (CH_BIN): its column of the shapes table is n/a'; }
@@ -129,11 +136,12 @@ preconditions() {
   check "psql, python3, flock, ss, perf, pgbench, pg_config" bash -c 'for c in psql python3 flock ss perf pgbench pg_config; do command -v $c || exit 1; done'
   [[ $SIZE != release || -n ${REHEARSAL:-} ]] || check "a ClickHouse binary for the application shapes (CH_BIN, default /usr/bin/clickhouse)" test -x "${CH_BIN:-/usr/bin/clickhouse}"
   if [[ " $STAGES " == *" cases "* ]]; then   # the clusters of the cases are scratch on tmpfs (CASES_TMP, default /dev/shm/sift-cases, fsync off): the largest point of the plan, twice (the rehearsal peaked at 1.6x the plan: the datasets of fixed size do not shrink), and the working memory of the server on top; tmpfs is charged to the cap of the server (CASES_MEM, 16G: 8G was killed by the kernel at 6.3 GB of scratch)
-    local cdir=${CASES_TMP:-/dev/shm/sift-cases} cap=${CASES_MEM:-16G} need fs
-    need=$("$BENCH/bench" cases --plan --rows "$P_ROWS" 2>/dev/null | sed -n 's/.*largest point needs about \([0-9]*\) GB.*/\1/p'); [[ -z $need ]] || need=$((need * 2))
+    local cdir=${CASES_TMP:-/dev/shm/sift-cases} fs
+    cases_memory
+    printf '  cases memory: plan %s GB at %s orders, %s GB of memory available -> reserve %sx = %s GB, CASES_MEM=%s\n' "${CASES_PLAN_GB:-?}" "$P_ROWS" "$CASES_AVAIL_GB" "$CASES_X" "$CASES_RESERVE_GB" "$CASES_CAP"
     fs=$cdir; while [[ ! -e $fs ]]; do fs=$(dirname "$fs"); done
-    check "the cases fit: ${need:-?} GB free under CASES_TMP=$cdir, $(( ${need:-0} + 8 )) GB of memory available, CASES_MEM=$cap at least $(( ${need:-0} + 4 )) GB" \
-      bash -c '[[ -n $1 ]] && (( $(df --output=avail -BG "$2" | tail -1 | tr -dc 0-9) >= $1 && $(awk "/MemAvailable/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) >= $1 + 8 && ${3} >= $1 + 4 ))' _ "$need" "$fs" "${cap%[Gg]}"
+    check "the cases fit: ${CASES_RESERVE_GB} GB free under CASES_TMP=$cdir, $(( CASES_RESERVE_GB + 8 )) GB of memory available, CASES_MEM=$CASES_CAP at least $(( CASES_RESERVE_GB + 4 )) GB" \
+      bash -c '[[ $1 -gt 0 ]] && (( $(df --output=avail -BG "$2" | tail -1 | tr -dc 0-9) >= $1 && $(awk "/MemAvailable/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) >= $1 + 8 && ${3} >= $1 + 4 ))' _ "$CASES_RESERVE_GB" "$fs" "${CASES_CAP%[Gg]}"
   fi
   check "ports 56280 .. 56284 are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
   check "no containers of a store run exist (bench/bench store clean)" bash -c '[[ -z $(docker ps -a -q --filter label=sift-store) ]]'

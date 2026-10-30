@@ -13,10 +13,12 @@
 #                count per stage and the proof that the pipeline runs end to end, without touching this checkout's docs or the caches. No other option is needed.
 #   --dry-run    the plan and the preconditions, nothing started
 #
-# On the benchmark host (HOST is the ssh name, DIR a checkout of the commit under test with the engines built by `bench/bench setup`):
-#   ssh HOST 'cd DIR && git checkout --detach SHA && nohup bench/bench release > ~/release-run.log 2>&1 &'      # the run survives the connection
-#   ssh HOST 'tail -f ~/release-run.log'                                                                           # follow it; the stage lines are `[time final] stage ...`
+# On the benchmark host (HOST is the ssh name, DIR a checkout with the engines built by `bench/bench setup`, SHA the release candidate):
+#   ssh HOST 'cd DIR && git fetch -q && git checkout --detach SHA && bench/bench release --dry-run'              # read the plan and the preconditions
+#   ssh HOST 'cd DIR && nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'        # the run survives the connection
+#   ssh HOST 'tail -f ~/release-run.log'                                                                         # follow it; the stage lines are `[time final] stage ...`
 # and afterwards, in the checkout: `git diff --stat` shows the regenerated README.md and bench/results.
+# What to read in the dry-run, when to abort, how a finished run looks and who commits the diff: docs/BENCHMARKS.md, "The go: one block and a checklist".
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=release
@@ -26,7 +28,7 @@ while (( $# )); do
   case $1 in
     --rehearsal) REHEARSAL=1 ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) ARGS+=("$1") ;;
   esac
   shift
