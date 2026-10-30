@@ -1,9 +1,9 @@
 apiVersion: v1
 name: pg_sift
-version: "3.6.2"
+version: "3.6.3"
 homepage: https://github.com/brauliobo/pg_sift
 repository: https://github.com/brauliobo/pg_sift
-source: https://github.com/brauliobo/pg_sift/archive/refs/tags/v3.6.2.tar.gz
+source: https://github.com/brauliobo/pg_sift/archive/refs/tags/v3.6.3.tar.gz
 description: Exact BM25 full-text index and column-store aggregates for PostgreSQL.
 license: PostgreSQL
 keywords:
