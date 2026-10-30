@@ -33,7 +33,7 @@ roundtrip(const SiftColBatch *b, const SiftCcPolicy *pol, const char *name)
 	int64	   *dst = calloc(NROWS + SIFT_COL_PAD, sizeof(int64));
 
 	initStringInfo(&out);
-	sift_cunit_encode(b, NULL, NULL, pol, false, &out, &start, NULL);
+	sift_cunit_encode(b, NULL, NULL, pol, false, false, &out, &start, NULL);
 	check(sift_cunit_parse((const uint8 *) out.data + start, out.len - start, b->schema, &v), name);
 	check(v.nrows == NROWS, "nrows");
 	for (int col = 0; col < 2; col++)
@@ -95,7 +95,7 @@ mapping_bytes(MemoryContext cx, const SiftColSchema *schema, int shift, int nrow
 			sift_cbatch_add(b, &row);
 		}
 		initStringInfo(&out);
-		sift_cunit_encode(b, NULL, NULL, pol, false, &out, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, pol, false, false, &out, &start, NULL);
 		total += out.len - start;
 		(*nunits)++;
 	}

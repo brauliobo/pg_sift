@@ -555,7 +555,7 @@ gen_units(const char *dir)
 		for (int c = 0; c < (int) lengthof(defs); c++)
 			sift_cc_policy_parse(seed_policies[(k + c) % 6], &pol[c]);
 		initStringInfo(&out);
-		sift_cunit_encode(b, NULL, NULL, k % 2 ? pol : NULL, k % 3 != 0, &out, &start, NULL);
+		sift_cunit_encode(b, NULL, NULL, k % 2 ? pol : NULL, k % 3 != 0, false, &out, &start, NULL);
 		rec = fz_copy((uint8 *) out.data + start, out.len - start, SIFT_COL_PAD, 8);
 		snprintf(name, sizeof(name), "unit-%d", k);
 		emit(dir, name, 4, 0, rec, out.len - start);
