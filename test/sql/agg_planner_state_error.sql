@@ -1,0 +1,42 @@
+-- An error while the paths of an aggregate stage are made, for the second column index of the table (the stage tries each index in turn and keeps the
+-- pick, how many there are and the cost of the normal plan in variables of the planner), leaves the planner as it was: the next statements pick the
+-- indexes they picked before. sift.test_fail_pick raises the error.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE TABLE f (id int, g int, k int, y float8, z float8, w float8) WITH (autovacuum_enabled = false);
+INSERT INTO f SELECT i, i % 7, i % 5, (i % 997) / 8.0, i % 13, i % 17 FROM generate_series(1, 60000) i;
+-- f_a holds w, f_b holds z: a statement on w can be answered by f_a only, one on z by f_b only, one on y by either
+CREATE INDEX f_a ON f USING sift_col (id, g, y, w);
+CREATE INDEX f_b ON f USING sift_col (id, g, k, y, z);
+VACUUM (FREEZE, ANALYZE) f;
+
+CREATE TABLE shapes (n serial, q text);
+INSERT INTO shapes (q) VALUES
+	('SELECT g, sum(w) FROM f GROUP BY g'),
+	('SELECT g, sum(z) FROM f GROUP BY g'),
+	('SELECT g, sum(y) FROM f GROUP BY g'),
+	('SELECT k, count(*), sum(z) FROM f WHERE g < 3 GROUP BY k');
+CREATE FUNCTION picks() RETURNS TABLE (n int, scan text) LANGUAGE plpgsql AS $$
+DECLARE r record; l text;
+BEGIN
+	FOR r IN SELECT shapes.n, shapes.q FROM shapes ORDER BY shapes.n LOOP
+		n := r.n; scan := 'none';
+		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || r.q LOOP
+			IF l LIKE '%Index: %' THEN scan := trim(l); END IF;
+		END LOOP;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+CREATE TABLE before AS SELECT * FROM picks();
+SELECT * FROM before ORDER BY n;
+
+SET sift.test_fail_pick = 1;
+SELECT * FROM picks();
+SET sift.test_fail_pick = 0;
+SELECT count(*) AS statements, count(*) FILTER (WHERE b.scan = a.scan) AS same_pick FROM before b JOIN picks() a USING (n);
+
+DROP FUNCTION picks();
+DROP TABLE shapes, before, f;
+DROP EXTENSION pg_sift;

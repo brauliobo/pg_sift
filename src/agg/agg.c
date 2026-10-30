@@ -282,6 +282,10 @@ sift_agg_init(void)
 							 "Testing: the table of the shared verdicts cannot be had (an error in the registry), once for a backend.",
 							 NULL, &sift_test_verdict_fail, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_fail_pick",
+							"Testing: planning the n-th column index (1 is the second) of a table in an aggregate stage raises an error (0: none).",
+							NULL, &sift_test_fail_pick, 0, 0, 100,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_verdict_gate",
 							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
 							 NULL, &sift_test_verdict_gate, false,

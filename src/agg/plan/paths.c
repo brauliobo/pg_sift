@@ -301,6 +301,10 @@ normal_under_floor(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *outpu
 	return best < agg_floor_cost() / 2.0;
 }
 
+#ifdef SIFT_TESTING
+int			sift_test_fail_pick;	/* sift.test_fail_pick */
+#endif
+
 /* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -330,6 +334,10 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	}
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
+#ifdef SIFT_TESTING
+		if (sift_test_fail_pick > 0 && agg_index_pick == sift_test_fail_pick)
+			ereport(ERROR, (errcode(ERRCODE_QUERY_CANCELED), errmsg("canceling statement due to sift.test_fail_pick")));
+#endif
 		upper_paths_on(root, stage, input_rel, output_rel, extra);
 		if (agg_index_pick + 1 >= agg_index_usable)
 			break;

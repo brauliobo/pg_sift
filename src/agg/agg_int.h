@@ -347,6 +347,7 @@ extern int		sift_verdict_cache_kb;
 extern bool		sift_agg_verdict_cache;
 #ifdef SIFT_TESTING
 extern bool		sift_test_verdict_fail;
+extern int		sift_test_fail_pick;
 extern bool		sift_test_verdict_gate;
 #endif
 extern int		sift_agg_combo_cache;
