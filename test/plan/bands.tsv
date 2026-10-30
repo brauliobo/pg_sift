@@ -33,7 +33,7 @@ table	join_month	scan	0.072	0.20
 table	join_other_fact_filter	scan	0.13	0.52
 table	join_spans_values	scan	0.053	0.18
 table	join_tier	scan	0.076	0.23
-table	join_two_lookups	either	0.13	0.54
+table	join_two_lookups	either	0.12	0.54
 table	jsonpath_element	scan	0.080	0.24
 table	lag_of_months	scan	0.056	0.19
 table	lateral_dim_limit_one	scan	0.057	0.16
