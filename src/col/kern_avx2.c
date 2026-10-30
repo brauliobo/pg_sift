@@ -5,7 +5,7 @@
  * (x - lo) <= span unsigned is !((x - lo') > span') signed. A 64-element word comes out of movemasks (u16 and u32 compare results
  * are packed to bytes first). The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use gathers; unpack cuts 8 values per step
  * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount; bits_to_idx
- * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
+ * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decode for_i64_sel stays scalar: gathers were slower than the loads they
  * replace. The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */
@@ -33,6 +33,17 @@ K2 void
 st(void *p, __m256i v)
 {
 	_mm256_storeu_si256((__m256i *) p, v);
+}
+
+F2 void
+gather_u32_avx2(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst)
+{
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+		st(dst + i, _mm256_i32gather_epi32((const int *) a, ld(idx + i), 4));
+	for (; i < n; i++)
+		dst[i] = a[idx[i]];
 }
 
 /* The 64 results of the elements at p, bit k for element k; lo and span are the biased constants */
@@ -481,7 +492,7 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.unpack = unpack_avx2,
 	.for_i64 = {for_i64_u8_avx2, for_i64_u16_avx2, for_i64_u32_avx2, for_i64_u64_avx2},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
-	.gather_u32 = sift_colk_gather_u32_scalar,
+	.gather_u32 = gather_u32_avx2,
 	.f8_from_keys = f8_from_keys_avx2,
 	.bits_to_flags = bits_to_flags_avx2,
 	.expand_parents = expand_parents_avx2,

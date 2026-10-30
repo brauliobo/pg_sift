@@ -32,6 +32,7 @@ extern void sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int6
 extern void sift_colk_f8_from_keys_neon(int64 *a, uint32 n);
 extern void sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep);
 extern void sift_colk_expand_parents_neon(const uint32 *end, uint32 np, uint32 *parent);
+extern void sift_colk_gather_u32_neon(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
 extern void sift_colk_anc_match32_neon(const uint32 *a, uint32 n, uint32 base, uint32 c, uint32 bmin, uint32 bmax, uint64 *bits);
 extern void sift_colk_anc_match_neon(const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits);
 extern void sift_colk_str_contains_neon(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold);
