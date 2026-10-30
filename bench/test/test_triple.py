@@ -58,6 +58,15 @@ class CaseFig(unittest.TestCase):
         self.assertIsInstance(got[1], NA)
         self.assertIsInstance(got[2], NA)
 
+    def test_instrumented_cpu_stands_in_and_the_cold_run_has_its_time_and_cpu(self):
+        import cases_render
+        rows = [dict(case='c', arm='sift', metric=m, value=v) for m, v in (('io_warm_cpu_ms', '4'), ('io_cold_ms', '9'), ('io_cold_cpu_ms', '7'))]
+        self.assertEqual(cases_render.case_fig(rows, 'c', 'sift', 2.0)[1], 4.0)
+        self.assertEqual(cases_render.cold_fig(rows, 'c', 'sift', 3.0), (9.0, 7.0, 3.0))
+        got = cases_render.cold_fig(rows, 'c', 'native', 3.0)
+        self.assertIsInstance(got[0], NA)
+        self.assertEqual(got[2], 3.0)
+
 
 class UpdatesFig(unittest.TestCase):
     class S:

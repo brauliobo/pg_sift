@@ -28,16 +28,28 @@ UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row'
 IO = tuple(m for m in UNIT if m.startswith('io_'))   # the IO rows shown beside the time of a case, where the results have them (steps/iolib.py)
 SHORT = {'wal_bytes': 'WAL B/row', 'minstr': 'M instr', 'io_extend_mb': 'MB'}   # the unit written after a figure that is not a time, a CPU or a read
 BLOCK = 8192 / 2**20   # MB of a buffer: the IO of a warm run is the blocks it hit or read (EXPLAIN (BUFFERS))
-NO_CPU = triple.NA('no CPU figure for this case in the results')
+NO_CPU = triple.NA('no CPU figure for this case in the results (it is recorded for one backend with no parallel workers)')
 NO_COLD = triple.NA('the time and CPU of the cold run are not recorded')
 VARIANT = {'agg_forced': 'the aggregate scan forced whatever the plans cost (`sift.agg_force = on`)', 'scan': 'the units scanned (`sift.agg_preagg = off`)', 'runs_off': 'the sorted runs not read (`sift.topn_runs = off`)', 'zone_off': 'the zones of the keys after the first not used (`sift.topn_zone_keys = off`)',
            'forced': 'the top-N scan forced by turning the btree plans off (`enable_indexscan`, `enable_indexonlyscan`, `enable_bitmapscan`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
 
 
+def row(rows, case, arm, metric):
+    r = extras.get(rows, case=case, arm=arm, metric=metric)
+    return float(r['value']) if r else None
+
+
 def case_fig(rows, case, arm, ms):
-    """(ms, CPU ms, MB) of one lane of a case in its warm run: the CPU only where the case records it (the load cases), the MB the buffers its run hit and read"""
-    cpu, blocks = (extras.get(rows, case=case, arm=arm, metric=m) for m in ('cpu_ms', 'buffers'))
-    return ms, float(cpu['value']) if cpu else NO_CPU, float(blocks['value']) * BLOCK if blocks else triple.NA(triple.NOT_MEASURED)
+    """(ms, CPU ms, MB) of one lane of a case in its warm run: the CPU of the load cases or of the instrumented run (one backend, no workers), the MB the buffers its run hit and read"""
+    cpu = next((v for m in ('cpu_ms', 'io_warm_cpu_ms') if (v := row(rows, case, arm, m)) is not None), NO_CPU)
+    blocks = row(rows, case, arm, 'buffers')
+    return ms, cpu, blocks * BLOCK if blocks is not None else triple.NA(triple.NOT_MEASURED)
+
+
+def cold_fig(rows, case, arm, mb):
+    """(ms, CPU ms, MB read) of the first run after the cache was emptied, where the instrumented run recorded them"""
+    ms, cpu = (row(rows, case, arm, m) for m in ('io_cold_ms', 'io_cold_cpu_ms'))
+    return NO_COLD if ms is None else ms, NO_COLD if cpu is None else cpu, mb
 
 
 def figure(v):
@@ -217,7 +229,7 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
         if m == 'ms':
             fig = lambda arm, v: case_fig(rows, cid, arm, v)  # noqa: E731
         elif m == IO[0]:
-            fig = lambda arm, v: (NO_COLD, NO_COLD, v)  # noqa: E731
+            fig = lambda arm, v: cold_fig(rows, cid, arm, v)  # noqa: E731
         else:
             fig = None
         if fig:
@@ -235,7 +247,7 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
     out = ['%d benchmark cases (`bench/cases.tsv`) on %s rows (the orders of the orders benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL time over the pg_sift one. '
-           'Each case has a warm row (time, CPU and MB of the median run) and a cold row (the MB read after the tables were emptied); the cells of the other systems carry their factors over pg_sift. %s' % (
+           'Each case has a warm row (time, CPU and MB of the median run) and a cold row (time, CPU and MB read of the first run after the tables were emptied); the cells of the other systems carry their factors over pg_sift. %s' % (
         n, '{:,}'.format(int(meta.get('orders', 0))), rounds(meta), extras.footer(meta)), ''] + head + body + [''] + triple.legend(shown, 'MB read (a warm row: MB of buffers hit and read; a cold row: MB `pg_stat_io` counted read)') + [
         '', '**Takeaway:** ' + takeaway(timed), ''] + io_takeaway(figs) + ['**Caveats**', '',
         '- PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store\'s PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).',
@@ -376,7 +388,7 @@ def featured(rows, registry, scale_rows):
         shown += [nat, sf]
         line.update({(m, c.id): v for m, v in zip(MEASURES, (triple.cell(nat, None if f['kept'] else sf), "PostgreSQL's plan" if f['kept'] else triple.cell(sf), sp, *sl))})
         if c.id in cold:
-            cn, cs_ = ((NO_COLD, NO_COLD, cold[c.id][arm]) for arm in ('native', 'sift'))
+            cn, cs_ = (cold_fig(rows, c.id, arm, cold[c.id][arm]) for arm in ('native', 'sift'))
             line.update({(m, c.id): v for m, v in zip(IO_MEASURES, (triple.cell(cn, None if f['kept'] else cs_), "PostgreSQL's plan" if f['kept'] else triple.cell(cs_)))})
             shown += [cn, cs_]
         else:
