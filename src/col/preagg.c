@@ -18,7 +18,8 @@
  *     the key as the zigzag difference to the previous one (the tuples are in ascending order of their keys, dim 0 first, a NULL after the values),
  *     counts[ntuples] (elements of the tuple),
  *     per measure: nn[ntuples], sum[ntuples] (as in the cube), then the smallest value of each tuple that has one and the largest
- *     (INT measure: zigzag of the key; float measure: 8 bytes each)
+ *     (INT measure: zigzag of the key; float measure: 8 bytes each). With PAGG_MEASLEN in the byte of nmeas (minor 36) each measure is preceded by its length
+ *     in bytes as a varint, so that a query skips the measures it does not read.
  */
 
 #include "core/host.h"
@@ -542,7 +543,8 @@ typedef struct RuBuild
 			   *mc[SIFT_PAGG_MAX_MEAS];
 	int16		dleaf[SIFT_PAGG_MAX_RDIMS],
 				mleaf[SIFT_PAGG_MAX_MEAS];
-	bool		mfl[SIFT_PAGG_MAX_MEAS];
+	bool		mfl[SIFT_PAGG_MAX_MEAS],
+				measlen;
 	uint32		n,					/* elements */
 				cap,				/* the most tuples */
 				nt,
@@ -663,7 +665,7 @@ ru_encode(const RuBuild *b, StringInfo out)
 	ru_order = &od;
 	qsort(ord, nt, sizeof(uint32), cmp_tuple);
 	appendStringInfoChar(out, (char) b->nd);
-	appendStringInfoChar(out, (char) b->nm);
+	appendStringInfoChar(out, (char) (b->nm | (b->measlen ? PAGG_MEASLEN : 0)));
 	sift_col_put_varint(out, nt);
 	for (int j = 0; j < b->nd; j++)
 		sift_col_put_varint(out, b->dleaf[j]);
@@ -704,7 +706,9 @@ ru_encode(const RuBuild *b, StringInfo out)
 	for (int m = 0; m < b->nm; m++)
 	{
 		const SiftCPaggCol *mc = b->mc[m];
+		StringInfoData ms;
 
+		initStringInfo(&ms);
 		memset(nn, 0, nt * sizeof(uint32));
 		for (uint32 i = 0; i < b->n; i++)
 		{
@@ -740,7 +744,7 @@ ru_encode(const RuBuild *b, StringInfo out)
 			}
 		}
 		for (uint32 i = 0; i < nt; i++)
-			sift_col_put_varint(out, nn[ord[i]]);
+			sift_col_put_varint(&ms, nn[ord[i]]);
 		for (uint32 i = 0; i < nt; i++)
 		{
 			uint32		g = ord[i];
@@ -749,10 +753,10 @@ ru_encode(const RuBuild *b, StringInfo out)
 			{
 				double		v = nn[g] ? sf[g] : 0;
 
-				appendBinaryStringInfo(out, (const char *) &v, sizeof(double));
+				appendBinaryStringInfo(&ms, (const char *) &v, sizeof(double));
 			}
 			else
-				put_zz128(out, nn[g] ? si[g] : 0);
+				put_zz128(&ms, nn[g] ? si[g] : 0);
 		}
 		for (int pass = 0; pass < 2; pass++)
 			for (uint32 i = 0; i < nt; i++)
@@ -762,10 +766,14 @@ ru_encode(const RuBuild *b, StringInfo out)
 				if (nn[g] == 0)
 					continue;
 				if (b->mfl[m])
-					appendBinaryStringInfo(out, (const char *) (pass ? &fmx[g] : &fmn[g]), sizeof(double));
+					appendBinaryStringInfo(&ms, (const char *) (pass ? &fmx[g] : &fmn[g]), sizeof(double));
 				else
-					put_zz(out, pass ? mx[g] : mn[g]);
+					put_zz(&ms, pass ? mx[g] : mn[g]);
 			}
+		if (b->measlen)
+			sift_col_put_varint(out, ms.len);
+		appendBinaryStringInfo(out, ms.data, ms.len);
+		pfree(ms.data);
 	}
 	pfree(ord);
 	pfree(nn);
@@ -820,7 +828,7 @@ ru_distinct(const SiftCPaggCol *c, uint32 n, uint32 limit, int64 *hk, uint8 *hu,
  * the blob fits room (limited: the budget of the list). false when no rollup fits or the list cannot be used.
  */
 static bool
-build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggCol *cols, uint32 nrows, bool fixed, bool limited, Size room, StringInfo out)
+build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggCol *cols, uint32 nrows, bool fixed, bool limited, bool measlen, Size room, StringInfo out)
 {
 	RuBuild		b;
 	int			cand[SIFT_PAGG_MAX_RDIMS],
@@ -850,6 +858,7 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 	if (n == 0 || nc == 0)
 		return false;
 	b.n = n;
+	b.measlen = measlen;
 	b.cap = rows ? Min((uint32) SIFT_PAGG_ROWS_CELLS, Max((uint32) SIFT_PAGG_ROLLUP_MIN, nrows / SIFT_PAGG_ROWS_RATIO)) : fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
 	while (mhs < 2 * (b.cap + 2))
 		mhs *= 2;
@@ -955,7 +964,7 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 		bool		rows = spec->rollup[i].list < 0;
 
 		initStringInfo(&body[nl]);
-		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed || rows, limited && !rows, room, &body[nl]))
+		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed || rows, limited && !rows, spec->measlen, room, &body[nl]))
 			list[nl++] = spec->rollup[i].list;
 		else
 			pfree(body[nl].data);

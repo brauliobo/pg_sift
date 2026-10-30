@@ -76,12 +76,14 @@ CREATE TABLE rh (LIKE rw) WITH (autovacuum_enabled = off);
 CREATE TABLE ro (LIKE rw) WITH (autovacuum_enabled = off);
 CREATE TABLE rf (LIKE rw) WITH (autovacuum_enabled = off);
 CREATE TABLE rx (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rm (LIKE rw) WITH (autovacuum_enabled = off);
 INSERT INTO rc SELECT * FROM rw;
 INSERT INTO rd SELECT * FROM rw;
 INSERT INTO rh SELECT * FROM rw;
 INSERT INTO ro SELECT * FROM rw;
 INSERT INTO rf SELECT * FROM rw;
 INSERT INTO rx SELECT * FROM rw;
+INSERT INTO rm SELECT * FROM rw;
 DROP TABLE rw;
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 SET sift.col_auto_merge_fragmentation = 1000;
@@ -93,11 +95,16 @@ CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_b
 SET sift.col_format_minor = 8;
 CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b');
 RESET sift.col_format_minor;
+-- the rollup of a segment written under 14 has no length before each measure (minor 9); one written under the default has (minor 36): both are read
+SET sift.col_format_minor = 14;
+CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, d: v, w, c');
+RESET sift.col_format_minor;
 CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
-VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rc, rd, rh, ro, rf, rx;
-SELECT sift.col_verify('rc_col', true), sift.col_verify('rd_col', true), sift.col_verify('rh_col', true), sift.col_verify('rf_col', true);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rc, rd, rh, ro, rf, rx, rm;
+SELECT sift.col_verify('rc_col', true), sift.col_verify('rd_col', true), sift.col_verify('rh_col', true), sift.col_verify('rf_col', true), sift.col_verify('rm_col', true);
+SELECT 'rm' AS idx, array_agg(DISTINCT format) AS minors FROM sift.col_segments('rm_col') WHERE kind = 'immutable' UNION ALL SELECT 'rd', array_agg(DISTINCT format) FROM sift.col_segments('rd_col') WHERE kind = 'immutable' ORDER BY 1;
 
 -- 1. built, every page all-visible: the indexes with the option answer from their cells, the others scan
 SELECT * FROM pa_check('rc');
@@ -196,6 +203,8 @@ RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 
+SELECT * FROM pa_sum('rm');
+
 -- a transaction that deleted rows sees them gone, another does not until it commits
 BEGIN;
 DELETE FROM rd WHERE id BETWEEN 1 AND 100;
@@ -209,7 +218,7 @@ SELECT pre IS NULL AS off FROM pa_units('SELECT a, b, count(*) FROM rd GROUP BY 
 RESET sift.agg_preagg;
 SELECT pre > 0 AS on FROM pa_units('SELECT a, b, count(*) FROM rd GROUP BY a, b');
 
-DROP TABLE rc, rd, rh, ro, rf, rx, pa_q;
+DROP TABLE rc, rd, rh, ro, rf, rx, rm, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int), pa_explain(text);
 DROP PROCEDURE pa_settle();
 DROP EXTENSION pg_sift;

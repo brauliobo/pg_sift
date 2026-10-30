@@ -105,6 +105,7 @@ typedef struct SiftCPaggSpec
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
+	bool		measlen;				/* the rollups are written with the length of each measure (column format minor 36) */
 	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
 	bool		table;					/* the default of a sift_table (table/seg.c): no exception cubes, which its source does not read, and runs only where they fit the share of the unit that key lists take */
 	bool		key_table;				/* the segments keep a key table of each leaf of set (option key_table, column format minor 22; col/ktab.h) */
@@ -313,6 +314,7 @@ typedef struct SiftCRollup
 	uint8	   *isnull[SIFT_PAGG_MAX_RDIMS];	/* [ntuples], NULL when no tuple has a NULL there */
 	uint32	   *count;
 	int			nmeas;
+	bool		measlen;		/* the blob had the length of each measure (column format minor 36) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 	uint32	   *nn[SIFT_PAGG_MAX_MEAS];
 	SiftCI128  *sum[SIFT_PAGG_MAX_MEAS];		/* INT measure, else NULL */

@@ -29,11 +29,11 @@ UNION ALL SELECT 'cr_nocube', array_agg(DISTINCT format) FROM sift._test_col_for
 UNION ALL SELECT 'cr_cap', array_agg(DISTINCT format) FROM sift._test_col_formats('cr_cap') ORDER BY 1;
     idx    | minors 
 -----------+--------
- cr_both   | {9}
+ cr_both   | {36}
  cr_cap    | {9}
  cr_nocube | {4}
  cr_off    | {4}
- cr_on     | {9}
+ cr_on     | {36}
  cr_seven  | {4}
 (6 rows)
 
@@ -95,7 +95,7 @@ SELECT * FROM sift.col_refresh('cr_seven');
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('cr_seven');
  minors 
 --------
- {9}
+ {36}
 (1 row)
 
 SELECT blobs > 0 AS has_rollups, intact = blobs AS intact_decodes FROM sift._test_col_cube_damage('cr_seven', 4, true);
@@ -159,7 +159,7 @@ SELECT sift.col_promote('cr_off') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('cr_off');
  minors 
 --------
- {4,9}
+ {4,36}
 (1 row)
 
 SELECT sift.col_verify('cr_off', true);
@@ -177,7 +177,7 @@ SELECT sift.col_merge('cr_off', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('cr_off');
  minors | segments 
 --------+----------
- {9}    |        1
+ {36}   |        1
 (1 row)
 
 SELECT blobs > 0 AS has_rollups, intact = blobs AS intact_decodes FROM sift._test_col_cube_damage('cr_off', 4, true);
@@ -237,7 +237,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) cr;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('cr_on');
  minors 
 --------
- {9}
+ {36}
 (1 row)
 
 SELECT blobs > 0 AS has_rollups, intact = blobs AS intact_decodes FROM sift._test_col_cube_damage('cr_on', 4, true);

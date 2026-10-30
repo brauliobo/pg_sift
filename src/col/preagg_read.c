@@ -13,6 +13,7 @@ typedef struct Rd
 	const uint8 *p;
 	const uint8 *end;
 	bool		bad;
+	bool		measlen;		/* a rollup blob: each measure is preceded by its length (column format minor 36) */
 } Rd;
 
 static uint64
@@ -321,7 +322,7 @@ peek_rollup(const SiftColSchema *s, const uint8 *p, uint32 len, int *nd, int16 *
 	if (len < 3)
 		return false;
 	*nd = *r.p++;
-	*nm = *r.p++;
+	*nm = *r.p++ & ~PAGG_MEASLEN;
 	nt = get_u(&r);
 	if (*nd == 0 || *nd > SIFT_PAGG_MAX_RDIMS || *nm > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > PAGG_MAX_TUPLES)
 		return false;
@@ -579,6 +580,8 @@ read_head(const SiftColSchema *s, Rd *rd, SiftCRollup *r)
 		return false;
 	r->ndims = *rd->p++;
 	r->nmeas = *rd->p++;
+	rd->measlen = r->measlen = (r->nmeas & PAGG_MEASLEN) != 0;
+	r->nmeas &= ~PAGG_MEASLEN;
 	nt = (uint32) get_u(rd);
 	if (r->ndims == 0 || r->ndims > SIFT_PAGG_MAX_RDIMS || r->nmeas > SIFT_PAGG_MAX_MEAS || nt == 0 || nt > PAGG_MAX_TUPLES)
 		return false;
@@ -731,10 +734,25 @@ read_meas(const SiftColSchema *s, Rd *rd, SiftCRollup *r, int m, const SiftCRoll
 	bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
 	int			k = need_meas(need, r->meas[m]);
 	bool		want = need == NULL || k >= 0;
-	uint32		nnz = read_nn(rd, r, m, want);
+	const uint8 *mend = NULL;
+	uint32		nnz;
 
+	if (rd->measlen)
+	{
+		uint64		mlen = get_u(rd);
+
+		if (rd->bad || mlen > (uint64) (rd->end - rd->p))
+			return false;
+		mend = rd->p + mlen;
+		if (!want)
+		{
+			rd->p = mend;
+			return true;
+		}
+	}
+	nnz = read_nn(rd, r, m, want);
 	return read_sums(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].sums)) &&
-		read_minmax(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].minmax), nnz);
+		read_minmax(rd, r, m, fl, need == NULL || (k >= 0 && need->meas[k].minmax), nnz) && (mend == NULL || rd->p == mend);
 }
 
 /* what a rollup written from rows cannot break: a tuple stands for at least one element, a measure has no more values than the tuple has elements, and min <= max */
@@ -954,6 +972,7 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 
 			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r) || r.list != list[i] || (r.list < 0 && format < SIFT_COL_FORMAT_ROWS))
 				return false;
+			spec->measlen = r.measlen;
 			*ru = (SiftCPaggRollup) {.list = r.list, .ndims = r.ndims, .nmeas = r.nmeas};
 			memcpy(ru->dim, r.dim, sizeof(ru->dim));
 			memcpy(ru->meas, r.meas, sizeof(ru->meas));

@@ -112,6 +112,7 @@ struct SiftColSegWriter
 	StringInfoData xecube;
 	bool		excepts;		/* the units may get exceptions: a sift_col index, written under a setting that allows them */
 	bool		anyexc;			/* some unit has exceptions: the segment is column format minor 19 */
+	bool		anymeaslen;		/* some unit has a rollup with the length of each measure: the segment is column format minor 36 */
 	uint64	   *pmask;			/* [unit * SIFT_PAGEMASK_WORDS]: the pages of its superblock that hold the rows of the unit (superunits) */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
@@ -140,7 +141,7 @@ struct SiftColSegWriter
 	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
-	bool		anypacked;		/* ... and one of them is a packed table (column format minor 35) */
+	bool		anypacked;		/* ... and one of them is a packed table (column format minor 36) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -314,6 +315,8 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			memmove(w->pagg.rollup, w->pagg.rollup + 1, w->pagg.nrollups * sizeof(SiftCPaggRollup));
 		}
 	}
+	/* the rollups carry the length of each measure (minor 36) under the setting of the compact forms of the 3.7 minors (15), else as before */
+	w->pagg.measlen = w->setting >= SIFT_COL_FORMAT_PRESENCE;
 	/* a leaf asks for its keys (a summary, or a key list or bitmap) or its sorted run: minor 10, 15 or 13 when some unit gets one (sift_colw_finish) */
 	if (w->setting < SIFT_COL_FORMAT_PRESENCE)
 		memset(w->pagg.pres, 0, sizeof(w->pagg.pres));
@@ -710,6 +713,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, w->keyed && b->nrows < w->aim_rows ? (Size) ((uint64) unit_bytes * w->aim_rows / b->nrows) : unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
+	w->anymeaslen |= w->pagg.measlen && w->ecube.len > ecubeat;
 	add_excepts(w, b, cols, cubeat, ecubeat);
 	add_sets(w, cols, unit_bytes);
 	add_runs(w, cols, b->keys, unit_bytes);
@@ -1683,6 +1687,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONTAIN);
+	if (w->anymeaslen)
+		w->format = Max(w->format, SIFT_COL_FORMAT_MEASLEN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{

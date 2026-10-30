@@ -10,6 +10,7 @@
 
 #define PAGG_NULLGROUP	0x01
 #define PAGG_MAX_TUPLES	Max(SIFT_PAGG_ROLLUP_TUPLES, SIFT_PAGG_ROWS_CELLS)	/* the most tuples a rollup blob may say it holds */
+#define PAGG_MEASLEN	0x80			/* in the measure count of a rollup blob: each measure starts with its length in bytes (column format minor 36) */
 #define PAGG_MINMAX		0x02			/* the body of the dim has the minimum and maximum of each integer measure after its sums (column format minor 7) */
 
 /* A signed value as the varint of its zigzag */

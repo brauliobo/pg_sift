@@ -85,7 +85,7 @@ CREATE INDEX ex_col ON ex USING sift_col (id, kind, grp, val, small, amt, flt, d
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_col') WHERE kind = 'immutable';
  minors 
 --------
- {19}
+ {36}
 (1 row)
 
 SELECT sift.col_verify('ex_col', true);
@@ -209,7 +209,7 @@ REINDEX INDEX ex_old_col;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_old_col') WHERE kind = 'immutable';
  minors 
 --------
- {19}
+ {36}
 (1 row)
 
 SELECT * FROM pa_check('ex_old');
