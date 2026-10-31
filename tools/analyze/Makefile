@@ -17,7 +17,7 @@ DATA ?= data
 # LeakSanitizer is on: the stub frees its palloc arena at exit (../pgshim.c), so what it reports is a real malloc leak
 
 harness: harness.c ../pgshim.c ../pgshim.h $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(SRC)/bm25/analyze.h \
-		$(SRC)/bm25/analyze_tables.h
+		$(SRC)/bm25/analyze_tables.h $(wildcard $(SRC)/bm25/analyze_tables/*.h)
 	$(CC) $(CFLAGS) -o $@ harness.c ../pgshim.c $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(LIBS)
 
 check: harness
