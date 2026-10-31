@@ -1,0 +1,48 @@
+-- A correlated EXISTS whose WHERE is an OR of correlated tests (`link.key = d.id OR link.group_id = ANY(ARRAY(SELECT .. FROM group_links WHERE key = d.id))`) cannot be pulled up
+-- into a join by PostgreSQL: the plan is a semi join with a filter that runs the sub-select for every pair of rows (121,975 runs of a sequential scan for 500 x 425 rows), a cliff on
+-- small link tables. Each arm is a test of one key, so the EXISTS is the key in the union of the keys the arms give, computed once (an IN sub-select, hashed), with the NULL
+-- keys left out so that the answer is true or false as EXISTS is. Each statement gives the rows of the plan without the extension.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE dim_a (id int PRIMARY KEY, label text NOT NULL);
+INSERT INTO dim_a SELECT g, 'a' || (g * 7919) % 1000 FROM generate_series(1, 500) g;
+CREATE TABLE links_a (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, set_id int, deleted_at timestamp);
+INSERT INTO links_a SELECT g, CASE WHEN g % 6 = 0 THEN 1 + g % 3 ELSE 4 END, CASE WHEN g % 3 <> 0 THEN 1 + (g * 13) % 500 END, CASE WHEN g % 3 = 0 THEN g % 9 END,
+       CASE WHEN g % 7 = 0 THEN 1 + (g * 31) % 500 END, CASE WHEN g % 11 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 497) g;
+CREATE TABLE group_links (id int PRIMARY KEY, group_id int NOT NULL, dim_a_id int, deleted_at timestamp);
+INSERT INTO group_links SELECT g, g % 9, CASE WHEN g % 17 <> 0 THEN 1 + (g * 29) % 500 END, CASE WHEN g % 13 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 150) g;
+VACUUM (FREEZE, ANALYZE) dim_a, links_a, group_links;
+
+CREATE TABLE forms (name text PRIMARY KEY, pred text);
+INSERT INTO forms VALUES
+	('key or group of the key', $p$EXISTS (SELECT 1 FROM links_a l WHERE l.deleted_at IS NULL AND l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.group_id = ANY(ARRAY(SELECT g.group_id FROM group_links g WHERE g.deleted_at IS NULL AND g.dim_a_id = d.id))))$p$),
+	('not exists', $p$NOT EXISTS (SELECT 1 FROM links_a l WHERE l.deleted_at IS NULL AND l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.group_id = ANY(ARRAY(SELECT g.group_id FROM group_links g WHERE g.deleted_at IS NULL AND g.dim_a_id = d.id))))$p$),
+	('two keys', $p$EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.set_id = d.id))$p$),
+	('key or group, in an or', $p$(d.label < 'a3' OR EXISTS (SELECT 1 FROM links_a l WHERE l.deleted_at IS NULL AND l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.group_id = ANY(ARRAY(SELECT g.group_id FROM group_links g WHERE g.deleted_at IS NULL AND g.dim_a_id = d.id)))))$p$),
+	('an arm that is no key test', $p$EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.id < 3))$p$),
+	('a key from an expression', $p$EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 4 AND (l.dim_a_id = d.id + 1 OR l.set_id = d.id * 2))$p$),
+	('a limit inside', $p$EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 4 AND (l.dim_a_id = d.id OR l.set_id = d.id) LIMIT 1)$p$);
+
+-- how many times the plan scans a link table (the runs of a sub-select for each pair of rows), and whether the rows are the plan without the extension's
+CREATE FUNCTION link_scans(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE p jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO p;
+	RETURN coalesce((SELECT max((n ->> 'Actual Loops')::bigint) FROM jsonb_path_query(p, 'strict $.**."Plans"[*] ? (@."Relation Name" == "group_links" || @."Relation Name" == "links_a")') n), 0);
+END $$;
+CREATE FUNCTION rows_equal(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO b;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT name, link_scans(q) <= 2 AS keys_once, rows_equal(q) AS rows_equal
+FROM (SELECT name, 'SELECT d.id, d.label FROM dim_a d WHERE ' || pred AS q FROM forms) t ORDER BY name;
+
+DROP FUNCTION link_scans(text), rows_equal(text);
+DROP TABLE forms, dim_a, links_a, group_links;
+DROP EXTENSION pg_sift;

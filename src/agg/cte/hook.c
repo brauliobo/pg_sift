@@ -384,7 +384,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 {
 	MemoryContext memo = sift_agg_memo_begin();
 	bool		col_plan = sift_col_plan_begin();
-	bool		reads;
+	bool		reads,
+				split_exists;
 	PlannedStmt *stmt;
 
 	hook_ran = true;
@@ -396,8 +397,11 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
-	if (reads || (sift_enable_agg && has_shared_cte(parse)))
+	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
+	if (reads || split_exists || (sift_enable_agg && has_shared_cte(parse)))
 		parse = copyObject(parse);
+	if (split_exists)
+		sift_agg_split_exists_or(parse);
 	if (reads)
 	{
 		sift_json_build_object_swap(parse);
