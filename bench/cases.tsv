@@ -274,3 +274,9 @@ point_directory_skips_unique_btree	`point_tid_columns = 'auto'` no longer picks 
 group_order_rank_sort	sorts the distinct values of an integer, date or timestamp key by the value and the groups by a radix sort of their packed ranks	orders	default	Custom Scan \(SiftAgg	native	-	ms,minstr	faster33	no	-
 search_insert_language_german	a backend keeps the words its dictionaries answered between statements	docs	-	^[0-9]+$	native	-	ms,cpu_ms,minstr	faster33	no	-
 search_top_20_ties	a ranked search whose `ORDER BY` has a key after the score	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+group_one_table_start	a scan of one table that groups is priced as starting at 0	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+in_list_and_subselect_planned_once	a statement that holds a literal `IN` list and a sub-selec	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+count_not_null_column_is_count_star	`count(x)` of a column the table declares `NOT NULL` is `c	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+date_bin_whole_seconds_step	of whole seconds is a step of its own, like `date_trunc`	events	-	per 900 seconds	native	-	ms	faster33	no	-
+union_all_group_added_above	a `GROUP BY` over a `UNION ALL` of selects (a queue's dept	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+is_null_priced_as_comparison	a test of `IS NULL` or `IS NOT NULL` on a column of a `sif	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
