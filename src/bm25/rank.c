@@ -441,11 +441,17 @@ attr_codes(const SiftAttrTest *at, const SiftAttrBlock *ab, RankWork *wk, SiftAt
 		case SIFT_AT_IN:
 			if (ab->unk > SIFT_ATTR_TABLE)
 				return false;
-			memset(wk->attab, 0, ab->unk + 1 + SIFT_KERN_PAD);
-			wk->attab[ab->unk] = 1;
-			for (int i = 0; i < at->nset; i++)
-				if (at->set[i] >= ab->base && attr_code(ab, at->set[i]) <= top)
-					wk->attab[attr_code(ab, at->set[i])] = 1;
+			if (wk->attab_test != at || wk->attab_base != ab->base || wk->attab_unk != ab->unk)
+			{
+				memset(wk->attab, 0, ab->unk + 1 + SIFT_KERN_PAD);
+				wk->attab[ab->unk] = 1;
+				for (int i = 0; i < at->nset; i++)
+					if (at->set[i] >= ab->base && attr_code(ab, at->set[i]) <= top)
+						wk->attab[attr_code(ab, at->set[i])] = 1;
+				wk->attab_test = at;
+				wk->attab_base = ab->base;
+				wk->attab_unk = ab->unk;
+			}
 			c->table = wk->attab;
 			return true;
 		default:				/* SIFT_AT_NOTNULL */

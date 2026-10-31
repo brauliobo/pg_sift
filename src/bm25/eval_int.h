@@ -298,6 +298,9 @@ typedef struct RankWork
 	uint16		zero[SIFT_KERN_SLOTS];
 	const uint16 *dl[SIFT_BLK_PAGES];
 	uint8		attab[SIFT_ATTR_TABLE + 1 + SIFT_KERN_PAD];	/* the codes of a block that pass an IN test */
+	const SiftAttrTest *attab_test;	/* the test, and the base and code count of the block, that attab was built for (a superblock has one of each) */
+	int64		attab_base;
+	uint64		attab_unk;
 } RankWork;
 
 struct SiftRanker
