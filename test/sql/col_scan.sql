@@ -2,7 +2,7 @@
 -- integer operators and OR/AND of bitmaps on a column index built with the sift.col_*_ops operator classes. Every query runs three ways and
 -- must return the same rows: on the heap (sc, no index but the column index, sequential scan), on the column index (sc, bitmap scan) and on
 -- btrees (sc_b, a copy that gets the same statements). Over the build, the write buffer, updates, deletes, a rollback, the promotion of the
--- buffer and a merge.
+-- buffer and a merge. The cut and the point directories are not under test (a table that was never analyzed has them chosen when the rewrite sees its statistics): off.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 
@@ -37,7 +37,7 @@ INSERT INTO sc_b SELECT * FROM sc;
 
 CREATE INDEX sc_col ON sc USING sift_col (id sift.col_int4_ops, v sift.col_int4_ops, k2 sift.col_int2_ops, k8 sift.col_int8_ops, d sift.col_date_ops,
 	ts sift.col_timestamp_ops, tz sift.col_timestamptz_ops, s sift.col_text_ops, u sift.col_uuid_ops, g sift.col_int4_ops,
-	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc');
+	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc', key_cut = 'off', point_tid_columns = 'off');
 CREATE INDEX sc_b_id ON sc_b (id);
 CREATE INDEX sc_b_v ON sc_b (v);
 CREATE INDEX sc_b_k2 ON sc_b (k2);

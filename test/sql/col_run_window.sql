@@ -6,6 +6,7 @@
 -- updates and inserts (dead rows of the units, the write buffer).
 -- An OR of ranges on one leaf (a window now and the same one a year ago) takes the rows of the union from the run, one search for each arm; the arms overlap, touch, are
 -- empty or equalities (an arm with one bound is a plain comparison, tested row by row); an OR of ranges of two leaves, or of more than an eighth of the values of the index, is tested row by row (the executor).
+-- The point directories are not under test (the rewrite after the ANALYZE would choose them): off.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -24,7 +25,7 @@ SELECT g, timestamp '2024-01-01' + ((hashint4(g) & 2147483647) % 1051200) * inte
        (hashint4(g + 3) & 2147483647) % 100000 - 50000, date '2020-01-01' + (hashint4(g + 4) & 2147483647) % 2000, timestamptz '2024-01-01 00:00 UTC' + ((hashint4(g + 5) & 2147483647) % 1051200) * interval '1 minute', repeat('x', 200)
 FROM generate_series(1, 40000) g;
 CREATE INDEX rw_col ON rw USING sift_col (id, ts, tsa, tsd, kn, n, neg, d, tz)
-	WITH (order_columns = 'ts, tsa, tsd, kn, n, neg, d, tz', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+	WITH (order_columns = 'ts, tsa, tsd, kn, n, neg, d, tz', cube_minmax = false, superunit = 0, calendar_columns = 'off', point_tid_columns = 'off');
 -- a table of one unit of 600 rows
 CREATE TABLE rs AS SELECT id, ts, kn FROM rw WHERE id <= 600;
 CREATE INDEX rs_col ON rs USING sift_col (id, ts, kn) WITH (order_columns = 'ts, kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
