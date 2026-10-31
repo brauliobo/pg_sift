@@ -104,17 +104,17 @@
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
 	X(merge_disk_peak, "-", "col/maint/maint.c", 2, "times the live index", \
 	  "disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back", "the step fails with PostgreSQL's disk-full error before it replaces a segment", "-", 0) \
-	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
+	X(col_leaves, "SIFT_COL_MAX_COLS", "col/api/format.h", SIFT_COL_MAX_COLS, "leaves", \
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
-	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
+	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/api/format.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
-	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/col.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
+	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/api/format.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
 	  "string bytes of one leaf in one column unit", "the values after it are stored as overflow and read from the heap (NOTICE)", "-", 1) \
-	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/col.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
+	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/api/format.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
 	  "rows of one column unit (256 heap pages)", "a new unit starts", "-", 0) \
-	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/col.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \
+	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/api/format.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \
 	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
-	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/col.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
+	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/api/format.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
 	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
 	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
@@ -134,7 +134,7 @@
 	X(lst_share_div, "LST_SHARE_DIV", "col/seg_write/seg_write.c", 33, "1/n of a segment", \
 	  "the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none", \
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
-	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
+	X(int_digits, "SIFT_COL_MAX_SCALE", "col/api/leaf.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
 	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
 	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
