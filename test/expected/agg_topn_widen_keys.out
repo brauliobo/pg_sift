@@ -1,0 +1,43 @@
+-- A page of a list (ORDER BY .. LIMIT) whose rows tie on the first sort key beyond the statistics: the top-N starts again with a larger heap. The scan that starts again made the
+-- conjuncts of the keys of the joined tables and sub-selects a second time and tested the first start's, which it had no state for (the server process ended), and read the
+-- sub-plan of a key source from its end (no rows). Each statement gives the rows of the plan without the extension.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE dim_a (id int PRIMARY KEY, name text NOT NULL, type text NOT NULL);
+INSERT INTO dim_a SELECT g, 'a' || g, 't' || g % 6 FROM generate_series(1, 700) g;
+CREATE TABLE dim_c (id int PRIMARY KEY, enabled bool);
+INSERT INTO dim_c SELECT g, g % 9 <> 0 FROM generate_series(1, 30) g;
+CREATE TABLE links_a (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL);
+INSERT INTO links_a SELECT g, 1 + g % 6, 1 + (g * 13) % 700 FROM generate_series(1, 120) g;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, foreign_id int NOT NULL, event_date date, updated_at timestamp NOT NULL, deleted_at timestamp) WITH (autovacuum_enabled = false);
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, event_date, foreign_id, deleted_at, updated_at);
+INSERT INTO events SELECT g, 1 + (g::bigint * 7919) % 710, 1 + g % 30, date '2025-01-01' + (g::bigint * 300 / 30000)::int, timestamp '2025-01-01' + g * interval '1 second', NULL FROM generate_series(1, 30000) g;
+VACUUM (FREEZE, ANALYZE) events, links_a, dim_a, dim_c;
+INSERT INTO events SELECT 100000 + g, 1 + (g * 7919) % 710, 1 + g % 30, date '2026-06-01', timestamp '2026-01-01' + g * interval '1 second', NULL FROM generate_series(1, 6000) g;
+CREATE TABLE forms (name text, q text);
+INSERT INTO forms VALUES
+ ('in one table', 'SELECT e.id FROM events e WHERE e.deleted_at IS NULL AND e.dim_a_id IN (SELECT dim_a_id FROM links_a WHERE tenant_id = 3) ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3'),
+ ('inner join filter', 'SELECT e.id FROM events e JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE WHERE e.deleted_at IS NULL ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3'),
+ ('join and in', 'SELECT e.id, a.type FROM events e JOIN dim_a a ON a.id = e.dim_a_id JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE WHERE e.deleted_at IS NULL AND e.dim_a_id IN (SELECT dim_a_id FROM links_a WHERE tenant_id = 3) ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3');
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; used bool := false; l text;
+BEGIN
+  PERFORM set_config('sift.enable_agg','off',true);
+  EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () ord FROM (%s) r) x', q) INTO a;
+  PERFORM set_config('sift.enable_agg','on',true); PERFORM set_config('sift.agg_force','on',true);
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'SiftAgg' THEN used := true; END IF; END LOOP;
+  EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () ord FROM (%s) r) x', q) INTO b;
+  RETURN (CASE WHEN used THEN 'scan ' ELSE 'normal ' END) || (CASE WHEN a IS NOT DISTINCT FROM b THEN 'rows equal' ELSE 'ROWS DIFFER' END);
+END $$;
+SELECT name, chk(q) FROM forms ORDER BY name;
+       name        |        chk        
+-------------------+-------------------
+ in one table      | scan rows equal
+ inner join filter | scan rows equal
+ join and in       | normal rows equal
+(3 rows)
+
+DROP FUNCTION chk(text);
+DROP TABLE forms, events, links_a, dim_c, dim_a;
+DROP EXTENSION pg_sift;
