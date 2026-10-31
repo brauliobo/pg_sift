@@ -45,11 +45,15 @@ stem_fixpoint(StemFn fn, char *w, int n)
 	}
 }
 
+static int
+stem_memo_fn(void *a, char *w, int n)
+{
+	return stem_fixpoint(((SiftAnalyzer *) a)->stem, w, n);
+}
+
 static inline int
 stem(SiftAnalyzer *a, char *w, int n)
 {
-	StemSlot   *e;
-
 	if (a->ts)					/* has a memo of its own; a stop word (-1) is dropped but keeps its position */
 	{
 		int			m = sift_ts_stem(a->ts, w, n);
@@ -57,27 +61,12 @@ stem(SiftAnalyzer *a, char *w, int n)
 		a->gap += m < 0;
 		return Max(m, 0);
 	}
-	if (!a->stem_memo && ++a->nstems == STEM_MEMO_AFTER)
-		a->stem_memo = MemoryContextAllocZero(a->mcxt, STEM_SLOTS * sizeof(StemSlot));
-	if (n > STEM_MAXW || !a->stem_memo)
+	if (a->memo.tab == NULL && ++a->nstems < STEM_MEMO_AFTER)
 		return stem_fixpoint(a->stem, w, n);
-	e = &a->stem_memo[hash64(w, n) & (STEM_SLOTS - 1)];
-	if (e->inlen != n || memcmp(e->in, w, n) != 0)
-	{
-		int			m;
-
-		memcpy(e->in, w, n);
-		e->inlen = 0;
-		m = stem_fixpoint(a->stem, w, n);
-		if (m > STEM_MAXW)		/* a dictionary may lengthen a word */
-			return m;
-		e->outlen = m;
-		memcpy(e->out, w, m);
-		e->inlen = n;
-		return m;
-	}
-	memcpy(w, e->out, e->outlen);
-	return e->outlen;
+	if (n > STEM_MEMO_MAXW)
+		return stem_fixpoint(a->stem, w, n);
+	a->memo.mcxt = a->mcxt;
+	return memo_stem(&a->memo, stem_memo_fn, a, w, n);
 }
 
 static inline uint16

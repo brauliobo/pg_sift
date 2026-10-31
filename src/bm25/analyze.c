@@ -13,6 +13,7 @@
 #include <ctype.h>
 
 #include "bm25/analyze.h"
+#include "bm25/analyze_memo.h"
 #include "bm25/analyze_tables.h"
 #include "core/varint.h"
 #include "core/cmp.h"
@@ -27,18 +28,8 @@ enum
 #define TERM_CAP		SIFT_MAX_TERM_BYTES
 #define DST_CAP			(TERM_CAP + 16)	/* token buffer: cap plus one vector store */
 #define KEEP_BYTES		(1024 * 1024)	/* buffers above this are freed on reset */
-#define STEM_SLOTS		4096
-#define STEM_MAXW		23
 #define STEM_MEMO_AFTER	1024		/* stems before the memo pays for its setup */
-
-/* Memo of recent stems; words follow Zipf's law, so most tokens hit */
-typedef struct StemSlot
-{
-	uint8		inlen;			/* 0 = empty */
-	uint8		outlen;
-	char		in[STEM_MAXW];
-	char		out[STEM_MAXW];
-} StemSlot;
+#define STEM_MEMO_MAXW	64			/* longer words are stemmed without it */
 
 typedef int (*StemFn) (char *w, int len);
 
@@ -67,7 +58,7 @@ struct SiftAnalyzer
 	uint32		gap;			/* stop words dropped since the last token: each takes a position */
 	uint32	   *tokpos;			/* token -> position, with stop words (ts only) */
 	size_t		tokposcap;
-	StemSlot   *stem_memo;		/* STEM_SLOTS entries, after STEM_MEMO_AFTER stems */
+	StemMemo	memo;			/* of the stems, after STEM_MEMO_AFTER of them */
 	uint32		nstems;
 	uint8		ascii[128];		/* folded byte, 0 = separator */
 

@@ -16,31 +16,17 @@
 #include "utils/builtins.h"
 
 #include "bm25/analyze.h"
+#include "bm25/analyze_memo.h"
 
 /* Token types of the default parser (wparser_def.c) */
 #define TS_ASCIIWORD	1
 #define TS_WORD			2
 #define TS_NUMWORD		3
 
-/*
- * Memo of every word the dictionaries answered (a lexize costs thousands of instructions, words follow Zipf's law and the vocabulary
- * of a corpus is small): entries [uint16 inlen][uint16 outlen][in][out] in an arena, found through an open-addressing table of
- * offsets (+ 1). outlen 0 is a word no dictionary knows, TS_MEMO_STOP a stop word. Both are dropped when the arena passes TS_MEMO_MAX, so a vocabulary without end stays bounded.
- */
-#define TS_MEMO_MAX		(8 * 1024 * 1024)
-#define TS_MEMO_STOP	0xFFFF	/* outlen of a stop word */
-#define TS_MEMO_TAB0	4096
-
 struct SiftTsStem
 {
 	Oid			cfg;
-	MemoryContext mcxt;
-	char	   *arena;
-	uint32		used;
-	uint32		cap;
-	uint32	   *tab;
-	uint32		tabmask;
-	uint32		nent;
+	StemMemo	memo;			/* of the words the dictionaries answered */
 };
 
 /*
@@ -69,7 +55,7 @@ sift_ts_open(const char *config, MemoryContext mcxt)
 {
 	SiftTsStem *ts = MemoryContextAlloc(mcxt, sizeof(SiftTsStem));
 
-	*ts = (SiftTsStem) {.cfg = ts_config_oid(config), .mcxt = mcxt};
+	*ts = (SiftTsStem) {.cfg = ts_config_oid(config), .memo = {.mcxt = mcxt}};
 	return ts;
 }
 
@@ -174,88 +160,14 @@ ts_stem(SiftTsStem *ts, char *w, int n)
 	return m;
 }
 
-static void
-memo_clear(SiftTsStem *ts)
+static int
+ts_memo_fn(void *ts, char *w, int n)
 {
-	ts->used = 0;
-	ts->nent = 0;
-	if (ts->tab)
-		memset(ts->tab, 0, (ts->tabmask + 1) * sizeof(uint32));
-}
-
-static void
-memo_grow_tab(SiftTsStem *ts)
-{
-	uint32		size = ts->tab ? (ts->tabmask + 1) * 2 : TS_MEMO_TAB0;
-
-	if (ts->tab)
-		pfree(ts->tab);
-	ts->tab = MemoryContextAllocZero(ts->mcxt, size * sizeof(uint32));
-	ts->tabmask = size - 1;
-	for (uint32 off = 0; off < ts->used;)
-	{
-		const uint16 *h = (const uint16 *) (ts->arena + off);
-		uint32		i = (uint32) sift_term_hash((const char *) (h + 2), h[0]) & ts->tabmask;
-
-		while (ts->tab[i])
-			i = (i + 1) & ts->tabmask;
-		ts->tab[i] = off + 1;
-		off += 4 + h[0] + (h[1] == TS_MEMO_STOP ? 0 : h[1]);
-	}
+	return ts_stem((SiftTsStem *) ts, w, n);
 }
 
 int
 sift_ts_stem(SiftTsStem *ts, char *w, int n)
 {
-	uint32		i;
-	int			m;
-
-	if (!ts->tab)
-		memo_grow_tab(ts);
-	i = (uint32) sift_term_hash(w, n) & ts->tabmask;
-	for (; ts->tab[i]; i = (i + 1) & ts->tabmask)
-	{
-		const uint16 *h = (const uint16 *) (ts->arena + ts->tab[i] - 1);
-
-		if (h[0] == n && memcmp(h + 2, w, n) == 0)
-		{
-			if (h[1] == TS_MEMO_STOP)
-				return LEX_STOP;
-			memcpy(w, (const char *) (h + 2) + n, h[1]);
-			return h[1];
-		}
-	}
-	{
-		char		in[SIFT_MAX_TERM_BYTES + 16];
-		uint16		hd[2];
-
-		memcpy(in, w, n);
-		m = ts_stem(ts, w, n);
-		if (ts->used + 4 + n + Max(m, 0) > ts->cap)
-		{
-			if (ts->cap >= TS_MEMO_MAX)
-			{
-				memo_clear(ts);
-				i = (uint32) sift_term_hash(in, n) & ts->tabmask;
-				while (ts->tab[i])
-					i = (i + 1) & ts->tabmask;
-			}
-			else
-			{
-				ts->cap = ts->cap ? ts->cap * 2 : 64 * 1024;
-				ts->arena = ts->arena ? repalloc(ts->arena, ts->cap) : MemoryContextAlloc(ts->mcxt, ts->cap);
-			}
-		}
-		hd[0] = n;
-		hd[1] = m < 0 ? TS_MEMO_STOP : m;
-		memcpy(ts->arena + ts->used, hd, 4);
-		memcpy(ts->arena + ts->used + 4, in, n);
-		if (m > 0)
-			memcpy(ts->arena + ts->used + 4 + n, w, m);
-		ts->tab[i] = ts->used + 1;
-		ts->used += 4 + n + Max(m, 0);
-		if (++ts->nent * 2 > ts->tabmask + 1)
-			memo_grow_tab(ts);
-	}
-	return m;
+	return memo_stem(&ts->memo, ts_memo_fn, ts, w, n);
 }

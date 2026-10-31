@@ -64,6 +64,7 @@ bm25/analyze_tables/fold_pool_2.h
 bm25/analyze_tables/fold_recs_1.h
 bm25/analyze_tables/fold_recs_2.h
 bm25/analyze_scan.h
+bm25/analyze_memo.h
 bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
