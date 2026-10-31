@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The groups of a COPY into a sift_table are written by the backend and the workers of a parallel context (table/load.c) when the run is 16 MB of rows or more.
+# The groups of a COPY into a sift_table are written by the backend and the workers of a parallel context (table/load/write.c) when the run is 16 MB of rows or more.
 # With a streaming standby attached: the load with workers and without give the same TIDs, answers and verified index, and the standby replays the same rows; a COPY in a
 # transaction block, with FREEZE and into a partitioned table writes the same rows too; and a load that dies leaves nothing: a worker ended by pg_terminate_backend, a
 # worker cancelled, a worker killed with kill -9 (the postmaster restarts the cluster), the statement timeout while the participants write, and the backend killed with kill -9. After

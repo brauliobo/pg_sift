@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The workers of a COPY into a sift_table stay for the command (table/load.c, the ring): the backend writes the rows of a group into shared memory and goes on reading
+# The workers of a COPY into a sift_table stay for the command (table/load/ring.c): the backend writes the rows of a group into shared memory and goes on reading
 # while a worker writes the group's segment, and publishes the segments as they come. The blocks of a group written and not yet published are in no directory: the orphan
 # sweep of a VACUUM leaves them alone (SIFT_LOAD_LOCK_BLKNO). With a streaming standby under generic WAL consistency checking: the load equals the load without workers (the
 # same rows at the same TIDs) and the heap twin, also into a table with a b-tree, and a table whose default calls nextval loads (it cannot run in the parallel mode of the ring); a VACUUM, a

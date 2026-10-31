@@ -598,7 +598,7 @@ extern PGDLLIMPORT char *sift_tbl_compression_spec;
 /* Why the bulk load of rel (COPY, CREATE TABLE AS, REFRESH MATERIALIZED VIEW) keeps the write buffers; NULL when its rows may be written straight into groups */
 extern const char *sift_tbl_bulk_refusal(Relation rel);
 /*
- * sift.table_bulk_groups: the rows of a load are encoded into column groups instead of write buffer pages (table/load.c). wanted: does the load
+ * sift.table_bulk_groups: the rows of a load are encoded into column groups instead of write buffer pages (table/load/load.c). wanted: does the load
  * of rel qualify (decided once per load, and kept until it ends); row: encodes mtup under the next TID of the load, which it returns in tid;
  * finish: writes the rows that wait (the end of the command; the end of the transaction is the last chance). frozen: rows with no writer.
  */
