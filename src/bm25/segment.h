@@ -279,7 +279,7 @@ extern void sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisi
  * at most, except a small term of a vacuumed segment, which is counted first and then comes in one. The memory is the dl of
  * the docs of the SBs a term touches, kept for the next term (budget bytes at most, 2.3 bytes a doc; a segment that does not
  * fit has its SBs read again for each term that touches them), a batch, and the blob of the term, which sift_post_open
- * copies whole: about a byte a posting of the hottest term.
+ * copies whole: about a byte a posting of the hottest term. Without term() the docs only.
  */
 typedef struct SiftSegSink
 {

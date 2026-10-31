@@ -314,6 +314,10 @@ doctext_open(Relation index)
 	sift_analyzer_config_from_index(index, &cfg);
 	if (!sift_index_options(index)->positions || cfg.keyword)
 		return NULL;
+#ifdef SIFT_TESTING
+	if (sift_test_no_heap_positions)
+		return NULL;
+#endif
 	d = palloc0(sizeof(DocText));
 	d->heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	d->info = BuildIndexInfo(index);
@@ -435,6 +439,34 @@ dead_terms(const DocCursor *c, MemoryContext cx)
 	return terms;
 }
 
+typedef struct RunList
+{
+	SiftRun   **run;
+	int			n;
+	int			max;
+} RunList;
+
+static void
+runlist_push(RunList *l, SiftRun *r)
+{
+	if (l->n == l->max)
+		l->run = repalloc(l->run, (l->max *= 2) * sizeof(SiftRun *));
+	l->run[l->n++] = r;
+}
+
+/* Adds a doc to the buffer, which spills to a run of the list when the doc does not fit or the buffer is full */
+static void
+inv_add_doc(SiftInvBuf *inv, RunList *runs, DocText *dt, ItemPointerData *tid, SiftTermFreq *terms, int nterms, uint32 dl, int len)
+{
+	if (dt != NULL && len >= sift_inv_small_doc(inv) && !sift_inv_empty(inv) && !sift_inv_fits(inv, nterms, len))
+		runlist_push(runs, sift_inv_spill(inv));
+	sift_inv_add(inv, tid, terms, nterms, dl);
+	if (dt != NULL)
+		sift_analyzer_reset(dt->an);
+	if (sift_inv_full(inv))
+		runlist_push(runs, sift_inv_spill(inv));
+}
+
 /* Writes the sorted docs as one immutable segment; false when there are none */
 static bool
 write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
@@ -442,11 +474,9 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 	SiftScoreRef ref = score_ref(index);
 	DocText    *dt = doctext_open(index);
 	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, dt != NULL);
-	SiftRun   **runs = palloc(sizeof(SiftRun *));
+	RunList		runs = {.run = palloc(sizeof(SiftRun *)),.max = 1};
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
 	MemoryContext deadcx = AllocSetContextCreate(CurrentMemoryContext, "sift promote gone docs", ALLOCSET_DEFAULT_SIZES);
-	int			nruns = 0,
-				maxruns = 1;
 
 	while (next_doc(&c))
 	{
@@ -457,46 +487,25 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 		uint32		dl = c.dl;
 
 		sift_key_to_tid(c.key, &tid);
-		if (dt != NULL)
+		if (dt != NULL && !doctext_terms(dt, &tid, &terms, &nterms, &dl, &len))
 		{
-			if (!doctext_terms(dt, &tid, &terms, &nterms, &dl, &len))
-			{
-				MemoryContextReset(deadcx);
-				terms = dead_terms(&c, deadcx);
-				len = 0;
-			}
-			if (len >= sift_inv_small_doc(inv) && !sift_inv_empty(inv) && !sift_inv_fits(inv, nterms, len))
-			{
-				if (nruns == maxruns)
-					runs = repalloc(runs, (maxruns *= 2) * sizeof(SiftRun *));
-				runs[nruns++] = sift_inv_spill(inv);
-			}
+			MemoryContextReset(deadcx);
+			terms = dead_terms(&c, deadcx);
+			len = 0;
 		}
-		sift_inv_add(inv, &tid, terms, nterms, dl);
-		if (dt != NULL)
-			sift_analyzer_reset(dt->an);
-		if (sift_inv_full(inv))
-		{
-			if (nruns == maxruns)
-				runs = repalloc(runs, (maxruns *= 2) * sizeof(SiftRun *));
-			runs[nruns++] = sift_inv_spill(inv);
-		}
+		inv_add_doc(inv, &runs, dt, &tid, terms, nterms, dl, len);
 	}
 	doctext_close(dt);
 	MemoryContextDelete(deadcx);
-	if (nruns == 0 && sift_inv_empty(inv))
+	if (runs.n == 0 && sift_inv_empty(inv))
 		return false;
-	if (nruns == 0)
+	if (runs.n == 0)
 		sift_inv_write(inv, wt, gen, &ref, entry);
 	else
 	{
 		if (!sift_inv_empty(inv))
-		{
-			if (nruns == maxruns)
-				runs = repalloc(runs, (maxruns *= 2) * sizeof(SiftRun *));
-			runs[nruns++] = sift_inv_spill(inv);
-		}
-		sift_runs_write(runs, nruns, wt, gen, &ref, entry);
+			runlist_push(&runs, sift_inv_spill(inv));
+		sift_runs_write(runs.run, runs.n, wt, gen, &ref, entry);
 	}
 	return true;
 }
@@ -672,6 +681,47 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftMergeGoa
 	return k < Min(n, 2) ? 0 : k;
 }
 
+typedef struct Heal
+{
+	DocText    *dt;
+	SiftInvBuf *inv;
+	RunList    *runs;
+} Heal;
+
+static void
+heal_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+{
+	Heal	   *h = arg;
+
+	for (int i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+		SiftTermFreq *terms;
+		int			nterms,
+					len;
+		uint32		doclen;
+
+		sift_key_to_tid(keys[i], &tid);
+		/* a row that is gone is dead for every snapshot: its doc is left out, as a vacuum would */
+		if (doctext_terms(h->dt, &tid, &terms, &nterms, &doclen, &len))
+			inv_add_doc(h->inv, h->runs, h->dt, &tid, terms, nterms, doclen, len);
+	}
+}
+
+/*
+ * The runs of a segment without positions (written before promotions had them), analyzed again from the heap: one segment without
+ * would take the positions from every segment it merges with, and the index would keep paying the rechecks of its phrases.
+ */
+static void
+heal_runs(DocText *dt, SiftInvBuf *inv, SiftSegment *seg, RunList *runs)
+{
+	Heal		h = {.dt = dt,.inv = inv,.runs = runs};
+
+	sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {.docs = heal_docs}, &h);
+	if (!sift_inv_empty(h.inv))
+		runlist_push(runs, sift_inv_spill(h.inv));
+}
+
 static void
 merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 {
@@ -679,9 +729,10 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftScoreRef ref = score_ref(index);
-	SiftRun   **runs = palloc(in->n * sizeof(SiftRun *));
+	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
-	int			nruns = 0;
+	DocText    *dt = NULL;
+	SiftInvBuf *inv = NULL;
 	SiftSegEntry neu;
 	TimestampTz start = GetCurrentTimestamp();
 
@@ -699,6 +750,11 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 		CHECK_FOR_INTERRUPTS();
 	}
 #endif
+	for (int i = 0; i < in->n && dt == NULL; i++)
+		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
+			dt = doctext_open(index);
+	if (dt != NULL)
+		inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
 	for (int i = 0; i < in->n; i++)
 	{
 		SiftSegment *seg;
@@ -706,16 +762,18 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 
 		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of this segment */
 		seg = sift_seg_open(index, &in->seg[i], cx);
-		run = sift_run_from_segment(seg, &ref, cx);
+		if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
+			heal_runs(dt, inv, seg, &runs);
+		else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
+			runlist_push(&runs, run);
 		sift_seg_close(seg);
-		if (run)
-			runs[nruns++] = run;
 	}
-	if (nruns > 0)
-		sift_runs_write(runs, nruns, wt, sift_store_new_gen(index), &ref, &neu);
+	doctext_close(dt);
+	if (runs.n > 0)
+		sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	sift_wt_finish(wt);
-	sift_maint_replace(index, mi.gens, in->n, nruns > 0 ? &neu : NULL, mi.release, mi.nrelease,
-					   psprintf("merged %d segments of", in->n), start, nruns > 0 ? neu.ndocs : 0);
+	sift_maint_replace(index, mi.gens, in->n, runs.n > 0 ? &neu : NULL, mi.release, mi.nrelease,
+					   psprintf("merged %d segments of", in->n), start, runs.n > 0 ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

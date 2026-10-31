@@ -49,6 +49,9 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_room_segments",
 							"Testing: directory entries from which inserters merge (0 = 112).",
 							NULL, &sift_test_room_segments, 0, 0, SIFT_MAX_SEGMENTS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_no_heap_positions",
+							 "Testing: promotions and merges take no positions from the heap, as 3.7.0 did.",
+							 NULL, &sift_test_no_heap_positions, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_run_gap",
 							 "Testing: every run a segment stream takes is followed by a page taken by another writer.",
 							 NULL, &sift_test_run_gap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

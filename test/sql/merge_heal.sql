@@ -1,0 +1,80 @@
+-- An index whose segments were promoted without positions (3.7.0 did) heals by itself: a merge that finds an input without positions
+-- analyzes its documents again from the heap, so the segment it writes has them and the index is the size of a fresh build and decides
+-- its phrases from the positions as the fresh one does.
+CREATE EXTENSION pg_sift;
+SELECT setseed(0.5);
+
+CREATE TABLE src (id int PRIMARY KEY, body text);
+CREATE TABLE damaged (id int PRIMARY KEY, body text);
+INSERT INTO src
+SELECT g, (SELECT string_agg('v' || (get_byte(decode(md5(g || ':' || k), 'hex'), 0) % 24), ' ') FROM generate_series(1, 14) k)
+FROM generate_series(1, 6000) g;
+-- documents whose text is stored out of line (TOAST)
+INSERT INTO src SELECT 6000 + g, 'v3 v4 ' || (SELECT string_agg(md5(g || ':' || k), ' ') FROM generate_series(1, 300) k) || ' v3 v4' FROM generate_series(1, 20) g;
+INSERT INTO src SELECT g, (SELECT string_agg('v' || (get_byte(decode(md5(g || ':' || k), 'hex'), 0) % 24), ' ') FROM generate_series(1, 14) k)
+FROM generate_series(6021, 6500) g;
+-- fresh builds of the rows before and after the healing merge
+CREATE TABLE fresh1 AS SELECT * FROM src WHERE id <= 6020;
+CREATE TABLE fresh2 AS SELECT * FROM src;
+CREATE INDEX fresh1_idx ON fresh1 USING sift (body);
+CREATE INDEX fresh2_idx ON fresh2 USING sift (body);
+INSERT INTO damaged SELECT * FROM src WHERE id <= 3000;
+CREATE INDEX damaged_idx ON damaged USING sift (body);
+
+SET sift.async_maintenance = off;
+SET sift.test_no_heap_positions = on;
+DO $$
+BEGIN
+	FOR b IN 0..5 LOOP
+		INSERT INTO damaged SELECT * FROM src WHERE id > 3000 + b * 500 AND id <= 3500 + b * 500;
+		PERFORM sift.promote('damaged_idx');
+	END LOOP;
+	INSERT INTO damaged SELECT * FROM src WHERE id > 6000 AND id <= 6020;
+	PERFORM sift.promote('damaged_idx');
+END $$;
+SELECT sift.merge('damaged_idx', true) >= 0 AS merged;
+RESET sift.test_no_heap_positions;
+
+CREATE FUNCTION idx_bytes(idx regclass) RETURNS numeric LANGUAGE sql AS $$ SELECT sum(bytes) FROM sift.segments(idx) WHERE kind = 'immutable' $$;
+CREATE FUNCTION heap_checks(tbl regclass, q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT id FROM %s WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT 10', tbl, q) INTO j;
+	RETURN (SELECT (n ->> 'Heap Checks')::bigint FROM jsonb_path_query(j, 'strict $.**') n WHERE n ->> 'Custom Plan Provider' = 'SiftScan' LIMIT 1);
+END $$;
+CREATE FUNCTION top_ids(tbl regclass, q text) RETURNS int[] LANGUAGE plpgsql AS $$
+DECLARE
+	r int[];
+BEGIN
+	EXECUTE format('SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM %s WHERE body @@> %L ORDER BY sift.score(ctid) DESC, id LIMIT 10) s', tbl, q) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE phrases (q text);
+INSERT INTO phrases SELECT format('"v%s v%s"', a, b) FROM generate_series(0, 23, 5) a, generate_series(1, 23, 6) b;
+INSERT INTO phrases SELECT format('"v%s v%s v%s"', a, b, c) FROM generate_series(0, 23, 7) a, generate_series(1, 23, 9) b, generate_series(2, 23, 11) c;
+
+
+CREATE FUNCTION other_phrases(tbl regclass, fresh regclass) RETURNS TABLE (phrases bigint, other_heap_checks bigint, other_rows bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE heap_checks(tbl, q) IS DISTINCT FROM heap_checks(fresh, q)),
+		count(*) FILTER (WHERE top_ids(tbl, q) IS DISTINCT FROM top_ids(fresh, q))
+	FROM phrases
+$$;
+
+-- the damage: smaller than a fresh build (no positions), heap checks where the fresh index reads its positions, the same rows
+SELECT idx_bytes('damaged_idx') < 0.8 * idx_bytes('fresh1_idx') AS smaller_than_fresh;
+SELECT phrases, other_heap_checks > 0 AS has_other_heap_checks, other_rows FROM other_phrases('damaged', 'fresh1');
+SELECT sum(heap_checks('fresh1', q)) > 0 AS the_test_has_heap_checks FROM phrases;
+
+-- documents promoted with positions and a forced merge: the damaged segment is analyzed again from the heap
+INSERT INTO damaged SELECT * FROM src WHERE id > 6020;
+SELECT sift.promote('damaged_idx') >= 0 AS promoted;
+SELECT sift.merge('damaged_idx', true) >= 0 AS merged;
+SELECT count(*) AS segments FROM sift.segments('damaged_idx') WHERE kind = 'immutable';
+SELECT idx_bytes('damaged_idx') BETWEEN 0.97 * idx_bytes('fresh2_idx') AND 1.03 * idx_bytes('fresh2_idx') AS size_of_a_fresh_build;
+SELECT * FROM other_phrases('damaged', 'fresh2');
+SELECT sift.verify('damaged_idx', true) IS NOT NULL AS verified;
+
+DROP TABLE src, fresh1, fresh2, damaged, phrases;
+DROP FUNCTION idx_bytes(regclass), heap_checks(regclass, text), top_ids(regclass, text), other_phrases(regclass, regclass);
+DROP EXTENSION pg_sift;
