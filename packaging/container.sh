@@ -59,6 +59,7 @@ build_rpm() {
 }
 
 build() {
+	command -v tar >/dev/null || dnf -y -q install tar gzip # the Amazon Linux image has neither, and the source tarball is unpacked below
 	mkdir /build && tar xzf "/src/pg_sift-$VER.tar.gz" -C /build --strip-components=1 && cd /build
 	build_$FMT
 	chown -R "$HOST_UID" /out
