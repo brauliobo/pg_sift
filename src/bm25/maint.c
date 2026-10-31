@@ -533,6 +533,12 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 			break;
 		maint_lock_mode(index, true, ops->step_lock);
 	}
+	if (n > 0 && ops->vacuum_truncate && ops->vacuum_truncate(index) && !RecoveryInProgress())
+	{
+		sift_maint_lock(index, true);
+		(void) sift_maint_cut_released(index, DEBUG1);
+		sift_maint_unlock(index);
+	}
 	sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	return n;
 }

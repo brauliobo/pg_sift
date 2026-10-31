@@ -1,0 +1,46 @@
+-- The rewrite of a sift_col index cuts the free end of the file it leaves. The segments it writes go after the ones it replaces (nothing a snapshot may
+-- read is overwritten), so the old ones are the free end; VACUUM leaves that end to a rewrite that is due, and the rewrite did not cut it, so the file
+-- stayed at the size of both until a VACUUM found no rewrite due.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.col_auto_merge = off;
+CREATE TABLE events (id bigint PRIMARY KEY, tenant_id int, foreign_id int, kind text, value_num numeric(12,2), updated_at timestamptz)
+	WITH (autovacuum_enabled = off, fillfactor = 85);
+INSERT INTO events SELECT g, g % 20, hashint8(g * 31) % 5000, 'kind_' || g % 8, (hashint8(g * 17) % 100000) / 100.0,
+	timestamptz '2026-01-01' + interval '90 days' * g / 100000 FROM generate_series(1, 100000) g;
+CREATE INDEX events_col ON events USING sift_col (tenant_id, foreign_id, kind, value_num, updated_at);
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) events;
+
+-- blocks after the last block in use (a free list page counts as in use)
+CREATE FUNCTION free_end() RETURNS bigint LANGUAGE sql AS
+$$ SELECT (SELECT relation_blocks FROM sift.col_space('events_col')) - max(first_block + nblocks) FROM sift.col_extents('events_col') WHERE what NOT LIKE 'free extent' $$;
+
+CREATE PROCEDURE churn(r int) LANGUAGE plpgsql AS $$
+BEGIN
+	UPDATE events SET value_num = value_num + 1, updated_at = timestamptz '2026-04-01' + r * interval '1 day' WHERE abs(hashint8(id * 7 + r)) % 100 < 5;
+	DELETE FROM events WHERE abs(hashint8(id * 9 + r)) % 100 < 2;
+END $$;
+
+CALL churn(1);
+VACUUM events;
+SELECT sift.col_maintain('events_col');
+-- the first rewrite after the build; the next ones each rewrite every segment again and leave the end free
+CALL churn(2);
+VACUUM events;
+SELECT sift.col_maintain('events_col');
+SELECT free_end() = 0 AS cut_after_rewrite_2;
+CALL churn(3);
+VACUUM events;
+SELECT sift.col_maintain('events_col');
+SELECT free_end() = 0 AS cut_after_rewrite_3;
+CALL churn(4);
+VACUUM events;
+SELECT sift.col_maintain('events_col');
+SELECT free_end() = 0 AS cut_after_rewrite_4;
+SELECT sift.col_verify('events_col', true);
+SELECT count(*) > 0 AS rows_kept FROM events WHERE updated_at >= timestamptz '2026-04-01';
+
+DROP TABLE events;
+DROP PROCEDURE churn(int);
+DROP FUNCTION free_end();
+DROP EXTENSION pg_sift;

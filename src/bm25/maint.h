@@ -199,6 +199,7 @@ extern bool sift_maint_buffer_above_shrink(Relation rel);
 extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
+extern BlockNumber sift_maint_cut_released(Relation rel, int elevel);
 extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */

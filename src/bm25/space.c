@@ -731,28 +731,16 @@ sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
 	sift_maint_space_budget(rel, relocate_page, elevel, (uint64) sift_vacuum_rewrite_limit << 20);
 }
 
-/* The space step with a cap on the bytes it may copy under the lock (0: only the free tail is cut); the blocks it cut off the end of the file */
-BlockNumber
-sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
+/*
+ * The cut of the file under the lock of the cut, after the screens of the callers: moves segments down into the holes when budget allows (0: only the free end is
+ * cut) and truncates. The lock keeps every reader out, so every record released is reusable here (sift_store_space_exclusive); returns the blocks cut off the end.
+ */
+static BlockNumber
+cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
 	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
-	BlockNumber nblocks;
 	BlockNumber freed = 0;
 
-	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
-	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
-		return 0;
-	space_copied = 0;
-	if (online_cut_wanted(rel))
-		return online_cut(rel, elevel);
-	nblocks = RelationGetNumberOfBlocks(rel);
-	/*
-	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the
-	 * relation is locked): do not stop the relation for it
-	 */
-	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
-		!(budget > 0 && (space_resume || space_worth(sift_store_free_stats(rel).blocks, nblocks))))
-		return 0;
 	if (!lock_for_cut(rel, what, elevel))
 		return 0;
 	PG_TRY();
@@ -776,6 +764,43 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
 								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
 	return freed;
+}
+
+/* The space step with a cap on the bytes it may copy under the lock (0: only the free tail is cut); the blocks it cut off the end of the file */
+BlockNumber
+sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
+{
+	BlockNumber nblocks;
+
+	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
+	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+		return 0;
+	space_copied = 0;
+	if (online_cut_wanted(rel))
+		return online_cut(rel, elevel);
+	nblocks = RelationGetNumberOfBlocks(rel);
+	/*
+	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the
+	 * relation is locked): do not stop the relation for it
+	 */
+	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
+		!(budget > 0 && (space_resume || space_worth(sift_store_free_stats(rel).blocks, nblocks))))
+		return 0;
+	return cut_locked(rel, relocate_page, elevel, budget);
+}
+
+/*
+ * The free end a rewrite leaves: the blocks it released are held back by the snapshot of its own transaction, so the screen of the space step (which counts only
+ * what the horizon frees) sees no tail, while under the lock of the cut every record is reusable. VACUUM defers its moves to a due rewrite and cuts only an end
+ * that is free, so without this the end stays until a VACUUM finds the rewrite not due.
+ */
+BlockNumber
+sift_maint_cut_released(Relation rel, int elevel)
+{
+	space_copied = 0;
+	if (online_cut_wanted(rel))
+		return online_cut(rel, elevel);
+	return cut_locked(rel, NULL, elevel, 0);
 }
 
 /*
