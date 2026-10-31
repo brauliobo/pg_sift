@@ -158,7 +158,7 @@ REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
  format | segments 
 --------+----------
-     30 |        1
+     38 |        1
 (1 row)
 
 SELECT count(*) FILTER (WHERE same(s.col, shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
@@ -175,7 +175,7 @@ CREATE INDEX small_ix ON small USING sift_col (id, ts) WITH (order_array_columns
 SELECT format, rows FROM sift.col_segments('small_ix') WHERE kind = 'immutable';
  format | rows 
 --------+------
-     30 |  100
+     38 |  100
 (1 row)
 
 SELECT sift.col_verify('small_ix');

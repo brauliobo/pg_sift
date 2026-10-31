@@ -67,6 +67,29 @@ SELECT sift.col_verify('gg_new', true);
 SELECT format, count(*) AS segments FROM sift.col_segments('gg_new') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
 SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gg_check();
 
+-- an index with order arrays and no point directory packs the addresses too (column format minor 38); a segment of the layout before (minor 30) is read as it was,
+-- and the merge that takes it with the rows added since writes the packed one
+SET sift.test_col_point_unrooted = on;
+SET sift.test_col_gorder_unpacked = on;
+CREATE INDEX gg_oo_old ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off');
+RESET sift.test_col_point_unrooted;
+RESET sift.test_col_gorder_unpacked;
+CREATE INDEX gg_oo_new ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off');
+SELECT sift.col_verify('gg_oo_old', true), sift.col_verify('gg_oo_new', true);
+SELECT 'gg_oo_old' AS idx, format FROM sift.col_segments('gg_oo_old') WHERE kind = 'immutable' UNION ALL SELECT 'gg_oo_new', format FROM sift.col_segments('gg_oo_new') WHERE kind = 'immutable' ORDER BY 1;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section = 'dict_other') AS smaller;
+DROP INDEX gg_oo_new;
+INSERT INTO gg (id, k, u) SELECT 100000 + i, -((i * 6841) % 300), (i * 104729::bigint) % 1000003 FROM generate_series(1, 20000) i;
+SELECT sift.col_promote('gg_oo_old'::regclass) >= 0 AS promoted;
+SELECT format, count(*) AS segments FROM sift.col_segments('gg_oo_old') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+SELECT sift.col_verify('gg_oo_old', true);
+SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gg_check();
+SELECT sift.col_merge('gg_oo_old'::regclass, true) >= 0 AS merged;
+SELECT format, count(*) AS segments FROM sift.col_segments('gg_oo_old') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+SELECT sift.col_verify('gg_oo_old', true);
+SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gg_check();
+DROP INDEX gg_oo_old;
+
 DROP TABLE gg;
 DROP FUNCTION gg_ids(text, text, boolean);
 DROP FUNCTION gg_check();

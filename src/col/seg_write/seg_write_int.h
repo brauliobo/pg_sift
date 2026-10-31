@@ -125,6 +125,7 @@ struct SiftColSegWriter
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anydense;		/* ... and some chunk codes its addresses with the bits of its largest offset (minor 38) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
+	bool		wantord;		/* some leaf has a global order block to write: its addresses are packed, so the segment is of the rooted layout */
 	bool		wantends;		/* ... some leaf will, so the segment is of the rooted layout whether or not it has a point directory */
 	bool		anyends;		/* ... and some of them keeps the ends of the order only (minor 40) */
 	bool		anypacked;		/* ... and one of them is a packed table (column format minor 36) */

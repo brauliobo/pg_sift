@@ -65,7 +65,7 @@ SELECT name, (same(q)).* FROM q ORDER BY name;
 SELECT DISTINCT format FROM sift.col_segments('uh_cut_i') WHERE kind = 'immutable';
  format 
 --------
-     34
+     38
 (1 row)
 
 VACUUM uh_cut;

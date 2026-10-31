@@ -178,7 +178,7 @@ segw_rooted_ok(const SiftColSegWriter *w)
 	if (sift_test_col_point_unrooted)
 		return false;
 #endif
-	return (w->anypoints || w->wantends) && w->setting >= SIFT_COL_FORMAT_PRESENCE;
+	return (w->anypoints || w->wantends || w->wantord) && w->setting >= SIFT_COL_FORMAT_PRESENCE;
 }
 
 /* Whether a point directory may be written as a packed table (the setting that allows the exact slot count allows it; a testing build can turn it off to write the slots) */
@@ -196,6 +196,8 @@ packed_ok(void)
 void
 segw_build_points(SiftColSegWriter *w)
 {
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+		w->wantord |= w->pt[c].ord && !w->pt[c].bad && w->pt[c].n + w->pt[c].nn > 0 && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE;
 	for (int c = 0; w->pt && c < w->schema->ncols; c++)
 	{
 		w->pt[c].ends = w->pt[c].ord && !w->pt[c].bad && w->pt[c].n + w->pt[c].nn > 0 && segw_gorder_plain(w, c) && gord_ends_ok(w, &w->pt[c], c);
