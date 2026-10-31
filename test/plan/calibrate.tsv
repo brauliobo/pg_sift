@@ -98,4 +98,4 @@ flat_list	other
 any_array_subselect	other
 in_constants	other
 text_not_equal	other
-top_rows_per_kind_unindexed_column	other
+top_rows_per_kind_unindexed_column	known
