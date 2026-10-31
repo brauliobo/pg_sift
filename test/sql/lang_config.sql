@@ -109,6 +109,26 @@ END $$;
 SELECT l.cfg, q.kind, count(*) AS queries, sum(lang_check(l.cfg, q.kind, q.q)) AS differ
 FROM lang_words l, LATERAL lang_queries(l.words) q GROUP BY l.cfg, q.kind ORDER BY l.cfg, q.kind;
 
+-- the operators of the query language answer as the operators of to_tsquery do (&, |, & !), stop words among the operands included; but for a stop word
+-- as the only positive operand of AND NOT, which to_tsquery turns into a bare NOT (every document without the other word) and the scan answers with no row
+CREATE FUNCTION lang_ops_check(cfg text, op text, a text, b text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE sift_n bigint; pg_n bigint; tsq tsquery;
+BEGIN
+	tsq := CASE op WHEN 'AND' THEN plainto_tsquery(cfg::regconfig, a) && plainto_tsquery(cfg::regconfig, b)
+		WHEN 'OR' THEN plainto_tsquery(cfg::regconfig, a) || plainto_tsquery(cfg::regconfig, b)
+		ELSE plainto_tsquery(cfg::regconfig, a) && !! plainto_tsquery(cfg::regconfig, b) END;
+	EXECUTE format('SELECT count(*) FROM d_%s WHERE body @@> %L', cfg, a || ' ' || op || ' ' || b) INTO sift_n;
+	EXECUTE format('SELECT count(*) FROM d_%s WHERE to_tsvector(%L::regconfig, body) @@ %L::tsquery', cfg, cfg, tsq) INTO pg_n;
+	RETURN CASE WHEN sift_n = pg_n THEN 0 ELSE 1 END;
+END $$;
+SELECT l.cfg, o.op, count(*) AS queries, sum(lang_ops_check(l.cfg, o.op, q.a, q.b)) AS differ
+FROM lang_words l, (VALUES ('AND'), ('OR'), ('AND NOT')) o(op),
+	LATERAL (SELECT l.words[a] AS a, l.words[b] AS b FROM generate_series(1, array_length(l.words, 1)) a, generate_series(1, array_length(l.words, 1)) b WHERE (a * 7 + b * 3) % 11 = 0) q
+WHERE o.op <> 'AND NOT' OR numnode(plainto_tsquery(l.cfg::regconfig, q.a)) > 0
+GROUP BY l.cfg, o.op ORDER BY l.cfg, o.op;
+
+SELECT count(*) AS stop_not_rows FROM d_german WHERE body @@> 'und AND NOT Katze';
+
 -- the same through a scan of the index in a plan that ranks, and through the exact check of the text (sift.match)
 SET enable_seqscan = off;
 SELECT count(*) AS ranked_differ FROM d_german WHERE body @@> '"Hund und Katze"' AND NOT (to_tsvector('german', body) @@ phraseto_tsquery('german', 'Hund und Katze'));
