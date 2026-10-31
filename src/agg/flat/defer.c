@@ -161,6 +161,46 @@ reads_walker(Node *n, Reads *c)
 	return expression_tree_walker(n, reads_walker, c);
 }
 
+typedef struct Uses
+{
+	Bitmapset  *leaves;
+	Bitmapset **atts;			/* by range table index: the columns read */
+	bool	   *whole;			/* by range table index: the whole row is read */
+	int			level;
+} Uses;
+
+/* the columns of the tables below that the lookups and the select list read: the sub-select shows no others */
+static bool
+uses_walker(Node *n, Uses *c)
+{
+	if (n == NULL)
+		return false;
+	SIFT_SKIP_CONST_LIST(n, false);
+	if (IsA(n, Var))
+	{
+		Var		   *v = (Var *) n;
+
+		if (v->varlevelsup == c->level && bms_is_member(v->varno, c->leaves))
+		{
+			if (v->varattno == 0)
+				c->whole[v->varno] = true;
+			else
+				c->atts[v->varno] = bms_add_member(c->atts[v->varno], v->varattno);
+		}
+		return false;
+	}
+	if (IsA(n, Query))
+	{
+		bool		r;
+
+		c->level++;
+		r = query_tree_walker((Query *) n, uses_walker, c, 0);
+		c->level--;
+		return r;
+	}
+	return expression_tree_walker(n, uses_walker, c);
+}
+
 static void
 tree_members(Node *jt, Bitmapset **leaves, Bitmapset **joins)
 {
@@ -285,7 +325,9 @@ defer_level(Query *q)
 			   *colnames = NIL,
 			   *leaf_list = NIL;
 	int			x;
-	Bitmapset **nulling;
+	Bitmapset **nulling,
+			  **used_atts;
+	bool	   *used_whole;
 	Index		kidx = list_length(q->rtable) + 1;
 	ListCell   *lc;
 	int			depth = 0;
@@ -330,6 +372,18 @@ defer_level(Query *q)
 	}
 	if (reads.unsupported)
 		return false;
+	{
+		Uses		uses = {leaves, palloc0((list_length(q->rtable) + 1) * sizeof(Bitmapset *)), palloc0((list_length(q->rtable) + 1) * sizeof(bool)), 0};
+
+		used_atts = uses.atts;
+		used_whole = uses.whole;
+		uses_walker((Node *) q->targetList, &uses);
+		foreach_ptr(JoinExpr, j, lookups)
+		{
+			uses_walker(j->quals, &uses);
+			uses_walker((Node *) rt_fetch(((RangeTblRef *) j->rarg)->rtindex, q->rtable)->subquery, &uses);
+		}
+	}
 
 	/* the sub-select: the columns of every table below, then the sort expressions (the ORDER BY of the sub-select reads them) */
 	in = makeNode(Query);
@@ -361,7 +415,7 @@ defer_level(Query *q)
 		{
 			Node	   *x = lfirst(lv);
 
-			if (IsA(x, Var))
+			if (IsA(x, Var) && (used_whole[rti] || bms_is_member(foreach_current_index(lv) + 1, used_atts[rti])))
 			{
 				Var		   *v = copyObject((Var *) x);
 				int			pos = list_length(in->targetList) + 1;
@@ -371,6 +425,8 @@ defer_level(Query *q)
 				colnames = lappend(colnames, makeString(psprintf("c%d", pos)));
 				tl = lappend(tl, makeTargetEntry((Expr *) makeVar(kidx, pos, v->vartype, v->vartypmod, v->varcollid, 0), list_length(tl) + 1, NULL, false));
 			}
+			else if (IsA(x, Var))
+				tl = lappend(tl, makeTargetEntry((Expr *) makeNullConst(((Var *) x)->vartype, ((Var *) x)->vartypmod, ((Var *) x)->varcollid), list_length(tl) + 1, NULL, false));
 			else
 				tl = lappend(tl, makeTargetEntry((Expr *) copyObject(x), list_length(tl) + 1, NULL, false));
 		}
