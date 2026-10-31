@@ -54,6 +54,126 @@ limit_hint(SiftScanState *ss, List *limit)
 	return k;
 }
 
+/* The tests of INCLUDE columns, from the flat list the planner made (planner_attr.c): column, op, value, n and the n values of each */
+static void
+init_attrs(SiftScanState *ss, List *flat)
+{
+	int			n = 0;
+	ListCell   *lc;
+
+	ss->attr = NULL;
+	ss->nattr = 0;
+	if (flat == NIL)
+		return;
+	ss->attr = palloc0(list_length(flat) / 4 * sizeof(SiftAttrTest));
+	lc = list_head(flat);
+	while (lc != NULL)
+	{
+		SiftAttrTest *t = &ss->attr[n++];
+		int64	   *set;
+
+		t->col = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->op = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->v = DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->nset = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		set = t->nset ? palloc(t->nset * sizeof(int64)) : NULL;
+		for (int i = 0; i < t->nset; i++, lc = lnext(flat, lc))
+			set[i] = DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		t->set = set;
+	}
+	ss->nattr = n;
+}
+
+/* The most keys of a table the scan tests the join column against: more is left to the join */
+#define SEMI_MAX_SET	65536
+
+static int
+cmp_i64(const void *a, const void *b)
+{
+	int64		x = *(const int64 *) a,
+				y = *(const int64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/*
+ * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
+ * to: the rows the join keeps of the scan are among them, whatever else it does. A table that holds more keys than SEMI_MAX_SET adds none.
+ */
+void
+load_semi(SiftScanState *ss)
+{
+	EState	   *estate = ss->css.ss.ps.state;
+	int			n = list_length(ss->semi) / 4;
+
+	if (ss->semi_done || n == 0)
+		return;
+	ss->semi_done = true;
+	ss->attr = ss->attr ? repalloc(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest)) : palloc((ss->nattr + n) * sizeof(SiftAttrTest));
+	for (int i = 0; i < n; i++)
+	{
+		Oid			reloid = DatumGetObjectId(((Const *) list_nth(ss->semi, 4 * i))->constvalue);
+		int			col = (int) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 1))->constvalue);
+		AttrNumber	attno = (AttrNumber) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 2))->constvalue);
+		List	   *quals = (List *) list_nth(ss->semi, 4 * i + 3);
+		Relation	dim = table_open(reloid, AccessShareLock);
+		Oid			keytype = TupleDescAttr(RelationGetDescr(dim), attno - 1)->atttypid;
+		MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+		ExprState  *qual = ExecPrepareQual(quals, estate);
+		ExprContext *econtext = CreateExprContext(estate);
+		TupleTableSlot *slot = table_slot_create(dim, NULL);
+		TableScanDesc scan = table_beginscan(dim, estate->es_snapshot, 0, NULL);
+		int64	   *set = palloc(1024 * sizeof(int64));
+		int			nset = 0,
+					cap = 1024;
+		bool		over = false;
+
+		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		{
+			bool		isnull;
+			Datum		d;
+
+			econtext->ecxt_scantuple = slot;
+			if (!ExecQual(qual, econtext))
+				continue;
+			d = slot_getattr(slot, attno, &isnull);
+			if (isnull)
+				continue;
+			if (nset == cap)
+			{
+				if (cap >= SEMI_MAX_SET)
+				{
+					over = true;
+					break;
+				}
+				cap *= 2;
+				set = repalloc(set, cap * sizeof(int64));
+			}
+			set[nset++] = sift_attr_datum(keytype, d);
+		}
+		table_endscan(scan);
+		ExecDropSingleTupleTableSlot(slot);
+		MemoryContextSwitchTo(old);
+		table_close(dim, AccessShareLock);
+		if (over)
+			continue;
+		qsort(set, nset, sizeof(int64), cmp_i64);
+		{
+			int			m = 0;
+
+			for (int j = 0; j < nset; j++)
+				if (m == 0 || set[m - 1] != set[j])
+					set[m++] = set[j];
+			nset = m;
+		}
+		ss->attr[ss->nattr++] = (SiftAttrTest) {.col = col, .op = SIFT_AT_IN, .set = set, .nset = nset};
+	}
+}
+
 /* The leading sort keys of a keyed scan: their expressions over the scan tuple, and how they compare */
 static void
 init_keys(SiftScanState *ss, CustomScan *cs)
@@ -102,6 +222,8 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
 	ss->secure = list_length(cs->custom_exprs) > SIFT_EXPR_SECURE;
 	init_keys(ss, cs);
+	init_attrs(ss, list_nth_node(List, cs->custom_private, SIFT_PRIV_ATTR));
+	ss->semi = list_nth_node(List, cs->custom_private, SIFT_PRIV_SEMI);
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
 	ss->heap = node->ss.ss_currentRelation;
@@ -215,6 +337,8 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Order", order_text(ss, cs, dctx), es);
 		if (ss->k > 0)
 			ExplainPropertyInteger("Limit Hint", NULL, ss->k, es);
+		if (ss->nattr > 0 || ss->semi != NIL)
+			ExplainPropertyInteger("Include Tests", NULL, ss->semi_done ? ss->nattr : ss->nattr + list_length(ss->semi), es);
 		if (ss->bitmap && gated(ss) && es->verbose)
 		{
 			ExplainPropertyFloat("Filter Mask From Matches", NULL, ss->gate, 0, es);

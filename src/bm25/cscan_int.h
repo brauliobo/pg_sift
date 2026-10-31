@@ -88,6 +88,10 @@ typedef struct SiftScanState
 	double		gate,				/* the bitmap is built when the query matches between gate and gate_to documents */
 				gate_to;
 	SiftFilter *filter;
+	SiftAttrTest *attr;			/* tests of INCLUDE columns the ranker applies (SIFT_PRIV_ATTR) */
+	int			nattr;
+	List	   *semi;			/* SIFT_PRIV_SEMI */
+	bool		semi_done;
 	SiftMatchIter *it;
 	SiftRanker *rank;
 	SiftVis		vis;
@@ -121,6 +125,7 @@ typedef struct SiftScanState
 	bool		kcomplete;			/* the round holds every match */
 } SiftScanState;
 
+extern void load_semi(SiftScanState *ss);
 extern TupleTableSlot *fill_scan_slot(SiftScanState *ss, float4 score);
 extern bool scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc);
 extern void reset_iter(SiftScanState *ss);

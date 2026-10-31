@@ -112,13 +112,13 @@ static text *
 index_text(SiftScanState *ss)
 {
 	EState	   *estate = ss->css.ss.ps.state;
-	Datum		value;
-	bool		isnull;
+	Datum		values[INDEX_MAX_KEYS];	/* the key and the INCLUDE columns */
+	bool		isnull[INDEX_MAX_KEYS];
 
 	ResetPerTupleExprContext(estate);
 	GetPerTupleExprContext(estate)->ecxt_scantuple = ss->heapslot;
-	FormIndexDatum(ss->iinfo, ss->heapslot, estate, &value, &isnull);
-	return isnull ? NULL : DatumGetTextPP(value);
+	FormIndexDatum(ss->iinfo, ss->heapslot, estate, values, isnull);
+	return isnull[0] ? NULL : DatumGetTextPP(values[0]);
 }
 
 /*
@@ -322,6 +322,9 @@ start_scan(SiftScanState *ss)
 	old = MemoryContextSwitchTo(ss->cxt);
 	if (!ss->empty)
 		bind_scan(ss);
+	load_semi(ss);
+	if (ss->plan && ss->nattr)
+		sift_plan_set_attrs(ss->plan, ss->attr, ss->nattr);
 	if (ss->bitmap && gated(ss) && !ss->empty && in_gate(ss, sift_plan_docs(ss->plan)))
 		build_filter(ss);
 	if (!ss->empty)

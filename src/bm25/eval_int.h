@@ -121,6 +121,8 @@ struct SiftPlan
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;
 	const SiftFilter *filter;	/* ranked search: the tuples worth scoring */
+	const SiftAttrTest *attrs;	/* ranked search: tests of INCLUDE columns the docs of a block pass before they are scored */
+	int			nattrs;
 	SiftBm25	bm;
 	SiftPlanStats stats;
 };
@@ -290,6 +292,7 @@ typedef struct RankWork
 	BlockMask	flt pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint16		zero[SIFT_KERN_SLOTS];
 	const uint16 *dl[SIFT_BLK_PAGES];
+	uint8		attab[SIFT_ATTR_TABLE + 1 + SIFT_KERN_PAD];	/* the codes of a block that pass an IN test */
 } RankWork;
 
 struct SiftRanker

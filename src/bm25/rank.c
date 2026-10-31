@@ -242,6 +242,144 @@ filter_result(const SiftPlan *p, const SiftFilterSB *fs, int b, RankWork *wk)
 	return any != 0;
 }
 
+/* The pages of the block with a candidate */
+static uint32
+res_pages(const RankWork *wk)
+{
+	uint32		want = 0;
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		uint64		w = 0;
+
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+			w |= wk->res[pg][k];
+		want |= (uint32) (w != 0) << pg;
+	}
+	return want;
+}
+
+/* The code of value v in a block of ab: 0 below its base, else v - base + 1, and 2^62 for any value beyond what a code can be */
+static uint64
+attr_code(const SiftAttrBlock *ab, int64 v)
+{
+	uint64		d;
+
+	if (v < ab->base)
+		return 0;
+	d = (uint64) v - (uint64) ab->base;
+	return d >= (UINT64CONST(1) << 62) ? (UINT64CONST(1) << 62) : d + 1;
+}
+
+/*
+ * The codes of a block that pass a test, as SiftAttrCodes has them: a comparison is a range of codes (codes 1 .. unk - 1 stand for the values the
+ * block holds, 0 for NULL, unk for unknown, which always passes), <> two ranges, IN a table of bytes. False for an IN over more codes than
+ * SIFT_ATTR_TABLE: the caller tests the decoded values.
+ */
+static bool
+attr_codes(const SiftAttrTest *at, const SiftAttrBlock *ab, RankWork *wk, SiftAttrCodes *c)
+{
+	uint64		top = ab->unk - 1,
+				v = attr_code(ab, at->v),
+				none = ab->unk + 1;
+
+	*c = (SiftAttrCodes) {1, top, none, none, ab->unk, NULL};
+	switch (at->op)
+	{
+		case SIFT_AT_EQ:
+			c->lo1 = c->hi1 = v;
+			break;
+		case SIFT_AT_LT:
+			c->hi1 = v == 0 ? 0 : v - 1;
+			break;
+		case SIFT_AT_LE:
+			c->hi1 = v;
+			break;
+		case SIFT_AT_GT:
+			c->lo1 = v + 1;
+			break;
+		case SIFT_AT_GE:
+			c->lo1 = Max(v, 1);
+			break;
+		case SIFT_AT_NE:
+			c->hi1 = v == 0 ? 0 : v - 1;
+			c->lo2 = v + 1;
+			c->hi2 = top;
+			break;
+		case SIFT_AT_ISNULL:
+			c->lo1 = c->hi1 = 0;
+			break;
+		case SIFT_AT_IN:
+			if (ab->unk > SIFT_ATTR_TABLE)
+				return false;
+			memset(wk->attab, 0, ab->unk + 1 + SIFT_KERN_PAD);
+			wk->attab[ab->unk] = 1;
+			for (int i = 0; i < at->nset; i++)
+				if (at->set[i] >= ab->base && attr_code(ab, at->set[i]) <= top)
+					wk->attab[attr_code(ab, at->set[i])] = 1;
+			c->table = wk->attab;
+			return true;
+		default:				/* SIFT_AT_NOTNULL */
+			c->hi1 = ab->unk;
+			break;
+	}
+	for (int r = 0; r < 2; r++)
+	{
+		uint64	   *lo = r ? &c->lo2 : &c->lo1,
+				   *hi = r ? &c->hi2 : &c->hi1;
+
+		*hi = Min(*hi, ab->unk);
+		if (at->op != SIFT_AT_ISNULL)
+			*lo = Max(*lo, 1);
+		if (*lo > *hi)
+			*lo = *hi = none;
+	}
+	return true;
+}
+
+/* Clears from wk->res the docs of the block that fail a test of an INCLUDE column (a doc whose value is unknown passes); false when none is left */
+static bool
+attr_filter(const SiftPlan *p, SiftSegment *seg, const SiftDocChunk *dc, int b, RankWork *wk)
+{
+	int			ncols = sift_seg_attr_ncols(seg);
+	uint32		want = res_pages(wk);
+
+	for (int t = 0; t < p->nattrs && want && ncols; t++)
+	{
+		const SiftAttrTest *at = &p->attrs[t];
+		SiftAttrBlock ab;
+		SiftAttrCodes c;
+		bool		fast;
+
+		if (at->col >= ncols)
+			continue;
+		sift_seg_block_attr(seg, dc, b, want, at->col, &ab);
+		if (ab.norows)
+			continue;
+		fast = attr_codes(at, &ab, wk, &c);
+		for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		{
+			if (ab.row[pg] == NULL)
+				continue;
+			if (fast)
+				sift_kern->attr_mask(wk->res[pg], ab.row[pg], ab.width, ab.nslots[pg], &c);
+			else
+				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+					for (uint64 m = wk->res[pg][k]; m; m &= m - 1)
+					{
+						int			bit = pg_rightmost_one_pos64(m);
+						int64		v = 0;
+						int			st = sift_attr_get(&ab, pg, k * 64 + bit, &v);
+
+						if (!sift_attr_test_pass(at, st, v))
+							wk->res[pg][k] &= ~(UINT64CONST(1) << bit);
+					}
+		}
+		want = res_pages(wk);
+	}
+	return want != 0;
+}
+
 /*
  * The leaves present in the block (ub > 0) by descending bound, ties by leaf,
  * and rest[i], the sum of the bounds after ord[i]; returns their number.
@@ -311,6 +449,8 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
 	if (fs && !filter_result(p, fs, b, wk))
+		return 0;
+	if (p->nattrs && !attr_filter(p, seg, dc, b, wk))
 		return 0;
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{

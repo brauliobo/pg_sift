@@ -406,7 +406,7 @@ index_serves(SupportRequestIndexCondition *req)
 	const SiftCatalog *cat = sift_catalog();
 	List	   *args = ((FuncExpr *) req->node)->args;
 
-	if (req->index->relam != cat->am || req->index->ncolumns != 1 || req->indexarg != 0)
+	if (req->index->relam != cat->am || req->index->nkeycolumns != 1 || req->indexarg != 0)
 		return false;
 	if (req->funcid == cat->match_idx_func)
 		return IsA(lthird(args), Const) && sift_index_serves(req->index->indexoid, DatumGetObjectId(((Const *) lthird(args))->constvalue));

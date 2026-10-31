@@ -694,6 +694,13 @@ sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
 	plan->filter = filter;
 }
 
+void
+sift_plan_set_attrs(SiftPlan *plan, const SiftAttrTest *tests, int n)
+{
+	plan->attrs = tests;
+	plan->nattrs = n;
+}
+
 typedef struct Estimate
 {
 	double		postings;

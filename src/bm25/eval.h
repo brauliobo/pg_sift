@@ -15,6 +15,7 @@
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
 
+#include "bm25/attr.h"
 #include "core/filter.h"
 #include "bm25/parallel.h"
 #include "bm25/query.h"
@@ -80,6 +81,8 @@ extern SiftPlan *sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqu
  * ignore it.
  */
 extern void sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter);
+/* Tests of INCLUDE columns the ranker applies to the docs of a block; they must outlive the plan */
+extern void sift_plan_set_attrs(SiftPlan *plan, const SiftAttrTest *tests, int n);
 
 /* The documents the bound query is expected to match (the estimate of sift_eval_estimate, from the bound dictionaries) */
 extern double sift_plan_docs(const SiftPlan *plan);

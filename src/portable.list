@@ -53,6 +53,7 @@ core/span.c
 # headers (the data tables and kernels included by the sources above come with them)
 core/sift.h
 bm25/analyze.h
+bm25/attr.h
 bm25/analyze_tables.h
 bm25/analyze_scan.h
 bm25/bitmap.h

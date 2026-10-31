@@ -45,7 +45,7 @@
 bool
 sift_index_matches_key(IndexOptInfo *index, Node *expr)
 {
-	if (index->ncolumns != 1 || index->relam != sift_catalog()->am)
+	if (index->nkeycolumns != 1 || index->relam != sift_catalog()->am)
 		return false;
 	while (IsA(expr, RelabelType))
 		expr = (Node *) ((RelabelType *) expr)->arg;
@@ -330,10 +330,11 @@ scan_limit(PlannerInfo *root, bool ranked)
  * answer keep the fraction `kept` of its rows, and the other relations of an inner join keep the fraction their own
  * restrictions leave (a key join passes that fraction of the scan's rows). The rows asked for carry three standard
  * deviations of the binomial so that the search seldom comes up short. Only a hint: a ranked scan that is drained
- * past it searches again, scoring every block again, which costs about as much as the search itself.
+ * past it searches again, scoring every block again, which costs about as much as the search itself. The tables in skip are the ones
+ * the scan tests the keys of itself (planner_attr.c): the rows it hands out already have a match there.
  */
 int64
-joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept)
+joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept, Relids skip)
 {
 	double		pass = kept,
 				mean;
@@ -346,7 +347,7 @@ joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept)
 		RelOptInfo *other = root->simple_rel_array[x];
 		bool		inner = true;
 
-		if (other == NULL || other == rel || other->tuples <= 0 || bms_is_member(x, rel->top_parent_relids))
+		if (other == NULL || other == rel || other->tuples <= 0 || bms_is_member(x, rel->top_parent_relids) || bms_is_member(x, skip))
 			continue;
 		foreach_node(SpecialJoinInfo, sj, root->join_info_list)
 			inner &= !bms_is_member(x, sj->min_lefthand) && !bms_is_member(x, sj->min_righthand);

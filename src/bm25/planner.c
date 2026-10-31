@@ -57,7 +57,12 @@ split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, S
 	c->index = ii;
 	c->queries = c->residual = NIL;
 	c->late_k = c->late_rows = 0;
-	if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
+	c->attr = NIL;
+	c->attr_sel = 1.0;
+	c->attr_all = false;
+	c->semi = NIL;
+	c->semi_rels = NULL;
+	if (ii->relam != sift_catalog()->am || ii->nkeycolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 		return false;
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 	{
@@ -67,6 +72,14 @@ split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, S
 			c->queries = lappend(c->queries, q);
 		else
 			c->residual = lappend(c->residual, rinfo);
+	}
+	if (c->queries != NIL && ranked && ii->ncolumns > ii->nkeycolumns)
+	{
+		double		sel = 1.0;
+
+		c->attr = scan_attr_tests(root, rel, ii, c->residual, &c->attr_sel, &c->attr_all);
+		c->semi = scan_semi_tests(root, rel, ii, &c->semi_rels, &sel);
+		c->attr_sel *= sel;
 	}
 	return c->queries != NIL;
 }
@@ -363,7 +376,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	if (!split_quals(root, rel, ii, ps->only_best, &c))
 		return;
 	if (mode == SIFT_MODE_RANKED)
-		k = joined_limit(root, rel, k, 1.0);
+		k = joined_limit(root, rel, k, 1.0, c.semi_rels);
 	if (mode == SIFT_MODE_RANKED && !ps->filter_looked)
 	{
 		ps->filter = sift_filter_bitmap_path(root, rel);
@@ -372,7 +385,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	scan_est(root, rel, &c, mode, k, ps->filter, &est);
 	if (mode == SIFT_MODE_RANKED && late_quals(root, rel, &c, &est.sc, k0))
 	{
-		int64		asked = joined_limit(root, rel, k0, est.sc.pass);
+		int64		asked = joined_limit(root, rel, k0, est.sc.pass, c.semi_rels);
 
 		/* asked for a quarter of the matches or more, the search is the same one */
 		if (asked > k && est.sc.docs > 4 * asked)

@@ -210,6 +210,9 @@ scan_cost(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, bool ranked, ScanCost
 	scan_cost_docs(root, rel, c, sc->idx.known ? sc->idx.est.docs : ranked ? rel->tuples * UNKNOWN_QUERY_SEL : rel->rows, sc);
 	/* rows holds the default match fraction when the query is unknown: the quals' own selectivity is what passes */
 	sc->pass = sc->idx.known || !ranked ? Min(rel->rows / sc->docs, 1.0) : clauselist_selectivity(root, c->residual, rel->relid, JOIN_INNER, NULL);
+	/* the tests of the INCLUDE columns keep attr_sel of the matches inside the scan: what reaches the heap passes the rest of the quals more often */
+	if (ranked && (c->attr != NIL || c->semi != NIL) && c->attr_sel < 1.0)
+		sc->pass = Min(sc->pass / Max(c->attr_sel, 1e-9), 1.0);
 }
 
 /* Does an index qual hold an array of queries (an ANY qual)? */
@@ -262,6 +265,8 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 	cp->custom_private = lappend(cp->custom_private, makeConst(FLOAT8OID, -1, InvalidOid, sizeof(float8), Float8GetDatum(get_float8_infinity()), false, FLOAT8PASSBYVAL));
 	cp->custom_private = lappend(cp->custom_private, makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(ko || c->late_k <= 0 ? 0 : (int32) Min(c->late_rows, PG_INT32_MAX)), false, true));
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->keyops : NIL);
+	cp->custom_private = lappend(cp->custom_private, c->attr);
+	cp->custom_private = lappend(cp->custom_private, c->semi);
 	cp->custom_private = lappend(cp->custom_private, c->queries);
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->exprs : NIL);
 	return cp;
@@ -337,7 +342,7 @@ rank_verified_after(double cands, double pass, int64 k, const SiftFilterEst *fe,
 bool
 late_quals(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanCost *sc, int64 k)
 {
-	return k > 0 && c->residual != NIL && sc->idx.known && !rel_secured(root, rel) && bounds_tie(rel, sc->docs) > 0.2;
+	return k > 0 && c->residual != NIL && !c->attr_all && sc->idx.known && !rel_secured(root, rel) && bounds_tie(rel, sc->docs) > 0.2;
 }
 
 /* The blocks of SIFT_BLK_PAGES heap pages that hold a match, when matches are spread over the fraction span of the heap */
@@ -461,7 +466,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 		}
 		else
 		{
-			verify = rank_verified_after(sc.docs, pass, k, &fe, bounds_tie(rel, sc.docs)) * sc.tuple;
+			verify = rank_verified_after(sc.docs * ((c->attr != NIL || c->semi != NIL) ? c->attr_sel : 1.0), pass, k, &fe, bounds_tie(rel, sc.docs)) * sc.tuple;
 			postings += blocks_scored(rel, blocks_with_match(rel, sc.docs, 1), sc.docs) * SCORE_BLOCK_COST;
 		}
 	}
