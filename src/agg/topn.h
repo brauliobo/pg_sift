@@ -194,7 +194,7 @@ extern bool sift_topn_unit_lazy(SiftTopN *t, SiftSrcSource *src, const SiftSrcUn
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
 /*
- * Parallel scan (agg/par.c): the participants take windows of superblocks in the leader's visit order from a shared counter, each keeps the
+ * Parallel scan (agg/par/items.c): the participants take windows of superblocks in the leader's visit order from a shared counter, each keeps the
  * heap of its rows and publishes the first-key rank of its n-th row, so that every participant leaves out the units and rows that rank
  * excludes; the leader merges the heaps (keys and TIDs, ties by TID as in one process) and fetches the rows. A top-N that sorts is serial.
  */

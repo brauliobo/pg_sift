@@ -54,7 +54,7 @@
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
 	X(lookup_kb, "-", "agg/plan/finish.c", 262144, "kB", \
 	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
-	X(lookup_shared_bytes, "SHARE_MAX", "agg/par.c", 1073741824, "bytes", \
+	X(lookup_shared_bytes, "SHARE_MAX", "agg/par/int.h", 1073741824, "bytes", \
 	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
 	X(lookup_shared_slots, "LOOKSHM_SLOTS", "agg/lookshm.c", 64, "tables", \
 	  "lookup tables shared through DSM at one time", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \

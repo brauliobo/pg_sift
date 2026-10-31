@@ -2,7 +2,7 @@
  * agg/vk.h - the Vulkan compute device of the aggregate scan (docs/GPU.md): one device per backend, a cache of column chunks that stay on
  * it, and one kernel (vk.comp) that counts and sums integer columns of those chunks, filtered and grouped by a low cardinality key.
  *
- * Plain C, no PostgreSQL headers. Compiled only with `make VULKAN=1` (SIFT_VULKAN); the default build does not have agg/vk.c at all (the backend,
+ * Plain C, no PostgreSQL headers. Compiled only with `make VULKAN=1` (SIFT_VULKAN); the default build has none of agg/vk/ (the backend,
  * agg/gpu.c, uses this header only under SIFT_VULKAN). libvulkan.so.1 is opened with dlopen at the first sift_vk_open, never earlier,
  * and the Vulkan declarations are the vendored subset of agg/vk_min.h: a build needs neither the SDK nor its headers.
  *

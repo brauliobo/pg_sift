@@ -1,5 +1,5 @@
 /*
- * agg/par_int.h - the parallel scan (agg/par.c)
+ * agg/par_int.h - the parallel scan (agg/par/)
  */
 #ifndef SIFT_AGG_PAR_INT_H
 #define SIFT_AGG_PAR_INT_H
@@ -35,7 +35,7 @@ typedef struct AggPar
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
-/* par.c */
+/* par/ */
 Size shared_size(const SiftAggSpec *s, uint32 norder);
 uint32 *shared_order(ScanShared *sh, const SiftAggSpec *s);
 void shared_init(ScanShared *sh, AggExec *ex);
