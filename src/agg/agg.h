@@ -77,6 +77,8 @@ extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
 extern void sift_agg_drop_unused_laterals(Query *q);
 extern void sift_agg_defer_lookups(Query *q);
+extern bool sift_agg_exists_or_candidate(Query *q);
+extern void sift_agg_split_exists_or(Query *q);
 extern void sift_agg_drop_sorts(PlannedStmt *stmt);
 #ifdef SIFT_TESTING
 extern int64 sift_source_lookups;	/* the asks of has_column_source that went to the catalog */
@@ -96,7 +98,7 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;
 /* agg/col.c: registers the sift_col index as a column source (does nothing in a build without the column engine) */
 extern void sift_aggcol_register(void);
 
-/* agg/par.c: entry point of the parallel workers of a scan (access/parallel.h) */
+/* agg/par/worker.c: entry point of the parallel workers of a scan (access/parallel.h) */
 struct dsm_segment;
 struct shm_toc;
 extern PGDLLEXPORT void sift_agg_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
