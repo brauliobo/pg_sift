@@ -123,7 +123,7 @@ def cmd_run(args):
         failed += [] if ok else ['a case is over its instruction ceiling (%s)' % args.budget]
     if args.docs and not failed:   # the blocks that quote bench/results/cases.tsv and cases-scale.tsv
         import cases_render
-        cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'README.md'), os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+        cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'bench', 'out', 'README-blocks.md'), os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
         subprocess.run([sys.executable, '-I', os.path.join(HERE, 'highlights.py')], check=True, stdout=subprocess.DEVNULL)
     return 1 if failed else 0
 

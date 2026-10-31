@@ -27,7 +27,7 @@ class Tree:
         self.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n## 3.7.0\n')
         self.write('bench/cases.tsv', '# registry\n')
         self.write('bench/results/cases.tsv', '# results\n' + RESULT_HEAD)
-        self.write('README.md', '# readme\n<!-- bench:faster33:begin -->\nx\n<!-- bench:faster33:end -->\n')
+        self.write('bench/out/README-blocks.md', '# readme\n<!-- bench:faster33:begin -->\nx\n<!-- bench:faster33:end -->\n')
         self.write('scripts/bench-cases.allow', '# waivers\n')
         self.commit('release: 3.7.0')
         self.git('tag', 'v3.7.0')
@@ -151,16 +151,16 @@ class Rows(Fixture):
         self.claim()
         self.t.rows('topn_text_key', ['sift', 'native'])
         self.assertEqual(self.messages(), [])
-        self.t.write('README.md', '# readme\n<!-- bench:other:begin -->\nx\n<!-- bench:other:end -->\n')
+        self.t.write('bench/out/README-blocks.md', '# readme\n<!-- bench:other:begin -->\nx\n<!-- bench:other:end -->\n')
         self.assertIn('faster33', ' '.join(self.messages()))
 
     def test_pages_without_any_generated_block_are_one_note_in_warn_mode_and_one_error_when_strict(self):
         self.claim()
         self.t.rows('topn_text_key', ['sift', 'native'])
-        self.t.write('README.md', '# readme\n')
+        self.t.write('bench/out/README-blocks.md', '# readme\n')
         errors, notes = self.t.check()
         self.assertEqual(errors, [])
-        self.assertTrue(any('no generated block in README.md' in n for n in notes))
+        self.assertTrue(any('no generated block in bench/out/README-blocks.md' in n for n in notes))
         self.assertEqual(len([m for m, _ in self.t.check(strict=True)[0] if 'no generated block' in m]), 1)
 
     def test_without_results_the_row_checks_are_one_note_in_warn_mode_and_an_error_when_strict(self):
@@ -210,7 +210,7 @@ class HostPlan(Fixture):
         self.assertEqual(coverage.host_plan(self.t.root), ['bench/bench cases --cases topn_text_key --rows 1000000 --docs'])
 
     def test_the_footers_become_the_release_command_with_the_cells_of_the_competitors_measured_again(self):
-        self.t.write('README.md', '`n/a`: not measured under 3.7 yet.\n')
+        self.t.write('bench/out/README-blocks.md', '`n/a`: not measured under 3.7 yet.\n')
         self.assertIn('bench/bench release --remeasure-all --budget 160', coverage.host_plan(self.t.root))
 
 

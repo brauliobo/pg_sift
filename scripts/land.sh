@@ -90,7 +90,7 @@ resolve_conflicts() {
 				git checkout -q --conflict=diff3 -- "$f"
 				if git show "$2:$f" 2>/dev/null | grep -v '^[#=]' | LC_ALL=C sort -c 2>/dev/null; then sorted=--sorted; else sorted=; fi
 				if python3 "$HERE/land-union.py" $sorted "$f"; then git add "$f"; else echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2; fi ;;
-			README.md|bench/results/*|docs/OPTIONS.md|docs/LIMITS.md|docs/REFERENCE.md|docs/COL-TAM.md|bench/out/img/*|bench/*)
+			README.md|bench/results/*|docs/OPTIONS.md|docs/LIMITS.md|docs/REFERENCE.md|docs/COL-TAM.md|bench/*)
 				git checkout -q --theirs -- "$f" 2>/dev/null; git add "$f" ;;
 			*) echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2 ;;
 		esac

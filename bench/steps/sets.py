@@ -205,7 +205,7 @@ def main():
     r.add_argument('--meta', action='append')
     g = sub.add_parser('render')
     g.add_argument('--results', default=os.path.join(REPO, 'bench', 'results', 'sets.tsv'))
-    g.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    g.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     a = ap.parse_args()
     run(a) if a.cmd == 'run' else render(a)
 

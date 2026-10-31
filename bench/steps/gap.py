@@ -241,7 +241,7 @@ def main():
     p.add_argument('--store', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
     p.add_argument('--profile', nargs='+', required=True)
     p.add_argument('--stats', nargs='*', default=[])
-    p.add_argument('--doc', default=os.path.join(HERE, '..', '..', 'docs', 'BENCH-GAP.md'))
+    p.add_argument('--doc', default=os.path.join(HERE, '..', '..', 'bench', 'out', 'BENCH-GAP.md'))
     args = ap.parse_args()
     try:
         sys.exit({'load': cmd_load, 'profile': cmd_profile, 'render': cmd_render}[args.cmd](args))

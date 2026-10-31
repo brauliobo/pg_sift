@@ -100,14 +100,13 @@ def block(results):
 
 
 def render(results, readme_path):
-    if os.path.exists(readme_path) and '<!-- bench:limits:begin' in open(readme_path).read():
-        readme.replace_block(readme_path, 'limits', block(results))
+    readme.replace_block(readme_path, 'limits', block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     render(a.results, a.readme)
 

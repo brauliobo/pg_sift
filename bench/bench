@@ -517,12 +517,12 @@ cmd_report() {
 
 cmd_charts() {
   command -v python3 >/dev/null || die "python3 is required"
-  python3 -I "$STEPS/charts.py" --results "$REPO/bench/results" --out "$REPO/docs/img" --tier slim
+  python3 -I "$STEPS/charts.py" --results "$REPO/bench/results" --out "$REPO/bench/out/img" --tier slim
 }
 
 cmd_readme() { # the generated blocks of README.md and bench/out/BENCHMARKS.md from the slim rows of bench/results
   command -v python3 >/dev/null || die "python3 is required"
-  python3 -B -I "$STEPS/readme.py" --results "$REPO/bench/results" --readme "$REPO/README.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --tier slim
+  python3 -B -I "$STEPS/readme.py" --results "$REPO/bench/results" --readme "$REPO/bench/out/README-blocks.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --tier slim
 }
 
 cmd_all() {

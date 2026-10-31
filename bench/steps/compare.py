@@ -408,15 +408,14 @@ def numbers_block(results):
 def render(results, readme_path):
     for name, fn in (('compare', compare_block), ('compare-sources', sources_block), ('compare-search', search_block), ('compare-ports', ports_block), ('numbers', numbers_block), ('write-cost', write_cost_block)):
         readme.replace_block(readme_path, name, fn(results))
-    benchmarks = os.path.join(os.path.dirname(readme_path), 'docs', 'BENCHMARKS.md')
-    if os.path.exists(benchmarks) and '<!-- bench:generic:begin' in open(benchmarks).read():
-        readme.replace_block(benchmarks, 'generic', generic_block(results))
+    benchmarks = os.path.join(os.path.dirname(readme_path), 'BENCHMARKS.md')
+    readme.replace_block(benchmarks, 'generic', generic_block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     render(a.results, a.readme)
 

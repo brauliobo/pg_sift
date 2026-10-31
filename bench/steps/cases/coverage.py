@@ -12,7 +12,8 @@ from .runcfg import REPO
 
 ALLOW = os.path.join('scripts', 'bench-cases.allow')
 RESULTS = os.path.join('bench', 'results')
-PAGES = ('README.md', os.path.join('docs', 'BENCHMARKS.md'))
+OUT = os.path.join('bench', 'out')   # the generated pages are untracked: they exist after a run of `bench/bench cases --docs`
+PAGES = (os.path.join(OUT, 'README-blocks.md'), os.path.join(OUT, 'BENCHMARKS.md'))
 CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 FOOTER = re.compile(r'`n/a`: (?:a measure )?not measured under')   # steps/triple.py NOT_MEASURED, whatever the version it names
 LANES = ('sift', 'native')

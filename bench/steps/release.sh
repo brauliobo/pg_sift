@@ -38,9 +38,9 @@ while (( $# )); do
 done
 
 if [[ -n $APPLY ]]; then
-  [[ -z $(git -C "$REPO" status --porcelain -- README.md docs) ]] || die 'the docs of this checkout have changes: apply the results to a clean checkout of the integration tip'
+  [[ -z $(git -C "$REPO" status --porcelain -- bench/results) ]] || die 'the results of this checkout have changes: apply the results to a clean checkout of the integration tip'
   if [[ $APPLY == - ]]; then git -C "$REPO" apply --index; else git -C "$REPO" apply --index "$APPLY"; fi
-  git -C "$REPO" add -A README.md docs
+  git -C "$REPO" add -A bench/results
   git -C "$REPO" diff --cached --stat | tail -3
   "$REPO/scripts/lint.sh" neutral || die 'the lint above lists what to edit'
   log 'the results are applied and the checks pass: read git diff --cached, commit and open the pull request'
@@ -61,8 +61,8 @@ if [[ -n $REHEARSAL ]]; then
   "$tmp/wt/bench/bench" final --size smoke --docs --budget 0 "${ARGS[@]}"
   log "rehearsal: $(( (SECONDS - T0 + 30) / 60 )) min; checking the rendered tables"
   [[ -z ${REHEARSAL_PATCH:-} ]] || git -C "$tmp/wt" diff --binary > "$REHEARSAL_PATCH"
-  log "rehearsal: fuzzy cells in bench/results/articles.tsv: $(grep -c $'\tfuzzy\t' "$tmp/wt/bench/results/articles.tsv" || true); table heads: $(grep -h '^| engine .*| fuzzy' "$tmp/wt/README.md" "$tmp/wt/bench/out/BENCHMARKS.md" | head -2 | tr '\n' ' ')"
-  log "rehearsal: every stage ran and the tables render; docs changed in the throwaway tree: $(git -C "$tmp/wt" diff --stat | tail -1)"
+  log "rehearsal: fuzzy cells in bench/results/articles.tsv: $(grep -c $'\tfuzzy\t' "$tmp/wt/bench/results/articles.tsv" || true); table heads: $(grep -h '^| engine .*| fuzzy' "$tmp/wt/bench/out/README-blocks.md" "$tmp/wt/bench/out/BENCHMARKS.md" | head -2 | tr '\n' ' ')"
+  log "rehearsal: every stage ran and the tables render; results changed in the throwaway tree: $(git -C "$tmp/wt" diff --stat | tail -1)"
   exit 0
 fi
 

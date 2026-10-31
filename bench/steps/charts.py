@@ -315,7 +315,7 @@ def make(rows, tier):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--out', default=os.path.join(REPO, 'docs', 'img'))
+    ap.add_argument('--out', default=os.path.join(REPO, 'bench', 'out', 'img'))
     ap.add_argument('--tier', default='slim')
     args = ap.parse_args()
     rows = {}

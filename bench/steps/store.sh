@@ -319,7 +319,7 @@ docs() {
   cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
   report
 }
-report() { py render --readme "$REPO/README.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --img "$REPO/docs/img"; }
+report() { py render --readme "$REPO/bench/out/README-blocks.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --img "$REPO/bench/out/img"; }
 finish() {
   merge
   cache_save

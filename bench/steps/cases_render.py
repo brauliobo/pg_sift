@@ -423,13 +423,13 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
     n = len({f['case'].id for f in figs})
     out = ['%d cases, each a query shape the planner has to recognize (a report with grouping sets, a ranked top-N per group, an anti join, a keyset page, a lookup by key, a JSON array and more), on %s rows, one backend[^cases]. '
            'Every case runs on pg_sift and on PostgreSQL on the same table and indexes (`sift.enable_agg = off`) and every answer is compared before it is timed.' % (n, '{:,}'.format(int(meta.get('orders', 0)))), '',
-           '<picture><source media="(prefers-color-scheme: dark)" srcset="bench/out/img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="bench/out/img/cases-speedup-light.svg"></picture>', '',
+           '<picture><source media="(prefers-color-scheme: dark)" srcset="img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="img/cases-speedup-light.svg"></picture>', '',
            '**Takeaway:** ' + takeaway(figs, brief=True), '']
     table = featured(rows, registry, scale_rows)
     if table:
         out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows)%s:' % (results_dir, ', and a cold row is the MB read by the first run after the tables were emptied from memory' if any(m in ' '.join(table) for m in IO_MEASURES) else ''), ''] + table + ['']
-    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="bench/out/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="bench/out/img/cases-ecdf-light.svg"></picture>', '',
-            'Every case with its plan and variants: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
+    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="img/cases-ecdf-light.svg"></picture>', '',
+            'Every case with its plan and variants: [BENCHMARKS.md](BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
             '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
                 meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'))]
     return out
@@ -442,24 +442,24 @@ def render(results, readme, benchmarks):
         meta, rows = extras.read(path)
         scale_path = os.path.join(results, 'cases-scale.tsv')
         scale_rows = extras.read(scale_path)[1] if os.path.exists(scale_path) else []
-        for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, readme_lines(meta, rows, registry, scale_rows))):
-            if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
+        for doc, body in ((benchmarks, lines(meta, rows, registry, '../results', '..')), (readme, readme_lines(meta, rows, registry, scale_rows))):
+            if doc:
                 extras.replace_block(doc, 'faster33', body)
-        if benchmarks and os.path.exists(benchmarks) and '<!-- bench:gaps:begin' in open(benchmarks).read():
+        if benchmarks:
             extras.replace_block(benchmarks, 'gaps', gap_lines(collect(rows, registry), rows))
     scale = os.path.join(results, 'cases-scale.tsv')
     meta, rows = extras.read(scale) if os.path.exists(scale) else ({}, [])
     for doc in (benchmarks, readme):
-        if doc and os.path.exists(doc) and '<!-- bench:scale33:begin' in open(doc).read():
+        if doc:
             body = scale_lines(meta, rows, registry)
-            extras.replace_block(doc, 'scale33', [l.replace('bench/results/', 'results/') if doc == benchmarks else l for l in body])
+            extras.replace_block(doc, 'scale33', [l.replace('bench/results/', '../results/') if doc == benchmarks else l for l in body])
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     a = ap.parse_args()
     render(a.results, a.readme, a.benchmarks)
 

@@ -21,11 +21,11 @@ def readme_block(R):
            picture('agg-latency', f'Median time per question and system on a logarithmic axis, {t["rows"]:,} orders'), '', takeaway(R, tier, engines), '',
            picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold'), '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels, brief=True)]
-    out += ['', 'Every table, the cold runs, sizes and the configuration: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#aggregates-an-orders-dataset); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
-            f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](bench/out/BENCHMARKS.md#configuration)), '
+    out += ['', 'Every table, the cold runs, sizes and the configuration: [BENCHMARKS.md](BENCHMARKS.md#aggregates-an-orders-dataset); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
+            f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](BENCHMARKS.md#configuration)), '
             f'a local connection; median of {t["runs"]} warm runs; the first run after the server\'s memory was emptied is "cold". Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), '
             f'PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}; host at the start of the warm runs: {host_noise(t["parts"]["warm"])}. '
-            'pg_duckdb is its own run (the better of its heap and Parquet modes, a different PostgreSQL build next to it, [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#pg_duckdb)): its factor is against the PostgreSQL of that run.']
+            'pg_duckdb is its own run (the better of its heap and Parquet modes, a different PostgreSQL build next to it, [BENCHMARKS.md](BENCHMARKS.md#pg_duckdb)): its factor is against the PostgreSQL of that run.']
     return out
 
 
@@ -76,7 +76,7 @@ def benchmarks_block(R):
     out += triple_table(R, tier, engines, dagger(R, tier, labels)) + [''] + md_table(['measure'] + [dagger(R, tier, labels)[e] for e in engines], load_rows(R, tier, engines)) + ['', takeaway(R, tier, engines), '',
                                                                    picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]
-    out += ['', '#### Search with filters', '', 'The three full-text questions of the same set, a text search with filters on the same rows (the search benchmarks proper are in the [README](../README.md#search)); they are not part of the aggregates above.', '']
+    out += ['', '#### Search with filters', '', 'The three full-text questions of the same set, a text search with filters on the same rows (the search benchmarks proper are in the [README](../../README.md#search)); they are not part of the aggregates above.', '']
     out += triple_table(R, tier, engines, dagger(R, tier, labels), search=True)
     if any(R.get(tier, e, q, 'cold', 'latency_ms') for e in engines for q in R.queries(tier)):
         out += ['', '#### Cold', '', 'The first run of every question after the server\'s memory was emptied ([method](#configuration)), the same three measures; the aggregate questions, then the searches.', ''] + triple_table(

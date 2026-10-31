@@ -164,12 +164,12 @@ def benchmarks_block(t, timing):
     budget, details = tables.cpus_parts(s.get('quota', ''))
     out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client), every engine on the same data, queries and clients[^search]. Throughput in queries per second, higher is better; '
            'the error bars are one standard error over the interleaved rounds.' % (articles, places), '',
-           '![Throughput by workload](bench/out/img/articles-throughput.svg)', '', '![Index size](bench/out/img/index-size.svg)', '']
+           '![Throughput by workload](img/articles-throughput.svg)', '', '![Index size](img/index-size.svg)', '']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
-    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](bench/out/BENCHMARKS.md#correctness)).', '',
-            '![Autocomplete latency](bench/out/img/places-latency.svg)', '',
-            'Every cell with its standard error, the cold-cache tables and the method: [bench/out/BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
+    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](BENCHMARKS.md#correctness)).', '',
+            '![Autocomplete latency](img/places-latency.svg)', '',
+            'Every cell with its standard error, the cold-cache tables and the method: [BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
     foot = ['[^search]: Scope: every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus (the slim tier, the default of `bench/bench all`); cells stop at a 5%% relative standard error (at most 1 s). '
             'Method: one engine at a time, median of %s interleaved rounds. CPUs: %s%s' % ('2-%d' % rounds if rounds > 2 else '2', budget, (': ' + '; '.join(details) + '.') if details else '.')]
     if s:
@@ -180,13 +180,13 @@ def benchmarks_block(t, timing):
 
 
 def replace_block(path, name, lines):
-    text = open(path).read()
+    text = open(path).read() if os.path.exists(path) else ''   # the pages of bench/out start empty: a block is appended
     begin, end = '<!-- bench:%s:begin' % name, '<!-- bench:%s:end -->' % name
     m = re.search(r'(%s[^\n]*-->\n)(.*?)(%s)' % (re.escape(begin), re.escape(end)), text, re.S)
-    if not m:
-        sys.exit('readme.py: %s has no <!-- bench:%s:begin --> ... <!-- bench:%s:end --> block' % (path, name, name))
-    new = text[:m.start(2)] + '\n'.join(lines).rstrip('\n') + '\n' + text[m.start(3):]
+    body = '\n'.join(lines).rstrip('\n') + '\n'
+    new = text[:m.start(2)] + body + text[m.start(3):] if m else text + '%s -->\n%s%s\n\n' % (begin, body, end)
     if new != text:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, 'w').write(new)
 
 
@@ -213,8 +213,8 @@ def slim_section(t, rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     ap.add_argument('--tier', default='slim')
     a = ap.parse_args()
     rows = load(a.results)

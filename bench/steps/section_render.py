@@ -167,11 +167,11 @@ def losses(S):
 
 
 def readme_block(S):
-    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](bench/out/img/updates-reads.svg)', '']
+    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](img/updates-reads.svg)', '']
     ls = losses(S)
     out += ['**What is slower, and why**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL, and no read is slowed more than tenfold by the changes.']
     out += ['']
-    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#updates-and-deletes).']
+    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [BENCHMARKS.md](BENCHMARKS.md#updates-and-deletes).']
     return out
 
 

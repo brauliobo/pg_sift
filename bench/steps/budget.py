@@ -267,14 +267,13 @@ def block(results):
 
 
 def render(results, benchmarks):
-    if os.path.exists(benchmarks) and '<!-- bench:budget:begin' in open(benchmarks).read():
-        readme.replace_block(benchmarks, 'budget', block(results))
+    readme.replace_block(benchmarks, 'budget', block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     a = ap.parse_args()
     render(a.results, a.benchmarks)
 

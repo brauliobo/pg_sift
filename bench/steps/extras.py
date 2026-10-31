@@ -524,8 +524,8 @@ def main():
     ap.add_argument('--raw')
     ap.add_argument('--versions')
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     if a.cmd == 'wrap':
         return wrap(a)
@@ -538,15 +538,9 @@ def main():
         if os.path.exists(path):
             meta, rows = read(path)
             lines = section(meta, rows)
-            if name not in ALSO_ONLY:
-                replace_block(a.benchmarks, name, lines)
-            for doc in ALSO.get(name, []):   # the other documents that carry the block
-                if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
-                    replace_block(doc, name, lines)
+            replace_block(a.benchmarks, name, lines)
 
 
-ALSO_ONLY = {'gpu'}   # kept in docs/GPU.md, labelled with the build it was measured on
-ALSO = {'gpu': [os.path.join(REPO, 'docs', 'GPU.md')]}
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
             'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section, 'duckdb': duckdb_section}
 

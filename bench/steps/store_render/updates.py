@@ -169,7 +169,7 @@ def updates_readme(R):
     loss = upd_losses(R, tier, engines)
     if loss:
         out += ['- **Where pg_sift loses:** ' + '; '.join(loss) + '.']
-    out += ['', 'Every row, the update path of each system and the official pages: [bench/out/BENCHMARKS.md](bench/out/BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
+    out += ['', 'Every row, the update path of each system and the official pages: [BENCHMARKS.md](BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
     return out
 
 
