@@ -380,7 +380,7 @@ disable_col_bitmaps(List *paths)
 {
 	foreach_ptr(Path, p, paths)
 		if (IsA(p, BitmapHeapPath) && bitmap_uses_col(((BitmapHeapPath *) p)->bitmapqual))
-			p->disabled_nodes = Max(p->disabled_nodes, 1) + 1;
+			sift_path_disable(p, Max(sift_disabled_nodes(p), 1) + 1);
 }
 
 static build_simple_rel_hook_type prev_simple_rel_hook;

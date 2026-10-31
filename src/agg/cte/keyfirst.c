@@ -115,7 +115,7 @@ disable_join_paths(PlannerInfo *root, List *paths)
 			bms_free(filtered);
 			if (dominated)
 			{
-				p->disabled_nodes = Max(p->disabled_nodes, jp->outerjoinpath->disabled_nodes + jp->innerjoinpath->disabled_nodes + 1);
+				sift_path_disable(p, sift_disabled_nodes(jp->outerjoinpath) + sift_disabled_nodes(jp->innerjoinpath) + 1);
 				break;
 			}
 		}
