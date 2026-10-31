@@ -78,7 +78,15 @@ INSERT INTO b_q VALUES
 	('SELECT date_trunc(''month'', d) AS k, count(*) FROM b_t GROUP BY 1'),
 	('SELECT to_char(ts, ''YYYY-MM'') AS k, count(*) FROM b_t GROUP BY 1'),
 	('SELECT date_trunc(''microseconds'', ts) AS k, count(*) FROM b_t GROUP BY 1'),
-	('SELECT date_trunc(''month'', ts + interval ''1 day'') AS k, count(*) FROM b_t WHERE ts < ''3000-01-01'' GROUP BY 1');
+	('SELECT date_trunc(''month'', ts + interval ''1 day'') AS k, count(*) FROM b_t WHERE ts < ''3000-01-01'' GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', ts, timestamp ''2000-01-01'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''7 minutes'', ts, timestamp ''2000-01-01 00:03:00'') AS k, count(*), sum(n) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''1 hour'', ts, timestamp ''2001-02-03 04:05:06'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''2 days'', ts, timestamp ''1999-12-31'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''90 seconds'', ts, timestamp ''2000-01-01 00:00:00.5'') AS k, count(*) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', date_trunc(''hour'', ts), timestamp ''2000-01-01'') AS k, count(*) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', tz, timestamptz ''2000-01-01 00:00:00+00'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', ts, timestamp ''2000-01-01'') AS k, count(*) FROM b_t WHERE date_bin(''1 hour'', ts, timestamp ''2000-01-01'') >= timestamp ''2023-06-01'' GROUP BY 1');
 
 CREATE FUNCTION b_compare(OUT query text, OUT same bool, OUT keys text) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
@@ -105,6 +113,9 @@ UPDATE b_t SET ts = ts + interval '40 days' WHERE id % 11 = 0;
 DELETE FROM b_t WHERE id % 13 = 0;
 INSERT INTO b_t SELECT 20000 + i, timestamp '2026-06-01' + i * interval '1 hour', NULL, NULL, i % 5, i FROM generate_series(1, 500) i;
 SELECT query, same FROM b_compare();
+
+-- a stride with months is PostgreSQL's error whatever the plan
+SELECT date_bin('1 month', ts, timestamp '2000-01-01') AS k, count(*) FROM b_t GROUP BY 1;
 
 DROP TABLE b_t, b_h, b_q;
 DROP FUNCTION b_rows(text, bool), b_keys(text), b_compare();

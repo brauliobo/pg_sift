@@ -8,6 +8,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/fmgroids.h"
+#include "utils/timestamp.h"
 #include "catalog/pg_type.h"
 
 #include "agg/expr/int.h"
@@ -75,6 +76,47 @@ bucket_unit(Node *e, bool session)
 	return NULL;
 }
 
+/*
+ * date_bin(stride, ts, origin) of whole seconds changes only where ts crosses origin + k * stride, which are the multiples of gcd(stride, origin) seconds (counted from the
+ * clock the steps are counted from): the step of the call, and its stride in `stride`. 0 for a stride with months (an error), an origin or a stride that is not a Const of
+ * whole seconds, or an infinite origin.
+ */
+static int
+bin_step(FuncExpr *f, int64 *stride)
+{
+	Const	   *s,
+			   *o;
+	Interval   *iv;
+	int64		us,
+				org,
+				a,
+				b;
+
+	if (f->funcid != F_DATE_BIN_INTERVAL_TIMESTAMP_TIMESTAMP && f->funcid != F_DATE_BIN_INTERVAL_TIMESTAMPTZ_TIMESTAMPTZ)
+		return 0;
+	s = linitial(f->args);
+	o = lthird(f->args);
+	if (!IsA(s, Const) || !IsA(o, Const) || s->constisnull || o->constisnull)
+		return 0;
+	iv = DatumGetIntervalP(s->constvalue);
+	us = (int64) iv->day * USECS_PER_DAY + iv->time;
+	org = DatumGetInt64(o->constvalue);
+	if (iv->month != 0 || us <= 0 || us % USECS_PER_SEC != 0 || org == PG_INT64_MAX || org == PG_INT64_MIN)
+		return 0;
+	org = ((org % us) + us) % us;
+	if (org % USECS_PER_SEC != 0)
+		return 0;
+	for (a = us, b = org; b != 0;)
+	{
+		int64		t = a % b;
+
+		a = b;
+		b = t;
+	}
+	*stride = us / USECS_PER_SEC;
+	return a / USECS_PER_SEC > PG_INT32_MAX ? 0 : (int) (a / USECS_PER_SEC);
+}
+
 /* the leaf of the expression of a key: a reference, or Param 0 once the key is compiled */
 static bool
 bucket_leaf(AggCtx *c, Node *e)
@@ -91,7 +133,9 @@ static int
 bucket_step(AggCtx *c, Node *e, bool session)
 {
 	const BucketUnit *u;
-	int			arg;
+	int			arg,
+				bin;
+	int64		stride;
 
 	/* in the session's zone the leaf is read only by the calendar call right above it: a function of the UTC clock below it would cut the day on another clock */
 	if (bucket_leaf(c, e))
@@ -129,6 +173,12 @@ bucket_step(AggCtx *c, Node *e, bool session)
 		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args), session);
 		return arg ? Max(arg, u->secs) : 0;
 	}
+	if ((bin = bin_step((FuncExpr *) e, &stride)) > 0)
+	{
+		/* over a coarser step the value is a function of that step; over the leaf it changes on the call's own */
+		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args), session);
+		return arg == 1 ? bin : arg;
+	}
 	switch (((FuncExpr *) e)->funcid)
 	{
 		case F_DATE_TIMESTAMP:
@@ -147,6 +197,7 @@ bucket_groups(AggCtx *c, Node *e, double span)
 {
 	const BucketUnit *u;
 	double		n;
+	int64		stride;
 
 	if (bucket_leaf(c, e))
 		return span + 1;
@@ -161,6 +212,8 @@ bucket_groups(AggCtx *c, Node *e, double span)
 		n = Min(bucket_groups(c, lsecond(((FuncExpr *) e)->args), span), span / u->len + 1);
 		return u->cycle ? Min(n, u->cycle) : n;
 	}
+	if (bin_step((FuncExpr *) e, &stride) > 0)
+		return Min(bucket_groups(c, lsecond(((FuncExpr *) e)->args), span), span / stride + 1);
 	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP || ((FuncExpr *) e)->funcid == F_DATE_TIMESTAMPTZ)
 		return Min(bucket_groups(c, linitial(((FuncExpr *) e)->args), span), span / DAY_SECS + 1);
 	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
@@ -170,7 +223,7 @@ bucket_groups(AggCtx *c, Node *e, double span)
 const char *
 bucket_text(int secs)
 {
-	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : " (per day)";
+	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : secs == DAY_SECS ? " (per day)" : psprintf(" (per %d seconds)", secs);
 }
 
 /*
@@ -221,6 +274,9 @@ bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned)
 		int			secs = bucket_step(c, expr, true),
 					cut = cut_trunc(expr);
 
+		/* the calls of the UTC clock (date_bin) are the same in every session: a step of that clock */
+		if (secs <= 0 && cut == 0)
+			return bucket_step(c, expr, false);
 		/* a cut to the second, minute or hour under another call is not a function of the step */
 		if (secs <= 0 || cut < 0)
 			return 0;

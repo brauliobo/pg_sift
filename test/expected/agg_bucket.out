@@ -73,7 +73,15 @@ INSERT INTO b_q VALUES
 	('SELECT date_trunc(''month'', d) AS k, count(*) FROM b_t GROUP BY 1'),
 	('SELECT to_char(ts, ''YYYY-MM'') AS k, count(*) FROM b_t GROUP BY 1'),
 	('SELECT date_trunc(''microseconds'', ts) AS k, count(*) FROM b_t GROUP BY 1'),
-	('SELECT date_trunc(''month'', ts + interval ''1 day'') AS k, count(*) FROM b_t WHERE ts < ''3000-01-01'' GROUP BY 1');
+	('SELECT date_trunc(''month'', ts + interval ''1 day'') AS k, count(*) FROM b_t WHERE ts < ''3000-01-01'' GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', ts, timestamp ''2000-01-01'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''7 minutes'', ts, timestamp ''2000-01-01 00:03:00'') AS k, count(*), sum(n) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''1 hour'', ts, timestamp ''2001-02-03 04:05:06'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''2 days'', ts, timestamp ''1999-12-31'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''90 seconds'', ts, timestamp ''2000-01-01 00:00:00.5'') AS k, count(*) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', date_trunc(''hour'', ts), timestamp ''2000-01-01'') AS k, count(*) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', tz, timestamptz ''2000-01-01 00:00:00+00'') AS k, count(*), sum(v) FROM b_t GROUP BY 1'),
+	('SELECT date_bin(''15 minutes'', ts, timestamp ''2000-01-01'') AS k, count(*) FROM b_t WHERE date_bin(''1 hour'', ts, timestamp ''2000-01-01'') >= timestamp ''2023-06-01'' GROUP BY 1');
 CREATE FUNCTION b_compare(OUT query text, OUT same bool, OUT keys text) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
 	FOR query IN SELECT q FROM b_q ORDER BY q COLLATE "C" LOOP
@@ -84,44 +92,52 @@ BEGIN
 END $$;
 -- in the write buffer, then sealed in a segment
 SELECT query, same, keys FROM b_compare();
-                                                          query                                                           | same |                                                    keys                                                     
---------------------------------------------------------------------------------------------------------------------------+------+-------------------------------------------------------------------------------------------------------------
- SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                  | t    | 
- SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                       | t    | Group Keys: ts: date_part('quarter'::text, b_t.ts) (per day)
- SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t    | Group Keys: ts: date_trunc('century'::text, b_t.ts) (per day)
- SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                      | t    | Group Keys: ts: date_trunc('day'::text, date_trunc('hour'::text, b_t.ts)) (per day)
- SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t    | Group Keys: ts: date_trunc('day'::text, b_t.ts) (per day)
- SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('decade'::text, b_t.ts) (per day)
- SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                    | t    | Group Keys: ts: date_trunc('hour'::text, date_trunc('month'::text, b_t.ts)) (per day)
- SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                         | t    | Group Keys: ts: date_trunc('hour'::text, b_t.ts) (per hour)
- SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('microseconds'::text, b_t.ts)
- SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                           | t    | Group Keys: ts: date_trunc('millennium'::text, b_t.ts) (per day)
- SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('minute'::text, b_t.ts) (per minute)
- SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                         | t    | Group Keys: d: date_trunc('month'::text, (b_t.d)::timestamp with time zone)
- SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1             | t    | Group Keys: ts: date_trunc('month'::text, (b_t.ts + '@ 1 day'::interval))
- SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                  | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                             | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
- SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
- SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                          | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
- SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                      | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
- SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                        | t    | Group Keys: tz: date_trunc('month'::text, b_t.tz) (per day)
- SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t    | Group Keys: ts: date_trunc('quarter'::text, b_t.ts) (per day)
- SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('second'::text, b_t.ts) (per second)
- SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('week'::text, b_t.ts) (per day)
- SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day)
- SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                        | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day), ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                   | t    | Group Keys: ts: EXTRACT(dow FROM b_t.ts) (per day)
- SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                          | t    | Group Keys: ts: EXTRACT(hour FROM b_t.ts) (per hour)
- SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                        | t    | Group Keys: ts: EXTRACT(isoyear FROM b_t.ts) (per day), ts: EXTRACT(week FROM b_t.ts) (per day)
- SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: EXTRACT(month FROM b_t.ts) (per day)
- SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t    | Group Keys: ts: EXTRACT(year FROM b_t.ts) (per day)
- SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                         | t    | Group Keys: ts: to_char(b_t.ts, 'YYYY-MM'::text)
- SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                               | t    | Group Keys: ts: (b_t.ts)::date (per day)
-(35 rows)
+                                                                                    query                                                                                    | same |                                                                         keys                                                                          
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------+-------------------------------------------------------------------------------------------------------------------------------------------------------
+ SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                                                                     | t    | 
+ SELECT date_bin('1 hour', ts, timestamp '2001-02-03 04:05:06') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                   | t    | Group Keys: ts: date_bin('@ 1 hour'::interval, b_t.ts, 'Sat Feb 03 04:05:06 2001'::timestamp without time zone) (per 18 seconds)
+ SELECT date_bin('15 minutes', date_trunc('hour', ts), timestamp '2000-01-01') AS k, count(*) FROM b_t GROUP BY 1                                                            | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, date_trunc('hour'::text, b_t.ts), 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per hour)
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*) FROM b_t WHERE date_bin('1 hour', ts, timestamp '2000-01-01') >= timestamp '2023-06-01' GROUP BY 1 | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, b_t.ts, 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per 900 seconds)
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                        | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, b_t.ts, 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per 900 seconds)
+ SELECT date_bin('15 minutes', tz, timestamptz '2000-01-01 00:00:00+00') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                          | t    | Group Keys: tz: date_bin('@ 15 mins'::interval, b_t.tz, 'Fri Dec 31 16:00:00 1999 PST'::timestamp with time zone) (per 900 seconds)
+ SELECT date_bin('2 days', ts, timestamp '1999-12-31') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                            | t    | Group Keys: ts: date_bin('@ 2 days'::interval, b_t.ts, 'Fri Dec 31 00:00:00 1999'::timestamp without time zone) (per day)
+ SELECT date_bin('7 minutes', ts, timestamp '2000-01-01 00:03:00') AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                | t    | Group Keys: ts: date_bin('@ 7 mins'::interval, b_t.ts, 'Sat Jan 01 00:03:00 2000'::timestamp without time zone) (per minute)
+ SELECT date_bin('90 seconds', ts, timestamp '2000-01-01 00:00:00.5') AS k, count(*) FROM b_t GROUP BY 1                                                                     | t    | Group Keys: ts: date_bin('@ 1 min 30 secs'::interval, b_t.ts, 'Sat Jan 01 00:00:00.5 2000'::timestamp without time zone)
+ SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                          | t    | Group Keys: ts: date_part('quarter'::text, b_t.ts) (per day)
+ SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t    | Group Keys: ts: date_trunc('century'::text, b_t.ts) (per day)
+ SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                         | t    | Group Keys: ts: date_trunc('day'::text, date_trunc('hour'::text, b_t.ts)) (per day)
+ SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t    | Group Keys: ts: date_trunc('day'::text, b_t.ts) (per day)
+ SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('decade'::text, b_t.ts) (per day)
+ SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                       | t    | Group Keys: ts: date_trunc('hour'::text, date_trunc('month'::text, b_t.ts)) (per day)
+ SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                                                                            | t    | Group Keys: ts: date_trunc('hour'::text, b_t.ts) (per hour)
+ SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('microseconds'::text, b_t.ts)
+ SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                              | t    | Group Keys: ts: date_trunc('millennium'::text, b_t.ts) (per day)
+ SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('minute'::text, b_t.ts) (per minute)
+ SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t    | Group Keys: d: date_trunc('month'::text, (b_t.d)::timestamp with time zone)
+ SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1                                                                | t    | Group Keys: ts: date_trunc('month'::text, (b_t.ts + '@ 1 day'::interval))
+ SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1                                                    | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                                                                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                                                                                | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                                                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                                                                           | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                                                                                  | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
+ SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                                                                    | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
+ SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                             | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
+ SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                                                                         | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
+ SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                                                                           | t    | Group Keys: tz: date_trunc('month'::text, b_t.tz) (per day)
+ SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t    | Group Keys: ts: date_trunc('quarter'::text, b_t.ts) (per day)
+ SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('second'::text, b_t.ts) (per second)
+ SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('week'::text, b_t.ts) (per day)
+ SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day)
+ SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                                                                           | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day), ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                      | t    | Group Keys: ts: EXTRACT(dow FROM b_t.ts) (per day)
+ SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                             | t    | Group Keys: ts: EXTRACT(hour FROM b_t.ts) (per hour)
+ SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                                                                           | t    | Group Keys: ts: EXTRACT(isoyear FROM b_t.ts) (per day), ts: EXTRACT(week FROM b_t.ts) (per day)
+ SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: EXTRACT(month FROM b_t.ts) (per day)
+ SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t    | Group Keys: ts: EXTRACT(year FROM b_t.ts) (per day)
+ SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t    | Group Keys: ts: to_char(b_t.ts, 'YYYY-MM'::text)
+ SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                                  | t    | Group Keys: ts: (b_t.ts)::date (per day)
+(43 rows)
 
 SELECT count(*) > 0 AS has_wbuf FROM sift.table_segments('b_t') WHERE kind = 'buffer';
  has_wbuf 
@@ -131,44 +147,52 @@ SELECT count(*) > 0 AS has_wbuf FROM sift.table_segments('b_t') WHERE kind = 'bu
 
 VACUUM b_t;
 SELECT query, same, keys FROM b_compare();
-                                                          query                                                           | same |                                                    keys                                                     
---------------------------------------------------------------------------------------------------------------------------+------+-------------------------------------------------------------------------------------------------------------
- SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                  | t    | 
- SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                       | t    | Group Keys: ts: date_part('quarter'::text, b_t.ts) (per day)
- SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t    | Group Keys: ts: date_trunc('century'::text, b_t.ts) (per day)
- SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                      | t    | Group Keys: ts: date_trunc('day'::text, date_trunc('hour'::text, b_t.ts)) (per day)
- SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t    | Group Keys: ts: date_trunc('day'::text, b_t.ts) (per day)
- SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('decade'::text, b_t.ts) (per day)
- SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                    | t    | Group Keys: ts: date_trunc('hour'::text, date_trunc('month'::text, b_t.ts)) (per day)
- SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                         | t    | Group Keys: ts: date_trunc('hour'::text, b_t.ts) (per hour)
- SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('microseconds'::text, b_t.ts)
- SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                           | t    | Group Keys: ts: date_trunc('millennium'::text, b_t.ts) (per day)
- SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('minute'::text, b_t.ts) (per minute)
- SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                         | t    | Group Keys: d: date_trunc('month'::text, (b_t.d)::timestamp with time zone)
- SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1             | t    | Group Keys: ts: date_trunc('month'::text, (b_t.ts + '@ 1 day'::interval))
- SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                  | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                             | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
- SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                 | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
- SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                          | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
- SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                      | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
- SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                        | t    | Group Keys: tz: date_trunc('month'::text, b_t.tz) (per day)
- SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t    | Group Keys: ts: date_trunc('quarter'::text, b_t.ts) (per day)
- SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t    | Group Keys: ts: date_trunc('second'::text, b_t.ts) (per second)
- SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('week'::text, b_t.ts) (per day)
- SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day)
- SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                        | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day), ts: date_trunc('month'::text, b_t.ts) (per day)
- SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                   | t    | Group Keys: ts: EXTRACT(dow FROM b_t.ts) (per day)
- SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                          | t    | Group Keys: ts: EXTRACT(hour FROM b_t.ts) (per hour)
- SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                        | t    | Group Keys: ts: EXTRACT(isoyear FROM b_t.ts) (per day), ts: EXTRACT(week FROM b_t.ts) (per day)
- SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t    | Group Keys: ts: EXTRACT(month FROM b_t.ts) (per day)
- SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t    | Group Keys: ts: EXTRACT(year FROM b_t.ts) (per day)
- SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                         | t    | Group Keys: ts: to_char(b_t.ts, 'YYYY-MM'::text)
- SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                               | t    | Group Keys: ts: (b_t.ts)::date (per day)
-(35 rows)
+                                                                                    query                                                                                    | same |                                                                         keys                                                                          
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------+-------------------------------------------------------------------------------------------------------------------------------------------------------
+ SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                                                                     | t    | 
+ SELECT date_bin('1 hour', ts, timestamp '2001-02-03 04:05:06') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                   | t    | Group Keys: ts: date_bin('@ 1 hour'::interval, b_t.ts, 'Sat Feb 03 04:05:06 2001'::timestamp without time zone) (per 18 seconds)
+ SELECT date_bin('15 minutes', date_trunc('hour', ts), timestamp '2000-01-01') AS k, count(*) FROM b_t GROUP BY 1                                                            | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, date_trunc('hour'::text, b_t.ts), 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per hour)
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*) FROM b_t WHERE date_bin('1 hour', ts, timestamp '2000-01-01') >= timestamp '2023-06-01' GROUP BY 1 | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, b_t.ts, 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per 900 seconds)
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                        | t    | Group Keys: ts: date_bin('@ 15 mins'::interval, b_t.ts, 'Sat Jan 01 00:00:00 2000'::timestamp without time zone) (per 900 seconds)
+ SELECT date_bin('15 minutes', tz, timestamptz '2000-01-01 00:00:00+00') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                          | t    | Group Keys: tz: date_bin('@ 15 mins'::interval, b_t.tz, 'Fri Dec 31 16:00:00 1999 PST'::timestamp with time zone) (per 900 seconds)
+ SELECT date_bin('2 days', ts, timestamp '1999-12-31') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                            | t    | Group Keys: ts: date_bin('@ 2 days'::interval, b_t.ts, 'Fri Dec 31 00:00:00 1999'::timestamp without time zone) (per day)
+ SELECT date_bin('7 minutes', ts, timestamp '2000-01-01 00:03:00') AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                | t    | Group Keys: ts: date_bin('@ 7 mins'::interval, b_t.ts, 'Sat Jan 01 00:03:00 2000'::timestamp without time zone) (per minute)
+ SELECT date_bin('90 seconds', ts, timestamp '2000-01-01 00:00:00.5') AS k, count(*) FROM b_t GROUP BY 1                                                                     | t    | Group Keys: ts: date_bin('@ 1 min 30 secs'::interval, b_t.ts, 'Sat Jan 01 00:00:00.5 2000'::timestamp without time zone)
+ SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                          | t    | Group Keys: ts: date_part('quarter'::text, b_t.ts) (per day)
+ SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t    | Group Keys: ts: date_trunc('century'::text, b_t.ts) (per day)
+ SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                         | t    | Group Keys: ts: date_trunc('day'::text, date_trunc('hour'::text, b_t.ts)) (per day)
+ SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t    | Group Keys: ts: date_trunc('day'::text, b_t.ts) (per day)
+ SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('decade'::text, b_t.ts) (per day)
+ SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                       | t    | Group Keys: ts: date_trunc('hour'::text, date_trunc('month'::text, b_t.ts)) (per day)
+ SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                                                                            | t    | Group Keys: ts: date_trunc('hour'::text, b_t.ts) (per hour)
+ SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('microseconds'::text, b_t.ts)
+ SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                              | t    | Group Keys: ts: date_trunc('millennium'::text, b_t.ts) (per day)
+ SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('minute'::text, b_t.ts) (per minute)
+ SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t    | Group Keys: d: date_trunc('month'::text, (b_t.d)::timestamp with time zone)
+ SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1                                                                | t    | Group Keys: ts: date_trunc('month'::text, (b_t.ts + '@ 1 day'::interval))
+ SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1                                                    | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                                                                     | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                                                                                | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                                                                        | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                                                                           | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                                                                                  | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v
+ SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                                                                    | t    | Group Keys: ts: date_trunc('month'::text, b_t.ts) (per day), v: (b_t.v % 3)
+ SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                             | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
+ SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                                                                         | t    | Group Keys: ts: (date_trunc('month'::text, b_t.ts))::date (per day)
+ SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                                                                           | t    | Group Keys: tz: date_trunc('month'::text, b_t.tz) (per day)
+ SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t    | Group Keys: ts: date_trunc('quarter'::text, b_t.ts) (per day)
+ SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t    | Group Keys: ts: date_trunc('second'::text, b_t.ts) (per second)
+ SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('week'::text, b_t.ts) (per day)
+ SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day)
+ SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                                                                           | t    | Group Keys: ts: date_trunc('year'::text, b_t.ts) (per day), ts: date_trunc('month'::text, b_t.ts) (per day)
+ SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                      | t    | Group Keys: ts: EXTRACT(dow FROM b_t.ts) (per day)
+ SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                             | t    | Group Keys: ts: EXTRACT(hour FROM b_t.ts) (per hour)
+ SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                                                                           | t    | Group Keys: ts: EXTRACT(isoyear FROM b_t.ts) (per day), ts: EXTRACT(week FROM b_t.ts) (per day)
+ SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t    | Group Keys: ts: EXTRACT(month FROM b_t.ts) (per day)
+ SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t    | Group Keys: ts: EXTRACT(year FROM b_t.ts) (per day)
+ SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t    | Group Keys: ts: to_char(b_t.ts, 'YYYY-MM'::text)
+ SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                                  | t    | Group Keys: ts: (b_t.ts)::date (per day)
+(43 rows)
 
 SELECT count(*) > 0 AS has_segment FROM sift.table_segments('b_t') WHERE kind <> 'buffer';
  has_segment 
@@ -189,45 +213,56 @@ UPDATE b_t SET ts = ts + interval '40 days' WHERE id % 11 = 0;
 DELETE FROM b_t WHERE id % 13 = 0;
 INSERT INTO b_t SELECT 20000 + i, timestamp '2026-06-01' + i * interval '1 hour', NULL, NULL, i % 5, i FROM generate_series(1, 500) i;
 SELECT query, same FROM b_compare();
-                                                          query                                                           | same 
---------------------------------------------------------------------------------------------------------------------------+------
- SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                  | t
- SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                       | t
- SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t
- SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                      | t
- SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t
- SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t
- SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                    | t
- SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                         | t
- SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                 | t
- SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                           | t
- SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                               | t
- SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                         | t
- SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1             | t
- SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1 | t
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                  | t
- SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                             | t
- SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                     | t
- SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                        | t
- SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                               | t
- SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                 | t
- SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                          | t
- SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                      | t
- SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                        | t
- SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                              | t
- SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                               | t
- SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                 | t
- SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t
- SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                        | t
- SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                   | t
- SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                          | t
- SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                        | t
- SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                 | t
- SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                  | t
- SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                         | t
- SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                               | t
-(35 rows)
+                                                                                    query                                                                                    | same 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------
+ SELECT count(DISTINCT date_trunc('month', ts)) FROM b_t                                                                                                                     | t
+ SELECT date_bin('1 hour', ts, timestamp '2001-02-03 04:05:06') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                   | t
+ SELECT date_bin('15 minutes', date_trunc('hour', ts), timestamp '2000-01-01') AS k, count(*) FROM b_t GROUP BY 1                                                            | t
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*) FROM b_t WHERE date_bin('1 hour', ts, timestamp '2000-01-01') >= timestamp '2023-06-01' GROUP BY 1 | t
+ SELECT date_bin('15 minutes', ts, timestamp '2000-01-01') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                        | t
+ SELECT date_bin('15 minutes', tz, timestamptz '2000-01-01 00:00:00+00') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                          | t
+ SELECT date_bin('2 days', ts, timestamp '1999-12-31') AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                            | t
+ SELECT date_bin('7 minutes', ts, timestamp '2000-01-01 00:03:00') AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                | t
+ SELECT date_bin('90 seconds', ts, timestamp '2000-01-01 00:00:00.5') AS k, count(*) FROM b_t GROUP BY 1                                                                     | t
+ SELECT date_part('quarter', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                          | t
+ SELECT date_trunc('century', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t
+ SELECT date_trunc('day', date_trunc('hour', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                         | t
+ SELECT date_trunc('day', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t
+ SELECT date_trunc('decade', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t
+ SELECT date_trunc('hour', date_trunc('month', ts)) AS k, count(*) FROM b_t GROUP BY 1                                                                                       | t
+ SELECT date_trunc('hour', ts) AS k, count(*), min(v), max(v) FROM b_t GROUP BY 1                                                                                            | t
+ SELECT date_trunc('microseconds', ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                    | t
+ SELECT date_trunc('millennium', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                              | t
+ SELECT date_trunc('minute', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                  | t
+ SELECT date_trunc('month', d) AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t
+ SELECT date_trunc('month', ts + interval '1 day') AS k, count(*) FROM b_t WHERE ts < '3000-01-01' GROUP BY 1                                                                | t
+ SELECT date_trunc('month', ts) AS k, count(*) FILTER (WHERE v < 8), sum(n) FILTER (WHERE id % 2 = 0) FROM b_t GROUP BY 1                                                    | t
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 HAVING count(*) > 100                                                                                     | t
+ SELECT date_trunc('month', ts) AS k, count(*) FROM b_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5                                                                                | t
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v) FROM b_t WHERE v > 5 AND id % 3 = 0 GROUP BY 1                                                                        | t
+ SELECT date_trunc('month', ts) AS k, count(*), sum(v), avg(n) FROM b_t GROUP BY 1                                                                                           | t
+ SELECT date_trunc('month', ts) AS k, sum(v) OVER () FROM b_t GROUP BY 1, v                                                                                                  | t
+ SELECT date_trunc('month', ts) AS k, v % 3 AS g, count(*), sum(n) FROM b_t GROUP BY 1, 2                                                                                    | t
+ SELECT date_trunc('month', ts)::date AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                             | t
+ SELECT date_trunc('month', ts)::date AS k, count(DISTINCT v), count(DISTINCT n) FROM b_t GROUP BY 1                                                                         | t
+ SELECT date_trunc('month', tz) AS k, count(*) FROM b_t GROUP BY 1                                                                                                           | t
+ SELECT date_trunc('quarter', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                 | t
+ SELECT date_trunc('second', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                  | t
+ SELECT date_trunc('week', ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                    | t
+ SELECT date_trunc('year', ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t
+ SELECT date_trunc('year', ts) AS k, date_trunc('month', ts) AS m, count(*) FROM b_t GROUP BY 1, 2                                                                           | t
+ SELECT extract(dow FROM ts) AS k, count(*), sum(n) FROM b_t GROUP BY 1                                                                                                      | t
+ SELECT extract(hour FROM ts) AS k, count(*) FROM b_t GROUP BY 1                                                                                                             | t
+ SELECT extract(isoyear FROM ts) AS k, extract(week FROM ts) AS w, count(*) FROM b_t GROUP BY 1, 2                                                                           | t
+ SELECT extract(month FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                    | t
+ SELECT extract(year FROM ts) AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                     | t
+ SELECT to_char(ts, 'YYYY-MM') AS k, count(*) FROM b_t GROUP BY 1                                                                                                            | t
+ SELECT ts::date AS k, count(*), sum(v) FROM b_t GROUP BY 1                                                                                                                  | t
+(43 rows)
 
+-- a stride with months is PostgreSQL's error whatever the plan
+SELECT date_bin('1 month', ts, timestamp '2000-01-01') AS k, count(*) FROM b_t GROUP BY 1;
+ERROR:  timestamps cannot be binned into intervals containing months or years
 DROP TABLE b_t, b_h, b_q;
 DROP FUNCTION b_rows(text, bool), b_keys(text), b_compare();
 DROP EXTENSION pg_sift_helpers;
