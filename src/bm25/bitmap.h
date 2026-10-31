@@ -43,6 +43,10 @@
 #define SIFT_LIST_OB_MAX 9    /* bits of an offset in a LIST blob: log2(SIFT_MAX_OFF) */
 #define SIFT_MAX_W       64
 #define SIFT_LIST_BLOCK  256
+#define SIFT_LIST_SLICE  16
+
+/* an Elias-Fano block of a LIST blob: keys x0 + [0, u), cnt postings with l low bits each */
+typedef struct { uint64_t x0, u; uint32_t cnt, l; const uint8_t *lows, *highs, *end; } ef_blk;
 #define SIFT_GRP_BYTES   (SIFT_GROUP_PAGES * SIFT_MAX_W)
 #define SIFT_CUR_BUF     (2 * SIFT_GRP_BYTES)
 #define SIFT_GRP_MAXTIDS (SIFT_GROUP_PAGES * SIFT_MAX_OFF)
@@ -91,7 +95,10 @@ struct sift_cur {
 			const uint8_t *p;           /* next LIST block */
 			const uint8_t *end;         /* end of the blob */
 			uint64_t prev, lim;         /* last key of the block before p; keys are below lim, a power of two */
-			uint32_t n, i, bi, bn, w, ob;  /* postings, position, block window [bi, bi + bn) */
+			uint32_t n, i, bi, bn, w, ob;  /* postings, position, window [bi, bi + bn) of decoded postings */
+			ef_blk cb;                  /* the block the window comes from: its first posting cstart, the postings decoded or passed ck, the next slice's size cw, */
+			uint32_t cstart, ck, cw;
+			uint64_t cpos;              /* and the bit of its high bits after the last posting decoded */
 			sift_tid blk[SIFT_LIST_BLOCK];
 		} ls;
 		struct { sift_cur **kid; int k; } op;

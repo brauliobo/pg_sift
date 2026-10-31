@@ -1,0 +1,59 @@
+-- A conjunction of LIST terms seeks into the middle of Elias-Fano blocks: only the postings of the groups it reads are decoded.
+-- The ids a search returns, its count and its k best scores are the ones of a reference computed from the text, for terms that sit in few, many and every superblock,
+-- for phrases, after deletes and VACUUM.
+CREATE EXTENSION pg_sift;
+
+-- 200,000 rows on about 2,100 heap pages (8 superblocks): 'common' in every row, seven terms in 28,000, 500 terms in 400, 'rare' in 2,000, 'x y' in 15,000,
+-- 'early' in the first 300 rows, 'mid' in 401 rows of one superblock, 'late' in the last 5,000: a conjunction of them with a dense term skips whole superblocks of the dense one
+CREATE TABLE src AS
+SELECT g AS id, g % 10 AS counter_a, concat_ws(' ', 'common', 'w' || g % 7, 'r' || g % 500, CASE WHEN g % 100 = 0 THEN 'rare' END, CASE WHEN g % 13 = 0 THEN 'x y' END, CASE WHEN g < 300 THEN 'early' END, CASE WHEN g BETWEEN 100000 AND 100400 THEN 'mid' END, CASE WHEN g > 195000 THEN 'late' END, repeat('f ', g % 5)) AS body
+FROM generate_series(1, 200000) g;
+SET sift.grouped_min_df = 1000000;
+CREATE INDEX src_idx ON src USING sift (body);
+
+-- the distinct tokens of a row, to compute what a search must return
+CREATE TABLE tok AS SELECT DISTINCT id, t FROM src, unnest(string_to_array(body, ' ')) t WHERE t <> '';
+CREATE INDEX tok_t ON tok (t, id);
+CREATE TABLE words (t text);
+INSERT INTO words VALUES ('common'), ('w0'), ('w3'), ('w6'), ('rare'), ('x'), ('f'), ('r1'), ('early'), ('mid'), ('late');
+-- every pair of words, and the pairs of the others with 'common'
+CREATE TABLE cases AS
+SELECT a.t || ' AND ' || b.t AS q, ARRAY[a.t, b.t] AS w FROM words a JOIN words b ON a.t < b.t
+UNION ALL SELECT a.t || ' AND ' || b.t || ' AND common', ARRAY[a.t, b.t, 'common'] FROM words a JOIN words b ON a.t < b.t WHERE a.t <> 'common' AND b.t <> 'common';
+
+CREATE FUNCTION compare() RETURNS TABLE (cases bigint, same_ids bigint, same_count bigint, same_top10 bigint, phrases bigint) LANGUAGE plpgsql AS $f$
+DECLARE
+	c cases;
+	a text; b text; nb bigint; ta text; tb text;
+	i bigint = 0; j bigint = 0; k bigint = 0; n bigint = 0; p bigint = 0;
+BEGIN
+	FOR c IN SELECT * FROM cases LOOP
+		n = n + 1;
+		EXECUTE format('SELECT md5(string_agg(id::text, '','' ORDER BY id)) FROM (SELECT id FROM src WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT 1000000) a', c.q) INTO a;
+		EXECUTE format('SELECT md5(string_agg(id::text, '','' ORDER BY id)), count(*) FROM (SELECT id FROM tok JOIN src USING (id) WHERE t = %L %s) r',
+			c.w[1], (SELECT string_agg(format('INTERSECT SELECT id FROM tok JOIN src USING (id) WHERE t = %L', w), ' ') FROM unnest(c.w[2:]) w)) INTO b, nb;
+		IF a IS NOT DISTINCT FROM b THEN i = i + 1; END IF;
+		IF (SELECT count(*) FROM src WHERE body @@> c.q) = coalesce(nb, 0) THEN j = j + 1; END IF;
+		EXECUTE format('SELECT md5(string_agg(round(s::numeric, 6)::text, '','' ORDER BY s DESC)) FROM (SELECT sift.score(ctid) AS s FROM src WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT 10) r', c.q) INTO ta;
+		EXECUTE format('SELECT md5(string_agg(round(s::numeric, 6)::text, '','' ORDER BY s DESC)) FROM (SELECT s FROM (SELECT sift.score(ctid) AS s FROM src WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT 1000000) a ORDER BY s DESC LIMIT 10) r', c.q) INTO tb;
+		IF ta IS NOT DISTINCT FROM tb THEN k = k + 1; END IF;
+	END LOOP;
+	-- phrases: the adjacent tokens of the text
+	SELECT count(*) INTO p FROM (VALUES ('"x y"', 'x y'), ('"common w3"', 'common w3'), ('"w5 r5"', 'w5 r5'), ('"common w1 r1"', 'common w1 r1')) v(q, s)
+	WHERE (SELECT count(*) FROM src WHERE body @@> v.q) = (SELECT count(*) FROM src WHERE (' ' || body || ' ') LIKE '% ' || v.s || ' %')
+		AND (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM (SELECT id FROM src WHERE body @@> v.q ORDER BY sift.score(ctid) DESC LIMIT 1000000) a)
+			IS NOT DISTINCT FROM (SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM src WHERE (' ' || body || ' ') LIKE '% ' || v.s || ' %');
+	RETURN QUERY SELECT n, i, j, k, p;
+END $f$;
+SELECT * FROM compare();
+
+DELETE FROM src WHERE id % 4 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) src;
+SELECT * FROM compare();
+
+DROP FUNCTION compare();
+DROP TABLE cases;
+DROP TABLE words;
+DROP TABLE tok;
+DROP TABLE src;
+DROP EXTENSION pg_sift;

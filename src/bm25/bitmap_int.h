@@ -25,7 +25,6 @@ static inline uint32_t packed_w_of(uint32_t type) { return (type & 0x1f) < sizeo
 static inline size_t packed_bytes(uint32_t n, uint32_t ob) { return 33 + ((size_t)n * ob + 7) / 8 + (n + 7) / 8; }
 
 /* LIST: Elias-Fano blocks over key = blk << ob | (off - 1) */
-typedef struct { uint64_t x0, u; uint32_t cnt, l; const uint8_t *lows, *highs, *end; } ef_blk;
 
 static inline uint32_t ef_l(uint64_t u, uint32_t cnt) { return u > cnt ? nbits(u / cnt) - 1 : 0; }
 static inline size_t ef_lows(uint32_t cnt, uint32_t l) { return ((size_t)cnt * l + 7) / 8; }
