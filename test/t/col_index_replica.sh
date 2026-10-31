@@ -3,7 +3,8 @@
 # replay to an index that verifies on the hot standby and answers the column source exactly as the primary does. Readers on the standby
 # run all the while (with hot_standby_feedback on none may fail). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON
 # nulls (overflow values with their JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs return the same on the standby, the primary and the heap.
-# The standby is then promoted and takes writes.
+# The standby is then promoted and takes writes. key_cut is off: the rewrite chooses it again from the data (tenant_id here, 13 units), and the units of a cut
+# index are not answered net of exceptions (an IS NULL on the leaf that is mostly NULL scans them), which the check of the merged segment asks for.
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_col.bash"
 
@@ -19,7 +20,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, gone bigint, doc jsonb)" \
 	"INSERT INTO orders (tenant_id, status, qty, gone, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, CASE WHEN i % 500 = 0 THEN i END,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, gone, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
+	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, gone, doc) WITH (key_cut = off, write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)', hll_columns = 'tenant_id, status, qty')" \
 	>/dev/null || bail "setup failed"
 
