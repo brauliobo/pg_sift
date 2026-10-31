@@ -143,7 +143,7 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 ## Features
 
-- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan, counts from the index, facets, autocomplete.
+- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan (the columns of `INCLUDE (...)` are tested before a document is scored, and a join with a small table adds its keys as one more test: [docs/USAGE.md](docs/USAGE.md)), counts from the index, facets, autocomplete.
 - **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
 - **Pre-aggregates, top-N and lookups:** units whose rows are all visible answer from the exact count/sum/min/max stored with them (on by default); `ORDER BY ... LIMIT n` stops after the first rows of the units that can hold them; an equality or `IN` lookup on a key column reads only the units that hold it (`point_columns`, `point_tid_columns`; opt-in per index).
 - **Faster paths of 3.4**:
@@ -236,5 +236,5 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->720 regression tests (`test/sql`), 43 isolation specs, 112 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->722 regression tests (`test/sql`), 43 isolation specs, 112 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

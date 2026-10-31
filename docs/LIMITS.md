@@ -110,6 +110,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `regex_bytes` | a regular expression of a query | 1,000 | bytes | ERROR 54000 |  | `bm25/query.h` `SIFT_MAX_REGEX_BYTES` |  |
 | `any_list_rows` | rows a query list (= ANY(array)) may match in one scan | 100,000 | rows | normal plan |  | `bm25/planner_path.c` `ANY_LIST_MAX_ROWS` |  |
 | `maint_backoff_ms` | longest wait before a failing background maintenance retries | 3,600,000 | ms | retried once an hour |  | `bm25/maint.c` `BACKOFF_MAX_MS` |  |
+| `semi_set` | rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys) | 65,536 | rows | the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns) |  | `bm25/planner.h` `SIFT_SEMI_MAX_SET` |  |
 
 ## `sift_table` (`src/table`)
 

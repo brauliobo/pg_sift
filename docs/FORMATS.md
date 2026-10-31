@@ -25,6 +25,7 @@ Format major 1. The minor is what a build must read to understand an index or ta
 | 1.2 | segment format 2 | BM25 index |
 | 1.3 | BM25: segments of segment format 3. `sift_table`: a column group with unfrozen rows (`SIFT_SEG_VERS`) | the first such segment |
 | 1.4 | BM25: segments of segment format 4 (the position stream in blocks). A `sift_table` stays at 1.3 | the first such segment |
+| 1.5 | BM25: segments of segment format 5 (the values of the INCLUDE columns). A `sift_table` stays at 1.3 | the first such segment, of an index that names INCLUDE columns |
 
 `sift_col` indexes are never raised: their segment formats are the column engine's (section 4).
 
@@ -39,8 +40,9 @@ failure count (`SIFT_META_FAILURES_MASK`).
 | 2 | `SIFT_SEGFMT_LIVEROWS`: liveness rows per superblock, dead-posting table | 3.0 |
 | 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers (perf/BM25-SIZE.md section 5) | 3.1 PostgreSQL |
 | 4 | `SIFT_SEGFMT_POSBLK`: the position stream of a term in blocks of 32 postings, bit-packed (`bm25/posblk.c`, perf/BM25-SIZE.md section 5.4); a dictionary block says so with `SIFT_DICT_POS2` | 3.7 PostgreSQL |
+| 5 | `SIFT_SEGFMT_ATTR`: format 4 with the values of the INCLUDE columns: per column and SB one record (a 24-byte `SiftAttrColHdr` of the smallest value, the code of an unknown value and the width, then the row of each present page, `width` bits a slot: 0 is NULL, `v - base + 1` a value, the unknown code a document whose heap tuple was gone) after the docmap records, and a docmap trailer `SiftAttrRef[nsb][ncols]`, `u64 recs_end`, `u32 ncols`, `u32 nsb` (`bm25/segment.h`, `bm25/segment_int.h`) | 3.8 PostgreSQL |
 
-A 3.7 build reads 1 to 4 side by side; a merge writes the current format. 3.0 refuses a segment of format 3, and 3.6 and older one of format 4, through the metapage minor
+A 3.8 build reads 1 to 5 side by side, and writes format 5 only for an index with INCLUDE columns (the others stay at 4: a 3.7 library still reads them); a merge writes the current format. 3.0 refuses a segment of format 3, 3.6 and older one of format 4, and 3.7 and older one of format 5, through the metapage minor
 (section 2); `REINDEX` with the older library rewrites it.
 
 ## 4. Column segments (`SiftSegEntry.format` of access methods `sift_col` and `sift_table`)

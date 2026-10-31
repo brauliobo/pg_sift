@@ -106,6 +106,27 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;      -- Bitmap Index Scan child; Filter
 RESET sift.filter_pushdown;
 ```
 
+### INCLUDE columns: tests and small joins inside the ranked scan
+
+`filter_pushdown` finds the rows that pass a qual through another index. A column that a search filters on all the time can instead live in the sift index, as `INCLUDE`; the ranker then drops a document that fails the test before it scores it, and the scan stops after `LIMIT` passing documents rather than after the many matches of a common term:
+
+```sql
+CREATE INDEX docs_fts ON docs USING sift (body) INCLUDE (category_id, created_at);
+
+SELECT id, sift.score(ctid) FROM docs
+WHERE body @@> 'common OR terms' AND created_at >= '2026-09-26'
+ORDER BY sift.score(ctid) DESC LIMIT 10;                      -- Include Tests: 1
+SELECT d.id FROM docs d JOIN categories c ON c.id = d.category_id
+WHERE d.body @@> 'common OR terms' AND c.region = 3
+ORDER BY sift.score(d.ctid) DESC LIMIT 10;                    -- Include Tests: 1 (the keys of the rows of region 3)
+```
+
+Nothing is stored unless `INCLUDE` names the column. The index keeps the value of each document in the segment (up to 8 columns; `boolean`, `smallint`, `integer`, `bigint`, `date`, `timestamp` and `timestamptz`; another type keeps nothing and its tests stay on the heap), in the width the range of the values of a superblock needs: the lab corpus of 1,000,000 articles (a date of 300 days, a category of 1,000, a counter of 1,000,000 values) grows by 1.2, 1.3 and 1.3 bytes a document for the three columns (0.54% and 0.60% of a 212.6 MB index each), 2.4 bytes for the date and the category, 3.7 for the three. The records of a column are together in the segment, so a statement reads the pages of the columns it tests, and `EXPLAIN` says `Include Tests: n`.
+
+**What is tested before scoring:** `col = c`, `<>`, `<`, `<=`, `>`, `>=` (either side; a cross-type integer comparison too), `col IN (c, ...)` and `= ANY` of a constant array of up to 1,024 values, `col IS NULL`, `IS NOT NULL`, and a boolean column or its `NOT`; a comparison is false of NULL. And the join of the scan with a table of at most 65,536 estimated rows that has quals of its own, by an equality between its column and an INCLUDE column, when the query has no outer join: the table is read at the start of the scan and the keys of its rows that pass become one more `IN` test (the join stays, and checks every row as before).
+
+**What stays as it is, and why:** every qual stays in the plan and is checked on the heap row, so the answer is the post-filter plan's (a document whose heap tuple was gone when its segment was written, and a document of the write buffer, pass every test and are checked there). `OR`, an expression of the column, `NOT IN`, a function, a column that is not in `INCLUDE`, a join with an outer join or a table over 65,536 rows are checked after the ranker as without the columns. An `UPDATE` of an INCLUDE column is not a HOT update (the column is an indexed column of the table, and the new row version gets its own entry in the index). A segment is written with the values the heap held at that time; a merge and a VACUUM that rewrite a segment read them from the heap again, a `REINDEX` of an index of an older version writes them.
+
 ## Analyzers, phrases, several columns
 
 Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. With `positions = on` (default) the index stores word positions and decides phrases itself; `positions = off` gives a much smaller index that rechecks phrases in the heap. An index has one key, a `text` column or an immutable expression: concatenate columns (`coalesce` nullable ones; `NULL` keys are not indexed).
