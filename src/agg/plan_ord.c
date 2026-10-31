@@ -98,6 +98,9 @@ order_cost(AggCtx *c, const SiftAggSpec *s, double groups)
 	return cost;
 }
 
+/* the group table of the scan being planned outgrows hash memory */
+static bool ord_table_big;
+
 /* the node's paths with the groups sorted by ord[0..n), promised as `pathkeys` (the pathkeys of this query level) */
 static void
 ordered_add(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist,
@@ -109,6 +112,13 @@ ordered_add(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output
 	s->nord = n;
 	/* the paths keep the spec, which is packed when the plan is made: the array outlives this call (the caller's is on its stack) */
 	s->ord = memcpy(palloc(n * sizeof(SiftAggOrd)), ord, n * sizeof(SiftAggOrd));
+	/* the groups come out of a table that stays in memory (a spilling scan emits them by partition, in the order of the first key when it can) */
+	if (ord_table_big && !sift_aggspec_ord_range(s))
+	{
+		s->nord = 0;
+		s->ord = NULL;
+		return;
+	}
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, pathkeys);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, pathkeys);
@@ -306,10 +316,10 @@ agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *inpu
 	Query	   *parse = root->parse;
 	List	   *seen = NIL;
 
-	/* the groups come out of a table that stays in memory (a spilling scan emits them by partition), and a node that keeps only some of them has nothing to sort */
-	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0) ||
-		table > (double) get_hash_memory_limit())
+	/* a node that keeps only some of the groups has nothing to sort */
+	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0))
 		return;
+	ord_table_big = table > (double) get_hash_memory_limit();
 	/* grouping sets: a key a set leaves out is NULL in its groups, which the keys of this level (the columns themselves) do not say; the parent's pathkeys, on the columns of the sub-select, do */
 	if (root->sort_pathkeys != NIL && s->nsets == 0)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->sort_pathkeys, nworkers, &seen);

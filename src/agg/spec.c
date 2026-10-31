@@ -759,12 +759,39 @@ agg_serial(const SiftAggAgg *a)
 	return "its partial state is not one the leader can merge";
 }
 
+/*
+ * Can a spilled scan give its groups in the order of ord? Its partitions are then ranges of the first order key, which come one after the other in that
+ * order and each sorted by itself: the key is a type whose value is an integer, sorted as it is.
+ */
+bool
+sift_aggspec_ord_range(const SiftAggSpec *s)
+{
+	const SiftAggOrd *o;
+
+	if (s->nord == 0)
+		return false;
+	o = &s->ord[0];
+	if (o->eq != NULL || o->subst != NULL)
+		return false;
+	switch (s->key[o->key].typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return true;
+	}
+	return false;
+}
+
 /* does the group table go to partitions on disk when it outgrows hash memory (agg/spill.c)? It must travel as a blob, one pass, one table */
 bool
 sift_aggspec_spillable(const SiftAggSpec *s)
 {
-	/* an ordered scan holds its groups to the end: the partitions of a spilled scan come one after the other */
-	if (s->topn || s->nord > 0 || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+	/* an ordered scan holds its groups to the end, unless the partitions of a spilled one are ranges of its first key */
+	if (s->topn || (s->nord > 0 && !sift_aggspec_ord_range(s)) || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (s->key[j].kind == SAK_SET)

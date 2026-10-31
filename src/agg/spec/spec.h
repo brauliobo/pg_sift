@@ -101,6 +101,7 @@ extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
 extern const char *sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg);
 
 /* the specs whose group table can also go to partitions on disk past hash memory (agg/spill.c): count, sum, avg, min and max over one pass */
+extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */

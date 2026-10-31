@@ -136,9 +136,10 @@ The executor holds the same budget. When the table of an aggregate made of `coun
 
 - `count(DISTINCT)` and distinct `sum`/`avg` of numbers spill with their sets, united when partitions merge. Each set is walked once for all partitions of a spill, and a `count(DISTINCT)` whose bitmaps held less than a value per 128 bytes of chunks at spill time starts the next tables as a hash set.
 - The set of a column whose values fall in a window of at most 512 (`dist_narrow_words` words of 64 bits) keeps a few words per group instead of a directory and a 1,024-byte chunk, becoming a bitmap when a value falls outside; an integer column whose zones span more than the window starts as a bitmap.
+- A scan that gives its groups in an order (`ORDER BY` the group keys) spills in ranges of the first key when it is an integer, a date or a timestamp, merged in that order (docs/COL-PLAN.md, "Groups in the order the parent sorts by"); another first key keeps the scan until the table is `group_nospill_factor` times hash memory.
 - Shapes that cannot spill (arms of a two-level aggregate, grouping sets, set keys, top-N, ordered-set and generic aggregates, and `sum`/`min`/`max` over combos such as numeric and text columns) keep the scan until the table is `group_nospill_factor` times hash memory (8 MB at least), then the normal plan.
 
-Tests `agg_distinct_narrow`, `agg_group_memory`, `agg_group_spill`, `agg_group_spill_fuzz`, `agg_group_spill_limits`.
+Tests `agg_distinct_narrow`, `agg_group_memory`, `agg_group_spill`, `agg_group_spill_fuzz`, `agg_group_spill_limits`, `agg_group_spill_order`.
 
 ## DISTINCT ON
 
