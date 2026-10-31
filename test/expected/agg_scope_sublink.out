@@ -1,0 +1,72 @@
+-- A scope sublink (IN, EXISTS, NOT EXISTS over a join of the link tables) is a key source: the keys are what PostgreSQL's plan of the sub-select
+-- produces, whatever joins are inside, and the aggregate reads the column index. The shape is in the FROM tree as PostgreSQL leaves it after pulling the
+-- sublink up: a semi or anti join whose right side is a join of two tables, and whose key is a function of columns of both (coalesce of the direct key
+-- and the key of the group). Each statement gets the plan that reads the column index (the FROM list was refused as from_shape) and gives the rows
+-- of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, event_date date NOT NULL, status smallint NOT NULL, value_num numeric(8,2) NOT NULL, deleted_at timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + (g * 7919) % 400, date '2025-01-01' + (g * 31) % 300, g % 5, (g % 97)::numeric / 4, CASE WHEN g % 23 = 0 THEN timestamp '2025-06-01' END FROM generate_series(1, 150000) g;
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, event_date, status, value_num, deleted_at);
+-- the links of a tenant: a key itself, or a group whose members are the keys; a link to an empty group and to a deleted link give no key, a group of NULL members gives NULL
+CREATE TABLE links_a (id int PRIMARY KEY, tenant_id int NOT NULL, group_id int, dim_a_id int, deleted_at timestamp);
+INSERT INTO links_a SELECT g, 1 + g % 6, CASE WHEN g % 3 = 0 THEN g % 9 END, CASE WHEN g % 3 <> 0 THEN 1 + (g * 13) % 400 END, CASE WHEN g % 11 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 120) g;
+CREATE TABLE group_dim_a (group_id int NOT NULL, dim_a_id int, deleted_at timestamp);
+INSERT INTO group_dim_a SELECT g % 8, CASE WHEN g % 17 <> 0 THEN 1 + (g * 29) % 400 END, CASE WHEN g % 13 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 150) g;
+VACUUM (FREEZE, ANALYZE) events, links_a, group_dim_a;
+-- the scope of a tenant as a key source, in the forms an endpoint writes it
+CREATE FUNCTION scope(tenant int) RETURNS text LANGUAGE sql AS $$
+	SELECT format($s$SELECT coalesce(a.dim_a_id, g.dim_a_id) FROM links_a a LEFT JOIN group_dim_a g ON g.group_id = a.group_id AND g.deleted_at IS NULL
+	                 WHERE a.tenant_id = %s AND a.deleted_at IS NULL$s$, tenant)
+$$;
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+	('in', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (' || scope(4) || ') GROUP BY 1'),
+	('in, no join inside', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (SELECT dim_a_id FROM links_a WHERE tenant_id = 4 AND deleted_at IS NULL) GROUP BY 1'),
+	('in, one level more', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (SELECT k FROM (' || replace(scope(4), 'SELECT coalesce(a.dim_a_id, g.dim_a_id)', 'SELECT coalesce(a.dim_a_id, g.dim_a_id) AS k') || ') t) GROUP BY 1'),
+	('in, scope within a scope', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (' || scope(4) || ') AND dim_a_id IN (' || scope(2) || ') GROUP BY 1'),
+	('in and a list', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (SELECT g FROM generate_series(1, 300) g) AND dim_a_id IN (' || scope(3) || ') GROUP BY 1'),
+	('not in', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id NOT IN (' || scope(4) || ') GROUP BY 1'),
+	('not in, keys not null', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id NOT IN (' || scope(4) || ' AND coalesce(a.dim_a_id, g.dim_a_id) IS NOT NULL) GROUP BY 1'),
+	('exists', 'SELECT status, count(*), sum(value_num) FROM events e WHERE deleted_at IS NULL AND EXISTS (SELECT 1 FROM links_a a LEFT JOIN group_dim_a g ON g.group_id = a.group_id AND g.deleted_at IS NULL WHERE a.tenant_id = 4 AND a.deleted_at IS NULL AND coalesce(a.dim_a_id, g.dim_a_id) = e.dim_a_id) GROUP BY 1'),
+	('not exists', 'SELECT status, count(*), sum(value_num) FROM events e WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM links_a a LEFT JOIN group_dim_a g ON g.group_id = a.group_id AND g.deleted_at IS NULL WHERE a.tenant_id = 4 AND a.deleted_at IS NULL AND coalesce(a.dim_a_id, g.dim_a_id) = e.dim_a_id) GROUP BY 1'),
+	('scope of no link', 'SELECT status, count(*), sum(value_num) FROM events WHERE deleted_at IS NULL AND dim_a_id IN (' || scope(99) || ') GROUP BY 1');
+-- whether the plan the statement gets reads the column index, and whether the rows are the normal plan's
+CREATE FUNCTION uses_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION rows_equal(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO b;
+	PERFORM set_config('sift.agg_force', 'off', true);
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT name, uses_scan(q) AS scan, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
+           name           | scan | rows_equal 
+--------------------------+------+------------
+ exists                   | t    | t
+ in                       | t    | t
+ in and a list            | t    | t
+ in, no join inside       | t    | t
+ in, one level more       | t    | t
+ in, scope within a scope | t    | t
+ not exists               | t    | t
+ not in                   | t    | t
+ not in, keys not null    | t    | t
+ scope of no link         | t    | t
+(10 rows)
+
+DROP TABLE forms, events, links_a, group_dim_a;
+DROP FUNCTION scope(int), uses_scan(text), rows_equal(text);
+DROP EXTENSION pg_sift;

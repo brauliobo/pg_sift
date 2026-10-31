@@ -65,12 +65,12 @@ SELECT * FROM check_same($q$SELECT count(*) AS n, sum(amount) AS total, count(pa
 (1 row)
 
 -- a LEFT JOIN whose result is the key set: the key is a coalesce of both tables, and a link without a member keeps its own key. A key that
--- reads two tables of the tree stays with the normal plan (the first query); behind a table of its own, whose column is the key, it is pushed down (the second)
+-- reads two tables of the tree is no key the scan can take from the tree: the sub-select is a fenced key source the scan reads as a plan of its own (the first query); behind a table of its own, whose column is the key, it is pushed down (the second)
 SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
   WHERE e.parent_id IN (SELECT coalesce(l.item_id, m.item_id) FROM links l LEFT JOIN dim_b m ON m.grp_id = l.grp_id AND m.live WHERE l.live)$q$);
  pushed | rows | differences 
 --------+------+-------------
- f      |    1 |           0
+ t      |    1 |           0
 (1 row)
 
 SELECT * FROM check_same($q$SELECT kind, count(*), sum(amount) FROM events e
