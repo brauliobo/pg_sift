@@ -113,7 +113,7 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
  * The exceptions of a unit: when exactly one INT leaf of the top level has at most 1 row in SIFT_PAGG_EXC_DIV not NULL (the fewest, the first of equals), the cube and the
  * element rollups of those rows, built with the dims, measures and calendar grains of the unit's own blobs and appended to xcube (after the leaf, as a varint) and xcube's
  * element blob xecube. eoff[c] is the element offset of each row for a leaf c of a list, NULL for the others. Nothing is appended, and false returned, when no leaf
- * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own. leaf >= 0 selects a stored leaf for verification; -1 chooses the fewest non-NULL rows.
+ * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own and more than a byte for each SIFT_PAGG_EXC_ROWS rows of it. leaf >= 0 selects a stored leaf for verification; -1 chooses the fewest non-NULL rows.
  */
 bool
 sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, int leaf,
@@ -198,7 +198,7 @@ sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const Sift
 	initStringInfo(&xb);
 	initStringInfo(&xe);
 	sift_cpagg_cube(s, &mirror, xc, nx, 0, &xb, &xe);
-	if (xb.len + xe.len > 0 && xb.len + xe.len <= (clen + elen) / SIFT_PAGG_EXC_SHARE)
+	if (xb.len + xe.len > 0 && xb.len + xe.len <= Max((clen + elen) / SIFT_PAGG_EXC_SHARE, nrows / SIFT_PAGG_EXC_ROWS))
 	{
 		sift_col_put_varint(xcube, xleaf);
 		appendBinaryStringInfo(xcube, xb.data, xb.len);

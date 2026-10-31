@@ -171,6 +171,25 @@ FROM pa_units('SELECT dim, count(*), sum(val) FROM ex_reuse WHERE k >= 2 AND (j-
 RESET sift.agg_force;
 DROP TABLE ex_reuse, ex_alternate;
 
+-- Units cut by the grouping column hold few groups, so the exceptions of their stamped rows (1 row in 101, 39 a unit) are about as large as the unit's own cube and
+-- element blob (107 bytes against 166); they are kept all the same, a few bytes for each hundred rows of the unit, and the soft-delete filter is answered net of them
+CREATE TABLE ex_cut AS
+SELECT g AS id, g / 2000 AS tenant, g % 3 AS status, g * 10 AS qty, (g / 2.0)::float8 AS price, CASE WHEN g % 101 = 0 THEN g END::bigint AS stamp,
+       jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || g % 5, 'qty', g % 7))) AS doc
+FROM generate_series(1, 60000) g;
+CREATE INDEX ex_cut_col ON ex_cut USING sift_col (id, tenant, status, qty, price, stamp, doc)
+  WITH (key_cut = 'tenant', key_cut_rows = 4000, paths = 'doc.items[]{category text, qty int4}',
+        preagg = 'cube(tenant: qty, price; status: qty) rollup(doc.items[].category: doc.items[].qty)', superunit = 0);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_cut;
+SELECT sift.col_verify('ex_cut_col', true);
+SET sift.agg_force = on;
+SELECT pa_rows(q, true, true) IS NOT DISTINCT FROM pa_rows(q, false, false) AS same
+FROM (VALUES ('SELECT status, count(*), sum(qty) FROM ex_cut WHERE stamp IS NULL GROUP BY 1')) t(q);
+SELECT net > 0 AS uses_exceptions, scan
+FROM pa_units('SELECT status, count(*), sum(qty) FROM ex_cut WHERE stamp IS NULL GROUP BY 1');
+RESET sift.agg_force;
+DROP TABLE ex_cut;
+
 DROP TABLE ex, ex_old, ex_many, ex_out, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text);
 DROP PROCEDURE pa_settle();

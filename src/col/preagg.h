@@ -49,6 +49,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROLLUP_PERMILLE	20			/* the rollups of one list of elements take at most this share of the unit's bytes */
 #define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
 #define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
+#define SIFT_PAGG_EXC_ROWS		32			/* ... or at most one byte for each 32 rows of the unit: a unit with few groups has a cube as small as its exceptions */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* a unit's rollups of a list always may take this many bytes */
 #define SIFT_PAGG_CUBE_MIN_BUDGET	8192		/* ... and its cube's dims (and calendar cells) this many, or the tail of a table would keep none under the share */
 #define SIFT_PAGG_CAL_PERMILLE	100		/* the calendar dims of a unit together may take this much of its bytes, counted as built (at least the cube's minimum budget) */
