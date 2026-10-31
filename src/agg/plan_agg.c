@@ -462,13 +462,23 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	return true;
 }
 
-/* count(*), and count of a constant or of a unique row id: the kinds that read no column */
+/* a column of the scanned table that the table declares NOT NULL, and no outer join nulls or preserves rows without it (every row the scan counts has it) */
+static bool
+not_null_column(AggCtx *c, Node *arg)
+{
+	Var		   *v = (Var *) strip_relabel(arg);
+
+	return IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0 && bms_is_empty(c->nulling) && !preserved_join(c) &&
+		bms_is_member(v->varattno, c->rel->notnullattnums);
+}
+
+/* count(*), and count of a constant, of a NOT NULL column or of a unique row id: the kinds that read no column */
 static bool
 count_rows_kind(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 {
 	if (a->aggfnoid != F_COUNT_ANY)
 		return false;
-	if (a->aggdistinct == NIL && IsA(strip_relabel(arg), Const) && !((Const *) strip_relabel(arg))->constisnull)
+	if (a->aggdistinct == NIL && ((IsA(strip_relabel(arg), Const) && !((Const *) strip_relabel(arg))->constisnull) || not_null_column(c, arg)))
 		out->kind = SAA_COUNT_STAR;
 	else if (a->aggdistinct != NIL && unique_row_column(c, arg))
 		out->kind = SAA_COUNT_ROWS;
