@@ -12,13 +12,15 @@
 # 3 the merge commit failed; 4 a gate is red (lint, generated files, bench cases, privacy, focus table); 5 the PR deletes files (ALLOW_DELETE=1 after checking they are its
 # own); 6 the PR is closed; 7 another run is landing this same PR; 75 try again (checks still pending or missing, the tip or the branch moved, GitHub unreachable): run it again.
 #
-# Steps: (1) when the PR head does not hold the tip, merge the tip into the branch. A conflict only in what both sides add to (CHANGELOG, bench/cases.tsv, bench/results/*.tsv,
+# Steps: (1) when the PR head does not hold the tip, merge the tip into the branch, unless GitHub says the PR merges cleanly onto the tip and the required checks of the head are
+# green or still running: a merge-up restarts them, and with a landing every few minutes the tip is always newer than any head (the semantic breakage between PRs that do not conflict
+# is caught by the checks of the batch pull request into main). A conflict only in what both sides add to (CHANGELOG, bench/cases.tsv, bench/results/*.tsv,
 # the list lines of Makefile, scripts/focus.tsv) or in a generated file is resolved; any other is exit 2. The CHANGELOG is
 # checked after every merge (no marker left, no line of Unreleased twice, no entry moved out of Unreleased or lost): a broken one is exit 2 and nothing is pushed. If the tip
 # moved while the gates ran, it is merged again (three rounds; the gates run once, the checks of the pushed head are the rest). (2) After a merge: scripts/lint.sh. (3) The privacy gate on
 # the added lines, the commit messages and the PR title and body, and the focus-table row of every new test/sql file. (4) A push, always after a merge of the tip: GitHub
 # squashes the PR diff onto the tip, and a branch that is behind it conflicts there even when the local merge was clean. (5) The required checks of the new head (the branch
-# protection list, else gate and neutral) are waited for: up to CHECK_WAIT seconds (600) while pending, MISSING_WAIT (300) while they have not appeared. (6) The tip is fetched
+# protection list, else gate and neutral) are waited for: up to CHECK_WAIT seconds (1500) while pending, MISSING_WAIT (300) while they have not appeared. (6) The tip is fetched
 # again; if it moved while the checks ran, the answer of GitHub on the PR is waited for (UNKNOWN lasts seconds after every push to the base): MERGEABLE merges, CONFLICTING merges the tip into the branch again and runs the gates of the new head (three attempts), anything else exit 75. (7) The merge, `gh pr merge --match-head-commit` of the commit that was
 # checked: rebase, or squash (PR title as subject, PR body) when the branch holds a merge commit, which GitHub refuses to rebase. Never a force-push. The line in MERGED.md says
 # `merge-up` and `changelog-conflict` when the landing needed them, so they can be counted.
@@ -115,13 +117,13 @@ local_gate_record() {
 	gh pr comment "$pr" --repo "$repo" --body "local gate: lint, neutral, docs, options, bench-case and privacy checks passed on \`$1\` in a clean work tree (LAND_LOCAL_GATE, no hosted checks)" >/dev/null
 }
 
-# wait_checks HEAD REQUIRED: sets verdict; a pending check is waited for up to CHECK_WAIT seconds (600), one that has not appeared yet (GitHub starts the checks of a pushed
+# wait_checks HEAD REQUIRED: sets verdict; a pending check is waited for up to CHECK_WAIT seconds (1500: the PostgreSQL 18 job of a busy runner takes 20 minutes), one that has not appeared yet (GitHub starts the checks of a pushed
 # head late) up to MISSING_WAIT (300), every LAND_POLL seconds (15); no lock is held
 wait_checks() {
 	local waited=0 limit poll=${LAND_POLL:-15}
 	while :; do
 		verdict=$(checks_verdict "$1" "$2")
-		case $verdict in pending*) limit=${CHECK_WAIT:-600} ;; missing*) limit=${MISSING_WAIT:-300} ;; *) return 0 ;; esac
+		case $verdict in pending*) limit=${CHECK_WAIT:-1500} ;; missing*) limit=${MISSING_WAIT:-300} ;; *) return 0 ;; esac
 		(( waited < limit )) || return 0
 		sleep "$poll" # wait: the required checks of this PR, and GitHub to show a pushed head
 		waited=$((waited + poll))
@@ -167,6 +169,14 @@ settle_mergeable() {
 	MG=UNKNOWN
 }
 
+# skip_mergeup HEAD REQUIRED: 0 when the head need not hold the tip to be landed: GitHub says the PR merges cleanly onto it and the required checks of the head are green or still
+# running. A merge-up would push a new head and restart them
+skip_mergeup() {
+	settle_mergeable "$pr"
+	[[ $MG == MERGEABLE ]] || return 1
+	case $(checks_verdict "$1" "$2") in ok | pending*) return 0 ;; *) return 1 ;; esac
+}
+
 # lint_slot CMD...: at most LAND_LINT_SLOTS (default 2) lints run on the box at once, each one low priority (a lint runs thirty checks side by side, and ten landings at the same time
 # kept the CPU pressure at 40%); the others wait here with no lock but their own held. A tree that already passed lint on this box (same git tree, stamp in $DIR) is not linted again.
 lint_slot() {
@@ -202,8 +212,15 @@ worker() {
 	[[ -z $dels || -n ${ALLOW_DELETE:-} ]] || { echo "REFUSED #$pr: the PR deletes files ($dels); check they are its own, then ALLOW_DELETE=1"; exit 5; }
 	fetch_tip && head=$(fetch_pr_head "$pr") || { echo "cannot fetch #$pr or $base"; exit 75; }
 
+	required=
+	if prot=$(gh api "repos/$repo/branches/$base/protection/required_status_checks" --jq '.contexts[]' 2>/dev/null); then required=$(sort -u <<<"$prot" | tr '\n' ' '); required=${required% }; fi
+	required=${required:-gate neutral}
+
 	cand=$head   # the commit the gates look at; the one that is checked and merged is the PR head, or what this run pushes
+	nomerge=
+	if ! git merge-base --is-ancestor "origin/$base" "$cand" && skip_mergeup "$head" "$required"; then nomerge=1; echo "the head of #$pr does not hold the tip, GitHub calls it $MG and its required checks are not red: no merge-up (it would restart them)"; fi
 	for round in 1 2 3; do
+		[[ -z $nomerge ]] || break
 		git merge-base --is-ancestor "origin/$base" "$cand" && break
 		# the PR does not hold the tip, or the tip moved while the gates ran: merge it in, in a work tree of this run, and push the result. GitHub squashes the PR diff onto
 		# the tip, and a branch that is behind it conflicts there even when the local merge was clean (every PR adds its CHANGELOG entry at the same spot)
@@ -228,7 +245,7 @@ worker() {
 		cand=$(git rev-parse HEAD); cd "$CLONE" || exit 1
 		fetch_tip || { echo "cannot fetch $base"; exit 75; }
 	done
-	(( push )) || echo "up to date"
+	(( push )) || [[ -n $nomerge ]] || echo "up to date"
 
 	# privacy and focus table on the commit to merge: before any push
 	meta=$(gh pr view "$pr" --repo "$repo" --json title,body -q '.title + "\n" + .body') || { echo "cannot read the text of #$pr"; exit 75; }
@@ -242,9 +259,6 @@ worker() {
 		[[ -z $missing ]] || red "no row in scripts/focus.tsv for: $missing(run scripts/focus-gen.sh NAME... and commit scripts/focus.tsv)"
 	fi
 
-	required=
-	if prot=$(gh api "repos/$repo/branches/$base/protection/required_status_checks" --jq '.contexts[]' 2>/dev/null); then required=$(sort -u <<<"$prot" | tr '\n' ' '); required=${required% }; fi
-	required=${required:-gate neutral}
 	if [[ -n $dry ]]; then
 		if (( push )); then echo "dry run: would push the merge-up to $br, then wait for the required checks ($required)"; else echo "dry run: required checks ($required): $(checks_verdict "$head" "$required")"; fi
 		merges=$(gh api "repos/$repo/pulls/$pr/commits" --paginate --jq '[.[] | select(.parents | length > 1)] | length' | awk '{ n += $1 } END { print n + 0 }')
@@ -281,7 +295,7 @@ worker() {
 	if ! git merge-base --is-ancestor "origin/$base" "$head"; then
 		settle_mergeable "$pr"
 		case $MG in
-			MERGEABLE) [[ $ST != BLOCKED && $ST != DRAFT ]] || { echo "the tip moved while the checks ran and GitHub calls #$pr $st: run land.sh again"; exit 75; } ;;
+			MERGEABLE) [[ $ST != BLOCKED && $ST != DRAFT ]] || { echo "the tip moved while the checks ran and GitHub calls #$pr $ST: run land.sh again"; exit 75; } ;;
 			CONFLICTING)
 				if (( ${LAND_ATTEMPT:-1} < 3 )); then
 					echo "the tip moved while the checks ran and conflicts with #$pr: merging it again (attempt $(( ${LAND_ATTEMPT:-1} + 1 )) of 3)"

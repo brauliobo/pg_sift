@@ -279,5 +279,26 @@ awk -v c="$cpu" 'BEGIN { exit !(c > 0) }' || fail "children_cpu reads $cpu for a
 ( . "$LAND"; PATH=$T/bin16:$PATH; repo=x/y pr=3; local_gate_record abc123 ) || fail "local_gate_record failed with a working gh"
 has 'api repos/x/y/statuses/abc123 -f state=success -f context=local-gate' "$T/gh16.log" && has 'pr comment 3 --repo x/y --body local gate: .*abc123' "$T/gh16.log" || fail "the local gate is not recorded on the head: $(<"$T/gh16.log")"
 
+# 17. skip_mergeup: a head that does not hold the tip is landed as it is when GitHub says the PR merges cleanly and its required checks are green or running; a conflict, a red or
+# missing check, or no answer from GitHub merges the tip in
+mkdir -p "$T/bin17"
+cat >"$T/bin17/gh" <<'GH'
+#!/usr/bin/env bash
+case "$*" in *mergeStateStatus*) printf '%s\t%s\n' "${FAKE_MG:-MERGEABLE}" BEHIND ;; *) cat "$T_DIR/gh17.json" ;; esac
+GH
+chmod +x "$T/bin17/gh"
+skip() { rm -f "$T/gh17.json"; [[ -z ${2:-} ]] || printf '%s\n' "$2" >"$T/gh17.json"; ( export FAKE_MG=$1; timeout 20 bash -c '. "$1"; pr=1 repo=x/y; LAND_POLL=0.01; PATH=$2:$PATH; skip_mergeup H "neutral lint" && echo skip || echo merge-up' _ "$LAND" "$T/bin17" ); }
+while IFS='|' read -r want mg rollup; do
+	got=$(skip "$mg" "$(J H "$(eval "echo $rollup")")")
+	[[ $got == "$want" ]] || fail "skip_mergeup: want '$want', got '$got' for $mg and $rollup"
+done <<'EOF17'
+skip|MERGEABLE|$N_OK,$(ck lint COMPLETED SUCCESS 2026-01-01T00:00:02Z)
+skip|MERGEABLE|$N_OK,$(ck lint IN_PROGRESS "" "")
+merge-up|MERGEABLE|$N_OK,$(ck lint COMPLETED FAILURE 2026-01-01T00:00:02Z)
+merge-up|MERGEABLE|
+merge-up|CONFLICTING|$N_OK,$(ck lint COMPLETED SUCCESS 2026-01-01T00:00:02Z)
+merge-up|UNKNOWN|$N_OK,$(ck lint COMPLETED SUCCESS 2026-01-01T00:00:02Z)
+EOF17
+
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad
