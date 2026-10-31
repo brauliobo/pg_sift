@@ -1,0 +1,122 @@
+-- Parallel CREATE INDEX: the participants also write the segment, each a range of the terms; the leader
+-- stitches the ranges. The index is the one a serial build writes, byte for byte.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pageinspect;
+SET maintenance_work_mem = '64MB';
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 3;
+
+CREATE FUNCTION idx_digest(r regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT md5(string_agg(substring(get_raw_page(r::text, n::int) FROM 11), ''::bytea ORDER BY n))
+	FROM generate_series(0, pg_relation_size(r) / 8192 - 1) n
+$$;
+
+CREATE TABLE br (id serial, body text) WITH (parallel_workers = 3);
+INSERT INTO br (body)
+SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' z' || (i * i % 9973) || ' common word' || (i % 50) || ' ' || repeat('filler ', i % 5)
+	|| CASE WHEN i % 3 = 0 THEN ' rare' || (i % 5000) ELSE '' END
+FROM generate_series(1, 40000) i;
+UPDATE br SET body = NULL WHERE id % 1000 = 0;
+DELETE FROM br WHERE id % 13 = 0;
+
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX br_ser ON br USING sift (body);
+SELECT idx_digest('br_ser') AS serial_digest \gset
+SELECT current_setting('sift.test_range_pieces')::int AS serial_pieces;
+DROP INDEX br_ser;
+
+-- small runs and pieces: many of both
+SET max_parallel_maintenance_workers = 3;
+SET sift.test_run_docs = 3000;
+SET sift.test_range_bytes = 20000;
+SET sift.test_par_workers = 0;
+SET sift.test_range_pieces = 0;
+CREATE INDEX br_par ON br USING sift (body);
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+SELECT current_setting('sift.test_range_pieces')::int > 3 AS ranges;
+SELECT idx_digest('br_par') = :'serial_digest' AS same_bytes;
+SELECT sift.verify('br_par', true);
+DROP INDEX br_par;
+
+-- the default piece size
+RESET sift.test_run_docs;
+RESET sift.test_range_bytes;
+CREATE INDEX br_par ON br USING sift (body);
+SELECT idx_digest('br_par') = :'serial_digest' AS same_bytes_default;
+SELECT sift.verify('br_par', true);
+
+-- REINDEX goes through the same build
+SET sift.test_range_bytes = 20000;
+SET sift.test_range_pieces = 0;
+REINDEX INDEX br_par;
+SELECT current_setting('sift.test_range_pieces')::int > 3 AS reindex_ranges;
+SELECT idx_digest('br_par') = :'serial_digest' AS reindex_same_bytes;
+SELECT count(*) FROM br WHERE body @@> 'rare17';
+
+-- a segment without positions
+SET sift.test_range_bytes = 20000;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX br_np ON br USING sift (body) WITH (positions = off);
+SELECT idx_digest('br_np') AS serial_np \gset
+DROP INDEX br_np;
+SET max_parallel_maintenance_workers = 3;
+SET sift.test_range_pieces = 0;
+CREATE INDEX br_np ON br USING sift (body) WITH (positions = off);
+SELECT current_setting('sift.test_range_pieces')::int > 3 AS np_ranges;
+SELECT idx_digest('br_np') = :'serial_np' AS np_same_bytes;
+
+-- a participant that fails in a range, a worker or the leader, ends the build with the others, and the next one is whole
+RESET sift.test_run_docs;
+SET sift.test_range_bytes = 20000;
+SET sift.test_fail_who = 2;
+SET sift.test_fail_merge = 1;
+CREATE INDEX br_fail ON br USING sift (body);
+SET sift.test_fail_who = 1;
+CREATE INDEX br_fail ON br USING sift (body);
+RESET sift.test_fail_who;
+RESET sift.test_fail_merge;
+SELECT count(*) AS leftover FROM pg_class WHERE relname = 'br_fail';
+SELECT count(*) AS workers_left FROM pg_stat_activity WHERE backend_type = 'parallel worker';
+CREATE INDEX br_fail ON br USING sift (body);
+SELECT idx_digest('br_fail') = :'serial_digest' AS same_bytes_after;
+DROP INDEX br_fail;
+
+-- the runs merged by the leader alone (no range is cut under that many bytes) and by all, as many bytes, but for a layout of several
+-- segments (where the runs a participant gets decide the segments): a small merge fan-in and the older segment formats; each index is verified
+CREATE FUNCTION layouts() RETURNS TABLE (digest text, segments bigint, pieces int) LANGUAGE plpgsql AS $$
+DECLARE
+	r int;
+BEGIN
+	FOR r IN SELECT unnest(ARRAY[2000000000, 20000]) LOOP
+		PERFORM set_config('sift.test_range_bytes', r::text, false);
+		PERFORM set_config('sift.test_range_pieces', '0', false);
+		EXECUTE 'CREATE INDEX br_lay ON br USING sift (body)';
+		PERFORM sift.verify('br_lay', true);
+		digest := idx_digest('br_lay');
+		SELECT count(*) INTO segments FROM sift.segments('br_lay');
+		pieces := current_setting('sift.test_range_pieces')::int;
+		RETURN NEXT;
+		EXECUTE 'DROP INDEX br_lay';
+	END LOOP;
+END
+$$;
+SET sift.test_run_docs = 3000;
+SET sift.test_segment_postings = 4000;
+SELECT min(segments) > 1 AS several_segments, min(pieces) = 0 AS leader_alone, max(pieces) > 3 AS ranges FROM layouts();
+RESET sift.test_segment_postings;
+SET sift.test_merge_fanin = 3;
+SELECT count(DISTINCT digest) AS same_bytes, min(pieces) = 0 AS leader_alone, max(pieces) > 3 AS ranges FROM layouts();
+RESET sift.test_merge_fanin;
+SET sift.test_segfmt = 2;
+SELECT count(DISTINCT digest) AS same_bytes, min(pieces) = 0 AS leader_alone, max(pieces) > 3 AS ranges FROM layouts();
+RESET sift.test_segfmt;
+SET sift.test_segment_postings = 4000;
+SET sift.test_segfmt = 3;
+SELECT min(segments) > 1 AS several_segments, min(pieces) = 0 AS leader_alone, max(pieces) > 3 AS ranges FROM layouts();
+RESET sift.test_segfmt;
+
+DROP FUNCTION layouts();
+DROP TABLE br;
+DROP FUNCTION idx_digest(regclass);
+DROP EXTENSION pageinspect;
+DROP EXTENSION pg_sift;

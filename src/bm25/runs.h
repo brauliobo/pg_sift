@@ -28,6 +28,8 @@ extern PGDLLIMPORT int sift_test_fanin;
 extern PGDLLIMPORT int sift_test_segment_postings;
 /* blocks of 64 kB the buffer's pool has (0 = 60000) */
 extern PGDLLIMPORT int sift_test_pool_blocks;
+/* bytes of runs under which a range of terms of a parallel build is not cut, and between two samples of the terms of a run (0 = 512 kB and 64 kB) */
+extern PGDLLIMPORT int sift_test_range_bytes;
 /* Called by a merge to a run or a segment after each term (nterms so far, df of the term), when set: how the host tests it */
 extern PGDLLIMPORT void (*sift_test_merge_term) (uint32 nterms, uint64 df);
 #define TEST_MERGE_TERM(nterms, df)	do { if (sift_test_merge_term) sift_test_merge_term(nterms, df); } while (0)
@@ -48,6 +50,8 @@ struct SiftRun
 	uint64		maxdf;			/* postings of its largest term */
 	uint64		maxblob;		/* bytes the largest term takes of a segment, at most */
 	uint64		dict;			/* bytes the terms take of a segment's dictionary, at most */
+	uint64		sum_dl;			/* of its docs */
+	uint64		trailer;		/* where the term samples start after its end, 0 for a run without (see run_finish) */
 	int			level;			/* merge passes the run has been through (spill cascade) */
 	SharedFileSet *fileset;		/* NULL for a temporary file, else the file sift_run_file(worker, id) of the set */
 	int			worker;
@@ -111,6 +115,36 @@ typedef struct RunHome
 
 /* The most runs one merge reads: its buffers must fit the budget, the leader reads this many of each worker */
 #define MAX_MERGE_FANIN	256
+
+/*
+ * The segment of a group of runs written by several processes, each a range of the terms (the build of a parallel CREATE INDEX): the
+ * runs hold samples of their terms, which cut the terms of the group into ranges of about the same bytes. The process of the segment
+ * writes the docs (sift_runs_write_docs), the others (and it) the postings of a range each (sift_runs_write_range, into a range writer
+ * of segment.h), which it then stitches into the segment.
+ */
+typedef struct SiftTermCut
+{
+	int			len;
+	char		term[SIFT_MAX_TERM_BYTES];
+} SiftTermCut;
+
+#define MAX_RANGES		64
+
+/* Whether the runs hold the samples of their terms and are files of a fileset (the processes of a build open them by name) */
+extern bool sift_runs_splittable(SiftRun **runs, int nruns);
+
+/* The cuts (in term order) that split the terms of the runs into about target ranges of the same bytes of the runs, none under min_bytes; returns their number (target - 1 at most) */
+extern int	sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int target, SiftTermCut *cuts);
+
+/* Starts the segment of the runs with all their docs; the terms come from the ranges */
+extern SiftSegmentWriter *sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
+											   MemoryContext mcxt);
+
+/* The terms from lo (NULL: the first) up to, not including, hi (NULL: the last) of the runs into the range writer */
+extern void sift_runs_write_range(SiftRun **runs, int nruns, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw);
+
+/* Closes the runs of a segment that was written in ranges */
+extern void sift_runs_close(SiftRun **runs, int nruns);
 
 extern const char *sift_run_file(int worker, int run);
 extern int	sift_merge_fanin(Size budget);

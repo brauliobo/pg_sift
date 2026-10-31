@@ -217,10 +217,11 @@ end_segment(BuildState *bs)
 		int			n;
 
 		progress_phase(bs, PHASE_MERGE);
-		n = sift_shrink_runs(bs->runs + first, last - first, sift_merge_fanin(bs->budget), bs->budget, &tmp);
+		n = sift_shrink_runs(bs->runs + first, last - first, sift_merge_fanin(bs->budget), bs->budget, bs->shared ? &bs->home : &tmp);
 		entry = next_entry(bs, &gen);
 		progress_phase(bs, PHASE_WRITE);
-		sift_runs_write(bs->runs + first, n, bs->wt, gen, &bs->ref, entry);
+		if (!bs->shared || !sift_ranges_write(bs, bs->runs + first, n, gen, entry))
+			sift_runs_write(bs->runs + first, n, bs->wt, gen, &bs->ref, entry);
 		progress_written(bs, entry);
 		first = last;
 	}

@@ -60,6 +60,7 @@ struct SiftStreamWriter
 	uint32		grow;
 	uint64		blocks;			/* blocks taken for this stream */
 	SiftExtentList ext;
+	BufFile    *spool;			/* a stream of a range of a parallel build: the bytes go to this file, not to pages */
 };
 
 Relation
@@ -494,6 +495,15 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	return sw;
 }
 
+SiftStreamWriter *
+sift_sw_begin_spool(BufFile *file)
+{
+	SiftStreamWriter *sw = palloc0(sizeof(SiftStreamWriter));
+
+	sw->spool = file;
+	return sw;
+}
+
 uint64
 sift_sw_tell(const SiftStreamWriter *sw)
 {
@@ -579,6 +589,12 @@ sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len)
 {
 	const char *p = data;
 
+	if (sw->spool)
+	{
+		BufFileWrite(sw->spool, data, len);
+		sw->pos += len;
+		return;
+	}
 	while (len > 0)
 	{
 		size_t		n;

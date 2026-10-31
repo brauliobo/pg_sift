@@ -78,6 +78,16 @@ extern void sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings);
 extern SiftPostingWriter *sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len);
 extern void sift_segw_end_term(SiftSegmentWriter *w);
 
+/*
+ * The segment written by several processes: each writes a range of the terms into a writer that has a stream of its own for the term
+ * blobs (post: its offsets count from 0) and the dictionary entries of the terms in the file ent. The writer of the docs then appends the ranges in
+ * term order (avgdl: what the ranges were scored with, which the docs must come to): the blobs of a range after the padding to 4 bytes the stream of a single writer has, the entries to the dictionary with
+ * the offsets of the blobs moved to where they landed. The segment is the one a single writer makes, byte for byte.
+ */
+extern SiftSegmentWriter *sift_segw_begin_range(SiftStreamWriter *post, BufFile *ent, const SiftScoreRef *ref, MemoryContext mcxt);
+extern uint64 sift_segw_range_terms(const SiftSegmentWriter *w);
+extern void sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufFile *ent, uint64 nterms, float4 avgdl);
+
 /* Writes sections, LIVE pages (all live) and the header; fills the directory entry */
 extern void sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry);
 

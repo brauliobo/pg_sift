@@ -446,6 +446,8 @@ sift_extents_block(const SiftExtent *ext, const uint32 *pagestart, int n, uint32
 typedef struct SiftStreamWriter SiftStreamWriter;
 
 extern SiftStreamWriter *sift_sw_begin(SiftWriteTarget *wt, uint64 gen);
+/* PostgreSQL host only: a stream whose bytes go to file (offsets count from 0), for a range of a segment that another process appends (bm25/build_ranges.c) */
+extern SiftStreamWriter *sift_sw_begin_spool(BufFile *file);
 extern uint64 sift_sw_tell(const SiftStreamWriter *sw);
 extern void sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len);
 /* The first len bytes of a temporary file (the spool of a section written out of order), from its start */

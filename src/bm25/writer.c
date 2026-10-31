@@ -56,6 +56,9 @@ struct SiftSegmentWriter
 	SiftDictWriter *dw;
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			termlen;
+	/* a writer of a range of the terms (sift_segw_begin_range): the dictionary entries go to this file instead of dw */
+	BufFile    *ent;
+	uint64		nterms;
 };
 
 static void
@@ -371,6 +374,18 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 	}
 }
 
+static void
+postw_open(SiftSegmentWriter *w)
+{
+	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
+	if (w->spool_min)
+		sift_postw_spool(w->pw, w->spool_min);
+	if (w->fmt >= SIFT_SEGFMT_PACKED)
+		sift_postw_pack(w->pw);
+	if (w->fmt >= SIFT_SEGFMT_POSBLK)
+		sift_postw_posblk(w->pw);
+}
+
 /* Closes DOCMAP and opens POSTINGS on the first term */
 static void
 start_terms(SiftSegmentWriter *w)
@@ -414,13 +429,7 @@ start_terms(SiftSegmentWriter *w)
 	w->hdr.sections[SIFT_SEC_DOCMAP].len = sift_sw_tell(w->sw);
 	w->hdr.sections[SIFT_SEC_POSTINGS].off = sift_sw_tell(w->sw);
 	w->ref.avgdl = (float4) ((double) w->sum_dl / w->ndocs);
-	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
-	if (w->spool_min)
-		sift_postw_spool(w->pw, w->spool_min);
-	if (w->fmt >= SIFT_SEGFMT_PACKED)
-		sift_postw_pack(w->pw);
-	if (w->fmt >= SIFT_SEGFMT_POSBLK)
-		sift_postw_posblk(w->pw);
+	postw_open(w);
 	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED, w->fmt >= SIFT_SEGFMT_POSBLK);
 	pfree(w->offmask);
 	pfree(w->dl);
@@ -430,7 +439,9 @@ start_terms(SiftSegmentWriter *w)
 SiftPostingWriter *
 sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len)
 {
-	if (w->pw == NULL)
+	if (w->pw == NULL && w->ent)
+		postw_open(w);
+	else if (w->pw == NULL)
 		start_terms(w);
 	SIFT_INVARIANT(len >= 1 && len <= SIFT_MAX_TERM_BYTES, "sift: term of %d bytes", len);
 	memcpy(w->term, term, len);
@@ -444,7 +455,92 @@ sift_segw_end_term(SiftSegmentWriter *w)
 	SiftTermInfo info;
 
 	sift_postw_end_term(w->pw, &info);
+	if (w->ent)
+	{
+		uint8		len = w->termlen;
+
+		BufFileWrite(w->ent, &len, 1);
+		BufFileWrite(w->ent, w->term, len);
+		BufFileWrite(w->ent, &info, sizeof(info));
+		if ((info.flags & SIFT_TERM_INLINE) && (info.flags & SIFT_TERM_POS))
+			BufFileWrite(w->ent, info.inline_pos, info.pos_len);
+		w->nterms++;
+		return;
+	}
 	sift_dict_add(w->dw, w->term, w->termlen, &info);
+}
+
+SiftSegmentWriter *
+sift_segw_begin_range(SiftStreamWriter *post, BufFile *ent, const SiftScoreRef *ref, MemoryContext mcxt)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftSegmentWriter *w = palloc0(sizeof(SiftSegmentWriter));
+
+	w->fmt = SIFT_WRITE_SEGFMT;
+#ifdef SIFT_TESTING
+	if (sift_test_segfmt > 0)
+		w->fmt = Min(sift_test_segfmt, SIFT_WRITE_SEGFMT);
+#endif
+	w->mcxt = mcxt;
+	w->ref = *ref;
+	w->sw = post;
+	w->ent = ent;
+	w->termlen = -1;
+	MemoryContextSwitchTo(old);
+	return w;
+}
+
+uint64
+sift_segw_range_terms(const SiftSegmentWriter *w)
+{
+	return w->nterms;
+}
+
+void
+sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufFile *ent, uint64 nterms, float4 avgdl)
+{
+	uint64		base;
+	uint8	   *pos = NULL;
+	Size		poscap = 0;
+
+	if (w->pw == NULL)
+		start_terms(w);
+	SIFT_INVARIANT(w->ref.avgdl == avgdl, "sift: the ranges of a segment were scored with an average length %g, its docs have %g", avgdl, w->ref.avgdl);
+	if (post_len > 0)
+	{
+		sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
+		sift_sw_write_file(w->sw, post, post_len);
+	}
+	base = sift_sw_tell(w->sw) - post_len;
+	SIFT_INVARIANT(BufFileSeek(ent, 0, 0, SEEK_SET) == 0, "sift: could not rewind a range of terms");
+	for (uint64 i = 0; i < nterms; i++)
+	{
+		SiftTermInfo info;
+		char		term[SIFT_MAX_TERM_BYTES];
+		uint8		len;
+
+		BufFileReadExact(ent, &len, 1);
+		BufFileReadExact(ent, term, len);
+		BufFileReadExact(ent, &info, sizeof(info));
+		if (info.flags & SIFT_TERM_INLINE)
+		{
+			if (info.flags & SIFT_TERM_POS)
+			{
+				if (info.pos_len > poscap)
+				{
+					poscap = Max(info.pos_len, 256);
+					pos = pos ? repalloc(pos, poscap) : palloc(poscap);
+				}
+				BufFileReadExact(ent, pos, info.pos_len);
+			}
+			info.inline_pos = pos;
+		}
+		else
+			info.post_off += base;
+		sift_dict_add(w->dw, term, len, &info);
+	}
+	if (pos)
+		pfree(pos);
 }
 
 void

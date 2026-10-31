@@ -20,6 +20,8 @@ extern PGDLLIMPORT int sift_test_fail_who;
 /* a CREATE INDEX waits to enter each progress phase (2 scan, 3 spill, 4 merge, 5 write) for the advisory lock this + the phase (0 = no gate) */
 extern PGDLLIMPORT int sift_test_phase_gate;
 extern void sift_test_phase_wait(int phase);
+/* ranges of terms the participants of the last parallel CREATE INDEX of this backend wrote (0 = none) */
+extern PGDLLIMPORT int sift_test_range_pieces;
 #endif
 
 #endif							/* SIFT_BUILD_H */

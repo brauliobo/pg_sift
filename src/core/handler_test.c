@@ -34,6 +34,12 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_par_workers",
 							"Testing: parallel workers the last CREATE INDEX of this session launched (a test sets it to 0 before the build).",
 							NULL, &sift_test_par_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_range_pieces",
+							"Testing: ranges of terms the participants of the last parallel CREATE INDEX of this session wrote (a test sets it to 0 before the build).",
+							NULL, &sift_test_range_pieces, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_range_bytes",
+							"Testing: bytes of runs under which a range of terms of a parallel CREATE INDEX is not cut (0 = the default).",
+							NULL, &sift_test_range_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_load_publish",
 							"Testing: segments of a COPY's ring the backend takes before it publishes them (0 = the default of 8).",
 							NULL, &sift_test_load_publish, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

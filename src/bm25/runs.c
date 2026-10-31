@@ -5,6 +5,7 @@
 #include "core/host.h"
 
 #include "core/cmp.h"
+#include "core/varint.h"
 #include "bm25/runs.h"
 #include "bm25/runs_int.h"
 
@@ -15,6 +16,7 @@ int			sift_test_run_docs = 0;
 int			sift_test_fanin = 0;
 int			sift_test_segment_postings = 0;
 int			sift_test_pool_blocks = 0;
+int			sift_test_range_bytes = 0;
 void		(*sift_test_merge_term) (uint32 nterms, uint64 df) = NULL;
 #endif
 
@@ -71,9 +73,19 @@ run_open(SiftRun *run)
 static void
 run_close(SiftRun *run)
 {
-	BufFileClose(run->file);
+	if (run->file)
+		BufFileClose(run->file);
 	if (run->fileset)
 		BufFileDeleteFileSet(&run->fileset->fs, sift_run_file(run->worker, run->id), false);
+}
+
+/* Closes the handle of a run another process wrote; the file stays for the next process to read */
+static void
+run_release(SiftRun *run)
+{
+	if (run->file)
+		BufFileClose(run->file);
+	run->file = NULL;
 }
 
 /* Runs one merge reads at a time: a reader each (the smallest has two blocks), within half the budget */
@@ -118,7 +130,55 @@ void
 io_flush(RunIO *io)
 {
 	BufFileWrite(io->file, io->buf, io->len);
+	io->off += io->len;
 	io->len = 0;
+}
+
+/*
+ * A run ends with a varint 0 (no more terms), then the samples of its terms: varint number of samples, varint offset of the 0, and
+ * for each sample varint length, the term, varint offset of its record. A sample is taken at the first term and once SAMPLE_BYTES of the run
+ * passed since the last one: a reader that wants the terms from one on (a range of a parallel build) starts at the last sample before it.
+ */
+#define SAMPLE_BYTES	TEST_KNOB(sift_test_range_bytes, 65536)
+
+void
+run_sample(RunIO *io, const char *term, int len)
+{
+	uint64		at = io_tell(io);
+	uint8	   *p;
+
+	if (io->nsmp > 0 && at - io->smp_at < SAMPLE_BYTES)
+		return;
+	if (io->smp_len + len + 2 * 10 > io->smp_cap)
+	{
+		io->smp_cap = Max(4096, io->smp_cap * 2);
+		io->smp = io->smp ? repalloc(io->smp, io->smp_cap) : palloc(io->smp_cap);
+	}
+	p = sift_put_varint(io->smp + io->smp_len, len);
+	memcpy(p, term, len);
+	p = sift_put_varint(p + len, at);
+	io->smp_len = p - io->smp;
+	io->smp_at = at;
+	io->nsmp++;
+}
+
+/* Writes the end of the run: no more terms, the samples */
+void
+run_finish(SiftRun *run, RunIO *io)
+{
+	uint64		end = io_tell(io);
+
+	io_varint(io, 0);
+	run->trailer = io_tell(io);
+	io_varint(io, io->nsmp);
+	io_varint(io, end);
+	if (io->smp_len > 0)
+		io_put(io, io->smp, io->smp_len);
+	io_flush(io);
+	if (io->smp)
+		pfree(io->smp);
+	io->smp = NULL;
+	io->smp_len = io->smp_cap = 0;
 }
 
 
@@ -285,6 +345,7 @@ out_begin_term(MergeOut *mo, Batch *bt, const char *term, int len, uint64 df)
 		bt->pw = sift_segw_begin_term(mo->sw, term, len);
 		return;
 	}
+	run_sample(&mo->io, term, len);
 	io_varint(&mo->io, len);
 	io_put(&mo->io, term, len);
 	io_varint(&mo->io, df);
@@ -454,9 +515,9 @@ open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint64 *nd
 	return rd;
 }
 
-/* Merges the docs and the terms of the opened runs into mo */
+/* Merges the terms of the runs, each positioned on its first (rd->len, 0 at its end), that are below hi (NULL: all) into mo */
 static void
-merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
+merge_terms(RunReader *rd, int nruns, bool positions, MergeOut *mo, const SiftTermCut *hi)
 {
 	RunReader **cur = palloc(nruns * sizeof(RunReader *));
 	RunReader **act = palloc(nruns * sizeof(RunReader *));
@@ -465,13 +526,9 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 	uint32		nterms = 0;
 
 	bt->run = mo->sw ? NULL : &mo->io;
-	merge_docs(mo, rd, nruns);
 	for (int i = 0; i < nruns; i++)
-	{
-		reader_next_term(&rd[i]);
 		if (rd[i].len)
 			binaryheap_add_unordered(heap, PointerGetDatum(&rd[i]));
-	}
 	binaryheap_build(heap);
 	while (!binaryheap_empty(heap))
 	{
@@ -481,6 +538,8 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 		uint64		df = 0;
 
 		memcpy(term, ((RunReader *) DatumGetPointer(binaryheap_first(heap)))->term, len);
+		if (hi && sift_term_cmp(term, len, hi->term, hi->len) >= 0)
+			break;
 		while (!binaryheap_empty(heap))
 		{
 			RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
@@ -516,6 +575,16 @@ merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
 	}
 }
 
+/* Merges the docs and the terms of the opened runs into mo */
+static void
+merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo)
+{
+	merge_docs(mo, rd, nruns);
+	for (int i = 0; i < nruns; i++)
+		reader_next_term(&rd[i]);
+	merge_terms(rd, nruns, positions, mo, NULL);
+}
+
 /* Merges the runs into a new one of the home's files and closes them */
 SiftRun *
 sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
@@ -530,10 +599,10 @@ sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 	io_varint(&mo.io, out->ndocs);
 	io_varint(&mo.io, positions);
 	merge_readers(rd, nruns, positions, &mo);
-	io_varint(&mo.io, 0);
-	io_flush(&mo.io);
+	run_finish(out, &mo.io);
 	for (int i = 0; i < nruns; i++)
 	{
+		out->sum_dl += runs[i]->sum_dl;
 		run_close(runs[i]);
 		pfree(runs[i]);
 	}
@@ -596,6 +665,181 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 		run_close(runs[i]);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
+}
+
+bool
+sift_runs_splittable(SiftRun **runs, int nruns)
+{
+	for (int i = 0; i < nruns; i++)
+		if (runs[i]->trailer == 0 || runs[i]->fileset == NULL)
+			return false;
+	return true;
+}
+
+/* The samples of a run (see run_sample), read through the reader's file: where its terms end, and the sample at index i starts and stops */
+typedef struct RunSample
+{
+	uint64		off;
+	uint64		vol;			/* bytes up to the next sample, or the end of the terms */
+	int			len;
+	const char *term;
+} RunSample;
+
+static RunSample *
+run_samples(RunReader *rd, const SiftRun *run, int *n)
+{
+	RunSample  *smp;
+	uint64		end;
+
+	SIFT_INVARIANT(BufFileSeek(rd->io.file, 0, (off_t) run->trailer, SEEK_SET) == 0, "sift: could not seek in a build run");
+	rd->io.pos = rd->io.len = 0;
+	*n = io_get_varint(&rd->io);
+	end = io_get_varint(&rd->io);
+	smp = palloc((*n + 1) * sizeof(RunSample));
+	for (int i = 0; i < *n; i++)
+	{
+		char	   *term;
+
+		smp[i].len = io_get_varint(&rd->io);
+		term = palloc(smp[i].len);
+		for (int j = 0; j < smp[i].len; j++)
+			term[j] = io_byte(&rd->io);
+		smp[i].term = term;
+		smp[i].off = io_get_varint(&rd->io);
+		if (i > 0)
+			smp[i - 1].vol = smp[i].off - smp[i - 1].off;
+	}
+	if (*n > 0)
+		smp[*n - 1].vol = end - smp[*n - 1].off;
+	return smp;
+}
+
+static int
+sample_cmp(const void *a, const void *b)
+{
+	const RunSample *x = a,
+			   *y = b;
+
+	return sift_term_cmp(x->term, x->len, y->term, y->len);
+}
+
+int
+sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int target, SiftTermCut *cuts)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run cuts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	bool		positions;
+	uint64		ndocs,
+				total = 0,
+				acc = 0;
+	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &ndocs);
+	RunSample  *all = NULL;
+	int			nall = 0,
+				ncuts = 0,
+				nranges;
+
+	for (int i = 0; i < nruns; i++)
+	{
+		int			n;
+		RunSample  *smp = run_samples(&rd[i], runs[i], &n);
+
+		all = all ? repalloc(all, (nall + n) * sizeof(RunSample)) : palloc((nall + n) * sizeof(RunSample));
+		memcpy(all + nall, smp, n * sizeof(RunSample));
+		nall += n;
+		for (int j = 0; j < n; j++)
+			total += smp[j].vol;
+	}
+	nranges = (int) Min((uint64) target, Min(total / Max(min_bytes, 1), (uint64) nall));
+	if (nranges >= 2)
+	{
+		qsort(all, nall, sizeof(RunSample), sample_cmp);
+		for (int i = 0; i < nall && ncuts < nranges - 1; acc += all[i++].vol)
+		{
+			if (acc * nranges < total * (uint64) (ncuts + 1) || (ncuts > 0 && sift_term_cmp(all[i].term, all[i].len, cuts[ncuts - 1].term, cuts[ncuts - 1].len) <= 0))
+				continue;
+			cuts[ncuts].len = all[i].len;
+			memcpy(cuts[ncuts].term, all[i].term, all[i].len);
+			ncuts++;
+		}
+	}
+	for (int i = 0; i < nruns; i++)
+		run_release(runs[i]);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+	return ncuts;
+}
+
+/* Starts the reader at the first term not below lo (NULL: the first): the last sample not above it, and on from there */
+static void
+reader_to_term(RunReader *rd, const SiftRun *run, const SiftTermCut *lo)
+{
+	int			n;
+	RunSample  *smp = run_samples(rd, run, &n);
+	uint64		at = n > 0 ? smp[0].off : 0;
+
+	for (int i = 1; lo && i < n && sift_term_cmp(smp[i].term, smp[i].len, lo->term, lo->len) <= 0; i++)
+		at = smp[i].off;
+	if (n == 0)
+	{
+		rd->len = 0;
+		return;
+	}
+	SIFT_INVARIANT(BufFileSeek(rd->io.file, 0, (off_t) at, SEEK_SET) == 0, "sift: could not seek in a build run");
+	rd->io.pos = rd->io.len = 0;
+	reader_next_term(rd);
+	while (lo && rd->len && sift_term_cmp(rd->term, rd->len, lo->term, lo->len) < 0)
+	{
+		rd->pleft = rd->df;
+		rd->pkey = 0;
+		while (post_next(rd))
+			;
+		reader_next_term(rd);
+	}
+}
+
+SiftSegmentWriter *
+sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run docs", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	MergeOut	mo = {0};
+	bool		positions;
+	uint64		ndocs;
+	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &ndocs);
+
+	mo.sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
+	merge_docs(&mo, rd, nruns);
+	for (int i = 0; i < nruns; i++)
+		run_release(runs[i]);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+	return mo.sw;
+}
+
+void
+sift_runs_write_range(SiftRun **runs, int nruns, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	MergeOut	mo = {.sw = rw};
+	bool		positions;
+	uint64		ndocs;
+	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &ndocs);
+
+	for (int i = 0; i < nruns; i++)
+		reader_to_term(&rd[i], runs[i], lo);
+	merge_terms(rd, nruns, positions, &mo, hi);
+	for (int i = 0; i < nruns; i++)
+		run_release(runs[i]);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+}
+
+void
+sift_runs_close(SiftRun **runs, int nruns)
+{
+	for (int i = 0; i < nruns; i++)
+		run_close(runs[i]);
 }
 
 typedef struct DumpState

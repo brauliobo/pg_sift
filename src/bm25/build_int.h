@@ -27,6 +27,7 @@
 #include "bm25/am.h"
 #include "bm25/build.h"
 #include "core/parbuild.h"
+#include "storage/condition_variable.h"
 #include "table/table.h"
 #include "core/visibility.h"
 
@@ -71,7 +72,8 @@ typedef struct BuildState
 	double		indexed;
 	uint32		analyzer_hash;
 	bool		positions;
-	/* a parallel worker's runs go to files of the leader's fileset */
+	/* a parallel build's runs go to files of the fileset, which its participants read: the shared state, NULL when it is serial */
+	struct SiftBuildShared *shared;
 	RunHome		home;
 	/* progress (pg_stat_progress_create_index): the phase, docs reported, scan done, docs of the segments written */
 	int			phase;
@@ -79,6 +81,73 @@ typedef struct BuildState
 	bool		scanned;
 	uint64		written;
 } BuildState;
+
+/*
+ * Every participant scans its share of a parallel heap scan (ascending keys,
+ * interleaved with the others') into sorted runs. The runs are files of a shared
+ * fileset; the leader merges them into the segments a serial build would write, and
+ * the participants write the terms of each (build_ranges.c).
+ */
+#define SCAN_OF(shared)	((ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(SiftBuildShared))))
+
+/* The segment of a group of runs, written in ranges of its terms: the plan the leader publishes and the ranges the participants take */
+typedef struct SiftBuildRanges
+{
+	ConditionVariable cv;
+	int			nscanned;			/* workers that handed their runs over */
+	int			gen;				/* the group of the plan, from 1 */
+	bool		closed;				/* no more groups */
+	int			nruns;
+	struct
+	{
+		int			worker;
+		int			id;
+		uint64		trailer;
+	}			run[MAX_MERGE_FANIN];
+	SiftScoreRef ref;				/* with the average length of the group's docs */
+	int			nranges;
+	SiftTermCut cut[MAX_RANGES - 1];	/* range i has the terms from cut i - 1 up to cut i */
+	int			next;				/* the next range to take */
+	struct
+	{
+		bool		fin;			/* written */
+		uint64		post_len;		/* of its blobs */
+		uint64		nterms;
+	}			range[MAX_RANGES];
+} SiftBuildRanges;
+
+typedef struct SiftBuildShared
+{
+	SiftParCommon common;
+	int			nparticipants;
+	Size		budget;				/* per participant */
+	SharedFileSet fileset;
+	slock_t		mutex;				/* also guards the counters of ranges (the plan itself is read after gen) */
+	double		reltuples;
+	double		indexed;
+	int			peak_kb;			/* the most memory a participant allocated (SIFT_TESTING) */
+	SiftBuildRanges ranges;
+	/* the parallel table scan descriptor follows */
+} SiftBuildShared;
+
+/* The most runs a worker hands over (the leader opens each as it merges it) */
+#define MAX_PART_RUNS	1024
+
+/* A worker's runs, in the files sift_run_file(worker number, id) */
+typedef struct SiftBuildPart
+{
+	int			nruns;
+	struct
+	{
+		int			id;
+		uint64		ndocs;
+		uint64		sum_dl;
+		uint64		trailer;
+		uint64		maxdf;
+		uint64		maxblob;
+		uint64		dict;
+	}			run[MAX_PART_RUNS];
+} SiftBuildPart;
 
 /* Subphases of the build, named by sift_ambuildphasename */
 #define PHASE_SCAN		2
@@ -89,6 +158,7 @@ typedef struct BuildState
 
 #ifdef SIFT_TESTING
 extern void mem_sample(void);
+extern void mem_watch(MemoryContext cxt);
 extern void sift_test_phase_wait(int phase);
 #define MEM_SAMPLE()	mem_sample()
 #define TEST_PHASE_GATE(phase)	sift_test_phase_wait(phase)
@@ -96,6 +166,12 @@ extern void sift_test_phase_wait(int phase);
 #define MEM_SAMPLE()	((void) 0)
 #define TEST_PHASE_GATE(phase)	((void) 0)
 #endif
+
+/* build_ranges.c */
+extern void sift_ranges_wait_scanned(SiftBuildShared *shared, int nworkers);
+extern void sift_ranges_worker(SiftBuildShared *shared);
+extern bool sift_ranges_write(BuildState *bs, SiftRun **runs, int nruns, uint64 gen, SiftSegEntry *entry);
+extern void sift_ranges_close(SiftBuildShared *shared);
 
 extern void progress_phase(BuildState *bs, int phase);
 extern void progress_docs(BuildState *bs, bool all);

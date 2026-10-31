@@ -579,6 +579,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 				maxdf = 0;
 
 	run->ndocs = b->ndocs;
+	run->sum_dl = b->sum_dl;
 	io_varint(&io, b->ndocs);
 	io_varint(&io, b->positions);
 	for (uint32 i = 0; i < b->ndocs; prev = DOC_KEY(b->docs[i++]))
@@ -594,6 +595,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 		uint8		tf[CHUNK];
 		uint64		posbytes = 0;
 
+		run_sample(&io, b->tbytes + t->term_off, t->len);
 		io_varint(&io, t->len);
 		io_put(&io, b->tbytes + t->term_off, t->len);
 		io_varint(&io, t->df);
@@ -626,8 +628,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 		if (i % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
-	io_varint(&io, 0);
-	io_flush(&io);
+	run_finish(run, &io);
 	run->maxdf = maxdf;
 	run->maxblob = maxblob;
 	run->dict = b->tlen + (uint64) b->nterms * DICT_ENTRY_BYTES;
