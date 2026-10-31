@@ -226,7 +226,8 @@ flush_attr(SiftSegmentWriter *w)
 					pad;
 		int64		lo = PG_INT64_MAX,
 					hi = PG_INT64_MIN;
-		bool		any = false;
+		bool		any = false,
+					unknown = false;
 		uint8	   *rec,
 				   *row;
 
@@ -236,7 +237,11 @@ flush_attr(SiftSegmentWriter *w)
 		{
 			for (int p = 0; p < SIFT_SB_PAGES; p++)
 				for (int s = 0; s < w->maxoff[p]; s++)
-					if (w->as[c * cols + p * MAXOFF + s] == SIFT_AV_VALUE && (w->offmask[p * SIFT_OFFMASK_WORDS + s / 64] >> (s % 64) & 1))
+					if (!(w->offmask[p * SIFT_OFFMASK_WORDS + s / 64] >> (s % 64) & 1))
+						continue;
+					else if (w->as[c * cols + p * MAXOFF + s] == SIFT_AV_UNKNOWN)
+						unknown = true;
+					else if (w->as[c * cols + p * MAXOFF + s] == SIFT_AV_VALUE)
 					{
 						int64		v = w->av[c * cols + p * MAXOFF + s];
 
@@ -249,6 +254,7 @@ flush_attr(SiftSegmentWriter *w)
 		}
 		if (!(hdr.flags & SIFT_ATTR_NOROWS))
 		{
+			hdr.flags = unknown ? 0 : SIFT_ATTR_NOUNK;
 			hdr.base = any ? lo : 0;
 			hdr.unk = any ? (uint64) hi - (uint64) lo + 2 : 1;
 			hdr.width = code_bits(hdr.unk);

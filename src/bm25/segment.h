@@ -37,6 +37,7 @@ typedef struct SiftDocSBRef
  */
 #define SIFT_ATTR_MAXCOLS	8
 #define SIFT_ATTR_NOROWS	1
+#define SIFT_ATTR_NOUNK		2		/* no doc of the SB is unknown in this column: base and unk are its exact range, and a test no value of it passes drops the SB (an older segment never sets it) */
 #define SIFT_ATTR_MAXWIDTH	56
 #define SIFT_ATTR_TABLE		16384	/* codes of a block for which an IN test is a table of bytes, not a search of its set */
 
@@ -121,6 +122,9 @@ typedef struct SiftDocChunk
 
 /* The columns of INCLUDE a segment holds values of (0 for a segment of an older format) */
 extern int	sift_seg_attr_ncols(SiftSegment *seg);
+
+/* Does a column of superblock sb leave no doc that passes the tests (read from the headers of the records, not their rows) */
+extern bool sift_seg_attr_excludes(SiftSegment *seg, uint32 sb, const SiftAttrTest *tests, int n);
 
 /* One column of the pages of a block (SIFT_BLK_PAGES pages) set in want that have docs: the rows of their slots, NULL for the others */
 typedef struct SiftAttrBlock

@@ -180,6 +180,8 @@ rank_theta(const SiftRanker *r, const SiftTopK *tk)
 	return r->par_active ? Max(theta, sift_par_theta(r->par)) : theta;
 }
 
+#define ZONE_TRIES	32
+
 static void
 rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 {
@@ -196,6 +198,18 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	uint64		pages[4];
 	bool		have;
 
+	/* data that is not ordered like the column has no superblock to drop: stop asking when none of the first ones was */
+	if (p->nattrs && (r->wk->zone_drops > 0 || r->wk->zone_checks < ZONE_TRIES))
+	{
+		r->wk->zone_checks++;
+		if (sift_seg_attr_excludes(seg, u->gid, p->attrs, p->nattrs))
+		{
+			r->wk->zone_drops++;
+			p->stats.blocks_skipped += u->nblk;
+			sift_sr_release(&seg->sr);
+			return;
+		}
+	}
 	if ((int64) u->gid < rs->last)
 		seg_rewind(rs);
 	rs->last = u->gid;

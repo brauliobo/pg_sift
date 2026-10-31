@@ -429,6 +429,25 @@ sift_seg_attr_ncols(SiftSegment *seg)
 	return seg->fmt >= SIFT_SEGFMT_ATTR ? (int) docmap(seg)->ncols : 0;
 }
 
+/* The directory entry of the INCLUDE column col of the SB at index i of the docmap directory */
+static const SiftAttrRef *
+attr_ref(SiftSegment *seg, DocMap *dm, int64 i, int col)
+{
+	const SiftAttrRef *a;
+
+	if (dm->adir == NULL)
+	{
+		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef));
+
+		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef), dir);
+		dm->adir = dir;
+	}
+	a = &dm->adir[i * dm->ncols + col];
+	if (a->off < dm->recs_end || a->len < sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
+		corrupt(seg, "INCLUDE record of SB %u (%u bytes at %llu) is outside the records.", dm->dir[i].sb, a->len, ULL(a->off));
+	return a;
+}
+
 /* The record of the INCLUDE column col for the loaded and indexed SB, and where the rows of its present pages start: each column is read alone, so a test reads the pages of its column only */
 static const SiftAttrColHdr *
 attr_load(SiftSegment *seg, DocMap *dm, int col)
@@ -441,16 +460,7 @@ attr_load(SiftSegment *seg, DocMap *dm, int col)
 	if (dm->acur[col] == i)
 		return h;
 	dm->acur[col] = -1;
-	if (dm->adir == NULL)
-	{
-		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef));
-
-		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef), dir);
-		dm->adir = dir;
-	}
-	a = &dm->adir[i * dm->ncols + col];
-	if (a->off < dm->recs_end || a->len < sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
-		corrupt(seg, "INCLUDE record of SB %u (%u bytes at %llu) is outside the records.", dm->dir[i].sb, a->len, ULL(a->off));
+	a = attr_ref(seg, dm, i, col);
 	if (a->len > dm->arecap[col])
 	{
 		dm->arecap[col] = Max(a->len, 4096);
@@ -477,6 +487,75 @@ attr_load(SiftSegment *seg, DocMap *dm, int col)
 	}
 	dm->acur[col] = i;
 	return h;
+}
+
+/* Can no doc of values lo .. hi (hi < lo: only NULLs) pass the test */
+static bool
+zone_fails(const SiftAttrTest *t, int64 lo, int64 hi)
+{
+	bool		empty = hi < lo;
+
+	switch (t->op)
+	{
+		case SIFT_AT_EQ:
+			return empty || t->v < lo || t->v > hi;
+		case SIFT_AT_NE:
+			return empty || (lo == hi && t->v == lo);
+		case SIFT_AT_LT:
+			return empty || lo >= t->v;
+		case SIFT_AT_LE:
+			return empty || lo > t->v;
+		case SIFT_AT_GT:
+			return empty || hi <= t->v;
+		case SIFT_AT_GE:
+			return empty || hi < t->v;
+		case SIFT_AT_IN:
+			{
+				int			a = 0,
+							z = t->nset;
+
+				while (a < z)
+				{
+					int			mid = a + (z - a) / 2;
+
+					if (t->set[mid] < lo)
+						a = mid + 1;
+					else
+						z = mid;
+				}
+				return empty || a == t->nset || t->set[a] > hi;
+			}
+		case SIFT_AT_NOTNULL:
+			return empty;
+		default:				/* SIFT_AT_ISNULL: the headers do not say whether a doc is NULL */
+			return false;
+	}
+}
+
+bool
+sift_seg_attr_excludes(SiftSegment *seg, uint32 sb, const SiftAttrTest *tests, int n)
+{
+	DocMap	   *dm;
+	int64		i;
+
+	if (seg->fmt < SIFT_SEGFMT_ATTR)
+		return false;
+	dm = seg->docmap ? seg->docmap : docmap(seg);
+	i = sb_search(dm, sb);
+	if (i == dm->nsb || dm->dir[i].sb != sb)
+		return false;
+	for (int k = 0; k < n; k++)
+	{
+		SiftAttrColHdr h;
+
+		if (tests[k].col >= dm->ncols)
+			continue;
+		seg_read(seg, attr_ref(seg, dm, i, tests[k].col)->off, sizeof(h), &h);
+		if ((h.flags & (SIFT_ATTR_NOROWS | SIFT_ATTR_NOUNK)) == SIFT_ATTR_NOUNK &&
+			zone_fails(&tests[k], h.base, h.unk < 2 ? h.base - 1 : h.base + (int64) (h.unk - 2)))
+			return true;
+	}
+	return false;
 }
 
 void

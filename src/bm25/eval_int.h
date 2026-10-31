@@ -301,6 +301,8 @@ typedef struct RankWork
 	const SiftAttrTest *attab_test;	/* the test, and the base and code count of the block, that attab was built for (a superblock has one of each) */
 	int64		attab_base;
 	uint64		attab_unk;
+	int			zone_checks;	/* superblocks tested against their INCLUDE ranges, and the ones that dropped (sift_seg_attr_excludes) */
+	int			zone_drops;
 } RankWork;
 
 struct SiftRanker
