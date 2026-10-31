@@ -1,0 +1,54 @@
+-- A merge keeps everything a segment holds: after batches that are promoted and a forced merge, every part of the segment (dictionary,
+-- docmap, containers, tf and position streams, bounds, prefix terms) has the bytes and items of a fresh build of the same rows, and the
+-- scores and rows of word, prefix and phrase statements are the fresh index's.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+CREATE TABLE fresh (id int PRIMARY KEY, body text);
+CREATE TABLE churned (id int PRIMARY KEY, body text);
+-- a few frequent words (containers), many rare ones (lists, inline terms), repeated words, documents of different lengths
+INSERT INTO fresh
+SELECT g, (SELECT string_agg(CASE WHEN get_byte(decode(md5(g || ':' || k), 'hex'), 0) < 90 THEN 'common' || (get_byte(decode(md5(g || ':' || k), 'hex'), 1) % 4)
+		ELSE 'word' || (get_byte(decode(md5(g || ':' || k), 'hex'), 1) * 5 + get_byte(decode(md5(g || ':' || k), 'hex'), 2) % 5) END, ' ')
+	FROM generate_series(1, 8 + g % 40) k)
+FROM generate_series(1, 6000) g;
+INSERT INTO churned SELECT * FROM fresh WHERE id <= 3600;
+CREATE INDEX fresh_idx ON fresh USING sift (body) WITH (prefix_index = 3);
+CREATE INDEX churned_idx ON churned USING sift (body) WITH (prefix_index = 3);
+
+DO $$
+BEGIN
+	FOR b IN 0..5 LOOP
+		INSERT INTO churned SELECT * FROM fresh WHERE id > 3600 + b * 400 AND id <= 4000 + b * 400;
+		PERFORM sift.promote('churned_idx');
+	END LOOP;
+END $$;
+SELECT sift.merge('churned_idx', true) >= 0 AS merged;
+SELECT count(*) AS segments, sum(ndocs) AS docs FROM sift.segments('churned_idx') WHERE kind = 'immutable';
+
+-- the parts that differ from the fresh build by more than 3% in bytes or in any item
+WITH f AS (SELECT part, sum(bytes) bytes, sum(items) items FROM sift._test_segment_parts('fresh_idx'::regclass) GROUP BY part),
+	 c AS (SELECT part, sum(bytes) bytes, sum(items) items FROM sift._test_segment_parts('churned_idx'::regclass) GROUP BY part)
+SELECT count(*) > 15 AS parts_compared,
+	string_agg(f.part, ', ' ORDER BY f.part) FILTER (WHERE c.bytes NOT BETWEEN 0.97 * f.bytes AND 1.03 * f.bytes OR c.items IS DISTINCT FROM f.items) AS parts_that_differ
+FROM f LEFT JOIN c USING (part) WHERE f.bytes > 0;
+
+-- the answers
+CREATE FUNCTION top(tbl regclass, q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	EXECUTE format('SELECT string_agg(id || '':'' || round(s::numeric, 3), '','' ORDER BY s DESC, id) FROM (SELECT id, sift.score(ctid) s FROM %s WHERE body @@> %L ORDER BY sift.score(ctid) DESC, id LIMIT 10) x', tbl, q) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE qs (q text);
+INSERT INTO qs VALUES ('common0'), ('common1 AND common2'), ('common0 OR word7'), ('word12 AND word340'), ('"common0 common1"'), ('"common2 word9"'), ('"word5 word5"'),
+	('com*'), ('wor*'), ('word1*'), ('"common3 common3 common3"'), ('NOT common0 AND word77');
+SELECT q, top('churned', q) IS NOT DISTINCT FROM top('fresh', q) AS same_top FROM qs ORDER BY q;
+SELECT q, (SELECT count(*) FROM churned WHERE body @@> q) = (SELECT count(*) FROM fresh WHERE body @@> q) AS same_count FROM qs ORDER BY q;
+SELECT sift.verify('churned_idx', true) IS NOT NULL AS verified;
+
+DROP TABLE fresh, churned, qs;
+DROP FUNCTION top(regclass, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

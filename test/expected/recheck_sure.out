@@ -2,7 +2,7 @@
 -- phrase, a NOT of a superset) are not rechecked against the text, the others are, and every path
 -- (SiftCount, SiftScan, Bitmap Heap Scan) returns what a sequential evaluation does. Run without word
 -- positions (the heap decides every phrase) and with them (the heap decides only the documents the
--- positions do not cover: write buffers and promoted segments, a negated phrase)
+-- positions do not cover: write buffers, a negated phrase)
 CREATE EXTENSION pg_sift;
 CREATE TABLE s (id int PRIMARY KEY, body text, grp int);
 INSERT INTO s SELECT i, (ARRAY['quick brown fox', 'fox quick', 'lazy dog', 'the quick red fox', 'brown dog quick',
@@ -222,7 +222,7 @@ SELECT * FROM report();
  fox NOT "quick red"                                 |     521 | t    |       171
 (12 rows)
 
--- the write buffer has no positions, nor does the segment promoted from it: the index mixes both
+-- the write buffer has no positions, the segment promoted from it has them: the index mixes both
 INSERT INTO s SELECT 3000 + i, (ARRAY['quick fox', 'fox quick', 'dog'])[1 + i % 3], 0 FROM generate_series(1, 90) i;
 SELECT * FROM report();
                           q                          | matches | same | rechecked 
@@ -251,15 +251,15 @@ SELECT sift.promote('s_idx') IS NOT NULL AS promoted;
 SELECT * FROM report();
                           q                          | matches | same | rechecked 
 -----------------------------------------------------+---------+------+-----------
- "quick fox"                                         |     213 | t    |        60
- dog OR "quick fox"                                  |     582 | t    |        60
+ "quick fox"                                         |     213 | t    |         0
+ dog OR "quick fox"                                  |     582 | t    |         0
  quick OR "quick fox"                                |     894 | t    |         0
- "quick fox" OR "fox quick"                          |     425 | t    |        60
+ "quick fox" OR "fox quick"                          |     425 | t    |         0
  quick AND NOT "quick fox"                           |     681 | t    |       737
  fox AND NOT "quick fox"                             |     524 | t    |       737
  (dog OR "quick fox") AND w1                         |      95 | t    |         0
  "quick fox" AND w1                                  |      32 | t    |         0
- (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       274
+ (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       244
  dog OR ("fox quick" AND w3)                         |     400 | t    |         0
  quick fox                                           |     737 | t    |         0
  fox NOT "quick red"                                 |     581 | t    |       156
@@ -275,15 +275,15 @@ SELECT sift.merge('s_idx') IS NOT NULL AS merged;
 SELECT * FROM report();
                           q                          | matches | same | rechecked 
 -----------------------------------------------------+---------+------+-----------
- "quick fox"                                         |     213 | t    |        60
- dog OR "quick fox"                                  |     582 | t    |        60
+ "quick fox"                                         |     213 | t    |         0
+ dog OR "quick fox"                                  |     582 | t    |         0
  quick OR "quick fox"                                |     894 | t    |         0
- "quick fox" OR "fox quick"                          |     425 | t    |        60
+ "quick fox" OR "fox quick"                          |     425 | t    |         0
  quick AND NOT "quick fox"                           |     681 | t    |       737
  fox AND NOT "quick fox"                             |     524 | t    |       737
  (dog OR "quick fox") AND w1                         |      95 | t    |         0
  "quick fox" AND w1                                  |      32 | t    |         0
- (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       274
+ (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       244
  dog OR ("fox quick" AND w3)                         |     400 | t    |         0
  quick fox                                           |     737 | t    |         0
  fox NOT "quick red"                                 |     581 | t    |       156
@@ -293,15 +293,15 @@ SET sift.parallel_scan = on;
 SELECT * FROM report();
                           q                          | matches | same | rechecked 
 -----------------------------------------------------+---------+------+-----------
- "quick fox"                                         |     213 | t    |        60
- dog OR "quick fox"                                  |     582 | t    |        60
+ "quick fox"                                         |     213 | t    |         0
+ dog OR "quick fox"                                  |     582 | t    |         0
  quick OR "quick fox"                                |     894 | t    |         0
- "quick fox" OR "fox quick"                          |     425 | t    |        60
+ "quick fox" OR "fox quick"                          |     425 | t    |         0
  quick AND NOT "quick fox"                           |     681 | t    |       737
  fox AND NOT "quick fox"                             |     524 | t    |       737
  (dog OR "quick fox") AND w1                         |      95 | t    |         0
  "quick fox" AND w1                                  |      32 | t    |         0
- (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       274
+ (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     495 | t    |       244
  dog OR ("fox quick" AND w3)                         |     400 | t    |         0
  quick fox                                           |     737 | t    |         0
  fox NOT "quick red"                                 |     581 | t    |       156

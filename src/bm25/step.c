@@ -5,11 +5,14 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/int.h"
+#include "executor/executor.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
@@ -26,6 +29,7 @@
 #include "utils/timestamp.h"
 
 #include "bm25/am.h"
+#include "bm25/analyze.h"
 #include "bm25/build.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
@@ -34,6 +38,7 @@
 #include "bm25/wbuf.h"
 #include "core/ops.h"
 #include "core/sql.h"
+#include "core/varint.h"
 #include "core/visibility.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
@@ -284,23 +289,192 @@ inv_budget(Tuplesortstate *sort)
 	return budget;
 }
 
+/*
+ * The text of the docs of a promotion. The write buffer keeps the terms of a doc and their counts, not where in the text they are, and
+ * a segment of an index with positions needs the position records of its terms: a merge keeps them only when every segment it merges has
+ * them, so one segment without would take them from all.
+ */
+typedef struct DocText
+{
+	Relation	heap;
+	IndexInfo  *info;
+	EState	   *estate;
+	TupleTableSlot *slot;
+	HeapTupleData tup;
+	SiftAnalyzer *an;
+	BlockNumber nblocks;
+} DocText;
+
+static DocText *
+doctext_open(Relation index)
+{
+	SiftAnalyzerConfig cfg;
+	DocText    *d;
+
+	sift_analyzer_config_from_index(index, &cfg);
+	if (!sift_index_options(index)->positions || cfg.keyword)
+		return NULL;
+	d = palloc0(sizeof(DocText));
+	d->heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	d->info = BuildIndexInfo(index);
+	d->estate = CreateExecutorState();
+	d->slot = table_slot_create(d->heap, NULL);
+	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
+	sift_analyzer_set_positions(d->an, true);
+	d->nblocks = RelationGetNumberOfBlocks(d->heap);
+	PushActiveSnapshot(GetTransactionSnapshot());	/* a worker has none, and the text may be out of line */
+	return d;
+}
+
+static void
+doctext_close(DocText *d)
+{
+	if (d == NULL)
+		return;
+	PopActiveSnapshot();
+	ExecDropSingleTupleTableSlot(d->slot);
+	FreeExecutorState(d->estate);
+	table_close(d->heap, AccessShareLock);
+}
+
+/* The tuple a key stands for, or the member of its HOT chain that the root redirects to, in d->slot; false when it is gone (dead for every snapshot) */
+static bool
+doctext_fetch(DocText *d, const ItemPointerData *tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumber(tid);
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+	bool		found = false;
+	Buffer		buf;
+	Page		page;
+
+	if (blk >= d->nblocks)
+		return false;
+	buf = ReadBuffer(d->heap, blk);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	for (int hops = 0; off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page) && hops < MaxHeapTuplesPerPage; hops++)
+	{
+		ItemId		lp = PageGetItemId(page, off);
+
+		if (ItemIdIsRedirected(lp))
+		{
+			off = ItemIdGetRedirect(lp);
+			continue;
+		}
+		if (ItemIdIsNormal(lp))
+		{
+			d->tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+			d->tup.t_len = ItemIdGetLength(lp);
+			d->tup.t_tableOid = RelationGetRelid(d->heap);
+			ItemPointerSet(&d->tup.t_self, blk, off);
+			ExecStoreBufferHeapTuple(&d->tup, d->slot, buf);
+			found = true;
+		}
+		break;
+	}
+	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	ReleaseBuffer(buf);
+	return found;
+}
+
+/* The terms of the doc at tid with their position records, as a build analyzes it; false when its row or its text is gone */
+static bool
+doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int *nterms, uint32 *dl, int *len)
+{
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	text	   *t;
+
+	if (!doctext_fetch(d, tid))
+		return false;
+	ResetPerTupleExprContext(d->estate);
+	GetPerTupleExprContext(d->estate)->ecxt_scantuple = d->slot;
+	FormIndexDatum(d->info, d->slot, d->estate, values, isnull);
+	if (isnull[0])
+		return false;
+	t = DatumGetTextPP(values[0]);
+	*len = VARSIZE_ANY_EXHDR(t);
+	*nterms = sift_analyze_doc(d->an, VARDATA_ANY(t), *len, terms, dl);
+	return true;
+}
+
+/*
+ * The doc of a record whose row is gone: the row is dead for every snapshot, so no query returns it, but it counts in the statistics of
+ * its segment as it did in the buffer's, and the terms of a segment with positions all have records. Each word term gets its tf
+ * occurrences at the positions 0 .. tf - 1.
+ */
+static SiftTermFreq *
+dead_terms(const DocCursor *c, MemoryContext cx)
+{
+	SiftTermFreq *terms = MemoryContextAlloc(cx, Max(c->nterms, 1) * sizeof(SiftTermFreq));
+	Size		room = 0;
+	uint8	   *p;
+
+	for (uint32 i = 0; i < c->nterms; i++)
+		room += 12 + c->terms[i].tf;
+	p = MemoryContextAlloc(cx, room);
+	for (uint32 i = 0; i < c->nterms; i++)
+	{
+		uint8	   *start = p;
+		uint32		n = c->terms[i].tf;
+
+		terms[i] = c->terms[i];
+		if (!SIFT_SYNTHETIC_TERM(terms[i].term))
+		{
+			p = sift_put_varint(p, n > 1);
+			if (n > 1)
+			{
+				p = sift_put_varint(p, n - 2);
+				memset(p, 0, n - 1);
+				p += n - 1;
+			}
+			terms[i].pos = start;
+			terms[i].poslen = p - start;
+		}
+	}
+	return terms;
+}
+
 /* Writes the sorted docs as one immutable segment; false when there are none */
 static bool
 write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
 {
 	SiftScoreRef ref = score_ref(index);
-	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, false);
+	DocText    *dt = doctext_open(index);
+	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, dt != NULL);
 	SiftRun   **runs = palloc(sizeof(SiftRun *));
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
+	MemoryContext deadcx = AllocSetContextCreate(CurrentMemoryContext, "sift promote gone docs", ALLOCSET_DEFAULT_SIZES);
 	int			nruns = 0,
 				maxruns = 1;
 
 	while (next_doc(&c))
 	{
 		ItemPointerData tid;
+		SiftTermFreq *terms = c.terms;
+		int			nterms = c.nterms,
+					len = 0;
+		uint32		dl = c.dl;
 
 		sift_key_to_tid(c.key, &tid);
-		sift_inv_add(inv, &tid, c.terms, c.nterms, c.dl);
+		if (dt != NULL)
+		{
+			if (!doctext_terms(dt, &tid, &terms, &nterms, &dl, &len))
+			{
+				MemoryContextReset(deadcx);
+				terms = dead_terms(&c, deadcx);
+				len = 0;
+			}
+			if (len >= sift_inv_small_doc(inv) && !sift_inv_empty(inv) && !sift_inv_fits(inv, nterms, len))
+			{
+				if (nruns == maxruns)
+					runs = repalloc(runs, (maxruns *= 2) * sizeof(SiftRun *));
+				runs[nruns++] = sift_inv_spill(inv);
+			}
+		}
+		sift_inv_add(inv, &tid, terms, nterms, dl);
+		if (dt != NULL)
+			sift_analyzer_reset(dt->an);
 		if (sift_inv_full(inv))
 		{
 			if (nruns == maxruns)
@@ -308,6 +482,8 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 			runs[nruns++] = sift_inv_spill(inv);
 		}
 	}
+	doctext_close(dt);
+	MemoryContextDelete(deadcx);
 	if (nruns == 0 && sift_inv_empty(inv))
 		return false;
 	if (nruns == 0)
