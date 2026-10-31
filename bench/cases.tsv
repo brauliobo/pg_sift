@@ -234,3 +234,6 @@ flags_or_null_range	flags_or_null_range	events	-	fallback:Bitmap Heap Scan	nativ
 time_event_buckets	time_event_buckets	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 live_counts_by_dim	live_counts_by_dim	events	-	fallback:Seq Scan	native	-	ms	faster33	no
 upsert_returning_conflict	upsert_returning_conflict	events	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no
+series_snapshot_windows	series_snapshot_windows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+ledger_rollup_grain	ledger_rollup_grain	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+count_key_outside_index	count_key_outside_index	events	-	fallback:Seq Scan on ck_snaps	native	-	ms	faster33	no
