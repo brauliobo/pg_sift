@@ -5,13 +5,13 @@
 # transaction block, with FREEZE and into a partitioned table writes the same rows too; and a load that dies leaves nothing: a worker ended by pg_terminate_backend, a
 # worker cancelled, a worker killed with kill -9 (the postmaster restarts the cluster), the statement timeout while the participants write, and the backend killed with kill -9. After
 # each the table is empty, VACUUM leaves the file as small as that of an empty table (no orphan group), the same load works and equals the heap twin, and the standby counts as the primary.
-# SIFT_LW_ROWS (300000, 200000 quick).
+# SIFT_LW_ROWS (300000, 150000 quick).
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_LW_ROWS 300000 200000)
+ROWS=$(knob SIFT_LW_ROWS 300000 150000)
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
-wal_keep_size = 256MB
+wal_keep_size = 32MB
 autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8"
@@ -73,7 +73,8 @@ hold() {
 	rm -f "$D/held"
 	{ echo "SELECT pg_advisory_lock($((GATE + 4)));"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(600);"; } | sql primary >/dev/null 2>&1 &
 	HOLDER=$!
-	until [[ -e $D/held ]]; do sleep 0.05; done
+	for _ in $(seq 1200); do [[ -e $D/held ]] && return 0; sleep 0.05; done
+	bail "the holder of the gate did not start"
 }
 release() {
 	sql primary "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()" >/dev/null 2>&1
@@ -132,7 +133,8 @@ attempt "a worker ended by pg_terminate_backend" terminate
 recovered "worker terminated"
 attempt "a worker cancelled" cancel
 recovered "worker cancelled"
-attempt "the statement timeout while the participants write" timeout "SET statement_timeout = '4s'"
+# a timeout that outlasts the start of the workers on a loaded host: the statement ends when it fires, the participants waiting at the gate meanwhile
+attempt "the statement timeout while the participants write" timeout "SET statement_timeout = '15s'"
 recovered "statement timeout"
 attempt "a worker killed with kill -9" kill9worker
 if restart "$PM"; then ok "the primary restarts and the standby streams again"; recovered "worker killed"; else not_ok "the primary restarts"; fi

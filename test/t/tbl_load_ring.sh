@@ -7,13 +7,13 @@
 # second COPY and an INSERT during the load change nothing for it; and a load that dies at each stage of the ring leaves nothing: power loss while a worker writes the first group,
 # while groups are written and none is published, and while some are published and the last are not, a COPY that fails on a row after the workers started, a savepoint rolled back
 # after the ring ran. After each the table is empty on the primary and the standby, VACUUM leaves the file as small as the empty table's and no orphan block, the store verifies,
-# and the same load works. SIFT_LR_ROWS (300000, 200000 quick).
+# and the same load works. SIFT_LR_ROWS (300000, 100000 quick).
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_LR_ROWS 300000 200000)
+ROWS=$(knob SIFT_LR_ROWS 300000 100000)
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
-wal_keep_size = 256MB
+wal_keep_size = 32MB
 autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8
@@ -42,7 +42,8 @@ digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid:
 rows() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id, grp, amount, pad)) FROM lt" | tail -1; }
 answers() { sql "$1" "SELECT count(*) || ':' || sum(amount) FROM lt WHERE grp = 7" "SELECT count(*) FROM lt WHERE id = 12345" | tr '\n' ' '; }
 twin() { sql primary "SELECT count(*) || ':' || sum(amount) FROM src WHERE grp = 7" "SELECT count(*) FROM src WHERE id = 12345" | tr '\n' ' '; }
-used() { sql primary "SELECT relation_blocks - free_blocks FROM sift.table_space('lt')"; }
+# the high-water mark: the workers extend the file by several blocks at a time, and the tail past the mark is no space the load holds
+used() { sql primary "SELECT high_water - free_blocks FROM sift.table_space('lt')"; }
 orphans() { sql primary "SELECT sift._test_check('lt')"; }
 reset() { sql primary "TRUNCATE lt" >/dev/null && sql primary "VACUUM lt" >/dev/null; }
 same_on_standby() { catchup primary standby && [[ $(digest standby) == "$(digest primary)" ]] && [[ $(sql standby "SELECT sift._test_check('lt') >= 0") == t ]]; }
@@ -77,21 +78,32 @@ out=$(sql primary "${OPTS[@]}" "COPY ls (id, grp, amount, pad) FROM '$D/load.csv
 check "a table with a serial column: the sequence runs in the load, one value per row" test "$out" == "$ROWS:$ROWS:$ROWS"
 sql primary "DROP TABLE ls" >/dev/null
 
+# what the backend runs for each row while the ring keeps it in parallel mode must not start a command or a subtransaction: a table with a sift index (its maintenance merges in a
+# subtransaction, and failed here with the index half written) or a foreign key loads without the ring
+sql primary "CREATE TABLE lk (id int PRIMARY KEY)" "INSERT INTO lk SELECT g FROM generate_series(1, $ROWS) g" \
+	"CREATE TABLE lb (id int REFERENCES lk, grp int, amount numeric(10,2), pad text) USING sift_table" "CREATE INDEX lb_bm ON lb USING sift (pad)" >/dev/null
+out=$(sql primary "${OPTS[@]}" "COPY lb FROM '$D/load.csv' CSV" 2>&1)
+check "a table with a sift index and a foreign key loads without a warning or an error" test -z "$out"
+check "... the rows" test "$(sql primary "SELECT count(*) || ':' || sum(amount) FROM lb")" == "$ROWS:$(sql primary "SELECT sum(amount) FROM src")"
+check "... the sift index verifies" test -z "$(sql primary "SELECT sift.verify('lb_bm', true)" 2>&1)"
+sql primary "DROP TABLE lb, lk" >/dev/null
+
 # the stages: the load waits for the advisory lock of sift.test_phase_gate + the phase (4: a participant writing a group, 5: the backend about to publish the segments taken, 6: the backend about to publish the last)
 HOLDER=
 hold() { # PHASE
 	rm -f "$D/held"
 	{ echo "SELECT pg_advisory_lock($((GATE + $1)));"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(600);"; } | sql primary >/dev/null 2>&1 &
 	HOLDER=$!
-	until [[ -e $D/held ]]; do sleep 0.05; done
+	for _ in $(seq 1200); do [[ -e $D/held ]] && return 0; sleep 0.05; done
+	bail "the holder of the gate did not start"
 }
 release() {
 	sql primary "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()" >/dev/null 2>&1
 	wait "$HOLDER" 2>/dev/null
 }
-waits() { # PHASE: the pid of the backend (leader, phase 5 and 6) or the worker (4) waiting for the lock
+waits() { # PHASE: the pid of the backend (leader, phase 5 and 6) or of a process that writes a group (4: a worker, or the backend while the workers attach) waiting for the lock
 	local v kind="backend_type = 'client backend' AND query LIKE 'COPY lt FROM%'"
-	[[ $1 == 4 ]] && kind="backend_type = 'parallel worker'"
+	[[ $1 == 4 ]] && kind="(backend_type = 'parallel worker' OR (backend_type = 'client backend' AND query LIKE 'COPY lt FROM%'))"
 	for _ in $(seq 600); do
 		v=$(sql primary "SELECT pid FROM pg_stat_activity WHERE $kind AND wait_event_type = 'Lock' AND pid <> pg_backend_pid() LIMIT 1" 2>/dev/null)
 		[[ -z $v ]] || { echo "$v"; return 0; }

@@ -10,6 +10,7 @@
 #include "access/xact.h"
 #include "access/genam.h"
 #include "access/transam.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -93,15 +94,28 @@ calls_parallel_unsafe(Node *node, void *context)
 }
 
 /*
- * The backend that reads the rows of a COPY is in parallel mode while the workers of the ring write: a default, a generated column or an identity
- * column that calls nextval would fail there. Such a table has its groups written one run at a time, without the ring.
+ * The backend that reads the rows of a COPY is in parallel mode while the workers of the ring write, so what it runs for each row must not start a
+ * command, a subtransaction or a new xid: a default, a generated column or an identity column that calls nextval, a trigger (the checks of a
+ * foreign key are triggers), an index that is not a plain b-tree (the maintenance of a sift index merges in a subtransaction, which failed here and
+ * left the index half written). Such a table has its groups written one run at a time, without the ring.
  */
 static bool
-row_expressions_unsafe_in_parallel_mode(Relation rel)
+row_work_unsafe_in_parallel_mode(Relation rel)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 	TupleConstr *constr = desc->constr;
 
+	if (rel->rd_rel->relhastriggers)
+		return true;
+	foreach_oid(indexoid, RelationGetIndexList(rel))
+	{
+		Relation	index = index_open(indexoid, NoLock);
+		bool		plain = index->rd_rel->relam == BTREE_AM_OID && RelationGetIndexExpressions(index) == NIL && RelationGetIndexPredicate(index) == NIL;
+
+		index_close(index, NoLock);
+		if (!plain)
+			return true;
+	}
 	for (int i = 0; i < desc->natts; i++)
 		if (TupleDescAttr(desc, i)->attidentity != '\0')
 			return true;
@@ -196,6 +210,13 @@ sift_tbl_bulk_refusal(Relation rel)
  */
 #define LOAD_SBS		8
 #define LOAD_RING_UNITS	4
+/*
+ * The ring writes its groups without the lock of the active segment, so the writers of the table can take the room they need in the directory before
+ * the segments are published: the ring runs while the directory has this many entries free besides the segments it holds, else the load goes on in the
+ * way that keeps the lock for the groups of a run
+ */
+#define LOAD_RING_ROOM	32
+#define ring_room(st, held)		((st)->dir.nsegs + (held) + LOAD_RING_ROOM <= sift_tbl_max_segments - 2)
 #define LOAD_SB_ROWS	((uint64) SIFT_TBL_VBLOCKS_SB * SIFT_TBL_MAX_OFF)
 /* The backend and three workers: the buffer of a run is LOAD_MAX_GROUPS * LOAD_SBS write buffers */
 #define LOAD_MAX_GROUPS	4
@@ -287,7 +308,7 @@ load_groups(Relation rel)
 static bool
 ring_wanted(Load *ld, Relation rel)
 {
-	return ld->ring_ok && !ld->noring && load_groups(rel) > 1;
+	return ld->ring_ok && !ld->noring && load_groups(rel) > 1 && ring_room(sift_tbl_rel(rel), 0);
 }
 
 /* The next run of superblocks, taken under the lock that serializes the write buffers' own reservations */
@@ -352,38 +373,51 @@ make_room(Relation rel, SiftTblRel *st)
 							   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 }
 
-/* The lock of the active segment, held with room in the directory for n segments (made by settling, as often as writers that waited for it take it) */
-static void
+/*
+ * The lock of the active segment, held with room in the directory for n segments or, when the room stays short (rows of running transactions fill it),
+ * for the fewest the directory has: returns how many segments may be published under this hold, at least one (room made by settling, as often as
+ * writers that waited for it take it)
+ */
+static int
 lock_with_room(Relation rel, SiftTblRel *st, int n)
 {
-	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and give up only when it stays full */
+	int			room;
+
+	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and take what there is only when it stays short */
 	for (int tries = 0;; tries++)
 	{
 		make_room(rel, st);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_dir_read(rel, &st->dir);
-		if (st->dir.nsegs + n <= sift_tbl_max_segments - 2 || tries == LOAD_ROOM_TRIES)
+		room = sift_tbl_max_segments - 2 - st->dir.nsegs;
+		if (room >= n || tries == LOAD_ROOM_TRIES)
 			break;
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	}
-	if (st->dir.nsegs + n > sift_tbl_max_segments - 2)
+	if (room < 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
 				 errdetail("The groups of a load cannot be merged as fast as it writes them: rows of running transactions are in the way."),
 				 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
+	return Min(n, room);
 }
 
-/* The segments of groups already written, published in one change */
+/* The segments of groups already written (the caller keeps the orphan sweep from them), published in as few changes as the room of the directory allows */
 static void
 publish_all(Relation rel, SiftTblRel *st, Published *pub)
 {
-	lock_with_room(rel, st, pub->n);
-	sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = pub,.extra = InvalidBuffer});
-	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_tbl_refresh(rel, st);
-	if (sift_tbl_inline_promote)
-		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
+	for (int done = 0; done < pub->n;)
+	{
+		Published	part = {pub->segs + done, lock_with_room(rel, st, pub->n - done)};
+
+		sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = &part,.extra = InvalidBuffer});
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		done += part.n;
+		sift_tbl_refresh(rel, st);
+		if (sift_tbl_inline_promote)
+			(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
+	}
 }
 
 /* The unit of the current superblock is full: the rows go into the next one */
@@ -753,9 +787,10 @@ ring_hand_over(Load *ld, Relation rel, SiftTblRel *st, bool last)
 		return;
 	while (ring_reap(ld, rel, false))
 		;
-	if (rl->nsegs >= load_publish() && !ring_publish(ld, rel, st))
+	sift_dir_read(rel, &st->dir);
+	if (!ring_room(st, rl->nsegs + (int) (rl->head - rl->tail)) || (rl->nsegs >= load_publish() && !ring_publish(ld, rel, st)))
 	{
-		/* the directory is full: the rest of the load goes the way of a load without workers, which makes room between its runs */
+		/* the directory has little room: the rest of the load goes the way of a load without workers, which makes room between its runs */
 		ld->noring = true;
 		ring_stop(ld, rel, st);
 	}
@@ -777,7 +812,8 @@ ring_start(Load *ld, Relation rel, SiftTblRel *st)
 	LoadRing   *rg;
 	MemoryContext old;
 
-	if (!ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
+	sift_dir_read(rel, &st->dir);
+	if (!ring_room(st, 0) || !ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
 		return false;
 	(void) GetCurrentTransactionId();
 	old = MemoryContextSwitchTo(ld->cxt);
@@ -857,7 +893,6 @@ ring_stop(Load *ld, Relation rel, SiftTblRel *st)
 		(void) ring_reap(ld, rel, true);
 	sift_par_wait(rl->ldr);
 	sift_par_end(rl->ldr);
-	UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
 	ld->rl = NULL;
 	{
 		MemoryContext old = MemoryContextSwitchTo(ld->cxt);
@@ -871,6 +906,7 @@ ring_stop(Load *ld, Relation rel, SiftTblRel *st)
 #endif
 	if (pub.n > 0)
 		publish_all(rel, st, &pub);
+	UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
 }
 
 /* The groups of the run are written and become segments in the directory. parallel: the command is still running, so a parallel context may be used */
@@ -880,6 +916,7 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 	LoadRun    *r = &ld->run;
 	int			participants = parallel ? load_groups(rel) : 1;
 	int			ngroups;
+	int			room;
 	SiftSegEntry segs[LOAD_MAX_GROUPS];
 	Published	pub = {segs};
 
@@ -900,13 +937,30 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 		ld->noring = true;
 	}
 	pub.n = ngroups = share_units(r, ld->rows.len, participants);
-	lock_with_room(rel, st, ngroups);
+	room = lock_with_room(rel, st, ngroups);
 	r->xid = r->vers ? GetCurrentTransactionId() : InvalidTransactionId;
-	if (!(participants > 1 && ngroups > 1 && write_parallel(r, ld->rows.data, rel, ngroups, segs)))
+	if (room >= ngroups)
+	{
+		if (!(participants > 1 && ngroups > 1 && write_parallel(r, ld->rows.data, rel, ngroups, segs)))
+			for (int g = 0; g < ngroups; g++)
+				write_group(r, ld->rows.data, rel, g, &segs[g]);
+		sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = &pub,.extra = InvalidBuffer});
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	}
+	else
+	{
+		/* less room than groups: each is written and published under its own hold of the lock, the way a load without workers goes */
 		for (int g = 0; g < ngroups; g++)
+		{
+			Published	one = {&segs[g], 1};
+
+			if (g > 0)
+				(void) lock_with_room(rel, st, 1);
 			write_group(r, ld->rows.data, rel, g, &segs[g]);
-	sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = &pub,.extra = InvalidBuffer});
-	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+			sift_dir_update(rel, &(SiftDirChange) {.fn = publish_groups,.arg = &one,.extra = InvalidBuffer});
+			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		}
+	}
 	sift_tbl_refresh(rel, st);
 	if (sift_tbl_inline_promote)
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
@@ -1011,7 +1065,7 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 	{
 		MemoryContextSwitchTo(cxt);
 		ld->run.vers = !frozen;
-		ld->ring_ok = sift_tbl_load_from_copy && !row_expressions_unsafe_in_parallel_mode(rel);
+		ld->ring_ok = sift_tbl_load_from_copy && !row_work_unsafe_in_parallel_mode(rel);
 		(void) layout_of(rel, st);
 		ld->desc = RelationGetDescr(rel);
 		ld->flat = palloc(ld->desc->natts * sizeof(Datum));
