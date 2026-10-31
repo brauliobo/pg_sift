@@ -13,7 +13,8 @@ shape, size and work_mem, one backend, no workers (--workers N allows N per Gath
     plan_instr   user instructions to plan the shape with the extension on against off (perf stat of the backend, 20 EXPLAINs each); over off + 5%
                  and 20,000 instructions is a violation; '-' without perf
     on_ms off_ms median of 5 runs, warm
-    scan_ms      when the scan is not chosen, the median of 5 runs with it forced (sift.agg_force); '-' when it is the plan
+    scan_ms      when the scan is not chosen, the median of 5 runs with it forced (sift.agg_force); '-' when it is the plan or forcing it changes nothing (the statement
+                 has no scan to force: the two times of one plan differ by noise alone)
     slower       the plan the planner chose runs over 5% longer than the other (the plan without the extension when the scan is chosen, the scan forced when it is not)
 
 A violation is printed after the table; --strict makes any of them exit 1. Rows go to --out as TSV.
@@ -112,9 +113,10 @@ def cell(db, wm, name, cls, stmt, planning):
     sift = 'SiftAgg' in plan_on
     row = {'shape': name, 'class': cls, 'rows': db.rsplit('_', 1)[1], 'work_mem': wm, 'sift': sift, 'same_as_off': '-' if sift else plan_on == plan_off,
            'est_x': round(est_factor(explain(db, wm, 'on', stmt, True)), 1), 'on_ms': median_ms(db, wm, 'on', stmt), 'off_ms': median_ms(db, wm, 'off', stmt)}
-    row['scan_ms'] = '-' if sift else median_ms(db, wm, 'force', stmt)
+    forced = not sift and explain(db, wm, 'force', stmt) != plan_on
+    row['scan_ms'] = median_ms(db, wm, 'force', stmt) if forced else '-'
     other = row['off_ms'] if sift else row['scan_ms']
-    row['slower'] = row['on_ms'] > other * SLOWER_BAND and row['on_ms'] - other > 0.5
+    row['slower'] = (sift or forced) and row['on_ms'] > other * SLOWER_BAND and row['on_ms'] - other > 0.5
     on = off = None
     if planning:
         on, off = instructions(db, wm, 'on', stmt), instructions(db, wm, 'off', stmt)
