@@ -54,7 +54,7 @@ $$);
 -- the diagnostics: counters of the session, the indexes the role can read, why a query was not pushed down; what an update leaves to do and the
 -- declared paths are listed for the tables the role owns or may maintain, and for no other
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm_non', 'rm_nos'], $$
-SELECT sift.version()
+SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
@@ -91,7 +91,7 @@ $$);
 REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
 GRANT USAGE ON SCHEMA sift TO rm_own;
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_rd', 'rm_nos'], $$
-SELECT sift.version()
+SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
 !SELECT sift.promote('rm.docs_idx')
 !SELECT * FROM sift.stats()
 !SELECT * FROM sift.workers

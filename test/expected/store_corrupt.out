@@ -10,7 +10,7 @@ BEGIN
 	RETURN 'ok';
 EXCEPTION WHEN OTHERS THEN
 	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL, h = PG_EXCEPTION_HINT;
-	RETURN SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), '');
+	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), ''), 'pg_sift [0-9]+\.[0-9]+', 'pg_sift <version>');
 END $$;
 -- Fresh index: segment 1 = 20000 bytes (header block 5, data 2-4), segment 2 = 100 bytes
 CREATE TABLE t (v int);
@@ -206,9 +206,9 @@ SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                                                               expect                                                                                               
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift 3.7) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+                                                                                                  expect                                                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();
@@ -224,9 +224,9 @@ SELECT sift._test_poke('t_idx', 0, 30, 5, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                                                               expect                                                                                               
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 1.5, this build (pg_sift 3.7) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+                                                                                                  expect                                                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "t_idx" has on-disk format 1.5, this build (pg_sift <version>) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();

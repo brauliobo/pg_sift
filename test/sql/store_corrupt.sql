@@ -9,7 +9,7 @@ BEGIN
 	RETURN 'ok';
 EXCEPTION WHEN OTHERS THEN
 	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL, h = PG_EXCEPTION_HINT;
-	RETURN SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), '');
+	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), ''), 'pg_sift [0-9]+\.[0-9]+', 'pg_sift <version>');
 END $$;
 
 -- Fresh index: segment 1 = 20000 bytes (header block 5, data 2-4), segment 2 = 100 bytes
