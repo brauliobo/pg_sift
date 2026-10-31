@@ -42,7 +42,29 @@ ord_copy(size_t bytes)
 #define ORD_GROUP(x) ((x)->group)
 #define ORD_KEY(x) ((x)->key)
 #define ORD_CODE(x) ((x)->code)
-SIFT_DEFINE_RADIX_SORT(ord_sort, OrdEnt, ORD_GROUP, ORD_KEY, ORD_CODE, ord_copy, pfree, ord_sort_cmp)
+SIFT_DEFINE_RADIX_SORT(ord_sort_by_code_order, OrdEnt, ORD_GROUP, ORD_KEY, ORD_CODE, ord_copy, pfree, ord_sort_cmp)
+
+#define ORD_CODE_LESS(x, y) ((x)->code < (y)->code)
+#define ORD_ZERO(x) ((int64) 0)
+#define ORD_CODE_SIGNED(x) ((int64) ((x)->code ^ UINT64CONST(0x8000000000000000)))	/* the order of the unsigned code as a signed key */
+SIFT_DEFINE_SORT(ord_code_cmp, OrdEnt, ORD_CODE_LESS)
+SIFT_DEFINE_RADIX_SORT(ord_by_code, OrdEnt, ORD_CODE_SIGNED, ORD_ZERO, ORD_ZERO, ord_copy, pfree, ord_code_cmp)
+
+/*
+ * The entries by (group, key, address). The radix sort keeps the order of the entries it finds, so they must come in the order of the address: the rows of a segment cut by a key
+ * do not, and the comparison sort that took their place was a tenth of such a build (1,000,000 rows). They are put in the order of the address by a radix sort of their own first.
+ */
+static void
+ord_sort(OrdEnt *a, size_t n)
+{
+	for (size_t i = 1; i < n; i++)
+		if (a[i].code < a[i - 1].code)
+		{
+			ord_by_code(a, n);
+			break;
+		}
+	ord_sort_by_code_order(a, n);
+}
 
 bool
 sift_cgord_leaf_text(const SiftColDef *d)
