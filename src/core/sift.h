@@ -17,6 +17,8 @@
  * 1.3: segments of segment format 3 (below) in a BM25 index, or a column group with unfrozen rows (SIFT_SEG_VERS) in a sift_table: the first
  *      one raises the minor, nothing lowers it; all older ones are read as before
  * 1.4: segments of segment format 4 (below) in a BM25 index
+ * 1.5: segments of segment format 5 (below) in a BM25 index, or a metapage that names the text search configuration of the stemmer: an
+ *      index with either is refused by a 3.7 library with this format, not read as damaged
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
  * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
@@ -101,6 +103,9 @@ sift_block_sb(BlockNumber blk)
 	return blk >> SIFT_SB_SHIFT;
 }
 
+/* Longest name of a text search configuration as the stemmer option (the metapage keeps it) */
+#define SIFT_TSCONFIG_BYTES	128
+
 /* Index reloptions (amoptions); strings are offsets from the struct start */
 typedef struct SiftOptions
 {
@@ -110,6 +115,7 @@ typedef struct SiftOptions
 	int			stemmer;		/* text search dictionary name, "" = none */
 	bool		case_folding;
 	bool		accent_folding;
+	bool		accent_folding_set;	/* given in the options: with a text search configuration as stemmer the default is off */
 	int			write_buffer_limit;	/* kB; seal the open write buffer above it */
 	int			mutable_limit;	/* DEPRECATED ALIAS of write_buffer_limit: the 2.0.0 spelling, read by sift_amoptions only */
 	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */

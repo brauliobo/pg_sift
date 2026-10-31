@@ -148,9 +148,12 @@ extents_subtract(SiftWriteTarget *wt, SiftExtent *a, int *na, SiftExtent *b, int
 }
 
 void
-sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash)
+sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash, const char *analyzer_config)
 {
 	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
+	strlcpy(wt->meta.analyzer_config, analyzer_config, sizeof(wt->meta.analyzer_config));
+	if (analyzer_config[0])
+		wt->meta.format_minor = SIFT_FORMAT_MINOR;
 }
 
 /* The blocks taken from the store, in the order of the target: adjacent runs are one */
@@ -381,7 +384,7 @@ bulk_put_meta(SiftWriteTarget *wt)
 
 	sift_page_init(page, SIFT_PT_META, 0);
 	*META(page) = wt->meta;
-	SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
+	SiftPageSetUsed(page, wt->meta.analyzer_config[0] ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
 	wt_put(wt, SIFT_METAPAGE_BLKNO, page);
 	page = wt_page(wt, NULL);
 	sift_page_init(page, SIFT_PT_DIRECTORY, 0);

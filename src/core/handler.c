@@ -333,7 +333,7 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 	{"b", RELOPT_TYPE_REAL, offsetof(SiftOptions, b)},
 	{"stemmer", RELOPT_TYPE_STRING, offsetof(SiftOptions, stemmer)},
 	{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
-	{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
+	{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding), offsetof(SiftOptions, accent_folding_set)},
 	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, write_buffer_limit)},
 	{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},	/* DEPRECATED ALIAS */
 	{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},

@@ -83,6 +83,7 @@ typedef struct PhraseCheck
 	int			nterms;
 	int		   *leaf;
 	int		   *order;
+	int		   *offs;			/* position of term i from the first, NULL: adjacent */
 	bool		required;
 } PhraseCheck;
 

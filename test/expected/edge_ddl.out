@@ -215,7 +215,7 @@ CREATE UNIQUE INDEX a_bad ON a USING sift (body);
 ERROR:  access method "sift" does not support unique indexes
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
 ERROR:  unknown sift stemmer "klingon"
-HINT:  Valid stemmers are "en" and "none".
+HINT:  Valid stemmers are "en", "none" and the names of text search configurations (with their schema unless they are in pg_catalog).
 CREATE INDEX a_bad ON a USING sift (body) WITH (write_buffer_limit = 0);
 ERROR:  value 0 out of bounds for option "write_buffer_limit"
 DETAIL:  Valid values are between "64" and "1048576".

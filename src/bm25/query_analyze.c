@@ -39,7 +39,8 @@ node_cmp_shape(const SiftQNode *a, const SiftQNode *b)
 	if (a->nterms != b->nterms)
 		return SIFT_CMP3(a->nterms, b->nterms);
 	for (int i = 0; i < a->nterms; i++)
-		if ((c = cmp_bytes(a->terms[i], a->termlens[i], b->terms[i], b->termlens[i])) != 0)
+		if ((c = cmp_bytes(a->terms[i], a->termlens[i], b->terms[i], b->termlens[i])) != 0 ||
+			(c = SIFT_CMP3(a->offs ? a->offs[i] : i, b->offs ? b->offs[i] : i)) != 0)
 			return c;
 	if (a->nchild != b->nchild)
 		return SIFT_CMP3(a->nchild, b->nchild);
@@ -96,6 +97,12 @@ analyze_words(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 	{
 		n->terms[i] = pnstrdup(tok[i].str, tok[i].len);
 		n->termlens[i] = tok[i].len;
+	}
+	if (tok[nt - 1].pos - tok[0].pos != nt - 1)
+	{
+		n->offs = palloc(nt * sizeof(int));
+		for (int i = 0; i < nt; i++)
+			n->offs[i] = tok[i].pos - tok[0].pos;
 	}
 	return n;
 }

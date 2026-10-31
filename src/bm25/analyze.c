@@ -62,6 +62,11 @@ struct SiftAnalyzer
 	bool		utf8;
 	uint8		mode;			/* 0 none, 1 case, 2 accent, 3 both */
 	StemFn		stem;
+	SiftTsStem *ts;				/* stemmer SIFT_STEM_TS */
+	bool		stems;			/* stem or ts */
+	uint32		gap;			/* stop words dropped since the last token: each takes a position */
+	uint32	   *tokpos;			/* token -> position, with stop words (ts only) */
+	size_t		tokposcap;
 	StemSlot   *stem_memo;		/* STEM_SLOTS entries, after STEM_MEMO_AFTER stems */
 	uint32		nstems;
 	uint8		ascii[128];		/* folded byte, 0 = separator */
@@ -189,6 +194,9 @@ sift_analyzer_create(const SiftAnalyzerConfig *cfg, MemoryContext mcxt)
 	a->mode = (cfg->case_fold ? 1 : 0) | (cfg->accent_fold ? 2 : 0);
 	Assert(cfg->stemmer < SIFT_STEM_COUNT);
 	a->stem = stem_fns[cfg->stemmer];
+	if (cfg->stemmer == SIFT_STEM_TS)
+		a->ts = sift_ts_open(cfg->tsconfig, mcxt);
+	a->stems = a->stem || a->ts;
 	for (int c = 0; c < 128; c++)
 		if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
 			a->ascii[c] = cfg->case_fold ? pg_ascii_tolower(c) : c;
@@ -241,6 +249,7 @@ sift_analyzer_reset(SiftAnalyzer *a)
 	DROP_BIG(a->terms, a->termcap, sizeof(SiftTermFreq));
 	DROP_BIG(a->slots, a->slotcap, sizeof(int32));
 	DROP_BIG(a->tokidx, a->tokidxcap, sizeof(int32));
+	DROP_BIG(a->tokpos, a->tokposcap, sizeof(uint32));
 	DROP_BIG(a->pstart, a->pstartcap, sizeof(uint32));
 	DROP_BIG(a->plist, a->plistcap, sizeof(uint32));
 	DROP_BIG(a->pbuf, a->pbufcap, 1);
@@ -393,8 +402,12 @@ group_positions(SiftAnalyzer *a, int ntok, int nbag)
 	for (int b = 0; b < nbag; b++)
 		a->pstart[b + 1] += a->pstart[b];
 	/* fills each group from its start; the starts end up one group later, where the groups end */
-	for (int t = 0; t < ntok; t++)
-		a->plist[a->pstart[a->tokidx[t]]++] = t;
+	if (a->ts)
+		for (int t = 0; t < ntok; t++)
+			a->plist[a->pstart[a->tokidx[t]]++] = a->tokpos[t];
+	else
+		for (int t = 0; t < ntok; t++)
+			a->plist[a->pstart[a->tokidx[t]]++] = t;
 }
 
 /* Appends the record of bag term b (occurrences in plist) to pbuf at *used; returns its length */
@@ -422,12 +435,13 @@ put_positions(SiftAnalyzer *a, int b, size_t *used)
  * 32-bit hash, so walking it yields them almost sorted; an insertion pass
  * fixes probe displacement, wrap-around and equal hashes.
  */
-int
-sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint32 *dl)
+static pg_attribute_always_inline int
+analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint32 *dl, const bool ts)
 {
 	const uint8 *s = (const uint8 *) text;
 	size_t		used = 0;
-	uint64		ntok = 0;
+	uint64		ntok = 0,
+				gaps = 0;
 	int			nterms = 0,
 				nbag = 0,
 				off = 0,
@@ -438,6 +452,7 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 				section = 0;
 	const uint8 *sep = a->cfg.nfields ? memchr(s, SIFT_FIELD_SEP, len) : NULL;
 
+	a->gap = 0;
 	bag_table(a, pg_nextpower2_32(Min(Max(len / 4, 64), 1 << 16)), 0);
 	for (;;)
 	{
@@ -449,6 +464,12 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 		{
 			ENSURE(a, tokidx, tokidxcap, ntok + 1);
 			a->tokidx[ntok] = cur;
+			if (ts)
+			{
+				ENSURE(a, tokpos, tokposcap, ntok + 1);
+				a->tokpos[ntok] = ntok + (gaps += a->gap);
+				a->gap = 0;
+			}
 		}
 		ntok++;
 		for (; sep && sep < s + start; section++)
@@ -500,6 +521,13 @@ sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out,
 	*dl = Min(ntok, SIFT_MAX_DL);
 	*out = a->terms;
 	return nterms;
+}
+
+/* ts: the analyzer's stop words keep a position, so each token has its own; the loop is compiled for both so the others pay nothing */
+int
+sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint32 *dl)
+{
+	return a->ts ? analyze_doc(a, text, len, out, dl, true) : analyze_doc(a, text, len, out, dl, false);
 }
 
 /* Literal folding */

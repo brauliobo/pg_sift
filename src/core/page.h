@@ -54,7 +54,7 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
 /*
- * Metapage (block 0). The failure note at its end needs no format minor: a build that does not know it keeps the page as it is (pd_lower
+ * Metapage (block 0). The failure note and the analyzer configuration at its end need no format minor: a build that does not know it keeps the page as it is (pd_lower
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
  */
 #define SIFT_MAINT_ERRMSG_LEN	192
@@ -78,10 +78,12 @@ typedef struct SiftMetaPageData
 	TimestampTz maint_failed_at;	/* 0: no note */
 	uint32		maint_errcode;		/* the SQLSTATE, packed by MAKE_SQLSTATE */
 	char		maint_errmsg[SIFT_MAINT_ERRMSG_LEN];	/* NUL-terminated, cut to fit */
+	/* The text search configuration of the stemmer option, as given at build time, "" for the built-in analyzers; pd_lower covers it like the note */
+	char		analyzer_config[SIFT_TSCONFIG_BYTES];
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
-/* The bytes of a metapage of a build without the note */
+/* The bytes of a metapage of a build without the note and the configuration */
 #define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
 
 /* Segment directory (block 1) */

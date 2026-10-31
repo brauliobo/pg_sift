@@ -332,7 +332,7 @@ doc_count_tokens(const SiftDoc *d, int field, const SiftQNode *leaf, const char 
 	return n;
 }
 
-/* The terms at consecutive positions, found on the tokens: a phrase never needs the term grouping */
+/* The terms at their positions (adjacent unless stop words lie between), found on the tokens: a phrase never needs the term grouping */
 static bool
 eval_phrase(const SiftDoc *d, const SiftQNode *n)
 {
@@ -340,11 +340,18 @@ eval_phrase(const SiftDoc *d, const SiftQNode *n)
 
 	for (int t = 0; t + n->nterms <= d->ntok; t++)
 	{
-		int			i = 0;
+		int			i = 0,
+					j = t;
 
-		while (i < n->nterms && tok[t + i].len == n->termlens[i] && tok[t + i].pos == tok[t].pos + i &&
-			   memcmp(tok[t + i].str, n->terms[i], n->termlens[i]) == 0)
-			i++;
+		for (; i < n->nterms; i++)
+		{
+			uint32		want = tok[t].pos + (n->offs ? n->offs[i] : i);
+
+			while (j < d->ntok && tok[j].pos < want)
+				j++;
+			if (j == d->ntok || tok[j].pos != want || tok[j].len != n->termlens[i] || memcmp(tok[j].str, n->terms[i], n->termlens[i]) != 0)
+				break;
+		}
 		if (i == n->nterms)
 			return true;
 	}

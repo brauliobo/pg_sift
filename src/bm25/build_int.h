@@ -71,6 +71,7 @@ typedef struct BuildState
 	int			nsegs;
 	double		indexed;
 	uint32		analyzer_hash;
+	char		analyzer_config[SIFT_TSCONFIG_BYTES];	/* the stemmer's text search configuration, for the metapage */
 	bool		positions;
 	/* a parallel build's runs go to files of the fileset, which its participants read: the shared state, NULL when it is serial */
 	struct SiftBuildShared *shared;

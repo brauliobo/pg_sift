@@ -16,6 +16,19 @@ static const struct
 	{"en", SIFT_STEM_EN}, {"english", SIFT_STEM_EN}, {"english_stem", SIFT_STEM_EN},
 };
 
+/* Stemmer names the built-in stemmers answer to; any other name is a text search configuration */
+static bool
+builtin_stemmer(const char *name, SiftStemmer *id)
+{
+	for (int i = 0; i < lengthof(stem_names); i++)
+		if (pg_strcasecmp(name, stem_names[i].name) == 0)
+		{
+			*id = stem_names[i].id;
+			return true;
+		}
+	return false;
+}
+
 /* Configuration */
 
 void
@@ -56,8 +69,14 @@ sift_analyze_validate_fields(const char *names)
 static void
 config_hash(SiftAnalyzerConfig *cfg)
 {
-	uint8		key[12] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
+	uint8		key[12 + SIFT_TSCONFIG_BYTES] = {SIFT_ANALYZER_VERSION, cfg->case_fold, cfg->accent_fold, cfg->stemmer};
 	int			n = 4;
+
+	if (cfg->stemmer == SIFT_STEM_TS)
+	{
+		memcpy(key + n, cfg->tsconfig, strlen(cfg->tsconfig) + 1);
+		n += strlen(cfg->tsconfig) + 1;
+	}
 
 	if (cfg->prefix_len)
 	{
@@ -100,6 +119,7 @@ sift_analyzer_config_set(SiftAnalyzerConfig *cfg, bool case_fold, bool accent_fo
 	cfg->case_fold = case_fold;
 	cfg->accent_fold = accent_fold;
 	cfg->stemmer = stemmer;
+	cfg->tsconfig[0] = '\0';
 	cfg->keyword = false;
 	sift_analyzer_config_set_synthetic(cfg, 0, "");
 }
@@ -111,10 +131,36 @@ sift_analyzer_config_default(SiftAnalyzerConfig *cfg)
 }
 
 void
+sift_analyzer_config_set_accent_fold(SiftAnalyzerConfig *cfg, bool accent_fold)
+{
+	cfg->accent_fold = accent_fold;
+	config_hash(cfg);
+}
+
+void
+sift_analyzer_config_set_stemmer(SiftAnalyzerConfig *cfg, const char *name)
+{
+	SiftStemmer id;
+
+	if (builtin_stemmer(name, &id))
+		cfg->tsconfig[0] = '\0';
+	else
+	{
+		id = SIFT_STEM_TS;
+		strlcpy(cfg->tsconfig, name, sizeof(cfg->tsconfig));
+	}
+	cfg->stemmer = id;
+	config_hash(cfg);
+}
+
+void
 sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *cfg)
 {
-	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding,
-							 sift_analyze_stemmer(sift_options_stemmer(opts)));
+	sift_analyzer_config_set(cfg, opts->case_folding, opts->accent_folding, SIFT_STEM_NONE);
+	sift_analyzer_config_set_stemmer(cfg, sift_options_stemmer(opts));
+	/* a configuration's own dictionaries decide what is folded, as for to_tsvector */
+	if (cfg->stemmer == SIFT_STEM_TS && !opts->accent_folding_set)
+		sift_analyzer_config_set_accent_fold(cfg, false);
 	sift_analyzer_config_set_synthetic(cfg, opts->prefix_index, sift_options_fields(opts));
 	if (opts->analyzer == SIFT_ANALYZER_KEYWORD)
 	{
@@ -135,25 +181,14 @@ sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *cfg)
 SiftStemmer
 sift_analyze_stemmer(const char *name)
 {
-	for (int i = 0; i < lengthof(stem_names); i++)
-		if (pg_strcasecmp(name, stem_names[i].name) == 0)
-			return stem_names[i].id;
-	ereport(ERROR,
-			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-			 errmsg("unknown sift stemmer \"%s\"", name),
-			 errhint("Valid stemmers are \"en\" and \"none\".")));
-	pg_unreachable();
-}
+	SiftStemmer id;
 
-void
-sift_analyze_validate_stemmer(const char *name)
-{
-	sift_analyze_stemmer(name);
+	return builtin_stemmer(name, &id) ? id : SIFT_STEM_TS;
 }
 
 bool
 sift_analyzer_config_agrees(const SiftAnalyzerConfig *a, const SiftAnalyzerConfig *b)
 {
-	return a->case_fold == b->case_fold && a->accent_fold == b->accent_fold && a->stemmer == b->stemmer &&
+	return a->case_fold == b->case_fold && a->accent_fold == b->accent_fold && a->stemmer == b->stemmer && strcmp(a->tsconfig, b->tsconfig) == 0 &&
 		a->keyword == b->keyword && strcmp(a->field_names, b->field_names) == 0;
 }

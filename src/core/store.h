@@ -257,7 +257,7 @@ extern int64 sift_store_free_below(Relation index, BlockNumber limit, uint32 min
  * final high-water mark. A BULK build numbers its segments from gen 1 and
  * sets meta->next_gen when it publishes them.
  */
-extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash);
+extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash, const char *analyzer_config);
 /* The same with the scoring constants and the metapage flags given (a column index: k1 = b = 0, schema hash, SIFT_COL_META_FLAG) */
 extern void sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyzer_hash, uint32 flags);
 

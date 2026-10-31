@@ -381,7 +381,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
-		if (META(mp)->maint_failed_at != 0)
+		if (META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0])
 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)

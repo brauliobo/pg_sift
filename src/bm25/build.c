@@ -202,6 +202,7 @@ build_begin(Relation index, Size budget)
 	sift_analyzer_config_from_options(opts, &cfg);
 	bs->index = index;
 	bs->analyzer_hash = cfg.hash;
+	strlcpy(bs->analyzer_config, cfg.tsconfig, sizeof(bs->analyzer_config));
 	bs->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift build", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(bs->cxt);
 	bs->tmpcxt = AllocSetContextCreate(bs->cxt, "sift build tuple", ALLOCSET_DEFAULT_SIZES);
@@ -425,7 +426,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_par_wait(ldr);
 		sift_par_end(ldr);
 	}
-	sift_store_init_meta(bs->wt, opts, bs->analyzer_hash);
+	sift_store_init_meta(bs->wt, opts, bs->analyzer_hash, bs->analyzer_config);
 	sift_wt_finish(bs->wt);
 	if (bs->nsegs > 0)
 		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.extra = InvalidBuffer});
@@ -441,6 +442,6 @@ sift_ambuildempty(Relation index)
 	SiftAnalyzerConfig cfg;
 
 	sift_analyzer_config_from_index(index, &cfg);
-	sift_store_init_meta(wt, sift_index_options(index), cfg.hash);
+	sift_store_init_meta(wt, sift_index_options(index), cfg.hash, cfg.tsconfig);
 	sift_wt_finish(wt);
 }

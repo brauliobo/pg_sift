@@ -209,7 +209,7 @@ sift_tbl_ensure_init(Relation rel)
 		{
 			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
 
-			sift_store_init_meta(wt, &none, 0);
+			sift_store_init_meta(wt, &none, 0, "");
 			sift_wt_finish(wt);
 		}
 		UnlockRelationForExtension(rel, ExclusiveLock);

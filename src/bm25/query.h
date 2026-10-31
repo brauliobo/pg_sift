@@ -66,6 +66,7 @@ typedef struct SiftQNode
 	int			nterms;			/* SQ_PHRASE: analyzed terms */
 	char	  **terms;
 	int		   *termlens;
+	int		   *offs;			/* SQ_PHRASE: position of term i from the first (stop words take one); NULL: the terms are adjacent */
 	int			nchild;			/* SQ_AND / SQ_OR / SQ_NOT */
 	struct SiftQNode **child;
 	char	   *fieldname;		/* name: qualifier of a leaf or group, else NULL */

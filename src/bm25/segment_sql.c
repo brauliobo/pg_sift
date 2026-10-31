@@ -453,6 +453,9 @@ sift_verify(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("sift index \"%s\" was built with other options", RelationGetRelationName(index)),
+				 snap->meta.analyzer_config[0] || cfg.tsconfig[0] ?
+				 errdetail("The index was built with text search configuration \"%s\", the stemmer option names \"%s\".",
+						   snap->meta.analyzer_config[0] ? snap->meta.analyzer_config : "(none)", cfg.tsconfig[0] ? cfg.tsconfig : "(none)") : 0,
 				 errhint("REINDEX the index after changing k1, b or analyzer options.")));
 	segs = palloc0(Max(snap->nsegs, 1) * sizeof(SiftSegment *));
 	for (int i = 0; i < snap->nsegs; i++)
