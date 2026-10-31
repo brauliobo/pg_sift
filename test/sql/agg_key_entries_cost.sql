@@ -6,10 +6,10 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
-CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, part int NOT NULL, amount float8 NOT NULL);
+CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, part int NOT NULL, amount float8 NOT NULL, grp text NOT NULL, gi int NOT NULL);
 SELECT setseed(0.42);
-INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), g % 100, random() * 100 FROM generate_series(1, 100000) g;
-CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount) WITH (rollup_dims = 'off');
+INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), g % 100, random() * 100, 'k' || (g % 20000), g % 20000 FROM generate_series(1, 100000) g;
+CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_dims = 'off');
 VACUUM (FREEZE, ANALYZE) items;
 
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
@@ -22,6 +22,12 @@ SELECT key,
        scan_cost('SELECT id, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY id') > 5 AS entries_priced,
        differences(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS differences
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
+
+-- a text key of repeated values (20,000 groups of 5 rows) maps its entries once each into the table of ids: the repeats of an id the table holds are
+-- not the growth of the table, and cost the scan the 20,000 ids and not their 95,000 entries (1.7 times the integer key of the same groups in time, 3.6 when the entries are priced)
+SELECT scan_cost('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP BY grp') /
+       scan_cost('SELECT gi, count(*) AS n, max(amount) AS s FROM items GROUP BY gi') < 2 AS repeats_not_priced,
+       differences('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP BY grp') AS differences;
 
 -- the near-unique key keeps the normal plan, the 17 values take the scan
 SELECT key, scan_used(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS scan
