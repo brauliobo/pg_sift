@@ -1,0 +1,66 @@
+-- The default merge_fanin (4) keeps the segment count of an index that takes batches low: 40 batches of 300 documents, each promoted and
+-- merged by the policy, leave 1 to 3 segments at any time (the fourth equal segment merges) and 2 on average, where merge_fanin = 8 keeps up to 7 and 3.9 (a
+-- segment costs a query 0.3 to 0.9 M instructions, docs/OPTIONS.md); the segments the merges write stay under 3x those of the promotions.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+CREATE FUNCTION ingest_slope(tbl regclass, idx regclass, OUT counts int[], OUT promoted bigint, OUT merged bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	known bigint[];
+	r record;
+BEGIN
+	counts := '{}'; promoted := 0; merged := 0;
+	SELECT coalesce(array_agg(gen), '{}') INTO known FROM sift.segments(idx);
+	FOR b IN 0..39 LOOP
+		EXECUTE format('INSERT INTO %s SELECT g, (SELECT string_agg(''w'' || (get_byte(decode(md5(g || '':'' || k), ''hex''), 0) %% 40), '' '') FROM generate_series(1, 12) k) FROM generate_series(%s, %s) g', tbl, b * 300 + 1, b * 300 + 300);
+		PERFORM sift.promote(idx);
+		FOR r IN SELECT gen, bytes FROM sift.segments(idx) WHERE kind = 'immutable' AND gen <> ALL (known) LOOP
+			promoted := promoted + r.bytes;
+			known := known || r.gen;
+		END LOOP;
+		PERFORM sift.merge(idx);
+		FOR r IN SELECT gen, bytes FROM sift.segments(idx) WHERE kind = 'immutable' AND gen <> ALL (known) LOOP
+			merged := merged + r.bytes;
+			known := known || r.gen;
+		END LOOP;
+		counts := counts || (SELECT count(*)::int FROM sift.segments(idx) WHERE kind = 'immutable');
+	END LOOP;
+END $$;
+CREATE TABLE fanin_default (id int PRIMARY KEY, body text);
+CREATE TABLE fanin_8 (id int PRIMARY KEY, body text);
+CREATE INDEX fanin_default_idx ON fanin_default USING sift (body) WITH (write_buffer_limit = 64);
+CREATE INDEX fanin_8_idx ON fanin_8 USING sift (body) WITH (write_buffer_limit = 64, merge_fanin = 8);
+CREATE TEMP TABLE slope AS SELECT 'default' AS fanin, * FROM ingest_slope('fanin_default', 'fanin_default_idx')
+UNION ALL SELECT '8', * FROM ingest_slope('fanin_8', 'fanin_8_idx');
+-- the segment count after each of the first 12 batches of the default, and the slope over 1..40 segments' worth of batches
+SELECT counts[1:12] AS first_12_batches FROM slope WHERE fanin = 'default';
+     first_12_batches      
+---------------------------
+ {1,2,3,1,2,3,1,2,3,1,2,3}
+(1 row)
+
+SELECT fanin, (SELECT max(c) FROM unnest(counts) c) AS max_segments, round((SELECT avg(c) FROM unnest(counts) c), 1) AS mean_segments,
+	merged < 3 * promoted AS write_amplification_under_3, merged > promoted AS merges_rewrite
+FROM slope ORDER BY fanin DESC;
+  fanin  | max_segments | mean_segments | write_amplification_under_3 | merges_rewrite 
+---------+--------------+---------------+-----------------------------+----------------
+ default |            3 |           2.0 | t                           | t
+ 8       |            7 |           3.9 | t                           | f
+(2 rows)
+
+SELECT (SELECT avg(c) FROM unnest(d.counts) c) < 0.6 * (SELECT avg(c) FROM unnest(e.counts) c) AS default_has_fewer_segments,
+	d.merged > e.merged AS default_merges_more
+FROM slope d, slope e WHERE d.fanin = 'default' AND e.fanin = '8';
+ default_has_fewer_segments | default_merges_more 
+----------------------------+---------------------
+ t                          | t
+(1 row)
+
+SELECT sift.verify('fanin_default_idx', true) IS NOT NULL AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+DROP TABLE fanin_default, fanin_8;
+DROP FUNCTION ingest_slope(regclass, regclass);
+DROP EXTENSION pg_sift;

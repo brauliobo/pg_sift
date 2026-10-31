@@ -156,6 +156,8 @@ typedef struct SiftOptions
 #define SIFT_DEFAULT_B				0.75
 #define SIFT_DEFAULT_WRITE_BUFFER_LIMIT	4096
 #define SIFT_DEFAULT_VACUUM_SEGMENTS	2
+/* segments of a size tier that merge (merge_fanin): fewer than the 8 of the column and table hosts, which are not measured at it */
+#define SIFT_DEFAULT_MERGE_FANIN		4
 
 /* Returns the index options with defaults filled in; never NULL */
 extern const SiftOptions *sift_index_options(Relation index);

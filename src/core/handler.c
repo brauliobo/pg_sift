@@ -213,7 +213,7 @@ define_reloptions(void)
 					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "merge_fanin",
 					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
-					  SIFT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
+					  SIFT_DEFAULT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -432,7 +432,7 @@ sift_index_options(Relation index)
 		.accent_folding = true,
 		.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
-		.merge_fanin = SIFT_MERGE_FANIN,
+		.merge_fanin = SIFT_DEFAULT_MERGE_FANIN,
 		.positions = true,
 		.dead_rewrite_pct = SIFT_MERGE_DEAD_PCT,
 		.vacuum_truncate = true,

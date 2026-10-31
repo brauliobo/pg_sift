@@ -136,16 +136,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift(merge_fanin)
 
-`BM25` · default · since 2.0 · default 8
+`BM25` · default · since 2.0 · default 4 (8 before 3.8)
 
 - **What it does:** segments of one size tier that trigger a merge: lower keeps fewer segments
-- **Gain:** none measured: query after 20 inserts of 2,000 documents 1.49 ms at fanin 2, 1.40 ms at 8 (140,000 documents)
-- **Impact:** index size: 26.7 MB at fanin 2, 25.8 MB at 8 (-3.2%); build, merge and writes: 20 inserts of 2,000 documents 844 ms at fanin 2, 703 ms at 8 (-16.7%); other: lower merges more often (more write work), higher keeps up to merge_fanin - 1 segments a tier
+- **Gain:** 1,000,000 documents ingested in batches of 5,000 after a build of 100,000, every batch promoted and merged by the policy, 4 against 8: 4.6 segments on average (8 at most) against 6.5 (12); warm, M instructions a statement at the end state (4 and 6 segments): and 9.24 against 10.22 (-9.6%), or 85.86 against 89.75 (-4.3%), mixed 36.04 against 38.79 (-7.1%), phrase 10.42 against 11.35 (-8.2%); cold, and: 284 against 297 blocks, 2.79 against 3.20 MB (-13%)
+- **Impact:** index size: equal within 1% (212.2 against 214.1 MB); write: the merges write 3.10 bytes for each byte a promotion writes against 2.19 (+42%), 30.6 against 22.4 s of merging for the 900,000 documents (+37%), the WAL of the whole ingestion 2,460 against 2,208 MB (+11%); the INSERT statement itself is the same. Other: 2 gives 3.2 segments on average at 6.25 bytes a byte, 3 gives 3.8 at 4.07, 16 gives 9.0 at 1.85 (and +76% instructions against one segment)
 - **When:** Merges chosen by the worker, by inserters needing room and by sift.merge(): segments of one size tier (a factor of merge_fanin, from write_buffer_limit). Range 2 to 32. VACUUM follows vacuum_segments.
-- **Default:** 8 — 8: against 2, 20 inserts of 2,000 documents took 703 against 844 ms (-16.7%), the index was 3.2% smaller and queries equal (1.40 against 1.49 ms); the directory is kept under greatest(32, 2*merge_fanin) entries.
-- **Turn off:** n/a: a tuning value (2 to 32). ALTER INDEX .. RESET (merge_fanin) returns 8 at the next merge; no REINDEX. No value turns merging off; async_maintenance = off moves it to inserters and VACUUM.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave 8. Lower merges sooner (more write work, fewer segments to query); higher merges less and keeps up to merge_fanin - 1 segments per size tier. ALTER INDEX applies at the next merge.
+- **Default:** 4: a segment costs a query 0.30 (and), 0.86 (or), 0.48 (mixed), 0.32 (phrase) and 0.60 (count) M instructions at 1,000,000 documents (12 states of 1 to 39 segments, least squares), and the blocks of a cold statement grow with it (and: 250 blocks at 1 segment, 284 at 4, 372 at 16, 543 at 39); against 8 the write work is 37% more for 1.9 segments less on average and 4 less at most. 2 and 3 cost 2.0x and 1.3x the merge bytes of 4 for 1.4 and 0.8 segments less; the directory is kept under greatest(32, 2*merge_fanin) entries.
+- **Turn off:** n/a: a tuning value (2 to 32). ALTER INDEX .. RESET (merge_fanin) returns 4 at the next merge; no REINDEX. No value turns merging off; async_maintenance = off moves it to inserters and VACUUM.
+- **Upgrade from 3.7:** an index that does not set merge_fanin merges at 4 segments a tier from its next merge (8 before); `ALTER INDEX .. SET (merge_fanin = 8)` keeps the 3.7 policy.
+- **Advice:** Leave 4. Lower merges sooner (more write work, fewer segments to query); higher merges less and keeps up to merge_fanin - 1 segments per size tier. ALTER INDEX applies at the next merge.
 
 #### sift(dead_rewrite_pct)
 

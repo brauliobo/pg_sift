@@ -187,7 +187,7 @@ SELECT sift_count('news', 'power AND plant');
 
 ## Operations and limits
 
-- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `merge_fanin` defaults to 4 (8 before 3.8): an index that takes batches keeps 4.6 segments on average instead of 6.5 and reads 4 to 10% fewer instructions and 13% fewer cold MB, for 37% more merge time and 11% more WAL while it ingests (`ALTER INDEX .. SET (merge_fanin = 8)` keeps the old policy); `sift_table` is tuned with settings (`sift.table_*`), not per table.
 - **Maintenance** is on by default: a background worker (`sift.async_maintenance`) promotes write buffers and merges segments, `sift.col_auto_merge` vacuums and merges a `sift_col` index after churn, `sift.table_auto_defrag` clears the dead rows of a `sift_table`; VACUUM clears dead rows as usual.
 - **Large `work_mem` and unusual planner costs:** a `seq_page_cost` above `random_page_cost` moves the planner's choice between the scan and the normal plan most; the results are the same as the normal plan's either way.
 - **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
