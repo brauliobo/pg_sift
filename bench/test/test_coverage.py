@@ -143,8 +143,17 @@ class Rows(Fixture):
         self.claim()
         self.t.rows('topn_text_key', ['sift', 'native'])
         self.assertEqual(self.messages(), [])
-        self.t.write('README.md', '# readme\n')
+        self.t.write('README.md', '# readme\n<!-- bench:other:begin -->\nx\n<!-- bench:other:end -->\n')
         self.assertIn('faster33', ' '.join(self.messages()))
+
+    def test_pages_without_any_generated_block_are_one_note_in_warn_mode_and_one_error_when_strict(self):
+        self.claim()
+        self.t.rows('topn_text_key', ['sift', 'native'])
+        self.t.write('README.md', '# readme\n')
+        errors, notes = self.t.check()
+        self.assertEqual(errors, [])
+        self.assertTrue(any('no generated block in README.md' in n for n in notes))
+        self.assertEqual(len([m for m, _ in self.t.check(strict=True)[0] if 'no generated block' in m]), 1)
 
     def test_without_results_the_row_checks_are_one_note_in_warn_mode_and_an_error_when_strict(self):
         self.claim()

@@ -102,9 +102,13 @@ def check(root, strict=False, since=None):
         errors.append((message, [case.id for _, case in claims])) if strict else notes.append(message)
     for _, case in claims if cur else []:
         errors += rows_gaps(root, case, cur, strict)
-    for _, case in claims:
-        if not any(f'<!-- bench:{case.block}:begin' in text for text in pages.values()):
-            errors.append((f'{case.id}: its block "{case.block}" is in no page of {" or ".join(PAGES)}', []))
+    if claims and not any('<!-- bench:' in text for text in pages.values()):
+        message = f'no generated block in {" or ".join(PAGES)}: the blocks of the cases cannot be checked in this tree'
+        errors.append((message, [])) if strict else notes.append(message)
+    else:
+        for _, case in claims:
+            if not any(f'<!-- bench:{case.block}:begin' in text for text in pages.values()):
+                errors.append((f'{case.id}: its block "{case.block}" is in no page of {" or ".join(PAGES)}', []))
 
     footers = [(p, n) for p, text in pages.items() for n, l in enumerate(text.split('\n'), 1) if FOOTER.search(l)]
     if strict:
