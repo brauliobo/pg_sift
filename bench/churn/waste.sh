@@ -103,4 +103,44 @@ report() {
 		round(vac_s::numeric, 2) vac_s, round(maint_s::numeric, 2) maint_s, merges, merge_docs, merge_bytes from waste.round where run = '$RUN' order by lane, round"
 }
 
-case ${1:-run} in run) run ;; report) report ;; *) sed -n '2,15p' "$0"; exit 1 ;; esac
+# online: CREATE INDEX CONCURRENTLY of a second index and REINDEX INDEX CONCURRENTLY of the lane's index while rate-limited pgbench writers (WRITERS clients,
+# RATE_TPS statements a second in all, bench/churn/online.sql) change the table; then an offline REINDEX for the reference size. Records stage cic and reindex:
+# seconds, WAL bytes, bytes of the index, free blocks, indexes left invalid, and the writers' statements done.
+online() {
+	createdb "$DB" 2>/dev/null || true
+	q -c "create extension if not exists pg_sift" -c "create extension if not exists pgstattuple" -c "create extension if not exists pageinspect" -c "create extension if not exists pg_stat_statements" -f "$HERE/waste.sql" >/dev/null
+	q -c "delete from waste.metric where run = '$RUN'"
+	[[ -n $(q -c "select to_regclass('waste.m')") ]] || q -c "call waste.mkmaster($N)"
+	for l in $LANES; do
+		[[ $l != heap ]] || continue
+		q -c "call waste.mklane('$l')"; q -c "vacuum (analyze, freeze, disable_page_skipping) w_$l"
+		local t=w_$l ddl2 pid
+		ddl2=$(q -c "select replace(waste.ddl('$l', '$t'), 'create index ', 'create index concurrently ')" | sed "s/${t}_ix/${t}_ix2/")
+		pgbench -n -c "${WRITERS:-2}" -R "${RATE_TPS:-1500}" -T 600 -D tbl=$t -D rows=$N -f "$HERE/online.sql" "$DB" >/tmp/waste-pgbench-$l.out 2>&1 & pid=$!
+		sleep 2
+		local w0; w0=$(q -c "select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0) from pg_stat_user_tables where relname = '$t'")
+		for st in cic reindex; do
+			local l0 t0 t1 l1 sql
+			if [[ $st = cic ]]; then sql="$ddl2"; else sql="reindex index concurrently ${t}_ix"; fi
+			l0=$(q -c "select pg_current_wal_lsn()"); t0=$(date +%s.%N)
+			psql -X -q -d "$DB" -v ON_ERROR_STOP=1 -c "set statement_timeout = 0" -c "$sql" >/dev/null || echo "ONLINE STEP FAILED $l $st" >&2
+			t1=$(date +%s.%N); l1=$(q -c "select pg_current_wal_lsn()")
+			add "$l" 1 "$st" secs "$(echo "$t1 - $t0" | bc -l)"
+			add "$l" 1 "$st" wal_bytes "$(q -c "select pg_wal_lsn_diff('$l1','$l0')")"
+			add "$l" 1 "$st" invalid "$(q -c "select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = '$t'::regclass and not i.indisvalid")"
+			add "$l" 1 "$st" idx_bytes "$(q -c "select pg_relation_size('${t}_ix$([[ $st = cic ]] && echo 2)')")"
+		done
+		kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+		sleep 1.5
+		add "$l" 1 cic writer_rows "$(q -c "select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0) - $w0 from pg_stat_user_tables where relname = '$t'")"
+		q -c "vacuum $t"; quiet "$l" 1
+		add "$l" 1 after idx_bytes_live "$(q -c "select pg_relation_size('${t}_ix')")"
+		add "$l" 1 after idx2_bytes_live "$(q -c "select pg_relation_size('${t}_ix2')")"
+		q -c "drop index ${t}_ix2"
+		local b0 b1; b0=$(q -c "select pg_relation_size('${t}_ix')"); q -c "reindex index ${t}_ix" >/dev/null; b1=$(q -c "select pg_relation_size('${t}_ix')")
+		add "$l" 1 after idx_bytes_before_offline_reindex "$b0"; add "$l" 1 after idx_bytes_offline_reindex "$b1"
+		echo "online $l done $(date +%T)" >&2
+	done
+}
+
+case ${1:-run} in run) run ;; online) online ;; report) report ;; *) sed -n '2,15p' "$0"; exit 1 ;; esac
