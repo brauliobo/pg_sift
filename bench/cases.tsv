@@ -231,6 +231,6 @@ page_deep_offset	page_deep_offset	events	-	Top-N: ts DESC NULLS LAST, id	native	
 scope_exists_any_array	scope_exists_any_array	events	-	fallback:Seq Scan on dims	native	-	ms	faster33	no
 search_scope_filter	search_scope_filter	events	-	Custom Scan \(SiftScan	native	-	ms	faster33	no
 flags_or_null_range	flags_or_null_range	events	-	fallback:Bitmap Heap Scan	native	-	ms	faster33	no
-time_event_buckets	time_event_buckets	events	-	fallback:Append	native	-	ms	faster33	no
+time_event_buckets	time_event_buckets	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 live_counts_by_dim	live_counts_by_dim	events	-	fallback:Seq Scan	native	-	ms	faster33	no
 upsert_returning_conflict	upsert_returning_conflict	events	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no

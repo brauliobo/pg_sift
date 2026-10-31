@@ -256,6 +256,7 @@ flatten_query(Query *q, bool apply)
 	flat_fenced |= fence_sublinks(q, apply);
 	changed |= group_aggregate_lateral(q, apply);
 	changed |= sift_agg_latest_per_group(q, apply);
+	changed |= sift_agg_push_partial_aggs(q, apply);
 	flat_levels = list_delete_first(flat_levels);
 	return changed;
 }
