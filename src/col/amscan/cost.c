@@ -167,7 +167,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
 
-	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one */
+	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one; IS [NOT] NULL tests a bit, as a comparison does */
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
 		cols = bms_add_member(cols, ic->indexcol);
@@ -175,7 +175,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		{
 			int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[ic->indexcol]) : 0;
 
-			if ((strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber) && !(IsA(ri->clause, ScalarArrayOpExpr) && bms_is_member(ic->indexcol, narrowed)))
+			if ((strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber) && !IsA(ri->clause, NullTest) &&
+				!(IsA(ri->clause, ScalarArrayOpExpr) && bms_is_member(ic->indexcol, narrowed)))
 				slow = bms_add_member(slow, ic->indexcol);
 		}
 	}

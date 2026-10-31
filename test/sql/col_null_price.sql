@@ -1,0 +1,29 @@
+-- A test of IS [NOT] NULL on a column of a sift_col index is a bit test of each row, priced as a comparison. Priced as a pattern (18 times a comparison), a scan of a
+-- table of 200,000 rows cost as much as the bitmap scan of a b-tree that reads every tenth heap page, and the b-tree won: 14 ms against the 0.6 ms of the column scan.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE nullp (id int, parent_id int NOT NULL, kind int NOT NULL, deleted_at timestamptz, body text DEFAULT repeat('x', 40)) WITH (autovacuum_enabled = false);
+INSERT INTO nullp SELECT i, 1 + ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int, i % 10,
+	CASE WHEN i % 500 = 0 OR ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int = 6 AND i % 4 = 0 THEN now() END FROM generate_series(1, 200000) i;
+CREATE INDEX nullp_parent ON nullp (parent_id);
+CREATE INDEX nullp_col ON nullp USING sift_col (parent_id, deleted_at, kind) WITH (rollup_dims = 'off', key_cut = 'off');
+ANALYZE nullp;
+
+CREATE FUNCTION nullp_plan_index(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l;
+	END LOOP;
+	RETURN CASE WHEN r LIKE '%nullp_col%' THEN 'nullp_col' WHEN r LIKE '%nullp_parent%' THEN 'nullp_parent' ELSE r END;
+END $$;
+
+SELECT q, nullp_plan_index(q) AS index_used FROM unnest(ARRAY[
+	'SELECT id, kind, body FROM nullp WHERE parent_id = 7 AND deleted_at IS NOT NULL',
+	'SELECT id, kind, body FROM nullp WHERE parent_id = 7 AND deleted_at IS NULL AND kind = 3',
+	'SELECT id, body FROM nullp WHERE deleted_at IS NOT NULL AND kind = 3'
+]) q;
+
+DROP FUNCTION nullp_plan_index(text);
+DROP TABLE nullp;
+DROP EXTENSION pg_sift CASCADE;
