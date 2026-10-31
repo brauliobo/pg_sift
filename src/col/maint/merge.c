@@ -721,10 +721,11 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	pfree(snap);
 	if (n > 0)
 	{
-		/* the cached schema is read after the option is written: the write reloads it */
+		/* the cached schema is read after the option is written: the write reloads it. The rewrite that follows a parallel build merges the segments of its participants: the
+		 * build has just chosen from the same data, and choosing again took 40% of a build of 1,000,000 rows */
 		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
 
-		merge_recut = n == nimm && sift_col_auto_redecide(index, sel, n);
+		merge_recut = n == nimm && !maint_after_build && sift_col_auto_redecide(index, sel, n);
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 

@@ -52,6 +52,7 @@ typedef struct RewriteView
 } RewriteView;
 
 extern int maint_merge_workers;
+extern bool maint_after_build;
 
 extern const SiftMaintOps maint_col_ops;
 

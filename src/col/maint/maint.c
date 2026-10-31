@@ -75,6 +75,7 @@ maint_throttle(SiftWriteTarget *wt)
 
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
 int	maint_merge_workers = 0;
+bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
@@ -123,6 +124,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 		workers = Min(workers, sift_test_col_merge_workers);
 #endif
 	maint_merge_workers = workers;
+	maint_after_build = true;
 	PG_TRY();
 	{
 		merged = sift_mops_rewrite(&maint_col_ops, index, false) > 0;
@@ -130,6 +132,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 	PG_FINALLY();
 	{
 		maint_merge_workers = 0;
+		maint_after_build = false;
 	}
 	PG_END_TRY();
 	if (merged || gapn > 0)
