@@ -87,7 +87,7 @@ def check(root, strict=False, since=None):
             errors.append((f'{sha} {subject}: a landed commit that gives a speed has no CHANGELOG line and no `commit {sha}<TAB>reason` in {ALLOW}', []))
     for line in unreleased(root):
         waiver = next((k for k in allow if k in line), None)
-        case = next((c for c in cases if c.changelog in line), None)
+        case = next((c for c in cases if c.changelog != '-' and c.changelog in line), None)
         if waiver:
             used.add(waiver)
         elif case:

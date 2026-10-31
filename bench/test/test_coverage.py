@@ -107,6 +107,14 @@ class Landed(Fixture):
         self.t.commit('bench: rows')
         self.assertEqual(self.messages(), [])
 
+    def test_a_case_without_a_changelog_phrase_claims_no_line(self):
+        self.t.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n%s\n\n## 3.7.0\n' % CLAIM_LINE)
+        self.t.case('search_and_count', '-')
+        self.t.commit('bench: case')
+        found = self.messages()
+        self.assertEqual(len(found), 1)
+        self.assertIn('no case measures', found[0])
+
     def test_since_is_the_last_tag_that_is_behind_the_head_unless_given(self):
         self.t.land(SPEED)
         self.t.git('tag', 'v3.7.1')

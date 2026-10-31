@@ -18,7 +18,8 @@ EVENTS_GEN = os.path.join(REPO, 'test', 'plan', 'gen.sql')   # the events datase
 DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql')),
             'tpch': ('c_tpch', os.path.join(BENCH, 'sql', 'tpch', 'gen.sql')),
             'hits': ('c_hits', os.path.join(BENCH, 'sql', 'hits', 'gen.sql')),
-            'tseries': ('c_tseries', os.path.join(BENCH, 'sql', 'tseries', 'gen.sql'))}   # the datasets a case shares: schema and generator
+            'tseries': ('c_tseries', os.path.join(BENCH, 'sql', 'tseries', 'gen.sql')),
+            'docs': ('c_docs', os.path.join(BENCH, 'sql', 'docs', 'gen.sql'))}   # the datasets a case shares: schema and generator
 BUILT = set()
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']

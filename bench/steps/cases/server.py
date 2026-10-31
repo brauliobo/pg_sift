@@ -35,32 +35,38 @@ def dataset(rows):
         log('generating %s orders' % format(rows, ','))
         subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', GEN], check=True, capture_output=True, env=ENV)
         psql('ANALYZE orders_src')
-    csv = os.path.join(os.environ.get('CASES_TMP', '/var/tmp'), 'orders-%d.csv' % rows)
+    csv = os.path.join(os.environ.get('CASES_TMP', '/dev/shm/sift-cases'), 'orders-%d.csv' % rows)
     if not os.path.exists(csv):
         psql("COPY (SELECT %s FROM orders_src ORDER BY id) TO '%s' CSV" % (', '.join(COLUMNS), csv))
     return csv
 
 
+def generate(case, rows):
+    """the schema of a shared dataset (`events`, `keys`, `tpch`, `hits`, `tseries`, `docs`) with ROWS rows, made once per size from its generator (-v n=ROWS)"""
+    schema, path = DATASETS[case.dataset]
+    if (case.dataset, rows) not in BUILT:
+        psql('DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s' % (schema, schema))
+        gen = open(path).read()
+        if case.dataset == 'events':   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
+            gen = gen.replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")
+        r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
+                           env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
+        if r.returncode:
+            die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
+        BUILT.add((case.dataset, rows))
+
+
 def build(case, rows):
     """the case's schema: `orders` from orders_src (+ the derived columns) with the btrees of the store's PostgreSQL lane (bench/sql/store/pg.sql, without the GIN) and
     the sift_col index, the case's DDL, VACUUM (FREEZE, ANALYZE) unless the case says no"""
+    if case.dataset in DATASETS:
+        generate(case, rows)
     if case.load:
         psql('DROP SCHEMA IF EXISTS c_%s CASCADE; CREATE SCHEMA c_%s' % (case.id, case.id))
         return
     if case.dataset in DATASETS:
-        schema, path = DATASETS[case.dataset]
-        if (case.dataset, rows) not in BUILT:
-            psql('DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s' % (schema, schema))
-            gen = open(path).read()
-            if case.dataset == 'events':   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
-                gen = gen.replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")
-            r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
-                               env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
-            if r.returncode:
-                die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
-            BUILT.add((case.dataset, rows))
         if case.sec.get('setup'):
-            psql('SET search_path = %s, public;\n' % schema + case.sec['setup'] + ';\n')
+            psql('SET search_path = %s, public;\n' % DATASETS[case.dataset][0] + case.sec['setup'] + ';\n')
         return
     if case.share and (case.schema(), rows) in BUILT:
         return
@@ -151,7 +157,7 @@ def load_duck(port, csv):
 
 def plan_note(text):
     """the plan the row says it used: the scan node and the lines that name what it does (or the first scan of PostgreSQL's plan)"""
-    sift = [re.sub(r' \(actual[^)]*\)', '', l.strip()) for l in text.split('\n') if re.match(r'\s*(Custom Scan \(Sift|Top-N:|Group Keys:|Pushed Aggregates:)', l)]
+    sift = [re.sub(r' \(actual[^)]*\)', '', l.strip()) for l in text.split('\n') if re.match(r'\s*(?:->\s*)?(?:Custom Scan \(Sift|Top-N:|Group Keys:|Pushed Aggregates:)', l)]
     if sift:
         return '; '.join(sift)[:140]
     scans = re.findall(r'(?:Parallel )?(?:Seq Scan|Index Only Scan|Index Scan|Bitmap Heap Scan)(?: using \w+)?(?: on \w+)?', text)

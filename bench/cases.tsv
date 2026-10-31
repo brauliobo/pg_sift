@@ -1,7 +1,7 @@
 # The benchmark cases of the optimizations: one row per case, its SQL in cases/ID.sql. `bench/bench cases` times each against PostgreSQL and the other engines;
 # id: the case (bench/cases/ID.sql, the layout of bench/sql/store/queries: `--@ pg` the statement of every lane, `--@ sift` / `--@ duck` replace it, `--@ setup` DDL after the index)
 # changelog: a phrase of the CHANGELOG line the case measures (the gate matches it; it must stay in CHANGELOG.md)
-# dataset: orders (the store table of bench/sql/store/gen.sql with two derived columns, segment_id with 6,313 values and order_date)
+# dataset: orders (the store table of bench/sql/store/gen.sql with two derived columns, segment_id with 6,313 values and order_date); docs (the text table of bench/sql/docs/gen.sql, a BM25 index built in the case's setup, the PostgreSQL lane is full text search: tsvector and GIN)
 # index: the columns of the sift_col index (`default`: every column of the store questions plus the derived ones; `default+title` adds the columns named after the +) and its WITH options; `-` for a case that makes its own tables
 # plan: a regular expression the EXPLAIN of the sift lane must match (a load case: the output of its `--@ check`); a case that falls back to the normal plan fails
 # baselines: engines besides sift and native (PostgreSQL with sift.enable_agg = off) that can answer it: pg_duckdb (the others: bench/engines.tsv, steps/store_engine.py)
@@ -243,3 +243,12 @@ topn_list_page_not_exists	a page of a list that excludes a scope with `NOT EXIST
 topn_deep_offset_heap_priced	the scan prices the heap of a deep page (`OFFSET` past 1,024	orders	default	Top-N: created_at DESC	native	btree:search_path = topn_deep_offset_btree	ms	faster33	no	-
 wbuf_narrowest_condition_first	the write buffers are searched by their narrowest condition	events	-	Index Only Scan using wb_narrow_col	native	-	ms	faster33	no	-
 wbuf_batches_kept	a scan keeps the rows of a write buffer as batches	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+search_and_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_or_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_phrase_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_mixed_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_top_20	-	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+search_filter_include	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
+search_join_region	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
+search_language_german	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_build_index	-	docs	-	^[1-9]	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-

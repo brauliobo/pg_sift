@@ -23,7 +23,7 @@ def run_point(args, cases, rows, engines, results, failed):
     scaled = bool(args.scales)
     tag = '@%d' % rows if scaled else ''
     t0 = time.time()
-    csv = dataset(rows)
+    csv = dataset(rows) if args.duck_port or any(c.dataset not in DATASETS for c in cases) else ''   # the orders: only the cases on them, the load cases and pg_duckdb read the CSV
     TIMES['(dataset)' + tag] = [round(time.time() - t0, 1), 0]
     if args.duck_port:
         t0 = time.time()
@@ -52,7 +52,7 @@ def run_point(args, cases, rows, engines, results, failed):
                 for metric, xs in ms.items():
                     if not xs or args.io == 'off' and metric.startswith('io_'):   # no pg_stat_io on this server, or --io off
                         continue
-                    point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
+                    point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'BM25 index, segments: %s' if c.dataset == 'docs' else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()
