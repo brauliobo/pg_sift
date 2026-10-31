@@ -95,6 +95,10 @@ UPDATE dim_a SET type = 't9', note = NULL WHERE id % 5 = 0;
 DELETE FROM dim_a WHERE id % 53 = 0;
 SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
 
+-- many rows that tie on the first sort key since the statistics were made (the scan starts again with a larger heap): the keys of the plans are tested again
+INSERT INTO events SELECT 100000 + g, 1 + (g * 7919) % 710, 1 + g % 30, date '2026-06-01', timestamp '2026-01-01' + g * interval '1 second', NULL FROM generate_series(1, 6000) g;
+SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'a list and the scope on the joined table') ORDER BY name;
+
 -- the blocks a page reads, with the extension on: the same statements at three times the rows read the same blocks (the normal plan reads three times as many)
 CREATE FUNCTION blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE p jsonb;

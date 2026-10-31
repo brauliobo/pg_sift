@@ -459,12 +459,21 @@ static void
 topn_widen(AggExec *ex)
 {
 	EState	   *estate = ex->css.ss.ps.state;
+	SiftAggSpec *base = ex->spec;
 
+	/* the spec of the first start holds the conjuncts of the keys of the joins (join_filters); the engine of its own makes them again */
+	if (ex->njfilter > 0)
+	{
+		base = MemoryContextAlloc(estate->es_query_cxt, sizeof(SiftAggSpec));
+		*base = *ex->spec;
+		base->npred -= ex->njfilter;
+		base->npreds_total -= ex->njfilter;
+	}
 	while (sift_topn_incomplete(ex->topn))
 	{
 		AggExec    *w = MemoryContextAllocZero(estate->es_query_cxt, sizeof(AggExec));
 
-		w->spec = ex->spec;
+		w->spec = base;
 		w->pack = ex->pack;
 		w->params = ex->params;
 		w->snap = ex->snap;

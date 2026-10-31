@@ -147,6 +147,16 @@ SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM form
  scope, two joins                         | t      | t
 (22 rows)
 
+-- many rows that tie on the first sort key since the statistics were made (the scan starts again with a larger heap): the keys of the plans are tested again
+INSERT INTO events SELECT 100000 + g, 1 + (g * 7919) % 710, 1 + g % 30, date '2026-06-01', timestamp '2026-01-01' + g * interval '1 second', NULL FROM generate_series(1, 6000) g;
+SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'a list and the scope on the joined table') ORDER BY name;
+                   name                   | forced | rows_equal 
+------------------------------------------+--------+------------
+ a list and the scope on the joined table | t      | t
+ scope on the joined table                | t      | t
+ scope sub-select                         | t      | t
+(3 rows)
+
 -- the blocks a page reads, with the extension on: the same statements at three times the rows read the same blocks (the normal plan reads three times as many)
 CREATE FUNCTION blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE p jsonb;

@@ -265,6 +265,13 @@ map_load_child(AggExec *ex, int ci)
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
+	/* the top-N that starts again (topn_widen) reads the rows of a plan that has run to its end */
+	if (ex->widen > 0)
+	{
+		MemoryContextSwitchTo(caller);
+		ExecReScan(child);
+		MemoryContextSwitchTo(ex->cxt);
+	}
 	for (;;)
 	{
 		TupleTableSlot *slot;
