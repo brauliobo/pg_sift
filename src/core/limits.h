@@ -208,7 +208,9 @@
 	X(any_list_rows, "ANY_LIST_MAX_ROWS", "bm25/planner_path.c", 100000, "rows", \
 	  "rows a query list (= ANY(array)) may match in one scan", "normal plan", "-", 0) \
 	X(maint_backoff_ms, "BACKOFF_MAX_MS", "bm25/maint.c", 3600000, "ms", \
-	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0)
+	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0) \
+	X(semi_set, "SIFT_SEMI_MAX_SET", "bm25/planner.h", 65536, "rows", \
+	  "rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys)", "the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns)", "-", 0)
 
 typedef enum SiftLimitId
 {

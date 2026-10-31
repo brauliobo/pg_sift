@@ -255,7 +255,6 @@ scan_attr_tests(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, List *resi
  * key in the set the table's rows with those quals hold, so the scan may test the column against that set (SIFT_PRIV_SEMI; the join itself still
  * runs). Small tables only: the set is read when the scan starts.
  */
-#define SEMI_MAX_SET	65536
 
 static bool
 semi_expr_ok(Node *node, void *ctx)
@@ -286,7 +285,7 @@ add_semi(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Node *docs_side, 
 	dim = root->simple_rel_array[kv->varno];
 	rte = root->simple_rte_array[kv->varno];
 	if (dim == NULL || dim->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_RELATION || rte->inh || rte->relkind != RELKIND_RELATION ||
-		dim->baserestrictinfo == NIL || dim->rows > SEMI_MAX_SET || dim->tuples <= 0)
+		dim->baserestrictinfo == NIL || dim->rows > SIFT_SEMI_MAX_SET || dim->tuples <= 0)
 		return false;
 	foreach_node(RestrictInfo, ri, dim->baserestrictinfo)
 	{

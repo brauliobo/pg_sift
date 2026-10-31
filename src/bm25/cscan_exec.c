@@ -89,7 +89,6 @@ init_attrs(SiftScanState *ss, List *flat)
 }
 
 /* The most keys of a table the scan tests the join column against: more is left to the join */
-#define SEMI_MAX_SET	65536
 
 static int
 cmp_i64(const void *a, const void *b)
@@ -102,7 +101,7 @@ cmp_i64(const void *a, const void *b)
 
 /*
  * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
- * to: the rows the join keeps of the scan are among them, whatever else it does. A table that holds more keys than SEMI_MAX_SET adds none.
+ * to: the rows the join keeps of the scan are among them, whatever else it does. A table that holds more keys than SIFT_SEMI_MAX_SET adds none.
  */
 void
 load_semi(SiftScanState *ss)
@@ -145,7 +144,7 @@ load_semi(SiftScanState *ss)
 				continue;
 			if (nset == cap)
 			{
-				if (cap >= SEMI_MAX_SET)
+				if (cap >= SIFT_SEMI_MAX_SET)
 				{
 					over = true;
 					break;

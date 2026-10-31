@@ -113,17 +113,23 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 
 	if (IndexRelationGetNumberOfAttributes(index) <= nkey)
 		return NULL;
+	if (IndexRelationGetNumberOfAttributes(index) - nkey > SIFT_ATTR_MAXCOLS)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift index \"%s\": at most %d INCLUDE columns", RelationGetRelationName(index), SIFT_ATTR_MAXCOLS),
+				 errhint("Name the columns that searches filter on most.")));
 	h = MemoryContextAllocZero(mcxt, sizeof(HeapAttrs));
 	h->heap = table_open(ix->indrelid, AccessShareLock);
 	if (h->heap->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift index \"%s\": INCLUDE columns need a heap table", RelationGetRelationName(index))));
+				 errmsg("sift index \"%s\": INCLUDE columns need a heap table", RelationGetRelationName(index)),
+				 errhint("Create the index without INCLUDE columns, or on a heap table.")));
 	h->desc = RelationGetDescr(h->heap);
 	h->cb.func = heap_attrs_close;
 	h->cb.arg = h;
 	MemoryContextRegisterResetCallback(mcxt, &h->cb);
-	h->ncols = Min(IndexRelationGetNumberOfAttributes(index) - nkey, SIFT_ATTR_MAXCOLS);
+	h->ncols = IndexRelationGetNumberOfAttributes(index) - nkey;
 	for (int c = 0; c < h->ncols; c++)
 	{
 		h->attno[c] = ix->indkey.values[nkey + c];

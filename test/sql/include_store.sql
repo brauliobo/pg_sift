@@ -59,6 +59,13 @@ REINDEX INDEX docs_idx;
 SELECT * FROM docs_held();
 SELECT value_mismatches();
 
+-- more than 8 INCLUDE columns are refused
+CREATE TABLE wide_cols (body text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int);
+INSERT INTO wide_cols VALUES ('x', 1, 2, 3, 4, 5, 6, 7, 8, 9);
+CREATE INDEX ON wide_cols USING sift (body) INCLUDE (c1, c2, c3, c4, c5, c6, c7, c8, c9);
+CREATE INDEX wide_cols_8 ON wide_cols USING sift (body) INCLUDE (c1, c2, c3, c4, c5, c6, c7, c8);
+DROP TABLE wide_cols;
+
 DROP FUNCTION mismatches(), value_mismatches(), docs_held();
 DROP TABLE docs;
 DROP EXTENSION pg_sift_test;

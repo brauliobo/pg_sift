@@ -21,7 +21,10 @@
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
-typedef enum SiftScanMode
+typedef /* Rows of a table whose keys a ranked scan tests an INCLUDE column against (SIFT_PRIV_SEMI) */
+#define SIFT_SEMI_MAX_SET	65536
+
+enum SiftScanMode
 {
 	SIFT_MODE_UNORDERED,		/* heap order, optional scores */
 	SIFT_MODE_RANKED,			/* descending score, k hint; with leading sort keys, by them and then descending score */
