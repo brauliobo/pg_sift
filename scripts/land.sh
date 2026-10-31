@@ -15,7 +15,7 @@
 # Steps: (1) when the PR head does not hold the tip, merge the tip into the branch, unless GitHub says the PR merges cleanly onto the tip and the required checks of the head are
 # green or still running: a merge-up restarts them, and with a landing every few minutes the tip is always newer than any head (the semantic breakage between PRs that do not conflict
 # is caught by the checks of the batch pull request into main). A conflict only in what both sides add to (CHANGELOG, bench/cases.tsv, bench/results/*.tsv,
-# the list lines of Makefile, scripts/focus.tsv) or in a generated file is resolved; any other is exit 2. The CHANGELOG is
+# the list lines of any Makefile, and the lists every split of a source file adds a row to: scripts/focus.tsv, focus-pins.tsv, moved-sources.tsv, static.baseline, areas.tsv, src/portable.list, src/portable-col.list; rows of both sides are kept, sorted again when the list was sorted, and a change of an existing row is exit 2) or in a generated file is resolved; any other is exit 2. The CHANGELOG is
 # checked after every merge (no marker left, no line of Unreleased twice, no entry moved out of Unreleased or lost): a broken one is exit 2 and nothing is pushed. If the tip
 # moved while the gates ran, it is merged again (three rounds; the gates run once, the checks of the pushed head are the rest). (2) After a merge: scripts/lint.sh. (3) The privacy gate on
 # the added lines, the commit messages and the PR title and body, and the focus-table row of every new test/sql file. (4) A push, always after a merge of the tip: GitHub
@@ -79,14 +79,17 @@ merge_locked() {
 
 # resolve_conflicts BASE MB HEAD: the routine conflicts of the merge in progress, by the rules above; 2 on any other
 resolve_conflicts() {
-	local f l
+	local f l sorted
 	while IFS= read -r f; do
 		case $f in
 			CHANGELOG.md|bench/cases.tsv|bench/results/*.tsv)
 				sed -i '/^<<<<<<< /d;/^=======$/d;/^>>>>>>> /d' "$f"; git add "$f"; [[ $f != CHANGELOG.md ]] || CL=1 ;;
-			Makefile|scripts/focus.tsv)
-				# both sides only add list lines (TESTING_REGRESS += ..., focus rows): keep both once; anything else is the owner's
-				if python3 "$HERE/land-union.py" "$f"; then git add "$f"; else echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2; fi ;;
+			Makefile|*/Makefile|scripts/focus.tsv|scripts/focus-pins.tsv|scripts/static.baseline|scripts/moved-sources.tsv|scripts/areas.tsv|src/portable.list|src/portable-col.list)
+				# both sides only add list lines (TESTING_REGRESS += ..., rows of a list: every split of a source file adds its row to the same lists): keep both once, sorted again when the
+				# list was sorted at the merge base; a hunk that changes a line of the base, and anything else, is the owner's
+				git checkout -q --conflict=diff3 -- "$f"
+				if git show "$2:$f" 2>/dev/null | grep -v '^[#=]' | LC_ALL=C sort -c 2>/dev/null; then sorted=--sorted; else sorted=; fi
+				if python3 "$HERE/land-union.py" $sorted "$f"; then git add "$f"; else echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2; fi ;;
 			README.md|bench/results/*|docs/OPTIONS.md|docs/LIMITS.md|docs/REFERENCE.md|docs/COL-TAM.md|bench/out/img/*|bench/*)
 				git checkout -q --theirs -- "$f" 2>/dev/null; git add "$f" ;;
 			*) echo "SOURCE CONFLICT in $f: owner must merge the tip"; git merge --abort; return 2 ;;

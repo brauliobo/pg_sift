@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""land-union.py FILE: resolve the conflict hunks of FILE when both sides only ADD whole lines of a list:
+"""land-union.py [--sorted] FILE: resolve the conflict hunks of FILE when both sides only ADD whole lines of a list:
 `VAR += names` lines of a Makefile (TESTING_REGRESS += ...), or rows of a tsv/allow file. Both sides are kept, once each.
 A hunk with any other Makefile line (an assignment `=`, a recipe, a deletion) is left alone: exit 1, the owner merges the tip.
+FILE may hold the diff3 style (`|||||||` section of the merge base): a hunk whose base section is not empty is a change of existing lines, not an addition: exit 1.
+--sorted: the lines of the file after its leading `#` and `=` lines are put in byte order again (for a list the file keeps sorted).
 
 land-union.py --changelog RESULT MERGE_BASE HEAD TIP: check the CHANGELOG.md that a merge of the tip left (the files are the result, and the versions of the merge base,
 the PR head and the tip). Exit 1 with the reason when conflict markers are left, the merge duplicated a line of `## Unreleased`, the entries outside `## Unreleased` differ from the
@@ -10,14 +12,18 @@ import re, sys
 from collections import Counter
 
 
-def union(path):
+def union(path, sort=False):
     is_make = path.endswith("Makefile") or path.endswith(".mk")
     entry = re.compile(r"^[A-Z][A-Z0-9_]* \+= \S.*$") if is_make else re.compile(r".+")
-    out, side, ours, theirs = [], None, [], []
+    out, side, ours, theirs, base = [], None, [], [], []
     for line in open(path).read().split("\n"):
         if line.startswith("<<<<<<< "):
-            side, ours, theirs = "o", [], []
-        elif line.startswith("=======") and side == "o":
+            side, ours, theirs, base = "o", [], [], []
+        elif line.startswith("||||||| ") and side == "o":
+            side = "b"
+        elif line.startswith("=======") and side in ("o", "b"):
+            if side == "b" and base:
+                return 1
             side = "t"
         elif line.startswith(">>>>>>> ") and side == "t":
             both = [l for l in ours + theirs if l.strip()]
@@ -29,6 +35,9 @@ def union(path):
                     seen.add(l)
                     out.append(l)
             side = None
+        elif side == "b":
+            if line.strip():
+                base.append(line)
         elif side == "o":
             ours.append(line)
         elif side == "t":
@@ -37,6 +46,12 @@ def union(path):
             out.append(line)
     if side is not None:
         return 1
+    if sort:
+        keep = 0
+        while keep < len(out) and out[keep][:1] in ("#", "="):
+            keep += 1
+        end = len(out) - 1 if out and out[-1] == "" else len(out)
+        out = out[:keep] + sorted(out[keep:end], key=lambda l: l.encode()) + out[end:]
     open(path, "w").write("\n".join(out))
     return 0
 
@@ -85,4 +100,5 @@ if __name__ == "__main__":
         if why:
             print("CHANGELOG.md: " + why)
         sys.exit(1 if why else 0)
-    sys.exit(union(sys.argv[1]))
+    sort = sys.argv[1] == "--sorted"
+    sys.exit(union(sys.argv[-1], sort))

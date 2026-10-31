@@ -177,6 +177,10 @@ done <<'EOF2'
 1|Makefile|CFLAGS = -O2|CFLAGS = -O3
 0|focus.tsv|a|a\nb
 EOF2
+printf '# h\nb\n<<<<<<< HEAD\nd\n=======\nc\n>>>>>>> tip\ne\n' >"$T/sorted.tsv"
+python3 "$HERE/land-union.py" --sorted "$T/sorted.tsv" && [[ $(tr '\n' ' ' <"$T/sorted.tsv") == "# h b c d e " ]] || fail "land-union.py --sorted did not sort the rows after the header"
+printf '<<<<<<< HEAD\nx2\n||||||| base\nx\n=======\nx3\n>>>>>>> tip\n' >"$T/base.tsv"
+python3 "$HERE/land-union.py" "$T/base.tsv" && fail "land-union.py kept both versions of a row that both sides changed"
 
 # 9. the CHANGELOG check: a fixed tip, merge base and PR head; each result is what a merge of the tip could leave
 cl() { printf '# Changelog\n\n## Unreleased\n\n%b\n## 3.5\n\n%b\n' "$1" "$2"; }
@@ -299,6 +303,24 @@ merge-up|MERGEABLE|
 merge-up|CONFLICTING|$N_OK,$(ck lint COMPLETED SUCCESS 2026-01-01T00:00:02Z)
 merge-up|UNKNOWN|$N_OK,$(ck lint COMPLETED SUCCESS 2026-01-01T00:00:02Z)
 EOF17
+
+# 18. resolve_conflicts on the lists that every split of a source file adds a row to: both sides' rows are kept (sorted again when the list was sorted at the merge base), a change of an
+# existing row is the owner's
+RC=$T/rc
+rg() { git -C "$RC" -c user.name=t -c user.email=t@example.com "$@"; }
+rcase() { # FILE BASE OURS THEIRS: the exit code of resolve_conflicts on the merge, or "clean"
+	rm -rf "$RC"; git init -q -b main "$RC"; mkdir -p "$RC/$(dirname "$1")"
+	printf '%b' "$2" >"$RC/$1"; rg add -A; rg commit -qm base
+	rg checkout -q -b theirs; printf '%b' "$4" >"$RC/$1"; rg commit -qam theirs
+	rg checkout -q main; printf '%b' "$3" >"$RC/$1"; rg commit -qam ours
+	rg merge -q --no-edit theirs >/dev/null 2>&1 && { echo clean; return; }
+	( cd "$RC" && . "$LAND" && resolve_conflicts main "$(rg merge-base HEAD theirs)" HEAD >/dev/null 2>&1; echo $? )
+}
+[[ $(rcase scripts/moved-sources.tsv '# h\nz\ny\n' '# h\nz\ny\na1\n' '# h\nz\ny\nb1\n') == 0 && $(tr '\n' ' ' <"$RC/scripts/moved-sources.tsv") == "# h z y a1 b1 " ]] || fail "resolve_conflicts: rows added at the end of an unsorted list are not both kept in order: $(tr '\n' ' ' <"$RC/scripts/moved-sources.tsv")"
+[[ $(rcase scripts/static.baseline '# h\na\nc\n' '# h\na\nc\ne\n' '# h\na\nc\nd\n') == 0 && $(tr '\n' ' ' <"$RC/scripts/static.baseline") == "# h a c d e " ]] || fail "resolve_conflicts: the rows of a sorted list are not sorted again: $(tr '\n' ' ' <"$RC/scripts/static.baseline")"
+[[ $(rcase tools/x/Makefile 'A\n' 'A\nTESTING_REGRESS += a\n' 'A\nTESTING_REGRESS += b\n') == 0 ]] || fail "resolve_conflicts: a Makefile in a folder is not merged by its added lines"
+[[ $(rcase scripts/moved-sources.tsv '# h\nz\n' '# h\nz2\n' '# h\nz3\n') == 2 ]] || fail "resolve_conflicts: two changes of one row are not the owner's"
+[[ $(rcase src/x.c 'a\n' 'b\n' 'c\n') == 2 ]] || fail "resolve_conflicts: a conflict in a source file is not the owner's"
 
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad
