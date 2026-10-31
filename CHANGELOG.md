@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: an index with `positions = on` (the default) lost its word positions at the first merge that followed a promotion of the write buffer (3.7.0 and before): the segment a promotion wrote had no positions and a merge keeps them only when every segment it merges has them, so every phrase statement of the index was decided by heap rechecks (the index 56% of the size of a fresh build, a ranked phrase +17.7% instructions, heap checks 2,505 to 23,855 over 300 statements). A promotion now reads the text of its documents from the heap and writes the position records of its terms (114 to 137 ms against 57 to 72 for 10,000 documents, in the maintenance worker; the INSERT statement is unchanged), and a merge that finds a segment without positions analyzes its documents again from the heap (+0.45 s per 100,000 documents of such a segment, once), so an index that already lost them has them back at its next merge, with no `REINDEX`. No format change. Tests: `phrase_churn`, `merge_heal`, `merge_parts`.
 - Fixed: pg_sift: planning a statement with a `MATERIALIZED` CTE, a `DISTINCT` sub-select joined to it and a second read of a table with a column index could crash the backend (SIGSEGV; 3.7.0 and 3.6.3 too): the rows of a lookup were read through the sub-select with the range table of the outer query.
 
 ## 3.7.0 - 2026-10-30
