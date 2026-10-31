@@ -40,6 +40,7 @@
 #define SPEC_COUNT(spec)	((Node *) lsecond((List *) (spec)))
 #define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
 #define SPEC_EXPRS(spec)	((List *) lfourth((List *) (spec)))
+#define SPEC_LOOKUPS(spec)	((List *) list_nth((List *) (spec), 4))
 /* The bytes of a dictionary entry, copied out of the unit: what a heap entry holds for a key of byte strings (kept at int64 in TopEnt.k) */
 typedef struct KeyBlob
 {

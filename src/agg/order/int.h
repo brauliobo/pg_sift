@@ -73,7 +73,16 @@ extern Node * topn_xform(Node *e, SiftTopXform *xf, Node **konst);
 extern bool topn_raw_key(AggCtx *c, int leaf, int xkind);
 extern bool topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs);
 extern double topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit);
-extern bool topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs);
+/* a column of a joined table the select list reads, and its place among the columns the table's rows hold for the scan */
+typedef struct TopLookup
+{
+	JoinCtx    *jc;
+	Var		   *var;
+	int			col;
+} TopLookup;
+
+extern bool topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs, List **lookups);
+extern bool topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, int *attno, int *nout, List **spec);
 extern void topn_out_leaves(AggCtx *c, List *scan_tlist, int nkey, const int *leaf, const SiftTopXform *xf, int *oleaf);
 
 extern bool window_whole_set(WindowClause *wc);

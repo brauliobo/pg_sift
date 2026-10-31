@@ -639,12 +639,12 @@ scanned_key(AggCtx *c, List *quals, Var *v, Oid opno)
 }
 
 /*
- * `scanned.k = A.id AND A.id = B.id` (A and B inner lookups) holds the same rows as `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a
- * column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
+ * `scanned.k = A.id AND A.id = B.id` (A an inner lookup, B an inner or semi one: an IN over a plan, on the column of A) holds the same rows as
+ * `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
  * when B is joined to the table itself: the units they miss are not read.
  */
 static List *
-rekey_chains(AggCtx *c, List *quals)
+rekey_chains(AggCtx *c, List *quals, List *known)
 {
 	List	   *out = list_copy(quals);
 	bool		changed = true;
@@ -661,18 +661,30 @@ rekey_chains(AggCtx *c, List *quals)
 			JoinCtx    *ja,
 					   *jb;
 			OpExpr	   *op;
+			List	   *all = list_concat_copy(out, known);
 
-			if (!column_equality(list_nth(out, i), &a, &b, &opno) || (ja = join_of_var(c, (Node *) a)) == NULL ||
-				(jb = join_of_var(c, (Node *) b)) == NULL || ja->kind != SJ_INNER || jb->kind != SJ_INNER)
+			if (!column_equality(list_nth(out, i), &a, &b, &opno) || (ja = join_of_var(c, (Node *) a)) == NULL || (jb = join_of_var(c, (Node *) b)) == NULL)
 				continue;
-			if (scanned_key(c, out, a, opno) == NULL)
+			if (ja->kind != SJ_INNER)
+			{
+				Var		   *t = a;
+				JoinCtx    *tj = ja;
+
+				a = b;
+				b = t;
+				ja = jb;
+				jb = tj;
+			}
+			if (ja->kind != SJ_INNER || (jb->kind != SJ_INNER && jb->kind != SJ_SEMI))
+				continue;
+			if (scanned_key(c, all, a, opno) == NULL)
 			{
 				Var		   *t = a;
 
 				a = b;
 				b = t;
 			}
-			if (scanned_key(c, out, b, opno) != NULL || (key = scanned_key(c, out, a, opno)) == NULL)
+			if (scanned_key(c, all, b, opno) != NULL || (key = scanned_key(c, all, a, opno)) == NULL)
 				continue;
 			op = copyObject((OpExpr *) list_nth(out, i));
 			linitial(op->args) = copyObject(key);
@@ -761,10 +773,13 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 
 	*quals = drop_pushed(c, *quals);
 	*scan_quals = drop_pushed(c, *scan_quals);
-	*quals = rekey_chains(c, *quals);
-	*scan_quals = rekey_chains(c, *scan_quals);
+	*quals = rekey_chains(c, *quals, NIL);
+	*scan_quals = rekey_chains(c, *scan_quals, NIL);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		jc->clauses = drop_pushed(c, jc->clauses);
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->kind == SJ_SEMI)
+			jc->clauses = rekey_chains(c, jc->clauses, list_concat_copy(*quals, *scan_quals));
 	probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->kind == SJ_INNER)
@@ -830,7 +845,34 @@ child_pos(List *vars, int att)
 	SIFT_INVARIANT(false, "sift: column %d is not an output of the joined plan", att);
 }
 
+/* The plans the joins read travel with the path: each is a child of the node, or a sub-plan of a query level of its own */
+void
+agg_path_children(AggCtx *c, SiftAggPath *ap)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		/* a path of c->root cannot be planned as a child of the node, which PostgreSQL does with the root of the statement: it is a sub-plan of its own level */
+		bool		own_level = jc->cpath != NULL && jc->j.params == NIL && c->detached;
+
+		ap->correlated = lappend(ap->correlated, jc->j.params != NIL ? ((SubqueryScanPath *) jc->cpath)->subpath : own_level ? jc->cpath : NULL);
+		ap->subroots = lappend(ap->subroots, own_level ? c->root : jc->subroot);
+		if (jc->cpath != NULL && jc->j.params == NIL && !own_level)
+			ap->path.custom_paths = lappend(ap->path.custom_paths, jc->cpath);
+	}
+}
+
 #define AGG_FORCE_SCALE	1e-6	/* sift.agg_force: the price of a path against the normal plan's */
+
+/* sift.agg_force: free, but in the order of their prices: the paths with workers and the ones without still compete */
+void
+agg_force_price(Path *p)
+{
+	if (sift_agg_force)
+	{
+		p->startup_cost *= AGG_FORCE_SCALE;
+		p->total_cost *= AGG_FORCE_SCALE;
+	}
+}
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 void
@@ -855,25 +897,11 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	if (s->gtopn_k > 0 && cp->path.rows > 4.0 * s->gtopn_k)
 		cp->path.rows = 2.0 * s->gtopn_k;
 	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
-	foreach_ptr(JoinCtx, jc, c->joins)
-	{
-		/* a path of c->root cannot be planned as a child of the node, which PostgreSQL does with the root of the statement: it is a sub-plan of its own level */
-		bool		own_level = jc->cpath != NULL && jc->j.params == NIL && c->detached;
-
-		ap->correlated = lappend(ap->correlated, jc->j.params != NIL ? ((SubqueryScanPath *) jc->cpath)->subpath : own_level ? jc->cpath : NULL);
-		ap->subroots = lappend(ap->subroots, own_level ? c->root : jc->subroot);
-		if (jc->cpath != NULL && jc->j.params == NIL && !own_level)
-			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
-	}
+	agg_path_children(c, ap);
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);
 	agg_arm_path(&cp->path);
-	/* free, but in the order of their prices: the paths with workers and the ones without still compete */
-	if (sift_agg_force)
-	{
-		cp->path.startup_cost *= AGG_FORCE_SCALE;
-		cp->path.total_cost *= AGG_FORCE_SCALE;
-	}
+	agg_force_price(&cp->path);
 	add_path(output_rel, &cp->path);
 }
 

@@ -121,7 +121,7 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 			continue;
 		j = &s->join[cb->join];
 		jc = list_nth(c->joins, cb->join);
-		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->child >= 0 || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
 			cb->nleaves != 1 || cb->leaf[0] < 0 || cb->leaf[0] >= c->lay->nleaves || cb->nslots != (j->fslot >= 0 ? 1 : 0) ||
 			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 			return agg_refuse_on(TOPN_SHAPE, "a joined table is not an inner join by one key that the rows of the heap hold, with ON and WHERE on its own columns");
@@ -129,6 +129,47 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || (j->kind == SJ_INNER && !topn_unique_key(c, jc)))
 			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
 	}
+	return true;
+}
+
+/*
+ * The columns of the joined tables that the select list reads (topn_columns) are in the scan tuple after the heap columns, filled from the rows the scan loaded
+ * for each joined table when the node hands out a row (exec/topn.c): the key of the row is a heap column of the tuple (added when the output does not read it).
+ * *nout: the heap columns, key columns included. *spec: for each column of a joined table its combination, its column there, and the place and type of the key.
+ */
+bool
+topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, int *attno, int *nout, List **spec)
+{
+	int		   *kpos = palloc(list_length(lookups) * sizeof(int));
+
+	foreach_ptr(TopLookup, l, lookups)
+	{
+		const SiftAggCombo *cb = &s->combo[l->jc->combo];
+		const SiftSrcLeaf *lf = &c->lay->leaf[cb->leaf[0]];
+		Node	   *k = list_nth(c->attexpr, lf->attno - 1);
+		int			i = foreach_current_index(l);
+
+		if (!IsA(k, Var) || ((Var *) k)->varno != c->relid || (lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID))
+			return agg_refuse_on(TOPN_SHAPE, "the key of a joined table whose columns the select list reads is not an integer column of the scanned table");
+		for (kpos[i] = 0; kpos[i] < *nout; kpos[i]++)
+			if (equal(list_nth_node(TargetEntry, *scan_tlist, kpos[i])->expr, k))
+				break;
+		if (kpos[i] == *nout)
+		{
+			*scan_tlist = list_insert_nth(*scan_tlist, *nout, makeTargetEntry((Expr *) copyObject(k), *nout + 1, NULL, false));
+			attno[(*nout)++] = ((Var *) k)->varattno;
+		}
+	}
+	foreach_ptr(TopLookup, l, lookups)
+	{
+		int			at = *nout + foreach_current_index(l);
+
+		*scan_tlist = list_insert_nth(*scan_tlist, at, makeTargetEntry((Expr *) copyObject(l->var), at + 1, NULL, false));
+		*spec = lappend_int(lappend_int(lappend_int(lappend_int(*spec, l->jc->combo), l->col), kpos[foreach_current_index(l)]),
+							c->lay->leaf[s->combo[l->jc->combo].leaf[0]].typid);
+	}
+	foreach_ptr(TargetEntry, te, *scan_tlist)
+		te->resno = foreach_current_index(te) + 1;
 	return true;
 }
 

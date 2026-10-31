@@ -400,6 +400,7 @@ extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
 extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
+extern int join_col(JoinCtx *jc, Var *v);
 extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
@@ -481,6 +482,8 @@ extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
 extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
+extern void agg_path_children(AggCtx *c, SiftAggPath *ap);
+extern void agg_force_price(Path *p);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
 						 List *scan_tlist, int nworkers, List *pathkeys);
 extern void agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,

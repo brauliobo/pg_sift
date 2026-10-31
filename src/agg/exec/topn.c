@@ -482,6 +482,40 @@ topn_widen(AggExec *ex)
 	}
 }
 
+/*
+ * The columns of the joined tables that the page reads (topn_lookup_cols), after the columns of the heap: the row of each table with the key of the row of the
+ * page, from the rows the scan loaded (the keys of the rows that pass are among them: the scan tests them, join_filters).
+ */
+static void
+topn_lookups(AggExec *ex, TupleTableSlot *slot)
+{
+	List	   *l = sift_topn_lookups(ex->spec->topn);
+	int			n = list_length(l) / 4,
+				first = slot->tts_tupleDescriptor->natts - ex->spec->naggs - n;
+
+	for (int i = 0; i < n; i++)
+	{
+		int			ci = list_nth_int(l, 4 * i),
+					col = list_nth_int(l, 4 * i + 1),
+					kpos = list_nth_int(l, 4 * i + 2);
+		Oid			ktype = (Oid) list_nth_int(l, 4 * i + 3);
+		Datum		d = slot->tts_values[kpos];
+		int64		key = ktype == INT2OID ? DatumGetInt16(d) : ktype == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+		const char *ptr[1] = {NULL};
+		uint32		len[1] = {0},
+				   *rows;
+		int			found;
+
+		/* a row the Limit above throws away is NULLs (skipped_row) */
+		if (slot->tts_isnull[kpos])
+			continue;
+		found = map_find(ex->cs[ci].map, ptr, len, &key, &rows);
+		SIFT_INVARIANT(found == 1, "sift: a row of the page has no row in the table joined by its key");
+		slot->tts_values[first + i] = map_col(ex->cs[ci].map, rows[0], col, &slot->tts_isnull[first + i]);
+		pfree(rows);
+	}
+}
+
 /* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
 TupleTableSlot *
 topn_next(AggExec *ex, TupleTableSlot *slot)
@@ -513,5 +547,10 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 		slot->tts_values[nout + i] = ex->total_val[i];
 		slot->tts_isnull[nout + i] = ex->total_null[i];
 	}
-	return sift_topn_next(ex->topn, slot) ? slot : NULL;
+	for (int i = nout - list_length(sift_topn_lookups(s->topn)) / 4; i < nout; i++)
+		slot->tts_isnull[i] = true;
+	if (!sift_topn_next(ex->topn, slot))
+		return NULL;
+	topn_lookups(ex, slot);
+	return slot;
 }

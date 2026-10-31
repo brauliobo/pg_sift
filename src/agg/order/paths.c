@@ -34,12 +34,6 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	Cost		extra;
 
 	s->nworkers = nworkers;
-	/* the joins are tables read by the scan itself: no child plan in a query level of its own */
-	for (int i = 0; i < list_length(c->joins); i++)
-	{
-		ap->correlated = lappend(ap->correlated, NULL);
-		ap->subroots = lappend(ap->subroots, NULL);
-	}
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
 	cp->path.pathtarget = c->topn_target;
@@ -55,7 +49,9 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 			topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
+	agg_force_price(&cp->path);
 	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
+	agg_path_children(c, ap);
 	agg_arm_path(&cp->path);
 	/* TOPN_TIES: the rows come in the order of the first keys only; the Sort puts the others in order, and the Limit above it takes the first */
 	if (nordered < list_length(root->sort_pathkeys))
@@ -238,7 +234,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	SiftAggSpec *s;
 	StringInfoData txt;
 	List	   *scan_tlist = NIL,
-			   *funcs = NIL;
+			   *funcs = NIL,
+			   *lookups = NIL,
+			   *lookup_spec = NIL;
 	int			nworkers,
 				nout,
 				flags;
@@ -348,13 +346,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		return;
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
-	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno, &funcs))
+	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno, &funcs, &lookups))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
 	nout = list_length(scan_tlist);
-	oleaf = palloc(Max(nout, 1) * sizeof(int));
+	oleaf = palloc(MaxHeapAttributeNumber * sizeof(int));
 	topn_out_leaves(c, scan_tlist, nlead, leaf, xf, oleaf);
 	if (!topn_windows(c, s, funcs, &scan_tlist))
 		return;
@@ -364,6 +362,17 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
+	}
+	if (!child_paths(c, s))
+		return;
+	if (lookups != NIL)
+	{
+		if (!topn_lookup_cols(c, s, lookups, &scan_tlist, attno, &nout, &lookup_spec))
+		{
+			agg_refused(TOPN_SHAPE);
+			return;
+		}
+		topn_out_leaves(c, list_copy_head(scan_tlist, nout), nlead, leaf, xf, oleaf);
 	}
 	/* the scan starts over for each value of the parameters: its other inputs (joined plans, partitions, window functions, expressions) are read once */
 	if (c->level_params != NIL &&
@@ -403,7 +412,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			c->topn_array = false;
 			flags |= TOPN_NOGORD;
 		}
-		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, lookup_spec, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
 		nworkers = parallel_verdict(c, s,
 									deep ? "it reads the order array of the key down to the offset, which one process does" :
@@ -425,6 +434,6 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_array = false;
 	c->topn_runs = false;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, lookup_spec, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nkey, count + offset);
 }

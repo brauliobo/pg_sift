@@ -91,7 +91,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, List *lookups, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
@@ -105,7 +105,13 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 	for (int c = 0; c < nout; c++)
 		l = lappend_int(lappend_int(l, attno[c]), oleaf[c]);
 	l = lappend_int(l, flags);
-	return (Node *) list_make4(l, count, offset, exprs);
+	return (Node *) list_make5(l, count, offset, exprs, lookups);
+}
+
+List *
+sift_topn_lookups(Node *spec)
+{
+	return SPEC_LOOKUPS(spec);
 }
 
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
