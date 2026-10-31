@@ -19,6 +19,15 @@
 #define MEM_ID_FLAG		(UINT64CONST(1) << 63)
 #define INL_ID_FLAG		(UINT64CONST(1) << 62)	/* the dictionary of an inline STR chunk: one per chunk read */
 
+/* What sift_col_gorder_exact knows of a unit: state 0 not asked, 1 usable, 2 not; the pages of its superblock that are all-visible and the addresses of its dead rows, ascending */
+typedef struct GExact
+{
+	uint8		state;
+	uint32		ndead;
+	SiftKey    *dead;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+} GExact;
+
 typedef struct ColCursor
 {
 	SiftColSegment *seg;
@@ -49,7 +58,7 @@ typedef struct ColCursor
 	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
 	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
 	SiftCGOrdCuts gcuts;
-	uint8	   *gexact;		/* sift_col_gorder_exact: per unit, 0 not asked, 1 exact, 2 not (nsb bytes, in the source's mcxt; reset by sift_col_gorder_open) */
+	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's mcxt; reset by sift_col_gorder_open) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
 	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */
 	bool		others;			/* the scan has predicates besides the directory's: a unit with many of its addresses is read and filtered, not handed to the heap */

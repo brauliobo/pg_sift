@@ -1,5 +1,5 @@
--- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry of a unit with no dead row whose
--- pages are all-visible is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry on an all-visible page that is not
+-- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
@@ -69,7 +69,7 @@ INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17
 DELETE FROM ot WHERE id % 11 = 0;
 UPDATE ot SET a = coalesce(a, 0) + 1, b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1, t = t + interval '1 day', s = 'u' || s WHERE id % 7 = 0;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
--- a VACUUM flags the dead rows of the units: those units are confirmed again
+-- a VACUUM flags the dead rows of the units: their entries are confirmed again
 VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key

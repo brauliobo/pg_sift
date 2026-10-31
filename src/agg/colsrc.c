@@ -390,9 +390,9 @@ sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 v
 }
 
 bool
-sift_colsrc_gorder_exact(SiftSrcSource *src, int i, BlockNumber blk)
+sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
 {
-	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, blk);
+	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, tid);
 }
 
 void

@@ -1,5 +1,5 @@
 -- ORDER BY key, id LIMIT n OFFSET m over the global order of the key (two sort keys, the second the tie-break): the groups of rows that tie on the first key and lie wholly before the
--- OFFSET are counted and not fetched, when their units are exact (no dead row, pages all-visible, the condition decided by the key); the group that holds the first row to keep is
+-- OFFSET are counted and not fetched, when their entries are exact (page all-visible, row not dead, the condition decided by the key); the group that holds the first row to keep is
 -- fetched whole and sorted by the tie-break key. The rows are the plan's without the extension through ties across the boundary, nulls, deleted and updated rows, a VACUUM, new rows
 -- and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;

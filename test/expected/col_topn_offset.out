@@ -1,5 +1,5 @@
--- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry of a unit with no dead row whose
--- pages are all-visible is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry on an all-visible page that is not
+-- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -98,21 +98,24 @@ SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
  confirmed | 96
 (1 row)
 
--- a VACUUM flags the dead rows of the units: those units are confirmed again
+-- a VACUUM flags the dead rows of the units: their entries are confirmed again
 VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 96
-(1 row)
+ confirmed | 26
+ partly    | 32
+ skipped   | 38
+(3 rows)
 
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
 INSERT INTO ot (id, a, b, c, t) SELECT 20000 + i, -i % 50, i % 400, i, TIMESTAMP '1990-01-01' + i * interval '1 hour' FROM generate_series(1, 900) i;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 96
-(1 row)
+ confirmed | 95
+ partly    |  1
+(2 rows)
 
 SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -123,8 +126,8 @@ SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 82
- partly    |  5
+ confirmed | 74
+ partly    | 13
  skipped   |  9
 (3 rows)
 
@@ -137,8 +140,8 @@ SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 76
- partly    | 11
+ confirmed | 74
+ partly    | 13
  skipped   |  9
 (3 rows)
 
@@ -146,8 +149,8 @@ SET sift.test_limits = 'topn_rows=50';
 SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
   result   | n  
 -----------+----
- confirmed | 59
- partly    | 11
+ confirmed | 57
+ partly    | 13
  skipped   |  2
 (3 rows)
 

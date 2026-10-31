@@ -329,7 +329,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 bool
 sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid)
 {
-	return g->prev != NULL && sift_colsrc_gorder_exact(g->src, g->prev->src, ItemPointerGetBlockNumber(tid));
+	return g->prev != NULL && sift_colsrc_gorder_exact(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
 }
 
 void

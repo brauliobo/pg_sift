@@ -154,7 +154,7 @@ typedef struct SiftSrcProvider
 	const char *(*gorder_str) (void *impl, int i, int leaf, int64 key, uint32 *len);	/* a text key: the string of the entries with that key in source i, valid until the next call */
 	void		(*gorder_head) (void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
-	bool		(*gorder_exact) (void *impl, int i, BlockNumber blk);	/* optional: the entry of source i at heap block blk is of a row that is live and visible to every snapshot, so the heap need not confirm it */
+	bool		(*gorder_exact) (void *impl, int i, SiftKey tid);	/* optional: the entry of source i at heap address tid is of a row that is live and visible to every snapshot, so the heap need not confirm it */
 	uint32		(*gorder_seek) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; a segment leaves the chunk it ends in in keep (when not NULL) */
 	/*
 	 * Optional (needs run_info found a run): the head of that run, the best SiftSrcRunHeads.n entries of the run read ascending (lo) and descending (hi)

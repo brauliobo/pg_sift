@@ -713,9 +713,9 @@ col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bo
 }
 
 static bool
-col_gorder_exact(void *impl, int i, BlockNumber blk)
+col_gorder_exact(void *impl, int i, SiftKey tid)
 {
-	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, blk);
+	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, tid);
 }
 
 static void

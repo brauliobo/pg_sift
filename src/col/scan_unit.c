@@ -4,6 +4,8 @@
 
 #include "postgres.h"
 
+#include "port/pg_bitutils.h"
+
 #include "common/pg_prng.h"
 
 #include "access/htup_details.h"
@@ -331,16 +333,18 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 }
 
 /*
- * Is the entry of the global order of stored segment i at heap block blk of a row that is live and visible to every snapshot, so that nothing needs the heap to
- * confirm it (an OFFSET throws it away unread)? Its unit must have no dead row and its pages all-visible, read once for the unit in the order of col_super_take:
- * the map, the directory, the liveness.
+ * Is the entry of the global order of stored segment i at heap address tid of a row that is live and visible to every snapshot, so that nothing needs the heap to
+ * confirm it (an OFFSET throws it away unread)? Its page must be all-visible and its row not among the dead ones of its unit, read once for the unit in the order of
+ * col_super_take: the map, the directory, the liveness. A dead row is still asked of the heap: a vacuumed address may hold a row of another source with the same key,
+ * which the merge of the sources has already dropped as the repeat of this entry.
  */
 bool
-sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
+sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 {
 	ColCursor  *c;
 	SiftColSegment *seg;
-	uint32		sb = sift_block_sb(blk),
+	GExact	   *x;
+	uint32		sb = sift_block_sb(sift_key_block(tid)),
 				u;
 
 	if (i >= src->nseg || (src->flags & COLO_TABLE))
@@ -356,33 +360,50 @@ sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
 	if (u >= seg->nsb)
 		return false;
 	if (c->gexact == NULL)
-		c->gexact = MemoryContextAllocZero(src->mcxt, seg->nsb);
-	if (c->gexact[u] == 0)
+		c->gexact = MemoryContextAllocZero(src->mcxt, seg->nsb * sizeof(GExact));
+	x = &c->gexact[u];
+	if (x->state == 0)
 	{
-		uint64		pm[SIFT_PAGEMASK_WORDS],
-					av[SIFT_PAGEMASK_WORDS];
 		SiftCUnitView v;
-		bool		ok = sift_cseg_unit_pagemask(seg, u, pm);
 
-		/* a segment of one unit has no superunit summary: the mask is in the head of the unit */
-		if (!ok && sift_cseg_unit_view(seg, u, &v))
+		x->state = 2;
+		src->visibility.sb_mask(src->visibility.arg, sb, x->av);
+		if (segments_current(src) && sift_cseg_unit_view(seg, u, &v))
 		{
-			memcpy(pm, v.pagemask, sizeof(pm));
-			ok = true;
-		}
+			uint32		n = seg->sbdir[u].nrows,
+						*dead = palloc(n * sizeof(uint32));
+			uint64	   *live = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
 
-		if (ok)
-		{
-			src->visibility.sb_mask(src->visibility.arg, sb, av);
-			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-				ok &= (pm[w] & ~av[w]) == 0;
-			ok = ok && segments_current(src);
 			SIFT_COL_JITTER();
-			ok = ok && !sift_cseg_dirty(seg, u);
+			sift_cseg_live(seg, u, live);
+			for (uint32 w = 0; w < (n + 63) / 64; w++)
+				for (uint64 b = ~live[w] & (w == n / 64 ? (UINT64CONST(1) << (n % 64)) - 1 : ~UINT64CONST(0)); b; b &= b - 1)
+					dead[x->ndead++] = w * 64 + pg_rightmost_one_pos64(b);
+			x->dead = MemoryContextAlloc(src->mcxt, Max(x->ndead, 1) * sizeof(SiftKey));
+			sift_cunit_row_keys(&v, sb, dead, x->ndead, x->dead);
+			x->state = 1;
+			pfree(dead);
+			pfree(live);
 		}
-		c->gexact[u] = ok ? 1 : 2;
 	}
-	return c->gexact[u] == 1;
+	if (x->state != 1)
+		return false;
+	{
+		uint32		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES,
+					lo = 0,
+					hi = x->ndead;
+
+		while (lo < hi)
+		{
+			uint32		mid = (lo + hi) / 2;
+
+			if (x->dead[mid] < tid)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		return (lo == x->ndead || x->dead[lo] != tid) && (x->av[pg / 64] >> (pg % 64) & 1);
+	}
 }
 
 int

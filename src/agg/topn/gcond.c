@@ -333,16 +333,16 @@ grow_cmp(const void *a, const void *b, void *arg)
 }
 
 /*
- * The entries of one key of the array, in the order of the array. A group wholly before the OFFSET that no heap row has to confirm (an exact unit, a condition the key decides) is
- * counted and not fetched: the Limit above throws its rows away, and the tie order within it decides nothing. The group that holds the first row to keep, and any group a heap row
- * must confirm, is fetched and sorted by the keys after the first.
+ * The entries of one key of the array, in the order of the array. A group wholly before the OFFSET (even if every entry is live) is thrown away by the Limit above and the tie order
+ * within it decides nothing: its entries that are exact (live and visible, the condition decided by the key) are counted and not fetched, the others are confirmed by the heap and
+ * counted if it finds them. The group that holds the first row to keep is fetched whole and sorted by the keys after the first.
  */
 typedef struct GGroup
 {
 	ItemPointerData *tid;
+	bool	   *exact;			/* per entry: live and visible, and passes the condition by its key alone */
 	int			n;
 	int			room;
-	bool		exact;			/* every entry is live and visible, and passes the condition by its key alone */
 } GGroup;
 
 static void
@@ -350,63 +350,52 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 {
 	TopFetch   *f = &t->pf[0];
 	int			gstart = t->gqn;
+	bool		thrown = (int64) t->gqn + g->n <= t->skip;
 
-	if (g->n == 0)
-		return;
-	if (g->exact && (int64) t->gqn + g->n <= t->skip)
-	{
-		for (int i = 0; i < g->n; i++)
-		{
-			GRow	   *r;
-
-			if (t->gqn == t->gqroom)
-			{
-				t->gqroom *= 2;
-				t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
-			}
-			r = &t->gq[t->gqn++];
-			memset(r, 0, sizeof(GRow));
-			r->tid = g->tid[i];
-			r->exact = true;
-			r->isnull[0] = gnull;
-			r->key[0] = gkey;
-		}
-		g->n = 0;
-		return;
-	}
 	for (int i = 0; i < g->n; i++)
 	{
-		bool		call_again = false,
-					all_dead,
-					hnull;
-		Datum		d;
 		GRow	   *r;
 		ItemPointerData tid = g->tid[i],
 					entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
 
-		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
-			continue;
-		t->fetched++;
-		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull != gnull || (!hnull && heap_key(t->gtyp[0], d) != gkey))
-			continue;
-		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
-			continue;
 		if (t->gqn == t->gqroom)
 		{
 			t->gqroom *= 2;
 			t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
 		}
-		r = &t->gq[t->gqn++];
+		r = &t->gq[t->gqn];
 		memset(r, 0, sizeof(GRow));
 		r->tid = entry;
-		for (int j = 0; j < t->nkey; j++)
+		if (thrown)
 		{
-			d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
-			r->key[j] = r->isnull[j] ? 0 : heap_key(t->gtyp[j], d);
+			r->exact = true;
+			r->isnull[0] = gnull;
+			r->key[0] = gkey;
 		}
+		if (!thrown || !g->exact[i])
+		{
+			bool		call_again = false,
+						all_dead,
+						hnull;
+			Datum		d;
+
+			if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+				continue;
+			t->fetched++;
+			d = slot_getattr(f->slot, t->gatt[0], &hnull);
+			if (hnull != gnull || (!hnull && heap_key(t->gtyp[0], d) != gkey))
+				continue;
+			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
+				continue;
+			for (int j = 0; !thrown && j < t->nkey; j++)
+			{
+				d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
+				r->key[j] = r->isnull[j] ? 0 : heap_key(t->gtyp[j], d);
+			}
+		}
+		t->gqn++;
 	}
-	if (t->gqn - gstart > 1)
+	if (!thrown && t->gqn - gstart > 1)
 		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
 	g->n = 0;
 }
@@ -421,7 +410,7 @@ gord_prep(SiftTopN *t)
 	bool		isnull,
 				gnull = false,
 				closed = false;
-	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .room = 64, .exact = true};
+	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .room = 64};
 	ItemPointerData tid;
 
 	t->gqroom = 64;
@@ -433,7 +422,6 @@ gord_prep(SiftTopN *t)
 		if (g.n > 0 && (key != gkey || isnull != gnull))
 		{
 			gord_group(t, &g, gkey, gnull);
-			g.exact = true;
 			if (t->gqn >= t->limit)
 			{
 				closed = true;
@@ -446,14 +434,16 @@ gord_prep(SiftTopN *t)
 		{
 			g.room *= 2;
 			g.tid = repalloc(g.tid, g.room * sizeof(ItemPointerData));
+			g.exact = repalloc(g.exact, g.room * sizeof(bool));
 		}
-		g.exact &= sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1);
+		g.exact[g.n] = sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1);
 		g.tid[g.n++] = tid;
 	}
 	/* the end of the array closes the last group */
 	if (!closed)
 		gord_group(t, &g, gkey, gnull);
 	pfree(g.tid);
+	pfree(g.exact);
 	return closed || !sift_gord_short(t->go) || (uint32) t->gqn >= t->limit;
 }
 
