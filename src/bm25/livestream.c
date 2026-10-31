@@ -357,6 +357,187 @@ sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *ar
 	MemoryContextDelete(cxt);
 }
 
+struct SiftSegCursor
+{
+	Stream		s;
+	MemoryContext cxt;
+	/* docs */
+	uint32		next_sb;
+	bool		docs_started;
+	SiftDocChunk ch;
+	int			page;
+	int			wd;
+	uint64		live[SIFT_OFFMASK_WORDS];
+	const uint16 *row;
+	uint64		m;
+	/* terms */
+	SiftDictIter *dit;
+	SiftTermInfo info;
+	SiftPostingCursor *pc;
+	SiftPosReader *pr;
+	uint32		ri;				/* of the pending postings, the next to deliver */
+	Size		poff;			/* ... and where its record starts in s.pos */
+};
+
+SiftSegCursor *
+sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift cursor", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	SiftSegCursor *c = palloc0(sizeof(SiftSegCursor));
+	Stream	   *s = &c->s;
+
+	c->cxt = cxt;
+	s->seg = seg;
+	s->dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0;
+	s->dc = (DocCache) {.seg = seg,.mcxt = cxt,.budget = budget};
+	c->page = SIFT_SB_PAGES;
+	c->wd = SIFT_OFFMASK_WORDS;
+	c->next_sb = seg->hdr->sb_lo;
+	if (budget > 0)
+	{
+		s->dc.sb = MemoryContextAllocHuge(cxt, docmap(seg)->nsb * sizeof(SBDocs *));
+		memset(s->dc.sb, 0, docmap(seg)->nsb * sizeof(SBDocs *));
+		s->dc.rows = palloc(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+		s->dc.dead = palloc((SIFT_SB_PAGES * MAXOFF + 7) / 8);
+		s->tcxt = AllocSetContextCreate(cxt, "sift cursor term", ALLOCSET_DEFAULT_SIZES);
+		s->tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
+		s->gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
+		s->keys = palloc(STREAM_POSTINGS * sizeof(SiftKey));
+		s->tf = palloc(STREAM_POSTINGS);
+		s->dl = palloc(STREAM_POSTINGS * sizeof(uint16));
+		s->plen = palloc(STREAM_POSTINGS * sizeof(uint32));
+		c->dit = sift_dict_iter(seg->dict, lo, lolen, cxt);
+	}
+	MemoryContextSwitchTo(old);
+	return c;
+}
+
+void
+sift_seg_cursor_close(SiftSegCursor *c)
+{
+	MemoryContextDelete(c->cxt);
+}
+
+bool
+sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl)
+{
+	SiftSegment *seg = c->s.seg;
+
+	while (c->m == 0)
+	{
+		if (++c->wd < SIFT_OFFMASK_WORDS)
+		{
+			c->m = c->live[c->wd];
+			continue;
+		}
+		for (c->page++; c->page < SIFT_SB_PAGES; c->page++)
+			if (c->ch.pagemask[c->page / 64] & (1ULL << (c->page % 64)))
+				break;
+		if (c->page < SIFT_SB_PAGES)
+		{
+			sift_seg_page(seg, &c->ch, c->page, c->live, &c->row);
+			if (c->ch.dirty)
+				sift_seg_page_live(seg, &c->ch, c->page, c->live);
+			c->wd = 0;
+			c->m = c->live[0];
+			continue;
+		}
+		if (c->docs_started)
+			c->next_sb = c->ch.sb + 1;
+		if (c->next_sb > seg->hdr->sb_hi || !sift_seg_docs_next(seg, c->next_sb, &c->ch))
+			return false;
+		c->docs_started = true;
+		dirty_everywhere(seg, &c->ch);
+		c->page = -1;
+		c->wd = SIFT_OFFMASK_WORDS;
+		CHECK_FOR_INTERRUPTS();
+	}
+	{
+		int			o = c->wd * 64 + __builtin_ctzll(c->m);
+
+		c->m &= c->m - 1;
+		*key = ((SiftKey) (c->ch.sb * SIFT_SB_PAGES + c->page) << 16) | (o + 1);
+		*dl = c->row[o];
+	}
+	return true;
+}
+
+bool
+sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo *info)
+{
+	Stream	   *s = &c->s;
+	SiftTermInfo found;
+
+	MemoryContextReset(s->tcxt);
+	c->pc = NULL;
+	while (sift_dict_iter_next(c->dit, term, len, &found))
+	{
+		c->info = found;
+		c->pc = sift_post_open(&s->seg->sr, &c->info, s->tcxt);
+		c->pr = (found.flags & SIFT_TERM_POS) ? sift_post_pos_reader(c->pc, s->tcxt) : NULL;
+		if (s->dirty)
+			c->info.df = stream_count(s, c->pc);
+		if (c->info.df == 0)
+		{
+			MemoryContextReset(s->tcxt);
+			c->pc = NULL;
+			continue;
+		}
+		s->n = c->ri = 0;
+		s->poslen = c->poff = 0;
+		*info = c->info;
+		return true;
+	}
+	return false;
+}
+
+bool
+sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, const uint8 **rec, uint32 *len)
+{
+	Stream	   *s = &c->s;
+
+	while (c->ri == s->n)
+	{
+		const sift_grp *g;
+
+		s->n = c->ri = 0;
+		s->poslen = c->poff = 0;
+		if ((g = sift_next(sift_post_cursor(c->pc))) == NULL)
+			return false;
+		stream_group(s, c->pc, g, c->pr);
+	}
+	*key = s->keys[c->ri];
+	*tf = s->tf[c->ri];
+	*dl = s->dl[c->ri];
+	if (c->pr)
+	{
+		*len = s->plen[c->ri];
+		*rec = s->pos + c->poff;
+		c->poff += *len;
+	}
+	else
+		*rec = NULL, *len = 0;
+	c->ri++;
+	return true;
+}
+
+void
+sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl)
+{
+	SiftSegCursor *c = sift_seg_cursor(seg, 0, NULL, 0);
+	SiftKey		key;
+	uint16		dl;
+
+	*ndocs = *sum_dl = 0;
+	while (sift_seg_cursor_doc(c, &key, &dl))
+	{
+		(*ndocs)++;
+		*sum_dl += dl;
+	}
+	sift_seg_cursor_close(c);
+}
+
 /* sift_seg_dump: the postings of a term gathered, for the visitor of whole terms */
 typedef struct DumpTerm
 {

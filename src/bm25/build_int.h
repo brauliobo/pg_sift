@@ -104,6 +104,8 @@ typedef struct SiftBuildRanges
 		int			id;
 		uint64		trailer;
 	}			run[MAX_MERGE_FANIN];
+	int			nsegs;				/* a merge of segments (merge_ranges.c) has these, and no runs */
+	SiftSegEntry seg[MAX_MERGE_FANIN];
 	SiftScoreRef ref;				/* with the average length of the group's docs */
 	int			nranges;
 	SiftTermCut cut[MAX_RANGES - 1];	/* range i has the terms from cut i - 1 up to cut i */
@@ -149,6 +151,10 @@ typedef struct SiftBuildPart
 	}			run[MAX_PART_RUNS];
 } SiftBuildPart;
 
+/* Ranges are cut from volumes of this many bytes up, as many as four to a participant, so that one that is slower does not hold the others */
+#define RANGE_BYTES		(512 * 1024)
+#define RANGES_PER_PARTICIPANT	4
+
 /* Subphases of the build, named by sift_ambuildphasename */
 #define PHASE_SCAN		2
 #define PHASE_SPILL		3
@@ -169,9 +175,12 @@ extern void sift_test_phase_wait(int phase);
 
 /* build_ranges.c */
 extern void sift_ranges_wait_scanned(SiftBuildShared *shared, int nworkers);
-extern void sift_ranges_worker(SiftBuildShared *shared);
+extern void sift_ranges_worker(SiftBuildShared *shared, Relation index);
+extern void sift_ranges_publish(SiftBuildShared *shared, int ncuts);
+extern void sift_ranges_stitch(SiftBuildShared *shared, Relation index, SiftSegmentWriter *sw);
 extern bool sift_ranges_write(BuildState *bs, SiftRun **runs, int nruns, uint64 gen, SiftSegEntry *entry);
 extern void sift_ranges_close(SiftBuildShared *shared);
+
 
 extern void progress_phase(BuildState *bs, int phase);
 extern void progress_docs(BuildState *bs, bool all);

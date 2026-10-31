@@ -9,6 +9,12 @@
 
 #include "bm25/runs.h"
 
+/*
+ * Merges the segments in[0..n) by the process and max_parallel_maintenance_workers workers (merge_ranges.c) into neu: 1 written, 0 no live
+ * doc, -1 not done, which one process then merges.
+ */
+extern int	sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu);
+
 #ifdef SIFT_TESTING
 /* kB: the most memory a CREATE INDEX of this backend allocated since the variable was last set (to 0) */
 extern PGDLLIMPORT int sift_test_build_peak;

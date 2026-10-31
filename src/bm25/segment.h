@@ -365,4 +365,21 @@ typedef struct SiftSegSink
 
 extern void sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *arg);
 
+/*
+ * The same live part of a segment as a cursor, for a merge that reads its input segments directly: the docs in key order, or the
+ * terms from lo (NULL: the first) with a live posting, each with its postings in key order. A cursor reads either, not both. The
+ * memory is that of sift_seg_stream. next_term gives info->df the number of live postings; the term and info are valid until the next call.
+ */
+typedef struct SiftSegCursor SiftSegCursor;
+
+extern SiftSegCursor *sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen);
+extern bool sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl);
+extern bool sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo *info);
+/* The next live posting of the term; rec / len: its position record (NULL when the term has none) */
+extern bool sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, const uint8 **rec, uint32 *len);
+extern void sift_seg_cursor_close(SiftSegCursor *c);
+
+/* The live docs of the segment and their dl, as sift_seg_stream would deliver them (a dirty segment counts them) */
+extern void sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl);
+
 #endif							/* SIFT_SEGMENT_H */

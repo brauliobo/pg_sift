@@ -731,6 +731,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	SiftScoreRef ref = score_ref(index);
 	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
+	int			written = -1;
 	DocText    *dt = NULL;
 	SiftInvBuf *inv = NULL;
 	SiftSegEntry neu;
@@ -750,30 +751,36 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 		CHECK_FOR_INTERRUPTS();
 	}
 #endif
+	for (int i = 0; i < in->n; i++)
+		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of each segment */
 	for (int i = 0; i < in->n && dt == NULL; i++)
 		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
 			dt = doctext_open(index);
-	if (dt != NULL)
-		inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
-	for (int i = 0; i < in->n; i++)
+	/* the segments that get their positions from the heap are merged by this process */
+	if (dt == NULL)
+		written = sift_merge_ranges(index, wt, in->seg, in->n, &ref, &neu);
+	if (written < 0)
 	{
-		SiftSegment *seg;
-		SiftRun    *run;
+		if (dt != NULL)
+			inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
+		for (int i = 0; i < in->n; i++)
+		{
+			SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
+			SiftRun    *run;
 
-		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of this segment */
-		seg = sift_seg_open(index, &in->seg[i], cx);
-		if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
-			heal_runs(dt, inv, seg, &runs);
-		else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
-			runlist_push(&runs, run);
-		sift_seg_close(seg);
+			if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
+				heal_runs(dt, inv, seg, &runs);
+			else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
+				runlist_push(&runs, run);
+			sift_seg_close(seg);
+		}
+		doctext_close(dt);
+		if ((written = runs.n > 0) != 0)
+			sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	}
-	doctext_close(dt);
-	if (runs.n > 0)
-		sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	sift_wt_finish(wt);
-	sift_maint_replace(index, mi.gens, in->n, runs.n > 0 ? &neu : NULL, mi.release, mi.nrelease,
-					   psprintf("merged %d segments of", in->n), start, runs.n > 0 ? neu.ndocs : 0);
+	sift_maint_replace(index, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
+					   psprintf("merged %d segments of", in->n), start, written ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

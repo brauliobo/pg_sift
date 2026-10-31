@@ -124,6 +124,7 @@ typedef struct RunReader
 	uint8	   *prec;			/* position record of the current posting */
 	uint32		prlen;
 	Size		prcap;
+	SiftSegCursor *sc;			/* the reader of a segment, not of a run: its live docs and postings */
 } RunReader;
 
 void
@@ -213,6 +214,21 @@ io_get_varint(RunIO *io)
 static void
 reader_next_term(RunReader *rd)
 {
+	if (rd->sc)
+	{
+		const char *term;
+		SiftTermInfo info;
+
+		if (!sift_seg_cursor_term(rd->sc, &term, &rd->len, &info))
+		{
+			rd->len = 0;
+			return;
+		}
+		memcpy(rd->term, term, rd->len);
+		rd->df = info.df;
+		rd->thaspos = (info.flags & SIFT_TERM_POS) != 0;
+		return;
+	}
 	rd->len = io_get_varint(&rd->io);
 	if (rd->len == 0)
 		return;
@@ -248,6 +264,8 @@ doc_heap_cmp(Datum a, Datum b, void *arg)
 static bool
 reader_next_doc(RunReader *rd)
 {
+	if (rd->sc)
+		return sift_seg_cursor_doc(rd->sc, &rd->dkey, &rd->ddl);
 	if (rd->dleft == 0)
 		return false;
 	rd->dkey += io_get_varint(&rd->io);
@@ -436,6 +454,16 @@ post_next(RunReader *rd)
 
 	if (rd->pleft == 0)
 		return false;
+	if (rd->sc)
+	{
+		const uint8 *rec;
+
+		SIFT_INVARIANT(sift_seg_cursor_posting(rd->sc, &rd->pkey, &rd->ptf, &rd->pdl, &rec, &rd->prlen),
+					   "sift: a segment has fewer live postings of a term than it counted");
+		rd->prec = (uint8 *) rec;
+		rd->pleft--;
+		return true;
+	}
 	v = io_get_varint(&rd->io);
 	rd->ptf = (v & 1) ? io_byte(&rd->io) : 1;
 	rd->pkey += v >> 1;
@@ -723,20 +751,43 @@ sample_cmp(const void *a, const void *b)
 	return sift_term_cmp(x->term, x->len, y->term, y->len);
 }
 
+/* The cuts, in term order, that split the volume of the samples into about target parts, none under min_bytes; the samples are sorted here */
+static int
+choose_cuts(RunSample *all, int nall, uint64 min_bytes, int target, SiftTermCut *cuts)
+{
+	uint64		total = 0,
+				acc = 0;
+	int			ncuts = 0,
+				nranges;
+
+	for (int i = 0; i < nall; i++)
+		total += all[i].vol;
+	nranges = (int) Min((uint64) target, Min(total / Max(min_bytes, 1), (uint64) nall));
+	if (nranges < 2)
+		return 0;
+	qsort(all, nall, sizeof(RunSample), sample_cmp);
+	for (int i = 0; i < nall && ncuts < nranges - 1; acc += all[i++].vol)
+	{
+		if (acc * nranges < total * (uint64) (ncuts + 1) || (ncuts > 0 && sift_term_cmp(all[i].term, all[i].len, cuts[ncuts - 1].term, cuts[ncuts - 1].len) <= 0))
+			continue;
+		cuts[ncuts].len = all[i].len;
+		memcpy(cuts[ncuts].term, all[i].term, all[i].len);
+		ncuts++;
+	}
+	return ncuts;
+}
+
 int
 sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int target, SiftTermCut *cuts)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run cuts", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	bool		positions;
-	uint64		ndocs,
-				total = 0,
-				acc = 0;
+	uint64		ndocs;
 	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &ndocs);
 	RunSample  *all = NULL;
 	int			nall = 0,
-				ncuts = 0,
-				nranges;
+				ncuts;
 
 	for (int i = 0; i < nruns; i++)
 	{
@@ -746,22 +797,8 @@ sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int tar
 		all = all ? repalloc(all, (nall + n) * sizeof(RunSample)) : palloc((nall + n) * sizeof(RunSample));
 		memcpy(all + nall, smp, n * sizeof(RunSample));
 		nall += n;
-		for (int j = 0; j < n; j++)
-			total += smp[j].vol;
 	}
-	nranges = (int) Min((uint64) target, Min(total / Max(min_bytes, 1), (uint64) nall));
-	if (nranges >= 2)
-	{
-		qsort(all, nall, sizeof(RunSample), sample_cmp);
-		for (int i = 0; i < nall && ncuts < nranges - 1; acc += all[i++].vol)
-		{
-			if (acc * nranges < total * (uint64) (ncuts + 1) || (ncuts > 0 && sift_term_cmp(all[i].term, all[i].len, cuts[ncuts - 1].term, cuts[ncuts - 1].len) <= 0))
-				continue;
-			cuts[ncuts].len = all[i].len;
-			memcpy(cuts[ncuts].term, all[i].term, all[i].len);
-			ncuts++;
-		}
-	}
+	ncuts = choose_cuts(all, nall, min_bytes, target, cuts);
 	for (int i = 0; i < nruns; i++)
 		run_release(runs[i]);
 	MemoryContextSwitchTo(old);
@@ -831,6 +868,127 @@ sift_runs_write_range(SiftRun **runs, int nruns, Size budget, const SiftTermCut 
 	merge_terms(rd, nruns, positions, &mo, hi);
 	for (int i = 0; i < nruns; i++)
 		run_release(runs[i]);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+}
+
+/*
+ * The input segments of a merge read directly: a reader of each is a RunReader with a cursor in place of a run file, so that the merge of
+ * docs and terms is the one of runs. The segments have a live doc each (sift_seg_live_stats).
+ */
+static RunReader *
+open_seg_readers(SiftSegment **segs, int nsegs, Size budget, bool terms, const SiftTermCut *lo, bool *positions)
+{
+	RunReader  *rd = palloc0(nsegs * sizeof(RunReader));
+
+	*positions = true;
+	for (int i = 0; i < nsegs; i++)
+	{
+		rd[i].idx = i;
+		rd[i].sc = sift_seg_cursor(segs[i], terms ? Max(budget / 2 / nsegs, 1024 * 1024) : 0, lo ? lo->term : NULL, lo ? lo->len : 0);
+		rd[i].haspos = (segs[i]->entry.flags & SIFT_SEG_POSITIONS) != 0;
+		*positions &= rd[i].haspos;
+		if (terms)
+			reader_next_term(&rd[i]);
+	}
+	return rd;
+}
+
+static void
+close_seg_readers(RunReader *rd, int nsegs)
+{
+	for (int i = 0; i < nsegs; i++)
+		sift_seg_cursor_close(rd[i].sc);
+}
+
+/* A term of a segment costs about this many bytes of its postings */
+#define TERM_COST		32
+#define SEG_SAMPLES		256
+
+typedef struct SegSamples
+{
+	RunSample  *all;
+	int			n;
+	int			cap;
+	uint64		terms;			/* from the last sample to the next */
+} SegSamples;
+
+static void
+seg_sample(void *arg, const char *term, int len, uint64 post_off, uint64 nterms)
+{
+	SegSamples *ss = arg;
+	char	   *copy = palloc(len);
+
+	if (ss->n > 0)
+		ss->all[ss->n - 1].vol = post_off - ss->all[ss->n - 1].off + ss->terms * TERM_COST;
+	if (ss->n == ss->cap)
+	{
+		ss->cap = Max(16, ss->cap * 2);
+		ss->all = ss->all ? repalloc(ss->all, ss->cap * sizeof(RunSample)) : palloc(ss->cap * sizeof(RunSample));
+	}
+	memcpy(copy, term, len);
+	ss->all[ss->n++] = (RunSample) {.off = post_off,.len = len,.term = copy};
+	ss->terms = nterms;
+}
+
+int
+sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, SiftTermCut *cuts)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment cuts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	SegSamples	ss = {0};
+	RunSample  *all = NULL;
+	int			nall = 0,
+				ncuts;
+
+	for (int i = 0; i < nsegs; i++)
+	{
+		const SiftSectionRef *post = &segs[i]->hdr->sections[SIFT_SEC_POSTINGS];
+		int			first = nall;
+
+		ss.n = ss.cap = 0;
+		ss.all = NULL;
+		sift_dict_samples(segs[i]->dict, SEG_SAMPLES, seg_sample, &ss);
+		if (ss.n > 0)
+			ss.all[ss.n - 1].vol = Max(post->off + post->len, ss.all[ss.n - 1].off) - ss.all[ss.n - 1].off + ss.terms * TERM_COST;
+		all = all ? repalloc(all, (nall + ss.n) * sizeof(RunSample)) : palloc((nall + ss.n) * sizeof(RunSample));
+		memcpy(all + first, ss.all, ss.n * sizeof(RunSample));
+		nall += ss.n;
+	}
+	ncuts = choose_cuts(all, nall, min_bytes, target, cuts);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+	return ncuts;
+}
+
+SiftSegmentWriter *
+sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment docs", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	MergeOut	mo = {0};
+	bool		positions;
+	RunReader  *rd = open_seg_readers(segs, nsegs, budget, false, NULL, &positions);
+
+	mo.sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
+	merge_docs(&mo, rd, nsegs);
+	close_seg_readers(rd, nsegs);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+	return mo.sw;
+}
+
+void
+sift_segs_write_range(SiftSegment **segs, int nsegs, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw)
+{
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	MergeOut	mo = {.sw = rw};
+	bool		positions;
+	RunReader  *rd = open_seg_readers(segs, nsegs, budget, true, lo, &positions);
+
+	merge_terms(rd, nsegs, positions, &mo, hi);
+	close_seg_readers(rd, nsegs);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
 }

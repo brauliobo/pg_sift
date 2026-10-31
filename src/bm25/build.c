@@ -367,7 +367,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SpinLockRelease(&shared->mutex);
 #endif
 	MemoryContextDelete(bs->cxt);
-	sift_ranges_worker(shared);
+	sift_ranges_worker(shared, w.index);
 	sift_par_worker_end(&w);
 }
 

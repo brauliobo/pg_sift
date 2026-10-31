@@ -143,6 +143,15 @@ extern SiftSegmentWriter *sift_runs_write_docs(SiftRun **runs, int nruns, Size b
 /* The terms from lo (NULL: the first) up to, not including, hi (NULL: the last) of the runs into the range writer */
 extern void sift_runs_write_range(SiftRun **runs, int nruns, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw);
 
+/*
+ * The same for a merge of segments that need no runs: the readers are cursors over their live docs and postings. The segments are the
+ * ones with a live doc (sift_seg_live_stats); the position records are kept when every one has them.
+ */
+extern int	sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, SiftTermCut *cuts);
+extern SiftSegmentWriter *sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
+											   MemoryContext mcxt);
+extern void sift_segs_write_range(SiftSegment **segs, int nsegs, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw);
+
 /* Closes the runs of a segment that was written in ranges */
 extern void sift_runs_close(SiftRun **runs, int nruns);
 

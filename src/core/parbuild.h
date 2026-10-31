@@ -16,7 +16,7 @@
 
 typedef struct SiftParCommon
 {
-	Oid			heaprelid;
+	Oid			heaprelid;		/* InvalidOid: the merge of the segments of the index (bm25/merge_ranges.c), whose workers open no table */
 	Oid			indexrelid;		/* InvalidOid: the workers write into the table (the load of a sift_table, table/load/write.c) and open no index */
 	bool		isconcurrent;
 } SiftParCommon;

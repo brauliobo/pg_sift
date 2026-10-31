@@ -4,6 +4,7 @@
  * the runs are cut into ranges (sift_runs_cuts), which the workers, once they handed their runs over, and the leader, once it has
  * merged the docs, take one at a time: each writes the blobs of its terms to a file and one record per term to another. The leader
  * appends the files in term order (sift_segw_adopt_range) and the segment is the one a single process writes, byte for byte.
+ * The ranges of a merge of segments (merge_ranges.c) are written and stitched the same way, from the input segments instead of runs.
  */
 #include "build_int.h"
 
@@ -12,10 +13,6 @@
 #ifdef SIFT_TESTING
 int			sift_test_range_pieces = 0;
 #endif
-
-/* Ranges are cut from runs of this many bytes up, as many as four to a participant, so that one that is slower does not hold the others */
-#define RANGE_BYTES		(512 * 1024)
-#define RANGES_PER_PARTICIPANT	4
 
 static const char *
 range_file(int gen, int range, char kind)
@@ -53,34 +50,6 @@ sift_ranges_wait_scanned(SiftBuildShared *shared, int nworkers)
 	wait_for(shared, all_scanned, nworkers);
 }
 
-/* Writes range i of the plan of the group: its blobs and entries to files of the fileset, which the leader adopts */
-static void
-write_range(SiftBuildShared *shared, int gen, int i, SiftRun **runs, int nruns)
-{
-	SiftBuildRanges *rg = &shared->ranges;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift range", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(cxt);
-	BufFile    *post = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'p'));
-	BufFile    *ent = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'e'));
-	SiftStreamWriter *sw = sift_sw_begin_spool(post);
-	SiftSegmentWriter *rw = sift_segw_begin_range(sw, ent, &rg->ref, cxt);
-
-	sift_segw_spool(rw, sift_seg_postings(shared->budget) / 2);
-	sift_runs_write_range(runs, nruns, shared->budget, i > 0 ? &rg->cut[i - 1] : NULL, i < rg->nranges - 1 ? &rg->cut[i] : NULL, rw);
-	BufFileExportFileSet(post);
-	BufFileExportFileSet(ent);
-	SpinLockAcquire(&shared->mutex);
-	rg->range[i].post_len = sift_sw_tell(sw);
-	rg->range[i].nterms = sift_segw_range_terms(rw);
-	rg->range[i].fin = true;
-	SpinLockRelease(&shared->mutex);
-	BufFileClose(post);
-	BufFileClose(ent);
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(cxt);
-	ConditionVariableBroadcast(&rg->cv);
-}
-
 /* The runs of the plan, as this process opens them */
 static SiftRun **
 plan_runs(SiftBuildShared *shared)
@@ -99,18 +68,57 @@ plan_runs(SiftBuildShared *shared)
 	return runs;
 }
 
-/* Range i of the plan of group gen, which this process has taken */
+/* The terms from the cut before range i up to the cut after it, from the runs or the segments of the plan */
 static void
-write_one(SiftBuildShared *shared, int gen, int i)
+write_terms(SiftBuildShared *shared, Relation index, int i, SiftSegmentWriter *rw)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift ranges", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(cxt);
-	SiftRun   **runs = plan_runs(shared);
+	SiftBuildRanges *rg = &shared->ranges;
+	const SiftTermCut *lo = i > 0 ? &rg->cut[i - 1] : NULL,
+			   *hi = i < rg->nranges - 1 ? &rg->cut[i] : NULL;
 
+	if (rg->nsegs == 0)
+	{
+		sift_runs_write_range(plan_runs(shared), rg->nruns, shared->budget, lo, hi, rw);
+		return;
+	}
+	{
+		SiftSegment *segs[MAX_MERGE_FANIN];
+
+		for (int s = 0; s < rg->nsegs; s++)
+			segs[s] = sift_seg_open(index, &rg->seg[s], CurrentMemoryContext);
+		sift_segs_write_range(segs, rg->nsegs, shared->budget, lo, hi, rw);
+		for (int s = 0; s < rg->nsegs; s++)
+			sift_seg_close(segs[s]);
+	}
+}
+
+/* Range i of the plan of group gen, which this process has taken: its blobs and entries go to files of the fileset, which the leader adopts */
+static void
+write_one(SiftBuildShared *shared, Relation index, int gen, int i)
+{
+	SiftBuildRanges *rg = &shared->ranges;
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	BufFile    *post = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'p'));
+	BufFile    *ent = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'e'));
+	SiftStreamWriter *sw = sift_sw_begin_spool(post);
+	SiftSegmentWriter *rw = sift_segw_begin_range(sw, ent, &rg->ref, cxt);
+
+	sift_segw_spool(rw, sift_seg_postings(shared->budget) / 2);
 	/* the plan stays as it is until the ranges taken are done */
-	write_range(shared, gen, i, runs, shared->ranges.nruns);
+	write_terms(shared, index, i, rw);
+	BufFileExportFileSet(post);
+	BufFileExportFileSet(ent);
+	SpinLockAcquire(&shared->mutex);
+	rg->range[i].post_len = sift_sw_tell(sw);
+	rg->range[i].nterms = sift_segw_range_terms(rw);
+	rg->range[i].fin = true;
+	SpinLockRelease(&shared->mutex);
+	BufFileClose(post);
+	BufFileClose(ent);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
+	ConditionVariableBroadcast(&rg->cv);
 }
 
 /* Takes the next range of the plan of group gen; -1 when there is none */
@@ -129,10 +137,10 @@ take_range(SiftBuildShared *shared, int gen)
 
 /* Writes ranges of group gen until none is left */
 static void
-write_ranges(SiftBuildShared *shared, int gen)
+write_ranges(SiftBuildShared *shared, Relation index, int gen)
 {
 	for (int i; (i = take_range(shared, gen)) >= 0;)
-		write_one(shared, gen, i);
+		write_one(shared, index, gen, i);
 }
 
 static bool
@@ -146,9 +154,9 @@ news(SiftBuildShared *shared, int seen)
 	return ok;
 }
 
-/* A worker, its runs handed over: writes ranges of the groups of runs the leader publishes, until it closes them */
+/* A worker, its runs handed over (a worker of a merge has none): writes ranges of the groups the leader publishes, until it closes them */
 void
-sift_ranges_worker(SiftBuildShared *shared)
+sift_ranges_worker(SiftBuildShared *shared, Relation index)
 {
 	SiftBuildRanges *rg = &shared->ranges;
 	int			seen = 0;
@@ -171,7 +179,7 @@ sift_ranges_worker(SiftBuildShared *shared)
 		SpinLockRelease(&shared->mutex);
 		if (gen == seen)
 			return;
-		write_ranges(shared, gen);
+		write_ranges(shared, index, gen);
 		seen = gen;
 	}
 }
@@ -228,6 +236,42 @@ stitch(SiftBuildShared *shared, SiftSegmentWriter *sw, int gen, int i)
 	BufFileDeleteFileSet(&shared->fileset.fs, range_file(gen, i, 'e'), false);
 }
 
+/* Gives the plan, cut at ncuts terms, to the participants; the average length of the docs of the group is in rg->ref */
+void
+sift_ranges_publish(SiftBuildShared *shared, int ncuts)
+{
+	SiftBuildRanges *rg = &shared->ranges;
+
+	rg->nranges = ncuts + 1;
+	MemSet(rg->range, 0, sizeof(rg->range));
+	SpinLockAcquire(&shared->mutex);
+	rg->next = 0;
+	rg->gen++;
+	SpinLockRelease(&shared->mutex);
+	ConditionVariableBroadcast(&rg->cv);
+#ifdef SIFT_TESTING
+	sift_test_range_pieces += rg->nranges;
+#endif
+}
+
+/* The ranges of the plan are appended to sw in order as they are done, between those the leader writes */
+void
+sift_ranges_stitch(SiftBuildShared *shared, Relation index, SiftSegmentWriter *sw)
+{
+	SiftBuildRanges *rg = &shared->ranges;
+	int			g = rg->gen;
+
+	for (int i = 0, next = 0; next < rg->nranges;)
+	{
+		if (range_fin(shared, next))
+			stitch(shared, sw, g, next++);
+		else if ((i = take_range(shared, g)) >= 0)
+			write_one(shared, index, g, i);
+		else
+			wait_for(shared, range_fin, next);
+	}
+}
+
 /*
  * The segment of the runs, written in ranges by all the participants; false, with nothing written, when the runs are too small to cut or
  * lack the samples of their terms (the leader then merges them alone).
@@ -241,8 +285,7 @@ sift_ranges_write(BuildState *bs, SiftRun **runs, int nruns, uint64 gen, SiftSeg
 	SiftSegmentWriter *sw;
 	uint64		ndocs = 0,
 				sum_dl = 0;
-	int			ncuts,
-				g;
+	int			ncuts;
 	MemoryContext cxt;
 
 	if (nruns > MAX_MERGE_FANIN || !publish_runs(runs, nruns) || !sift_runs_splittable(runs, nruns))
@@ -261,30 +304,13 @@ sift_ranges_write(BuildState *bs, SiftRun **runs, int nruns, uint64 gen, SiftSeg
 		sum_dl += runs[i]->sum_dl;
 	}
 	rg->nruns = nruns;
+	rg->nsegs = 0;
 	rg->ref = bs->ref;
 	rg->ref.avgdl = (float4) ((double) sum_dl / ndocs);
-	rg->nranges = ncuts + 1;
-	MemSet(rg->range, 0, sizeof(rg->range));
-	SpinLockAcquire(&shared->mutex);
-	g = ++rg->gen;
-	rg->next = 0;
-	SpinLockRelease(&shared->mutex);
-	ConditionVariableBroadcast(&rg->cv);
-#ifdef SIFT_TESTING
-	sift_test_range_pieces += rg->nranges;
-#endif
+	sift_ranges_publish(shared, ncuts);
 	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment write", ALLOCSET_DEFAULT_SIZES);
 	sw = sift_runs_write_docs(runs, nruns, bs->budget, bs->wt, gen, &bs->ref, cxt);
-	/* the ranges are appended in order as they are done, between those the leader writes */
-	for (int i = 0, next = 0; next < rg->nranges;)
-	{
-		if (range_fin(shared, next))
-			stitch(shared, sw, g, next++);
-		else if ((i = take_range(shared, g)) >= 0)
-			write_one(shared, g, i);
-		else
-			wait_for(shared, range_fin, next);
-	}
+	sift_ranges_stitch(shared, bs->index, sw);
 	sift_segw_finish(sw, entry);
 	sift_runs_close(runs, nruns);
 	MemoryContextDelete(cxt);

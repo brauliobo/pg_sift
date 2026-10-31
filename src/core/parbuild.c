@@ -139,7 +139,15 @@ sift_par_worker_begin(SiftParWorker *w, shm_toc *toc)
 	w->indexlock = common->isconcurrent ? RowExclusiveLock : AccessExclusiveLock;
 	debug_query_string = shm_toc_lookup(toc, KEY_QUERY_TEXT, true);
 	pgstat_report_activity(STATE_RUNNING, debug_query_string);
-	if (!OidIsValid(common->indexrelid))
+	if (!OidIsValid(common->heaprelid))
+	{
+		/* the merge of segments: the leader holds the index, which the worker reads */
+		w->heap = NULL;
+		w->index = index_open(common->indexrelid, AccessShareLock);
+		w->indexlock = AccessShareLock;
+		w->info = NULL;
+	}
+	else if (!OidIsValid(common->indexrelid))
 	{
 		/* the load of a table: the leader holds the lock of an insert */
 		w->heaplock = RowExclusiveLock;
@@ -168,5 +176,6 @@ sift_par_worker_end(SiftParWorker *w)
 		UnregisterSnapshot(w->snapshot);
 	if (w->index)
 		index_close(w->index, w->indexlock);
-	table_close(w->heap, w->heaplock);
+	if (w->heap)
+		table_close(w->heap, w->heaplock);
 }
