@@ -129,7 +129,7 @@ Nothing is stored unless `INCLUDE` names the column. The index keeps the value o
 
 ## Analyzers, phrases, several columns
 
-Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. With `positions = on` (default) the index stores word positions and decides phrases itself; `positions = off` gives a much smaller index that rechecks phrases in the heap. An index has one key, a `text` column or an immutable expression: concatenate columns (`coalesce` nullable ones; `NULL` keys are not indexed).
+Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed: `stemmer = 'en'` is the built-in Snowball English (no stop words), and any PostgreSQL text search configuration gives the stems and the stop words of its language ([Other languages](#other-languages)). The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. With `positions = on` (default) the index stores word positions and decides phrases itself; `positions = off` gives a much smaller index that rechecks phrases in the heap. An index has one key, a `text` column or an immutable expression: concatenate columns (`coalesce` nullable ones; `NULL` keys are not indexed).
 
 ```sql
 SELECT token, pos FROM sift.tokenize('Running Cafés, RÉSUMÉ', stemmer => 'en');             -- run, cafe, resum
@@ -139,6 +139,25 @@ ALTER INDEX docs_body_en RENAME TO docs_body;
 SELECT id FROM docs WHERE body @@> 'run';                         -- 4: runners, running, runs
 CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || coalesce(body, '')));   -- query with the same expression
 ```
+
+### Other languages
+
+`stemmer` also takes the name of a PostgreSQL text search configuration: the 29 Snowball languages of the server (`german`, `french`, `spanish`, `russian`, ...: `SELECT cfgname FROM pg_ts_config`) or one you made, with synonym, thesaurus, ispell or unaccent dictionaries chained in front of the stemmer. The words are the ones `to_tsvector` indexes: our tokenizer finds the words, the dictionaries the configuration maps to word tokens decide the terms (a word in one pass, as `to_tsvector` stems it; a stop word is dropped; the first lexeme when a dictionary answers several), and queries use the same configuration. A stop word keeps its position, so `"hund und katze"` is two apart as `phraseto_tsquery` has it (the canonical text of `sift.parse_query` shows the terms without the gap). Positions, phrases, prefixes, `INCLUDE` columns, merges, parallel builds and `positions` healing work as for any index.
+
+```sql
+CREATE INDEX docs_body_de ON docs USING sift (body) WITH (stemmer = 'german');
+SELECT id FROM docs WHERE body @@> 'Häuser';                      -- Haus, Häuser
+SELECT id FROM docs WHERE body @@> '"Hund und Katze"';            -- the phrase with the stop word between
+CREATE TEXT SEARCH CONFIGURATION public.my_de (COPY = pg_catalog.german);   -- your own: name it with its schema
+CREATE INDEX docs_body_my ON docs USING sift (body) WITH (stemmer = 'public.my_de');
+```
+
+- A name without a schema is a `pg_catalog` configuration (`CREATE INDEX` runs with a restricted `search_path`): write other configurations as `schema.name`. `english` is the built-in `en`; PostgreSQL's English configuration, with its stop words, is `pg_catalog.english`.
+- Accent folding is off for such an index (the configuration's own dictionaries decide what is folded, as for `to_tsvector`); `accent_folding = true` is honored, and then the dictionaries see the folded word: on 400 words of generic corpora it changes the matches of 0 of 400 queries in German, 106 in French (-6.5% matches), 89 in Spanish (-8.2%) and 2 in Russian, for an index 3.3%, 3.3%, 0.6% and -0.2% larger.
+- The index keeps the configuration name in its metapage; `sift.verify` names it when the option no longer matches. Like an expression index on `to_tsvector`, the index is not rebuilt when the configuration or its dictionary files change (`ALTER TEXT SEARCH CONFIGURATION`, a new stop list): `REINDEX` after that.
+- Memory: a build, merge or write process keeps a memo of the words its dictionaries answered, about 24 bytes a distinct word (37,600 German words: 0.9 MB; 476,000 English words would need 8.4 MB, a little over the cap: +2.8% build instructions against an unbounded memo), at most 8 MB of entries and 4 MB of table; a parallel build holds one per participant (8 MB x (workers + 1) at most) and starts a dictionary once per process (1.1 ms).
+- Cost and size, per language: [stemmer](OPTIONS.md#siftstemmer). Russian queries read more with the stemmer (or 2.27 to 2.85 M, and 0.97 to 1.47 M, phrase 0.91 to 1.32 M instructions): stemming merges word forms into longer posting lists, which is more recall.
+- An index with a configuration as its `stemmer` is on-disk format 1.5 (a 3.7 library refuses it with that format; `REINDEX` with `stemmer = 'none'` there, or install 3.8).
 
 For autocomplete and weighted fields, build the key from sections with `sift.sections(a, b, ...)` (joined with `chr(29)`; a NULL section is empty), name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of up to n letters are one term lookup. It trades index size for speed and is optional: without it a broad prefix such as `h*` is read from the postings of all its words, once per backend and then from a cache (`sift.prefix_cache_size`): 10-15 ms for a one-letter prefix of a million names, under a millisecond with the option, which costs index size (a million names: 17 MB, 34 MB at 3, 73 MB at 15):
 
@@ -342,9 +361,9 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `k1` | `sift` | 1.2 | default | real 0..1000 | BM25 term frequency saturation | REINDEX to change; no size effect [SIZING](SIZING.md#features-and-their-costs) |
 | `b` | `sift` | 0.75 | default | real 0..1 | BM25 document length normalization | REINDEX to change; no size effect [SIZING](SIZING.md#features-and-their-costs) |
 | `analyzer` | `sift` | text | opt-in | enum: text, keyword | Analyzer: text, or keyword to index each whole value as one term (facets, REINDEX to apply) | REINDEX to change [FIELDS-FACETS](FIELDS-FACETS.md#facets-siftfacet_counts) |
-| `stemmer` | `sift` | '' | opt-in | none or en | Stemmer: en (Snowball English) or none | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
+| `stemmer` | `sift` | '' | opt-in | none, en or a text search configuration | Stemmer: en (Snowball English), none, or a text search configuration (german, french, ...) | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
 | `case_folding` | `sift` | true | default | bool | Fold case | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
-| `accent_folding` | `sift` | true | default | bool | Strip accents | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
+| `accent_folding` | `sift` | true | default | bool | Strip accents (off when the stemmer is a text search configuration and the option is not given) | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
 | `positions` | `sift` | true | default | bool | Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply) | index about 2.5x the size of positions=false (130.9 against 52.5 MiB on 218,058 articles); REINDEX to change [SIZING](SIZING.md#disk) |
 | `prefix_index` | `sift` | 0 | opt-in | int 0..15 | Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply) | a larger index (more terms, growing with n); REINDEX to change [USAGE](USAGE.md#queries) |
 | `fields` | `sift` | '' | opt-in | names of the leading sections of the text, as name:word | Names of the first sections of the indexed text (split at chr(29)) that queries can search apart, as name:word | REINDEX to change [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query) |
@@ -771,7 +790,7 @@ Every fixed limit of the code, with its value, what happens at it and the settin
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected (build a key of several columns with `sift.sections`). No plain or index-only scans.
 - Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000. `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
 - A word over 255 bytes is stored as its first 236 bytes and a hash of all of it (`REINDEX` makes an index built before 3.3 follow: it holds such words cut at 255 bytes, so a query for one finds nothing there); `tf` saturates at 255 and document length at 65535. At most 128 segments per index (writers merge the smallest closed segments from 112 entries; with the directory full and merges failing, the open write buffer takes the writes and `sift.workers` shows the failed step until a merge succeeds). A merge reads at most 16 GB of segments: a segment that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
-- Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
+- Analyzers: the built-in English stemmer (no stop words) or one text search configuration, fixed per index (REINDEX to change); no n-gram or CJK tokenizer.
 - `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows inserted since the build, and phrases under `NOT`.
 - `sift.score()`: the rules for `WHERE` are under [Ranking, filters and joins](#ranking-filters-and-joins); it works with `@@> ANY (array)` ([Queries](#queries)) but not in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
 - Under `SERIALIZABLE` a sift scan locks the whole relation (the access method has no finer predicate locks), so concurrent writers can make a serializable transaction fail with `40001`: retry.

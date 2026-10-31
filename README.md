@@ -160,7 +160,7 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 Feature facts checked against each project's own documentation on 2026-10-18; `?` is not verified. Search (pg_sift against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch) and analytics (against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB) tables, a note per row, sources and the unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
 
-pg_sift is weaker in text analysis (English stemming only, one key per index; case and accent folding, a `keyword` analyzer and `term*` prefixes are there, stop words, n-gram and CJK tokenizers are not, and another language indexes with `stemmer = 'none'`: what is supported, the workarounds, the cost of a second language) and where its column engine is narrow: joins are accelerated for small tables only, and `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates ([where it is weaker](docs/COMPARISON.md#where-pg_sift-is-weaker)).
+pg_sift is weaker in text analysis (one key per index; case and accent folding, a `keyword` analyzer, `term*` prefixes and the stemmers and stop words of any PostgreSQL text search configuration, `stemmer = 'german'`, are there; n-gram and CJK tokenizers are not) and where its column engine is narrow: joins are accelerated for small tables only, and `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates ([where it is weaker](docs/COMPARISON.md#where-pg_sift-is-weaker)).
 
 ## SQLite and MariaDB
 
@@ -238,5 +238,5 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->744 regression tests (`test/sql`), 43 isolation specs, 112 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->747 regression tests (`test/sql`), 43 isolation specs, 112 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
