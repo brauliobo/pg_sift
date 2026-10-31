@@ -167,6 +167,31 @@ extern bool sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, ui
 extern void sift_docdir_ready(void *handle);
 extern PGDLLIMPORT int sift_docdir_min_sb;
 
+/*
+ * size bytes (SIMD aligned) of what a kind of immutable bytes of the segment of sr holds at id, for the caller to fill: false
+ * when it must (then call sift_segcache_ready(handle) once filled and checked; a NULL handle is memory of mcxt that nobody
+ * keeps), true when they are those of an earlier query (bm25/segcache.c). Kept bytes live as long as mcxt.
+ */
+typedef enum SiftSegcacheKind
+{
+	SIFT_SEGCACHE_DOCDIR,
+	SIFT_SEGCACHE_BLOB
+} SiftSegcacheKind;
+
+extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,
+							  void **obj, void **handle);
+extern void sift_segcache_ready(void *handle);
+#ifdef SIFT_TESTING
+/* Entries dropped for room, and blobs that did not fit though a cursor held every entry (sift._test_read_stats) */
+typedef struct SiftSegCacheStats
+{
+	uint64		evicted;
+	uint64		refused;
+} SiftSegCacheStats;
+extern SiftSegCacheStats sift_segcache_stats;
+extern Size sift_segcache_bytes(void);
+#endif
+
 #ifdef SIFT_TESTING
 /* Directories read from the segment and found in the backend's cache (sift._test_read_stats) */
 typedef struct SiftDocDirStats

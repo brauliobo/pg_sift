@@ -67,6 +67,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  rollups              | SIFT_PAGG_MAX_ROLLUPS           |          8 | t         | f
  rows_shared          | SIFT_ROWS_MAX_SHARED            |         32 | t         | t
  scan_filters         | SIFT_COLSRC_MAX_FILTERS         |         64 | t         | f
+ segment_cache_kb     | SEGCACHE_MAX_KB                 |      32768 | t         | t
  semi_set             | SIFT_SEMI_MAX_SET               |      65536 | t         | f
  set_keys             | SIFT_CSET_LIMIT                 |         32 | t         | f
  set_keys_max         | SIFT_CSET_LIMIT_MAX             |       1024 | t         | f

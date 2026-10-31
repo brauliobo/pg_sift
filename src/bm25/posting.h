@@ -161,6 +161,7 @@ typedef struct SiftPostStats
 	uint64		curbuf_bytes;	/* ... and the buffers they decode groups into */
 	uint64		blobs;			/* term blobs copied out of the index */
 	uint64		blob_bytes;
+	uint64		blob_hits;		/* term blobs found in the backend's cache instead */
 } SiftPostStats;
 extern SiftPostStats sift_post_stats;
 #endif

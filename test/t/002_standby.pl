@@ -123,6 +123,48 @@ subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and 
 	$fb->stop;
 };
 
+# A backend keeps the blobs of the terms it reads (bm25/segcache.c, under the relation file and the generation of the segment): one
+# backend on the standby, alive from one check to the next, answers as the primary does after the replay of a promotion, a merge,
+# a VACUUM that rewrites the segment and a REINDEX, which each leave blobs of the same offsets and sizes under another generation or file
+subtest 'sift: a standby backend that keeps term blobs follows promotion, merge, VACUUM and REINDEX' => sub {
+	my ($t, $idx) = ('docs_a', 'docs_a_idx');
+	$primary->safe_psql('postgres', qq{
+		CREATE TABLE $t (id int, body text) WITH (autovacuum_enabled = off);
+		INSERT INTO $t SELECT g, 'dim_a' || g % 6 || ' dim_a' || (g + 1) % 6 || ' dim_a' || (g + 2) % 6 FROM generate_series(1, 30000) g;
+		CREATE INDEX $idx ON $t USING sift (body);
+	});
+	$primary->wait_for_catchup($standby);
+	my $bg = $standby->background_psql('postgres');
+	my $same = sub {
+		my ($what) = @_;
+		for my $q ('dim_a0', 'dim_a1 OR dim_a2')
+		{
+			for my $order ('id', 'id DESC')
+			{
+				my $sql = "SELECT string_agg(id::text, ',' ORDER BY n) FROM (SELECT row_number() OVER () AS n, id FROM"
+				  . " (SELECT id FROM $t WHERE body @@> '$q' ORDER BY sift.score(ctid) DESC, $order LIMIT 25) x) y";
+				is($bg->query_safe($sql), $primary->safe_psql('postgres', $sql), "$what: $q by $order");
+			}
+		}
+	};
+	$same->('first reads');
+	$same->('blobs kept');
+	$primary->safe_psql('postgres', "INSERT INTO $t SELECT 1000000 + g, 'dim_a' || g % 6 || ' dim_a' || (g + 1) % 6 || ' dim_a' || (g + 2) % 6"
+		. " FROM generate_series(1, 30000) g; SELECT sift.promote('$idx')");
+	$primary->wait_for_catchup($standby);
+	$same->('promoted segment');
+	$primary->safe_psql('postgres', "SELECT sift.merge('$idx', true)");
+	$primary->wait_for_catchup($standby);
+	$same->('merged');
+	$primary->safe_psql('postgres', "DELETE FROM $t WHERE id % 3 = 0; VACUUM $t");
+	$primary->wait_for_catchup($standby);
+	$same->('vacuumed');
+	$primary->safe_psql('postgres', "REINDEX INDEX $idx");
+	$primary->wait_for_catchup($standby);
+	$same->('reindexed');
+	$bg->quit;
+};
+
 subtest 'sift: INCLUDE columns on a hot standby' => sub {
 	my ($t, $idx) = ('inc_repl', 'inc_repl_idx');
 	$primary->safe_psql('postgres', qq{

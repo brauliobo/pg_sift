@@ -17,7 +17,21 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 	return NULL;
 }
 
-/* ---------- docmap directories (bm25/docdir.c): not kept between queries ---------- */
+/* ---------- bytes of a segment (bm25/segcache.c) and docmap directories (bm25/docdir.c): not kept between queries ---------- */
+
+bool
+sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
+{
+	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+	*handle = NULL;
+	return false;
+}
+
+void
+sift_segcache_ready(void *handle)
+{
+}
+
 
 bool
 sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)

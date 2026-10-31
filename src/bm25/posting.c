@@ -7,12 +7,15 @@
 #include "bm25/kernels.h"
 #include "bm25/posting.h"
 #include "bm25/posting_int.h"
+#include "bm25/segment.h"
 
 /* the L1 bit and nibble bytes of a term, from counts the dictionary stores as uint32: the sums wrap in 32 bits when a count is near 2^32 */
 #define L1_BYTES(info)	(((uint64) (info)->df + 7) / 8)
 #define NIB_BYTES(info)	(((uint64) (info)->nnib + 1) / 2)
 #define BLOB_NG(blob)	(*(const uint32 *) ((blob) + 8))
 #define BLOB_KEYS(blob)	((const uint32 *) ((blob) + 12))
+/* the blob of a term is kept by the backend (bm25/segcache.c) from this size on */
+#define BLOB_KEEP_MIN	8192
 
 uint8
 sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl)
@@ -155,21 +158,35 @@ static SiftPostingCursor *
 post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bool verify)
 {
 	uint8	   *blob = NULL;
+	void	   *handle = NULL;
+	SiftPostingCursor *c;
 
 	if (!(info->flags & SIFT_TERM_INLINE))
 	{
 		Size		len = blob_len(info);
+		bool		kept = false;
 		const void *src;
 
-		POST_STAT(blobs, 1);
-		POST_STAT(blob_bytes, len + SIFT_KERN_PAD);
-		blob = MemoryContextAllocAligned(mcxt, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
-		src = sift_sr_get(sr, info->post_off, len, blob);
-		if (src != blob)
-			memcpy(blob, src, len);
-		memset(blob + len, 0, SIFT_KERN_PAD);
+		/* sift.verify reads the pages; a blob under a page costs less to copy than to look up */
+		if (verify || len < BLOB_KEEP_MIN)
+			blob = MemoryContextAllocAligned(mcxt, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+		else
+			kept = sift_segcache_get(sr, SIFT_SEGCACHE_BLOB, info->post_off, len + SIFT_KERN_PAD, mcxt, (void **) &blob, &handle);
+		if (kept)
+			POST_STAT(blob_hits, 1);
+		else
+		{
+			POST_STAT(blobs, 1);
+			POST_STAT(blob_bytes, len + SIFT_KERN_PAD);
+			src = sift_sr_get(sr, info->post_off, len, blob);
+			if (src != blob)
+				memcpy(blob, src, len);
+			memset(blob + len, 0, SIFT_KERN_PAD);
+		}
 	}
-	return post_attach(info, mcxt, blob, sr, verify);
+	c = post_attach(info, mcxt, blob, sr, verify);
+	sift_segcache_ready(handle);
+	return c;
 }
 
 SiftPostingCursor *

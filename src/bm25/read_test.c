@@ -36,6 +36,10 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		{"cursor_buffer_bytes", sift_post_stats.curbuf_bytes},
 		{"blobs", sift_post_stats.blobs},
 		{"blob_bytes", sift_post_stats.blob_bytes},
+		{"blob_hits", sift_post_stats.blob_hits},
+		{"segcache_bytes", sift_segcache_bytes()},
+		{"segcache_evicted", sift_segcache_stats.evicted},
+		{"segcache_refused", sift_segcache_stats.refused},
 		{"prefix_passes", sift_prefix_stats.passes},
 		{"prefix_windows", sift_prefix_stats.windows},
 		{"prefix_direct", sift_prefix_stats.direct},
@@ -57,6 +61,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		sift_dict_probes = 0;
 		sift_dict_scan_blocks = 0;
 		memset(&sift_docdir_stats, 0, sizeof(sift_docdir_stats));
+		memset(&sift_segcache_stats, 0, sizeof(sift_segcache_stats));
 	}
 	return (Datum) 0;
 }
