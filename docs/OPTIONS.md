@@ -2284,17 +2284,17 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut/autocut.c` | `key_cut` |
 | NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut/autocut.c` | `key_cut` |
 | NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
-| NOTICE | sift_col index %s: compression of the text of %s column%s chosen by the formula (lz4 for %s, zstd kept for %s) | `src/col/build.c` | `compression` |
-| NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
-| NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
-| NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
-| NOTICE | sift_col index "%s": order_array_columns = 'auto' keeps the ends of the order of %s | `src/col/build.c` | `order_array_columns` |
-| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first | `src/col/build.c` | `order_array_columns`, `order_array_group` |
-| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s | `src/col/build.c` | `order_array_columns` |
-| NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
-| NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
-| NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |
-| NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
+| NOTICE | sift_col index %s: compression of the text of %s column%s chosen by the formula (lz4 for %s, zstd kept for %s) | `src/col/build/build.c` | `compression` |
+| NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build/build.c` |  |
+| NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' keeps the ends of the order of %s | `src/col/build/build.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first | `src/col/build/build.c` | `order_array_columns`, `order_array_group` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s | `src/col/build/build.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build/build.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build/build.c` |  |
+| NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build/build.c` |  |
+| NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build/build.c` |  |
 | NOTICE | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
 | NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols/cube.c` |  |
 | NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols/cube.c` |  |

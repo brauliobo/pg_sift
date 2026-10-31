@@ -1,5 +1,5 @@
 /*
- * col/build.h - the build of a sift_col index in two files: col/build.c turns the rows of heap pages into
+ * col/build.h - the build of a sift_col index in two files: col/build/build.c turns the rows of heap pages into
  * batches and the batches into segments (a ColBuild is one participant) and runs the serial build; col/build_par.c shares the
  * superblocks of the table between the participants of a parallel build.
  */

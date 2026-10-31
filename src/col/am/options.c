@@ -17,7 +17,7 @@
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
- * aminsert. The build is in col/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
+ * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
  */
 
 bool		sift_enable_col = true;
