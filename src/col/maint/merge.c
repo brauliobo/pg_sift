@@ -404,6 +404,9 @@ out_next(void *arg, SiftColSegWriter *w)
 {
 	MergeOut   *o = arg;
 
+#ifdef SIFT_TESTING
+	sift_col_test_inval(o->index);
+#endif
 	if (w == NULL)
 	{
 		out_begin(o);
@@ -528,10 +531,15 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		 */
 		if (live_rows > 0)
 		{
+			/* the cut is copied: the merge takes locks, which reload the cached state of the index and free what it holds */
+			int			cut[SIFT_COL_CUT_MAX];
+			int			ncut = key_cut ? sift_col_rel(index)->ncut : 0;
+
+			memcpy(cut, sift_col_rel(index)->cut, ncut * sizeof(int));
 			o.keyed = true;
 			if (slice == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
-			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? sift_col_rel(index)->cut : NULL, key_cut ? sift_col_rel(index)->ncut : 0,
+			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? cut : NULL, ncut,
 							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
