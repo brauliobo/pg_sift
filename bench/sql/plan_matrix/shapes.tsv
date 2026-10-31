@@ -1,0 +1,44 @@
+# name	class	statement  (events e, dim_a d, links_a l, tenants t; tenant 1 is the largest, 40 the smallest)
+point_id	point	SELECT * FROM events WHERE id = 12345
+point_tenant_date	point	SELECT id, kind, value_num FROM events WHERE tenant_id = 7 AND event_date = DATE '2024-06-15'
+range_date	range	SELECT count(*) FROM events WHERE event_date >= DATE '2024-03-01' AND event_date < DATE '2024-04-01'
+range_tenant_month	range	SELECT count(*), sum(value_num) FROM events WHERE tenant_id = 3 AND event_date >= DATE '2024-03-01' AND event_date < DATE '2024-04-01'
+range_year	range	SELECT count(*) FROM events WHERE event_date >= DATE '2024-01-01' AND event_date < DATE '2025-01-01'
+in_list_tenants	in_list	SELECT kind, count(*) FROM events WHERE tenant_id IN (1, 5, 9, 33) GROUP BY 1
+in_list_dim	in_list	SELECT count(*) FROM events WHERE dim_a_id IN (1, 41, 81, 121, 161, 201)
+null_test	null	SELECT count(*) FROM events WHERE tenant_id = 5 AND counter_a IS NOT NULL AND status IS NOT NULL
+count_all	count	SELECT count(*) FROM events
+count_filter	count	SELECT count(*) FROM events WHERE status = 2 AND kind = 'buy'
+group_kind	group	SELECT kind, count(*), avg(value_num) FROM events GROUP BY 1
+group_tenant_kind	group	SELECT tenant_id, kind, count(*), sum(value_num) FROM events WHERE event_date >= DATE '2024-06-01' GROUP BY 1, 2
+group_month	group	SELECT date_trunc('month', event_date) AS m, count(*) FROM events WHERE tenant_id = 2 GROUP BY 1
+group_having	group	SELECT dim_a_id, count(*) FROM events WHERE tenant_id = 4 GROUP BY 1 HAVING count(*) > 5
+group_minmax	group	SELECT kind, min(value_num), max(value_num), min(event_date) FROM events WHERE status < 3 GROUP BY 1
+group_filter_agg	group	SELECT tenant_id, count(*) FILTER (WHERE kind = 'buy') AS buys, count(*) FILTER (WHERE kind = 'view') AS views FROM events GROUP BY 1
+count_distinct	distinct	SELECT kind, count(DISTINCT dim_a_id) FROM events WHERE tenant_id <= 5 GROUP BY 1
+distinct_pair	distinct	SELECT DISTINCT tenant_id, kind FROM events
+top_n_date	top_n	SELECT id, event_date, value_num FROM events WHERE tenant_id = 2 ORDER BY event_date DESC, id LIMIT 20
+top_n_value	top_n	SELECT id, value_num FROM events ORDER BY value_num DESC, id LIMIT 10
+top_n_group	top_n	SELECT dim_a_id, count(*) AS c FROM events GROUP BY 1 ORDER BY c DESC, dim_a_id LIMIT 10
+top_n_offset	top_n	SELECT id, event_date FROM events WHERE kind = 'buy' ORDER BY event_date DESC, id LIMIT 20 OFFSET 200
+order_unindexed	top_n	SELECT id FROM events WHERE tenant_id = 6 AND status = 1 ORDER BY title, id LIMIT 15
+join_dim	join	SELECT d.kind, count(*), sum(e.value_num) FROM events e JOIN dim_a d ON d.id = e.dim_a_id WHERE e.event_date >= DATE '2024-06-01' GROUP BY 1
+join_dim_filter	join	SELECT d.label_a, count(*) FROM events e JOIN dim_a d ON d.id = e.dim_a_id WHERE d.kind = 'alpha' AND e.tenant_id = 1 GROUP BY 1
+join_tenants	join	SELECT t.name, count(*) FROM events e JOIN tenants t ON t.id = e.tenant_id GROUP BY 1
+left_join_dim	join	SELECT d.kind, count(e.id) FROM dim_a d LEFT JOIN events e ON e.dim_a_id = d.id AND e.status = 4 GROUP BY 1
+lateral_top1	join	SELECT d.id, x.event_date FROM dim_a d LEFT JOIN LATERAL (SELECT event_date FROM events e WHERE e.dim_a_id = d.id ORDER BY event_date DESC LIMIT 1) x ON true WHERE d.id <= 200
+semi_in_links	semi	SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM links_a WHERE group_key = 7) GROUP BY 1
+semi_exists	semi	SELECT count(*) FROM events e WHERE EXISTS (SELECT 1 FROM links_a l WHERE l.dim_a_id = e.dim_a_id AND l.group_key = 3) AND e.status = 0
+anti_not_exists	semi	SELECT count(*) FROM events e WHERE NOT EXISTS (SELECT 1 FROM links_a l WHERE l.dim_a_id = e.dim_a_id AND l.group_key = 3) AND e.tenant_id = 8
+scalar_sub	semi	SELECT d.id, (SELECT count(*) FROM events e WHERE e.dim_a_id = d.id) AS n FROM dim_a d WHERE d.id <= 100
+cte_agg	cte	WITH per AS (SELECT dim_a_id, count(*) AS c FROM events WHERE tenant_id = 1 GROUP BY 1) SELECT d.kind, sum(per.c) FROM per JOIN dim_a d ON d.id = per.dim_a_id GROUP BY 1
+union_all	cte	SELECT kind, count(*) FROM (SELECT kind FROM events WHERE tenant_id = 1 UNION ALL SELECT kind FROM events WHERE tenant_id = 2) u GROUP BY 1
+window_rank	window	SELECT * FROM (SELECT id, tenant_id, value_num, row_number() OVER (PARTITION BY tenant_id ORDER BY value_num DESC, id) AS rn FROM events WHERE kind = 'rate') w WHERE rn <= 3
+window_running	window	SELECT m, c, sum(c) OVER (ORDER BY m) FROM (SELECT date_trunc('month', event_date) AS m, count(*) AS c FROM events GROUP BY 1) g
+expr_group	expr	SELECT (counter_a / 10) AS bucket, count(*) FROM events GROUP BY 1
+expr_filter	expr	SELECT count(*) FROM events WHERE lower(kind) = 'buy' AND value_num * 2 > 100
+text_term	text	SELECT count(*) FROM events WHERE title @@> 'charger'
+text_and	text	SELECT id FROM events WHERE title @@> 'wireless speaker' ORDER BY id LIMIT 10
+text_group	text	SELECT tenant_id, count(*) FROM events WHERE title @@> 'laptop OR monitor' GROUP BY 1
+text_score_top	text	SELECT id, sift.score(ctid) FROM events WHERE title @@> 'premium charger OR smart tablet' ORDER BY sift.score(ctid) DESC, id LIMIT 10
+ilike	text	SELECT count(*) FROM events WHERE title ILIKE 'smart%'
