@@ -446,3 +446,10 @@ CREATE FUNCTION sift._test_col_dict_shared_hold(int4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_hold' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_posblk(seed int8, n int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_posblk' LANGUAGE C STRICT;
+
+-- A dictionary that maps words to others and answers nothing for the rest (src/bm25/analyze_ts_test.c), to chain in front of a stemmer
+CREATE FUNCTION sift._test_syn_init(internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_test_syn_init' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_syn_lexize(internal, internal, internal, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_test_syn_lexize' LANGUAGE C STRICT;
+CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE = sift._test_syn_lexize);
