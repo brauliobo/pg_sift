@@ -77,6 +77,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
+	if (sh->gpart_n)
+		split_begin(ex, ex->spec->gpart - 1, sh->gpart_n, 1u << (ParallelWorkerNumber + 1));
 	if (ex->topn)
 	{
 		sift_topn_share(ex->topn, &sh->topn_bound);
@@ -153,6 +155,10 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	done.n_combo_trim = ex->n_combo_trim;
 	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
+	/* the participants of a split scan all read every unit: the leader's counts are those of the scan, the workers' only the tuples they aggregated */
+	if (sh->gpart_n)
+		done = (WorkerDone) {.magic = DONE_MAGIC,.n_tuples = done.n_tuples,.n_dense = done.n_dense,.n_combo_trim = done.n_combo_trim,.n_matches = done.n_matches,
+			.n_skipped = done.n_skipped,.n_runs = done.n_runs,.n_lazy = done.n_lazy};
 	send_blob(ex->mqh, &done, sizeof(done));
 	shm_mq_detach(ex->mqh);
 	/* before the executor states: the expression context of the lookups is a child of the state of the sub-plans */

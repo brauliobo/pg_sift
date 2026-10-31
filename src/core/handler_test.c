@@ -11,6 +11,7 @@
 #include "core/visibility.h"
 #include "core/parbuild.h"
 #include "table/table.h"
+#include "agg/par_int.h"
 
 void
 sift_handler_test_gucs(void)
@@ -19,6 +20,9 @@ sift_handler_test_gucs(void)
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_split",
+							"Testing: the groups of a scan with workers (0 = by cost, 1 = the participants split the rows, 2 = they split the groups by a key where the scan can).",
+							NULL, &sift_test_split, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_segfmt",
 							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
 							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_POSBLK, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

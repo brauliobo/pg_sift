@@ -1,0 +1,116 @@
+-- The participants of a scan with workers split the rows, or, for a scan of many groups, the groups: each reads every row of the units and aggregates
+-- the rows whose key falls in its share of the keys (a hash of the key), so that the tables are disjoint and the leader only adds them to its own.
+-- The statements of a key the shares keep apart (an integer, a date or timestamp) can; a text or float key, an expression,
+-- grouping sets and a scan with the pre-aggregates cannot. The rows are those of the normal plan, of the scan alone and of both splits, to the bit for
+-- the float sums, with the leader taking the shares of workers that did not start, and the default plan splits the groups where the table is large.
+CREATE EXTENSION pg_sift;
+
+SET client_min_messages = warning;
+SET sift.agg_preagg = off;
+SET work_mem = '256MB';
+
+CREATE TABLE sp (id int, k_i int, k_b bigint, k_t text, k_ts timestamp, k_f float8, k_few int, k_hi int, v int, w float8, n numeric) WITH (autovacuum_enabled = off, parallel_workers = 4);
+INSERT INTO sp SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i::bigint * 7919 % 12000)::int END, (i::bigint * 7919 % 12000) * 1000003,
+       CASE WHEN i % 89 = 0 THEN NULL ELSE 'k' || (i::bigint * 7919 % 12000) END, timestamp '2026-01-01' + (i::bigint * 7919 % 5000) * interval '1 minute',
+       (i::bigint * 7919 % 12000) / 7.0, i % 7, (i::bigint * 7919 % 60000)::int, i % 100, (i % 977) * 0.01 + 1e8 * (i % 3), (i % 50) / 10.0
+FROM generate_series(1, 120000) i;
+CREATE INDEX sp_col ON sp USING sift_col (id, k_i, k_b, k_t, k_ts, k_f, k_few, k_hi, v, w, n) WITH (key_cut = off);
+-- the planner takes the groups of this key as many however large the table is priced
+ALTER TABLE sp ALTER COLUMN k_hi SET (n_distinct = 60000);
+VACUUM (FREEZE, ANALYZE) sp;
+
+CREATE TABLE sp_q (n int, sql text);
+INSERT INTO sp_q VALUES
+ (1, 'SELECT k_i, count(*) AS c, sum(v) AS s, min(id) AS a, max(v) AS b FROM sp GROUP BY 1'),
+ (2, 'SELECT k_b, count(*) AS c, sum(v) AS s, sum(n) AS t FROM sp GROUP BY 1'),
+ (3, 'SELECT k_t, count(*) AS c, count(DISTINCT v) AS d, avg(v) AS a FROM sp GROUP BY 1'),
+ (4, 'SELECT k_ts, k_few, count(*) AS c, sum(v) FILTER (WHERE v > 10) AS s FROM sp GROUP BY 1, 2'),
+ (5, 'SELECT k_i, sum(w) AS s, avg(w) AS a FROM sp WHERE v < 50 GROUP BY 1'),
+ (6, 'SELECT k_f, count(*) AS c FROM sp GROUP BY 1'),
+ (7, 'SELECT k_i % 1000 AS k, count(*) AS c FROM sp GROUP BY 1'),
+ (8, 'SELECT k_i, k_few, count(*) AS c FROM sp GROUP BY ROLLUP (1, 2)'),
+ (9, 'WITH ids AS MATERIALIZED (SELECT i FROM generate_series(0, 6000) i) SELECT k_i, count(*) AS c, sum(v) AS s FROM sp JOIN ids ON ids.i = sp.k_i GROUP BY 1'),
+ (10, 'SELECT k_few, count(*) AS c, sum(w) AS s FROM sp GROUP BY 1'),
+ (11, 'SELECT k_hi, count(*) AS c, sum(v) AS s, min(id) AS a FROM sp GROUP BY 1');
+
+-- how the workers share a scan the plan gives them: the groups split by a key, or the rows
+CREATE FUNCTION sp_set(mode text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode <> 'normal')::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode IN ('normal', 'scan') THEN '0' ELSE '3' END, true);
+	PERFORM set_config('max_parallel_workers', CASE WHEN mode = 'groups_two' THEN '2' ELSE '8' END, true);
+	PERFORM set_config('sift.test_split', CASE WHEN mode IN ('groups', 'groups_two') THEN '2' ELSE '1' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+END $$;
+
+CREATE FUNCTION sp_plan(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	PERFORM sp_set(mode);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'one process'; END IF;
+		IF l ~ 'Workers Planned: [1-9]' THEN r := 'rows split'; END IF;
+		IF l ~ 'Groups Split By: ' THEN r := 'groups split by ' || substring(l from 'Groups Split By: (.*)$'); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- a worker is lost when its start fails, and the leader takes its share
+CREATE FUNCTION sp_rows(q text, mode text, rnd bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM sp_set(mode);
+	EXECUTE format('SELECT md5(string_agg(x::text, E''\n'' ORDER BY x::text)) FROM (%s) x', CASE WHEN rnd THEN replace(replace(q, 'sum(w)', 'round(sum(w)::numeric, 2)'), 'avg(w)', 'round(avg(w)::numeric, 2)') ELSE q END) INTO r;
+	RETURN r;
+END $$;
+
+SELECT n, sp_plan(sql, 'groups') AS plan_groups, sp_plan(sql, 'rows') AS plan_rows FROM sp_q ORDER BY n;
+
+-- the plan of the default settings for the table priced as larger (sift.plan_scale): the groups of a large table are split by their key, a handful of groups are not
+-- (the rows are split), and a table of this size keeps one process
+CREATE FUNCTION sp_default(q text, scale int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	PERFORM set_config('sift.plan_scale', scale::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', '4', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'one process'; END IF;
+		IF l ~ 'Workers Planned: [1-9]' THEN r := 'rows split'; END IF;
+		IF l ~ 'Groups Split By: ' THEN r := 'groups split by ' || substring(l from 'Groups Split By: (.*)$'); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+SELECT n, sp_default(sql, 1) AS scale_1, sp_default(sql, 30) AS scale_30 FROM sp_q WHERE n IN (10, 11) ORDER BY n;
+
+-- the rows: the normal plan (floats rounded: it adds in another order), the scan alone, the workers splitting the rows, the groups, and the groups with one worker short
+SELECT n, sp_rows(sql, 'scan', true) = sp_rows(sql, 'normal', true) AS scan,
+       sp_rows(sql, 'rows', true) = sp_rows(sql, 'normal', true) AS rows,
+       sp_rows(sql, 'groups', true) = sp_rows(sql, 'normal', true) AS groups,
+       sp_rows(sql, 'groups_two', true) = sp_rows(sql, 'normal', true) AS groups_short
+FROM sp_q ORDER BY n;
+
+-- the workers a statement started: 3 asked for, 2 allowed (the leader takes the share of the third)
+CREATE FUNCTION sp_launched(q text, mode text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	PERFORM sp_set(mode);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		r := coalesce(substring(l from 'Workers Launched: (\d+)')::int, r);
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT n, sp_launched(sql, 'groups') AS launched, sp_launched(sql, 'groups_two') AS launched_short FROM sp_q WHERE n IN (1, 11) ORDER BY n;
+
+-- the float sums are the same to the bit whatever the process that adds them
+SELECT n, sp_rows(sql, 'groups', false) = sp_rows(sql, 'scan', false) AS groups_bits, sp_rows(sql, 'groups_two', false) = sp_rows(sql, 'scan', false) AS groups_short_bits,
+       sp_rows(sql, 'rows', false) = sp_rows(sql, 'scan', false) AS rows_bits
+FROM sp_q WHERE n IN (5, 10) ORDER BY n;
+
+DROP FUNCTION sp_set(text), sp_plan(text, text), sp_default(text, int), sp_launched(text, text), sp_rows(text, text, bool);
+DROP TABLE sp_q, sp;
+DROP EXTENSION pg_sift;

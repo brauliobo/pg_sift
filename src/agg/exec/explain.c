@@ -373,6 +373,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			explain_correlated(node, i, es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
+	if (s->gpart > 0)
+		ExplainPropertyText("Groups Split By", s->key[s->gpart - 1].desc, es);
 	if (s->wide_unit_rows > 0)
 		ExplainPropertyText("Workers Priced For", "the rows the scan reads", es);
 	if (es->analyze && ex->started)

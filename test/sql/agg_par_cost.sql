@@ -1,7 +1,7 @@
 -- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start,
 -- the leader a full participant, the partial tables merged by the leader one after the other). The plan the default settings choose is checked
 -- for the classes of statement the curves were measured on, over three families of table (uniform units, skewed tenants, many small units): a scan
--- of 1,000,000 or 600,000 rows with a few ms of work takes workers, 300,000 rows, a cheap group by and a group by of a hundred thousand groups do not.
+-- of 1,000,000 or 600,000 rows with a few ms of work takes workers, 300,000 rows, a cheap group by and a group by of a hundred thousand groups do not (the groups of such a table are split by their key only from some millions of rows: agg_par_split).
 -- And every statement gives the same rows with the normal plan, with the scan alone and with the workers the plan chose or would choose.
 CREATE EXTENSION pg_sift;
 
@@ -34,13 +34,14 @@ INSERT INTO pc_q VALUES
 
 -- the plan of the default settings: pushed down, and with workers or not
 CREATE FUNCTION pc_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; pushed bool := false; planned bool := false;
+DECLARE l text; pushed bool := false; planned bool := false; split bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		planned := planned OR l ~ 'Workers Planned: [1-9]';
+		split := split OR l ~ 'Groups Split By: ';
 		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
 	END LOOP;
-	RETURN CASE WHEN NOT pushed THEN 'normal plan' WHEN planned THEN 'workers' ELSE 'one process' END;
+	RETURN CASE WHEN NOT pushed THEN 'normal plan' WHEN split THEN 'workers split groups' WHEN planned THEN 'workers' ELSE 'one process' END;
 END $$;
 
 SELECT t.tbl, q.class, pc_plan(format(q.sql, t.tbl)) AS plan

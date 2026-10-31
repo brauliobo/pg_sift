@@ -770,6 +770,21 @@ process_unit(AggExec *ex)
 		ex->row_base += nrow;
 		return;
 	}
+	if (ex->gp_mine)
+	{
+		int			kept;
+
+		split_rows(ex, rmask, nrow);
+		kept = sift_colk->bits_count(rmask, (nrow + 63) / 64);
+		if (!kept)
+		{
+			ex->row_base += nrow;
+			return;
+		}
+		/* the share is a few rows of the unit: the other leaves are decoded for them only */
+		if (!cand && kept * SPARSE_RATIO < nrow && sift_colsrc_can_read_sel(ex->src))
+			ex->rsel = rmask;
+	}
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);
 	else

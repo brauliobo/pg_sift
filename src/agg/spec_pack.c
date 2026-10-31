@@ -426,6 +426,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_dbl(p, s->est_groups);
 	put_dbl(p, s->est_rows);
 	put_int(p, s->nworkers);
+	put_int(p, s->gpart);
 	put_dbl(p, s->wide_unit_rows);
 	put_str(p, s->serial);
 	put_str(p, s->desc_quals);
@@ -886,6 +887,7 @@ sift_aggspec_unpack(const List *items)
 	s->est_groups = strtod(get_str(u), NULL);
 	s->est_rows = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
+	s->gpart = get_int(u);
 	s->wide_unit_rows = strtod(get_str(u), NULL);
 	s->serial = get_str(u);
 	if (!*s->serial)

@@ -132,7 +132,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		}
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
-	k->cold_ops += entry_cost * (parallel_divisor(s->nworkers) - 1.0);
+	k->cold_ops += entry_cost * (s->gpart > 0 ? 0.0 : parallel_divisor(s->nworkers) - 1.0);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)

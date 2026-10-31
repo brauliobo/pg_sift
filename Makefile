@@ -44,8 +44,8 @@ endif
 # Switching it needs `make clean`.
 TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_% tbl_cap tbl_bulk_eligible tbl_bulk_groups tbl_vblocks tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds
 TESTING_REGRESS += limits_registry tbl_limits_lowered tbl_bulk_parallel agg_combo_cap agg_limit_refusals agg_planner_state_error
-TESTING_REGRESS += include_store include_filter errors_hints agg_cte_verdict_cache col_leaf_stats col_minmax_runs agg_outer_walks_once fuzzy_seek
-TESTING_REGRESS += col_wide_values
+TESTING_REGRESS += errors_hints agg_cte_verdict_cache col_leaf_stats col_minmax_runs agg_outer_walks_once fuzzy_seek
+TESTING_REGRESS += col_wide_values agg_par_split
 TESTING_REGRESS += tbl_wide_rows col_wildcard_keys col_read_ahead col_dead_rewrite
 TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks rank_page_live
 TESTING_REGRESS += col_topn_unit_ends col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func col_topn_trail

@@ -69,6 +69,7 @@ shared_init(ScanShared *sh, AggExec *ex)
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
 	if (part_flush_on(ex))
 		sh->nitems = ex->spec->nparts;
+	sh->gpart_n = 0;
 	pg_atomic_init_u32(&sh->next, 0);
 	pg_atomic_init_flag(&sh->kept_counted);
 	if (ex->skip != NULL)			/* the leader's map, made to decide on workers, counted */
@@ -251,23 +252,39 @@ take_kept_item(AggExec *ex, uint32 *item)
 	return true;
 }
 
+static void
+item_done(AggExec *ex, uint32 item)
+{
+	/* the cells of the last row are groups of the item's table */
+	arms_flush(ex);
+	if (part_flush_on(ex))
+		part_flush(ex);
+	if (ex->lane_serial)
+		lane_fold(ex);
+	else if (ex->lanes)
+		lane_keep(ex, item);
+	if (ex->par)
+		par_poll(ex);
+}
+
 void
 scan_items(AggExec *ex)
 {
 	uint32		item;
 
+	/* the participants that split the groups by a key read all the items, each for its share of the keys */
+	if (ex->gp_mine)
+	{
+		for (item = next_item(ex, 0); item < ex->shared->nitems; item = next_item(ex, item + 1))
+		{
+			scan_item(ex, item);
+			item_done(ex, item);
+		}
+		return;
+	}
 	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
 	{
 		scan_item(ex, item);
-		/* the cells of the last row are groups of the item's table */
-		arms_flush(ex);
-		if (part_flush_on(ex))
-			part_flush(ex);
-		if (ex->lane_serial)
-			lane_fold(ex);
-		else if (ex->lanes)
-			lane_keep(ex, item);
-		if (ex->par)
-			par_poll(ex);
+		item_done(ex, item);
 	}
 }

@@ -162,6 +162,12 @@ typedef struct AggExec
 	struct ScanShared *shared;
 	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
+	uint32		gp_n;			/* a scan whose participants split the groups by a key (SiftAggSpec.gpart): the shares, one for each participant; 0: they split the rows */
+	uint32		gp_mine;		/* ... the shares this process aggregates, bit i = share i: its own, and those of the workers that did not start */
+	int			gp_leaf;		/* ... the leaf of the key */
+	bool		gp_one;			/* ... a single share: the hashes of its keys are [gp_lo, gp_lo + gp_w) */
+	uint32		gp_lo;
+	uint32		gp_w;
 	struct AggPar *par;			/* workers launched by the leader */
 	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
 	uint32		nvorder;

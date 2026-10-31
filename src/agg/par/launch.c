@@ -85,6 +85,8 @@ par_launch(AggExec *ex)
 	char	  **child_txt;
 	char	   *sub_txt = NULL;
 
+	/* a scan run again starts from none */
+	ex->gp_n = ex->gp_mine = 0;
 	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
 		return;
 	spec_txt = nodeToString(ex->pack);
@@ -172,6 +174,8 @@ par_launch(AggExec *ex)
 		shm_toc_insert(pcxt->toc, KEY_DICTSHM, shm_toc_allocate(pcxt->toc, 1));
 	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
 	shared_init(ps, ex);
+	/* the participants split the groups by the key the plan chose when the scan can: a worker takes the share of its number + 1, the leader that of the workers that did not start too */
+	ps->gpart_n = split_run_ok(ex) ? nw + 1 : 0;
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
 	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
 	strcpy(p, spec_txt);
@@ -240,6 +244,8 @@ par_launch(AggExec *ex)
 		ExitParallelMode();
 		return;
 	}
+	if (ps->gpart_n)
+		split_begin(ex, ex->spec->gpart - 1, ps->gpart_n, ((UINT64CONST(1) << ps->gpart_n) - 1) & ~(((UINT64CONST(1) << (pcxt->nworkers_launched + 1)) - 1) & ~UINT64CONST(1)));
 	par = MemoryContextAllocZero(ex->cxt, sizeof(AggPar));
 	par->pcxt = pcxt;
 	par->nlaunched = pcxt->nworkers_launched;
