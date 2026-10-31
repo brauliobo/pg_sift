@@ -14,6 +14,8 @@
 #define TOPN_ASSUMED_ROWS	1000
 /* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
 #define TOPN_SORT_ROWS	1024
+/* What a row of the heap costs past TOPN_SORT_ROWS, in operator steps: 1.5, 3.1, 9.8 and 19.4 ms over a page of 100 for 2,000, 5,000, 20,000 and 50,000 rows of offset */
+#define TOPN_ROW_STEP	70.0
 /*
  * The sort reads the keys after the first at every row that passes (the scan reads the first anyway), by positions: a gather, dearer than
  * the decode of a whole column. Measured on 200,000 rows of small integer keys, sorted in memory: 11 ms for each key past the first, where

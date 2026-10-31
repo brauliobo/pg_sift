@@ -70,7 +70,7 @@ NOTICE:  table "tx_b" does not exist, skipping
  all_rows         | same+topn+sorted 30000
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn 20
+ deep_page        | same+topn+sorted 20
  five_keys        | same+topn 30
  inet_asc         | same+topn 25
  inet_desc        | same+topn 25
@@ -125,11 +125,11 @@ FROM generate_series(1, 700) i;
 UPDATE tx SET s = 'Aaa' || id, b = NULL, ip = '1.2.3.4'::inet WHERE id % 97 = 0;
 DELETE FROM tx WHERE id % 89 = 0;
 SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'text_nulls_first', 'text_c', 'text_locale', 'uuid_asc', 'bytea_asc', 'bytea_desc', 'inet_asc', 'mixed_keys', 'deep_page') ORDER BY tag COLLATE "C";
-       tag        |   tx_check   
-------------------+--------------
+       tag        |      tx_check       
+------------------+---------------------
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn 20
+ deep_page        | same+topn+sorted 20
  inet_asc         | same+topn 25
  mixed_keys       | same+topn 30
  text_asc         | same+topn 25

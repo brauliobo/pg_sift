@@ -119,7 +119,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  coalesce_texts_c  | same+topn 25
  coalesce_three    | same+topn 25
  coalesce_wide     | same+topn 25
- deep_page         | same+topn 20
+ deep_page         | same+topn+sorted 20
  expr_then_col     | same+topn 25
  greatest          | same+topn 25
  greatest_text     | same+topn 25
@@ -170,15 +170,15 @@ UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
 DELETE FROM tb WHERE id % 83 = 0;
 SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('case_null_zero', 'case_text', 'coalesce_ints', 'coalesce_texts', 'coalesce_dates', 'nullif_int', 'greatest', 'bool_or_null', 'two_exprs', 'deep_page') ORDER BY tag COLLATE "C";
-      tag       |   tb_check   
-----------------+--------------
+      tag       |      tb_check       
+----------------+---------------------
  bool_or_null   | same+topn 40
  case_null_zero | same+topn 25
  case_text      | same+topn 25
  coalesce_dates | same+topn 25
  coalesce_ints  | same+topn 25
  coalesce_texts | same+topn 25
- deep_page      | same+topn 20
+ deep_page      | same+topn+sorted 20
  greatest       | same+topn 25
  nullif_int     | same+topn 40
  two_exprs      | same+topn 40

@@ -121,7 +121,7 @@ NOTICE:  table "ta_b" does not exist, skipping
  compare           | same+topn 40
  date_minus_date   | same+topn 25
  date_plus         | same+topn 25
- deep_page         | same+topn 20
+ deep_page         | same+topn+sorted 20
  expr_then_col     | same+topn 30
  float4_times      | same+topn 25
  float_div         | same+topn 25
@@ -195,11 +195,11 @@ UPDATE ta SET a = NULL, k = 0 WHERE id % 97 = 0;
 UPDATE ta SET a = -5, d = NULL WHERE id % 89 = 0;
 DELETE FROM ta WHERE id % 83 = 0;
 SELECT tag, ta_check(q) FROM ta_q WHERE tag IN ('int_plus', 'int_minus_col', 'int_ties', 'two_columns', 'numeric_times', 'cast_to_text', 'date_plus', 'expr_then_col', 'deep_page') ORDER BY tag COLLATE "C";
-      tag      |   ta_check   
----------------+--------------
+      tag      |      ta_check       
+---------------+---------------------
  cast_to_text  | same+topn 25
  date_plus     | same+topn 25
- deep_page     | same+topn 20
+ deep_page     | same+topn+sorted 20
  expr_then_col | same+topn 30
  int_minus_col | same+topn 25
  int_plus      | same+topn 25

@@ -94,7 +94,7 @@ NOTICE:  table "tc_b" does not exist, skipping
  date              | same+topn 25
  date_desc         | same+topn 25
  date_infinity     | same+topn 25
- deep_page         | same+topn 20
+ deep_page         | same+topn+sorted 20
  int_above         | same+topn 40
  int_asc           | same+topn 25
  int_below         | same+topn 40
@@ -160,11 +160,11 @@ UPDATE tc SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tc SET a = -5, d = NULL WHERE id % 89 = 0;
 DELETE FROM tc WHERE id % 83 = 0;
 SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'int_below', 'bigint_asc', 'date', 'timestamp', 'lower', 'upper_desc', 'lower_locale', 'varchar', 'three_keys', 'deep_page') ORDER BY tag COLLATE "C";
-     tag      |   tc_check   
---------------+--------------
+     tag      |      tc_check       
+--------------+---------------------
  bigint_asc   | same+topn 25
  date         | same+topn 25
- deep_page    | same+topn 20
+ deep_page    | same+topn+sorted 20
  int_asc      | same+topn 25
  int_below    | same+topn 40
  int_desc     | same+topn 25

@@ -1,0 +1,36 @@
+-- The price of a deep page (ORDER BY .. LIMIT 100 OFFSET n) of the top-N scan against the time it takes. The heap holds the n rows of the offset and the page and
+-- the Limit above throws the offset away, so the time over a page of 100 grows with n (measured on 600,000 rows, scan only: 1.5, 3.1, 9.8 and 19.4 ms over a
+-- page of 100 for an offset of 2,000, 5,000, 20,000 and 50,000), whatever the number of rows that match (60,000 or 600,000: within 20%). `measured` is that time in
+-- cost units (355 per ms: what the base cost of the scan is worth); the price of the scan over its price at OFFSET 100 must stay within half and twice of it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE events (id int PRIMARY KEY, x int NOT NULL, ts timestamp NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, (hashint4(g) & 2147483647) % 100, timestamp '2024-01-01' + (hashint4(g + 1) & 2147483647) % 100000000 * interval '1 second', g % 1000
+FROM generate_series(1, 600000) g;
+CREATE INDEX events_col ON events USING sift_col (x, ts, amount, id) WITH (order_array_columns = off);
+VACUUM (FREEZE, ANALYZE) events;
+-- the plan without the extension is not an alternative here: its cost is not what is checked
+SET enable_sort = off;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = off;
+
+CREATE FUNCTION scan_price(bound int, off int) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE line text; p float8;
+BEGIN
+	FOR line IN EXECUTE format('EXPLAIN SELECT id, amount FROM events WHERE x < %s ORDER BY ts, id LIMIT 100 OFFSET %s', bound, off) LOOP
+		IF line ~ 'Custom Scan \(SiftAgg\)' THEN p := substring(line from 'cost=[0-9.]+\.\.([0-9.]+)')::float8; END IF;
+	END LOOP;
+	RETURN p;
+END $$;
+
+SELECT matching, off, ((scan_price(bound, off) - scan_price(bound, 100)) / measured)::numeric BETWEEN 0.5 AND 2.0 AS priced_within_band
+FROM (VALUES (100, 'all', 2000, 530), (100, 'all', 5000, 1090), (100, 'all', 20000, 3480), (100, 'all', 50000, 6870),
+             (10, 'a tenth', 2000, 290), (10, 'a tenth', 5000, 850), (10, 'a tenth', 20000, 2580), (10, 'a tenth', 50000, 6340)) m(bound, matching, off, measured)
+ORDER BY matching, off;
+
+DROP FUNCTION scan_price(int, int);
+DROP TABLE events;
+DROP EXTENSION pg_sift;
