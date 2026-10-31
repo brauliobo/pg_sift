@@ -22,7 +22,12 @@ INSERT INTO rc SELECT i, (hashint4(i) & 2147483647) % 800, 1 + i % 12, hashint4(
 FROM generate_series(120001, 144000) i;
 DELETE FROM rc WHERE id % 10 = 3;
 VACUUM ANALYZE rc;
+-- the NOTICE names the choice as the option holds it
+SET client_min_messages = notice;
+\set VERBOSITY terse
 SELECT sift.col_maintain('rc_ix');
+\set VERBOSITY default
+SET client_min_messages = warning;
 SELECT sift.col_maintain('rc_off');
 VACUUM rc;
 VACUUM rc;

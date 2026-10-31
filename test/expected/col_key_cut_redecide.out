@@ -25,12 +25,19 @@ INSERT INTO rc SELECT i, (hashint4(i) & 2147483647) % 800, 1 + i % 12, hashint4(
 FROM generate_series(120001, 144000) i;
 DELETE FROM rc WHERE id % 10 = 3;
 VACUUM ANALYZE rc;
+-- the NOTICE names the choice as the option holds it
+SET client_min_messages = notice;
+\set VERBOSITY terse
 SELECT sift.col_maintain('rc_ix');
+NOTICE:  sift_col index "rc_ix": point_tid_columns includes "counter_a", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +23%, 3.4 bytes a row, benefit 29 against cost 12)
+NOTICE:  sift_col index "rc_ix": the rewrite chose again from the data: key_cut = 'auto: foreign_id' (was ''); point_tid_columns = 'auto: counter_a' (was '')
  col_maintain 
 --------------
  t
 (1 row)
 
+\set VERBOSITY default
+SET client_min_messages = warning;
 SELECT sift.col_maintain('rc_off');
  col_maintain 
 --------------

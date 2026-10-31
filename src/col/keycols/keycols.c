@@ -229,6 +229,17 @@ sift_col_auto_keys(Relation heap, Relation index)
 	return true;
 }
 
+/* key_cut as the option holds it ("auto: d"), not as the reader returns it (" d") */
+static char *
+auto_cut_text(Relation index)
+{
+	const char *c = sift_col_options_key_cut(index);
+
+	while (*c == ' ')
+		c++;
+	return *c && sift_col_options_key_cut_auto(index) ? psprintf("auto: %s", c) : pstrdup(c);
+}
+
 /*
  * Before a merge of every immutable segment: what a build chooses from the data and keeps in an option it wrote itself (key_cut, order_array_columns, point_tid_columns,
  * each 'auto' or 'auto: list') is chosen again, in the order of the build, so the segments about to be written are those a REINDEX would write: rows of every tenant appended
@@ -274,7 +285,7 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	}
 	loaded *= sift_colk_row_bytes(sift_col_rel_private(index, mcx)->schema);
 	MemoryContextDelete(mcx);
-	cut = pstrdup(sift_col_options_key_cut(index));
+	cut = auto_cut_text(index);
 	o = sift_col_options_order_array_columns(index);
 	arr = pstrdup(o ? o : "");
 	pt = pstrdup(sift_col_options_point_tid_columns(index));
@@ -286,7 +297,7 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	table_close(heap, NoLock);
 	initStringInfo(&what);
 	if (changed)
-		appendStringInfo(&what, "key_cut = '%s' (was '%s'); ", sift_col_options_key_cut(index), cut);
+		appendStringInfo(&what, "key_cut = '%s' (was '%s'); ", auto_cut_text(index), cut);
 	o = sift_col_options_order_array_columns(index);
 	if (strcmp(arr, o ? o : "") != 0)
 		appendStringInfo(&what, "order_array_columns = '%s' (was '%s'); ", o ? o : "", arr);
