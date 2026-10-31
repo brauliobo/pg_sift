@@ -123,7 +123,7 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P2-10 | col/seg/seg.c:sift_cseg_unit, sift_cseg_unit_head | unit buffer lacks `SIFT_COL_PAD`; `unpack` reads 31 bytes past |
 | P2-11 | col/enc.c:sift_cchunk_zone, col/ctest.c:chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
 | P3-1 | col/codec_parse.c:parse_node, parse_child, sift_cc_open, col/codec_blob.c:sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
-| P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
+| P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
 | P3-3 | col/seg/seg.c:sift_cseg_open, sift_cseg_dict, zone_arrays | manual arithmetic; one 7-byte over-read at 429/441 |
 | P3-4 | col/compress.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
 | P3-5 | core/reader.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |

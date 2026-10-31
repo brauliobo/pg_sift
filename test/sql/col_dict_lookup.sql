@@ -1,4 +1,4 @@
--- The lookups on a cached segment dictionary (col/dict.c): a dictionary is searched entry by entry until it has been asked a few times, then
+-- The lookups on a cached segment dictionary (col/dict/dict.c): a dictionary is searched entry by entry until it has been asked a few times, then
 -- an equality goes through a table of its codes (after 8 finds) and a prefix or range through its codes in byte order (after 16 tests, 1024
 -- entries or more). Every answer must be the heap's, in the rounds before, at and after each switch, on strings that tie on their first
 -- 8 bytes, NULLs, empty strings, unicode, a unit with inline strings, DML, the write buffer and a promoted segment.

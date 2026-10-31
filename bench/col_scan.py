@@ -9,7 +9,7 @@ KIND: btree (one per query column), classes (one sift_col index with the operato
 point (the same with point_columns = $POINT_COLUMNS, default 'id, rnd, grp, s_short, u'), point_tid (the same with point_tid_columns: the directory lists heap addresses and the lookup reads no unit),
 keycut (point_tid and key_cut = 'rnd': the units are cut by rnd, the column of random order).
 PG* variables pick the server. Each query and plan runs RUNS = 24 times in one session: the median of the last three is exec_median_ms (EXPLAIN (ANALYZE, TIMING OFF) Execution
-Time), a backend that has run the query before (and has asked a dictionary often enough for the lookup structures built beside it, col/dict.c: 8
+Time), a backend that has run the query before (and has asked a dictionary often enough for the lookup structures built beside it, col/dict/dict.c: 8
 equalities, 16 prefix tests). first_ms is the first run of a new backend (it parses the dictionaries of the string columns it reads, fills its caches):
 the median of the first runs of three sessions, the way a client that connects for each query sees it.
 Plans: planner (sift.enable_col_scan on for sift_col, the planner's pick), and for a forced plan: an index scan, a bitmap scan; `scan off` is the
