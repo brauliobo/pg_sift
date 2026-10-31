@@ -73,6 +73,10 @@ col/shred.h
 col/shred_vec.h
 col/shred_int.h
 col/col.h
+col/api/format.h
+col/api/leaf.h
+col/api/meta.h
+col/api/source.h
 col/kern.h
 col/kern_int.h
 col/kern_anc.h
