@@ -21,7 +21,8 @@ extern void seg_rewind(RankSeg *rs);
 extern const SiftGroupBounds * term_bound_at(const RkTerm *t, uint32 gid);
 extern float4 sum_ub(const SiftPlan *p, const float4 *ub, int leaf, float4 v);
 extern bool block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub);
-extern int score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b, float4 theta, const float4 *ub);
+extern int score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b, float4 theta, const float4 *ub, uint32 live);
+extern uint32 block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta);
 extern void hot_forget(SiftRanker *r);
 
 /* The cursors of the narrowed leaves rewind when used first after a rewind of the segment */

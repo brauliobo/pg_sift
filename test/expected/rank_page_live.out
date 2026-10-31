@@ -1,0 +1,49 @@
+-- A block is scored on the pages that can lift a document over the k-th best score: a page counts the terms that have postings on it (block_live).
+-- The k best of a ranked search come out with the scores a search that keeps every match has (k above the number of matches: nothing is pruned),
+-- for queries whose terms sit on different pages, with a filter, and after deletes and VACUUM.
+CREATE EXTENSION pg_sift;
+-- 200,000 rows on about 2,100 heap pages (8 superblocks): a term in every row, seven terms in 28,000 rows, 500 terms in 400 rows, 'hot' in 20 rows of every
+-- thousand with tf 1 to 9, and rows of 3 to 30 tokens, so the bounds differ from page to page
+CREATE TABLE src AS
+SELECT g AS id, g % 10 AS counter_a, concat_ws(' ', 'common', 'w' || g % 7, 'r' || g % 500, CASE WHEN g % 1000 < 20 THEN repeat('hot ', 1 + g % 9) END, repeat('f ', g % 28)) AS body
+FROM generate_series(1, 200000) g;
+SET sift.grouped_min_df = 200;
+CREATE INDEX src_idx ON src USING sift (body);
+CREATE FUNCTION qs() RETURNS text[] LANGUAGE sql AS $$ SELECT ARRAY['common', 'hot', 'hot OR r7', 'hot OR r7 OR w3', 'r7 OR r8 OR r9', 'common AND r7', 'common AND hot',
+	'w1 OR w2 OR hot', 'hot AND NOT w3', '"hot hot"', 'r1* OR hot', 'hot~1 OR r7', 'r499 OR r498 OR zzz', 'common OR hot OR r3 OR r4 OR w5'] $$;
+-- the first k scores of a search that keeps lim matches: lim = k is the pruned ranker, lim above the matches keeps every one
+CREATE FUNCTION top(q text, k int, filt bool, lim int) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE
+	h text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(round(s::numeric, 6)::text, '','' ORDER BY s DESC)) FROM
+		(SELECT s FROM (SELECT sift.score(ctid) AS s FROM src WHERE body @@> %L %s ORDER BY sift.score(ctid) DESC LIMIT %s) a ORDER BY s DESC LIMIT %s) r',
+		q, CASE WHEN filt THEN 'AND counter_a < 3' ELSE '' END, lim, k) INTO h;
+	RETURN h;
+END $f$;
+CREATE FUNCTION compare() RETURNS TABLE (queries bigint, same_10 bigint, same_100 bigint, same_filter bigint) LANGUAGE sql AS $$
+	SELECT count(*),
+		count(*) FILTER (WHERE top(q, 10, false, 10) IS NOT DISTINCT FROM top(q, 10, false, 1000000)),
+		count(*) FILTER (WHERE top(q, 100, false, 100) IS NOT DISTINCT FROM top(q, 100, false, 1000000)),
+		count(*) FILTER (WHERE top(q, 10, true, 10) IS NOT DISTINCT FROM top(q, 10, true, 1000000))
+	FROM unnest(qs()) q
+$$;
+SELECT * FROM compare();
+ queries | same_10 | same_100 | same_filter 
+---------+---------+----------+-------------
+      14 |      14 |       14 |          14
+(1 row)
+
+DELETE FROM src WHERE id % 4 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) src;
+SELECT * FROM compare();
+ queries | same_10 | same_100 | same_filter 
+---------+---------+----------+-------------
+      14 |      14 |       14 |          14
+(1 row)
+
+DROP FUNCTION compare();
+DROP FUNCTION top(text, int, bool, int);
+DROP FUNCTION qs();
+DROP TABLE src;
+DROP EXTENSION pg_sift;

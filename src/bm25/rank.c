@@ -148,6 +148,44 @@ block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub)
 	return true;
 }
 
+/*
+ * The pages of block b that can lift a document over theta: bit i is set when the best the leaves can reach on page i, over the
+ * terms that score the block (block_terms) and have postings on the page, is above theta. The ub of a leaf in the block assumes all
+ * of its terms on every page; most pages hold few of them.
+ */
+uint32
+block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta)
+{
+	uint32		live = 0;
+	float4		pub[SIFT_BLK_PAGES] = {0};
+
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		const RkTerm *t = rs->term + rs->first[i];
+		float4		lm[SIFT_BLK_PAGES] = {0};
+
+		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[rs->s]; j++)
+		{
+			float4		v;
+
+			if (!term_in_block(&t[j], b))
+				continue;
+			v = t[j].ubw * (float4) t[j].bb->blk_bound[b];
+			for (uint32 m = t[j].g->pages[b / 4] >> ((b % 4) * 16) & 0xffff; m; m &= m - 1)
+			{
+				int			pg = pg_rightmost_one_pos32(m);
+
+				lm[pg] = Max(lm[pg], v);
+			}
+		}
+		for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+			pub[pg] += lm[pg];
+	}
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		live |= (uint32) (pub[pg] > theta) << pg;
+	return live;
+}
+
 /* Builds the term's mask in wk->tm, decoding its tf on first use */
 static void
 term_prepare(SiftPlan *p, RkTerm *t, int b, RankWork *wk)
@@ -431,13 +469,13 @@ prune_leaves(SiftPlan *p, RankSeg *rs, int b, float4 theta, RankWork *wk, const 
 }
 
 /*
- * Scores block b of the unit's SB for the group's result documents; returns
- * the candidates above theta in wk->slot / wk->vals. ub is the bound of each
- * leaf in the block.
+ * Scores block b of the unit's SB for the group's result documents on the
+ * pages of live (block_live); returns the candidates above theta in
+ * wk->slot / wk->vals. ub is the bound of each leaf in the block.
  */
 int
 score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
-			float4 theta, const float4 *ub)
+			float4 theta, const float4 *ub, uint32 live)
 {
 	SiftPlan   *p = r->plan;
 	RankWork   *wk = r->wk;
@@ -448,6 +486,9 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 
 	if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		if (!(live >> pg & 1))
+			memset(wk->res[pg], 0, sizeof(wk->res[pg]));
 	if (fs && !filter_result(p, fs, b, wk))
 		return 0;
 	if (p->nattrs && !attr_filter(p, seg, dc, b, wk))

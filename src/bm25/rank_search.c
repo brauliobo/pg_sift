@@ -226,6 +226,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	{
 		int			b = order[i],
 					nsel;
+		uint32		live;
 
 		theta = rank_theta(r, tk);
 		if (!(u->ub[b] > theta) || !block_terms(p, rs, b, theta, r->leafub))
@@ -233,8 +234,14 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			p->stats.blocks_skipped++;
 			continue;
 		}
+		live = theta > -INFINITY ? block_live(p, rs, b, theta) : 0xffff;
+		if (!live)
+		{
+			p->stats.blocks_skipped++;
+			continue;
+		}
 		p->stats.blocks_scored++;
-		nsel = score_block(r, rs, g, fs, &dc, b, theta, r->leafub);
+		nsel = score_block(r, rs, g, fs, &dc, b, theta, r->leafub, live);
 		sift_sr_release(&seg->sr);
 		for (int j = 0; j < nsel; j++)
 		{
