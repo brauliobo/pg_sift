@@ -36,6 +36,8 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-pt" SIFT_PORT=$((SIFT_PORT + 17)) "$REPO/scripts/old-lib-check.sh" points 2>&1)
 	# and the global orders of 3.6 (addresses of 9 bits) beside the packed addresses of this tree
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-go" SIFT_PORT=$((SIFT_PORT + 19)) "$REPO/scripts/old-lib-check.sh" gorder 2>&1)
+	# and the INCLUDE columns of this tree (segment format 5, minor 1.5) beside the plain index of 3.7.0
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.7.0 SIFT_TMP="$TAPDIR/old-lib-inc" SIFT_PORT=$((SIFT_PORT + 20)) "$REPO/scripts/old-lib-check.sh" include 2>&1)
 	# and the key-cut units of 3.6 (the chunk table after the directory) beside the table first of this tree
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-kc" SIFT_PORT=$((SIFT_PORT + 18)) "$REPO/scripts/old-lib-check.sh" keyed 2>&1)
 fi

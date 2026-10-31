@@ -13,6 +13,10 @@
 #                                                       library refuses the merged index with the format error, and reads it again after a REINDEX at the setting 14
 #   scripts/old-lib-check.sh gorder                      the same for the global orders (the addresses of a chunk with the bits of its largest offset; column format 38)
 #   scripts/old-lib-check.sh keyed                      the same for the units of a key-cut index (the chunk table after the directory; column format 34)
+#   scripts/old-lib-check.sh include                    INCLUDE columns (segment format 5, metapage minor 1.5): the older library (SIFT_OLD_REF, default v3.7.0) writes an index without them, this tree
+#                                                       reads it as it reads its own and writes beside it; an index of this tree that names INCLUDE columns is refused by the older library
+#                                                       with the format error and reported by sift.upgrade_check('3.7') as a blocker, and an index without them is read again after
+#                                                       DROP INDEX and CREATE INDEX
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -291,6 +295,48 @@ gorder() {
 	cycle
 }
 
+# the plain index of the older library, read by this tree; an index with INCLUDE columns of this tree, refused by the older library
+include() {
+	local root log want ids
+	OLD_REF=${SIFT_OLD_REF:-v3.7.0}
+	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-include}
+	export SIFT_PORT=${SIFT_PORT:-56142}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	log=$SIFT_TMP/old-lib-include.log
+	ids="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM"
+	want="SELECT id FROM %s WHERE body @@> 'dim_a3 AND w7' AND category_id < 60 ORDER BY sift.score(ctid) DESC LIMIT 100000"
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" \
+		-c "CREATE TABLE inc AS SELECT g AS id, 'common dim_a' || g % 7 || ' w' || g % 30 AS body, g % 97 AS category_id, DATE '2026-01-01' + g % 300 AS created_at FROM generate_series(1, 30000) g" \
+		-c "CREATE TABLE inc2 AS SELECT * FROM inc" -c "CREATE INDEX inc_i ON inc USING sift (body)" >/dev/null || { fail "the older library writes the index"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	OLD_MD5=$("${OLD_PSQL[@]}" -c "$ids ($(printf "$want" inc)) x")
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	[[ $(psql_new -c "$ids ($(printf "$want" inc)) x") == "$OLD_MD5" ]] && pass "this tree reads the index of the older library with its answers" || fail "this tree reads the index of the older library with its answers"
+	psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
+	psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	uc=$(PGHOST=$SIFT_TMP/sock PGPORT=$SIFT_PORT PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --to 3.7 postgres 2>&1)
+	grep -qE '^blocker +inc2_i +index +format 1\.5' <<<"$uc" && pass "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns (format 1.5) as a blocker" || fail "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns as a blocker ($uc)"
+	grep -qE '^ok +inc_i +index +format 1\.4' <<<"$uc" && pass "... and the index without them, written to by this tree, as ok (format 1.4)" || fail "... and the index without them, written to by this tree, as ok ($uc)"
+	[[ $(psql_new -c "$ids ($(printf "$want" inc2)) x") == "$OLD_MD5" ]] && pass "the index with INCLUDE columns answers as the older library's" || fail "the index with INCLUDE columns answers as the older library's"
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
+	FORMAT_ERROR='on-disk format 1\.5'
+	expect_refused "the older library refuses an index with INCLUDE columns with the format error" "SET enable_seqscan = off; SELECT count(*) FROM inc2 WHERE body @@> 'dim_a3'"
+	expect_rows "... and reads the index it wrote, with the rows of this tree, as the heap" "$ids (SELECT id FROM inc WHERE id <= 30000 AND body ~ 'dim_a3' AND body ~ 'w7' AND category_id < 60) x" "$OLD_MD5"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
+	psql_new -c "DROP INDEX inc2_i" -c "CREATE INDEX inc2_i ON inc2 USING sift (body)" >/dev/null
+	"$PG" stop >/dev/null
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the new index"; return; }
+	expect_rows "the older library reads the index without INCLUDE columns that DROP INDEX and CREATE INDEX wrote" "$ids ($(printf "$want" inc2)) x" "$OLD_MD5"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
 case ${1:-} in
 	build) build ;;
 	check) shift; check "$@"; exit $FAILED ;;
@@ -299,5 +345,6 @@ case ${1:-} in
 	points) points; exit $FAILED ;;
 	keyed) keyed; exit $FAILED ;;
 	gorder) gorder; exit $FAILED ;;
+	include) include; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -72,15 +72,27 @@ heap_fetch_attrs(void *arg, BlockNumber blk, const OffsetNumber *offs, int n, in
 	}
 	for (int i = 0; i < n && buf != InvalidBuffer; i++)
 	{
+		OffsetNumber off = offs[i];
 		ItemId		lp;
 		HeapTupleData tup;
 
-		if (offs[i] > maxoff || !ItemIdIsNormal(lp = PageGetItemId(page, offs[i])))
+		if (off > maxoff)
+			continue;
+		lp = PageGetItemId(page, off);
+		/* the index entry of a HOT chain is its root, which pruning turned into a redirect; the versions of a chain hold the same INCLUDE values (a change of one is not HOT) */
+		if (ItemIdIsRedirected(lp))
+		{
+			off = ItemIdGetRedirect(lp);
+			if (off > maxoff)
+				continue;
+			lp = PageGetItemId(page, off);
+		}
+		if (!ItemIdIsNormal(lp))
 			continue;
 		tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 		tup.t_len = ItemIdGetLength(lp);
 		tup.t_tableOid = RelationGetRelid(h->heap);
-		ItemPointerSet(&tup.t_self, blk, offs[i]);
+		ItemPointerSet(&tup.t_self, blk, off);
 		for (int c = 0; c < h->ncols; c++)
 		{
 			bool		isnull;

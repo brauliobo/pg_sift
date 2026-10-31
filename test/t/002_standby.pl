@@ -123,6 +123,33 @@ subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and 
 	$fb->stop;
 };
 
+subtest 'sift: INCLUDE columns on a hot standby' => sub {
+	my ($t, $idx) = ('inc_repl', 'inc_repl_idx');
+	$primary->safe_psql('postgres', qq{
+		CREATE TABLE $t (id int, body text, category_id int, created_at date) WITH (autovacuum_enabled = off);
+		INSERT INTO $t SELECT g, 'w' || g % 7 || ' w' || g % 13 || ' common', CASE WHEN g % 10 = 0 THEN NULL ELSE g % 50 END,
+			DATE '2026-01-01' + g % 200 FROM generate_series(1, 20000) g;
+		CREATE INDEX $idx ON $t USING sift (body) INCLUDE (category_id, created_at);
+		INSERT INTO $t SELECT g, 'w1 later ' || g, g % 50, DATE '2026-03-01' + g % 100 FROM generate_series(20001, 26000) g;
+		SELECT sift.promote('$idx');
+		UPDATE $t SET category_id = category_id + 1, created_at = created_at + 20 WHERE id % 13 = 0;
+		DELETE FROM $t WHERE id % 11 = 0;
+		VACUUM $t;
+		SELECT sift.merge('$idx');
+	});
+	$primary->wait_for_catchup($standby);
+
+	my $where = "category_id < 20 AND created_at >= '2026-04-01'";
+	my $sift = "SET enable_seqscan = off; SELECT string_agg(id::text, ',' ORDER BY id) FROM (SELECT id FROM $t WHERE body \@\@> 'w1' AND $where"
+	  . " ORDER BY sift.score(ctid) DESC LIMIT 100000) x";
+	my $heap = "SELECT string_agg(id::text, ',' ORDER BY id) FROM $t WHERE sift_ref.match(body, 'w1') AND $where";
+	like($standby->safe_psql('postgres', "SET enable_seqscan = off; EXPLAIN (COSTS OFF) SELECT id FROM $t WHERE body \@\@> 'w1' AND $where"
+		. " ORDER BY sift.score(ctid) DESC LIMIT 100000"), qr/Include Tests/, 'the standby plans the tests of the INCLUDE columns');
+	is($standby->safe_psql('postgres', $sift), $primary->safe_psql('postgres', $sift), "the standby returns the primary's rows");
+	is($standby->safe_psql('postgres', $sift), $standby->safe_psql('postgres', $heap), 'the rows are the heap\'s');
+	$standby->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
+};
+
 $standby->stop;
 $primary->stop;
 done_testing();
