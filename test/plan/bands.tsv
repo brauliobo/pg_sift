@@ -12,7 +12,7 @@ table	distinct_by_kind	scan	0.046	0.15
 table	distinct_by_month	scan	0.037	0.12
 table	distinct_global	scan	0.0097	0.039
 table	distinct_join	scan	0.045	0.14
-table	distinct_one_parent	scan	0.19	0.76
+table	distinct_one_parent	scan	0.071	0.29
 table	elements_counted	scan	0.060	0.24
 table	exists_by_parent_month	scan	0.0099	0.027
 table	exists_element	scan	0.0054	0.016
@@ -26,7 +26,7 @@ table	global	scan	0.033	0.13
 table	groups_over_threshold	scan	0.072	0.23
 table	having	either	0.042	0.17
 table	in_active_parents	scan	0.080	0.23
-table	in_constants	scan	0.079	0.22
+table	in_constants	scan	0.038	0.15
 table	join_active_filter	scan	0.072	0.22
 table	join_filter_on_lookup_column	scan	0.065	0.21
 table	join_month	scan	0.072	0.20
@@ -49,7 +49,7 @@ table	not_exists_element	scan	0.0053	0.017
 table	not_exists_in_table	scan	0.091	0.36
 table	one_day	normal	0.92	3.7
 table	one_key	scan	0.069	0.21
-table	one_parent_narrow	normal	1.8	7.2
+table	one_parent_narrow	normal	0.65	2.6
 table	parent_key	scan	0.069	0.21
 table	partition_pruned	either	any	any
 table	partitions_count	either	0.13	0.52
@@ -72,7 +72,7 @@ table	select_distinct	scan	0.065	0.21
 table	share_of_total	scan	0.069	0.22
 table	skew_heaviest_parents	scan	0.11	0.44
 table	skew_rarest_parents	scan	0.073	0.22
-table	spine_derived_cells	scan	0.23	0.93
+table	spine_derived_cells	scan	0.076	0.30
 table	spine_dims_cross	normal	0.57	2.3
 table	spine_expression_key	normal	4.1	17
 table	spine_range_join	normal	1.9	7.5
@@ -80,7 +80,7 @@ table	spine_series	scan	0.13	0.53
 table	spine_span_kind	scan	0.12	0.47
 table	sum_by_kind_month	scan	0.065	0.19
 table	sum_by_parent	scan	0.065	0.21
-table	sum_of_maxima_by_month	scan	0.10	0.42
+table	sum_of_maxima_by_month	scan	0.049	0.19
 table	text_not_equal	scan	0.065	0.21
 table	three_keys	scan	0.072	0.21
 table	top_groups	scan	0.069	0.22
@@ -111,7 +111,7 @@ tabletuned	distinct_by_kind	scan	0.016	0.052
 tabletuned	distinct_by_month	scan	0.014	0.047
 tabletuned	distinct_global	scan	0.0044	0.018
 tabletuned	distinct_join	scan	0.018	0.054
-tabletuned	distinct_one_parent	scan	0.16	0.63
+tabletuned	distinct_one_parent	scan	0.050	0.20
 tabletuned	elements_counted	scan	0.037	0.15
 tabletuned	exists_by_parent_month	scan	0.0076	0.022
 tabletuned	exists_element	scan	0.0046	0.014
@@ -125,7 +125,7 @@ tabletuned	global	scan	0.0093	0.037
 tabletuned	groups_over_threshold	scan	0.019	0.060
 tabletuned	having	either	0.012	0.047
 tabletuned	in_active_parents	scan	0.022	0.067
-tabletuned	in_constants	scan	0.048	0.19
+tabletuned	in_constants	scan	0.016	0.066
 tabletuned	join_active_filter	scan	0.021	0.065
 tabletuned	join_filter_on_lookup_column	scan	0.019	0.061
 tabletuned	join_month	scan	0.021	0.065
@@ -148,7 +148,7 @@ tabletuned	not_exists_element	scan	0.0045	0.014
 tabletuned	not_exists_in_table	scan	0.045	0.18
 tabletuned	one_day	normal	0.88	3.5
 tabletuned	one_key	scan	0.019	0.060
-tabletuned	one_parent_narrow	normal	2.0	8.0
+tabletuned	one_parent_narrow	normal	0.64	2.5
 tabletuned	parent_key	scan	0.019	0.060
 tabletuned	partition_pruned	scan	0.27	1.1
 tabletuned	partitions_count	either	0.044	0.17
@@ -210,7 +210,7 @@ tuned	distinct_by_kind	scan	0.026	0.086
 tuned	distinct_by_month	scan	0.054	0.19
 tuned	distinct_global	scan	0.051	0.20
 tuned	distinct_join	scan	0.068	0.21
-tuned	distinct_one_parent	scan	0.13	0.52
+tuned	distinct_one_parent	scan	0.043	0.17
 tuned	elements_counted	scan	0.047	0.19
 tuned	exists_by_parent_month	scan	0.0084	0.024
 tuned	exists_element	scan	0.0049	0.015
@@ -224,7 +224,7 @@ tuned	global	scan	0.016	0.063
 tuned	groups_over_threshold	scan	0.033	0.11
 tuned	having	either	0.19	0.77
 tuned	in_active_parents	scan	0.038	0.12
-tuned	in_constants	scan	0.04	0.19
+tuned	in_constants	scan	0.016	0.065
 tuned	join_active_filter	scan	0.035	0.11
 tuned	join_filter_on_lookup_column	scan	0.033	0.11
 tuned	join_month	scan	0.036	0.11
@@ -247,7 +247,7 @@ tuned	not_exists_element	scan	0.0048	0.016
 tuned	not_exists_in_table	scan	0.059	0.23
 tuned	one_day	normal	0.83	3.4
 tuned	one_key	scan	0.033	0.11
-tuned	one_parent_narrow	normal	1.5	6
+tuned	one_parent_narrow	scan	0.49	1.9
 tuned	parent_key	scan	0.033	0.11
 tuned	partition_pruned	either	any	any
 tuned	partitions_count	either	0.11	0.45
@@ -270,7 +270,7 @@ tuned	select_distinct	scan	0.032	0.11
 tuned	share_of_total	scan	0.030	0.097
 tuned	skew_heaviest_parents	scan	0.096	0.38
 tuned	skew_rarest_parents	scan	0.037	0.17
-tuned	spine_derived_cells	scan	0.145	0.66
+tuned	spine_derived_cells	scan	0.046	0.18
 tuned	spine_dims_cross	normal	-	-
 tuned	spine_expression_key	scan	0.029	0.093
 tuned	spine_range_join	scan	0.085	0.34

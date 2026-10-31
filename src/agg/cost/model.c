@@ -151,6 +151,13 @@ agg_floor_cost(void)
 	return AGG_START_PLAIN * cpu_operator_cost;
 }
 
+/* The least a scan of one table that groups pays to start (AGG_START_GROUPS): a normal plan under it is out of reach of such a scan. */
+Cost
+agg_group_open_cost(void)
+{
+	return AGG_START_GROUPS * cpu_operator_cost;
+}
+
 /* What every path of the scan pays to start, whatever it reads: its source and the partitions it opens. No path costs less in total. */
 Cost
 agg_open_cost(int nparts)
@@ -233,7 +240,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
+	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost :
+			   s->nkeys > 0 && !s->topn && c->joins == NIL && !c->search && c->nparts == 0 ? agg_group_open_cost() : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
 	/* a search is opened first (k.open_cost) and its native plan is the index scan of the search, which the scan starts no cheaper than */
 	if (s->nkeys == 0 && s->naggs > 0 && !s->topn && c->nparts == 0 && c->level_params == NIL && !c->search)
 		startup -= (AGG_START_COST - AGG_START_PLAIN) * cpu_operator_cost;
