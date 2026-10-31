@@ -266,6 +266,10 @@ typedef CompareType SiftCmpStrategy;
 #define sift_expand_rte(rte, rti, names, vars) \
 	expandRTE((rte), (rti), 0, VAR_RETURNING_DEFAULT, -1, false, (names), (vars))
 
+/* The same with a NULL constant for each dropped column, so that the list is indexed by attribute number */
+#define sift_expand_rte_dropped(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, VAR_RETURNING_DEFAULT, -1, true, (names), (vars))
+
 /* One page of a TIDBitmap: block, lossy, and the offsets of an exact page */
 typedef TBMPrivateIterator SiftTbmIter;
 
@@ -301,6 +305,9 @@ typedef int16 SiftCmpStrategy;
 
 #define sift_expand_rte(rte, rti, names, vars) \
 	expandRTE((rte), (rti), 0, -1, false, (names), (vars))
+
+#define sift_expand_rte_dropped(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, -1, true, (names), (vars))
 
 typedef TBMIterator SiftTbmIter;
 

@@ -409,6 +409,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 		{
 			sift_agg_preinline(parse);
 			sift_agg_drop_unused_laterals(parse);
+			sift_agg_defer_lookups(parse);
 		}
 	}
 	PG_TRY();

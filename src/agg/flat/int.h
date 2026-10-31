@@ -50,6 +50,6 @@ extern bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
 extern void decor_apply(Query *q, DecorJoin *r);
 extern bool decorrelate_sublinks(Query *q, bool apply);
 extern bool decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor);
-extern bool fence_sublinks(Query *q, bool apply);
+extern bool one_row_query(Query *sq);
 
 #endif							/* SIFT_AGG_FLAT_DIR_INT_H */
