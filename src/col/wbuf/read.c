@@ -268,3 +268,65 @@ sift_cwbuf_next(SiftCWbufReader *r, SiftColRow *row, bool *deleted)
 	*deleted = rec.deleted;
 	return true;
 }
+
+/*
+ * The live records of the lane that starts at head, from where the last read of l stopped (the start of the lane for a lane not read yet) to its end, passed to fn;
+ * l is moved to the end read. The lane chains are append-only (VACUUM flags a record dead in place), so a later read starts there.
+ */
+void
+wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg)
+{
+	BlockNumber startblk = BlockNumberIsValid(l->blk) ? l->blk : head;
+	Size		startpos = BlockNumberIsValid(l->blk) ? l->pos : 0;
+	BlockNumber wblk = startblk;	/* the watermark: the start of the first row not read (a row whose last piece is not there yet), else the end of the lane */
+	Size		wpos = startpos;
+	bool		first = true;
+
+	r->it.lane = SIFT_LANES;
+	r->it.nextblk = startblk;
+	for (;;)
+	{
+		RawRec		rec;
+		BlockNumber rowblk;
+		Size		rowpos;
+
+		if (first || r->cur.pos >= r->cur.used)
+		{
+			if (!wbuf_advance_page(r))
+				break;
+			if (first)
+				r->cur.pos = startpos;
+			first = false;
+			continue;
+		}
+		rowblk = r->it.blk;
+		rowpos = r->cur.pos;
+		r->torn = false;
+		if (!wbuf_next_rec(r, &rec))
+		{
+			/* a torn row at the end of the lane may still be completed by its writer: read it again */
+			if (r->torn)
+			{
+				wblk = rowblk;
+				wpos = rowpos;
+			}
+			else
+			{
+				wblk = r->it.blk;
+				wpos = r->cur.pos;
+			}
+			goto done;
+		}
+		/* a torn row with a complete row after it was left by a writer that died: skipped for good */
+		if (!rec.deleted)
+			fn(arg, &rec);
+		wblk = r->it.blk;
+		wpos = r->cur.pos;
+	}
+	/* the end of the lane (the last page fully read): the next read starts there */
+	wblk = r->it.blk;
+	wpos = r->cur.pos;
+done:
+	l->blk = wblk;
+	l->pos = wpos;
+}

@@ -231,6 +231,15 @@ typedef struct SiftCVals
 	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised */
 } SiftCVals;
 
+/* A batch of the write buffer as a scan reads it, encoded as a unit, kept with the batch until it changes (col/wbuf/batches.c) */
+typedef struct SiftColImage
+{
+	char	   *buf;			/* the allocation; the unit starts at off */
+	Size		off,
+				len;
+	struct SiftCZone *zones;
+} SiftColImage;
+
 typedef struct SiftColBatch
 {
 	MemoryContext mcxt;
@@ -246,6 +255,7 @@ typedef struct SiftColBatch
 	uint32	   *cmin;
 	SiftCVals  *col;			/* [ncols] */
 	SiftCDict **dict;			/* [ncols]: batch dictionary of each STR leaf, NULL for the others */
+	SiftColImage *image;		/* the batch of a write buffer kept by a backend: what a scan made of it, NULL until one does */
 } SiftColBatch;
 
 /* Legacy write-buffer values carry UNSURE in memory; a writer must not certify them as complete kinds. */

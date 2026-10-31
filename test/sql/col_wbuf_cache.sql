@@ -1,0 +1,115 @@
+-- The batches a scan builds from the write buffer are kept by the backend for the next scan, which reads only the records appended since (col/wbuf/batches.c). Every step
+-- is read through the column index and through the heap and must agree: a repeated read, rows appended, rows that take the address of rows VACUUM removed (below the ones
+-- already kept), an aborted insert, a read after a promotion, a cursor that holds the batches while rows are appended, and a rebuilt index.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE wc (id int, grp int, amount int, label text, pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(1, 3000) i;
+CREATE INDEX wc_col ON wc USING sift_col (id, grp, amount, label);
+VACUUM (FREEZE, ANALYZE) wc;
+
+CREATE FUNCTION wc_agg(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', use_col::text, true);
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(string_agg(g::text, '','' ORDER BY grp)) FROM (SELECT grp, count(*) AS c, sum(amount) AS s, min(label) AS lo, max(label) AS hi, count(DISTINCT label) AS d FROM wc GROUP BY grp) g' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wc_rows(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(coalesce(string_agg(id::text || label, '','' ORDER BY id), '''')) FROM wc WHERE grp = 3 AND amount > 40' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wc_same(step text) RETURNS TABLE (step text, aggregate bool, rows bool) LANGUAGE sql AS $$
+	SELECT $1, wc_agg(true) = wc_agg(false), wc_rows(true) = wc_rows(false)
+$$;
+
+SELECT * FROM wc_same('segment only');
+
+-- rows only in the write buffer, read twice (the second read appends nothing)
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(3001, 3600) i;
+SELECT * FROM wc_same('buffer built');
+SELECT * FROM wc_same('buffer read again');
+
+-- appended rows, in several statements
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'm' || i % 5 FROM generate_series(3601, 3700) i;
+SELECT * FROM wc_same('100 rows appended');
+INSERT INTO wc (id, grp, amount, label) VALUES (3701, 3, 99, 'one');
+SELECT * FROM wc_same('1 row appended');
+INSERT INTO wc (id, grp, amount, label) VALUES (3702, 3, NULL, NULL), (3703, NULL, 1, 'two');
+SELECT * FROM wc_same('NULLs appended');
+
+-- an aborted insert leaves records of dead tuples
+BEGIN;
+INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 90, 'gone' FROM generate_series(4000, 4100) i;
+ROLLBACK;
+SELECT * FROM wc_same('aborted insert');
+
+-- updates and deletes: new versions are appended, the old ones are dead for the heap
+UPDATE wc SET amount = amount + 1, label = 'u' || amount % 3 WHERE id % 11 = 0;
+DELETE FROM wc WHERE id % 17 = 0;
+SELECT * FROM wc_same('updates and deletes');
+
+-- VACUUM flags the records of the tuples it removes and the new tuples take their addresses: addresses below the rows already kept
+VACUUM wc;
+SELECT * FROM wc_same('after VACUUM');
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, 50 + i % 50, 'r' || i % 3 FROM generate_series(5000, 5400) i;
+SELECT * FROM wc_same('addresses reused');
+DELETE FROM wc WHERE id BETWEEN 5000 AND 5100;
+VACUUM wc;
+INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 60 + i % 30, 'q' || i % 4 FROM generate_series(5500, 5700) i;
+SELECT * FROM wc_same('addresses reused again');
+
+-- a cursor holds the batches it read while rows are appended: it keeps its snapshot, a scan of its own reads the rows after it
+CREATE FUNCTION wc_cursor() RETURNS TABLE (cursor_rows bool, scan_while_open bool) LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off AS $$
+DECLARE
+	c refcursor;
+	r record;
+	expect bigint;
+	n bigint := 0;
+	same bool;
+BEGIN
+	SELECT count(*) INTO expect FROM wc WHERE grp = 3 AND amount > 40;
+	OPEN c FOR SELECT id, label FROM wc WHERE grp = 3 AND amount > 40 ORDER BY id;
+	FOR i IN 1..5 LOOP
+		FETCH c INTO r;
+		n := n + 1;
+	END LOOP;
+	INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 80, 'c' FROM generate_series(6000, 6050) i;
+	same := wc_agg(true) = wc_agg(false) AND wc_rows(true) = wc_rows(false);
+	LOOP
+		FETCH c INTO r;
+		EXIT WHEN NOT FOUND;
+		n := n + 1;
+	END LOOP;
+	CLOSE c;
+	RETURN QUERY SELECT n = expect, same;
+END $$;
+SELECT * FROM wc_cursor();
+SELECT * FROM wc_same('after the cursor');
+
+-- promoted: the batches of the old buffer are not read again, the new buffer starts empty
+SELECT sift.col_promote('wc_col') >= 0 AS promoted;
+SELECT * FROM wc_same('promoted');
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'p' || i % 9 FROM generate_series(7000, 7200) i;
+SELECT * FROM wc_same('after promotion');
+
+-- a rebuilt index
+REINDEX INDEX wc_col;
+SELECT * FROM wc_same('rebuilt');
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'z' FROM generate_series(8000, 8100) i;
+SELECT * FROM wc_same('rebuilt and appended');
+
+DROP TABLE wc CASCADE;
+DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
+DROP EXTENSION pg_sift;

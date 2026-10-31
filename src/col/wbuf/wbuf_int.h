@@ -116,4 +116,13 @@ extern const uint8 *	wbuf_get_value(SiftCWbufReader *r, const SiftColDef *def, c
 
 extern void	wbuf_decode_row(SiftCWbufReader *r, const RawRec *rec, SiftColRow *row);
 
+/* Where the next read of a lane starts: InvalidBlockNumber before the first */
+typedef struct WbufLane
+{
+	BlockNumber blk;
+	Size		pos;
+} WbufLane;
+
+extern void	wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg);
+
 #endif

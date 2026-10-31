@@ -25,12 +25,6 @@ typedef struct WbufEnt
 	uint32		next;			/* the next entry of the bucket + 1, 0 at its end */
 } WbufEnt;
 
-typedef struct WbufLane
-{
-	BlockNumber blk;			/* where the next read starts: InvalidBlockNumber before the first */
-	Size		pos;
-} WbufLane;
-
 typedef struct WbufLeaf
 {
 	RelFileNumber rel;
@@ -106,83 +100,38 @@ leaf_add(WbufLeaf *lf, uint64 h, ItemPointerData tid)
 	lf->bucket[b] = ++lf->n;
 }
 
-/* The records of lane `lane` appended since the last read of the leaf */
-static void
-leaf_read_lane(WbufLeaf *lf, SiftCWbufReader *r, const SiftColSchema *schema, int lane, BlockNumber head)
+typedef struct LeafRead
 {
+	WbufLeaf   *lf;
+	SiftCWbufReader *r;
+	const SiftColSchema *schema;
+} LeafRead;
+
+static void
+leaf_read_rec(void *arg, const RawRec *rec)
+{
+	LeafRead   *lr = arg;
+	WbufLeaf   *lf = lr->lf;
+	SiftCWbufReader *r = lr->r;
+	const SiftColSchema *schema = lr->schema;
 	bool		str = schema->cols[lf->col].store == SIFT_COLS_STR;
-	WbufLane   *l = &lf->lane[lane];
-	BlockNumber startblk = BlockNumberIsValid(l->blk) ? l->blk : head;
-	Size		startpos = BlockNumberIsValid(l->blk) ? l->pos : 0;
-	BlockNumber wblk = startblk;	/* the watermark: the start of the first row not read (a row whose last piece is not there yet), else the end of the lane */
-	Size		wpos = startpos;
-	bool		first = true;
+	const uint8 *p = rec->payload,
+			   *end = p + rec->len;
 
-	r->it.lane = SIFT_LANES;
-	r->it.nextblk = startblk;
-	for (;;)
+	for (int id = 0; id <= lf->col; id++)
+		if (schema->cols[id].parent < 0)
+			p = wbuf_get_value(r, &schema->cols[id], p, end, &r->val[id]);
+	if (r->val[lf->col].overflow)
 	{
-		RawRec		rec;
-		BlockNumber rowblk;
-		Size		rowpos;
-
-		if (first || r->cur.pos >= r->cur.used)
+		if (lf->nover == lf->capover)
 		{
-			if (!wbuf_advance_page(r))
-				break;
-			if (first)
-				r->cur.pos = startpos;
-			first = false;
-			continue;
+			lf->capover = Max(16, lf->capover * 2);
+			lf->over = lf->over ? repalloc(lf->over, lf->capover * sizeof(ItemPointerData)) : MemoryContextAlloc(wbuf_cxt, lf->capover * sizeof(ItemPointerData));
 		}
-		rowblk = r->it.blk;
-		rowpos = r->cur.pos;
-		r->torn = false;
-		if (!wbuf_next_rec(r, &rec))
-		{
-			/* a torn row at the end of the lane may still be completed by its writer: read it again */
-			if (r->torn)
-			{
-				wblk = rowblk;
-				wpos = rowpos;
-			}
-			else
-			{
-				wblk = r->it.blk;
-				wpos = r->cur.pos;
-			}
-			goto done;
-		}
-		/* a torn row with a complete row after it was left by a writer that died: skipped for good */
-		if (!rec.deleted)
-		{
-			const uint8 *p = rec.payload,
-					   *end = p + rec.len;
-
-			for (int id = 0; id <= lf->col; id++)
-				if (schema->cols[id].parent < 0)
-					p = wbuf_get_value(r, &schema->cols[id], p, end, &r->val[id]);
-			if (r->val[lf->col].overflow)
-			{
-				if (lf->nover == lf->capover)
-				{
-					lf->capover = Max(16, lf->capover * 2);
-					lf->over = lf->over ? repalloc(lf->over, lf->capover * sizeof(ItemPointerData)) : MemoryContextAlloc(wbuf_cxt, lf->capover * sizeof(ItemPointerData));
-				}
-				lf->over[lf->nover++] = rec.tid;
-			}
-			else if (!r->val[lf->col].isnull)
-				leaf_add(lf, leaf_hash(str, &r->val[lf->col]), rec.tid);
-		}
-		wblk = r->it.blk;
-		wpos = r->cur.pos;
+		lf->over[lf->nover++] = rec->tid;
 	}
-	/* the end of the lane (the last page fully read): the next read starts there */
-	wblk = r->it.blk;
-	wpos = r->cur.pos;
-done:
-	l->blk = wblk;
-	l->pos = wpos;
+	else if (!r->val[lf->col].isnull)
+		leaf_add(lf, leaf_hash(str, &r->val[lf->col]), rec->tid);
 }
 
 static WbufLeaf *
@@ -221,7 +170,7 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 
 /*
  * The heap addresses of the live records of a write buffer whose plain leaf holds one of the constants of pred (EQ or IN; INT: the integer, STR: the bytes): the
- * records are read once by this backend (leaf_read_lane), a lookup is a probe of the hash for each constant. A value the leaf could not store (an overflow)
+ * records are read once by this backend (wbuf_read_lane), a lookup is a probe of the hash for each constant. A value the leaf could not store (an overflow)
  * may be any: its record is kept. The hash may name another value: the heap checks the condition. Ascending, each once; n = the count, rows = the live records of the leaf.
  */
 ItemPointerData *
@@ -241,7 +190,7 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	lf->used = ++wbuf_clock;
 	for (int l = 0; l < SIFT_LANES; l++)
 		if (BlockNumberIsValid(r->it.head[l]))
-			leaf_read_lane(lf, r, schema, l, r->it.head[l]);
+			wbuf_read_lane(r, r->it.head[l], &lf->lane[l], leaf_read_rec, &(LeafRead) {lf, r, schema});
 	sift_cwbuf_close(r);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
@@ -283,78 +232,6 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 		m = k;
 	}
 	*n = m;
-	return out;
-}
-
-/* A live record kept for sorting: its payload is at off in the arena */
-typedef struct Held
-{
-	SiftKey		key;
-	ItemPointerData tid;
-	uint32		seq;			/* order of reading, to keep the first record of a repeated TID */
-	uint32		len;
-	Size		off;
-} Held;
-
-static int
-held_cmp(const void *a, const void *b)
-{
-	const Held *x = a,
-			   *y = b;
-
-	return x->key != y->key ? pg_cmp_u64(x->key, y->key) : pg_cmp_u32(x->seq, y->seq);
-}
-
-SiftColBatch **
-sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n)
-{
-	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(tmp);
-	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
-	StringInfoData arena;
-	Held	   *held = palloc(256 * sizeof(Held));
-	int			nheld = 0,
-				heldcap = 256,
-				cap = 0;
-	SiftColBatch **out = NULL;
-	SiftColBatch *b = NULL;
-	RawRec		rec;
-	SiftColRow	row;
-
-	initStringInfo(&arena);
-	*n = 0;
-	while (wbuf_next_rec(r, &rec))
-	{
-		if (rec.deleted)
-			continue;
-		if (nheld == heldcap)
-			held = repalloc(held, (heldcap *= 2) * sizeof(Held));
-		held[nheld] = (Held) {sift_key_from_tid(&rec.tid), rec.tid, nheld, rec.len, arena.len};
-		nheld++;
-		appendBinaryStringInfo(&arena, (const char *) rec.payload, rec.len);
-	}
-	qsort(held, nheld, sizeof(Held), held_cmp);
-	for (int i = 0; i < nheld; i++)
-	{
-		uint32		sb = sift_block_sb(sift_key_block(held[i].key));
-
-		if (i > 0 && held[i].key == held[i - 1].key)
-			continue;
-		if (b == NULL || b->sb != sb)
-		{
-			b = sift_cbatch_create(mcxt, schema);
-			sift_cbatch_reset(b, sb);
-			if (*n == cap)
-				out = out ? repalloc(out, (cap *= 2) * sizeof(SiftColBatch *)) :
-					MemoryContextAlloc(mcxt, (cap = 8) * sizeof(SiftColBatch *));
-			out[(*n)++] = b;
-		}
-		rec = (RawRec) {held[i].tid, false, (const uint8 *) arena.data + held[i].off, held[i].len};
-		wbuf_decode_row(r, &rec, &row);
-		sift_cbatch_add(b, &row);
-	}
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(tmp);
 	return out;
 }
 

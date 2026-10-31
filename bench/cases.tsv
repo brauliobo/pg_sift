@@ -241,3 +241,5 @@ count_key_outside_index	count_key_outside_index	events	-	fallback:Seq Scan on ck
 topn_list_page_ordered_walk	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-
 topn_list_page_not_exists	a page of a list that excludes a scope with `NOT EXISTS (SELECT .. WHERE k = f.k)`	orders	default	Top-N: created_at	native	btree:search_path = topn_not_exists_btree	ms	faster33	no	-
 topn_deep_offset_heap_priced	the scan prices the heap of a deep page (`OFFSET` past 1,024	orders	default	Top-N: created_at DESC	native	btree:search_path = topn_deep_offset_btree	ms	faster33	no	-
+wbuf_narrowest_condition_first	the write buffers are searched by their narrowest condition	events	-	Index Only Scan using wb_narrow_col	native	-	ms	faster33	no	-
+wbuf_batches_kept	a scan keeps the rows of a write buffer as batches	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-

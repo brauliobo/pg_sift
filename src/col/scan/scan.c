@@ -232,7 +232,7 @@ scan_load_wbuf(SiftColSource *src)
 
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			continue;
-		bs = sift_cwbuf_batches(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
+		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
 		for (int j = 0; j < n; j++)
 			add_mem(src, bs[j], true);
 	}
@@ -536,15 +536,30 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 static void
 load_memory(ColUnit *cu, const ColMem *m)
 {
-	StringInfo	buf = makeStringInfo();
-	Size		start;
+	SiftColBatch *b = m->b;
+	SiftColImage *im = b->image;
 
-	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
-	sift_cunit_encode(m->b, NULL, NULL, NULL, true, false, buf, &start, cu->mzones);
-	SIFT_INVARIANT(sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v),
-				   "sift_col: an in-memory unit does not parse");
-	cu->batch = m->b;
-	cu->sb = m->b->sb;
+	if (im == NULL)
+	{
+		/* a batch of the write buffer outlives the scan: its unit is kept with it, the next scan parses it */
+		MemoryContext old = m->lane ? MemoryContextSwitchTo(b->mcxt) : CurrentMemoryContext;
+		StringInfo	buf = makeStringInfo();
+		Size		start;
+
+		im = palloc(sizeof(SiftColImage));
+		im->zones = palloc(b->schema->ncols * sizeof(SiftCZone));
+		sift_cunit_encode(b, NULL, NULL, NULL, true, false, buf, &start, im->zones);
+		im->buf = buf->data;
+		im->off = start;
+		im->len = buf->len - start;
+		MemoryContextSwitchTo(old);
+		if (m->lane)
+			b->image = im;
+	}
+	cu->mzones = im->zones;
+	SIFT_INVARIANT(sift_cunit_parse((uint8 *) im->buf + im->off, im->len, b->schema, &cu->v), "sift_col: an in-memory unit does not parse");
+	cu->batch = b;
+	cu->sb = b->sb;
 	cu->memid = m->id;
 	cu->lane = m->lane;
 	cu->clean = cu->clean_ready = true;
