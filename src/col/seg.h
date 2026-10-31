@@ -12,6 +12,7 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/runs.h"
 #include "core/store.h"
@@ -56,7 +57,7 @@ extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 /* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
 extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 /* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
-extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows);
+extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
@@ -322,6 +323,8 @@ extern const char *sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 ran
 extern uint32 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 len, bool after);	/* the strings of a text block that come before s (after: before or equal), which is the rank of the first one that does not */
 extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
+extern bool sift_cseg_gorder_pay(SiftColSegment *seg, int col, int keycol, SiftCGOrdPay *out);	/* what sift_cgord_pay says of the units' zones of an integer leaf */
+extern bool sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *values, uint32 *head, uint32 *vtotal);	/* a block of the ends only (minor 40), not a complete one */
 extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
 extern void sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);	/* _head for the chunk that holds entry p, into buf */
 extern uint32 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);	/* _chunk for the first w entries of the chunk only */

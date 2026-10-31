@@ -29,7 +29,7 @@ INSERT INTO wkp SELECT i, CASE WHEN random() < 0.15 THEN (random() * 100)::int E
 FROM generate_series(1, 125000) i;
 VACUUM (FREEZE, ANALYZE) wkp;
 SET client_min_messages = notice;
-CREATE INDEX wkp_id ON wkp USING sift_col (id, tenant_id, a1, a2, a3, a4, a5, a6, a7, a8);
+CREATE INDEX wkp_id ON wkp USING sift_col (id, tenant_id, a1, a2, a3, a4, a5, a6, a7, a8) WITH (order_array_columns = 'off');
 SET client_min_messages = warning;
 SELECT kopt('wkp_id') ~ 'key_cut=auto: tenant_id' AS cut_by_tenant;
 

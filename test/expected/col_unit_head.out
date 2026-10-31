@@ -3,6 +3,7 @@
 -- scan needs the pages or the TIDs. The answers are those of the normal plan in all of them, before and after the changes of a unit.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_preagg = off;
 SET sift.agg_force = on;

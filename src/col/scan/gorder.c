@@ -228,6 +228,55 @@ gorder_slot(SiftColSource *src, int j, int col)
 }
 
 /*
+ * A segment that keeps the ends of the order only (column format minor 40): the entries [0, head) are its first values and [head, values) its last, with nothing
+ * between, whose keys are after the first end's and before the last one's. A scan reads the end it starts at and stops at its edge; this finds the end, which is
+ * the start of the scan's range in the order it reads: false when that falls in what the block left out, or the scan wants more rows than an end holds.
+ */
+static bool
+gorder_view(ColCursor *cur, int col, const SiftCGOrdWant *want)
+{
+	uint32		entries,
+				values,
+				head,
+				vtotal,
+				nulls,
+				at;
+	SiftColSegment *seg = cur->seg;
+
+	cur->gends = sift_cseg_gorder_ends(seg, col, &entries, &values, &head, &vtotal);
+	if (!cur->gends)
+		return true;
+	if (want == NULL || want->rows > Max(head, values - head))
+		return false;
+	cur->gcuts = (SiftCGOrdCuts) {0};
+	if (!want->desc)
+	{
+		at = want->has_lo ? sift_cseg_gorder_seek(seg, col, 0, values, want->lo, false, NULL) : 0;
+		if (at == head)
+			return false;
+		cur->gwin[0] = at < head ? 0 : head;
+		cur->gwin[1] = at < head ? head : values;
+		cur->gcuts.hi_cut = at < head;
+	}
+	else
+	{
+		at = want->has_hi ? sift_cseg_gorder_seek(seg, col, 0, values, want->hi, true, NULL) : values;
+		if (at == head)
+			return false;
+		cur->gwin[0] = at < head ? 0 : head;
+		cur->gwin[1] = at < head ? head : values;
+		cur->gcuts.lo_cut = at > head;
+	}
+	cur->gcuts.lo = cur->gwin[0];
+	cur->gcuts.hi = cur->gwin[1];
+	nulls = (uint32) seg->entry.ndocs - vtotal;
+	cur->gwin[2] = values;
+	cur->gwin[3] = want->has_lo || want->has_hi ? values : entries;
+	cur->gcuts.null_cut = !(want->has_lo || want->has_hi) && entries - values < nulls;
+	return true;
+}
+
+/*
  * Every stored segment keeps the block of leaf col sorted by group (or plain), and for the first the one group leaf that a pin names; *gleaf is that leaf and vals its pinned
  * values (the pins on it, once each: an IN list pins a leaf more than once), *nvals their number
  */
@@ -243,7 +292,11 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
 		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, col, grouped),
 					gc;
 
-		if (slot < 0 || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) || sift_cseg_gorder_collation(src->seg[i].seg, slot) != collid)
+		uint32		head,
+					vtotal;
+
+		if (slot < 0 || !(sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) || (!grouped && sift_cseg_gorder_ends(src->seg[i].seg, slot, &entries, &values, &head, &vtotal))) ||
+			sift_cseg_gorder_collation(src->seg[i].seg, slot) != collid)
 			return false;
 		gc = sift_cseg_gorder_group(src->seg[i].seg, slot);
 		if (gc >= 0)
@@ -279,7 +332,7 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
  * group (those of each value of an IN list, one value after the other); any other reads the plain blocks.
  */
 int
-sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
+sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const SiftCGOrdWant *want)
 {
 	int			gleaf = -1,
 				nv = 0;
@@ -294,7 +347,11 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	memcpy(src->gpin_vals, vals, nv * sizeof(int64));
 	*grouped = gleaf;
 	for (int i = 0; i < src->nseg; i++)
+	{
 		src->seg[i].gexact = NULL;
+		if (!gorder_view(&src->seg[i], gorder_slot(src, i, col), want))
+			return -1;
+	}
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
 	src->gper = src->nseg + (src->nmem > 0);
@@ -334,11 +391,30 @@ sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint3
 }
 
 bool
+sift_col_gorder_cuts(SiftColSource *src, int i, int col, SiftCGOrdCuts *cuts)
+{
+	int			v,
+				j = gorder_src(src, i, &v);
+
+	if (j >= src->nseg || !src->seg[j].gends)
+		return false;
+	*cuts = src->seg[j].gcuts;
+	return true;
+}
+
+bool
 sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values)
 {
 	int			v,
 				j = gorder_src(src, i, &v);
 
+	if (j < src->nseg && src->seg[j].gends)
+	{
+		uint32		head,
+					vtotal;
+
+		return sift_cseg_gorder_ends(src->seg[j].seg, gorder_slot(src, j, col), entries, values, &head, &vtotal);
+	}
 	if (j < src->nseg)
 		return sift_cseg_gorder(src->seg[j].seg, gorder_slot(src, j, col), entries, values);
 	*entries = src->gmem[v]->n;
@@ -352,7 +428,14 @@ sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve
 	int			v,
 				j = gorder_src(src, i, &v);
 
-	if (j < src->nseg)
+	if (j < src->nseg && src->seg[j].gends)
+	{
+		*vs = src->seg[j].gwin[0];
+		*ve = src->seg[j].gwin[1];
+		*ns = src->seg[j].gwin[2];
+		*ne = src->seg[j].gwin[3];
+	}
+	else if (j < src->nseg)
 		sift_cseg_gorder_range(src->seg[j].seg, gorder_slot(src, j, col), src->gpin_vals[v], vs, ve, ns, ne);
 	else
 	{

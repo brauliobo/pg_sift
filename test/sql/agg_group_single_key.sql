@@ -1,6 +1,7 @@
 -- The groups of one key stay in the direct arrays past a million (they were rehashed at 1,048,576) up to the memory limit of the statement, and
 -- spill when work_mem is smaller: the result is that of the normal plan at every work_mem, with 1.3 million groups.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE sk_facts (id int, k int, v int) WITH (autovacuum_enabled = false);

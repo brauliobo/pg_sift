@@ -187,7 +187,8 @@ sift_col_auto_point(Relation heap, Relation index)
 	const char *plain;
 	const SiftColRel *rel;
 	StringInfoData list;
-	bool		autolist;
+	bool		autolist,
+				ordauto;
 	double		rows,
 				base;
 
@@ -197,6 +198,8 @@ sift_col_auto_point(Relation heap, Relation index)
 	opt = sift_col_options_point_tid_columns(index);
 	plain = sift_col_options_point_columns(index);
 	ordopt = sift_col_options_order_array_columns(index);
+	(void) sift_cpagg_auto_list(ordopt, &ordauto);
+	ordauto = ordauto && sift_col_key_cut(rel);	/* in an index cut by a key the build may keep the ends of a column's order, which answer no equality: the directory is the equality's */
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (plain[0] != '\0' || (opt[0] != '\0' && !autolist))
 		return;
@@ -217,7 +220,7 @@ sift_col_auto_point(Relation heap, Relation index)
 		int32		width;
 		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
-		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || in_list(ordopt, keycols_leaf_name(index, d)) || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
+		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || (!ordauto && in_list(ordopt, keycols_leaf_name(index, d))) || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
 			continue;
 		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || corr >= 0.9 || sift_col_leaf_unique(heap, index, d))
 			continue;

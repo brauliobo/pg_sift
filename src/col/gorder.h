@@ -9,6 +9,11 @@
  * keys and then the addresses as two codec blobs, each padded to 8), padded to 8. Entry i < values has the key of the chunk and an address; an entry
  * from values on has no key (it is a NULL) and keys 0.
  *
+ * Ends only (column format minor 40, a block of version 1 whose header word 7 is not 0): the block holds the first head and the last values - head value entries of the
+ * segment, which has word 7 of them in all, then the first NULL rows by address (all of them when the segment has no more than SIFT_CGORD_ENDS of them), in the order
+ * of a complete block. Word 6 is head. The entries left out lie between the two ends and, as neither end splits a run of equal keys, their keys are after every key
+ * of the head and before every key of the tail. A scan reads an end and stops at its edge (agg/gord.h), a range count or a bitmap reads the units.
+ *
  * Version 2, a block grouped by another leaf (option order_array_group): the entries are sorted by (group, key, address) and the NULL rows by (group, address); rows with no
  * group are not in it. After the chunks come the groups, 24 bytes each {i64 group, u32 first value entry, u32 value entries, u32 first NULL entry, u32 NULL entries} ascending by
  * group; header words 6 and 7 are their number and the group leaf + 1. The keys of a group ascend, so a scan that pins the group reads its entries only, as a b-tree
@@ -34,6 +39,9 @@
 #define SIFT_CGORD_STR_BLK	16
 #define SIFT_CGORD_STR_MAX	256		/* bytes of the buffer for a string of a text block (SIFT_COL_DICT_MAX_ENTRY + 1) */
 #define SIFT_CGORD_GRPENT	24
+#define SIFT_CGORD_ENDS_LEAVES	8			/* the date, timestamp and integer columns the build chooses to keep the ends of (the text columns it chooses keep the whole order, at most 2) */
+#define SIFT_CGORD_PAY_BLOCK	65536		/* the bytes of index one avoided cold block of a query is worth (sift_cgord_pay): the one rule of the default formulas */
+#define SIFT_CGORD_ENDS		4096		/* the entries kept at each end of a block of the ends only, and of the NULL rows: a top-N of up to this many rows reads them */
 #define SIFT_CGORD_ROWS		1024		/* the entries of a chunk written below column format minor 30, and the most a chunk holds (the slots of the arrays) */
 #define SIFT_CGORD_ROWS_FINE	512		/* from minor 30: a seek and a cursor decode half of the entries */
 #define SIFT_CGORD_GAPS		1		/* SiftCGOrdDir.pad bit 0: the addresses of the chunk are the first of each run of equal keys and the gaps; bits 8..11 are the bits of the offset in the address code (0: 9, the code of the point directory) */
@@ -64,7 +72,31 @@ typedef struct SiftCGOrdHdr
 	int			gcol;
 	uint32		collid;			/* version 3: the collation of the strings, and the bytes of them at the end of the block; else 0 */
 	uint32		strbytes;
+	uint32		head;			/* a block of the ends only: the entries of the first end (the others of the values are the last end); else 0 */
+	uint32		vtotal;			/* ... and the values the segment has in all; 0: the block is complete */
 } SiftCGOrdHdr;
+
+/* What a scan wants of the blocks (sift_col_gorder_open): a block of the ends only answers a scan of few rows that starts at an end of it */
+typedef struct SiftCGOrdWant
+{
+	int			rows;
+	bool		desc;
+	bool		nulls_first;
+	bool		has_lo;
+	bool		has_hi;
+	int64		lo;
+	int64		hi;
+} SiftCGOrdWant;
+
+/* Where the entries of a source that is an end of a block stop being the segment's (sift_col_gorder_cuts): the values [lo, hi) it offers, and which of the sides is not the segment's own end */
+typedef struct SiftCGOrdCuts
+{
+	uint32		lo;
+	uint32		hi;
+	bool		lo_cut;			/* entries before lo exist and are not in the block */
+	bool		hi_cut;
+	bool		null_cut;		/* the NULL rows are not all in the block */
+} SiftCGOrdCuts;
 
 typedef struct SiftCGOrdGrp
 {
@@ -87,8 +119,9 @@ typedef struct SiftCGOrdDir
 /*
  * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
  * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
+ * ends: a segment of more than 2 * SIFT_CGORD_ENDS values keeps the ends only.
  */
-extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, StringInfo out);
+extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
 extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, StringInfo out);
 
@@ -114,10 +147,46 @@ extern bool sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint
 extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
 
 #ifdef SIFT_TESTING
+extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
+extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
 extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
 #endif
+/*
+ * Does a segment's order of a leaf have to hold every row, or the ends only? A scan with a bound in the middle of the values (ts >= x ORDER BY ts LIMIT n, a count of
+ * a range, an OFFSET past the ends) reads from the units what a complete block hands the heap: the units whose zone holds the bound (and, when the units are cut by a key, that share a key
+ * value with it: a query scoped by the key reads those only). That is units * (SIFT_CGORD_PAY_UNIT_BLOCKS + the blocks of the leaf's bytes in a unit) cold blocks; a block is worth
+ * SIFT_CGORD_PAY_BLOCK bytes of index, so the complete block pays when they exceed its bytes (about log2 of the mean gap of the keys plus log2 of the rows, bits an entry).
+ * The zones are the units' (min, max, values) of the leaf and of the key the units are cut by (NULL: none); the bounds tried are the middles of SIFT_CGORD_PAY_PROBES units spread over the segment.
+ */
+#define SIFT_CGORD_PAY_PROBES	16
+#define SIFT_CGORD_PAY_UNIT_BLOCKS	1		/* the blocks a unit read costs besides its leaf: its directory */
+#define SIFT_CGORD_PAY_UNIT_BITS	0.7		/* the share of the bits of its zone's width that a unit's values code in (random timestamps over 300 days, 9,000 values a unit: 4.5 blocks read of the 6.2 the width says) */
+typedef struct SiftCGOrdZones
+{
+	const int64 *min;
+	const int64 *max;
+	const uint32 *nvals;
+	const int64 *kmin;
+	const int64 *kmax;
+	const uint32 *knvals;
+	uint32		nsb;
+	uint64		rows;			/* the rows of the segment, those with no value too */
+} SiftCGOrdZones;
+
+typedef struct SiftCGOrdPay
+{
+	double		units;			/* the units a bound in the middle must read */
+	double		blocks;			/* ... as cold blocks */
+	double		saved;			/* ... and the bytes of index they are worth */
+	double		bytes;			/* the bytes the complete block would take */
+	bool		complete;		/* saved > bytes */
+} SiftCGOrdPay;
+extern void sift_cgord_pay(const SiftCGOrdZones *z, SiftCGOrdPay *out);
+
 /* The entries of the chunks a block is written with: SIFT_CGORD_ROWS_FINE (SIFT_CGORD_ROWS in a test that asks for it, with the segment format 21) */
 extern uint32 sift_cgord_rows(void);
+/* The entries a block of the ends only keeps at each end: SIFT_CGORD_ENDS (a testing build can lower it: sift.test_col_gorder_ends) */
+extern uint32 sift_cgord_ends(void);
 
 /* Does the leaf get a block: a plain integer, date or timestamp attribute of the top level whose key is the integer itself (what the scan reads back as the value) */
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);

@@ -454,8 +454,16 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 
 			if (g != NULL)
 			{
-				acc->gord_rows += g->hdr.entries;
-				acc->gord_bytes += g->bytes;
+				if (g->hdr.vtotal != 0)
+				{
+					acc->gord_ends_rows += g->hdr.vtotal;	/* the ends of the order answer a scan of few rows, not a range */
+					acc->gord_ends_bytes += g->bytes;
+				}
+				else
+				{
+					acc->gord_rows += g->hdr.entries;
+					acc->gord_bytes += g->bytes;
+				}
 				if (g->hdr.strbytes != 0)
 					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;
 				if (g->hdr.gcol >= 0)
@@ -487,6 +495,24 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 	}
 	else
 		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
+}
+
+/* sift_cgord_pay over the zones of the units of an integer leaf (and of the leaf key the units are cut by, -1: none); false for a leaf with no integer zones */
+bool
+sift_cseg_gorder_pay(SiftColSegment *seg, int col, int keycol, SiftCGOrdPay *out)
+{
+	const ZoneArrays *z;
+	const ZoneArrays *k = NULL;
+	SiftCGOrdZones zn;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_INT || seg->nsb == 0)
+		return false;
+	z = zone_arrays(seg, col);
+	if (keycol >= 0 && keycol != col && seg->schema->cols[keycol].store == SIFT_COLS_INT)
+		k = zone_arrays(seg, keycol);
+	zn = (SiftCGOrdZones) {z->min, z->max, z->nvals, k ? k->min : NULL, k ? k->max : NULL, k ? k->nvals : NULL, seg->nsb, (uint64) seg->entry.ndocs};
+	sift_cgord_pay(&zn, out);
+	return true;
 }
 
 /* The next candidate of the sample: kept when it is the stride's turn, the sample thinned to every other entry (and the stride doubled) when it is full */

@@ -26,6 +26,8 @@ typedef struct GCur
 	uint32		end;
 	uint32		gs;
 	uint32		ge;
+	bool		ends;			/* the source is the ends of a segment's order (cuts says where they stop being its own) */
+	SiftCGOrdCuts cuts;
 	bool		have;			/* cls, k and tid are the cursor's entry */
 	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
 	int64		k;
@@ -88,6 +90,8 @@ struct SiftGOrd
 	GCur	   *prev;			/* the source of the last entry given, and the best of the others at that time (NULL: the sources are scanned) */
 	GCur	   *runner;
 	int		   *tree;			/* a text key: the tournament of the cursors, tree[0] the winner and tree[1..] the loser of each match (log2 of the sources compares a step, where the scan of them compares each) */
+	bool		ends;			/* some source is the ends of a segment's order */
+	bool		short_;			/* a source of the ends is spent: the order is not known past the last entry given */
 	bool		last_set;
 	int			last_cls;
 	int64		last_key;
@@ -147,6 +151,17 @@ cur_group(SiftGOrd *g, GCur *c)
 	}
 	c->pos = c->gs;
 	return true;
+}
+
+/* the region of the cursor that ends (nulls: the NULL rows) is cut short: the segment has entries after its last, in the order of the scan, that the block does not */
+static bool
+cur_cut(const SiftGOrd *g, const GCur *c, bool nulls)
+{
+	if (!c->ends)
+		return false;
+	if (nulls)
+		return c->cuts.null_cut;
+	return g->desc ? c->cuts.lo_cut && c->vs <= c->cuts.lo : c->cuts.hi_cut && c->ve >= c->cuts.hi;
 }
 
 static void
@@ -223,6 +238,12 @@ cur_next(SiftGOrd *g, GCur *c)
 				continue;
 			}
 		}
+		if (cur_cut(g, c, nulls))
+		{
+			g->short_ = true;
+			c->region = 2;
+			continue;
+		}
 		c->region++;
 		if (c->region < 2)
 			cur_enter(g, c);
@@ -242,9 +263,12 @@ SiftGOrd *
 sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *b, MemoryContext cxt)
 {
 	int			grouped,
-				n = sift_colsrc_gorder_open(src, leaf, rows, b != NULL ? b->npin : 0, b != NULL ? b->pinleaf : NULL, b != NULL ? b->pinval : NULL, &grouped, collid);
+				n;
+	SiftCGOrdWant want = {rows, desc, nulls_first, b != NULL && collid == 0 && b->has_lo, b != NULL && collid == 0 && b->has_hi, b != NULL ? b->lo : 0, b != NULL ? b->hi : 0};
 	SiftGOrd   *g;
 
+	/* a string bound is of ranks that differ from segment to segment: the ends of a text order are not read (they are not written) */
+	n = sift_colsrc_gorder_open(src, leaf, rows, b != NULL ? b->npin : 0, b != NULL ? b->pinleaf : NULL, b != NULL ? b->pinval : NULL, &grouped, collid, &want);
 	if (n < 0)
 		return NULL;
 	g = MemoryContextAllocZero(cxt, sizeof(SiftGOrd));
@@ -270,6 +294,8 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		c->skey = -1;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
+		c->ends = sift_colsrc_gorder_cuts(src, i, leaf, &c->cuts);
+		g->ends |= c->ends;
 		c->buf = gbuf_get();
 		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
 		if (g->bounded && collid != 0)
@@ -288,6 +314,8 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		}
 		if ((g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
 		{
+			/* nothing in the part of the ends this scan reads; the segment's own order goes on past it when the part is cut at the side the scan comes to */
+			g->short_ |= !(g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) && (cur_cut(g, c, false) || (!g->bounded && cur_cut(g, c, true)));
 			gbuf_put(c->buf);
 			continue;
 		}
@@ -309,6 +337,19 @@ sift_gord_rewind(SiftGOrd *g)
 {
 	g->started = false;
 	g->last_set = false;
+	g->short_ = false;
+}
+
+bool
+sift_gord_ends(const SiftGOrd *g)
+{
+	return g->ends;
+}
+
+bool
+sift_gord_short(const SiftGOrd *g)
+{
+	return g->short_;
 }
 
 /* < 0: a comes before b in the scan */
@@ -449,6 +490,9 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 	for (;;)
 	{
 		GCur	   *best = g->prev;
+
+		if (g->short_)
+			return false;
 
 		/*
 		 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row

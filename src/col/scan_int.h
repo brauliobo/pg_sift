@@ -46,6 +46,9 @@ typedef struct ColCursor
 	int			ppred;
 	uint64		pexact;			/* the predicates (bit i: preds[i], i < 64) whose rows prow is exactly: an element test of a list leaf the directory answered, which the caller need not test again */
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
+	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
+	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
+	SiftCGOrdCuts gcuts;
 	uint8	   *gexact;		/* sift_col_gorder_exact: per unit, 0 not asked, 1 exact, 2 not (nsb bytes, in the source's mcxt; reset by sift_col_gorder_open) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
 	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */

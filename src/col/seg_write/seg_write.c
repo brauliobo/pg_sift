@@ -230,11 +230,12 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
  *, whatever point_tid_columns says, and a lookup reads the unit of each row.
  */
 void
-sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
 {
 	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
 	w->keyed = true;
 	w->aim_rows = aim_rows;
+	w->keycol = keycol;
 	if (w->pt)
 		for (int c = 0; c < w->schema->ncols; c++)
 			w->pt[c].tids = false;
@@ -403,6 +404,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
 	if (w->anytextord)
 		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
+	if (w->anyends)
+		w->format = Max(w->format, SIFT_COL_FORMAT_ENDORD);
 	if (w->keyed)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)

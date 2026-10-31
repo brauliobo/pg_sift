@@ -21,6 +21,8 @@
 #include "core/filter.h"
 
 struct SiftCGOrdBuf;
+struct SiftCGOrdWant;
+struct SiftCGOrdCuts;
 
 #define SIFT_COL_FORMAT_MINOR	15			/* the newest minor 3.3 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete, minor 7 the minimum and maximum of each integer measure in every group of the cube (docs/COL-PREAGG.md 2), minor 8 the calendar cells of a date or timestamp column as a dim of the cube of a sift_table (docs/COL-PREAGG.md 2), minor 9 the rollup of the rows of a unit by a few scalar columns (docs/COL-PREAGG.md 2), minor 10 the small-set summary of the leaves of the option key_columns, minor 12 the summaries of groups of units, the option superunit (docs/COL-PREAGG.md 10), minor 13 the sorted run of the leaves of the option order_columns, minor 14 the dictionaries that a lookup reads in place, minor 15 the key lists and bitmaps of the leaves of the option key_columns, minor 16 the point directory of heap addresses of the leaves of the option point_tid_columns */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
@@ -59,7 +61,8 @@ struct SiftCGOrdBuf;
 #define SIFT_COL_FORMAT_ROOT	37	/* 3.7: the header, the records and the parameters of the point directories end the DICT section next to its footer, so a lookup reads them from the page of the footer */
 #define SIFT_COL_FORMAT_ADDRPACK	38	/* 3.7: the addresses of a chunk of a global order are coded with the bits of the largest offset of the chunk, and as gaps inside a run of equal keys where that is smaller */
 #define SIFT_COL_FORMAT_DICTPACK	39	/* 3.7: the order of a dictionary that is searched in place (code[], DICT_PERM_PACKED) takes the bits of a code where it took 32 */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_DICTPACK	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_ENDORD	40	/* 3.8: the global order of a leaf the build chose (order_array_columns 'auto') holds the ends of a segment of many rows only */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_ENDORD	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -389,6 +392,8 @@ typedef struct SiftColLeafStats
 	double		head_units;		/* the units of the segments whose sorted runs hold heads (column format minor 18) */
 	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
+	double		gord_ends_bytes;	/* ... and their bytes (gord_bytes is those of the complete blocks) */
+	double		gord_ends_rows;	/* the values of the segments whose block holds the ends of the order only (column format minor 40): gord_rows leaves them out, as a range is not counted from them */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
 	int			gord_gcol;
 	uint32		gord_coll;		/* the collation of the text blocks of the leaf (UINT32_MAX when they differ), 0: none is text */
@@ -726,7 +731,8 @@ extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
  * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _head: the first w entries of
  * the chunk that holds entry p, from the entry *at, as keys and heap addresses, each SIFT_CGORD_CAP slots; the count returned.
  */
-extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
+extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want);
+extern bool sift_col_gorder_cuts(SiftColSource *src, int i, int col, struct SiftCGOrdCuts *cuts);
 extern const char *sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len);
 extern uint32 sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint32 len, bool after);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);

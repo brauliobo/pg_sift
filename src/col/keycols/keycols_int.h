@@ -30,8 +30,6 @@
 #define GORD_AUTO_CORR		0.99
 #define GORD_AUTO_GROWTH_PCT 25
 #define GORD_AUTO_MAX		2
-#define GORD_TIME_SPEEDUP	25.0	/* S of the shape a time column's array is for: ts >= x ORDER BY ts LIMIT 10 on scattered values, 9.39 M to 0.38 M instructions at 500,000 rows (ORDER BY ts DESC LIMIT 10 10x, OFFSET 1000 11x) */
-#define GORD_TIME_WRITE_PCT	35.0	/* W: CREATE INDEX of a one-column timestamp index 1.031 G to 1.387 G instructions (500,000 rows) */
 #define GORD_TEXT_SPEEDUP	300.0	/* S of ORDER BY txt LIMIT 10 on a table at the 100,000-row floor: 82.8 M to 0.27 M instructions (3,000,000 rows 2,429 M to 0.86 M, so the floor is the least) */
 #define GORD_TEXT_WRITE_C	62.0	/* W: CREATE INDEX of (id, text, timestamp, int4) with the text array under the C collation 2.84 G to 4.62 G instructions (500,000 rows) */
 #define GORD_TEXT_WRITE_LOC	420.0	/* ... under a locale (pt_BR.UTF-8), 2.83 G to 14.73 G: the sort of the strings by strcoll. Both for 4 columns; the share of a wider index is smaller */

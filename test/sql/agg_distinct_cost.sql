@@ -6,6 +6,7 @@
 -- The workers of a scan are priced for their start (3 ms and 0.35 ms each) and, for a count(DISTINCT), for the leader merging the pairs of the sets one by one;
 -- a parallel_setup_cost of 0 asks for them.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, grp int NOT NULL, part int NOT NULL, cat int NOT NULL, amount float8 NOT NULL, half int NOT NULL);

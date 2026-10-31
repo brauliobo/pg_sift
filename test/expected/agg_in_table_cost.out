@@ -3,6 +3,7 @@
 -- the same 256 keys in a range of 256 nothing visible. The scan is priced for the table, and a list over a wide range on a small result keeps the index plan.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, key int NOT NULL, kind int NOT NULL, amount float8 NOT NULL);

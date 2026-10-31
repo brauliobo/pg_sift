@@ -42,6 +42,10 @@ extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerDat
 /* The entry sift_gord_next just gave is of a row that is live and visible to every snapshot: the heap need not confirm it (the first rows an OFFSET throws away) */
 extern bool sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid);
 extern void sift_gord_rewind(SiftGOrd *g);
+/* Some source is the ends of a segment's order: the entries it has end where the segment's go on. The scan that reads them may find the order short of rows (sift_gord_short) */
+extern bool sift_gord_ends(const SiftGOrd *g);
+/* A source of the ends went through its last entry while the segment has more after it: the entries given so far are the order's, those it would give next are not known */
+extern bool sift_gord_short(const SiftGOrd *g);
 /* The leaf the arrays are grouped by, whose pinned value the scan reads the entries of; -1 when they are not grouped */
 extern int	sift_gord_group(const SiftGOrd *g);
 

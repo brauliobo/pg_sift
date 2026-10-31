@@ -24,7 +24,12 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	if (g->hdr.strbytes != 0)
 		(void) seg_gord_strs(seg, g, col);
 	seg_gord_dir_read(seg, g);
-	if (g->hdr.gcol < 0 ? g->hdr.entries != total : g->hdr.entries > total)
+	if (g->hdr.vtotal != 0)
+	{
+		if (g->hdr.vtotal > total || g->hdr.entries - g->hdr.values > total - g->hdr.vtotal)
+			corrupt(seg, "The ends of the global order of leaf %d hold %u entries and %u values of %u rows, %u with a value.", col, g->hdr.entries, g->hdr.values, total, g->hdr.vtotal);
+	}
+	else if (g->hdr.gcol < 0 ? g->hdr.entries != total : g->hdr.entries > total)
 		corrupt(seg, "The global order of leaf %d holds %u entries for %u rows.", col, g->hdr.entries, total);
 	/* the chunks follow one another, and the first keys of a block that is not grouped ascend */
 	{
@@ -81,6 +86,8 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 			}
 			if (p != from && (isnull ? addr[p % g->hdr.crows] <= pa : key[p % g->hdr.crows] < pk || (key[p % g->hdr.crows] == pk && addr[p % g->hdr.crows] <= pa)))
 				corrupt(seg, "The global order of leaf %d is out of order at entry %u.", col, p);
+			if (!isnull && g->hdr.vtotal != 0 && p == g->hdr.head && p != from && key[p % g->hdr.crows] == pk)
+				corrupt(seg, "The ends of the global order of leaf %d split the run of the key %lld.", col, (long long) pk);
 			pk = key[p % g->hdr.crows];
 			pa = addr[p % g->hdr.crows];
 			if (!isnull && g->hdr.strbytes != 0 && (uint64) pk >= g->nstr)

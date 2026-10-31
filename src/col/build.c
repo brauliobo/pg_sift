@@ -29,6 +29,7 @@
 #include "bm25/build.h"
 #endif
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/build.h"
 #include "col/shred.h"
 #include "core/limits.h"
@@ -226,7 +227,7 @@ compact(ColBuild *b)
 	w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, cx);
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
-	sift_colw_set_keyed(w, b->aim);
+	sift_colw_set_keyed(w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
 	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0);
 	sift_colw_finish(w, &neu);
 	for (int i = 0; i < n; i++)
@@ -265,7 +266,7 @@ write_run(ColBuild *b, bool last)
 	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = sift_colk_run_rows(b->index, in, n);
-	sift_colw_set_keyed(b->w, b->aim);
+	sift_colw_set_keyed(b->w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
 	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt);
 	end_segment(b);
 	b->lvl[b->nsegs - 1] = 0;
@@ -773,6 +774,46 @@ notice_point_tid(Relation index)
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
+/*
+ * Why each column of the build's choice has the order it has, from the largest segment: the units a scan with a bound in the middle of the values reads (sift_cgord_pay) are few (the zones prune the
+ * bound, or its key slice is small: the ends) or many (the whole order). One phrase a column in the NOTICE, which does not vary with the data of a build; the figures (units, cold blocks, MB at
+ * SIFT_CGORD_PAY_BLOCK a block, against the MB of the whole order) are logged at DEBUG1. Nothing when the index has no segment yet.
+ */
+static void
+order_choice_lines(Relation index, const SiftColLeafStats *ls, StringInfo out)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	int			pick = -1;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (pick < 0 || snap->segs[i].ndocs > snap->segs[pick].ndocs))
+			pick = i;
+	if (pick >= 0)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &snap->segs[pick], CurrentMemoryContext);
+		int			kc = sift_cseg_keyed(&snap->segs[pick]) && r->ncut > 0 ? r->cut[0] : -1;
+
+		for (int c = 0; c < r->schema->ncols; c++)
+		{
+			SiftCGOrdPay pay;
+			bool		ends = ls[c].gord_ends_rows > 0;
+			const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
+
+			if ((ls[c].gord_rows > 0 || ends) && ls[c].gord_grp_rows < ls[c].gord_rows + ls[c].gord_ends_rows && sift_cseg_gorder_pay(seg, c, kc, &pay))
+			{
+				appendStringInfo(out, "%s%s: %s", out->len ? "; " : "", name, ends ? "the ends (a bound in the middle of its values reads few units: its zones prune it or its key slice is small)" :
+								 "the whole order (a bound in the middle of its values reads many units)");
+				elog(DEBUG1, "sift_col index \"%s\": %s: a bound in the middle of its values reads about %.1f units (%.0f cold blocks, %.2f MB at %d kB a block) against %.2f MB for the whole order of a segment of %u rows",
+					 RelationGetRelationName(index), name, pay.units, pay.blocks, pay.saved / (1024.0 * 1024.0), SIFT_CGORD_PAY_BLOCK / 1024, pay.bytes / (1024.0 * 1024.0), (uint32) snap->segs[pick].ndocs);
+			}
+		}
+		sift_cseg_close(seg);
+	}
+	pfree(snap);
+}
+
 /* The option keeps a sorted array of every row of a column: its bytes are said once, where they are paid, and the columns the build chose by name */
 static void
 notice_order_array(Relation index)
@@ -786,7 +827,10 @@ notice_order_array(Relation index)
 	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &gauto);
 	double		rows = 0,
 				bytes = 0;
-	int			n = 0;
+	int			n = 0,
+				ne = 0;
+	StringInfoData enames,
+				why;
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt == NULL || (opt[0] == '\0' && !autolist))
@@ -796,7 +840,9 @@ notice_order_array(Relation index)
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	initStringInfo(&names);
+	initStringInfo(&enames);
 	for (int c = 0; c < d->ncols; c++)
+	{
 		if (ls[c].gord_rows > 0)
 		{
 			rows += ls[c].gord_rows;
@@ -804,17 +850,32 @@ notice_order_array(Relation index)
 			appendStringInfo(&names, "%s%s", n ? ", " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname));
 			n++;
 		}
+		if (ls[c].gord_ends_rows > 0)
+		{
+			appendStringInfo(&enames, "%s%s", ne ? ", " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname));
+			ne++;
+		}
+	}
+	initStringInfo(&why);
+	if (autolist && (ne > 0 || n > 0))
+		order_choice_lines(index, ls, &why);
+	if (ne > 0 && autolist)
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' keeps the ends of the order of %s", RelationGetRelationName(index), enames.data),
+				 errdetail("The first and last %u entries of each segment and its first NULL rows, under 0.1 bytes a row of those columns; the segments are column format minor 40, which a library before 3.8 cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most %d of them (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (%d kB of index a block), else the ends: %s.",
+						   sift_cgord_ends(), SIFT_CGORD_ENDS_LEAVES, SIFT_CGORD_PAY_BLOCK / 1024, why.data),
+				 errhint("ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range in the middle of the column reads the units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops them; order_array_columns = 'column' keeps the whole order of a column.")));
 	if (n == 0)
 		return;
 	if (autolist && gauto && glist[0] != '\0')
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first", RelationGetRelationName(index), names.data, glist),
-				 errdetail("%.1f bytes a row for each array, %.1f MB together; the segments are column format minor 31, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first); the group is the integer column of most values that has 100 or more and at least 64 rows apiece.", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errdetail("%.1f bytes a row for each array, %.1f MB together; the segments are column format minor 31, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units) (a table with no statistics is analyzed first); the group is the integer column of most values that has 100 or more and at least 64 rows apiece.%s%s", bytes / rows, bytes / (1024.0 * 1024.0), why.len ? " The choice of each column: " : "", why.data),
 				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, ORDER BY column LIMIT n reads n entries, whatever the number of units, and WHERE %s = x ORDER BY column LIMIT n reads n entries of x. ALTER INDEX .. SET (order_array_group = 'off'), then REINDEX, drops the second order; (order_array_columns = 'off') drops both.", glist)));
 	else if (autolist)
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s", RelationGetRelationName(index), names.data),
-				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most %d of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (%d kB of index a block).%s%s", bytes / rows, bytes / (1024.0 * 1024.0), SIFT_CGORD_ENDS_LEAVES, SIFT_CGORD_PAY_BLOCK / 1024, why.len ? " The choice of each column: " : "", why.data),
 				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.")));
 	else
 		ereport(NOTICE,

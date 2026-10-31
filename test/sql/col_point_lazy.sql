@@ -8,7 +8,7 @@ SET max_parallel_maintenance_workers = 0;
 CREATE TABLE lz (id int, k int, g int, h int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE lz ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO lz (id, k, g, h) SELECT i, CASE WHEN i % 61 = 0 THEN NULL ELSE i % 7 END, (i * 7919) % 20011, i % 400 FROM generate_series(1, 100000) i;
-CREATE INDEX lz_t ON lz USING sift_col (k sift.col_int4_ops, g sift.col_int4_ops, id sift.col_int4_ops, h sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k, g, h');
+CREATE INDEX lz_t ON lz USING sift_col (k sift.col_int4_ops, g sift.col_int4_ops, id sift.col_int4_ops, h sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k, g, h', order_array_columns = 'off');
 VACUUM (ANALYZE) lz;
 SELECT sift.col_verify('lz_t', true);
 SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, sum(units) > 4 AS units FROM sift.col_segments('lz_t') WHERE kind = 'immutable';

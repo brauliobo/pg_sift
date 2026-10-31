@@ -397,7 +397,48 @@ gord_prep(SiftTopN *t)
 	/* the end of the array closes the last group; a group that ended the scan above is sorted already */
 	if (!closed && t->gqn - gstart > 1)
 		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
-	return true;
+	return closed || !sift_gord_short(t->go) || (uint32) t->gqn >= t->limit;
+}
+
+/*
+ * The scan of a segment that keeps the ends of its order only (column format minor 40) can run out of entries that are not its own: the rows of an end that the heap
+ * finds dead, an end that is a few rows. That must be known before the first row goes out, so the scan reads the n it will give once, with the confirmation of the heap
+ * (the pages stay in the buffers for the scan), and gives the rows to the units when the ends do not hold them.
+ */
+static bool
+gord_probe(SiftTopN *t)
+{
+	TopFetch   *f = &t->pf[0];
+	uint32		n = 0;
+	bool		cut;
+	int64		key;
+	bool		isnull;
+	ItemPointerData tid;
+
+	while (n < t->limit && sift_gord_next(t->go, &key, &isnull, &tid))
+	{
+		bool		call_again = false,
+					all_dead,
+					hnull;
+		Datum		d;
+
+		if (n < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
+		{
+			n++;
+			continue;
+		}
+		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+			continue;
+		d = slot_getattr(f->slot, t->gatt[0], &hnull);
+		if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
+			continue;
+		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
+			continue;
+		n++;
+	}
+	cut = sift_gord_short(t->go);
+	sift_gord_rewind(t->go);
+	return n >= t->limit || !cut;
 }
 
 /* an OR of equalities of the group leaf gl with constants (its IN list): a global order grouped by gl reads the entries of each of the groups */
@@ -568,6 +609,8 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	t->gcond = cond;
 	t->limit = t->all ? t->gwant : t->limit;
 	if (t->nkey > 1 && !gord_prep(t))
+		t->go = NULL;
+	else if (t->nkey == 1 && sift_gord_ends(t->go) && !gord_probe(t))
 		t->go = NULL;
 	return t->go != NULL;
 }

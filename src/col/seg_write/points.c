@@ -29,6 +29,66 @@ gord_dense_ok(const SiftColSegWriter *w)
 	return w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE && segw_rooted_ok(w);
 }
 
+/*
+ * Does the order of leaf c keep the ends of the segment only (column format minor 40): the leaf is of the build's own choice ('auto: a, b'), not text, the segment has more values than the two
+ * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units (and of the key the units are cut by, so that a slice of few rows
+ * counts the units of the slice). A segment that has such a block is of the rooted layout (segw_rooted_ok), which a minor of 37 or more is read as.
+ */
+static bool
+gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
+{
+	const SiftCZone *zn = w->zones;
+	int			nc = w->schema->ncols,
+				kc = w->keyed ? w->keycol : -1;
+	uint32		nsb = w->nsb;
+	int64	   *mn,
+			   *mx,
+			   *kmn,
+			   *kmx;
+	uint32	   *nv,
+			   *knv;
+	SiftCGOrdZones z;
+	SiftCGOrdPay pay;
+
+	if (!w->pagg.gorderauto || w->setting < SIFT_COL_FORMAT_PRESENCE || a->n <= 2 * sift_cgord_ends() || sift_cgord_leaf_text(&w->schema->cols[c]))
+		return false;
+#ifdef SIFT_TESTING
+	if (sift_test_col_gorder_choice != 0)
+		return sift_test_col_gorder_choice == 1;
+#endif
+	mn = palloc((Size) nsb * 4 * sizeof(int64));
+	mx = mn + nsb;
+	kmn = mx + nsb;
+	kmx = kmn + nsb;
+	nv = palloc((Size) nsb * 2 * sizeof(uint32));
+	knv = nv + nsb;
+	z = (SiftCGOrdZones) {mn, mx, nv, NULL, NULL, NULL, nsb, a->n + a->nn};
+	if (kc == c || (kc >= 0 && w->schema->cols[kc].store != SIFT_COLS_INT))
+		kc = -1;
+	for (uint32 u = 0; u < nsb; u++)
+	{
+		mn[u] = zn[(Size) u * nc + c].min;
+		mx[u] = zn[(Size) u * nc + c].max;
+		nv[u] = zn[(Size) u * nc + c].nvals;
+		if (kc >= 0)
+		{
+			kmn[u] = zn[(Size) u * nc + kc].min;
+			kmx[u] = zn[(Size) u * nc + kc].max;
+			knv[u] = zn[(Size) u * nc + kc].nvals;
+		}
+	}
+	if (kc >= 0)
+	{
+		z.kmin = kmn;
+		z.kmax = kmx;
+		z.knvals = knv;
+	}
+	sift_cgord_pay(&z, &pay);
+	pfree(mn);
+	pfree(nv);
+	return !pay.complete;
+}
+
 /* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
 static void
 build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, int c)
@@ -82,7 +142,18 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, &ob->tab);
 		}
 		else
-			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, &ob->tab);
+		{
+			SiftCGOrdHdr h;
+
+			/* the build's own choice of leaves keeps the ends of the order of a segment of many rows; a list of the user's keeps all of it */
+			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, a->ends, &ob->tab);
+			if (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h))
+			{
+				ob->nent = h.entries;
+				ob->nvals = h.values;
+				w->anyends = h.vtotal != 0 || w->anyends;
+			}
+		}
 	}
 	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
 	w->anyord = ob->nch > 0 || w->anyord;
@@ -99,7 +170,7 @@ bool		sift_test_col_dict_unpacked = false;
 #endif
 
 /* Whether the header and records of the point directories end the DICT section (column format minor 37; a testing build can turn it off to write them first). A segment with only global orders
- * keeps them first, and its minor stays one that 3.6 reads */
+ * keeps them first, and its minor stays one that 3.6 reads, unless it keeps the ends of an order (minor 40) */
 bool
 segw_rooted_ok(const SiftColSegWriter *w)
 {
@@ -107,7 +178,7 @@ segw_rooted_ok(const SiftColSegWriter *w)
 	if (sift_test_col_point_unrooted)
 		return false;
 #endif
-	return w->anypoints && w->setting >= SIFT_COL_FORMAT_PRESENCE;
+	return (w->anypoints || w->wantends) && w->setting >= SIFT_COL_FORMAT_PRESENCE;
 }
 
 /* Whether a point directory may be written as a packed table (the setting that allows the exact slot count allows it; a testing build can turn it off to write the slots) */
@@ -125,6 +196,11 @@ packed_ok(void)
 void
 segw_build_points(SiftColSegWriter *w)
 {
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+	{
+		w->pt[c].ends = w->pt[c].ord && !w->pt[c].bad && w->pt[c].n + w->pt[c].nn > 0 && segw_gorder_plain(w, c) && gord_ends_ok(w, &w->pt[c], c);
+		w->wantends |= w->pt[c].ends;
+	}
 	for (int c = 0; w->pt && c < w->schema->ncols; c++)
 	{
 		PointAcc   *a = &w->pt[c];

@@ -12,6 +12,8 @@
 #include "core/filter.h"
 
 struct SiftCGOrdBuf;
+struct SiftCGOrdWant;
+struct SiftCGOrdCuts;
 
 #define SIFT_COLSRC_MAX_LEAVES		128
 

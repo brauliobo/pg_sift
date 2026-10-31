@@ -27,6 +27,7 @@ typedef struct PointAcc
 	bool		bad;
 	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
+	bool		ends;			/* ... and keeps the ends of its order only (sift_cgord_pay, column format minor 40) */
 	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
 	int64	   *gk;				/* ord with a group leaf: the group of each entry of key, and of each one of ntid (a row with no group is left out when the block is built) */
 	uint8	   *gok;
@@ -101,6 +102,7 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
+	int			keycol;			/* the leaf the key-cut units are cut by (the first of key_cut), -1: unknown or not an integer */
 	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
 	bool		keyed;			/* the units are key-cut: the segment is column format minor 17 */
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
@@ -123,6 +125,8 @@ struct SiftColSegWriter
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anydense;		/* ... and some chunk codes its addresses with the bits of its largest offset (minor 38) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
+	bool		wantends;		/* ... some leaf will, so the segment is of the rooted layout whether or not it has a point directory */
+	bool		anyends;		/* ... and some of them keeps the ends of the order only (minor 40) */
 	bool		anypacked;		/* ... and one of them is a packed table (column format minor 36) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */

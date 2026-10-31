@@ -2,6 +2,7 @@
 -- without the data: the cost of the scan and of the normal plan, each by the model's own terms (a hash aggregate that stops fitting work_mem grows faster
 -- than the rows, a scan of units does not). Only the plan changes: the rows are those of the table.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '4MB';
 CREATE TABLE items (id int PRIMARY KEY, grp int NOT NULL, part int NOT NULL, amount float8 NOT NULL);

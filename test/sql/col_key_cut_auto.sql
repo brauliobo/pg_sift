@@ -18,7 +18,7 @@ VACUUM (FREEZE, ANALYZE) ka;
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
 
 -- chosen: the key is scattered over the units, nothing else follows the table
-CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
 SELECT kopt('ka_auto');
 SELECT kind, format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SELECT sift.col_verify('ka_auto', true);
@@ -69,7 +69,7 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 -- the NOTICE says what was chosen and how to turn it off
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
-CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
 
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 -- (small rows, 20 to a page: the prediction counts the addresses of the rows, not what the cut saves in the pre-aggregates, so it is an upper bound)
@@ -80,7 +80,7 @@ SELECT setseed(0.5);
 INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
-CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3);
+CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
 SET client_min_messages = warning;
 CREATE TABLE kf (id int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);

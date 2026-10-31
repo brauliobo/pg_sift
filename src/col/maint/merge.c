@@ -379,7 +379,11 @@ out_begin(MergeOut *o)
 	if (o->pagg)
 		sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
-		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index));
+	{
+		const SiftColRel *r = sift_col_rel_private(o->index, CurrentMemoryContext);
+
+		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), sift_col_key_cut(r) && r->ncut > 0 ? r->cut[0] : -1);
+	}
 }
 
 static void

@@ -34,9 +34,15 @@ gord_cand_cmp(const void *a, const void *b)
 		return x->text ? -1 : 1;
 	if (x->text)
 		return x->leaf - y->leaf;	/* the order of the index: the statistics of two columns of strings differ run to run */
-	if (x->corr != y->corr)
-		return x->corr < y->corr ? -1 : 1;
+	if ((int) (x->corr * 10) != (int) (y->corr * 10))
+		return (int) (x->corr * 10) < (int) (y->corr * 10) ? -1 : 1;	/* tenths: the correlations of columns of random values differ run to run */
 	return x->leaf - y->leaf;
+}
+
+static int
+pick_cmp(const void *a, const void *b)
+{
+	return *(const int *) a - *(const int *) b;
 }
 
 void
@@ -54,7 +60,9 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	bool	   *fit;
 	int			ncand = 0,
 				npick = 0,
-				pick[GORD_AUTO_MAX];
+				ntext = 0,
+				nends = 0,
+				pick[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
 	double		room,
 				index_bytes;
 	StringInfoData v;
@@ -102,25 +110,24 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		ncand++;
 	}
 	qsort(cand, ncand, sizeof(GordCand), gord_cand_cmp);
-	/* each array is a structure of its own: it must fit the room, and a column that does not leaves it to the next; the sorted run of a column not in order_columns comes with it */
+	/*
+	 * A text column is an array of its own: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling. A date, timestamp
+	 * or integer column keeps the ends of its order only (column format minor 40): 8,192 entries and the first NULL rows a segment, 0.07 bytes a row of 1,000,000, where the
+	 * units hold the order the zones cannot prune: nothing to weigh.
+	 */
 	for (int i = 0; i < ncand; i++)
 	{
-		const SiftColDef *d = &rel->schema->cols[cand[i].leaf];
-		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
-		double		bytes = cand[i].text ? cand[i].bytes : narrow ? 4.4 : 5.6;
-
-		/* a date, timestamp or text column: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling; the others fit the room */
 		if (cand[i].text)
 		{
 			double		b = log2(GORD_TEXT_SPEEDUP) / log2(1.05),
-						cost = bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
+						cost = cand[i].bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
 
 			fit[i] = b > cost;
 			cand[i].benefit = b;
 			cand[i].cost = cost;
 		}
 		else
-			fit[i] = cand[i].time ? log2(GORD_TIME_SPEEDUP) / log2(1.05) > bytes / index_bytes * 100.0 / 3.0 + GORD_TIME_WRITE_PCT / 5.0 : bytes <= room;
+			fit[i] = true;
 		timepick |= fit[i] && cand[i].time;
 	}
 	/* the arrays of a time column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then */
@@ -148,10 +155,12 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			grp = c;
 		}
 	}
-	for (int i = 0; i < ncand && npick < GORD_AUTO_MAX; i++)
-		if (fit[i] && cand[i].leaf != grp)
+	for (int i = 0; i < ncand; i++)
+		if (fit[i] && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
 		{
 			pick[npick++] = cand[i].leaf;
+			ntext += cand[i].text;
+			nends += !cand[i].text;
 			if (cand[i].text)
 			{
 				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
@@ -193,6 +202,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			sift_col_set_option(index, "order_array_columns", "auto");
 		return;
 	}
+	/* in the order of the index: the correlations that chose among more leaves than the cap differ run to run */
+	qsort(pick, npick, sizeof(int), pick_cmp);
 	initStringInfo(&v);
 	appendStringInfoString(&v, "auto: ");
 	for (int i = 0; i < npick; i++)

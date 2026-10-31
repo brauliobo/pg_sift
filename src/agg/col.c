@@ -233,7 +233,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
 		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
-		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows) / ls[i].nvals, 1.0) : 0;
+		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows) / ls[i].nvals, 1.0) : 0;
 		st->gord_coll[i] = ls[i].gord_coll;
 		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
 		st->ndistinct[i] = nonnull;
@@ -669,11 +669,17 @@ col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, ui
 }
 
 static int
-col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
+col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want)
 {
 	ColSource  *src = impl;
 
-	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid);
+	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid, want);
+}
+
+static bool
+col_gorder_cuts(void *impl, int i, int leaf, struct SiftCGOrdCuts *cuts)
+{
+	return sift_col_gorder_cuts(((ColSource *) impl)->cs, i, leaf, cuts);
 }
 
 static uint32
@@ -903,6 +909,7 @@ static const SiftSrcProvider col_provider = {
 	.gorder_strrank = col_gorder_strrank,
 	.gorder_str = col_gorder_str,
 	.gorder_info = col_gorder_info,
+	.gorder_cuts = col_gorder_cuts,
 	.gorder_exact = col_gorder_exact,
 	.gorder_head = col_gorder_head,
 	.gorder_range = col_gorder_range,

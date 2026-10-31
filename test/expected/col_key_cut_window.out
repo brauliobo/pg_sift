@@ -45,7 +45,7 @@ INSERT INTO wkp SELECT i, CASE WHEN random() < 0.15 THEN (random() * 100)::int E
 FROM generate_series(1, 125000) i;
 VACUUM (FREEZE, ANALYZE) wkp;
 SET client_min_messages = notice;
-CREATE INDEX wkp_id ON wkp USING sift_col (id, tenant_id, a1, a2, a3, a4, a5, a6, a7, a8);
+CREATE INDEX wkp_id ON wkp USING sift_col (id, tenant_id, a1, a2, a3, a4, a5, a6, a7, a8) WITH (order_array_columns = 'off');
 NOTICE:  sift_col index "wkp_id": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +19.2%, benefit 18 against cost 10)
 DETAIL:  A sample of 31 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table but "id", whose zones the cut widens and whose lookups a unique b-tree of the table answers. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX wkp_id SET (key_cut = 'off') and REINDEX keep the units by block range.

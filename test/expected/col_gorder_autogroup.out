@@ -178,11 +178,11 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 UPDATE ag SET g = id;
 ANALYZE ag;
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of id, ts
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of id, g, ts
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
-                               reloptions                                
--------------------------------------------------------------------------
- {key_cut=off,order_array_group=auto,"order_array_columns=auto: ts, id"}
+                                 reloptions                                 
+----------------------------------------------------------------------------
+ {key_cut=off,order_array_group=auto,"order_array_columns=auto: id, g, ts"}
 (1 row)
 
 DROP TABLE ag;

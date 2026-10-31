@@ -180,15 +180,31 @@ sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 	return g != NULL && (g->hdr.gcol >= 0) == grouped ? col : -1;
 }
 
+/* A complete block: the entries and values it holds. False for a segment without one and for one that keeps the ends only (sift_cseg_gorder_ends): nothing counts or lists a range from those */
 bool
 sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
-	if (g == NULL)
+	if (g == NULL || g->hdr.vtotal != 0)
 		return false;
 	*entries = g->hdr.entries;
 	*values = g->hdr.values;
+	return true;
+}
+
+/* A block of the ends only: its entries, the values it holds ([0, head) the first end, the rest the last), the values the segment has and its rows with no value; false when the block is complete or not there */
+bool
+sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *values, uint32 *head, uint32 *vtotal)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+
+	if (g == NULL || g->hdr.vtotal == 0 || g->hdr.gcol >= 0 || g->hdr.strbytes != 0)
+		return false;
+	*entries = g->hdr.entries;
+	*values = g->hdr.values;
+	*head = g->hdr.head;
+	*vtotal = g->hdr.vtotal;
 	return true;
 }
 
@@ -358,7 +374,7 @@ gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	/* the keys of a text block are ranks of the segment's strings, not the codes of its dictionary that a range of the scan is in */
-	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0)
+	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0)
 		return false;
 	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
 	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);
