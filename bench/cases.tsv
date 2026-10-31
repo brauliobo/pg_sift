@@ -260,3 +260,7 @@ search_list_terms_top_20	a term that is a list (fewer postings than `sift.groupe
 search_filter_recent	a ranked search with a test of an `INCLUDE` column does not read a superblock	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_vacuum_seals	`VACUUM` seals the open write buffer of a BM25 index once it	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-
 search_build_stemmer_en	`CREATE INDEX` with `stemmer = 'en'` spends 30% fewer instru	docs	-	^[1-9]	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+search_build_parallel	the participants of a parallel `CREATE INDEX` or `REINDEX` of a `sift` (BM25)	docs	-	^same bytes$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,wal_bytes	faster33	no	-
+search_build_parallel_include	-	docs	-	^same bytes$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,wal_bytes	faster33	no	-
+search_merge_parallel	a merge of segments of a `sift` (BM25) index (`sift.merge`	docs	-	^segments 1$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,wal_bytes	faster33	no	-
+search_merge_parallel_include	-	docs	-	^segments 1$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,wal_bytes	faster33	no	-
