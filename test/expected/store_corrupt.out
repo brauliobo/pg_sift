@@ -208,7 +208,7 @@ SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                                                                   expect                                                                                                  
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+ 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.5 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();
@@ -217,7 +217,7 @@ SELECT fresh();
  
 (1 row)
 
-SELECT sift._test_poke('t_idx', 0, 30, 5, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 6, 2);
  _test_poke 
 ------------
  
@@ -226,7 +226,7 @@ SELECT sift._test_poke('t_idx', 0, 30, 5, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                                                                   expect                                                                                                  
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 1.5, this build (pg_sift <version>) reads formats 1.0 to 1.4 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+ 55000: sift index "t_idx" has on-disk format 1.6, this build (pg_sift <version>) reads formats 1.0 to 1.5 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();
