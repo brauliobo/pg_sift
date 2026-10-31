@@ -6,7 +6,7 @@
 # plan: a regular expression the EXPLAIN of the sift lane must match (a load case: the output of its `--@ check`); a case that falls back to the normal plan fails
 # baselines: engines besides sift and native (PostgreSQL with sift.enable_agg = off) that can answer it: pg_duckdb (the others: bench/engines.tsv, steps/store_engine.py)
 # variants: name:SET a = b;SET c = d, further sift lanes with settings (the optimization turned off, or a lane without a pre-aggregate)
-# metric: the number the README table shows: ms (warm median) or wal_bytes (per row)
+# metric: the number the README table shows: ms (warm median), wal_bytes (per row) or, for a case that churns an index, index_mb (its size at the end)
 # block: the generated block of README.md / bench/out/BENCHMARKS.md the case feeds (<!-- bench:NAME:begin -->)
 # headline: yes puts the case in the README's table of application-shaped cases
 # peers: `-`, or the engines that answer the case in another results file, as FILE:ARM (generic:clickhouse is the arm clickhouse of bench/results/generic.tsv); `cases coverage` wants a measured row of each
@@ -252,3 +252,5 @@ search_filter_include	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	
 search_join_region	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_language_german	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
 search_build_index	-	docs	-	^[1-9]	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+col_maintain_cuts_free_end	the rewrite of the segments of a `sift_col` index (the automatic one, `sift.col_maintain`) cuts the free end	orders	-	^[0-9]+$	native	-	index_mb,ms	faster33	no	-
+exceptions_few_groups	the exceptions of a unit (the cube of the few rows where a soft-delete stamp is not NULL	orders	(id)	[1-9][0-9]* net of exceptions	native	scan:sift.agg_preagg = off	ms	faster33	no	-

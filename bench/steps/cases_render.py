@@ -24,9 +24,9 @@ MEASURES = ('PostgreSQL', 'pg_sift', 'speed-up', 'slope PostgreSQL', 'slope pg_s
 IO_MEASURES = ('PostgreSQL cold', 'pg_sift cold')   # after the speed-up, when the results have the cold IO of the headline cases
 OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
 UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms',
-        'io_cold_read_mb': 'MB read, cold', 'io_cold_read_blocks': 'blocks read, cold', 'io_extend_mb': 'MB of file growth'}
+        'io_cold_read_mb': 'MB read, cold', 'io_cold_read_blocks': 'blocks read, cold', 'io_extend_mb': 'MB of file growth', 'index_mb': 'MB of the index'}
 IO = tuple(m for m in UNIT if m.startswith('io_'))   # the IO rows shown beside the time of a case, where the results have them (steps/iolib.py)
-SHORT = {'wal_bytes': 'WAL B/row', 'minstr': 'M instr', 'io_extend_mb': 'MB'}   # the unit written after a figure that is not a time, a CPU or a read
+SHORT = {'wal_bytes': 'WAL B/row', 'minstr': 'M instr', 'io_extend_mb': 'MB', 'index_mb': 'MB'}   # the unit written after a figure that is not a time, a CPU or a read
 BLOCK = 8192 / 2**20   # MB of a buffer: the IO of a warm run is the blocks it hit or read (EXPLAIN (BUFFERS))
 NO_CPU = triple.NA('no CPU figure for this case in the results (it is recorded for one backend with no parallel workers)')
 NO_COLD = triple.NA('the time and CPU of the cold run are not recorded')

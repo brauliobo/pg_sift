@@ -180,11 +180,11 @@ def wait_sampler(pid):
 
 
 def measure_load(case, csv, rounds, rows, instr=False):
-    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, and with INSTR the backend's user instructions of the whole load (minstr)"""
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the backend's user instructions of the whole load (minstr)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
-    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': []} | ({'minstr': []} if instr else {}) for lane in lanes}, {}, {}
+    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': [], 'index_mb': []} | ({'minstr': []} if instr else {}) for lane in lanes}, {}, {}
     for r in range(rounds):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
@@ -225,6 +225,9 @@ def measure_load(case, csv, rounds, rows, instr=False):
             plans[lane] = checked.replace('\n', ', ')
             if lane == 'sift' and not re.search(case.plan, checked, re.M):
                 errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
+            size = s.run("SELECT sum(pg_relation_size(i.indexrelid)) / 1048576.0 FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'c_%s' AND NOT i.indisprimary" % case.id)[1][0]
+            if size:   # a case with no index besides its primary key has no figure
+                out[lane]['index_mb'].append(float(size))
             out[lane]['wal_bytes'].append(lsn / rows)
             out[lane]['ms'].append(ms)
             out[lane]['cpu_ms'].append(cpu / 1e6)
