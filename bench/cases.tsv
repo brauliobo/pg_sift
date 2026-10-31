@@ -247,10 +247,16 @@ search_and_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no
 search_or_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
 search_phrase_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
 search_mixed_count	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
-search_top_20	-	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
-search_filter_include	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
-search_join_region	-	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
-search_language_german	-	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
+search_top_20	a block only on the pages where the terms present there can still beat	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+search_filter_include	a sift index can name `INCLUDE` columns (`CREATE INDEX ON do	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
+search_join_region	the table of an `IN` test of an `INCLUDE` column	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
+search_language_german	`stemmer` takes the name of a PostgreSQL text search configu	docs	-	Custom Scan \(SiftCount	native	-	ms,minstr	faster33	no	-
 search_build_index	-	docs	-	^[1-9]	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_maintain_cuts_free_end	the rewrite of the segments of a `sift_col` index (the automatic one, `sift.col_maintain`) cuts the free end	orders	-	^[0-9]+$	native	-	index_mb,ms	faster33	no	-
 exceptions_few_groups	the exceptions of a unit (the cube of the few rows where a soft-delete stamp is not NULL	orders	(id)	[1-9][0-9]* net of exceptions	native	scan:sift.agg_preagg = off	ms	faster33	no	-
+search_top_20_and	a ranked search spends fewer instructions on the page index 	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+search_top_20_or_three	a ranked `OR` builds the candidates of a block from its term	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+search_list_terms_top_20	a term that is a list (fewer postings than `sift.grouped_min	docs	-	Order: score DESC	native	-	ms,minstr	faster33	no	-
+search_filter_recent	a ranked search with a test of an `INCLUDE` column does not read a superblock	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
+search_vacuum_seals	`VACUUM` seals the open write buffer of a BM25 index once it	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-
+search_build_stemmer_en	`CREATE INDEX` with `stemmer = 'en'` spends 30% fewer instru	docs	-	^[1-9]	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
