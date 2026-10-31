@@ -100,9 +100,12 @@ acut_leaf_bytes(Relation heap, const SiftColDef *d, AttrNumber hatt)
 	return bytes;
 }
 
+#define PAGG_SLOT_BITS	10
+#define PAGG_SLOTS		(1 << PAGG_SLOT_BITS)	/* four times the groups of a histogram: a probe ends at a free slot */
+
 /* the bytes of the pre-aggregates of a unit of n rows (docs/COL-PREAGG.md): a base for each leaf, and for each integer leaf with at most AUTOCUT_PAGG_GROUPS values in the unit a histogram of its groups with the measures of every leaf */
 static double
-pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nleaves, int64 *tmp)
+pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nleaves)
 {
 	double		bytes = (double) AUTOCUT_PAGG_UNIT * nleaves,
 				per_group = AUTOCUT_PAGG_GROUP + AUTOCUT_PAGG_MEASURE * Min(nleaves, 8);
@@ -110,14 +113,26 @@ pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nlea
 	for (int t = 0; t < ntr; t++)
 	{
 		uint32		groups = 0;
+		int64		seen[PAGG_SLOTS];
+		bool		used[PAGG_SLOTS] = {false};
 
 		if (tr[t].shape != NULL)
 			continue;
-		for (uint32 i = 0; i < n; i++)
-			tmp[i] = tr[t].nl[rows[i]] ? PG_INT64_MIN : tr[t].v[rows[i]];
-		sift_sort_i64(tmp, n);
-		for (uint32 i = 0; i < n; i++)
-			groups += i == 0 || tmp[i] != tmp[i - 1];
+		/* the values of the unit, counted until there are more than a histogram holds: a column of many values ends at the first AUTOCUT_PAGG_GROUPS + 1 of them */
+		for (uint32 i = 0; i < n && groups <= AUTOCUT_PAGG_GROUPS; i++)
+		{
+			int64		x = tr[t].nl[rows[i]] ? PG_INT64_MIN : tr[t].v[rows[i]];
+			uint32		h = (uint32) (((uint64) x * UINT64CONST(0x9E3779B97F4A7C15)) >> (64 - PAGG_SLOT_BITS));
+
+			while (used[h] && seen[h] != x)
+				h = (h + 1) & (PAGG_SLOTS - 1);
+			if (!used[h])
+			{
+				used[h] = true;
+				seen[h] = x;
+				groups++;
+			}
+		}
 		if (groups <= AUTOCUT_PAGG_GROUPS)
 			bytes += groups * per_group;
 	}
@@ -277,7 +292,7 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 		{
 			for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
 				rows[i - s->start[u]] = i;
-			bytes += pagg_unit_bytes(tr, ntr, rows, s->start[u + 1] - s->start[u], nleaves, tmp);
+			bytes += pagg_unit_bytes(tr, ntr, rows, s->start[u + 1] - s->start[u], nleaves);
 		}
 	else if (units)
 		for (uint32 u = 0; u < ncut; u++)
@@ -285,7 +300,7 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 			uint32		n = cuts[u + 1] - cuts[u];
 
 			memcpy(rows, sel + cuts[u], n * sizeof(uint32));
-			bytes += Min(1.0, (double) unit / rows_per_unit) * pagg_unit_bytes(tr, ntr, rows, n, nleaves, tmp);
+			bytes += Min(1.0, (double) unit / rows_per_unit) * pagg_unit_bytes(tr, ntr, rows, n, nleaves);
 		}
 	pfree(buf.data);
 	pfree(tmp);

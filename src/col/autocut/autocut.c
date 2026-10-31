@@ -290,11 +290,26 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 					tmp[n++] = k->v[i];
 			if (n == 0)
 				continue;
-			sift_sort_i64(tmp, n);
 			k->has[u] = true;
+			if (!k->cand)
+			{
+				/* the zone alone: no cells to count, so no sort */
+				int64		lo = tmp[0],
+							hi = tmp[0];
+
+				for (int i = 1; i < n; i++)
+				{
+					lo = Min(lo, tmp[i]);
+					hi = Max(hi, tmp[i]);
+				}
+				k->lo[u] = (double) lo;
+				k->hi[u] = (double) hi;
+				continue;
+			}
+			sift_sort_i64(tmp, n);
 			k->lo[u] = (double) tmp[0];
 			k->hi[u] = (double) tmp[n - 1];
-			for (int i = 0, j; k->cand && i < n; i = j)
+			for (int i = 0, j; i < n; i = j)
 			{
 				for (j = i; j < n && tmp[j] == tmp[i];)
 					j++;
