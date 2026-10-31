@@ -131,3 +131,7 @@ SELECT value_mismatches();
                 0
 (1 row)
 
+DROP FUNCTION mismatches(), value_mismatches(), docs_held();
+DROP TABLE docs;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

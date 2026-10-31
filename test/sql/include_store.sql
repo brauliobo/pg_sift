@@ -58,3 +58,8 @@ SELECT value_mismatches();
 REINDEX INDEX docs_idx;
 SELECT * FROM docs_held();
 SELECT value_mismatches();
+
+DROP FUNCTION mismatches(), value_mismatches(), docs_held();
+DROP TABLE docs;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

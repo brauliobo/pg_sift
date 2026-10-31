@@ -17,6 +17,7 @@
 
 #include "core/host.h"
 
+#include "bm25/attr.h"
 #include "bm25/dict.h"
 #include "bm25/posting.h"
 
@@ -28,20 +29,16 @@ typedef struct SiftDocSBRef
 } SiftDocSBRef;
 
 /*
- * The values of the INCLUDE columns (SIFT_SEGFMT_ATTR): per SB one record after the docmap records, with for each column a base, the code that
- * stands for "unknown" and the rows of the SB's present pages in the width the range of the SB's values needs. A slot holds 0 for NULL, v - base + 1
+ * The values of the INCLUDE columns (SIFT_SEGFMT_ATTR): per column and SB one record after the docmap records (the records of a column are
+ * together, so a statement reads the pages of the columns it tests), with a base, the code that stands for "unknown" and the rows of the SB's present
+ * pages in the width the range of the SB's values needs. A slot holds 0 for NULL, v - base + 1
  * for the value v, the unknown code for a doc whose heap tuple was gone when the segment was written. A column that is not an integer-like type has
  * no rows (flags SIFT_ATTR_NOROWS): every doc passes its tests.
  */
 #define SIFT_ATTR_MAXCOLS	8
 #define SIFT_ATTR_NOROWS	1
 #define SIFT_ATTR_MAXWIDTH	56
-enum SiftAttrState
-{
-	SIFT_AV_VALUE = 0,
-	SIFT_AV_NULL,
-	SIFT_AV_UNKNOWN
-};
+#define SIFT_ATTR_TABLE		16384	/* codes of a block for which an IN test is a table of bytes, not a search of its set */
 
 /* The source of the values of the docs of a page at a write: state[col * n + i] and vals[col * n + i] for the doc at offs[i] of block blk */
 typedef struct SiftAttrSrc
@@ -123,6 +120,7 @@ typedef struct SiftAttrBlock
 	int			width;
 	bool		norows;
 	const uint8 *row[SIFT_BLK_PAGES];
+	int			nslots[SIFT_BLK_PAGES];	/* the slots of each row */
 } SiftAttrBlock;
 
 extern void sift_seg_block_attr(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int col, SiftAttrBlock *out);

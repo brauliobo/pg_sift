@@ -122,19 +122,25 @@ docmap(SiftSegment *seg)
 		nsb > seg->hdr->sb_hi - seg->hdr->sb_lo + 1)
 		corrupt(seg, "DOCMAP of %llu bytes lists %u SBs.", ULL(s->len), nsb);
 	dm->nsb = nsb;
-	dm->acur = -1;
+	for (int c = 0; c < SIFT_ATTR_MAXCOLS; c++)
+		dm->acur[c] = -1;
 	if (seg->fmt >= SIFT_SEGFMT_ATTR)
 	{
-		uint64		adirlen = (uint64) nsb * sizeof(SiftAttrRef);
+		uint64		adirlen;
 
-		if (adirlen + (uint64) nsb * sizeof(SiftDocSBRef) + sizeof(tail) > s->len)
-			corrupt(seg, "DOCMAP of %llu bytes lists %u SBs and their INCLUDE records.", ULL(s->len), nsb);
+		if (s->len < sizeof(tail))
+			corrupt(seg, "DOCMAP of %llu bytes has no INCLUDE trailer.", ULL(s->len));
 		seg_read(seg, s->off + s->len - sizeof(tail), sizeof(tail), tail);
 		memcpy(&dm->recs_end, tail, sizeof(uint64));
 		memcpy(&dm->ncols, tail + 8, sizeof(uint32));
+		if (dm->ncols == 0 || dm->ncols > SIFT_ATTR_MAXCOLS)
+			corrupt(seg, "DOCMAP lists %u INCLUDE columns.", dm->ncols);
+		adirlen = (uint64) nsb * dm->ncols * sizeof(SiftAttrRef);
+		if (adirlen + (uint64) nsb * sizeof(SiftDocSBRef) + sizeof(tail) > s->len)
+			corrupt(seg, "DOCMAP of %llu bytes lists %u SBs and their INCLUDE records.", ULL(s->len), nsb);
 		dm->dir_off = s->off + s->len - sizeof(tail) - adirlen - nsb * sizeof(SiftDocSBRef);
-		if (dm->ncols == 0 || dm->ncols > SIFT_ATTR_MAXCOLS || dm->recs_end > dm->dir_off || dm->recs_end % 4 != 0)
-			corrupt(seg, "DOCMAP lists %u INCLUDE columns and its records end at %llu.", dm->ncols, ULL(dm->recs_end));
+		if (dm->recs_end > dm->dir_off || dm->recs_end % 4 != 0)
+			corrupt(seg, "DOCMAP's INCLUDE records end at %llu.", ULL(dm->recs_end));
 	}
 	else
 	{
@@ -423,81 +429,71 @@ sift_seg_attr_ncols(SiftSegment *seg)
 	return seg->fmt >= SIFT_SEGFMT_ATTR ? (int) docmap(seg)->ncols : 0;
 }
 
-/* The record of INCLUDE values of the loaded and indexed SB, and where the rows of its present pages start */
-static void
-attr_load(SiftSegment *seg, DocMap *dm)
+/* The record of the INCLUDE column col for the loaded and indexed SB, and where the rows of its present pages start: each column is read alone, so a test reads the pages of its column only */
+static const SiftAttrColHdr *
+attr_load(SiftSegment *seg, DocMap *dm, int col)
 {
 	int64		i = dm->cur;
 	const SiftAttrRef *a;
-	const SiftAttrColHdr *ch;
-	uint32		nc;
+	SiftAttrColHdr *h = &dm->ahdr[col];
+	uint64		off = sizeof(SiftAttrColHdr);
 
-	if (dm->acur == i)
-		return;
-	dm->acur = -1;
+	if (dm->acur[col] == i)
+		return h;
+	dm->acur[col] = -1;
 	if (dm->adir == NULL)
 	{
-		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, dm->nsb * sizeof(SiftAttrRef));
+		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef));
 
-		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), dm->nsb * sizeof(SiftAttrRef), dir);
+		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef), dir);
 		dm->adir = dir;
 	}
-	a = &dm->adir[i];
-	if (a->off < dm->recs_end || a->len < sizeof(uint32) + dm->ncols * sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
+	a = &dm->adir[i * dm->ncols + col];
+	if (a->off < dm->recs_end || a->len < sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
 		corrupt(seg, "INCLUDE record of SB %u (%u bytes at %llu) is outside the records.", dm->dir[i].sb, a->len, ULL(a->off));
-	if (a->len > dm->arecap)
+	if (a->len > dm->arecap[col])
 	{
-		dm->arecap = Max(a->len, 4096);
-		if (dm->arec)
-			pfree(dm->arec);
-		dm->arec = MemoryContextAlloc(seg->mcxt, dm->arecap + 16);
+		dm->arecap[col] = Max(a->len, 4096);
+		if (dm->arec[col])
+			pfree(dm->arec[col]);
+		dm->arec[col] = MemoryContextAlloc(seg->mcxt, dm->arecap[col] + SIFT_KERN_PAD);
 	}
-	seg_read(seg, a->off, a->len, dm->arec);
-	memcpy(&nc, dm->arec, sizeof(nc));
-	if (nc != dm->ncols)
-		corrupt(seg, "INCLUDE record of SB %u has %u columns, the segment %u.", dm->dir[i].sb, nc, dm->ncols);
-	ch = (const SiftAttrColHdr *) (dm->arec + sizeof(uint32));
-	for (uint32 c = 0; c < nc; c++)
+	seg_read(seg, a->off, a->len, dm->arec[col]);
+	memcpy(h, dm->arec[col], sizeof(*h));
+	if (!(h->flags & SIFT_ATTR_NOROWS))
 	{
-		SiftAttrColHdr h;
-		uint64		off;
-
-		memcpy(&h, &ch[c], sizeof(h));
-		if (h.flags & SIFT_ATTR_NOROWS)
-			continue;
-		if (h.width == 0 || h.width > SIFT_ATTR_MAXWIDTH || h.off < sizeof(uint32) + nc * sizeof(SiftAttrColHdr) || h.off > a->len)
-			corrupt(seg, "INCLUDE record of SB %u has a column of width %u at %u.", dm->dir[i].sb, h.width, h.off);
-		off = h.off;
+		if (h->width == 0 || h->width > SIFT_ATTR_MAXWIDTH)
+			corrupt(seg, "INCLUDE record of SB %u has a column of width %u.", dm->dir[i].sb, h->width);
 		for (int p = 0; p < SIFT_SB_PAGES; p++)
 		{
-			dm->arow[c][p] = 0;
+			dm->arow[col][p] = 0;
 			if (dm->rows[p] == NULL)
 				continue;
-			dm->arow[c][p] = off;
-			off += ATTR_ROW_BYTES(dm->rowlen[p], h.width);
+			dm->arow[col][p] = off;
+			off += ATTR_ROW_BYTES(dm->rowlen[p], h->width);
 		}
 		if (off > a->len)
 			corrupt(seg, "INCLUDE record of SB %u has rows for %llu bytes, its length %u.", dm->dir[i].sb, ULL(off), a->len);
 	}
-	dm->acur = i;
+	dm->acur[col] = i;
+	return h;
 }
 
 void
 sift_seg_block_attr(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int col, SiftAttrBlock *out)
 {
 	DocMap	   *dm = indexed(seg, dc);
-	SiftAttrColHdr h;
+	const SiftAttrColHdr *h = attr_load(seg, dm, col);
 
-	attr_load(seg, dm);
-	memcpy(&h, dm->arec + sizeof(uint32) + col * sizeof(SiftAttrColHdr), sizeof(h));
-	out->base = h.base;
-	out->unk = h.unk;
-	out->width = h.width;
-	out->norows = (h.flags & SIFT_ATTR_NOROWS) != 0;
+	out->base = h->base;
+	out->unk = h->unk;
+	out->width = h->width;
+	out->norows = (h->flags & SIFT_ATTR_NOROWS) != 0;
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
 		int			page = block * SIFT_BLK_PAGES + pg;
 
-		out->row[pg] = !out->norows && (want >> pg & 1) && dm->rows[page] ? dm->arec + dm->arow[col][page] : NULL;
+		out->row[pg] = !out->norows && (want >> pg & 1) && dm->rows[page] ? dm->arec[col] + dm->arow[col][page] : NULL;
+		out->nslots[pg] = dm->rowlen[page];
 	}
 }

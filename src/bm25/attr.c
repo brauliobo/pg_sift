@@ -15,6 +15,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "bm25/planner.h"
 #include "bm25/segment.h"
 #include "core/store.h"
 
@@ -35,8 +36,8 @@ intlike(Oid t)
 	return t == BOOLOID || t == INT2OID || t == INT4OID || t == INT8OID || t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID;
 }
 
-static int64
-datum_int(Oid t, Datum d)
+int64
+sift_attr_datum(Oid t, Datum d)
 {
 	switch (t)
 	{
@@ -88,7 +89,7 @@ heap_fetch_attrs(void *arg, BlockNumber blk, const OffsetNumber *offs, int n, in
 			if (!h->src.intlike[c])
 				continue;
 			d = heap_getattr(&tup, h->attno[c], h->desc, &isnull);
-			vals[c * n + i] = isnull ? 0 : datum_int(h->type[c], d);
+			vals[c * n + i] = isnull ? 0 : sift_attr_datum(h->type[c], d);
 			state[c * n + i] = isnull ? SIFT_AV_NULL : SIFT_AV_VALUE;
 		}
 	}
