@@ -226,8 +226,8 @@ union_arms_window_order	emit their groups in the order of the parent, which the 
 per_event_arms	the cells of the arms of a two-level grouping	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 scope_sublink_count	scope_sublink_count	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 page_newest_lateral	page_newest_lateral	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
-page_since_cursor	page_since_cursor	events	-	fallback:Bitmap Heap Scan	native	-	ms	faster33	no
-page_deep_offset	page_deep_offset	events	-	fallback:Sort	native	-	ms	faster33	no
+page_since_cursor	page_since_cursor	events	-	Top-N: updated_at DESC NULLS LAST, id	native	-	ms	faster33	no
+page_deep_offset	page_deep_offset	events	-	Top-N: ts DESC NULLS LAST, id	native	-	ms	faster33	no
 scope_exists_any_array	scope_exists_any_array	events	-	fallback:Seq Scan on dims	native	-	ms	faster33	no
 search_scope_filter	search_scope_filter	events	-	Custom Scan \(SiftScan	native	-	ms	faster33	no
 flags_or_null_range	flags_or_null_range	events	-	fallback:Bitmap Heap Scan	native	-	ms	faster33	no
