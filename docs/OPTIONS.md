@@ -2281,8 +2281,8 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %s bytes | `src/agg/lookshm.c` |  |
 | NOTICE | SiftAgg not used: %s: %s | `src/agg/refuse.c` |  |
 | WARNING | maintenance of sift index "%s" failed: %s | `src/bm25/step.c` |  |
-| NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut.c` | `key_cut` |
-| NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
+| NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut/autocut.c` | `key_cut` |
+| NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut/autocut.c` | `key_cut` |
 | NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
 | NOTICE | sift_col index %s: compression of the text of %s column%s chosen by the formula (lz4 for %s, zstd kept for %s) | `src/col/build.c` | `compression` |
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
