@@ -232,7 +232,7 @@ extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
  * list, cols[leaf].n of them. eout NULL: no rollup is built (a segment of column format minor 3 has none). The byte budget is shared: the cube
  * first, then the rollups in list order take what is left; a rollup that does not fit drops its dim of the most distinct values until it does.
  *
- * Element blob: u8 nlists, nlists x (list leaf, bytes of its rollup) as varints, then the rollups (format in col/preagg.c), in ascending list order.
+ * Element blob: u8 nlists, nlists x (list leaf, bytes of its rollup) as varints, then the rollups (format in col/preagg/preagg.c), in ascending list order.
  */
 extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 							StringInfo out, StringInfo eout);

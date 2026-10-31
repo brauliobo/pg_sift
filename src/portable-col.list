@@ -45,7 +45,10 @@ col/seg_write/points.c
 col/seg_write/summary.c
 col/seg_maint.c
 col/ver.c
-col/preagg.c
+col/preagg/preagg.c
+col/preagg/calendar.c
+col/preagg/cube.c
+col/preagg/rollup.c
 col/preagg_opt.c
 col/preagg_read.c
 col/preagg_super.c
@@ -66,6 +69,7 @@ agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c
 agg/kern_neon.c
+col/preagg/pagg_build_int.h
 col/dict/dict_int.h
 agg/kern_vec.h
 # headers
