@@ -116,11 +116,11 @@ relocation_reserve(FreeChain *free, const SiftSegEntry *entry, const SiftExtent 
 	return !immutable || plan->parts - plan->data_at <= SIFT_MAX_EXTENTS;
 }
 
-/* Whether the free blocks left after the plan cover publication's worst-case free-list page count. */
+/* Whether the free blocks left after the plan, and the given back, cover publication's worst-case free-list page count. */
 static bool
-relocation_leaves_spare(const FreeChain *free, int n)
+relocation_leaves_spare(const FreeChain *free, int n, uint32 given_back)
 {
-	uint64 spare = 0;
+	uint64 spare = given_back;
 
 	for (int k = 0; k < free->n; k++)
 		spare += free->ext[k].nblocks;
@@ -140,7 +140,7 @@ relocation_plan(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, 
 	metabuf = lock_meta(rel, BUFFER_LOCK_SHARE);
 	read_chain(rel, metabuf, &free, InvalidFullTransactionId);
 	UnlockReleaseBuffer(metabuf);
-	fits = relocation_reserve(&free, entry, old, n, limit, capacity, plan) && relocation_leaves_spare(&free, n);
+	fits = relocation_reserve(&free, entry, old, n, limit, capacity, plan) && relocation_leaves_spare(&free, n, 0);
 	pfree(free.ext);
 	pfree(free.page);
 	if (!fits)
@@ -375,6 +375,7 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 	BlockNumber newhdr = InvalidBlockNumber;
 	int			hdrbest;
 	bool		hdrfirst = false;
+	uint32		given_back = 0;
 	uint64		gen = entry->gen;
 
 	Assert(space_exclusive);
@@ -448,7 +449,14 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 		if (hdrbest >= 0)
 			newhdr = free.ext[hdrbest].start;
 	}
-	if ((!hdrfirst && hdrbest < 0) || !relocation_leaves_spare(&free, nparts + 1))
+	/* a hole the plan fills to its last block leaves none for the free-list page of the publication: the lowest piece of the last part stays */
+	if (nparts > 0 && part[nparts - 1].ext >= 0 && part[nparts - 1].src.nblocks > SPACE_MIN_RUN_BLOCKS && !relocation_leaves_spare(&free, nparts + 1, 0))
+	{
+		part[nparts - 1].src.start++;
+		part[nparts - 1].src.nblocks--;
+		given_back = 1;
+	}
+	if ((!hdrfirst && hdrbest < 0) || !relocation_leaves_spare(&free, nparts + 1, given_back))
 	{
 		pfree(piece);
 		pfree(part);

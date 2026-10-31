@@ -1,11 +1,11 @@
 -- Holes: a seeded random sequence of inserts, updates, deletes and VACUUMs over small tables leaves no hole behind a VACUUM that nothing
 -- else holds. After each VACUUM of a sift_col index and of a sift_table the file ends at the high-water mark, every free block is
 -- reusable, the free blocks are a small share of the file, a second VACUUM changes nothing, and both count and sum what a heap table
--- that took the same statements holds. The sequence is the same on every run. The order array of a text column is not under test (a table that was never analyzed has one chosen from its pages): off.
+-- that took the same statements holds. The sequence is the same on every run.
 CREATE EXTENSION pg_sift;
 CREATE TABLE fz_ref (id int, grp int, v bigint, note text) WITH (autovacuum_enabled = off);
 CREATE TABLE fz_col (LIKE fz_ref) WITH (autovacuum_enabled = off);
-CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp, order_array_columns = 'off');
+CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp);
 CREATE TABLE fz_tbl (LIKE fz_ref) USING sift_table WITH (autovacuum_enabled = off);
 CREATE TABLE fz_step (n serial, sql text);
 CREATE TABLE fz_bad (n int, what text);
@@ -57,6 +57,9 @@ END $$;
 SET enable_seqscan = off;
 -- every step on the three tables, the checks after each VACUUM of the two sift ones
 \set ECHO none
+NOTICE:  sift_col index "fz_col_idx": order_array_columns = 'auto' chose the text column "note": benefit 117 against cost 46
+DETAIL:  ORDER BY note LIMIT n reads n entries of each segment, where the units compare the strings of every row (100,000 rows: 82.8 M to 0.27 M instructions). The array takes about 11 bytes a row (89% of the index, G) and CREATE INDEX does about 83% more instructions (W): the benefit is log2(300) / log2(1.05), the cost G / 3 + W / 5.
+HINT:  ALTER INDEX fz_col_idx SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = 'note' keeps it by name.
 SELECT * FROM fz_bad ORDER BY n, what;
  n | what 
 ---+------
