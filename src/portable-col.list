@@ -52,7 +52,9 @@ col/preagg/calendar.c
 col/preagg/cube.c
 col/preagg/rollup.c
 col/preagg_opt.c
-col/preagg_read.c
+col/preagg_read/preagg_read.c
+col/preagg_read/check.c
+col/preagg_read/rollup.c
 col/preagg_super.c
 col/ktab.c
 col/gorder.c
@@ -71,6 +73,7 @@ agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c
 agg/kern_neon.c
+col/preagg_read/preagg_read_int.h
 col/codec/decode_int.h
 col/preagg/pagg_build_int.h
 col/dict/dict_int.h

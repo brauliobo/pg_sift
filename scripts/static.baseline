@@ -28,7 +28,7 @@ scan|analyzer|src/col/chunk.c|Array access (via field 'nulls') results in a null
 scan|analyzer|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
 scan|analyzer|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
 scan|analyzer|src/col/preagg/preagg.c|The first element of the 2nd argument is undefined [unix.cstring.UninitializedRead]
-scan|analyzer|src/col/preagg_read.c|Array access results in a null pointer dereference [core.NullDereference]
+scan|analyzer|src/col/preagg_read/preagg_read.c|Array access results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/core/store.h|Array access (via field 'ext') results in a null pointer dereference [core.NullDereference]
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob/sets.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/agg/blob/sets.c|performing an implicit widening conversion to type 'int64' (aka 'long') of a multiplication performed in type 'uint32' (aka 'unsigned int')
@@ -128,7 +128,7 @@ tidy|clang-analyzer-core.NullDereference|src/bm25/inv.c|Array access (via field 
 tidy|clang-analyzer-core.NullDereference|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru')
 tidy|clang-analyzer-core.NullDereference|src/col/chunk.c|Array access (from variable 'bits') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/col/chunk.c|Array access (via field 'nulls') results in a null pointer dereference
-tidy|clang-analyzer-core.NullDereference|src/col/preagg_read.c|Array access results in a null pointer dereference
+tidy|clang-analyzer-core.NullDereference|src/col/preagg_read/preagg_read.c|Array access results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/core/store.h|Array access (via field 'ext') results in a null pointer dereference
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a nonzero integer value results in undefined behavior
 tidy|clang-analyzer-core.NullPointerArithm|src/bm25/bitmap_kern.h|Addition of a null pointer (via field 'off') and a probably nonzero integer value may result in undefined behavior
