@@ -8,12 +8,13 @@ import time
 
 from . import runcfg
 from .runcfg import BENCH, MIN_RUNS, REPO
+from .coverage import cmd_coverage
 from .run import cmd_list, cmd_plan, cmd_run
 
 
 def main(doc):
     ap = argparse.ArgumentParser(description=doc.split('\n')[0])
-    ap.add_argument('cmd', choices=['run', 'list', 'plan'])
+    ap.add_argument('cmd', choices=['run', 'list', 'plan', 'coverage'])
     ap.add_argument('--cases', type=lambda s: s.split(','), default=[])
     ap.add_argument('--engines', default='sift,native')
     ap.add_argument('--rows', type=int, default=200000)
@@ -33,10 +34,14 @@ def main(doc):
     ap.add_argument('--budget-update', action='store_true', help='rewrite the ceilings of the cases that ran in the --budget file: the count with 15%% over it')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
+    ap.add_argument('--strict', action='store_true', help='coverage: fail (exit 1) on every gap, the release gate; without it the gaps are warnings')
+    ap.add_argument('--host-plan', action='store_true', help='coverage: print the commands that measure what is missing (the host window)')
+    ap.add_argument('--since', help='coverage: the commits since this tag are the landed claims (default: the last tag behind HEAD)')
+    ap.add_argument('--root', help='coverage: the checkout to read (default: this one)')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)
     args = ap.parse_args()
     if args.work_mem:
         os.environ['CASES_WORK_MEM'] = args.work_mem
-    sys.exit({'run': cmd_run, 'list': cmd_list, 'plan': cmd_plan}[args.cmd](args))
+    sys.exit({'run': cmd_run, 'list': cmd_list, 'plan': cmd_plan, 'coverage': cmd_coverage}[args.cmd](args))

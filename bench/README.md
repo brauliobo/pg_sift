@@ -469,7 +469,7 @@ The cluster of the cases is scratch on tmpfs (`CASES_TMP`, default `/dev/shm/sif
 ```sh
 bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
 bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
-bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict]   # the coverage gate, no measurement
+bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict] [--host-plan]   # the coverage gate, no measurement: every claim of the release (a CHANGELOG line under Unreleased, a landed commit that gives a speed) has a case, rows of this version, rows of its `peers` (FILE:ARM) and a block in a page, and no table footer says "not measured"; without --strict the gaps are warnings, --host-plan prints the commands that measure them
 ```
 
 Lanes: `sift` is the planner's own choice and its EXPLAIN must match the `plan` of the row (a case that falls back to the normal plan fails, and so does a wrong answer: every lane is compared with `native`,

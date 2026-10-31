@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--io cold|warm|off] [--minstr] [--budget FILE [--budget-update]] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--no-share] [--any-plan] [--no-wait] [--keep]
 #        bench/bench cases --list | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
+#        bench/bench cases --check [--strict] [--host-plan] [--since TAG]   every claim of the release has a case, rows of this version, rows of its peers and a block (steps/cases/coverage.py; --strict is the release gate)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
 # EXPLAIN), on PostgreSQL with sift.enable_agg = off (the same table and statement), on the sift variants of its row and, with --engines pg_duckdb, on a pg_duckdb container that holds a
@@ -21,6 +22,7 @@ while (( $# )); do
   case $1 in
     --list) exec python3 -I "$STEPS/cases.py" list ;;
     --plan) shift; exec python3 -I "$STEPS/cases.py" plan "$@" ;;
+    --check) shift; exec python3 -I "$STEPS/cases.py" coverage "$@" ;;
     --discover) DISC=1; shift; DISCOVER=("$@"); break ;;
     --rows) ROWS=$2; shift ;;
     --rounds) ROUNDS=$2; shift ;;
