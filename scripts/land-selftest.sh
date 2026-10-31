@@ -9,7 +9,7 @@
 #   6. a background process of the worker or of the merge call that outlives the landing holds no lock; the normal end removes what the worker left
 #   7. the privacy gate fails on a hit and closed without its deny list
 #   7b. overlapping runs of one PR fetch its head without disturbing each other
-#   8. land-union.py keeps both sides of added lines only
+#   8. land-union.py keeps both sides of added lines only, each entry once
 #   9. a CHANGELOG a merge of the tip left broken (markers, a duplicated line, an entry moved out of Unreleased or lost) is refused
 #  10. the verdict on the required checks (ok, missing, pending, red, a head that is not the PR head, a re-run) and the bounded wait for pending and missing ones
 #  11. the script has no process-table matching and no sleep that does not say what it waits for
@@ -177,6 +177,12 @@ done <<'EOF2'
 1|Makefile|CFLAGS = -O2|CFLAGS = -O3
 0|focus.tsv|a|a\nb
 EOF2
+# a name or a row that is in the list twice after the merge is kept once, in the place of its first appearance
+mkdir -p "$T/dedupe"
+printf 'A\nTESTING_REGRESS += a b\n<<<<<<< HEAD\nTESTING_REGRESS += c\n=======\nTESTING_REGRESS += b d\nTESTING_REGRESS += a\n>>>>>>> tip\nZ\n' >"$T/dedupe/Makefile"
+python3 "$HERE/land-union.py" "$T/dedupe/Makefile" && [[ $(tr '\n' ' ' <"$T/dedupe/Makefile") == "A TESTING_REGRESS += a b TESTING_REGRESS += c TESTING_REGRESS += d Z " ]] || fail "land-union.py left a list name twice in a Makefile"
+printf 'h\nr1\n<<<<<<< HEAD\nr2\nr1\n=======\nr1\nr3\n>>>>>>> tip\n' >"$T/dedupe/rows.tsv"
+python3 "$HERE/land-union.py" "$T/dedupe/rows.tsv" && [[ $(tr '\n' ' ' <"$T/dedupe/rows.tsv") == "h r1 r2 r3 " ]] || fail "land-union.py left a row twice in a list"
 printf '# h\nb\n<<<<<<< HEAD\nd\n=======\nc\n>>>>>>> tip\ne\n' >"$T/sorted.tsv"
 python3 "$HERE/land-union.py" --sorted "$T/sorted.tsv" && [[ $(tr '\n' ' ' <"$T/sorted.tsv") == "# h b c d e " ]] || fail "land-union.py --sorted did not sort the rows after the header"
 printf '<<<<<<< HEAD\nx2\n||||||| base\nx\n=======\nx3\n>>>>>>> tip\n' >"$T/base.tsv"

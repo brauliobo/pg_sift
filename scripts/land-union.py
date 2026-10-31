@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """land-union.py [--sorted] FILE: resolve the conflict hunks of FILE when both sides only ADD whole lines of a list:
 `VAR += names` lines of a Makefile (TESTING_REGRESS += ...), or rows of a tsv/allow file. Both sides are kept, once each.
+Afterwards each list entry is there once (dedupe: names of a `VAR +=` line already in an earlier line of that VAR, identical rows of a tsv), order kept.
 A hunk with any other Makefile line (an assignment `=`, a recipe, a deletion) is left alone: exit 1, the owner merges the tip.
 FILE may hold the diff3 style (`|||||||` section of the merge base): a hunk whose base section is not empty is a change of existing lines, not an addition: exit 1.
 --sorted: the lines of the file after its leading `#` and `=` lines are put in byte order again (for a list the file keeps sorted).
@@ -10,6 +11,27 @@ the PR head and the tip). Exit 1 with the reason when conflict markers are left,
 tip's, or an entry the PR added is not inside `## Unreleased`."""
 import re, sys
 from collections import Counter
+
+
+def dedupe(lines, is_make):
+    """each list entry once, the first one kept, order kept: a `VAR += names` line of a Makefile loses the names an earlier line of the same VAR has (a line left empty goes);
+    any other list line is dropped when an identical one came before (comments, `=` rows and blank lines are not entries)"""
+    entry = re.compile(r"^([A-Z][A-Z0-9_]*) \+= (\S.*)$")
+    seen, names, out = set(), {}, []
+    for line in lines:
+        m = entry.match(line) if is_make and not line.endswith("\\") else None
+        if m and not all(re.fullmatch(r"[\w%.-]+", n) for n in m[2].split()):
+            m = None  # a make expression ($(call ..)) is not a list of names: left as it is
+        if m:
+            have = names.setdefault(m[1], set())
+            kept = [n for n in m[2].split() if n not in have]
+            have.update(kept)
+            if kept:
+                out.append(f"{m[1]} += {' '.join(kept)}" if kept != m[2].split() else line)
+        elif is_make and not m or not line.strip() or line[0] in "#=" or line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out
 
 
 def union(path, sort=False):
@@ -46,6 +68,7 @@ def union(path, sort=False):
             out.append(line)
     if side is not None:
         return 1
+    out = dedupe(out, is_make)
     if sort:
         keep = 0
         while keep < len(out) and out[keep][:1] in ("#", "="):
