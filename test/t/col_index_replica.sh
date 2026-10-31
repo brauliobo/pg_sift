@@ -9,7 +9,7 @@
 . "$(dirname "$0")/lib_col.bash"
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 15
+plan 16
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -18,11 +18,27 @@ node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"${COL_WEIGHT_FUNCS[@]}" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, gone bigint, doc jsonb)" \
+	"CREATE FUNCTION kept_same(tbl regclass) RETURNS bool LANGUAGE plpgsql AS \$\$
+	DECLARE q text = format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (WITH ev AS (SELECT k, grp, v FROM %s WHERE v < 6)
+			SELECT c.grp, c.n, s.total FROM (SELECT grp, count(*) AS n FROM ev GROUP BY grp) c JOIN (SELECT grp, sum(v) AS total FROM ev GROUP BY grp) s USING (grp)) x', tbl);
+		a text; b text;
+	BEGIN
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		EXECUTE q INTO a;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		EXECUTE q INTO b;
+		RETURN a = b;
+	END \$\$" \
 	"INSERT INTO orders (tenant_id, status, qty, gone, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, CASE WHEN i % 500 = 0 THEN i END,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, gone, doc) WITH (key_cut = off, write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)', hll_columns = 'tenant_id, status, qty')" \
 	>/dev/null || bail "setup failed"
+for T in kept_a kept_b kept_c; do
+	sql primary "CREATE TABLE $T (id int PRIMARY KEY, k int NOT NULL, grp int NOT NULL, v int NOT NULL, doc jsonb)" \
+		"INSERT INTO $T SELECT i, i % 3000, i % 40, i % 17, jsonb_build_object('a', i % 9) FROM generate_series(1, 40000) i" \
+		"CREATE INDEX ${T}_col ON $T USING sift_col (id, k, grp, v, doc)" "VACUUM (FREEZE, ANALYZE) $T" >/dev/null || bail "setup of $T failed"
+done
 
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
@@ -87,6 +103,29 @@ check "and what the primary's returns" \
 	test "$(sql standby "SET seq_page_cost = 10000" "$TYPED")" == "$(sql primary "SET seq_page_cost = 10000" "$TYPED")"
 SEGS="SELECT string_agg(gen || ':' || kind || ':' || coalesce(rows, 0), ' ' ORDER BY gen) FROM sift.col_segments('o_col') WHERE kind = 'immutable'"
 check "standby immutable segments equal the primary's" test "$(sql standby "$SEGS")" == "$(sql primary "$SEGS")"
+
+# A session of the standby keeps the rows of the write buffer between statements. After updates and deletes the primary's VACUUM flags the records of the tuples it removes
+# (replayed here) and frees their addresses: the session's next read must be the heap's, not what it kept
+for T in kept_a kept_b kept_c; do
+	sql primary "SET sift.async_maintenance = off" "UPDATE $T SET doc = NULL WHERE id % 11 = 0" "UPDATE $T SET grp = (grp + 1) % 40 WHERE id % 17 = 0" "UPDATE $T SET v = v + 3 WHERE id % 13 = 0" \
+		"DELETE FROM $T WHERE id % 19 = 0" >/dev/null
+done
+catchup primary standby
+rm -f "$P/kept.go"
+cat >"$P/kept.sql" <<EOF
+SET max_parallel_workers_per_gather = 0;
+SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c');
+\! until [ -f $P/kept.go ]; do sleep 0.1; done
+SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c');
+EOF
+psql -X -At -q -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -d postgres -f "$P/kept.sql" >"$P/kept.log" 2>&1 &
+KEPT=$!
+for _ in $(seq 100); do [[ -s $P/kept.log ]] && break; sleep 0.1; done
+sql primary "SET sift.async_maintenance = off" "VACUUM kept_a, kept_b, kept_c" >/dev/null
+catchup primary standby
+touch "$P/kept.go"
+wait "$KEPT"
+check "a session of the standby that read the write buffer reads the heap as it is after the VACUUM" test "$(tr '\n' ' ' <"$P/kept.log")" == "t t "
 
 node_promote standby
 for _ in $(seq 100); do [[ $(sql standby "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done

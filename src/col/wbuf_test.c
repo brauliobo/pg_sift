@@ -483,8 +483,8 @@ sift_test_col_wbuf_rows(PG_FUNCTION_ARGS)
 }
 
 /*
- * (index regclass, seed int8) -> (gen int8, sb int8, id int8): the live rows of every write buffer as batches. The batches ascend by
- * superblock, their keys ascend and belong to it, and every row is checked against its generator.
+ * (index regclass, seed int8, shared bool) -> (gen int8, sb int8, id int8): the live rows of every write buffer as batches, kept by the backend for the next
+ * read when shared. The batches ascend by superblock, their keys ascend and belong to it, and every row is checked against its generator.
  */
 Datum
 sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
@@ -492,6 +492,7 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	uint64		seed = PG_GETARG_INT64(1);
+	bool		shared = PG_GETARG_BOOL(2);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -504,7 +505,8 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 
 		if (!is_wbuf(&snap->segs[i]))
 			continue;
-		batches = sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
+		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb) :
+			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
 		for (int k = 0; k < nb; k++)
 		{
 			SiftColBatch *b = batches[k];

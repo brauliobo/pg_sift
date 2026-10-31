@@ -85,6 +85,23 @@ SELECT s.kind, s.nrows = c.nrows AS same_nrows, s.live
 FROM sift._test_col_wbuf_segments('t_idx') s JOIN counts c USING (gen) ORDER BY gen;
 SELECT sift._test_check('t_idx') AS orphans;
 
+-- the batches a scan keeps are the buffer as it is now: a read after VACUUM flagged records leaves them out, rows appended since are in
+CREATE TABLE t4 (doc int);
+CREATE INDEX t4_idx ON t4 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t4_idx') IS NOT NULL AS prepared;
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 0, 600) >= 0 AS appended;
+SELECT count(*) AS kept, count(*) FILTER (WHERE id % 5 = 0) AS dead_kept FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT count(*) AS kept_again FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT sift._test_col_wbuf_delete('t4_idx', 5) AS flagged;
+SELECT count(*) AS kept, count(*) FILTER (WHERE id % 5 = 0) AS dead_kept FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 600, 100) >= 0 AS appended;
+SELECT sift._test_col_wbuf_delete('t4_idx', 7) AS flagged_more;
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 700, 100) >= 0 AS appended;
+SELECT (SELECT count(*) FROM (SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7, true) EXCEPT SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7)) x) AS only_kept,
+	   (SELECT count(*) FROM (SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7) EXCEPT SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7, true)) x) AS only_fresh,
+	   (SELECT count(*) FROM sift._test_col_wbuf_batches('t4_idx', 7, true)) AS kept;
+SELECT sift._test_check('t4_idx') AS orphans;
+
 -- a string of any length is held: a record of 300 000 bytes spans pages
 SELECT sift._test_col_wbuf_long('t_idx');
 SELECT sift._test_check('t_idx') AS orphans;
@@ -131,7 +148,7 @@ SELECT sift._test_poke('t2_idx', :rec_page, 40, 100000, 4);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
 
-DROP TABLE t, t2, t3, r, b, p, pages, counts;
+DROP TABLE t, t2, t3, t4, r, b, p, pages, counts;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -114,6 +114,12 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 		d->bytescap = Max(d->bytescap * 2, d->nbytes + len);
 		d->bytes = repalloc(d->bytes, d->bytescap);
 	}
+	/* the byte order made before (by a top-N scan of a batch the write buffer keeps) does not have this string */
+	if (d->sorted != NULL)
+	{
+		pfree(d->sorted);
+		d->sorted = NULL;
+	}
 	memcpy(d->bytes + d->nbytes, s, len);
 	d->nbytes += len;
 	d->off[d->n + 1] = (uint32) d->nbytes;

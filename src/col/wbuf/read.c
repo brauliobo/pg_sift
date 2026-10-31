@@ -45,7 +45,28 @@ wbuf_advance_page(SiftCWbufReader *r)
 		return false;
 	wbuf_cursor_set(&r->cur, r->page);
 	r->pflags = SiftLaneHead(r->page)->flags;
+	if (r->pagefn)
+		r->pagefn(r->pagearg, r->it.blk, r->page, r->cur.used);
 	return true;
+}
+
+/* The records of a page that start in bytes from to upto and are flagged dead */
+uint32
+wbuf_page_dead(Relation index, Page page, Size from, Size upto)
+{
+	PageCursor	c = {.index = index};
+	uint32		n = 0;
+
+	wbuf_cursor_set(&c, page);
+	while (c.pos < c.used && c.pos < upto)
+	{
+		Size		size;
+		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
+
+		n += c.pos >= from && (h->flags & SIFT_COLR_DELETED) != 0;
+		c.pos += size;
+	}
+	return n;
 }
 
 static void

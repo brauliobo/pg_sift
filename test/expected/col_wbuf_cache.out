@@ -191,6 +191,57 @@ SELECT * FROM wc_same('rebuilt and appended');
  rebuilt and appended | t         | t
 (1 row)
 
+-- the dictionary of a kept batch: a top-N scan on a text column makes its byte order once it compared enough rows (col/dict/parse.c), and the strings of the rows appended
+-- since must be in that order, or the scan reads past it
+CREATE EXTENSION pg_sift_helpers;
+CREATE TABLE tw (id int PRIMARY KEY, g int, s text COLLATE "C", pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
+INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX tw_col ON tw USING sift_col (id, g, s);
+VACUUM (FREEZE, ANALYZE) tw;
+INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(201, 3000) i;
+CREATE FUNCTION tw_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tw_a, tw_b;
+	PERFORM sift_helpers.agg_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tw_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM sift_helpers.agg_mode(false);
+	EXECUTE 'CREATE TEMP TABLE tw_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tw_a EXCEPT ALL SELECT pos, r FROM tw_b) UNION ALL (SELECT pos, r FROM tw_b EXCEPT ALL SELECT pos, r FROM tw_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END;
+END $$;
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') AS first;
+NOTICE:  table "tw_a" does not exist, skipping
+NOTICE:  table "tw_b" does not exist, skipping
+   first   
+-----------
+ same+topn
+(1 row)
+
+SELECT count(*) AS repeated FROM (SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') FROM generate_series(1, 20)) x;
+ repeated 
+----------
+       20
+(1 row)
+
+INSERT INTO tw (id, g, s) SELECT i, i % 7, 'a' || md5(i::text) FROM generate_series(3001, 3300) i;
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') AS strings_appended;
+ strings_appended 
+------------------
+ same+topn
+(1 row)
+
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s DESC, id LIMIT 30') AS strings_appended_desc;
+ strings_appended_desc 
+-----------------------
+ same+topn
+(1 row)
+
+RESET ALL;
+DROP TABLE tw;
+DROP FUNCTION tw_check(text);
+DROP EXTENSION pg_sift_helpers;
 DROP TABLE wc CASCADE;
 DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
 DROP EXTENSION pg_sift;

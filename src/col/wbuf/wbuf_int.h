@@ -66,6 +66,8 @@ struct SiftCWbufReader
 	const SiftColSchema *schema;
 	MemoryContext mcxt;
 	SiftLaneIter it;
+	void		(*pagefn) (void *arg, BlockNumber blk, Page page, Size used);	/* called for each page copied (col/wbuf/batches.c) */
+	void	   *pagearg;
 	Page		page;			/* copy of the current page */
 	PageCursor	cur;
 	uint16		pflags;
@@ -122,6 +124,8 @@ typedef struct WbufLane
 	BlockNumber blk;
 	Size		pos;
 } WbufLane;
+
+extern uint32 wbuf_page_dead(Relation index, Page page, Size from, Size upto);
 
 extern void	wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg);
 

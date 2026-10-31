@@ -178,8 +178,8 @@ CREATE FUNCTION sift._test_col_wbuf_long(index regclass) RETURNS void
 CREATE FUNCTION sift._test_col_wbuf_rows(index regclass, seed int8, OUT gen int8, OUT id int8, OUT deleted bool)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_rows' LANGUAGE C STRICT;
--- the live rows as batches (superblock, id), checked against the generator
-CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, OUT gen int8, OUT sb int8, OUT id int8)
+-- the live rows as batches (superblock, id), checked against the generator; shared: the batches the backend keeps for a scan
+CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bool DEFAULT false, OUT gen int8, OUT sb int8, OUT id int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_batches' LANGUAGE C STRICT;
 -- VACUUM's pass: flags the rows with id % modulus = 0; returns how many
