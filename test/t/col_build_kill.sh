@@ -83,8 +83,13 @@ if restart; then ok "the primary restarts and the standby streams again"; recove
 else not_ok "the primary restarts and the standby streams again"; fi
 
 # the leader, before the n-th directory update of the build
-sql primary "${OPTS[@]}" "$BUILD" "SELECT sift._test_dir_updates()" >"$(dir primary)/k.out" 2>&1 && updates=$(tail -1 "$(dir primary)/k.out") || updates=0
-sql primary "DROP INDEX t_idx" >/dev/null
+# the count varies from build to build (4 to 6 on a loaded runner): the smallest of three keeps the last kill points reachable
+updates=
+for _ in 1 2 3; do
+	sql primary "${OPTS[@]}" "$BUILD" "SELECT sift._test_dir_updates()" >"$(dir primary)/k.out" 2>&1 && n=$(tail -1 "$(dir primary)/k.out") || n=0
+	sql primary "DROP INDEX t_idx" >/dev/null
+	(( ${updates:-$n} >= n )) && updates=$n
+done
 diag "the build publishes $updates directory updates"
 check "the build publishes directory updates (the segments, then the partitions of the merge)" test "${updates:-0}" -gt 1
 points=(1 "$(( (updates + 1) / 2 ))" "$updates" "-$updates" 2 3 4 5 6 7 8)
