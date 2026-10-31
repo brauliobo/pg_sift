@@ -668,6 +668,23 @@ paranoid_report(SiftColSource *src, const ColUnit *cu, BlockNumber blk, OffsetNu
 }
 #endif
 
+int64		sift_col_vet_offsets;
+
+/* The first selected row at or after from; sel->nwords * 64 when there is none */
+static uint32
+sel_next(const SiftColSel *sel, uint32 from)
+{
+	uint32		w = from / 64;
+	uint64		m;
+
+	if (w >= sel->nwords)
+		return sel->nwords * 64;
+	m = sel->bits[w] & (~UINT64CONST(0) << (from % 64));
+	while (m == 0 && ++w < sel->nwords)
+		m = sel->bits[w];
+	return m == 0 ? sel->nwords * 64 : w * 64 + pg_rightmost_one_pos64(m);
+}
+
 bool
 sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 {
@@ -675,8 +692,6 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	SiftColSource *src = cu->src;
 	const SiftColVisibility *vis = &src->visibility;
 	const uint64 *av = unit_allvisible(cu);
-	const SiftKey *keys = NULL;		/* only a page that is not all-visible needs the row offsets */
-	PageWalk	pw;
 
 	SIFT_COL_JITTER();
 #ifdef SIFT_TESTING
@@ -691,37 +706,25 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 #endif
 			return sift_col_sel_count(sel) > 0;
 	sift_cunit_keyed_load(&cu->v);
-	pw_init(&pw, &cu->v);
-	for (uint32 p = 0; p < cu->v.npages; p++)
+	if (sift_col_sel_count(sel) >= cu->v.nrows / 16)
+		sift_cunit_page_offsets_all(&cu->v);
+	/* the pages that hold a selected row, found from the rows: a unit lists thousands of pages and the selection a few dozen rows */
+	for (uint32 r = sel_next(sel, 0), hi, p = 0; r < sel->nwords * 64; r = sel_next(sel, hi))
 	{
-		BlockNumber blk;
-
-		/* a key-cut unit lists thousands of pages and few of them are not all-visible: go to the next one that is not */
-		if (cu->v.keyed && av != NULL
-#ifdef SIFT_TESTING
-			&& !sift_test_col_paranoid
-#endif
-			)
-		{
-			uint32		w = p / 64,
-						nw = (cu->v.npages + 63) / 64;
-			uint64		m = ~av[w] & (~UINT64CONST(0) << (p % 64));
-
-			while (m == 0 && ++w < nw)
-				m = ~av[w];
-			if (m == 0)
-				break;
-			p = w * 64 + pg_rightmost_one_pos64(m);
-			if (p >= cu->v.npages)
-				break;
-		}
-		blk = cu->v.keyed ? cu->v.blocks[p] : cu->sb * SIFT_SB_PAGES + pw_next(&pw);
-		uint32		lo = cu->v.rowstart[p],
-					hi = cu->v.rowstart[p + 1],
+		uint32		lo,
 					n = 0;
+		BlockNumber blk;
 		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
-		bool		allvis = av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1));
+		uint16		offs[MaxHeapTuplesPerPage];		/* the offsets of the rows of the page: only a page that is not all-visible and holds a selected row has them decoded */
+		bool		allvis;
 
+		/* the page of the row: the same or the next one where the selection is dense */
+		if (r >= cu->v.rowstart[p + 1])
+			p = p + 1 < cu->v.npages && r < cu->v.rowstart[p + 2] ? p + 1 : sift_cunit_row_page(&cu->v, r);
+		lo = cu->v.rowstart[p];
+		hi = cu->v.rowstart[p + 1];
+		blk = sift_cunit_page_block(&cu->v, cu->sb, p);
+		allvis = av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1));
 #ifdef SIFT_TESTING
 		if (allvis && sift_test_col_paranoid)
 			allvis = false;		/* checked like the others, and reported below */
@@ -729,34 +732,28 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 #endif
 		if (allvis)
 			continue;
-		if (!range_any(sel->bits, lo, hi))
-			continue;
-		if (keys == NULL)
-			keys = unit_keys(cu);
-		for (uint32 r = lo; r < hi; r++)
-			if (sift_col_bit_test(sel->bits, r))
+		sift_cunit_page_offsets(&cu->v, p, offs);
+		sift_col_vet_offsets += hi - lo;
+		for (uint32 q = lo; q < hi; q++)
+			if (sift_col_bit_test(sel->bits, q))
 			{
-				uint32		off = (keys[r] & 0xFFFF) - 1;
-
-				sift_col_bit_set(offmask, off);
+				sift_col_bit_set(offmask, offs[q - lo] - 1);
 				n++;
 			}
-		if (n == 0)
-			continue;
 		src->cnt.rows_vetted += n;
 		vis->filter_page(vis->arg, blk, offmask);
-		for (uint32 r = lo; r < hi; r++)
-			if (sift_col_bit_test(sel->bits, r) && !sift_col_bit_test(offmask, (keys[r] & 0xFFFF) - 1))
+		for (uint32 q = lo; q < hi; q++)
+			if (sift_col_bit_test(sel->bits, q) && !sift_col_bit_test(offmask, offs[q - lo] - 1))
 			{
 #ifdef SIFT_TESTING
 				if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
 				{
 					/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
-					paranoid_report(src, cu, blk, (OffsetNumber) (keys[r] & 0xFFFF));
+					paranoid_report(src, cu, blk, (OffsetNumber) offs[q - lo]);
 					continue;
 				}
 #endif
-				sift_col_bit_clear(sel->bits, r);
+				sift_col_bit_clear(sel->bits, q);
 			}
 	}
 	if (vis->counters)

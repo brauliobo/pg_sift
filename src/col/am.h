@@ -316,6 +316,7 @@ extern void sift_col_plan_end(bool started);
 extern MemoryContext sift_col_plan_memo(uint64 *plan);
 #ifdef SIFT_TESTING
 extern int64 sift_col_key_sorts;	/* the sorts of an IN list by the cost estimates */
+extern int64 sift_col_vet_offsets;	/* the row offsets decoded to check rows against the heap (sift_col_vet) */
 #endif
 
 #endif							/* SIFT_COL_AM_H */

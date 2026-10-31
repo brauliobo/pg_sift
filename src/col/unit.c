@@ -192,16 +192,13 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	uint64		at = v->kbody_at != 0 ? v->kbody_at : 24;
 	const uint8 *p = v->rec + at;
 	uint32	   *delta = palloc(Max(np, 1) * sizeof(uint32)),
-			   *cnt = palloc(Max(np, 1) * sizeof(uint32)),
-			   *off = palloc(Max(nrows, 1) * sizeof(uint32));
+			   *cnt = palloc(Max(np, 1) * sizeof(uint32));
 	BlockNumber *blocks = palloc(Max(np, 1) * sizeof(BlockNumber));
 	uint32	   *rowstart = palloc((np + 1) * sizeof(uint32));
-	uint16	   *koff = palloc(Max(nrows, 1) * sizeof(uint16));
 
 	uint64		left = avail - at;		/* bytes from p to the end of the record: get_packed reads ahead inside it only */
 	uint64		blk = v->kblk0,
 				rows = 0;
-	bool		bad = false;			/* an offset out of its page, or not above the one before it in its page */
 
 	if (!get_packed(p, left, np > 0 ? np - 1 : 0, bw[0], delta))
 		return false;
@@ -213,10 +210,12 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	if (!get_packed(p, left, np, bw[1], cnt))
 		return false;
 	at = ((uint64) np * bw[1] + 7) / 8;
+	if (((uint64) nrows * bw[2] + 7) / 8 > left - at)
+		return false;
 	p += at;
 	left -= at;
-	if (!get_packed(p, left, nrows, bw[2], off))
-		return false;
+	v->koff_bits = p;
+	v->koff_left = left;
 	/* the pages and the rows each starts at are running sums, the block of a page only grows: the ends are checked once, not at every page */
 	rowstart[0] = 0;
 	for (uint32 q = 0; q < np; q++)
@@ -228,26 +227,14 @@ keyed_decode(SiftCUnitView *v, uint32 avail)
 	}
 	if (rows != nrows || (np > 0 && blk - 1 >= MaxBlockNumber))
 		return false;
-	for (uint32 q = 0; q < np; q++)
-	{
-		for (uint32 r = rowstart[q] + 1; r < rowstart[q + 1]; r++)
-			bad |= off[r] <= off[r - 1];
-	}
-	for (uint32 r = 0; r < nrows; r++)
-	{
-		bad |= off[r] >= MaxHeapTuplesPerPage;
-		koff[r] = (uint16) (off[r] + 1);
-	}
-	if (bad)
-		return false;
 	if (np > 0 && blocks[np - 1] != v->kblk1)
 		return false;
 	v->rowstart = rowstart;
 	v->blocks = blocks;
-	v->koff = koff;
+	v->koff = palloc(Max(nrows, 1) * sizeof(uint16));
+	v->kdone = palloc0(Max(np, 1));
 	pfree(delta);
 	pfree(cnt);
-	pfree(off);
 	return true;
 }
 
@@ -279,6 +266,78 @@ sift_cunit_keyed_load(const SiftCUnitView *cv)
 	keyed_body(v);
 	if (!keyed_decode(v, v->len))
 		sift_cunit_keyed_corrupt();
+}
+
+/*
+ * The offsets (1-based) of the rows of page p of a key-cut unit, decoded and checked the first time a scan asks for the page: a scan that vets a few rows of a unit
+ * reads the pages that hold them, not the offsets of every row of the unit.
+ */
+static const uint16 *
+keyed_page_offsets(const SiftCUnitView *cv, uint32 p)
+{
+	SiftCUnitView *v = (SiftCUnitView *) cv;
+	uint32		r0 = v->rowstart[p],
+				r1 = v->rowstart[p + 1],
+				first = r0 & ~7u,
+				bits = (v->kwidths >> 16) & 0xFF,
+				off[MaxHeapTuplesPerPage + 8];
+
+	sift_cunit_keyed_load(v);
+	if (v->kdone[p])
+		return v->koff + r0;
+	if (r1 - r0 > MaxHeapTuplesPerPage ||
+		!get_packed(v->koff_bits + (uint64) first * bits / 8, v->koff_left - (uint64) first * bits / 8, r1 - first, bits, off))
+		sift_cunit_keyed_corrupt();
+	for (uint32 r = r0; r < r1; r++)
+	{
+		if (off[r - first] >= MaxHeapTuplesPerPage || (r > r0 && off[r - first] <= off[r - first - 1]))
+			sift_cunit_keyed_corrupt();
+		v->koff[r] = (uint16) (off[r - first] + 1);
+	}
+	v->kdone[p] = true;
+	return v->koff + r0;
+}
+
+/* The offsets of all the rows of a key-cut unit at once, which costs less than a page at a time where a scan vets a tenth of its rows or more */
+void
+sift_cunit_page_offsets_all(const SiftCUnitView *cv)
+{
+	SiftCUnitView *v = (SiftCUnitView *) cv;
+	uint32	   *off;
+
+	if (!v->keyed)
+		return;
+	sift_cunit_keyed_load(v);
+	off = palloc(Max(v->nrows, 1) * sizeof(uint32));
+	if (!get_packed(v->koff_bits, v->koff_left, v->nrows, (v->kwidths >> 16) & 0xFF, off))
+		sift_cunit_keyed_corrupt();
+	for (uint32 p = 0; p < v->npages; p++)
+	{
+		if (v->kdone[p])
+			continue;
+		for (uint32 r = v->rowstart[p]; r < v->rowstart[p + 1]; r++)
+		{
+			if (off[r] >= MaxHeapTuplesPerPage || (r > v->rowstart[p] && off[r] <= off[r - 1]))
+				sift_cunit_keyed_corrupt();
+			v->koff[r] = (uint16) (off[r] + 1);
+		}
+		v->kdone[p] = true;
+	}
+	pfree(off);
+}
+
+/* The offsets (1-based) of the rows of page p of the unit, in the order of the rows: offs has room for MaxHeapTuplesPerPage */
+void
+sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs)
+{
+	if (v->keyed)
+		memcpy(offs, keyed_page_offsets(v, p), (v->rowstart[p + 1] - v->rowstart[p]) * sizeof(uint16));
+	else
+	{
+		uint32		sl = page_sparse_len(v, p);
+
+		page_offsets(v, p, sl > 0 ? v->sparse + page_sparse_off(v, p) : NULL, offs);
+	}
 }
 
 void
@@ -564,10 +623,14 @@ sift_cunit_page_offmask_at(const SiftCUnitView *v, uint32 p, uint32 soff, uint64
 
 	memset(offmask, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 	if (v->keyed)
+	{
+		const uint16 *ko;
+
 		sift_cunit_keyed_load(v);
-	if (v->keyed)
-		for (uint32 r = v->rowstart[p]; r < v->rowstart[p + 1]; r++)
-			offmask[(v->koff[r] - 1) / 64] |= UINT64CONST(1) << ((v->koff[r] - 1) % 64);
+		ko = keyed_page_offsets(v, p);
+		for (uint32 r = 0; r < cnt; r++)
+			offmask[(ko[r] - 1) / 64] |= UINT64CONST(1) << ((ko[r] - 1) % 64);
+	}
 	else if (sl > 0)
 		memcpy(offmask, v->sparse + soff, sl);
 	else
@@ -611,8 +674,12 @@ sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys)
 	{
 		sift_cunit_keyed_load(v);
 		for (uint32 p = 0; p < v->npages; p++)
+		{
+			const uint16 *ko = keyed_page_offsets(v, p);
+
 			for (uint32 r = v->rowstart[p]; r < v->rowstart[p + 1]; r++)
-				keys[r] = ((SiftKey) v->blocks[p] << 16) | v->koff[r];
+				keys[r] = ((SiftKey) v->blocks[p] << 16) | ko[r - v->rowstart[p]];
+		}
 		return;
 	}
 
@@ -681,7 +748,11 @@ sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint3
 	{
 		sift_cunit_keyed_load(v);		/* before v->blocks is read: the directory is decoded on first use */
 		for (; k < n; k++)
-			out[k] = ((SiftKey) v->blocks[sift_cunit_row_page(v, ords[k])] << 16) | v->koff[ords[k]];
+		{
+			uint32		p = sift_cunit_row_page(v, ords[k]);
+
+			out[k] = ((SiftKey) v->blocks[p] << 16) | keyed_page_offsets(v, p)[ords[k] - v->rowstart[p]];
+		}
 		return;
 	}
 	for (uint32 p = 0; p < v->npages && k < n; p++)
