@@ -118,8 +118,6 @@ preagg_unit_try(AggExec *ex)
 			preagg_count(ex, rows);
 			return true;
 		}
-		if (!ex->pcount_cmp)
-			return false;
 	}
 	if (ex->pa.ktab && ex->unit.nsu == 0)
 		return false;

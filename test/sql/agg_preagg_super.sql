@@ -139,6 +139,10 @@ SELECT * FROM pa_check('su');
 SELECT 'su_off' AS tbl, * FROM pa_sum('su_off') UNION ALL SELECT 'su_two', * FROM pa_sum('su_two') UNION ALL SELECT 'su_big', * FROM pa_sum('su_big')
 UNION ALL SELECT 'su_old', * FROM pa_sum('su_old') ORDER BY 1;
 
+-- a count(*) of one text test whose dictionary holds no row counts (count_columns is off for few strings) is answered by the groups of units too
+SELECT sup > 0 AS groups, pre = units AS all_exact, pa_rows(q, true, true, true) IS NOT DISTINCT FROM pa_rows(q, false, false, false) AS same
+FROM (SELECT 'SELECT count(*) FROM su WHERE grp = ''g05''' AS q) z, LATERAL pa_units(z.q) u;
+
 -- 2. rows written since the last VACUUM: the groups that hold their pages are answered from their units (or scanned), the others still from the summary
 UPDATE su SET amt = amt + 1, val = val + 7 WHERE id < 3000 AND id % 97 = 0;
 DELETE FROM su WHERE id < 3000 AND id % 199 = 0;
