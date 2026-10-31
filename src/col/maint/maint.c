@@ -214,6 +214,7 @@ sift_col_maint_worker_main(Datum main_arg)
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
 				CHECK_FOR_INTERRUPTS();
+			sift_mops_cut_free_end(&maint_col_ops, index);
 			sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
 		}
 		if (index != NULL)

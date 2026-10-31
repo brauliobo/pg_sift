@@ -471,6 +471,26 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 }
 
 /* Seals the active segment and promotes every sealed one; returns the number promoted */
+/* The free end of the file that a step of the worker leaves, cut when it is worth the lock (released: the step freed it itself, which its own snapshot holds back from the screen) */
+static void
+cut_free_end(const SiftMaintOps *ops, Relation index, bool released)
+{
+	if (!ops->vacuum_truncate || !ops->vacuum_truncate(index) || RecoveryInProgress())
+		return;
+	sift_maint_lock(index, true);
+	if (released)
+		(void) sift_maint_cut_released(index, DEBUG1);
+	else
+		(void) sift_maint_space_budget(index, NULL, DEBUG1, 0);
+	sift_maint_unlock(index);
+}
+
+void
+sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
+{
+	cut_free_end(ops, index, false);
+}
+
 int
 sift_mops_sql_promote(const SiftMaintOps *ops, Relation index)
 {
@@ -497,6 +517,8 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_maint_unlock(index);
+	if (n > 0)
+		cut_free_end(ops, index, false);
 	return n;
 }
 
@@ -533,12 +555,8 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 			break;
 		maint_lock_mode(index, true, ops->step_lock);
 	}
-	if (n > 0 && ops->vacuum_truncate && ops->vacuum_truncate(index) && !RecoveryInProgress())
-	{
-		sift_maint_lock(index, true);
-		(void) sift_maint_cut_released(index, DEBUG1);
-		sift_maint_unlock(index);
-	}
+	if (n > 0)
+		cut_free_end(ops, index, true);
 	sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	return n;
 }

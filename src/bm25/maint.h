@@ -153,6 +153,7 @@ extern bool sift_maint_make_room(Relation index);
 
 /* One tiered merge step if the policy asks; returns true if merged */
 extern bool sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait);
+extern void sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index);
 
 /* The VACUUM callbacks, and the SQL functions promote and merge (the lock and the index are the caller's: sift_mops_open_maintain) */
 extern IndexBulkDeleteResult *sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats,

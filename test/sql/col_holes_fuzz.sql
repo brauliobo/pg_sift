@@ -5,7 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE TABLE fz_ref (id int, grp int, v bigint, note text) WITH (autovacuum_enabled = off);
 CREATE TABLE fz_col (LIKE fz_ref) WITH (autovacuum_enabled = off);
-CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp);
+CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp, order_array_columns = 'note');
 CREATE TABLE fz_tbl (LIKE fz_ref) USING sift_table WITH (autovacuum_enabled = off);
 CREATE TABLE fz_step (n serial, sql text);
 CREATE TABLE fz_bad (n int, what text);
