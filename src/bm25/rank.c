@@ -243,6 +243,18 @@ block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta)
 		const RkTerm *t = rs->term + rs->first[i];
 		float4		lm[SIFT_BLK_PAGES] = {0};
 
+		/* a leaf of one word, the common one: its bound goes to the pages it has, no row to zero and add (a sum with 0 is exact) */
+		if (p->leaves[i].scoring && p->leaves[i].nterms[rs->s] == 1)
+		{
+			float4		v;
+
+			if (!term_in_block(&t[0], b))
+				continue;
+			v = t[0].ubw * (float4) t[0].bb->blk_bound[b];
+			for (uint32 m = t[0].g->pages[b / 4] >> ((b % 4) * 16) & 0xffff; m; m &= m - 1)
+				pub[pg_rightmost_one_pos32(m)] += v;
+			continue;
+		}
 		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[rs->s]; j++)
 		{
 			float4		v;

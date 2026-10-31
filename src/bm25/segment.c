@@ -180,7 +180,7 @@ index_sb(SiftSegment *seg, DocMap *dm)
 		dm->rows[p] = NULL;
 		if (!(dm->pagemask[p / 64] & (1ULL << (p % 64))))
 			continue;
-		for (wd = SIFT_OFFMASK_WORDS - 1; wd >= 0 && om[wd] == 0; wd--)
+		for (wd = dm->nwmax - 1; wd >= 0 && om[wd] == 0; wd--)
 			;
 		if (wd >= 0)
 			maxoff = wd * 64 + 64 - __builtin_clzll(om[wd]);
