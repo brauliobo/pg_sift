@@ -149,7 +149,7 @@ INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['id', 'sk'], ARRAY[1, 300,
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_res;
  queries | same | read_runs 
 ---------+------+-----------
-     240 |  240 |       176
+     240 |  240 |       148
 (1 row)
 
 SELECT n, shape FROM sr_res WHERE NOT same;
@@ -228,7 +228,7 @@ $$;
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn', 't'], ARRAY[20, 300]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      96 |   96 |        84 | 
+      96 |   96 |        60 | 
 (1 row)
 
 -- a range on the first key bounds the part of each run that is read (a binary search of the run for each end): the rows are the plain plan's for every form of the
@@ -321,7 +321,7 @@ SELECT * FROM sr_small('sr');
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      32 |   32 |        32 | 
+      32 |   32 |        24 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL BETWEEN 100 AND 120', 'WHERE COL > 900', 'WHERE COL BETWEEN 1000 AND 1100', 'WHERE COL = 2']);
@@ -395,7 +395,7 @@ SELECT * FROM sr_small('sr');
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      32 |   32 |        32 | 
+      32 |   32 |        24 | 
 (1 row)
 
 -- with workers: the rows are the plain plan's
