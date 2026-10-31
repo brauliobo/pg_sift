@@ -32,6 +32,7 @@
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
+#include "core/compat.h"
 #include "core/explain.h"
 
 #include "cscan_int.h"
@@ -125,7 +126,7 @@ load_semi(SiftScanState *ss)
 		ExprState  *qual = ExecPrepareQual(quals, estate);
 		ExprContext *econtext = CreateExprContext(estate);
 		TupleTableSlot *slot = table_slot_create(dim, NULL);
-		TableScanDesc scan = table_beginscan(dim, estate->es_snapshot, 0, NULL);
+		TableScanDesc scan = sift_table_beginscan(dim, estate->es_snapshot, 0, NULL);
 		int64	   *set = palloc(1024 * sizeof(int64));
 		int			nset = 0,
 					cap = 1024;

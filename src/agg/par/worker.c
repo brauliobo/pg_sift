@@ -3,6 +3,7 @@
  * A worker opens the leader's statement from the shared memory, takes items, and sends its tables, hits and counters through its queue.
  */
 #include "postgres.h"
+#include "storage/proc.h"
 
 #include "agg/agg.h"
 #include "agg/rows.h"

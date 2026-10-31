@@ -4,6 +4,8 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+#include "storage/latch.h"
 #include "utils/wait_event.h"
 
 #include "agg/par/int.h"

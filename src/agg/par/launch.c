@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
+#include "storage/proc.h"
 
 #include "agg/agg.h"
 #include "col/dictshm.h"
