@@ -155,6 +155,34 @@ sift_kern_vm_scalar(uint64 *pagemask, const uint8 *vmbytes)
 			even_bits(sift_kern_ld64(vmbytes + 16 * i + 8)) << 32;
 }
 
+void
+sift_kern_attr_mask_scalar(uint64 *mask, const uint8 *row, int width, int nslots, const SiftAttrCodes *c)
+{
+	const uint64 lim = (UINT64CONST(1) << width) - 1;
+
+	for (int w = 0; w * 64 < nslots; w++)
+	{
+		uint64		pass = ~UINT64CONST(0);
+
+		for (int i = 0; i < 64 && w * 64 + i < nslots; i++)
+		{
+			uint64		bit = (uint64) (w * 64 + i) * width,
+						code;
+			bool		ok;
+
+			memcpy(&code, row + (bit >> 3), sizeof(code));
+			code = (code >> (bit & 7)) & lim;
+			if (c->table)
+				ok = c->table[code] != 0;
+			else
+				ok = code - c->lo1 <= c->hi1 - c->lo1 || code - c->lo2 <= c->hi2 - c->lo2;
+			if (!ok && code != c->unk)
+				pass &= ~(UINT64CONST(1) << i);
+		}
+		mask[w] &= pass;
+	}
+}
+
 /* Lane j of row m: rank of bit j among the set bits of m, 0x80 (PSHUFB and TBL zero) if clear */
 #define XL(m, j)	((((m) >> (j)) & 1) ? BELOW(m, j) : 0x80)
 #define XROW(m)		ROW8(XL, m)
@@ -171,6 +199,7 @@ const SiftKernels sift_kernels_scalar = {
 	.ub_accum = sift_kern_ub_accum_scalar,
 	.select_gt = sift_kern_select_gt_scalar,
 	.vm_allvisible = sift_kern_vm_scalar,
+	.attr_mask = sift_kern_attr_mask_scalar,
 };
 
 const SiftKernels *

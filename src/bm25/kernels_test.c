@@ -15,6 +15,7 @@
 
 PG_FUNCTION_INFO_V1(sift_test_kern_digest);
 PG_FUNCTION_INFO_V1(sift_test_kern_equiv);
+PG_FUNCTION_INFO_V1(sift_test_kern_attr_equiv);
 PG_FUNCTION_INFO_V1(sift_test_kern_bm25);
 PG_FUNCTION_INFO_V1(sift_test_kern_bound);
 
@@ -209,6 +210,58 @@ sift_test_kern_equiv(PG_FUNCTION_ARGS)
 				continue;
 			run_case(tabs[t], c, o);
 			bad += memcmp(o, ref, sizeof(*o)) != 0;
+		}
+	}
+	PG_RETURN_INT64(bad);
+}
+
+/* Cases where a SIMD level's attr_mask differs from scalar: random widths, slot counts, ranges, tables and masks */
+Datum
+sift_test_kern_attr_equiv(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	uint8		row[512 * 7 + SIFT_KERN_PAD];
+	uint8		table[(1 << 16) + SIFT_KERN_PAD];
+	const SiftKernels *tabs[] = {sift_kernels_for(SIFT_SIMD_AVX2), sift_kernels_for(SIFT_SIMD_AVX512)};
+	int64		bad = 0;
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int i = 0; i < PG_GETARG_INT32(1); i++)
+	{
+		bool		use_table = i % 3 == 0;
+		int			width = 1 + pg_prng_uint32(&rs) % (use_table ? 16 : i % 4 == 0 ? 56 : 25),
+					nslots = 1 + pg_prng_uint32(&rs) % 512;
+		uint64		unk = (pg_prng_uint64(&rs) % ((UINT64CONST(1) << width) - 1)) + 1,
+					lo[2],
+					hi[2];
+		SiftAttrCodes c;
+		uint64		orig[SIFT_OFFMASK_WORDS],
+					want[SIFT_OFFMASK_WORDS];
+
+		for (size_t j = 0; j < sizeof(row); j++)
+			row[j] = (uint8) pg_prng_uint32(&rs);
+		for (int r = 0; r < 2; r++)
+		{
+			lo[r] = pg_prng_uint64(&rs) % (unk + 2);
+			hi[r] = lo[r] + pg_prng_uint64(&rs) % (unk + 2 - lo[r]);
+		}
+		if (pg_prng_uint32(&rs) % 4 == 0)
+			lo[1] = hi[1] = unk + 1;
+		for (int k = 0; k < (1 << 16) + SIFT_KERN_PAD; k++)
+			table[k] = pg_prng_uint32(&rs) % 3 == 0;
+		c = (SiftAttrCodes) {lo[0], hi[0], lo[1], hi[1], unk, use_table ? table : NULL};
+		for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+			orig[w] = want[w] = pg_prng_uint64(&rs);
+		sift_kernels_scalar.attr_mask(want, row, width, nslots, &c);
+		for (int t = 0; t < lengthof(tabs); t++)
+		{
+			uint64		got[SIFT_OFFMASK_WORDS];
+
+			if (!tabs[t])
+				continue;
+			memcpy(got, orig, sizeof(got));
+			tabs[t]->attr_mask(got, row, width, nslots, &c);
+			bad += memcmp(got, want, sizeof(got)) != 0;
 		}
 	}
 	PG_RETURN_INT64(bad);

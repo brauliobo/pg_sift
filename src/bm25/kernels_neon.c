@@ -1,7 +1,7 @@
 /*
  * bm25/kernels_neon.c - AArch64 Advanced SIMD kernels. An 8-slot byte of a mask word is two registers of floats; only nonzero bytes
  * are visited. Rank-order tf bytes are placed into slot lanes with TBL from the 256-entry expand table (an index of 0x80 gives 0),
- * and slots outside the mask are blended back unchanged. Slots without a NEON kernel are the scalar functions: expand, tf_decode, select_gt and vm_allvisible
+ * and slots outside the mask are blended back unchanged. Slots without a NEON kernel are the scalar functions: expand, tf_decode, select_gt, vm_allvisible and attr_mask
  * (a deposit, a variable length decode, a compaction and a bit gather, none of which NEON has an instruction for), ub_accum,
  * which the compiler vectorizes as well as the intrinsics do, and bm25_sel, which the intrinsics lose on.
  */
@@ -191,6 +191,7 @@ const SiftKernels sift_kernels_neon = {
 	.ub_accum = sift_kern_ub_accum_scalar,
 	.select_gt = sift_kern_select_gt_scalar,
 	.vm_allvisible = sift_kern_vm_scalar,
+	.attr_mask = sift_kern_attr_mask_scalar,
 };
 
 #endif

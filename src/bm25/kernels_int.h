@@ -18,6 +18,8 @@ extern void sift_kern_vm_scalar(uint64 *pagemask, const uint8 *vmbytes);
 extern int	sift_kern_expand_pdep(uint64 *out, const uint64 *mask, const uint64 *base, const uint64 *rankbits,
 								  uint32 pos, int nwords);
 extern void sift_kern_vm_pext(uint64 *pagemask, const uint8 *vmbytes);
+extern void sift_kern_attr_mask_scalar(uint64 *mask, const uint8 *row, int width, int nslots, const SiftAttrCodes *c);
+extern void sift_kern_attr_mask_avx2(uint64 *mask, const uint8 *row, int width, int nslots, const SiftAttrCodes *c);
 
 /* Row k: for each set bit of k, its rank among the set bits; 0x80 (PSHUFB and TBL zero) if clear */
 extern const uint8 sift_kern_lut_expand[256][8];

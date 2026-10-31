@@ -219,7 +219,7 @@ tf_decode_avx512(uint8 *tf, const uint8 *l1, const uint8 *nib, const uint8 *esc,
 	pos->esc = e;
 }
 
-/* expand and vm_allvisible as AVX2: PDEP/PEXT are fast on every AVX-512 CPU */
+/* expand, vm_allvisible and attr_mask as AVX2: PDEP/PEXT are fast on every AVX-512 CPU */
 const SiftKernels sift_kernels_avx512 = {
 	.expand = sift_kern_expand_pdep,
 	.tf_decode = tf_decode_avx512,
@@ -231,6 +231,7 @@ const SiftKernels sift_kernels_avx512 = {
 	.ub_accum = ub_accum_avx512,
 	.select_gt = select_gt_avx512,
 	.vm_allvisible = sift_kern_vm_pext,
+	.attr_mask = sift_kern_attr_mask_avx2,
 };
 
 #endif

@@ -53,6 +53,21 @@ typedef struct SiftTfPos
 	uint32		esc;			/* next escape byte */
 } SiftTfPos;
 
+/*
+ * The codes of an INCLUDE column (bm25/segment.h) a doc may hold to pass a test: from lo1 to hi1 or from lo2 to hi2 (an empty range is
+ * unk + 1 to unk + 1), or unk (an unknown value passes), or those with table[code] set (table has unk + 1 entries and SIFT_KERN_PAD bytes after
+ * them; every bound is at most unk + 1).
+ */
+typedef struct SiftAttrCodes
+{
+	uint64		lo1;
+	uint64		hi1;
+	uint64		lo2;
+	uint64		hi2;
+	uint64		unk;
+	const uint8 *table;
+} SiftAttrCodes;
+
 typedef struct SiftKernels
 {
 	/*
@@ -118,6 +133,12 @@ typedef struct SiftKernels
 	 * VISIBILITYMAP_ALL_VISIBLE = low bit) to a 256-bit all-visible page mask.
 	 */
 	void		(*vm_allvisible) (uint64 *pagemask, const uint8 *vmbytes);
+
+	/*
+	 * mask &= the slots 0 .. nslots - 1 of a page whose code passes c; slot s has its code in bits s * width .. of row (little endian,
+	 * 1 <= width <= 56), the mask bits from nslots stay. row has SIFT_KERN_PAD bytes after its last.
+	 */
+	void		(*attr_mask) (uint64 *mask, const uint8 *row, int width, int nslots, const SiftAttrCodes *c);
 } SiftKernels;
 
 /* Active table; never NULL after _PG_init */

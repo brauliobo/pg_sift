@@ -315,6 +315,68 @@ sift_kern_vm_pext(uint64 *pagemask, const uint8 *vmbytes)
 			_pext_u64(sift_kern_ld64(vmbytes + 16 * i + 8), even) << 32;
 }
 
+/*
+ * 8 slots a step: slot j of group g starts at bit (8g + j) * width, a byte offset of g * width + (j * width >> 3) and a shift of j * width & 7, so
+ * one gather of 32 bits per lane, a variable shift and a mask give the codes (width <= 25, shift + width <= 32); a range is one subtract and one
+ * unsigned min against its length
+ */
+SIFT_TARGET_AVX2 void
+sift_kern_attr_mask_avx2(uint64 *mask, const uint8 *row, int width, int nslots, const SiftAttrCodes *c)
+{
+	int			ngroups = (nslots + 7) / 8;
+	__m256i		off,
+				sh,
+				lim,
+				lo1,
+				len1,
+				lo2,
+				len2,
+				unk;
+
+	if (width > 25)
+	{
+		sift_kern_attr_mask_scalar(mask, row, width, nslots, c);
+		return;
+	}
+	off = _mm256_setr_epi32(0, width >> 3, 2 * width >> 3, 3 * width >> 3, 4 * width >> 3, 5 * width >> 3, 6 * width >> 3, 7 * width >> 3);
+	sh = _mm256_setr_epi32(0, width & 7, 2 * width & 7, 3 * width & 7, 4 * width & 7, 5 * width & 7, 6 * width & 7, 7 * width & 7);
+	lim = _mm256_set1_epi32((1 << width) - 1);
+	lo1 = _mm256_set1_epi32((int) c->lo1);
+	len1 = _mm256_set1_epi32((int) (c->hi1 - c->lo1));
+	lo2 = _mm256_set1_epi32((int) c->lo2);
+	len2 = _mm256_set1_epi32((int) (c->hi2 - c->lo2));
+	unk = _mm256_set1_epi32((int) c->unk);
+	for (int w = 0; w * 64 < nslots; w++)
+	{
+		uint64		pass = ~UINT64CONST(0);
+
+		for (int gi = 0; gi < 8 && w * 8 + gi < ngroups; gi++)
+		{
+			int			g = w * 8 + gi;
+			__m256i		code = _mm256_and_si256(_mm256_srlv_epi32(_mm256_i32gather_epi32((const int *) (row + (size_t) g * width), off, 1), sh), lim),
+						ok;
+			uint32		m;
+
+			if (c->table)
+				ok = _mm256_xor_si256(_mm256_cmpeq_epi32(_mm256_and_si256(_mm256_i32gather_epi32((const int *) c->table, code, 1), _mm256_set1_epi32(0xFF)), _mm256_setzero_si256()),
+									  _mm256_set1_epi32(-1));
+			else
+			{
+				__m256i		d1 = _mm256_sub_epi32(code, lo1),
+							d2 = _mm256_sub_epi32(code, lo2);
+
+				ok = _mm256_or_si256(_mm256_cmpeq_epi32(_mm256_min_epu32(d1, len1), d1), _mm256_cmpeq_epi32(_mm256_min_epu32(d2, len2), d2));
+			}
+			ok = _mm256_or_si256(ok, _mm256_cmpeq_epi32(code, unk));
+			m = _mm256_movemask_ps(_mm256_castsi256_ps(ok));
+			if (g == ngroups - 1 && (nslots & 7))
+				m |= ~((1U << (nslots & 7)) - 1) & 0xFF;
+			pass &= ~(UINT64CONST(0xFF) << (8 * gi)) | ((uint64) m << (8 * gi));
+		}
+		mask[w] &= pass;
+	}
+}
+
 #define AVX2_TABLE(expand_fn, vm_fn) { \
 	.expand = expand_fn, \
 	.tf_decode = tf_decode_avx2, \
@@ -326,6 +388,7 @@ sift_kern_vm_pext(uint64 *pagemask, const uint8 *vmbytes)
 	.ub_accum = ub_accum_avx2, \
 	.select_gt = select_gt_avx2, \
 	.vm_allvisible = vm_fn, \
+	.attr_mask = sift_kern_attr_mask_avx2, \
 }
 
 const SiftKernels sift_kernels_avx2 = AVX2_TABLE(sift_kern_expand_pdep, sift_kern_vm_pext);
