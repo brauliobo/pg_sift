@@ -316,13 +316,28 @@ query_limit(PlannerInfo *root)
 }
 
 /*
+ * A scan under a sort by further keys (ORDER BY sift.score(ctid) DESC, id: an Incremental Sort per group of equal scores) is read to the end of the group
+ * of its k-th row and to the row after it, which a search of k rows does not hold: the second search scores every block again for the rows of the first
+ * and more. It is asked for those rows at once.
+ */
+static int64
+tie_limit(int64 k)
+{
+	return Min(sift_rank_next_k(k + 1), (int64) PG_INT32_MAX);
+}
+
+/*
  * The rows the query takes from the scan before it stops, 0 when it drains the scan: the limit, unless a Sort
  * sits between them (the scan is not what the first sort key asks for)
  */
 int64
 scan_limit(PlannerInfo *root, bool ranked)
 {
-	return ranked || root->query_pathkeys == NIL ? query_limit(root) : 0;
+	int64		k = query_limit(root);
+
+	if (!ranked)
+		return root->query_pathkeys == NIL ? k : 0;
+	return k > 0 && list_length(root->query_pathkeys) > 1 ? tie_limit(k) : k;
 }
 
 /*
