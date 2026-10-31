@@ -157,6 +157,7 @@ read_columns(Node *n, Pulled *p)
 
 static bool flatten_query(Query *q, bool apply);
 bool		sift_agg_by_cost;
+bool		sift_agg_fence_alone;
 static bool flat_fenced;		/* a sub-select was fenced: a rewrite of its own, chosen by cost only when nothing else flattened */
 List	   *flat_levels;		/* the query level being flattened and those around it */
 struct DecorJoin;
@@ -275,7 +276,8 @@ sift_agg_flatten_laterals(Query *q)
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
 	flat_fenced = false;
+	sift_agg_fence_alone = false;
 	if (!flatten_query(q, true) && flat_fenced)
-		sift_agg_by_cost = true;
+		sift_agg_by_cost = sift_agg_fence_alone = true;
 	return sift_agg_by_cost;
 }

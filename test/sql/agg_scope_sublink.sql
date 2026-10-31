@@ -54,7 +54,9 @@ BEGIN
 	PERFORM set_config('sift.agg_force', 'off', true);
 	RETURN a IS NOT DISTINCT FROM b;
 END $$;
-SELECT name, uses_scan(q) AS scan, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
+-- arms: the arms the planner recorded for the statement. The plan that reads the column index is the plan, the sublink pulled up into the FROM tree is not planned as well
+-- (its selectivities of a list of thousands of keys, estimated again, doubled the planning of the statement)
+SELECT name, uses_scan(q) AS scan, rows_equal(q) AS rows_equal, (SELECT count(*) FROM sift.explain_why(q)) AS arms FROM forms ORDER BY name;
 
 DROP TABLE forms, events, links_a, group_dim_a;
 DROP FUNCTION scope(int), uses_scan(text), rows_equal(text);

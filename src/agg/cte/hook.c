@@ -382,6 +382,13 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			flat = copyObject(parse);
 			sift_agg_push_arms = 0;
 			by_cost = sift_agg_flatten_laterals(flat);
+			/*
+			 * A scope sublink fenced alone is the plan that reads the keys in the scan: the sublink pulled up is refused (from_shape), so the plan as written would be planned for
+			 * its cost only, selectivities of a list of thousands of keys and all (it doubled the planning of such a statement). With a shared CTE the plan as written may
+			 * share the scope's reads, which the cost weighs.
+			 */
+			if (sift_agg_fence_alone && !has_shared_cte(parse))
+				by_cost = false;
 		}
 		quiet = sift_explain_refusals && sift_agg_push_arms > 0;
 		if (quiet)

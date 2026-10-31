@@ -85,6 +85,7 @@ extern int64 sift_source_lookups;	/* the asks of has_column_source that went to 
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
 extern bool sift_agg_push_partial_aggs(Query *q, bool apply);
