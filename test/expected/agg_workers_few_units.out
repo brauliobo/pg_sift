@@ -49,7 +49,7 @@ END $$;
 CREATE FUNCTION w_priced_for_rows() RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
-	FOR s IN 1..60 LOOP
+	FOR s IN 1..400 LOOP
 		PERFORM set_config('sift.plan_scale', s::text, true);
 		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM w_q) LOOP
 			IF l ~ 'Workers Priced For' THEN RETURN s; END IF;

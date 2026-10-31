@@ -138,7 +138,7 @@ SELECT q, (pw_check(q)).* FROM (VALUES
  SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 30                            | t    | parallel
  SELECT id, k_mix FROM pw ORDER BY k_mix DESC NULLS LAST, id LIMIT 30                        | t    | parallel
  SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand DESC, id LIMIT 25                   | t    | parallel
- SELECT k_mix FROM pw ORDER BY k_mix LIMIT 5000                                              | t    | serial
+ SELECT k_mix FROM pw ORDER BY k_mix LIMIT 5000                                              | t    | parallel
  SELECT f FROM pw ORDER BY f DESC NULLS LAST LIMIT 60                                        | t    | parallel
  SELECT id FROM pw WHERE g = 7 ORDER BY id LIMIT 5                                           | t    | parallel
  SELECT id, k_clu FROM pw WHERE memo @@> 'alpha' AND g = 1 ORDER BY k_clu, id LIMIT 12       | t    | parallel

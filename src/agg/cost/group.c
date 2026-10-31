@@ -14,15 +14,11 @@
 #include "agg/acc_layout.h"
 #include "agg/cost/int.h"
 
-/* what PostgreSQL divides the cost of a parallel scan by: the workers, and the share of the leader that scans too */
+/* what the cost of a parallel scan is divided by: the workers and the leader, which scans as one of them (it passes no tuples: 3 participants run 1.5 times faster than 2, with the leader out of the scan 2 workers took 13.6 ms against 8.9) */
 double
 parallel_divisor(int workers)
 {
-	double		d = workers;
-
-	if (parallel_leader_participation)
-		d += Max(1.0 - 0.3 * workers, 0.0);
-	return d;
+	return workers + (parallel_leader_participation ? 1.0 : 0.0);
 }
 
 /*
@@ -38,13 +34,13 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
 	/*
-	 * Starting the workers takes 3 ms and 0.35 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
+	 * Starting the workers takes 3 ms and 0.5 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
 	 * leader merges the pairs of a count(DISTINCT) into its own sets one by one, so they do not scale with the workers (below)
 	 */
 	if (priced)
-		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
+		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS);
 	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
-		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * (AGG_MERGE_GROUP + (priced ? s->nkeys * AGG_MERGE_KEY : 0.0)) * AGG_SCAN_SPEED * cpu_operator_cost;
+		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * (priced ? AGG_MERGE_GROUP + s->nkeys * AGG_MERGE_KEY : 0.0) * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)

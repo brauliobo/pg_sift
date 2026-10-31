@@ -1,0 +1,80 @@
+-- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start,
+-- the leader a full participant, the partial tables merged by the leader one after the other). The plan the default settings choose is checked
+-- for the classes of statement the curves were measured on, over three families of table (uniform units, skewed tenants, many small units): a scan
+-- of 1,000,000 or 600,000 rows with a few ms of work takes workers, 300,000 rows, a cheap group by and a group by of a hundred thousand groups do not.
+-- And every statement gives the same rows with the normal plan, with the scan alone and with the workers the plan chose or would choose.
+CREATE EXTENSION pg_sift;
+
+SET client_min_messages = warning;
+SET sift.agg_preagg = off;
+SET max_parallel_workers_per_gather = 4;
+SET work_mem = '256MB';
+
+-- uniform tenants and few big units; skewed tenants; many small units (the index is cut by the tenant)
+CREATE TABLE pc_u (id int, tenant_id int, category_id int, status smallint, foreign_id int, a_count int, value_num float8, label text) WITH (autovacuum_enabled = off);
+INSERT INTO pc_u SELECT i, i % 1000, i % 20, i % 5, (i::bigint * 7919) % 100003, i % 1000, (i % 97) * 0.1 + 1.0 / (1 + i % 13), 'l' || (i % 50) FROM generate_series(1, 1000000) i;
+CREATE INDEX pc_u_col ON pc_u USING sift_col (id, tenant_id, category_id, status, foreign_id, a_count, value_num, label) WITH (key_cut = off);
+CREATE TABLE pc_s (LIKE pc_u) WITH (autovacuum_enabled = off);
+INSERT INTO pc_s SELECT i, floor(300 * power((i % 1009) / 1009.0, 4))::int, i % 20, i % 5, (i::bigint * 7919) % 100003, i % 1000, (i % 97) * 0.1 + 1.0 / (1 + i % 13), 'l' || (i % 50) FROM generate_series(1, 300000) i;
+CREATE INDEX pc_s_col ON pc_s USING sift_col (id, tenant_id, category_id, status, foreign_id, a_count, value_num, label) WITH (key_cut = off);
+CREATE TABLE pc_m (LIKE pc_u) WITH (autovacuum_enabled = off);
+INSERT INTO pc_m SELECT i, i % 12000, i % 20, i % 5, (i::bigint * 7919) % 100003, i % 1000, (i % 97) * 0.1 + 1.0 / (1 + i % 13), 'l' || (i % 50) FROM generate_series(1, 600000) i;
+CREATE INDEX pc_m_col ON pc_m USING sift_col (id, tenant_id, category_id, status, foreign_id, a_count, value_num, label) WITH (key_cut = tenant_id);
+VACUUM (FREEZE, ANALYZE) pc_u, pc_s, pc_m;
+
+CREATE TABLE pc_q (class text, sql text);
+INSERT INTO pc_q VALUES
+ ('scalar', 'SELECT count(*), sum(value_num), sum(a_count), min(id), max(foreign_id) FROM %s WHERE a_count > 10'),
+ ('scalar_many_aggs', 'SELECT count(*), sum(value_num), sum(a_count), sum(value_num * a_count), min(id), max(foreign_id), avg(value_num), max(a_count) FROM %s WHERE a_count > 10 AND status < 4'),
+ ('expression_two_keys', 'SELECT label, category_id, sum(value_num * a_count + status), avg(value_num), min(id), max(id) FROM %s GROUP BY 1, 2'),
+ ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), sum(value_num), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
+ ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
+ ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+
+-- the plan of the default settings: pushed down, and with workers or not
+CREATE FUNCTION pc_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; pushed bool := false; planned bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		planned := planned OR l ~ 'Workers Planned: [1-9]';
+		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
+	END LOOP;
+	RETURN CASE WHEN NOT pushed THEN 'normal plan' WHEN planned THEN 'workers' ELSE 'one process' END;
+END $$;
+
+SELECT t.tbl, q.class, pc_plan(format(q.sql, t.tbl)) AS plan
+FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q.class;
+
+-- the same rows with the normal plan, the scan alone and the workers (asked for whatever they save)
+CREATE FUNCTION pc_rows(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode <> 'normal')::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode = 'workers' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', CASE WHEN mode = 'workers' THEN '0' ELSE '1000' END, true);
+	PERFORM set_config('parallel_tuple_cost', CASE WHEN mode = 'workers' THEN '0' ELSE '0.1' END, true);
+	PERFORM set_config('sift.agg_par_min_rows', CASE WHEN mode = 'workers' THEN '0' ELSE '80000' END, true);
+	EXECUTE format('SELECT md5(string_agg(x::text, E''\n'' ORDER BY x::text)) FROM (SELECT * FROM (%s) y) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- floats: the sums are rounded (the normal plan adds in another order); the integers and the keys are exact
+CREATE TABLE pc_r (class text, sql text);
+INSERT INTO pc_r VALUES
+ ('scalar', 'SELECT count(*), round(sum(value_num)::numeric, 1), sum(a_count), min(id), max(foreign_id) FROM %s WHERE a_count > 10'),
+ ('scalar_many_aggs', 'SELECT count(*), round(sum(value_num)::numeric, 1), sum(a_count), min(id), max(foreign_id), max(a_count) FROM %s WHERE a_count > 10 AND status < 4'),
+ ('expression_two_keys', 'SELECT label, category_id, round(sum(value_num * a_count + status)::numeric, 0), min(id), max(id) FROM %s GROUP BY 1, 2'),
+ ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), round(sum(value_num)::numeric, 1), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
+ ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
+ ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+
+SELECT t.tbl, q.class,
+       pc_rows(format(q.sql, t.tbl), 'scan') = pc_rows(format(q.sql, t.tbl), 'normal') AS scan_equal,
+       pc_rows(format(q.sql, t.tbl), 'workers') = pc_rows(format(q.sql, t.tbl), 'scan') AS workers_equal
+FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q.class;
+
+DROP FUNCTION pc_plan(text), pc_rows(text, text);
+DROP TABLE pc_q, pc_r, pc_u, pc_s, pc_m;
+DROP EXTENSION pg_sift;
