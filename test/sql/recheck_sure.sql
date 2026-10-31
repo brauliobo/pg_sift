@@ -2,7 +2,7 @@
 -- phrase, a NOT of a superset) are not rechecked against the text, the others are, and every path
 -- (SiftCount, SiftScan, Bitmap Heap Scan) returns what a sequential evaluation does. Run without word
 -- positions (the heap decides every phrase) and with them (the heap decides only the documents the
--- positions do not cover: write buffers and promoted segments, a negated phrase)
+-- positions do not cover: write buffers, a negated phrase)
 CREATE EXTENSION pg_sift;
 
 CREATE TABLE s (id int PRIMARY KEY, body text, grp int);
@@ -96,7 +96,7 @@ SELECT * FROM report();
 DELETE FROM s WHERE id % 11 = 0;
 SELECT * FROM report();
 
--- the write buffer has no positions, nor does the segment promoted from it: the index mixes both
+-- the write buffer has no positions, the segment promoted from it has them: the index mixes both
 INSERT INTO s SELECT 3000 + i, (ARRAY['quick fox', 'fox quick', 'dog'])[1 + i % 3], 0 FROM generate_series(1, 90) i;
 SELECT * FROM report();
 VACUUM s;

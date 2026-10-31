@@ -351,7 +351,8 @@ sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *ar
 	s.dl = palloc(STREAM_POSTINGS * sizeof(uint16));
 	s.plen = palloc(STREAM_POSTINGS * sizeof(uint32));
 	stream_docs(&s);
-	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, stream_term, &s);
+	if (sink->term)
+		sift_dict_scan(seg->dict, NULL, 0, NULL, 0, stream_term, &s);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cxt);
 }

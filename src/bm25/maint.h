@@ -23,6 +23,8 @@ extern PGDLLIMPORT int sift_test_merge_max_kb;
 extern PGDLLIMPORT int sift_test_merge_sleep_ms;
 /* Testing knob (sift.test_room_segments, 0 = off): directory entries from which inserters merge */
 extern PGDLLIMPORT int sift_test_room_segments;
+/* Testing knob (sift.test_no_heap_positions): promotions and merges take no positions from the heap, as 3.7.0 did */
+extern PGDLLIMPORT bool sift_test_no_heap_positions;
 extern PGDLLIMPORT int64 sift_maint_wait_max_us;
 #endif
 
