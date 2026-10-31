@@ -283,7 +283,8 @@ has_subquery_rte(Query *parse)
 
 /*
  * The cheapest normal path of a stage, as the statement will pay for it: the rows a LIMIT takes of an ordered stage (the Limit node costs the same
- * fraction). Under half of agg_floor_cost no arm of the scan can win, so the arms are not planned (0.02 to 0.06 ms of a point lookup or a keyset page).
+ * fraction). Under half of agg_floor_cost no arm of the scan can win, so the arms are not planned (0.02 to 0.06 ms of a point lookup or a keyset page); a scan of one table
+ * with groups starts at agg_open_cost, and a normal plan under that is out of its reach (a day of one tenant grouped by kind: 0.1 ms to plan for nothing).
  * Only the top query without a CTE or sub-select: the price of those is not in the paths of the stage, and the inner levels are planned for the statement they join.
  */
 static bool
@@ -311,7 +312,8 @@ normal_under_floor(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *outpu
 		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
 			best = Min(best, cost);
 	}
-	return best < agg_floor_cost() / 2.0;
+	return best < (stage == UPPERREL_GROUP_AGG && bms_membership(root->all_baserels) == BMS_SINGLETON && root->parse->groupClause != NIL && groupClause_has_nonconst(root, root->parse->groupClause) ?
+				   agg_open_cost(0) : agg_floor_cost() / 2.0);
 }
 
 #ifdef SIFT_TESTING

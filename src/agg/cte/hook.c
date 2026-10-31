@@ -348,7 +348,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 				quiet = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && query_nests(parse) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan, and the inline plan of a shared CTE costs most of it: their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		if (has_shared_cte(parse))
@@ -473,6 +473,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	MemoryContext memo = sift_agg_memo_begin();
 	bool		col_plan = sift_col_plan_begin();
 	bool		reads,
+				nests,
+				swap,
 				split_exists;
 	PlannedStmt *stmt;
 
@@ -486,14 +488,17 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
-	if (reads || split_exists || (sift_enable_agg && has_shared_cte(parse)))
+	nests = reads && query_nests(parse);
+	swap = reads && sift_json_build_object_calls(parse);
+	if (nests || swap || split_exists || (sift_enable_agg && has_shared_cte(parse)))
 		parse = copyObject(parse);
 	if (split_exists)
 		sift_agg_split_exists_or(parse);
 	if (reads)
 	{
-		sift_json_build_object_swap(parse);
-		if (parse->rowMarks == NIL)
+		if (swap)
+			sift_json_build_object_swap(parse);
+		if (nests && parse->rowMarks == NIL)
 		{
 			sift_agg_preinline(parse);
 			sift_agg_drop_unused_laterals(parse);

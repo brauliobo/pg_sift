@@ -22,7 +22,7 @@
 #               are planned each way the planner can go (the scan, a sequential scan, a b-tree index, a bitmap scan, PostgreSQL without sift, the planner's own choice: EXPLAIN
 #               only), and each distinct plan runs under `perf stat` (user instructions of the backend, planning taken off, serial plans). Prints the table; fails when the
 #               plan the planner chooses is slower than the best by more than 20% and 1,000,000 instructions. Seconds, needs perf (skipped, exit 0, without it). docs/AGG.md
-# --planning  the user instructions of EXPLAIN of each shape of calibrate.tsv with the scan on and with it off (the library loaded), warm, under `perf stat`; a shape fails at 30% and 20,000
+# --planning  the user instructions of EXPLAIN of each shape of calibrate.tsv with the scan on and with it off (the library loaded), warm, under `perf stat`; a shape the scan does not take fails at 5% and 20,000 over off, one it takes at 40% (test/plan/planning.tsv lifts a shape's ratio), and a shape fails at 30% and 20,000
 #               instructions over its ceiling in test/plan/planning.tsv, the sum of the shapes at 10%; --update writes the ceilings from this run. Skipped, exit 0, without perf
 # Fails (exit 1) on a result that differs between the paths, a plan other than the expected one, a cost ratio outside its band and (without
 # --warn-time) a lose. Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT).
@@ -84,18 +84,22 @@ planning() {
 	while read -r name; do
 		printf "SELECT plangate.cal_set('chosen');\nSELECT plangate.cal_run('%s', 1, true);\nSELECT 'ready';\n" "$name" >&"${PSQ[1]}"; wait_for ready
 		on=$(instr "$name" chosen true); off=$(instr "$name" native true)
-		printf '%s\t%s\t%s\n' "$name" $(( on / 3000 )) $(( off / 3000 )) >>"$out"
+		printf '%s\t%s\t%s\t%s\n' "$name" $(( on / 3000 )) $(( off / 3000 )) "$(sql -qAt -c "SELECT plangate.cal_taken('$name')")" >>"$out"
 	done < <(sql -qAt -c "SELECT name FROM plangate.cal_shapes ORDER BY name")
 	perf_close
 	if [[ -n $UPDATE ]]; then
-		{ echo "# name<TAB>ceiling: thousands of user instructions of one EXPLAIN with the scan on (scripts/plangate.sh --planning --update)"; cut -f1,2 "$out"; } >"$f"
+		{ head -1 "$f" | sed 's/^# name<TAB>ceiling[^:]*:/# name<TAB>ceiling<TAB>[ratio]:/'; awk -F'\t' 'NR == FNR { if ($0 !~ /^#/ && $3 != "") ov[$1] = $3; next } { print $1 "\t" $2 (($1 in ov) ? "\t" ov[$1] : "") }' "$f" "$out"; } >"$f.new"
+		mv "$f.new" "$f"
 		log "updated test/plan/planning.tsv"
 	fi
-	awk -F'\t' 'NR == FNR { if ($0 !~ /^#/) base[$1] = $2; next }
+	# against off: a shape the scan does not take plans within 5% and 20 k instructions of the scan off, one it takes within 40% and 20 k; a third column of planning.tsv lifts the ratio of a shape that is over
+	awk -F'\t' 'NR == FNR { if ($0 !~ /^#/) { base[$1] = $2; over[$1] = $3 }; next }
 		{ n++; on += $2; off += $3; b = ($1 in base) ? base[$1] : -1; sum += (b > 0 ? b : 0)
-		  printf "%-34s %8d %8d %6.2f %8s\n", $1, $3, $2, $2 / ($3 ? $3 : 1), b >= 0 ? b : "-"
+		  lim = ($1 in over && over[$1] != "") ? over[$1] : ($4 == "t" ? 1.4 : 1.05)
+		  printf "%-34s %8d %8d %6.2f %8s %s\n", $1, $3, $2, $2 / ($3 ? $3 : 1), b >= 0 ? b : "-", $4 == "t" ? "scan" : "plan"
 		  if (b < 0) { print "FAIL " $1 ": no ceiling in test/plan/planning.tsv (--update)"; fail = 1 }
-		  else if ($2 > 1.3 * b + 20) { print "FAIL " $1 ": " $2 " k instructions to plan, ceiling " b; fail = 1 } }
+		  else if ($2 > 1.3 * b + 20) { print "FAIL " $1 ": " $2 " k instructions to plan, ceiling " b; fail = 1 }
+		  if ($2 > lim * $3 + 20) { print "FAIL " $1 ": " $2 " k instructions to plan against " $3 " k with the scan off, over " lim "x"; fail = 1 } }
 		END { printf "plangate --planning: %d shapes, %d k instructions to plan with the scan on against %d k off (%.2f), ceilings %d k\n", n, on, off, on / (off ? off : 1), sum
 		      if (n == 0) { print "FAIL no shape ran"; fail = 1 }
 		      if (on > 1.1 * sum) { print "FAIL the planning of the shapes together: " on " k instructions, ceilings " sum " k"; fail = 1 }

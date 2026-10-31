@@ -388,6 +388,10 @@ SELECT bucket, n, n - lag(n) OVER (ORDER BY bucket) AS change FROM (SELECT date_
 SELECT kind, parent_id, total FROM (SELECT kind, parent_id, total, row_number() OVER (PARTITION BY kind ORDER BY total DESC, parent_id) AS rn
 	FROM (SELECT kind, parent_id, sum(amount) AS total FROM events WHERE deleted_at IS NULL GROUP BY 1, 2) s) w WHERE rn <= 3 ORDER BY 1, 3 DESC, 2;
 
+-- name: top_rows_per_kind_unindexed_column
+-- expect: normal -
+SELECT id, kind, memo, rn FROM (SELECT id, kind, memo, row_number() OVER (PARTITION BY kind ORDER BY amount DESC, id) AS rn FROM events WHERE deleted_at IS NULL) w WHERE rn <= 3 ORDER BY 2, 4;
+
 -- name: search_group
 -- expect: scan 0.093 0.50
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE memo @@> 'cable wire' AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;

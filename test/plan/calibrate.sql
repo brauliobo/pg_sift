@@ -60,6 +60,18 @@ BEGIN
 	END LOOP;
 END $$;
 
+-- does the plan the planner chooses for a shape run in the scan
+CREATE FUNCTION plangate.cal_taken(nm text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE q text; r record;
+BEGIN
+	SELECT body INTO q FROM plangate.cal_shapes WHERE name = nm;
+	PERFORM plangate.cal_set('chosen');
+	FOR r IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF r::text LIKE '%SiftAgg%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
 -- the verdict of a shape: the plan the planner chooses against the best measured one (instructions, planning taken off)
 CREATE VIEW plangate.cal_verdicts AS
 	WITH p AS (

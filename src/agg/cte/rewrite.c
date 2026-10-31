@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/relation.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -29,9 +30,13 @@ typedef struct SourceEntry
 {
 	Oid			relid;
 	bool		found;
+	bool		reads_known;
+	bool			all_read;	/* a sift_table: the scan reads every column */
+	Bitmapset  *reads;			/* the columns of the table that some column index holds, as pull_varattnos numbers them */
 } SourceEntry;
 
 static HTAB *source_cache;
+static MemoryContext source_cx;	/* the hash and the bitmaps of its entries: deleted together */
 
 #ifdef SIFT_TESTING
 int64		sift_prepass_nodes;	/* the nodes the rewrite passes visited (sift._test_prepass_nodes) */
@@ -43,7 +48,7 @@ source_cache_inval(Datum arg, Oid relid)
 {
 	if (source_cache != NULL)
 	{
-		hash_destroy(source_cache);
+		MemoryContextDelete(source_cx);
 		source_cache = NULL;
 	}
 }
@@ -69,7 +74,7 @@ has_column_source(Oid relid)
 	relation_close(rel, AccessShareLock);
 	if (source_cache == NULL)
 	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(SourceEntry), .hcxt = TopMemoryContext};
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(SourceEntry)};
 		static bool registered;
 
 		if (!registered)
@@ -77,11 +82,50 @@ has_column_source(Oid relid)
 			CacheRegisterRelcacheCallback(source_cache_inval, (Datum) 0);
 			registered = true;
 		}
+		source_cx = AllocSetContextCreate(TopMemoryContext, "sift cache column sources", ALLOCSET_SMALL_SIZES);
+		ctl.hcxt = source_cx;
 		source_cache = hash_create("sift cache column sources", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	e = hash_search(source_cache, &relid, HASH_ENTER, &seen);
 	e->found = found;
+	e->reads_known = false;
+	e->reads = NULL;
 	return found;
+}
+
+/*
+ * Can the scan read these columns of the table (as pull_varattnos numbers them): does some column index of the table hold each of them? A column no
+ * index holds is read from the heap only by a top-N for its page, never by an aggregate or a filter. Kept with the answer of has_column_source.
+ */
+bool
+column_source_reads(Oid relid, Bitmapset *attnos)
+{
+	SourceEntry *e;
+
+	if (!has_column_source(relid))
+		return false;
+	e = hash_search(source_cache, &relid, HASH_FIND, NULL);
+	if (!e->reads_known)
+	{
+		Relation	rel = relation_open(relid, AccessShareLock);
+		MemoryContext old = MemoryContextSwitchTo(source_cx);
+
+		e->all_read = sift_colsrc_is_table(rel->rd_rel->relam);
+		foreach_oid(ix, RelationGetIndexList(rel))
+		{
+			Relation	idx;
+
+			if (!sift_colsrc_is_index(get_rel_relam(ix)))
+				continue;
+			idx = index_open(ix, AccessShareLock);
+			pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
+			index_close(idx, AccessShareLock);
+		}
+		MemoryContextSwitchTo(old);
+		relation_close(rel, AccessShareLock);
+		e->reads_known = true;
+	}
+	return e->all_read || bms_is_subset(attnos, e->reads);
 }
 
 /*
@@ -539,10 +583,22 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
 }
 
+/* can a CTE, sub-select or sub-link be anywhere below the query? Only through its WITH, a sub-select or CTE of its FROM or a sub-link of its own */
+bool
+query_nests(Query *q)
+{
+	if (q->cteList != NIL || q->hasSubLinks)
+		return true;
+	foreach_node(RangeTblEntry, rte, q->rtable)
+		if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE)
+			return true;
+	return false;
+}
+
 bool
 has_shared_cte(Query *parse)
 {
 	SharedCteWalk w = {0};
 
-	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &w);
+	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && query_nests(parse) && shared_cte_walker((Node *) parse, &w);
 }

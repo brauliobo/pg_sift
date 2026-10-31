@@ -371,6 +371,16 @@ latest_of(Query *q, Index rti, bool apply)
 			return false;
 		if (sub->hasSubLinks)
 			LATEST_REFUSE(!apply, "the sub-select has a sub-select of its own");
+		/* the arrays hold every column the sub-select reads, which the scan reads from the index only: planning the rewrite for a column no index holds is a plan to throw away */
+		if (list_length(sub->rtable) == 1 && ((RangeTblEntry *) linitial(sub->rtable))->rtekind == RTE_RELATION)
+		{
+			Bitmapset  *cols = NULL;
+
+			pull_varattnos((Node *) sub->targetList, 1, &cols);
+			pull_varattnos((Node *) sub->jointree->quals, 1, &cols);
+			if (!column_source_reads(((RangeTblEntry *) linitial(sub->rtable))->relid, cols))
+				LATEST_REFUSE(!apply, "a column the sub-select reads is in no column index of its table");
+		}
 		if ((top = topn_array(sub, w, rn, n, &why)) == NULL)
 			LATEST_REFUSE(!apply, why);
 	}

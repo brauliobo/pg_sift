@@ -227,9 +227,9 @@ SELECT * FROM check_query('an array column', $q$ SELECT * FROM (SELECT id, grp, 
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
-                              window_why                               
------------------------------------------------------------------------
- a column has a type with no array of its own, or is an array or a row
+                            window_why                            
+------------------------------------------------------------------
+ a column the sub-select reads is in no column index of its table
 (1 row)
 
 SELECT * FROM check_query('no column index', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM plain_events) t WHERE rn <= 3 $q$);
