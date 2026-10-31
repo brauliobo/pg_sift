@@ -31,7 +31,16 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		Datum		d;
 
 		if (t->nkey > 1)
-			tid = t->gq[t->gqpos++].tid;
+		{
+			const GRow *r = &t->gq[t->gqpos++];
+
+			if (r->exact)
+			{
+				t->emitted++;
+				return skipped_row(t, slot);
+			}
+			tid = r->tid;
+		}
 		/* an entry of an exact unit that the Limit throws away is not confirmed in the heap: its key is the array's */
 		else if (t->emitted < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
 		{

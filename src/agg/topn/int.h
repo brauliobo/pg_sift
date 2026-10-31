@@ -276,6 +276,7 @@ struct SiftTopN
 	Oid			gtyp[TOP_GKEYS];
 	struct GRow *gq;			/* sift_topn_gorder with more keys: the rows of the whole groups of the first key that make the n, in order */
 	int			gqn;
+	int			gqroom;
 	int			gqpos;
 	const SiftTopGPred *gcond;	/* sift_topn_gorder: what the key of an entry must satisfy */
 	struct SiftGOrd *go;		/* the global order of the key read in place of the units (sift_topn_gorder): rows come from the heap in the order of the key */
@@ -338,6 +339,7 @@ typedef struct GRow
 	ItemPointerData tid;
 	bool		isnull[TOP_GKEYS];
 	int64		key[TOP_GKEYS];
+	bool		exact;			/* an entry of an exact unit thrown away by the OFFSET: not fetched, a row of NULLs (gord_group) */
 } GRow;
 extern KeyBlob * xform_blob(SiftTopN *t, const TopKey *k, const char *p, uint32 len);
 
