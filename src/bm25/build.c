@@ -1,6 +1,6 @@
 /*
  * bm25/build.c - the PostgreSQL side of the build: heap scan, parallel workers and leader, ambuild and ambuildempty
- * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs.c); the spill,
+ * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs/runs.c); the spill,
  * merge and segment writing of the build, and the page documents, are in build_runs.c.
  */
 #include "build_int.h"

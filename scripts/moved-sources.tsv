@@ -40,3 +40,4 @@ src/table/load/	src/table/load.c	load_
 src/col/autocut/	src/col/autocut.c	acut_
 src/agg/par/	src/agg/par.c	
 src/agg/vk/	src/agg/vk.c	
+src/bm25/runs/	src/bm25/runs.c	runs_

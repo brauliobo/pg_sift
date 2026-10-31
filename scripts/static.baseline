@@ -67,7 +67,7 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/prefix.c|perfo
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/prefix.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/rank.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/rank.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/runs.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
+tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/runs/runs.c|performing an implicit widening conversion to type 'Size' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'

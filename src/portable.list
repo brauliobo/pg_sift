@@ -33,7 +33,11 @@ bm25/liveness.c
 bm25/walk.c
 bm25/livestream.c
 core/live.c
-bm25/runs.c
+bm25/runs/runs.c
+bm25/runs/cuts.c
+bm25/runs/merge.c
+bm25/runs/reader.c
+bm25/runs/segs.c
 bm25/inv.c
 core/stream.c
 bm25/merge.c
@@ -89,6 +93,7 @@ core/popcount.h
 bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h
+bm25/runs/runs_priv.h
 bm25/runs.h
 bm25/runs_int.h
 bm25/query.h

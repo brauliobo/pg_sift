@@ -1,5 +1,5 @@
 /*
- * merge.c - the merge of segments for the SQLite table: the engine's own (src/bm25/runs.c, the merge of the PostgreSQL host
+ * merge.c - the merge of segments for the SQLite table: the engine's own (src/bm25/runs/runs.c, the merge of the PostgreSQL host
  * too) turns the live part of every input into a sorted run and merges the runs into one segment, in bounded memory. The output
  * is published and the inputs retired in the same SQLite transaction by two manifest updates, so a rollback or a crash at any
  * point leaves the old segments in place: there is nothing to resume, a repeated merge starts over from the manifest. Which
