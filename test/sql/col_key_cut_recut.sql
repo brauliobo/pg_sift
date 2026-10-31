@@ -1,0 +1,33 @@
+-- The rewrite of every segment chooses key_cut again from the data (an option the build wrote itself, 'auto: col'). When the choice changes, the merge loads
+-- the segments whole and sorts their rows by the new key: a segment cut by the old key has units that each span the heap, so loading them one after the other
+-- must not ask for the rows in the order of the TIDs (parallel CREATE INDEX of a table of 200,000 rows did this: "rows must be added in ascending TID order").
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+-- 100 tenants in heap order but for 15% of the rows, which land anywhere; ten leaves that follow nothing; 100 superblocks (fillfactor 10 keeps the rows few)
+CREATE TABLE kr (id int, tenant_id int, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kr SELECT i, CASE WHEN random() < 0.15 THEN (random() * 100)::int ELSE i / 1250 END,
+	(i * 31) % 1000, (i * 37) % 1000, (i * 41) % 1000, (i * 43) % 1000, (i * 47) % 1000, (i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000, repeat('x', 100)
+FROM generate_series(1, 125000) i;
+VACUUM (FREEZE, ANALYZE) kr;
+CREATE INDEX kr_col ON kr USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
+SELECT sift_helpers.index_key_cut_reloption('kr_col');
+SELECT count(*) AS segments, sum(units) > 64 AS many_units FROM sift.col_segments('kr_col') WHERE kind = 'immutable';
+
+-- the segment is cut by tenant_id but the option says another leaf, and the write buffer gives the merge a second segment: the rewrite chooses tenant_id again
+ALTER INDEX kr_col SET (key_cut = 'auto: a1');
+INSERT INTO kr SELECT 200000 + i, (random() * 100)::int, i % 1000, i % 999, i % 997, i % 991, i % 983, i % 977, i % 971, i % 967, i % 953, i % 947, 'x' FROM generate_series(1, 5000) i;
+SELECT sift.col_merge('kr_col', true) > 0 AS merged;
+SELECT sift_helpers.index_key_cut_reloption('kr_col');
+SELECT sift.col_verify('kr_col', true);
+
+-- the rows are the table's, with the index and without
+SELECT sift_helpers.differences_agg('SELECT tenant_id, count(*) AS n, sum(a1) AS s, max(id) AS m FROM kr GROUP BY tenant_id') AS differences;
+SELECT sift_helpers.differences_agg('SELECT count(*) AS n, sum(a2) AS s FROM kr WHERE tenant_id BETWEEN 10 AND 20') AS differences;
+
+DROP TABLE kr;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

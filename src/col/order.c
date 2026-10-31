@@ -602,6 +602,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		SiftColBatch *one = sift_cbatch_create(m->cx, schema);
 
 		b->keyed = true;		/* the rows of many superblocks */
+		b->unsorted = true;		/* the units of a segment cut by another key each span the heap; the rows are sorted by reference below */
 		if (in->next_unit < seg->nsb)	/* the call that finds the segment read is not a second load */
 			m->loaded += sift_cseg_live_rows(seg);
 		if (m->loaded * sift_colk_row_bytes(schema) > m->budget)
