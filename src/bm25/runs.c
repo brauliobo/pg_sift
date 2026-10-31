@@ -662,6 +662,18 @@ sift_shrink_runs(SiftRun **runs, int nruns, int target, Size budget, RunHome *ho
 	return nruns;
 }
 
+/* A segment writer that also stores the values of the INCLUDE columns, which the process that merges the docs reads from the heap */
+static SiftSegmentWriter *
+segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions)
+{
+	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
+	SiftAttrSrc *as = sift_attr_src(wt, mcxt);
+
+	if (as != NULL)
+		sift_segw_attrs(sw, as);
+	return sw;
+}
+
 void
 sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
 				SiftSegEntry *entry)
@@ -673,7 +685,6 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	MergeOut	mo = {0};
 	bool		positions;
 	uint64		ndocs;
-	SiftAttrSrc *as;
 	RunReader  *rd;
 
 	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
@@ -682,9 +693,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	old = MemoryContextSwitchTo(cxt);
 	rd = open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */
-	mo.sw = sift_segw_begin(wt, gen, ref, cxt, positions);
-	if ((as = sift_attr_src(wt, cxt)) != NULL)
-		sift_segw_attrs(mo.sw, as);
+	mo.sw = segw_begin(wt, gen, ref, cxt, positions);
 	/* the merged runs hold a term of any size: the posting writer takes about 10 bytes of each posting, half the budget at most */
 	sift_segw_spool(mo.sw, sift_seg_postings(budget) / 2);
 	merge_readers(rd, nruns, positions, &mo);
@@ -844,7 +853,7 @@ sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt
 	uint64		ndocs;
 	RunReader  *rd = open_readers(runs, nruns, budget, &positions, &ndocs);
 
-	mo.sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
+	mo.sw = segw_begin(wt, gen, ref, mcxt, positions);
 	merge_docs(&mo, rd, nruns);
 	for (int i = 0; i < nruns; i++)
 		run_release(runs[i]);
@@ -970,7 +979,7 @@ sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget
 	bool		positions;
 	RunReader  *rd = open_seg_readers(segs, nsegs, budget, false, NULL, &positions);
 
-	mo.sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
+	mo.sw = segw_begin(wt, gen, ref, mcxt, positions);
 	merge_docs(&mo, rd, nsegs);
 	close_seg_readers(rd, nsegs);
 	MemoryContextSwitchTo(old);

@@ -203,6 +203,48 @@ SELECT min(segments) > 1 AS several_segments, min(pieces) = 0 AS leader_alone, m
 (1 row)
 
 RESET sift.test_segfmt;
+-- INCLUDE columns: the leader reads the values of every doc from the heap; the index is the serial one, byte for byte
+RESET sift.test_segment_postings;
+RESET sift.test_merge_fanin;
+SET sift.test_run_docs = 3000;
+SET sift.test_range_bytes = 20000;
+ALTER TABLE br ADD COLUMN cat int, ADD COLUMN created date;
+UPDATE br SET cat = CASE WHEN id % 11 = 0 THEN NULL ELSE id % 97 END, created = DATE '2026-01-01' + id % 300;
+VACUUM br;
+SET max_parallel_maintenance_workers = 0;
+DROP INDEX br_par;
+CREATE INDEX br_ser ON br USING sift (body) INCLUDE (cat, created);
+SELECT idx_digest('br_ser') AS serial_digest \gset
+DROP INDEX br_ser;
+SET max_parallel_maintenance_workers = 3;
+SET sift.test_par_workers = 0;
+SET sift.test_range_pieces = 0;
+CREATE INDEX br_par ON br USING sift (body) INCLUDE (cat, created);
+SELECT current_setting('sift.test_par_workers')::int AS workers;
+ workers 
+---------
+       3
+(1 row)
+
+SELECT current_setting('sift.test_range_pieces')::int > 3 AS ranges;
+ ranges 
+--------
+ t
+(1 row)
+
+SELECT idx_digest('br_par') = :'serial_digest' AS same_bytes;
+ same_bytes 
+------------
+ t
+(1 row)
+
+SELECT sift.verify('br_par', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP INDEX br_par;
 DROP FUNCTION layouts();
 DROP TABLE br;
 DROP FUNCTION idx_digest(regclass);

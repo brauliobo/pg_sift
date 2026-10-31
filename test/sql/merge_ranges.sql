@@ -10,20 +10,21 @@ CREATE FUNCTION idx_digest(r regclass) RETURNS text LANGUAGE sql AS $$
 	FROM generate_series(0, pg_relation_size(r) / 8192 - 1) n
 $$;
 
-CREATE TABLE mr (id int, body text);
+CREATE TABLE mr (id int, body text, cat int, created date);
 
 -- two indexes made alike, the segments of one merged by the backend alone, the other with w workers
-CREATE FUNCTION prep(opts text) RETURNS void LANGUAGE plpgsql AS $$
+CREATE FUNCTION prep(opts text, incl text DEFAULT '') RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	DROP INDEX IF EXISTS mr_a;
 	DROP INDEX IF EXISTS mr_b;
 	TRUNCATE mr;
-	EXECUTE format('CREATE INDEX mr_a ON mr USING sift (body) WITH (%s)', opts);
-	EXECUTE format('CREATE INDEX mr_b ON mr USING sift (body) WITH (%s)', opts);
+	EXECUTE format('CREATE INDEX mr_a ON mr USING sift (body) %s WITH (%s)', incl, opts);
+	EXECUTE format('CREATE INDEX mr_b ON mr USING sift (body) %s WITH (%s)', incl, opts);
 	FOR b IN 1..4 LOOP
-		INSERT INTO mr (id, body)
+		INSERT INTO mr (id, body, cat, created)
 		SELECT i, 'k' || (i % 7) || ' g' || (i % 300) || ' z' || (i * i % 997) || ' common word' || (i % 50) || ' ' || repeat('filler ', i % 5)
-			|| CASE WHEN i % 3 = 0 THEN ' rare' || (i % 500) ELSE '' END
+			|| CASE WHEN i % 3 = 0 THEN ' rare' || (i % 500) ELSE '' END,
+			CASE WHEN i % 11 = 0 THEN NULL ELSE i % 97 END, DATE '2026-01-01' + i % 300
 		FROM generate_series(b * 10000 - 9999, b * 10000) i;
 		PERFORM sift.promote('mr_a'), sift.promote('mr_b');
 	END LOOP;
@@ -60,6 +61,16 @@ SELECT prep('merge_fanin = 4');
 SELECT merged(2);
 SELECT * FROM same();
 SELECT prep('merge_fanin = 4');
+SELECT merged(4);
+SELECT * FROM same();
+-- INCLUDE columns: the values of every doc are read from the heap by the process of the merge
+SELECT prep('merge_fanin = 4', 'INCLUDE (cat, created)');
+SELECT merged(1);
+SELECT * FROM same();
+SELECT prep('merge_fanin = 4', 'INCLUDE (cat, created)');
+SELECT merged(2);
+SELECT * FROM same();
+SELECT prep('merge_fanin = 4', 'INCLUDE (cat, created)');
 SELECT merged(4);
 SELECT * FROM same();
 -- the merge of every segment, and an index without positions
@@ -126,7 +137,7 @@ SELECT count(*) FROM mr WHERE body @@> 'common';
 DROP TABLE mr;
 DROP FUNCTION same();
 DROP FUNCTION merged(int, bool);
-DROP FUNCTION prep(text);
+DROP FUNCTION prep(text, text);
 DROP FUNCTION idx_digest(regclass);
 DROP EXTENSION pageinspect;
 DROP EXTENSION pg_sift;
