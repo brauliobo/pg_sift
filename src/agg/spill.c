@@ -10,10 +10,11 @@
  * read of the partial states, never a second scan of the table.
  *
  * A scan that gives its groups in an order (an ORDER BY whose first key is an integer, a date or a timestamp: sift_aggspec_ord_range) has partitions that are
- * ranges of that key instead. The tables go to one stream; a sample of the key of the groups written (SPILL_SAMPLE values, each group as likely to be in it as
- * another) gives the points that cut the stream into ranges of as many groups; a range that does not fit is cut again by the points of the sample inside it; the
- * ranges are merged in the order of the key, each sorted by itself (agg/gorder.c), so the groups come out in order with the memory of one range. A range of one
- * value that does not fit is merged as it is. The range of a group depends on its key alone, so the groups of one value are never apart.
+ * ranges of that key instead, merged in the order of the key, each sorted by itself (agg/gorder.c), so the groups come out in order with the memory of one range.
+ * When the key is the value of a leaf (or a step of it) the zones of the superblocks give its range and the tables go to equal widths of it at once, so a range is
+ * final after one read; otherwise the tables go to one stream, and a sample of the key of the groups written (SPILL_SAMPLE values, each group as likely to be in
+ * it as another) gives the points that cut the stream into ranges of as many groups. A range that does not fit is cut again by the points of the sample inside it.
+ * A range of one value that does not fit is merged as it is. The range of a group depends on its key alone, so the groups of one value are never apart.
  *
  * Only the specs agg/spec.c names (sift_aggspec_spillable) take this path: a table is reset between two items, which the lanes of a parallel
  * scan do not allow, and the states must be blobs. The float sums of a group are added in the order of its partial states: the lane order
@@ -33,6 +34,7 @@
 
 #include "agg/agg.h"
 #include "agg/back.h"
+#include "agg/colsrc.h"
 #include "agg/spec.h"
 #include "core/limits.h"
 #include "agg/agg_int.h"
@@ -206,6 +208,53 @@ lead_value(AggExec *ex, uint32 g, int64 *v)
 	return true;
 }
 
+/*
+ * The range of the first order key in the zones of the superblocks the scan reads, when the key is the value of a leaf of its type or a step of it (so that the
+ * zones of the leaf are in the domain of the key): false when there is none
+ */
+static bool
+lead_domain(AggExec *ex, int64 *lo, int64 *hi)
+{
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggKey *k = &s->key[s->ord[0].key];
+	bool		any = false;
+	uint32		nsb;
+
+	if ((k->kind != SAK_LEAF && k->kind != SAK_LUT) || k->leaf < 0 || k->leaf >= ex->nbase || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src) ||
+		ex->lay->leaf[k->leaf].typid != k->typid || (ex->lay->leaf[k->leaf].vtype != SCV_I32 && ex->lay->leaf[k->leaf].vtype != SCV_I64))
+		return false;
+	nsb = sift_colsrc_nsb(ex->src);
+	for (uint32 sb = ex->tid_sb_lo; sb < Min(nsb, ex->tid_sb_hi); sb++)
+	{
+		SiftSrcZone zone;
+
+		if (sift_colsrc_zone_range(ex->src, sb, sb + 1, k->leaf, &zone) == 0 || zone.inexact || zone.nnull >= zone.nvals)
+			continue;
+		*lo = any ? Min(*lo, zone.min) : zone.min;
+		*hi = any ? Max(*hi, zone.max) : zone.max;
+		any = true;
+	}
+	return any && *hi > *lo;
+}
+
+/* the first set of the spill of a ranged scan: equal widths of the key's range when the zones give it, else one stream */
+static SpillSet *
+first_set(AggExec *ex)
+{
+	int64		lo,
+				hi;
+	int			nv = SPILL_MAX_PARTS - 1;
+	SpillSet   *set;
+
+	if (!lead_domain(ex, &lo, &hi))
+		return set_new(0, 1);
+	set = set_new(0, nv + 1);
+	set->bound = MemoryContextAlloc(ex->cxt, (nv - 1) * sizeof(int64));
+	for (int i = 1; i < nv; i++)
+		set->bound[i - 1] = lo + (int64) ((double) ((uint64) hi - (uint64) lo) * i / nv);
+	return set;
+}
+
 static void
 sample_add(AggSpill *sp, int64 v)
 {
@@ -355,7 +404,7 @@ spill_table(AggExec *ex)
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
 	if (sp->set == NULL && sp->ranged)
-		sp->set = set_new(0, 1);		/* one stream: the points that cut it are chosen when it is all written */
+		sp->set = first_set(ex);
 	else if (sp->set == NULL)
 	{
 		double		groups = Max(ex->spec->est_groups, 1.0),
