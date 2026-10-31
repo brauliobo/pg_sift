@@ -60,10 +60,14 @@ wait_for() { while IFS= read -r -u "${PSQ[0]}" x; do [[ $x == "$1" ]] && break; 
 instr() {
 	printf "SELECT plangate.cal_set('%s');\nSELECT 'ready';\n" "$2" >&"${PSQ[1]}"; wait_for ready
 	perf stat -x, -e instructions:u -p "$pid" -o "$pf" & p=$!
-	sleep 0.1
+	# a plan takes milliseconds: started before perf has opened its counter, it is not counted ("<not counted>"), and a SIGINT sent before perf has its handler is ignored and perf runs on
+	local i n
+	for i in $(seq 500); do [[ $(readlink "/proc/$p/fd/"* 2>/dev/null) == *perf_event* ]] && break; sleep 0.02; done
 	printf "SELECT plangate.cal_run('%s', 3, %s);\nSELECT 'done';\n" "$1" "$3" >&"${PSQ[1]}"; wait_for done
 	kill -INT "$p"; wait "$p" 2>/dev/null || true
-	awk -F, '/instructions/ { print $1 }' "$pf"
+	n=$(awk -F, '/instructions/ { print $1 }' "$pf")
+	[[ $n =~ ^[0-9]+$ ]] || { log "perf stat counted no instructions of $1 ($2): ${n:-nothing}"; return 1; }
+	echo "$n"
 }
 perf_close() { echo "\\q" >&"${PSQ[1]}"; wait "$PSQ_PID" 2>/dev/null || true; rm -f "$pf"; }
 cal_load() {
