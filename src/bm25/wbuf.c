@@ -72,6 +72,18 @@ sift_wbuf_seal(Relation index, bool force)
 	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), 0, limit_pages(index), has_docs);
 }
 
+/*
+ * VACUUM seals an open buffer once it holds a quarter of write_buffer_limit, as for a sift_col index: a search reads every document of the open buffer (and the heap
+ * pages of those not yet all-visible), so the 4 MB a buffer may reach cost a search many times what the index needs after a round of updates (300,000 documents,
+ * 16 MB: 684 blocks and 1.6 ms for a search at 4 MB, 186 and 0.54 ms when the VACUUM of the round seals it), and its rows are promoted and merged instead of waiting
+ * for a seal that may never come.
+ */
+uint64
+sift_wbuf_seal_vacuum(Relation index)
+{
+	return sift_lane_seal(index, false, sizeof(SiftWbufPageHeaderData), 0, Max(limit_pages(index) / 4, 2 * SIFT_LANES), has_docs);
+}
+
 /* Cached per relation: the active segment and the lane tails last seen */
 typedef struct WbufHint
 {

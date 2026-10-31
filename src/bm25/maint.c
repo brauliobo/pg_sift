@@ -595,6 +595,7 @@ static const SiftMaintOps bm25_ops = {
 	.vacuum_to_fixed_point = true,
 	.is_index = is_sift,
 	.seal = sift_wbuf_seal,
+	.vacuum_seal = sift_wbuf_seal_vacuum,
 	.promote_next = promote_next,
 	.merge_next = merge_next,
 	.bulkdelete_immutable = bulkdelete_immutable,

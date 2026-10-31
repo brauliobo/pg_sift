@@ -1,0 +1,60 @@
+-- VACUUM seals the open write buffer of a BM25 index once it holds a quarter of write_buffer_limit (1 MB at the default), as it does for a sift_col index, and the
+-- rows are promoted: a search reads every document of the open buffer, so the 4 MB a buffer may reach cost a search many times what a small index needs
+-- (300,000 documents, 16 MB: 684 blocks and 1.6 ms for a search with the buffer left, 186 blocks and 0.54 ms when the VACUUM of each round seals it).
+-- A limit written larger keeps its buffer for longer.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE docs (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+CREATE TABLE docs_kept (LIKE docs INCLUDING ALL) WITH (autovacuum_enabled = off);
+INSERT INTO docs SELECT g, (SELECT string_agg('w' || floor(2000 * power(abs(hashint8(g * 131 + k)::float8 / 2147483648.0), 2.5))::int, ' ') FROM generate_series(1, 25) k)
+	FROM generate_series(1, 10000) g;
+INSERT INTO docs_kept SELECT * FROM docs;
+CREATE INDEX docs_ix ON docs USING sift (body);
+CREATE INDEX docs_kept_ix ON docs_kept USING sift (body) WITH (write_buffer_limit = 16384);
+-- 8,000 more documents are about 2 MB of write buffer, nine times the index; 2% of the first ones are deleted
+INSERT INTO docs SELECT g, (SELECT string_agg('w' || floor(2000 * power(abs(hashint8(g * 131 + k)::float8 / 2147483648.0), 2.5))::int, ' ') FROM generate_series(1, 25) k)
+	FROM generate_series(10001, 18000) g;
+INSERT INTO docs_kept SELECT * FROM docs WHERE id > 10000;
+DELETE FROM docs WHERE id % 50 = 0;
+DELETE FROM docs_kept WHERE id % 50 = 0;
+SELECT max(bytes) > 1500000 AS buffer_before FROM sift.segments('docs_ix') WHERE kind <> 'immutable';
+ buffer_before 
+---------------
+ t
+(1 row)
+
+VACUUM docs, docs_kept;
+-- the default limit: the buffer was sealed and promoted; the larger limit keeps its buffer
+SELECT count(*) FILTER (WHERE kind <> 'immutable' AND bytes > 500000) AS big_buffers_left, sum(ndocs) AS docs FROM sift.segments('docs_ix');
+ big_buffers_left | docs  
+------------------+-------
+                0 | 17640
+(1 row)
+
+SELECT max(bytes) > 1500000 AS larger_limit_kept FROM sift.segments('docs_kept_ix') WHERE kind <> 'immutable';
+ larger_limit_kept 
+-------------------
+ t
+(1 row)
+
+SELECT count(*) FROM docs WHERE body @@> 'w3';
+ count 
+-------
+  3616
+(1 row)
+
+SELECT count(*) FROM docs_kept WHERE body @@> 'w3';
+ count 
+-------
+  3616
+(1 row)
+
+SELECT sift.verify('docs_ix', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE docs, docs_kept;
+DROP EXTENSION pg_sift;

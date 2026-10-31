@@ -33,7 +33,7 @@ create or replace function waste.ddl(p_lane text, p_t text) returns text languag
 		when 'col'   then format('create index %I on %I using sift_col (tenant_id, foreign_id, kind, value_num, updated_at)%s', p_t || '_ix', p_t,
 			coalesce(nullif(current_setting('waste.col_opts', true), ''), ''))
 		when 'gin'   then format('create index %I on %I using gin (to_tsvector(''simple'', body))', p_t || '_ix', p_t)
-		when 'bm25'  then format('create index %I on %I using sift (body)', p_t || '_ix', p_t)
+		when 'bm25'  then format('create index %I on %I using sift (body)%s', p_t || '_ix', p_t, coalesce(nullif(current_setting('waste.bm25_opts', true), ''), ''))
 	end $$;
 
 create or replace procedure waste.mklane(p_lane text, p_ff int default 85) language plpgsql as $$

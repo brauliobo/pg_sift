@@ -9,7 +9,7 @@
 #   bench/churn/waste.sh report       the table of the run (ROUND=last or all)
 #
 # WASTE_LOG: the log file of a cluster started with sift.log_min_duration = 0 (adds the merges, documents and bytes they wrote, a round).
-# COL_OPTS: reloptions of the col lane, e.g. "key_cut = 'off'".
+# COL_OPTS, BM25_OPTS: reloptions of the col and bm25 lanes, e.g. "key_cut = 'off'", "write_buffer_limit = 1024".
 # Settings: N rows (100000), ROUNDS (6), RATE percent of the live rows touched a round (4), MIX upd_idx:upd_plain:upd_body:del:ins (4:3:2:2:2), BATCH rows a
 # transaction (1), LANES (heap btree col gin bm25), RUN label (the lane set and N), AV=on lets autovacuum do the VACUUM (the step waits for it), DB (waste).
 set -euo pipefail
@@ -68,6 +68,8 @@ run() {
 	q -c "create extension if not exists pg_sift" -c "create extension if not exists pgstattuple" -c "create extension if not exists pageinspect" -c "create extension if not exists pg_stat_statements" -f "$HERE/waste.sql" >/dev/null
 	local opts=${COL_OPTS:+ with ($COL_OPTS)}
 	q -c "alter database $DB set waste.col_opts = '${opts//\'/\'\'}'"
+	opts=${BM25_OPTS:+ with ($BM25_OPTS)}
+	q -c "alter database $DB set waste.bm25_opts = '${opts//\'/\'\'}'"
 	q -c "delete from waste.metric where run = '$RUN'"
 	q -c "call waste.mkmaster($N)"
 	local mix="{${MIX//:/,}}"

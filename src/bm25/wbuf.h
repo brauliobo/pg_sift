@@ -25,6 +25,9 @@ extern bool sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq
  */
 extern uint64 sift_wbuf_seal(Relation index, bool force);
 
+/* Seals the active segment once it holds a quarter of write_buffer_limit (VACUUM); returns the sealed gen or 0 */
+extern uint64 sift_wbuf_seal_vacuum(Relation index);
+
 /* Re-sets the sealed flag on every lane tail of a sealed segment (idempotent) */
 extern void sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry);
 
