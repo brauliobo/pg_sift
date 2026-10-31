@@ -271,3 +271,4 @@ col_scan_not_all_visible_lazy_offsets	a scan of a `sift_col` index over a table 
 count_text_equality_groups_of_units	a `count(*)` of one text equality (`WHERE label = 'x'`) on a `sift_col` index	orders	default	Custom Scan \(SiftAgg\)	native	units:sift.agg_super = off	ms,minstr	faster33	no	-
 col_order_arrays_keep_ends	the sorted arrays that the build chooses (`order_array_columns = 'auto: a, b'`	orders	default	Top-N: created_at	native	whole:search_path = col_order_arrays_whole	ms,minstr	faster33	no	-
 point_directory_skips_unique_btree	`point_tid_columns = 'auto'` no longer picks a column that has a unique b-tree of its own	orders	-	^[0-9]+$	native	listed_id:application_name = listed_id	index_mb,ms	faster33	no	-
+group_order_rank_sort	sorts the distinct values of an integer, date or timestamp key by the value and the groups by a radix sort of their packed ranks	orders	default	Custom Scan \(SiftAgg	native	-	ms,minstr	faster33	no	-
