@@ -105,9 +105,9 @@ SELECT name, topn_plan(q) AS topn, topn_plan(q, true) AS forced, rows_equal(q) A
  nulls first                              | f    | t      | t
  offset                                   | f    | t      | t
  page of 500, cursor                      | f    | t      | t
- scope of a group of no member            | t    | t      | t
- scope of no link                         | t    | t      | t
- scope of one key                         | t    | t      | t
+ scope of a group of no member            | f    | t      | t
+ scope of no link                         | f    | t      | t
+ scope of one key                         | f    | t      | t
  scope on the joined table                | t    | t      | t
  scope sub-select                         | t    | t      | t
  scope, two joins                         | t    | t      | t
