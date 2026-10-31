@@ -16,7 +16,7 @@
 # moved while the gates ran, it is merged again (three rounds; the gates run once, the checks of the pushed head are the rest). (2) After a merge: scripts/lint.sh. (3) The privacy gate on
 # the added lines, the commit messages and the PR title and body, and the focus-table row of every new test/sql file. (4) A push, always after a merge of the tip: GitHub
 # squashes the PR diff onto the tip, and a branch that is behind it conflicts there even when the local merge was clean. (5) The required checks of the new head (the branch
-# protection list, else neutral and lint) are waited for: up to CHECK_WAIT seconds (600) while pending, MISSING_WAIT (300) while they have not appeared. (6) The tip is fetched
+# protection list, else gate and neutral) are waited for: up to CHECK_WAIT seconds (600) while pending, MISSING_WAIT (300) while they have not appeared. (6) The tip is fetched
 # again; if it moved while the checks ran, the answer of GitHub on the PR is waited for (UNKNOWN lasts seconds after every push to the base): MERGEABLE merges, CONFLICTING merges the tip into the branch again and runs the gates of the new head (three attempts), anything else exit 75. (7) The merge, `gh pr merge --match-head-commit` of the commit that was
 # checked: rebase, or squash (PR title as subject, PR body) when the branch holds a merge commit, which GitHub refuses to rebase. Never a force-push. The line in MERGED.md says
 # `merge-up` and `changelog-conflict` when the landing needed them, so they can be counted.
@@ -236,7 +236,7 @@ worker() {
 
 	required=
 	if prot=$(gh api "repos/$repo/branches/$base/protection/required_status_checks" --jq '.contexts[]' 2>/dev/null); then required=$(sort -u <<<"$prot" | tr '\n' ' '); required=${required% }; fi
-	required=${required:-neutral lint}
+	required=${required:-gate neutral}
 	if [[ -n $dry ]]; then
 		if (( push )); then echo "dry run: would push the merge-up to $br, then wait for the required checks ($required)"; else echo "dry run: required checks ($required): $(checks_verdict "$head" "$required")"; fi
 		merges=$(gh api "repos/$repo/pulls/$pr/commits" --paginate --jq '[.[] | select(.parents | length > 1)] | length' | awk '{ n += $1 } END { print n + 0 }')
