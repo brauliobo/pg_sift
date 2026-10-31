@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Land one pull request: merge the tip of its base into the branch, run the gates, push when needed, wait for the required checks, merge.
+# LAND_LOCAL_GATE=1 (set by the maintainer while hosted Actions are unavailable): the required checks are not waited for; the gates run in the work tree on the head, neutral is run too,
+# and a commit status `local-gate` and a comment with the SHA record it before the merge.
 #
 #   scripts/land.sh PR            land PR; landings of different PRs run side by side, a second run of the same PR exits 7 at once
 #   scripts/land.sh --dry-run PR  the same without a push, a merge or a write on GitHub, and without a lock: prints the plan
@@ -105,6 +107,12 @@ checks_verdict() {
 			  elif $l.conclusion != "SUCCESS" and $n == "neutral" then "red \($n) (no success)"
 			  else empty end ]
 		| if length == 0 then "ok" else (map(split(" ")[0]) | if index("red") then "red" elif index("pending") then "pending" else "missing" end) + " " + (map(split(" ")[1:] | join(" ")) | join(", ")) end end' || echo "pending GitHub unreachable"
+}
+
+# local_gate_record HEAD: the status and the comment that say the gates ran locally on exactly this head
+local_gate_record() {
+	gh api "repos/$repo/statuses/$1" -f state=success -f context=local-gate -f description="lint, neutral, docs and bench-case checks passed locally on this head" >/dev/null || return 1
+	gh pr comment "$pr" --repo "$repo" --body "local gate: lint, neutral, docs, options, bench-case and privacy checks passed on \`$1\` in a clean work tree (LAND_LOCAL_GATE, no hosted checks)" >/dev/null
 }
 
 # wait_checks HEAD REQUIRED: sets verdict; a pending check is waited for up to CHECK_WAIT seconds (600), one that has not appeared yet (GitHub starts the checks of a pushed
@@ -251,7 +259,13 @@ worker() {
 
 	KIND=$(kind_of "origin/$base" "$head")
 	t_=$SECONDS
-	wait_checks "$head" "$required"
+	if [[ -n ${LAND_LOCAL_GATE:-} ]]; then
+		scripts/check-neutral.sh >"$WORK/neutral.log" 2>&1 || red "neutral red (local gate)" "$WORK/neutral.log"
+		local_gate_record "$head" || { echo "cannot record the local gate on #$pr"; exit 75; }
+		verdict=ok required=local-gate
+	else
+		wait_checks "$head" "$required"
+	fi
 	T_WAIT=$(( T_WAIT + SECONDS - t_ ))
 	echo "required checks ($required): $verdict"
 	if [[ $verdict != ok ]]; then

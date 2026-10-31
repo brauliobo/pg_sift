@@ -274,5 +274,10 @@ cpu=$(LC_ALL=pt_BR.UTF-8 bash -c '. "$1"; python3 -c "sum(range(4 * 10**7))"; ch
 awk -v c="$cpu" 'BEGIN { exit !(c > 0) }' || fail "children_cpu reads $cpu for a child that used the CPU (the CPU of the waited children)"
 "$LAND" --stats | grep -q "rc4=1" || fail "--stats does not count the exit codes per day: $("$LAND" --stats)"
 
+# 16. LAND_LOCAL_GATE: the record that replaces the hosted checks names the head in a commit status and in a comment on the PR
+: >"$T/gh16.log"; mkdir -p "$T/bin16"; printf '#!/usr/bin/env bash\necho "$*" >>"$T_DIR/gh16.log"\n' >"$T/bin16/gh"; chmod +x "$T/bin16/gh"
+( . "$LAND"; PATH=$T/bin16:$PATH; repo=x/y pr=3; local_gate_record abc123 ) || fail "local_gate_record failed with a working gh"
+has 'api repos/x/y/statuses/abc123 -f state=success -f context=local-gate' "$T/gh16.log" && has 'pr comment 3 --repo x/y --body local gate: .*abc123' "$T/gh16.log" || fail "the local gate is not recorded on the head: $(<"$T/gh16.log")"
+
 (( bad )) || echo "land selftest: a second run of one PR exits 7, different PRs go side by side in their own work trees, only the merge is under the global lock, the worker's exit code reaches the caller, TERM and KILL of the holder release its lock, nothing inherits a lock, a broken CHANGELOG is refused, the verdict on the required checks and its bounded wait, the privacy gate fails closed, land.sh has no process-table matching"
 exit $bad
