@@ -361,7 +361,15 @@ sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
 	{
 		uint64		pm[SIFT_PAGEMASK_WORDS],
 					av[SIFT_PAGEMASK_WORDS];
+		SiftCUnitView v;
 		bool		ok = sift_cseg_unit_pagemask(seg, u, pm);
+
+		/* a segment of one unit has no superunit summary: the mask is in the head of the unit */
+		if (!ok && sift_cseg_unit_view(seg, u, &v))
+		{
+			memcpy(pm, v.pagemask, sizeof(pm));
+			ok = true;
+		}
 
 		if (ok)
 		{
