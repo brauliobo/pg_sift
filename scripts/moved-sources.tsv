@@ -31,6 +31,4 @@ src/agg/update/	src/agg/update.c
 src/agg/part/	src/agg/part.c	
 src/agg/lookup/	src/agg/lookup.c	
 src/agg/combo/	src/agg/combo.c	
-src/table/load/	src/table/load.c	load_
-src/agg/par/	src/agg/par.c	
-src/agg/vk/	src/agg/vk.c	
+src/col/codec/	src/col/codec.c	cc_

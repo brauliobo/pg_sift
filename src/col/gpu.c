@@ -1,6 +1,6 @@
 /*
  * col/gpu.c - a codec blob read as the fields a kernel decodes (col/gpu.h). The node layout is the codec's
- * (col/codec.c): a 24 byte blob head (magic, version, kind, flags, u32 n, i64 min, i64 max), the root node, a check word; a node is
+ * (col/codec/codec.c): a 24 byte blob head (magic, version, kind, flags, u32 n, i64 min, i64 max), the root node, a check word; a node is
  * 16 bytes (tag, parameter, u32 f1, 8 bytes of fields) followed by its payload, 8-byte aligned.
  */
 #include "postgres.h"

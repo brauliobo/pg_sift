@@ -14,7 +14,9 @@ col/batch.c
 col/chunk.c
 col/ctest.c
 col/unit.c
-col/codec.c
+col/codec/codec.c
+col/codec/filter.c
+col/codec/get.c
 col/codec_policy.c
 col/codec_write.c
 col/codec_parse.c
@@ -63,6 +65,7 @@ agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c
 agg/kern_neon.c
+col/codec/decode_int.h
 agg/kern_vec.h
 # headers
 col/shred.h
