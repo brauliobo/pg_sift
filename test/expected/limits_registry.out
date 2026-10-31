@@ -93,7 +93,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_conjuncts       | SIFT_AGG_MAX_WIDE               |          8 | t         | f
  wide_digits          | SIFT_COL_MAX_WIDE_SCALE         |         38 | t         | f
  write_buffer_kb      | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |       4096 | t         | f
-(88 rows)
+(89 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';
