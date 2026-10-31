@@ -4,6 +4,8 @@ name: neutral
 # are edited without a push, so this workflow also runs on `edited`; it is apart from ci.yml, whose run an edit would cancel and repeat.
 # pull_request, not pull_request_target: the code of the pull request runs without a token that can write. The title and the body reach the script through the
 # environment only and are never part of the text of a command.
+# The private vocabulary is the secret NEUTRAL_VOCAB, which a repository may not have (a fork never does): without it the job `neutral` is skipped, not green, and is not a
+# required check; the authority is the fail-closed gate that every landing passes locally.
 on:
   pull_request:
     types: [opened, reopened, synchronize, edited]
@@ -17,7 +19,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  vocab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    outputs:
+      present: ${{ steps.vocab.outputs.present }}
+    steps:
+      - id: vocab
+        env:
+          NEUTRAL_VOCAB: ${{ secrets.NEUTRAL_VOCAB }}
+        run: echo "present=$([[ -n $NEUTRAL_VOCAB ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   neutral:
+    needs: vocab
+    if: ${{ needs.vocab.outputs.present == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
