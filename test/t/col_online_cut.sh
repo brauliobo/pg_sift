@@ -80,11 +80,14 @@ hold() {
 }
 answer() { sql "$1" "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
 table_answer() { sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
-replayed_within() { # the standby has replayed what the primary wrote, $1 seconds later
-	local lsn
+replayed_while_held() { # the standby has replayed what the primary wrote within $1 seconds, while its query still holds the table: a stall lasts as long as the query
+	local lsn i
 	lsn=$(sql primary "SELECT pg_current_wal_insert_lsn()")
-	sleep "$1"
-	[[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]]
+	for ((i = 0; i < $1 * 5; i++)); do
+		[[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && kill -0 "$HOLDER" 2>/dev/null && return 0
+		sleep 0.2
+	done
+	return 1
 }
 held_answer_ok() { test "$(grep after "$D/hold.out" | tr -d ' ')" == "after|$(answer primary)"; }
 no_failure() { ! grep -q -E 'ERROR|pgbench: error|failed transactions: [1-9]' "$1"; }
@@ -95,7 +98,7 @@ check "the free end stays behind the live segments (the file is over 1.9 times t
 hold 20
 vacuum_until_cut
 check "a standby query holds the table: the free end is cut (at most 1.1 times the live bytes)" tight
-check "... and the replay does not stall behind the query" replayed_within 3
+check "... and the replay does not stall behind the query" replayed_while_held 10
 wait "$HOLDER"
 check "... the query reads the same rows after the cut as the primary" held_answer_ok
 
@@ -106,7 +109,7 @@ sql primary "UPDATE t SET amount = amount + 1 WHERE id % 3 = 0" >/dev/null
 vacuum
 echo "# gate: during the snapshot file $(size) live $(live) $(lay)" >&2
 check "blocks released after a standby snapshot are held by the horizon" test "$(pending)" -gt 0
-check "... and the replay does not stall behind the query" replayed_within 3
+check "... and the replay does not stall behind the query" replayed_while_held 10
 wait "$HOLDER"
 past
 vacuum
