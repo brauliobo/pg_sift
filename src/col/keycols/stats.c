@@ -8,6 +8,7 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/index.h"
 #include "executor/spi.h"
+#include "storage/proc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "col/keycols/keycols_int.h"
@@ -80,7 +81,7 @@ keycols_est_index_bytes(Relation heap, Relation index)
 	return bytes;
 }
 
-/* The table has a row estimate of at least GORD_AUTO_ROWS and no statistics of the first column of the index: the choice would decide nothing, so the indexed columns of the table are analyzed, as ANALYZE (columns) does (the NOTICE of the arrays it chooses says so). A REINDEX cannot: ANALYZE opens the index it rebuilds */
+/* The table has a row estimate of at least GORD_AUTO_ROWS and no statistics of the first column of the index: the choice would decide nothing, so the indexed columns of the table are analyzed, as ANALYZE (columns) does (the NOTICE of the arrays it chooses says so). A REINDEX cannot: ANALYZE opens the index it rebuilds, nor a VACUUM (its rewrite of the segments chooses again here): PostgreSQL refuses an ANALYZE inside it */
 void
 keycols_analyze_if_unknown(Relation heap, Relation index)
 {
@@ -88,7 +89,7 @@ keycols_analyze_if_unknown(Relation heap, Relation index)
 	StringInfoData cmd;
 	const char *sep = "";
 
-	if (hatt == 0 || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
+	if (hatt == 0 || (MyProc->statusFlags & PROC_IN_VACUUM) || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
 		return;
 	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;
