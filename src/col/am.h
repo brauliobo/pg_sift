@@ -66,11 +66,13 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
+extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
 extern bool sift_col_options_key_cut_auto(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */
 extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */
 extern bool sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n);
+extern bool sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n);
 extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec);
 /* paths = 'auto' (col/keycols/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
@@ -158,7 +160,7 @@ typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
-							int slice, int nslices, uint32 unit_base);
+							int slice, int nslices, uint32 unit_base, bool resort);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with

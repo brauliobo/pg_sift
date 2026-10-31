@@ -1,0 +1,82 @@
+-- The rewrite of every segment decides again what a build decides from the data (key_cut, the order arrays, the point directories of the options the build chose),
+-- so an index built on a table in the order of its tenants and rewritten after rows of every tenant were appended is as small as a rebuild of it
+--: the maintained size is within 5% of the REINDEX of the same rows, the answers are the table's, and the choice is the build's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_auto_merge = off;
+CREATE TABLE rc (id int PRIMARY KEY, tenant_id int, foreign_id int, counter_a int, updated_at timestamp, pad text);
+INSERT INTO rc SELECT i, i / 150, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
+FROM generate_series(1, 120000) i;
+VACUUM ANALYZE rc;
+CREATE INDEX rc_ix ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at);
+-- the same columns with the key the user wrote
+CREATE INDEX rc_off ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at) WITH (key_cut = 'off');
+-- built on rows in the order of the tenants: no cut
+SELECT reloptions::text ~ 'key_cut' AS cut_at_build FROM pg_class WHERE relname = 'rc_ix';
+ cut_at_build 
+--------------
+ f
+(1 row)
+
+-- rows of every tenant appended at the end of the heap, a tenth of the rows deleted
+INSERT INTO rc SELECT i, (hashint4(i) & 2147483647) % 800, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
+FROM generate_series(120001, 144000) i;
+DELETE FROM rc WHERE id % 10 = 3;
+VACUUM ANALYZE rc;
+SELECT sift.col_maintain('rc_ix');
+ col_maintain 
+--------------
+ t
+(1 row)
+
+SELECT sift.col_maintain('rc_off');
+ col_maintain 
+--------------
+ t
+(1 row)
+
+VACUUM rc;
+VACUUM rc;
+SELECT pg_relation_size('rc_ix') AS maintained \gset
+SELECT reloptions::text ~ 'key_cut=auto: foreign_id' AS cut_after_rewrite FROM pg_class WHERE relname = 'rc_ix';
+ cut_after_rewrite 
+-------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('rc_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- an option the user wrote is not changed by the rewrite
+SELECT reloptions::text ~ 'key_cut=off' AND reloptions::text !~ 'point_tid_columns' AS user_option_kept FROM pg_class WHERE relname = 'rc_off';
+ user_option_kept 
+------------------
+ t
+(1 row)
+
+DROP INDEX rc_off;
+-- the answers are the table's
+SELECT count(*) AS n, sum(counter_a) AS s, count(DISTINCT tenant_id) AS t FROM rc WHERE foreign_id = 5 \gset maint_
+SET sift.enable_agg = off;
+SELECT count(*) = :maint_n AND sum(counter_a) = :maint_s AND count(DISTINCT tenant_id) = :maint_t AS same_answers FROM rc WHERE foreign_id = 5;
+ same_answers 
+--------------
+ t
+(1 row)
+
+RESET sift.enable_agg;
+REINDEX INDEX rc_ix;
+SELECT pg_relation_size('rc_ix') AS rebuilt \gset
+SELECT :maintained <= :rebuilt * 1.05 AS maintained_within_5_percent;
+ maintained_within_5_percent 
+-----------------------------
+ t
+(1 row)
+
+DROP TABLE rc;
+DROP EXTENSION pg_sift;

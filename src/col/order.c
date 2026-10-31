@@ -602,7 +602,8 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		SiftColBatch *one = sift_cbatch_create(m->cx, schema);
 
 		b->keyed = true;		/* the rows of many superblocks */
-		m->loaded += sift_cseg_live_rows(seg);
+		if (in->next_unit < seg->nsb)	/* the call that finds the segment read is not a second load */
+			m->loaded += sift_cseg_live_rows(seg);
 		if (m->loaded * sift_colk_row_bytes(schema) > m->budget)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col merge of an index with key_cut holds the rows of the segments written before the option in memory and needs more than maintenance_work_mem"),
 							errhint("Raise maintenance_work_mem, or REINDEX the index.")));
@@ -734,11 +735,11 @@ merge_done(void *state, const RowRef *refs, uint64 n)
 /*
  * The merge of segments of an index with key_cut: the live rows of the inputs, in the order of the key, cut again into units. The units of a key-cut
  * segment follow each other in the order of the key, so each input holds one unit (a segment written before the option is loaded whole and sorted, up
- * to memory_kb) and the cut holds a window of rows: the memory does not depend on the number of rows. Returns the number of units.
+ * to memory_kb; resort: every input is, the key having changed since they were written) and the cut holds a window of rows: the memory does not depend on the number of rows. Returns the number of units.
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, bool resort)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
@@ -746,7 +747,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	int			units;
 
 	for (int i = 0; i < n; i++)
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]), .chunk = -1};
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 || sift_cseg_keyed(&ent[i])), .chunk = -1};
 	if (nslices > 1)
 	{
 		uint64		nb;

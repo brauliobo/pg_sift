@@ -2301,6 +2301,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols/cube.c` | `rollup` |
 | NOTICE | sift_col index "%s": order_array_columns = 'auto' chose the text column "%s": benefit %s against cost %s | `src/col/keycols/gorder.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": order_array_columns = 'auto' did not choose the text column "%s": benefit %s against cost %s | `src/col/keycols/gorder.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": the rewrite chose again from the data: %s | `src/col/keycols/keycols.c` |  |
 | NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols/keycols.c` |  |
 | NOTICE | sift_col index %s keeps the elements of the arrays %s | `src/col/keycols/keycols.c` |  |
 | NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols/keycols.c` | `paths` |

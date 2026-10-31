@@ -542,6 +542,32 @@ sift_col_auto_cut(Relation heap, Relation index)
 	return v.res;
 }
 
+/*
+ * The rewrite of every segment (col/maint/merge.c) decides the key again from the data, as a build does, for an index whose key_cut the build chose or left to the default:
+ * rows appended at the end of the heap turn a table in the order of its tenants into one the units no longer follow, and the rewrite is where the units are cut again.
+ * Writes the option when the verdict is a key other than the one the index has, and returns whether it did; the build's NOTICE is not repeated (the caller says what changed).
+ * fits: the rows of the segments can be held in maintenance_work_mem (col/order.c, they are sorted again for a new key); when they cannot, a cut is not chosen now. A cut is not undone:
+ * the segments it cut are streamed in the order of the key, and a table that stops paying for one is a REINDEX's to take back.
+ */
+bool
+sift_col_auto_cut_again(Relation heap, Relation index, bool fits)
+{
+	CutVerdict	v;
+	const char *have = sift_col_options_key_cut(index);
+	char	   *want;
+
+	decide(heap, index, false, &v);
+	if (!v.decided)
+		return false;
+	while (*have == ' ')
+		have++;
+	want = v.res == SIFT_AUTOCUT_CUT ? psprintf("%s%s%s", v.leaf, v.second[0] ? ", " : "", v.second) : pstrdup("");
+	if (strcmp(have, want) == 0 || want[0] == '\0' || !fits)
+		return false;
+	sift_col_set_option(index, "key_cut", want[0] != '\0' ? psprintf("auto: %s", want) : "auto");
+	return true;
+}
+
 PG_FUNCTION_INFO_V1(sift_col_key_cut_decision);
 
 /* sift.key_cut_decision(index): what CREATE INDEX or REINDEX of the index would decide for key_cut now, with the measures behind it; changes nothing */

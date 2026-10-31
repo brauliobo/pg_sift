@@ -157,7 +157,7 @@ compact(ColBuild *b)
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
-	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0);
+	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, false);
 	sift_colw_finish(w, &neu);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);

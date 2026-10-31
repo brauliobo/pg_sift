@@ -8,6 +8,9 @@
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 
+/* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/order.c) */
+static bool merge_recut;
+
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic_armed = 0;
 
@@ -454,7 +457,9 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				heap_sbs;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
+	bool		resort = merge_recut;
 
+	merge_recut = false;
 	if (sift_col_is_index(index))
 	{
 		sift_col_pagg_rewrite(index, in, n, &rewrite);
@@ -530,7 +535,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
-							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0);
+							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -710,6 +715,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	{
 		/* the cached schema is read after the option is written: the write reloads it */
 		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
+
+		merge_recut = n == nimm && sift_col_auto_redecide(index, sel, n);
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 

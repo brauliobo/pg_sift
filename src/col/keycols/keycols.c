@@ -17,6 +17,7 @@
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "col/am.h"
@@ -226,6 +227,80 @@ sift_col_auto_keys(Relation heap, Relation index)
 		return false;
 	set_chosen(index, &list);
 	return true;
+}
+
+/*
+ * Before a merge of every immutable segment: what a build chooses from the data and keeps in an option it wrote itself (key_cut, order_array_columns, point_tid_columns,
+ * each 'auto' or 'auto: list') is chosen again, in the order of the build, so the segments about to be written are those a REINDEX would write: rows of every tenant appended
+ * at the end of a heap built in the order of its tenants make a cut pay, the cut makes the ends of an order array and a point directory the better choices, and the index
+ * a merge kept at the choices of the day of its build was a third larger. The rewrite is due for its own reasons (dead or fragmented units, the buffer), so the decision
+ * adds the sample of the cut (at most a quarter of the heap, the build's) and no rewrite. An option the user wrote is left as it is. Returns whether an option changed; the
+ * caller reads the schema again after it. Returns whether key_cut changed (the merge then sorts the rows of its inputs again).
+ */
+bool
+sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
+{
+	Relation	heap;
+	char	   *cut,
+			   *arr,
+			   *pt;
+	const char *o;
+	bool		pushed = false,
+				changed;
+	uint64		loaded = 0;
+	MemoryContext mcx;
+	StringInfoData what;
+
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || IsInParallelMode())
+		return false;
+	/* the lock and the reasons of sift_col_auto_keys_merge: the merge holds the metapage, a VACUUM the heap */
+	if (!ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock))
+		return false;
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	if (!ActiveSnapshotSet())
+	{
+		PushActiveSnapshot(GetTransactionSnapshot());
+		pushed = true;
+	}
+	/* a merge that cuts by another key than the segments' holds their rows whole and sorts them: a cut is chosen only if they fit (col/order.c) */
+	mcx = AllocSetContextCreate(CurrentMemoryContext, "sift_col redecide", ALLOCSET_DEFAULT_SIZES);
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &in[i], mcx);
+
+		loaded += sift_cseg_live_rows(seg);
+		sift_cseg_close(seg);
+		MemoryContextReset(mcx);
+	}
+	loaded *= sift_colk_row_bytes(sift_col_rel_private(index, mcx)->schema);
+	MemoryContextDelete(mcx);
+	cut = pstrdup(sift_col_options_key_cut(index));
+	o = sift_col_options_order_array_columns(index);
+	arr = pstrdup(o ? o : "");
+	pt = pstrdup(sift_col_options_point_tid_columns(index));
+	changed = sift_col_auto_cut_again(heap, index, loaded <= (uint64) maintenance_work_mem * 1024);
+	sift_col_auto_gorder(heap, index);
+	sift_col_auto_point(heap, index);
+	if (pushed)
+		PopActiveSnapshot();
+	table_close(heap, NoLock);
+	initStringInfo(&what);
+	if (changed)
+		appendStringInfo(&what, "key_cut = '%s' (was '%s'); ", sift_col_options_key_cut(index), cut);
+	o = sift_col_options_order_array_columns(index);
+	if (strcmp(arr, o ? o : "") != 0)
+		appendStringInfo(&what, "order_array_columns = '%s' (was '%s'); ", o ? o : "", arr);
+	if (strcmp(pt, sift_col_options_point_tid_columns(index)) != 0)
+		appendStringInfo(&what, "point_tid_columns = '%s' (was '%s'); ", sift_col_options_point_tid_columns(index), pt);
+	if (what.len == 0)
+		return false;
+	what.data[what.len - 2] = '\0';
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the rewrite chose again from the data: %s", RelationGetRelationName(index), what.data),
+			 errdetail("Rows appended since the build, or a different spread of the values, change what the default formulas choose for key_cut, order_array_columns and point_tid_columns "
+					   "(an option you wrote is never changed); the segments written now are the ones a REINDEX would write."),
+			 errhint("ALTER INDEX %s SET (key_cut = 'off') (and the same for the others) keeps a choice off.", quote_identifier(RelationGetRelationName(index)))));
+	return changed;
 }
 
 /*
