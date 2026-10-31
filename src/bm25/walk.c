@@ -494,7 +494,13 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
-	st->parts.docmap_dir = (uint64) docmap(seg)->nsb * sizeof(SiftDocSBRef) + sizeof(uint32);
+	{
+		DocMap	   *dm = docmap(seg);
+
+		st->parts.docmap_attr = dm->dir_off - dm->recs_end;
+		st->parts.docmap_dir = (uint64) dm->nsb * sizeof(SiftDocSBRef) +
+			(seg->fmt >= SIFT_SEGFMT_ATTR ? (uint64) dm->nsb * sizeof(SiftAttrRef) + 16 : sizeof(uint32));
+	}
 	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -
 		st->parts.dict_inline_pos;

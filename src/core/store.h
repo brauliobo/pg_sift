@@ -316,6 +316,8 @@ typedef enum SiftWriteMode
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
+/* The index a target writes */
+extern Relation sift_wt_index(const SiftWriteTarget *wt);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 #ifdef SIFT_TESTING
 /* core/store_test.c: a test segment of payload bytes of content seed (0: zeros), written in pieces and aligned as the header records */

@@ -9,6 +9,14 @@
 #include "bm25/segment.h"
 #include "col/seg_int.h"
 
+/* ---------- INCLUDE columns (bm25/attr.c): the hosts keep none ---------- */
+
+SiftAttrSrc *
+sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
+{
+	return NULL;
+}
+
 /* ---------- docmap directories (bm25/docdir.c): not kept between queries ---------- */
 
 bool

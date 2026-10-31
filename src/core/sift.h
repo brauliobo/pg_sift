@@ -20,7 +20,7 @@
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
  * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
-#define SIFT_FORMAT_MINOR		4
+#define SIFT_FORMAT_MINOR		5
 #define SIFT_FORMAT_MINOR_VERS	3	/* what a sift_table with unfrozen rows needs: unchanged by 1.4 */
 #define SIFT_FORMAT_MINOR_BASE	2
 
@@ -31,12 +31,14 @@
  * at a time, which cannot keep that table, so they keep writing format 1 (and read both). 3: format 2 with the narrower parts of
  * (dictionary blocks, dl rows, packed containers), each announced where it
  * starts, so that a segment of format 3 is read by the code that reads 1 and 2 and the other way round. 4: the position stream of a term
- * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c).
+ * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c). 5: the values of the INCLUDE columns of the index, a record per SB after the
+ * docmap records (bm25/attr.c); a segment of an index without INCLUDE columns is written as 4.
  */
 #define SIFT_SEGFMT_RANKBITS	1
 #define SIFT_SEGFMT_LIVEROWS	2
 #define SIFT_SEGFMT_PACKED		3
 #define SIFT_SEGFMT_POSBLK		4
+#define SIFT_SEGFMT_ATTR		5
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 #define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_RANKBITS
 #else

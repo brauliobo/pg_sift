@@ -524,10 +524,13 @@ sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRe
 	MemoryContext cxt = AllocSetContextCreate(b->parent, "sift segment write", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt, b->positions);
+	SiftAttrSrc *as = sift_attr_src(wt, cxt);
 	SortTerm   *order = sorted_terms(b);
 	Batch	   *bt = palloc0(sizeof(Batch));
 	PosChunk   *pc = palloc0(sizeof(PosChunk));
 
+	if (as)
+		sift_segw_attrs(sw, as);
 	add_docs(sw, b->docs, b->ndocs);
 	for (uint32 i = 0; i < b->nterms; i++)
 	{

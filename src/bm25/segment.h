@@ -28,6 +28,34 @@ typedef struct SiftDocSBRef
 } SiftDocSBRef;
 
 /*
+ * The values of the INCLUDE columns (SIFT_SEGFMT_ATTR): per SB one record after the docmap records, with for each column a base, the code that
+ * stands for "unknown" and the rows of the SB's present pages in the width the range of the SB's values needs. A slot holds 0 for NULL, v - base + 1
+ * for the value v, the unknown code for a doc whose heap tuple was gone when the segment was written. A column that is not an integer-like type has
+ * no rows (flags SIFT_ATTR_NOROWS): every doc passes its tests.
+ */
+#define SIFT_ATTR_MAXCOLS	8
+#define SIFT_ATTR_NOROWS	1
+#define SIFT_ATTR_MAXWIDTH	56
+enum SiftAttrState
+{
+	SIFT_AV_VALUE = 0,
+	SIFT_AV_NULL,
+	SIFT_AV_UNKNOWN
+};
+
+/* The source of the values of the docs of a page at a write: state[col * n + i] and vals[col * n + i] for the doc at offs[i] of block blk */
+typedef struct SiftAttrSrc
+{
+	int			ncols;
+	bool		intlike[SIFT_ATTR_MAXCOLS];
+	void		(*fetch) (void *arg, BlockNumber blk, const OffsetNumber *offs, int n, int64 *vals, uint8 *state);
+	void	   *arg;
+} SiftAttrSrc;
+
+/* The attribute source of the index a target writes (NULL: it has no INCLUDE column, or the host keeps none); bm25/attr.c */
+extern SiftAttrSrc *sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt);
+
+/*
  * Writer: docs first (strictly ascending key; dl 0 for text without
  * tokens), then terms (strictly ascending bytes, possibly none). avgdl_ref
  * is the segment's own avgdl, so only k1 and b of ref are used. positions:
@@ -43,6 +71,8 @@ extern PGDLLIMPORT int sift_test_segfmt;
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
+/* The values of the INCLUDE columns of the docs that follow are fetched from src when an SB is flushed; before the first doc */
+extern void sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src);
 
 /* Terms of min_postings postings or more are staged in temporary files as they arrive (sift_postw_spool), before the first term */
 extern void sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings);
@@ -73,7 +103,6 @@ typedef struct SiftSegment
 extern SiftSegment *sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
 extern void sift_seg_close(SiftSegment *seg);	/* releases buffers only */
 
-/* Docs of one SB; false when the segment has none there */
 typedef struct SiftDocChunk
 {
 	uint32		sb;
@@ -83,6 +112,42 @@ typedef struct SiftDocChunk
 	bool		dirty;			/* some doc in this SB was vacuumed */
 } SiftDocChunk;
 
+/* The columns of INCLUDE a segment holds values of (0 for a segment of an older format) */
+extern int	sift_seg_attr_ncols(SiftSegment *seg);
+
+/* One column of the pages of a block (SIFT_BLK_PAGES pages) set in want that have docs: the rows of their slots, NULL for the others */
+typedef struct SiftAttrBlock
+{
+	int64		base;
+	uint64		unk;
+	int			width;
+	bool		norows;
+	const uint8 *row[SIFT_BLK_PAGES];
+} SiftAttrBlock;
+
+extern void sift_seg_block_attr(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int col, SiftAttrBlock *out);
+
+/* The value of slot (offset - 1) in the row of page pg of the block: an SiftAttrState, and the value in *v for SIFT_AV_VALUE */
+static inline int
+sift_attr_get(const SiftAttrBlock *a, int pg, int slot, int64 *v)
+{
+	uint64		code;
+	uint64		bit;
+
+	if (a->norows || a->row[pg] == NULL)
+		return SIFT_AV_UNKNOWN;
+	bit = (uint64) slot * a->width;
+	memcpy(&code, a->row[pg] + (bit >> 3), sizeof(code));
+	code = (code >> (bit & 7)) & ((UINT64CONST(1) << a->width) - 1);
+	if (code == 0)
+		return SIFT_AV_NULL;
+	if (code == a->unk)
+		return SIFT_AV_UNKNOWN;
+	*v = a->base + (int64) code - 1;
+	return SIFT_AV_VALUE;
+}
+
+/* Docs of one SB; false when the segment has none there */
 extern bool sift_seg_docs(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
 /*
@@ -209,6 +274,7 @@ typedef struct SiftPartStats
 {
 	uint64		docmap_dl;		/* dl rows */
 	uint64		docmap_presence;	/* the codec chunk of each SB's present docs, its headers and padding */
+	uint64		docmap_attr;	/* the INCLUDE values of the SBs */
 	uint64		docmap_dir;		/* SB directory */
 	uint64		list_codec;		/* LIST blobs */
 	uint64		grouped_dir;	/* GROUPED blobs: header, key/poff/base */

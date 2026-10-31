@@ -489,6 +489,7 @@ sift_handler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *am = sift_am_routine(1, 0, false);
 
+	am->amcaninclude = true;
 	am->ambuild = sift_ambuild;
 	am->ambuildempty = sift_ambuildempty;
 	am->aminsert = sift_aminsert;

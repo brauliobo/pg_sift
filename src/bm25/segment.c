@@ -92,7 +92,7 @@ docmap_read(SiftSegment *seg, DocMap *dm, void *handle)
 
 		if (r->sb < seg->hdr->sb_lo || r->sb > seg->hdr->sb_hi || (i > 0 && r->sb <= dm->dir[i - 1].sb) ||
 			r->off % 4 != 0 || r->off < (i > 0 ? dm->dir[i - 1].off + 8 : s->off) ||
-			r->off + 8 > dm->dir_off || r->ndocs == 0)
+			r->off + 8 > dm->recs_end || r->ndocs == 0)
 			corrupt(seg, "DOCMAP entry %u (SB %u at %llu, %u docs) is out of order.",
 					i, r->sb, ULL(r->off), r->ndocs);
 		dm->rank_base[i] = rank;
@@ -111,6 +111,7 @@ docmap(SiftSegment *seg)
 	const SiftSectionRef *s = &seg->hdr->sections[SIFT_SEC_DOCMAP];
 	void	   *handle;
 	uint32		nsb;
+	uint8		tail[16];
 
 	if (dm)
 		return dm;
@@ -121,7 +122,25 @@ docmap(SiftSegment *seg)
 		nsb > seg->hdr->sb_hi - seg->hdr->sb_lo + 1)
 		corrupt(seg, "DOCMAP of %llu bytes lists %u SBs.", ULL(s->len), nsb);
 	dm->nsb = nsb;
-	dm->dir_off = s->off + s->len - sizeof(uint32) - nsb * sizeof(SiftDocSBRef);
+	dm->acur = -1;
+	if (seg->fmt >= SIFT_SEGFMT_ATTR)
+	{
+		uint64		adirlen = (uint64) nsb * sizeof(SiftAttrRef);
+
+		if (adirlen + (uint64) nsb * sizeof(SiftDocSBRef) + sizeof(tail) > s->len)
+			corrupt(seg, "DOCMAP of %llu bytes lists %u SBs and their INCLUDE records.", ULL(s->len), nsb);
+		seg_read(seg, s->off + s->len - sizeof(tail), sizeof(tail), tail);
+		memcpy(&dm->recs_end, tail, sizeof(uint64));
+		memcpy(&dm->ncols, tail + 8, sizeof(uint32));
+		dm->dir_off = s->off + s->len - sizeof(tail) - adirlen - nsb * sizeof(SiftDocSBRef);
+		if (dm->ncols == 0 || dm->ncols > SIFT_ATTR_MAXCOLS || dm->recs_end > dm->dir_off || dm->recs_end % 4 != 0)
+			corrupt(seg, "DOCMAP lists %u INCLUDE columns and its records end at %llu.", dm->ncols, ULL(dm->recs_end));
+	}
+	else
+	{
+		dm->dir_off = s->off + s->len - sizeof(uint32) - nsb * sizeof(SiftDocSBRef);
+		dm->recs_end = dm->dir_off;
+	}
 	if (!sift_docdir_get(seg, nsb, &dm->dir, &dm->rank_base, &handle))
 		docmap_read(seg, dm, handle);
 	dm->cur = -1;
@@ -190,7 +209,7 @@ void
 load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 {
 	const SiftDocSBRef *r = &dm->dir[i];
-	uint64		len = (i + 1 < dm->nsb ? dm->dir[i + 1].off : dm->dir_off) - r->off;
+	uint64		len = (i + 1 < dm->nsb ? dm->dir[i + 1].off : dm->recs_end) - r->off;
 	uint64		all[SIFT_PAGEMASK_WORDS] = {~0ULL, ~0ULL, ~0ULL, ~0ULL};
 	uint32	   *h;
 	const char *bad;
@@ -395,5 +414,90 @@ sift_seg_block_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 wa
 		int			page = block * SIFT_BLK_PAGES + pg;
 
 		rows[pg] = (want >> pg & 1) && (dm->pagemask[page / 64] & (1ULL << (page % 64))) ? dl_row(dm, page) : NULL;
+	}
+}
+
+int
+sift_seg_attr_ncols(SiftSegment *seg)
+{
+	return seg->fmt >= SIFT_SEGFMT_ATTR ? (int) docmap(seg)->ncols : 0;
+}
+
+/* The record of INCLUDE values of the loaded and indexed SB, and where the rows of its present pages start */
+static void
+attr_load(SiftSegment *seg, DocMap *dm)
+{
+	int64		i = dm->cur;
+	const SiftAttrRef *a;
+	const SiftAttrColHdr *ch;
+	uint32		nc;
+
+	if (dm->acur == i)
+		return;
+	dm->acur = -1;
+	if (dm->adir == NULL)
+	{
+		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, dm->nsb * sizeof(SiftAttrRef));
+
+		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), dm->nsb * sizeof(SiftAttrRef), dir);
+		dm->adir = dir;
+	}
+	a = &dm->adir[i];
+	if (a->off < dm->recs_end || a->len < sizeof(uint32) + dm->ncols * sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
+		corrupt(seg, "INCLUDE record of SB %u (%u bytes at %llu) is outside the records.", dm->dir[i].sb, a->len, ULL(a->off));
+	if (a->len > dm->arecap)
+	{
+		dm->arecap = Max(a->len, 4096);
+		if (dm->arec)
+			pfree(dm->arec);
+		dm->arec = MemoryContextAlloc(seg->mcxt, dm->arecap + 16);
+	}
+	seg_read(seg, a->off, a->len, dm->arec);
+	memcpy(&nc, dm->arec, sizeof(nc));
+	if (nc != dm->ncols)
+		corrupt(seg, "INCLUDE record of SB %u has %u columns, the segment %u.", dm->dir[i].sb, nc, dm->ncols);
+	ch = (const SiftAttrColHdr *) (dm->arec + sizeof(uint32));
+	for (uint32 c = 0; c < nc; c++)
+	{
+		SiftAttrColHdr h;
+		uint64		off;
+
+		memcpy(&h, &ch[c], sizeof(h));
+		if (h.flags & SIFT_ATTR_NOROWS)
+			continue;
+		if (h.width == 0 || h.width > SIFT_ATTR_MAXWIDTH || h.off < sizeof(uint32) + nc * sizeof(SiftAttrColHdr) || h.off > a->len)
+			corrupt(seg, "INCLUDE record of SB %u has a column of width %u at %u.", dm->dir[i].sb, h.width, h.off);
+		off = h.off;
+		for (int p = 0; p < SIFT_SB_PAGES; p++)
+		{
+			dm->arow[c][p] = 0;
+			if (dm->rows[p] == NULL)
+				continue;
+			dm->arow[c][p] = off;
+			off += ATTR_ROW_BYTES(dm->rowlen[p], h.width);
+		}
+		if (off > a->len)
+			corrupt(seg, "INCLUDE record of SB %u has rows for %llu bytes, its length %u.", dm->dir[i].sb, ULL(off), a->len);
+	}
+	dm->acur = i;
+}
+
+void
+sift_seg_block_attr(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int col, SiftAttrBlock *out)
+{
+	DocMap	   *dm = indexed(seg, dc);
+	SiftAttrColHdr h;
+
+	attr_load(seg, dm);
+	memcpy(&h, dm->arec + sizeof(uint32) + col * sizeof(SiftAttrColHdr), sizeof(h));
+	out->base = h.base;
+	out->unk = h.unk;
+	out->width = h.width;
+	out->norows = (h.flags & SIFT_ATTR_NOROWS) != 0;
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		int			page = block * SIFT_BLK_PAGES + pg;
+
+		out->row[pg] = !out->norows && (want >> pg & 1) && dm->rows[page] ? dm->arec + dm->arow[col][page] : NULL;
 	}
 }

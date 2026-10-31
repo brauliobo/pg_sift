@@ -576,6 +576,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	MergeOut	mo = {0};
 	bool		positions;
 	uint64		ndocs;
+	SiftAttrSrc *as;
 	RunReader  *rd;
 
 	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
@@ -585,6 +586,8 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	rd = open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */
 	mo.sw = sift_segw_begin(wt, gen, ref, cxt, positions);
+	if ((as = sift_attr_src(wt, cxt)) != NULL)
+		sift_segw_attrs(mo.sw, as);
 	/* the merged runs hold a term of any size: the posting writer takes about 10 bytes of each posting, half the budget at most */
 	sift_segw_spool(mo.sw, sift_seg_postings(budget) / 2);
 	merge_readers(rd, nruns, positions, &mo);

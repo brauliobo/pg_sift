@@ -112,6 +112,11 @@ CREATE FUNCTION sift._test_segment_parts(index regclass, OUT gen int8, OUT part 
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_parts' LANGUAGE C STRICT;
 
+-- The INCLUDE values every doc of the segments of format 5 holds, as the filter reads them
+CREATE FUNCTION sift._test_attr_dump(index regclass, OUT gen int8, OUT blk int8, OUT off int4, OUT col int4, OUT state text, OUT val int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_attr_dump' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kind text, OUT format int4)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_formats' LANGUAGE C STRICT;

@@ -62,6 +62,12 @@ struct SiftStreamWriter
 	SiftExtentList ext;
 };
 
+Relation
+sift_wt_index(const SiftWriteTarget *wt)
+{
+	return wt->index;
+}
+
 SiftWriteTarget *
 sift_wt_begin(Relation index, SiftWriteMode mode)
 {
