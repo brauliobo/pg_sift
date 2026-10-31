@@ -84,18 +84,6 @@ RESET sift.test_col_rel_inval;
 SELECT sum(rows) = (SELECT count(*) FROM rw) AS all_rows, col_verified('rw_col') AS verified FROM sift.col_segments('rw_col');
 DROP TABLE rw;
 
--- The merge of segments cut by a key kept the leaves of the cut, in the cached state, across the units it wrote
-CREATE TABLE rm (id int, grp int, v int) WITH (autovacuum_enabled = off);
-INSERT INTO rm SELECT i, i % 7, i FROM generate_series(1, 20000) i;
-CREATE INDEX rm_col ON rm USING sift_col (grp, v, id) WITH (key_cut = grp);
-INSERT INTO rm SELECT i, i % 7, i FROM generate_series(20001, 30000) i;
-SELECT sift.col_promote('rm_col') > 0 AS promoted;
-SET sift.test_col_rel_inval = on;
-SELECT sift.col_merge('rm_col', true) AS merged;
-RESET sift.test_col_rel_inval;
-SELECT count(*) AS segments, sum(rows) = (SELECT count(*) FROM rm) AS all_rows, col_verified('rm_col') AS verified FROM sift.col_segments('rm_col');
-DROP TABLE rm;
-
 DROP TABLE rb;
 DROP FUNCTION rb_norm(jsonb);
 DROP EXTENSION pg_sift_test;

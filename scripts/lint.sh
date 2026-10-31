@@ -29,6 +29,7 @@ CHECKS=(
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'slugs		scripts/check-slugs.sh'
+	'file-size	scripts/check-file-size.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
 	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest'\'
