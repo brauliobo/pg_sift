@@ -1,0 +1,85 @@
+-- The words a configuration's dictionaries answered are kept by the backend for its next statement: a change of the configuration, of a dictionary, a
+-- rename, a drop and a rollback must reach the next statement of the same session (sift._test_syn, a synonym dictionary without a file)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+CREATE TEXT SEARCH DICTIONARY lm_syn (TEMPLATE = sift._test_syn, MAP = 'kater=katze');
+CREATE TEXT SEARCH CONFIGURATION lm (COPY = pg_catalog.german);
+ALTER TEXT SEARCH CONFIGURATION lm ALTER MAPPING FOR asciiword, word WITH lm_syn, german_stem;
+CREATE FUNCTION terms(w text, cfg text) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(token, ' ') FROM sift.tokenize(w, NULL, cfg) $$;
+SELECT terms('Kater Katze Hunde', 'public.lm');
+      terms      
+-----------------
+ katze katz hund
+(1 row)
+
+SELECT terms('Kater Katze Hunde', 'public.lm');
+      terms      
+-----------------
+ katze katz hund
+(1 row)
+
+-- the dictionary changes
+ALTER TEXT SEARCH DICTIONARY lm_syn (MAP = 'kater=hund');
+SELECT terms('Kater Katze Hunde', 'public.lm');
+     terms      
+----------------
+ hund katz hund
+(1 row)
+
+-- the mapping changes
+ALTER TEXT SEARCH CONFIGURATION lm ALTER MAPPING FOR asciiword, word WITH german_stem;
+SELECT terms('Kater Katze Hunde', 'public.lm');
+     terms     
+---------------
+ kat katz hund
+(1 row)
+
+-- a rollback returns the answers of before
+BEGIN;
+ALTER TEXT SEARCH CONFIGURATION lm ALTER MAPPING FOR asciiword, word WITH lm_syn, german_stem;
+SELECT terms('Kater Katze Hunde', 'public.lm');
+     terms      
+----------------
+ hund katz hund
+(1 row)
+
+ROLLBACK;
+SELECT terms('Kater Katze Hunde', 'public.lm');
+     terms     
+---------------
+ kat katz hund
+(1 row)
+
+-- the name moves, and a configuration of the old name is another one
+ALTER TEXT SEARCH CONFIGURATION lm RENAME TO lm2;
+SELECT terms('Kater Katze Hunde', 'public.lm2');
+     terms     
+---------------
+ kat katz hund
+(1 row)
+
+SELECT terms('Kater', 'public.lm');
+ERROR:  unknown sift stemmer "public.lm"
+HINT:  Valid stemmers are "en", "none" and the names of text search configurations (with their schema unless they are in pg_catalog).
+CONTEXT:  SQL function "terms" statement 1
+CREATE TEXT SEARCH CONFIGURATION lm (COPY = pg_catalog.german);
+ALTER TEXT SEARCH CONFIGURATION lm ALTER MAPPING FOR asciiword, word WITH lm_syn, german_stem;
+SELECT terms('Kater Katze Hunde', 'public.lm'), terms('Kater Katze Hunde', 'public.lm2');
+     terms      |     terms     
+----------------+---------------
+ hund katz hund | kat katz hund
+(1 row)
+
+-- two configurations at once, each with its own words
+SELECT terms('Kater', 'public.lm'), terms('Kater', 'public.lm2'), terms('Kater', 'public.lm'), terms('Kater', 'public.lm2');
+ terms | terms | terms | terms 
+-------+-------+-------+-------
+ hund  | kat   | hund  | kat
+(1 row)
+
+DROP FUNCTION terms(text, text);
+DROP TEXT SEARCH CONFIGURATION lm, lm2;
+DROP TEXT SEARCH DICTIONARY lm_syn;
+DROP EXTENSION pg_sift_test CASCADE;
+DROP EXTENSION pg_sift;

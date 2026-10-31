@@ -26,6 +26,7 @@ typedef struct StemMemo
 	uint32	   *tab;
 	uint32		tabmask;
 	uint32		nent;
+	uint32		max;			/* arena bytes before the memo is dropped; 0: MEMO_MAX */
 } StemMemo;
 
 /* A stemmer rewrites w[0..n) in place and returns the new length, negative for a word it drops */
@@ -89,7 +90,7 @@ memo_stem(StemMemo *m, MemoStemFn fn, void *ctx, char *w, int n)
 	r = fn(ctx, w, n);
 	if (m->used + 4 + n + Max(r, 0) > m->cap)
 	{
-		if (m->cap >= MEMO_MAX)
+		if (m->cap >= (m->max ? m->max : MEMO_MAX))
 		{
 			memo_clear(m);
 			i = (uint32) sift_term_hash(in, n) & m->tabmask;

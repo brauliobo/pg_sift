@@ -14,6 +14,9 @@
 #include "tsearch/ts_public.h"
 #include "nodes/miscnodes.h"
 #include "utils/builtins.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
+#include "utils/syscache.h"
 
 #include "bm25/analyze.h"
 #include "bm25/analyze_memo.h"
@@ -26,8 +29,78 @@
 struct SiftTsStem
 {
 	Oid			cfg;
-	StemMemo	memo;			/* of the words the dictionaries answered */
 };
+
+/*
+ * The words a configuration's dictionaries answered are kept by the backend (a statement analyzes a few words and a single-row INSERT was paying for
+ * the dictionaries again every time): TS_MEMOS configurations, the least recently used one replaced, each up to its share of MEMO_MAX. A change to
+ * the configurations or the dictionaries of the catalog empties them, as it does the text search cache of the server.
+ */
+#define TS_MEMOS		4
+
+typedef struct MemoSlot
+{
+	Oid			cfg;
+	uint64		gen;			/* of the catalog changes the answers are from */
+	uint64		tick;			/* of the last use */
+	StemMemo	memo;
+} MemoSlot;
+
+static MemoSlot memo_slots[TS_MEMOS];
+static MemoryContext memo_cx;
+static uint64 memo_gen = 1,
+			memo_tick;
+
+static void
+memo_invalidate(Datum arg, int cacheid, uint32 hashvalue)
+{
+	memo_gen++;
+}
+
+static void
+memo_init(void)
+{
+	if (memo_cx != NULL)
+		return;
+	memo_cx = AllocSetContextCreate(TopMemoryContext, "sift stem memos", ALLOCSET_DEFAULT_SIZES);
+	CacheRegisterSyscacheCallback(TSCONFIGOID, memo_invalidate, (Datum) 0);
+	CacheRegisterSyscacheCallback(TSCONFIGMAP, memo_invalidate, (Datum) 0);
+	CacheRegisterSyscacheCallback(TSDICTOID, memo_invalidate, (Datum) 0);
+	CacheRegisterSyscacheCallback(TSPARSEROID, memo_invalidate, (Datum) 0);
+	CacheRegisterSyscacheCallback(NAMESPACEOID, memo_invalidate, (Datum) 0);
+	for (int i = 0; i < TS_MEMOS; i++)
+		memo_slots[i].memo = (StemMemo) {.mcxt = memo_cx, .max = MEMO_MAX / TS_MEMOS};
+}
+
+static StemMemo *
+slot_memo(Oid cfg)
+{
+	MemoSlot   *s = NULL;
+
+	memo_init();
+	for (int i = 0; i < TS_MEMOS; i++)
+		if (memo_slots[i].cfg == cfg)
+		{
+			s = &memo_slots[i];
+			break;
+		}
+	if (s == NULL)
+	{
+		s = &memo_slots[0];
+		for (int i = 1; i < TS_MEMOS; i++)
+			if (memo_slots[i].tick < s->tick)
+				s = &memo_slots[i];
+		s->cfg = cfg;
+		s->gen = 0;
+	}
+	if (s->gen != memo_gen)
+	{
+		memo_clear(&s->memo);
+		s->gen = memo_gen;
+	}
+	s->tick = ++memo_tick;
+	return &s->memo;
+}
 
 /*
  * A name without a schema is a pg_catalog configuration: CREATE INDEX runs with a restricted search_path and queries with the session's,
@@ -36,10 +109,18 @@ struct SiftTsStem
 static Oid
 ts_config_oid(const char *name)
 {
+	static char cached[SIFT_TSCONFIG_BYTES];
+	static Oid	cached_oid;
+	static uint64 cached_gen;
 	ErrorSaveContext escontext = {T_ErrorSaveContext};
 	Datum		oid;
-	const char *qualified = strchr(name, '.') == NULL && name[0] != '"' ? psprintf("pg_catalog.%s", name) : name;
+	const char *qualified;
 
+	memo_init();
+	/* a statement of one row names its configuration again: the lookup of the name costs more than its few words */
+	if (cached_gen == memo_gen && strcmp(cached, name) == 0)
+		return cached_oid;
+	qualified = strchr(name, '.') == NULL && name[0] != '"' ? psprintf("pg_catalog.%s", name) : name;
 	if (!DirectInputFunctionCallSafe(regconfigin, (char *) qualified, InvalidOid, -1, (Node *) &escontext, &oid))
 	{
 		ereport(ERROR,
@@ -47,7 +128,10 @@ ts_config_oid(const char *name)
 				 errmsg("unknown sift stemmer \"%s\"", name),
 				 errhint("Valid stemmers are \"en\", \"none\" and the names of text search configurations (with their schema unless they are in pg_catalog).")));
 	}
-	return DatumGetObjectId(oid);
+	cached_oid = DatumGetObjectId(oid);
+	cached_gen = memo_gen;
+	strlcpy(cached, name, sizeof(cached));
+	return cached_oid;
 }
 
 SiftTsStem *
@@ -55,7 +139,7 @@ sift_ts_open(const char *config, MemoryContext mcxt)
 {
 	SiftTsStem *ts = MemoryContextAlloc(mcxt, sizeof(SiftTsStem));
 
-	*ts = (SiftTsStem) {.cfg = ts_config_oid(config), .memo = {.mcxt = mcxt}};
+	*ts = (SiftTsStem) {.cfg = ts_config_oid(config)};
 	return ts;
 }
 
@@ -169,5 +253,5 @@ ts_memo_fn(void *ts, char *w, int n)
 int
 sift_ts_stem(SiftTsStem *ts, char *w, int n)
 {
-	return memo_stem(&ts->memo, ts_memo_fn, ts, w, n);
+	return memo_stem(slot_memo(ts->cfg), ts_memo_fn, ts, w, n);
 }
