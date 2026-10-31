@@ -61,13 +61,13 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		add_path(output_rel, &cp->path);
 }
 
-/* The sub-selects a top-N takes are those PostgreSQL pulled up into semi joins (IN, EXISTS): their keys are a conjunct of the scan, like an inner join's */
+/* The sub-selects a top-N takes are those PostgreSQL pulled up into semi and anti joins (IN, EXISTS, NOT EXISTS): their keys are a conjunct of the scan, like an inner join's */
 static bool
 topn_lefts_ok(List *lefts)
 {
 	foreach_ptr(LeftJoin, lj, lefts)
-		if (lj->kind != SJ_SEMI)
-			return agg_refuse_on(TOPN_SHAPE, "an outer or anti join of the scanned table");
+		if (lj->kind != SJ_SEMI && lj->kind != SJ_ANTI)
+			return agg_refuse_on(TOPN_SHAPE, "an outer join of the scanned table");
 	return true;
 }
 

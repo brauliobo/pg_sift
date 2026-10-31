@@ -37,6 +37,11 @@ $$;
 CREATE FUNCTION page(sel text, joins text, filt text, tail text DEFAULT 'ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || sel || ' FROM events e ' || joins || ' WHERE e.deleted_at IS NULL ' || filt || ' ' || tail
 $$;
+-- a key that may be NULL: NOT EXISTS keeps its row, a test of the keys drops it
+CREATE TABLE notes (id int PRIMARY KEY, dim_a_id int, event_date date) WITH (autovacuum_enabled = false);
+INSERT INTO notes SELECT g, CASE WHEN g % 5 <> 0 THEN 1 + g % 700 END, date '2025-01-01' + g % 300 FROM generate_series(1, 3000) g;
+CREATE INDEX notes_col ON notes USING sift_col (dim_a_id, event_date);
+VACUUM (FREEZE, ANALYZE) notes;
 CREATE TABLE forms (name text PRIMARY KEY, q text);
 INSERT INTO forms VALUES
 	('scope sub-select', page('e.id', '', 'AND e.dim_a_id IN (' || scope(3) || ')')),
@@ -61,6 +66,9 @@ INSERT INTO forms VALUES
 	('scope of a group of no member', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(9) || ')')),
 	('scope of no link', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(99) || ')')),
 	('exists', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND EXISTS (SELECT 1 FROM links_a l LEFT JOIN group_dim_a g ON g.group_id = l.group_id AND g.deleted_at IS NULL WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND coalesce(l.dim_a_id, g.dim_a_id) = e.dim_a_id)')),
+	('not exists', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = e.dim_a_id)')),
+	('not exists, a list and ascending', page('e.id', '', 'AND e.dim_a_id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20) AND NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = e.dim_a_id)', 'ORDER BY e.event_date, e.id LIMIT 3')),
+	('not exists, a key that may be NULL', 'SELECT n.id FROM notes n WHERE NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = n.dim_a_id) ORDER BY n.event_date DESC NULLS LAST, n.id LIMIT 3'),
 	('not in, a join', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id NOT IN (' || scope(3) || ' AND coalesce(a.dim_a_id, g.dim_a_id) IS NOT NULL)'));
 
 -- whether the plan the statement gets is the top-N of the column index, and whether the rows are the normal plan's, in order
@@ -107,12 +115,12 @@ BEGIN
 	RETURN (p -> 0 -> 'Plan' ->> 'Shared Hit Blocks')::bigint + coalesce((p -> 0 -> 'Plan' ->> 'Shared Read Blocks')::bigint, 0);
 END $$;
 CREATE TABLE reads (name text, small bigint, large bigint);
-INSERT INTO reads SELECT name, blocks(q), NULL FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'column of the joined table', 'columns of two joined tables, scope', 'a lookup again of the joined column', 'a list and the scope on the joined table');
+INSERT INTO reads SELECT name, blocks(q), NULL FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'column of the joined table', 'columns of two joined tables, scope', 'a lookup again of the joined column', 'a list and the scope on the joined table', 'not exists');
 SELECT fill(90000);
 VACUUM (FREEZE, ANALYZE) events;
 UPDATE reads r SET large = blocks(f.q) FROM forms f WHERE f.name = r.name;
 SELECT name, large <= small * 1.3 AS flat FROM reads ORDER BY name;
 
 DROP FUNCTION fill(int), scope(int), page(text, text, text, text), topn_plan(text, bool), rows_equal(text), blocks(text);
-DROP TABLE reads, forms, events, links_a, group_dim_a, dim_a, dim_c, dim_d;
+DROP TABLE reads, forms, notes, events, links_a, group_dim_a, dim_a, dim_c, dim_d;
 DROP EXTENSION pg_sift;

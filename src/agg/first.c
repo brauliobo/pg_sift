@@ -29,9 +29,10 @@
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "agg/init_int.h"
+#include "agg/plan_int.h"
 
-static bool
-att_not_null(Oid relid, int att)
+bool
+agg_att_not_null(Oid relid, int att)
 {
 	HeapTuple	tup = SearchSysCache2(ATTNUM, ObjectIdGetDatum(relid), Int16GetDatum(att));
 	bool		notnull = HeapTupleIsValid(tup) && ((Form_pg_attribute) GETSTRUCT(tup))->attnotnull;
@@ -72,7 +73,7 @@ sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, List **cols)
 
 				while (k < nkey + nord && atts[k] != ix->indkey.values[n])
 					k++;
-				if (k == nkey + nord || (k >= nkey && !ix->indnullsnotdistinct && !att_not_null(relid, atts[k])))
+				if (k == nkey + nord || (k >= nkey && !ix->indnullsnotdistinct && !agg_att_not_null(relid, atts[k])))
 					break;
 			}
 			found = n == ix->indnkeyatts;

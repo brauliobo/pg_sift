@@ -121,13 +121,21 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 			continue;
 		j = &s->join[cb->join];
 		jc = list_nth(c->joins, cb->join);
-		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI && j->kind != SJ_ANTI) || j->params != NIL || j->nkey != 1 || j->keypos[0] != 0 || j->keynull[0] || cb->level != 0 ||
 			cb->nleaves != 1 || cb->leaf[0] < 0 || cb->leaf[0] >= c->lay->nleaves || cb->nslots != (j->fslot >= 0 ? 1 : 0) ||
 			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 			return agg_refuse_on(TOPN_SHAPE, "a joined table is not an inner join by one key that the rows of the heap hold, with ON and WHERE on its own columns");
 		lf = &c->lay->leaf[cb->leaf[0]];
 		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || (j->kind == SJ_INNER && !topn_unique_key(c, jc)))
 			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
+		/* the keys of an anti join are the conjunct `key NOT IN (keys)`: a row with no key is kept by the join, and dropped by the conjunct */
+		if (j->kind == SJ_ANTI)
+		{
+			Node	   *k = list_nth(c->attexpr, lf->attno - 1);
+
+			if (!IsA(k, Var) || ((Var *) k)->varno != c->relid || !agg_att_not_null(c->heapoid, ((Var *) k)->varattno))
+				return agg_refuse_f(TOPN_SHAPE, "the anti join with %s is keyed by a column of the scanned table that may hold NULL", get_rel_name(jc->j.relid));
+		}
 	}
 	return true;
 }

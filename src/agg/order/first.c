@@ -64,12 +64,8 @@ sort_is_total(AggCtx *c, List *sortexprs)
 		for (int i = 0; all && i < ix->indnkeyatts; i++)
 		{
 			int			att = ix->indkey.values[i];
-			HeapTuple	at = SearchSysCache2(ATTNUM, ObjectIdGetDatum(c->heapoid), Int16GetDatum(att));
 
-			all = bms_is_member(att, atts) &&
-				(ix->indnullsnotdistinct || bms_is_member(att, strict) || (HeapTupleIsValid(at) && ((Form_pg_attribute) GETSTRUCT(at))->attnotnull));
-			if (HeapTupleIsValid(at))
-				ReleaseSysCache(at);
+			all = bms_is_member(att, atts) && (ix->indnullsnotdistinct || bms_is_member(att, strict) || agg_att_not_null(c->heapoid, att));
 		}
 		ReleaseSysCache(it);
 		total |= all;

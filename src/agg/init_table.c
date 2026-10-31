@@ -24,7 +24,7 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	const SiftSrcLeaf *lf;
 
-	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI && !(j->kind == SJ_ANTI && ex->spec->topn)) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
 		return false;
 	*leaf = cb->leaf[j->keypos[k]];
 	if (*leaf < 0 || *leaf >= ex->nbase)
@@ -251,11 +251,12 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live,
 	st->ready = true;
 	p = palloc0(sizeof(SiftAggPred));
 	p->kind = SAP_IN;
+	p->op = j->kind == SJ_ANTI;
 	p->id = id;
 	p->leaf = leaf;
 	p->leaf2 = -1;
 	p->argtype = ex->lay->leaf[leaf].typid;
-	p->desc = psprintf("%s IN (keys of %s)", ex->lay->leaf[leaf].name, j->desc);
+	p->desc = psprintf("%s %sIN (keys of %s)", ex->lay->leaf[leaf].name, p->op ? "NOT " : "", j->desc);
 	if (jk)
 	{
 		jk->pred = p;
@@ -303,7 +304,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			/* the table of the predicate is the state of the id it is given: make room first */
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
 			memset(&ex->ps[total], 0, sizeof(PredState));
-			live = join_live_rows(ex, ci, caller);
+			/* the keys of an anti join are the rows that match, whatever a join after it does with them */
+			live = j->kind == SJ_ANTI ? NULL : join_live_rows(ex, ci, caller);
 			if (s->topn)
 				live = join_own_rows(ex, ci, live);
 			if ((p = join_filter_pred(ex, ci, k, leaf, total, live, &seen, &add)) != NULL)

@@ -639,7 +639,7 @@ scanned_key(AggCtx *c, List *quals, Var *v, Oid opno)
 }
 
 /*
- * `scanned.k = A.id AND A.id = B.id` (A an inner lookup, B an inner or semi one: an IN over a plan, on the column of A) holds the same rows as
+ * `scanned.k = A.id AND A.id = B.id` (A an inner lookup, B an inner, semi or anti one: an IN or NOT EXISTS over a plan, on the column of A) holds the same rows as
  * `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
  * when B is joined to the table itself: the units they miss are not read.
  */
@@ -675,7 +675,7 @@ rekey_chains(AggCtx *c, List *quals, List *known)
 				ja = jb;
 				jb = tj;
 			}
-			if (ja->kind != SJ_INNER || (jb->kind != SJ_INNER && jb->kind != SJ_SEMI))
+			if (ja->kind != SJ_INNER || (jb->kind != SJ_INNER && jb->kind != SJ_SEMI && jb->kind != SJ_ANTI))
 				continue;
 			if (scanned_key(c, all, a, opno) == NULL)
 			{
@@ -778,7 +778,7 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 	foreach_ptr(JoinCtx, jc, c->joins)
 		jc->clauses = drop_pushed(c, jc->clauses);
 	foreach_ptr(JoinCtx, jc, c->joins)
-		if (jc->kind == SJ_SEMI)
+		if (jc->kind == SJ_SEMI || jc->kind == SJ_ANTI)
 			jc->clauses = rekey_chains(c, jc->clauses, list_concat_copy(*quals, *scan_quals));
 	probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
 	foreach_ptr(JoinCtx, jc, c->joins)

@@ -182,7 +182,7 @@ def gen_toplook(r, ctx):
     scope = r.choice(['SELECT d.a FROM dims d JOIN dims2 x ON x.id = d.a WHERE d.score > %d' % r.choice([10, 40, 70]),
                       'SELECT coalesce(d.a, x.id) FROM dims d LEFT JOIN dims2 x ON x.id = d.b AND x.w > %d WHERE d.score < %d' % (r.choice([20, 60]), r.choice([30, 90])),
                       'SELECT x.id FROM dims2 x WHERE x.w > %d' % r.choice([10, 50, 80])])
-    return dict(form=r.choice(['cols', 'cols', 'scope', 'joined', 'exists', 'list']), scope=scope, cols=r.sample(['i.kind', 'i.grp', 'i.enabled', 'i.id'], r.choice([1, 2, 3])),
+    return dict(form=r.choice(['cols', 'cols', 'scope', 'joined', 'exists', 'list', 'notexists', 'notexists_joined']), scope=scope, cols=r.sample(['i.kind', 'i.grp', 'i.enabled', 'i.id'], r.choice([1, 2, 3])),
                 on=r.choice(['', ' AND i.enabled', ' AND i.grp < 6']), order=r.choice(['e.ts', 'e.amount', 'e.a', 'e.ts DESC', 'e.amount DESC NULLS LAST', 'e.ts NULLS FIRST']),
                 limit=r.choice([1, 3, 10, 60, 400]), offset=r.choice([0, 0, 0, 4, 50]), lst=r.sample(range(0, 600), r.choice([5, 40, 300])), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)))
 
@@ -190,7 +190,8 @@ def gen_toplook(r, ctx):
 def render_toplook(p):
     f, scope, lst = p['form'], p['scope'], ', '.join(map(str, p['lst']))
     cond = {'cols': '', 'scope': f" AND e.parent_id IN ({scope})", 'joined': f" AND i.id IN ({scope})", 'list': f" AND e.parent_id IN ({lst}) AND i.id IN ({scope})",
-            'exists': f" AND EXISTS (SELECT 1 FROM ({scope}) s(k) WHERE s.k = e.parent_id)"}[f]
+            'exists': f" AND EXISTS (SELECT 1 FROM ({scope}) s(k) WHERE s.k = e.parent_id)",
+            'notexists': f" AND NOT EXISTS (SELECT 1 FROM ({scope}) s(k) WHERE s.k = e.parent_id)", 'notexists_joined': f" AND NOT EXISTS (SELECT 1 FROM ({scope}) s(k) WHERE s.k = i.id)"}[f]
     w = ''.join(f' AND {c}' for c in p['where'])
     return (f"SELECT e.id, e.ts, {', '.join(c + ' AS i_' + c[2:] for c in p['cols'])} FROM events e JOIN items i ON i.id = e.parent_id{p['on']} WHERE true{cond}{w} "
             f"ORDER BY {p['order']}, e.id LIMIT {p['limit']} OFFSET {p['offset']}"), True

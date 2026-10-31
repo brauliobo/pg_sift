@@ -482,6 +482,7 @@ extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
 extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
+extern bool agg_att_not_null(Oid relid, int att);	/* the column is declared NOT NULL */
 extern void agg_path_children(AggCtx *c, SiftAggPath *ap);
 extern void agg_force_price(Path *p);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
