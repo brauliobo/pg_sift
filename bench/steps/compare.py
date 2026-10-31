@@ -318,7 +318,7 @@ def compare_block(results):
     desc = {slug: what for slug, what, _ in rows}
     out = ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. A cell is `faster of total (time · CPU · MB read)`: '
            'the time range is over the questions where pg_sift is faster, the CPU (of the whole server) and MB read ranges over all the questions, each the system over pg_sift (above 1x it uses more); the rates and times of the writes are one factor, then the same two measures. '
-           f'Losses are in bold and named under their table. `{NOT}` alone is a comparison no result file holds; inside the parentheses `{NOT}`: a measure not measured under 3.7 yet. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
+           f'Losses are in bold and named under their table. `{NOT}` alone is a comparison no result file holds; inside the parentheses `{NOT}`: a measure {triple.NOT_MEASURED}. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
     for title, slugs in GLANCE:
         slugs = [k for k in slugs if k in desc]
         out += ['', f'{title}: ' + '; '.join(f'{k} = {desc[k]}' for k in slugs) + '.', ''] + mdtable.tables([LABEL[e] for e in est], [('', [(k, k) for k in slugs])], lambda r, k: shown[r, k])
@@ -350,7 +350,7 @@ def generic_block(results):
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
-            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure not measured under 3.7 yet.' + stand + ' '
+            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure ' + triple.NOT_MEASURED + '.' + stand + ' '
             'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
 
 

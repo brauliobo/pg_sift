@@ -96,7 +96,7 @@ def block(results):
     body += ['| %s | %s | %s | %s | %s |' % (w, a, compare.x(r), cell(mine), cell(theirs, mine)) for r, w, a, mine, theirs in rows]
     figs = [f for r in rows for f in r[3:] if not isinstance(f, str)]
     return head + body + [''] + triple.legend(figs, 'MB read (the cases: MB of buffers hit and read; the application shapes: not recorded)') + [
-        'The shapes are the application shapes of the 3.6 results (their CPU is the backend\'s). The rows of a write rate, a load and the disk carry their own unit and the CPU and IO of the write: `n/a`: not measured under 3.7 yet.']
+        'The shapes are the application shapes of the 3.6 results (their CPU is the backend\'s). The rows of a write rate, a load and the disk carry their own unit and the CPU and IO of the write: `n/a`: ' + triple.NOT_MEASURED + '.']
 
 
 def render(results, readme_path):
