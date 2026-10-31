@@ -558,6 +558,13 @@ static const sift_grp *andnot_seek(sift_cur *c, uint32_t target)
 	return seek_limit == UINT32_MAX ? ended(c) : NULL;
 }
 
+sift_cur **sift_cur_or_kids(const sift_cur *c, int *k)
+{
+	if (c->seek != or_seek) return NULL;
+	*k = c->op.k;
+	return c->op.kid;
+}
+
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid)
 {
 	seek_limit = gid;

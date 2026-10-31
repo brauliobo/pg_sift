@@ -142,6 +142,8 @@ void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi);
 static inline const sift_grp *sift_seek(sift_cur *c, uint32_t gid) { return c->seek(c, gid); }
 /* the group of exactly gid or NULL; operators do not look past gid, so a miss costs no leapfrogging */
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid);
+/* the kids of an OR cursor and their number, NULL for any other cursor */
+sift_cur **sift_cur_or_kids(const sift_cur *c, int *k);
 static inline const sift_grp *sift_next(sift_cur *c) { return c->seek(c, c->state ? c->g.gid + 1 : 0); }
 
 /* whole-stream helpers */

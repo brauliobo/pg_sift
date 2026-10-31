@@ -49,6 +49,85 @@ term_mask(const sift_grp *g, int b, BlockMask out)
 	return true;
 }
 
+/*
+ * A row that only the last leaves of ord have scores at most their bounds' sum, which prune_leaves would take it out for at the first step
+ * where that sum cannot reach theta: the kids that are those leaves add no candidates (leaf_accum gives the leaves that stay their rows)
+ */
+static void
+kids_skip(const RankSeg *rs, float4 theta, int n, const int *ord, const float4 *rest)
+{
+	float4		margin = fabsf(theta) * (1.0f / 65536);
+	int			m = n;
+
+	/* a leaf that is not a kid of the root (inside an AND NOT, say) may score rows its candidates do not have: its bound would have to join the sum */
+	for (int k = 0; k < n; k++)
+	{
+		bool		kid = false;
+
+		for (int i = 0; i < rs->nug; i++)
+			kid |= rs->kidleaf[i] == ord[k];
+		if (!kid)
+			theta = -INFINITY;
+	}
+	if (theta > -INFINITY && n > 1)
+		for (int k = 1; k < n; k++)
+			if (rest[k - 1] + margin <= theta)
+			{
+				m = k;
+				break;
+			}
+	for (int i = 0; i < rs->nug; i++)
+	{
+		bool		essential = false;
+
+		for (int k = 0; k < m; k++)
+			essential |= ord[k] == rs->kidleaf[i];
+		rs->kidskip[i] = m < n && rs->kidleaf[i] >= 0 && !essential;
+	}
+}
+
+/* the union of the groups the kids of an OR root have in block b, on the pages of live */
+static void
+kids_mask(const RankSeg *rs, int b, uint32 live, RankWork *wk)
+{
+	memset(wk->res, 0, sizeof(BlockMask));
+	for (int i = 0; i < rs->nug; i++)
+	{
+		const sift_grp *g = rs->ug[i];
+		uint32		pm,
+					idx = 0;
+
+		if (g == NULL || rs->kidskip[i] || !(pm = g->pages[b / 4] >> ((b % 4) * 16) & 0xffff))
+			continue;
+		for (int wd = 0; wd < b / 4; wd++)
+			idx += pg_popcount64(g->pages[wd]);
+		idx += pg_popcount64(g->pages[b / 4] & ((UINT64CONST(1) << ((b % 4) * 16)) - 1));
+		for (; pm; pm &= pm - 1, idx++)
+		{
+			int			pg = pg_rightmost_one_pos32(pm);
+			const uint8 *row = g->off + (size_t) idx * g->w;
+
+			if (!(live >> pg & 1))
+				continue;
+			if (g->w < 8)
+			{
+				uint64		v = 0;
+
+				memcpy(&v, row, g->w);
+				wk->res[pg][0] |= v;
+			}
+			else
+				for (uint32 o = 0; o < g->w; o += 8)
+				{
+					uint64		v;
+
+					memcpy(&v, row + o, 8);
+					wk->res[pg][o / 8] |= v;
+				}
+		}
+	}
+}
+
 /* tf of every posting of the term's group and the rank each block starts at */
 static void
 term_decode(MemoryContext cx, RkTerm *t)
@@ -484,7 +563,13 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	uint32		want = 0;
 	int			n;
 
-	if (!term_mask(g, b, wk->res))
+	n = leaf_order(p, ub, r->ord, r->rest);
+	if (g == NULL)
+	{
+		kids_skip(rs, theta, n, r->ord, r->rest);
+		kids_mask(rs, b, live, wk);
+	}
+	else if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 		if (!(live >> pg & 1))
@@ -517,7 +602,6 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	if (!any)
 		return 0;
 	sift_kern->knorm(wk->knorm, wk->dl, wk->res[0], SIFT_BLK_PAGES, &p->bm);
-	n = leaf_order(p, ub, r->ord, r->rest);
 	if (n > 1 && theta > -INFINITY && !prune_leaves(p, rs, b, theta, wk, r->ord, r->rest, n))
 		return 0;
 	zero_rows(wk->scores, wk->res[0]);

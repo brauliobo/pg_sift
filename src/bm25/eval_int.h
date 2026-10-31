@@ -265,6 +265,10 @@ typedef struct RankSeg
 	RkTerm	   *term;
 	int			nterm;
 	int		   *first;				/* [leaf] index of its first term */
+	const sift_grp **ug;			/* [kid of an OR root] the group each kid has in the superblock being ranked, NULL for none */
+	int			nug;				/* the kids of the root when it is an OR, else 0 */
+	int		   *kidleaf;			/* [kid of an OR root] the scoring leaf the kid is the cursor of, -1 for none */
+	bool	   *kidskip;			/* [kid of an OR root] left out of the candidates of the block being scored */
 } RankSeg;
 
 typedef struct Unit

@@ -191,7 +191,10 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	SiftDocChunk dc;
 	float4		theta = rank_theta(r, tk);
 	int			order[SIFT_BLKS_PER_SB],
-				n = 0;
+				n = 0,
+				nk;
+	uint64		pages[4];
+	bool		have;
 
 	if ((int64) u->gid < rs->last)
 		seg_rewind(rs);
@@ -199,9 +202,30 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	unit_terms(p, rs, theta);
 	for (ListCell *lc = list_head(rs->cs.ops); lc; lc = lnext(rs->cs.ops, lc))
 		((sift_cur *) lfirst(lc))->state = 0;
-	g = sift_seek_eq(rs->root, u->gid);
+	/* an OR root is not merged into one group of the whole superblock: its kids' groups are merged per block, for the blocks that are scored */
+	if (rs->nug > 0)
+	{
+		sift_cur  **kid = sift_cur_or_kids(rs->root, &nk);
+
+		memset(pages, 0, sizeof(pages));
+		for (int i = 0; i < nk; i++)
+		{
+			rs->ug[i] = sift_seek_eq(kid[i], u->gid);
+			for (int w = 0; rs->ug[i] && w < 4; w++)
+				pages[w] |= rs->ug[i]->pages[w];
+		}
+		g = NULL;
+		have = (pages[0] | pages[1] | pages[2] | pages[3]) != 0;
+	}
+	else
+	{
+		g = sift_seek_eq(rs->root, u->gid);
+		have = g != NULL;
+		if (have)
+			memcpy(pages, g->pages, sizeof(pages));
+	}
 	p->stats.sb_scanned++;
-	if (!g || !sift_seg_docs(seg, u->gid, &dc))
+	if (!have || !sift_seg_docs(seg, u->gid, &dc))
 	{
 		sift_sr_release(&seg->sr);
 		return;
@@ -209,7 +233,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	fs = p->filter ? sift_filter_sb(p->filter, u->gid) : NULL;
 	Assert(fs || !p->filter);
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
-		if (g->pages[b / 4] >> ((b % 4) * 16) & 0xffff && (fs == NULL || sift_filter_has_block(fs, b)))
+		if (pages[b / 4] >> ((b % 4) * 16) & 0xffff && (fs == NULL || sift_filter_has_block(fs, b)))
 			order[n++] = b;
 	if (n == 0)
 	{
