@@ -652,6 +652,23 @@ sift_cseg_gorder_count(SiftColSegment *seg, int col, int64 lo, int64 hi)
 	return gorder_span(seg, col, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
 }
 
+/* The addresses of the entries [a, b) of leaf col, appended to t at *n */
+static void
+gorder_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n)
+{
+	uint32		crows = seg_gord_leaf(seg, col)->hdr.crows;
+
+	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)
+	{
+		uint32		from = Max(a, c * crows),
+					to = Min(b, (c + 1) * crows);
+
+		(void) gorder_chunk_memo(seg, col, c, memo);
+		for (uint32 i = from; i < to; i++)
+			t[(*n)++] = memo->addr[i - c * crows];
+	}
+}
+
 /*
  * The heap addresses of the rows whose key lies in [lo, hi], from the global order of leaf col (ungrouped), ascending: the two bounds are sought in the directory and
  * one chunk each, and the chunks between are decoded. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
@@ -662,23 +679,47 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 	SiftCGOrdBuf memo;
 	uint32		a,
 				b,
-				n = 0,
-				crows;
+				n = 0;
 	SiftKey    *t;
 
 	memo.at = UINT32_MAX;
 	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
-	crows = seg_gord_leaf(seg, col)->hdr.crows;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
-	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)
-	{
-		uint32		from = Max(a, c * crows),
-					to = Min(b, (c + 1) * crows);
+	gorder_addrs(seg, col, a, b, &memo, t, &n);
+	if (n > 1)
+		sift_sort_u64(t, n);
+	*tids = t;
+	*ntids = n;
+	return true;
+}
 
-		(void) gorder_chunk_memo(seg, col, c, &memo);
-		for (uint32 i = from; i < to; i++)
-			t[n++] = memo.addr[i - c * crows];
+/* The same for the rows whose key is one of keys (distinct, ascending): a seek for each, the chunk of one key shared with the next when they meet in it. Not past limit entries in all. */
+bool
+sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint32 nkeys, uint32 limit, SiftKey **tids, uint32 *ntids)
+{
+	SiftCGOrdBuf memo;
+	uint32		n = 0,
+				cap = Min(limit, Max(nkeys, 16));
+	SiftKey    *t = palloc(cap * sizeof(SiftKey));
+
+	memo.at = UINT32_MAX;
+	for (uint32 k = 0; k < nkeys; k++)
+	{
+		uint32		a,
+					b;
+
+		if (!gorder_span(seg, col, keys[k], keys[k], &a, &b, &memo) || b - a > limit - n)
+		{
+			pfree(t);
+			return false;
+		}
+		if (n + (b - a) > cap)
+		{
+			cap = Min(limit, Max(2 * cap, n + (b - a)));
+			t = repalloc(t, cap * sizeof(SiftKey));
+		}
+		gorder_addrs(seg, col, a, b, &memo, t, &n);
 	}
 	if (n > 1)
 		sift_sort_u64(t, n);

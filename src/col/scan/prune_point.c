@@ -313,20 +313,48 @@ intersect_tids(SiftColSource *src, ColCursor *c, uint64 *keep, const SiftKey *ti
  * point directory's do, and the units that hold them but are read stay kept. Not past SIFT_CORDER_MAX_ROWS rows (the addresses are sorted by address), not for a scan that
  * wants values, not in a key-cut segment (an address names no unit there, emit_tids would keep the wrong ones). After another list of addresses answered the scan (a key and a range, two ranges) the range narrows that list when it is not much longer, as a bitmap AND does.
  */
+/* The addresses an order array gave for the bounds or the keys of predicate i: the run of the segment, or narrowed by another list of addresses */
+static bool
+gorder_tids_adopt(SiftColSource *src, ColCursor *c, int i, uint64 *keep, SiftKey *tids, uint32 n)
+{
+	return c->ptids ? intersect_tids(src, c, keep, tids, n) : emit_tids(src, c, i, keep, tids, n);
+}
+
+/* Whether the order array may hand the heap the addresses of predicate i (the range and the keys alike) */
+static bool
+gorder_tids_ok(SiftColSource *src, ColCursor *c, uint32 *limit)
+{
+	if (c->prow != NULL || c->ps != NULL || !(src->flags & SIFT_COLO_POINT_TIDS) || (src->flags & SIFT_COLO_POINT_ROWS) || sift_cseg_keyed(&c->seg->entry))
+		return false;
+	*limit = SIFT_CORDER_MAX_ROWS;
+	if (c->ptids)
+		*limit = Min(*limit, Max(256, 8 * (src->nptid - c->prun)));
+	return true;
+}
+
 bool
 scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep)
 {
 	SiftKey    *tids;
 	uint32		n,
-				limit = SIFT_CORDER_MAX_ROWS;
+				limit;
 
-	if (c->prow != NULL || c->ps != NULL || !(src->flags & SIFT_COLO_POINT_TIDS) || (src->flags & SIFT_COLO_POINT_ROWS) || sift_cseg_keyed(&c->seg->entry))
+	if (!gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids(c->seg, col, lo, hi, limit, &tids, &n))
 		return false;
-	if (c->ptids)
-		limit = Min(limit, Max(256, 8 * (src->nptid - c->prun)));
-	if (!sift_cseg_gorder_tids(c->seg, col, lo, hi, limit, &tids, &n))
+	return gorder_tids_adopt(src, c, i, keep, tids, n);
+}
+
+/* An IN list on a leaf with a global order and no point directory: a seek for each key (as many as SIFT_CORDER_MAX_KEYS) */
+bool
+scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *set, uint32 nset, uint64 *keep)
+{
+	SiftKey    *tids;
+	uint32		n,
+				limit;
+
+	if (nset > SIFT_CORDER_MAX_KEYS || !gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids_keys(c->seg, col, set, nset, limit, &tids, &n))
 		return false;
-	return c->ptids ? intersect_tids(src, c, keep, tids, n) : emit_tids(src, c, i, keep, tids, n);
+	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }
 
 static bool

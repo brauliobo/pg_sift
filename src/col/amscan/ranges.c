@@ -16,6 +16,7 @@
 
 #define COL_SCAN_GORD_CHUNK	10.0	/* a chunk of the sorted keys of a segment (1,024 entries): its directory entry and its two blobs, for the bounds and each chunk between them */
 
+#define COL_SCAN_GORD_KEY	2.0		/* a key of an IN list: the seek of both bounds in one chunk of the sorted keys, 1 to 1.5 us measured on 60 to 500 keys of 100,000 to 1,000,000 rows */
 #define COL_SCAN_GORD_SORT	0.03	/* an address of a range sorted by its position in the heap */
 #ifdef SIFT_TESTING
 /* ---- the cost ---- */
@@ -334,12 +335,13 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			}
 		}
 	}
-	/* a range on a leaf with a global order is a seek in the sorted keys: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
+	/* a range or an equality on a leaf with a global order is a seek in the sorted keys, an IN list one seek a key: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
 	for (int col = 0; col < index->nkeycolumns; col++)
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
 		List	   *ranges = NIL;
 		bool		other = false;
+		double		keys = 0.0;
 
 		foreach_node(IndexClause, ic, path->indexclauses)
 		{
@@ -350,7 +352,16 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[col]) : 0;
 
 				if (strategy == BTEqualStrategyNumber || strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
+				{
 					ranges = lappend(ranges, ri);
+				}
+				else if (IsA(ri->clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) ri->clause)->useOr &&
+						 get_op_opfamily_strategy(((ScalarArrayOpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber &&
+						 estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args)) <= SIFT_CORDER_MAX_KEYS)
+				{
+					ranges = lappend(ranges, ri);
+					keys += estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
+				}
 				else
 					other = true;
 			}
@@ -366,7 +377,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				kept = 1.0 - cover + cover * share;
 				*nprobes = 1;
 				*tid = path->path.pathtype == T_IndexOnlyScan ? 0.0 : cover;
-				*extra = (2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + rows * COL_SCAN_GORD_SORT;
+				*extra = (2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + keys * COL_SCAN_GORD_KEY + rows * COL_SCAN_GORD_SORT;
 			}
 		}
 		list_free(ranges);

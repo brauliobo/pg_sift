@@ -96,6 +96,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
 	bool	   *late = palloc0(Max(npreds, 1) * sizeof(bool));
+	const int64 **set = palloc0(Max(npreds, 1) * sizeof(int64 *));
+	uint32	   *nset = palloc0(Max(npreds, 1) * sizeof(uint32));
 
 	if (pr->top != NULL)
 	{
@@ -165,6 +167,11 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			range[i] = t.kind == SIFT_CT_RANGE;
 			lo[i] = t.lo;
 			hi[i] = t.hi;
+			if (t.kind == SIFT_CT_SET && pass == 0)
+			{
+				set[i] = t.set;
+				nset[i] = t.nset;
+			}
 		}
 	}
 	for (int i = 0; i < npreds; i++)
@@ -205,6 +212,16 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		if (pr->top != NULL)
 			scan_prune_range_tids(src, pr->top, i, preds[i].col, t.lo, t.hi, keep);
 	}
+	for (int i = 0; i < npreds && pr->top != NULL; i++)
+	{
+		if (set[i] == NULL)
+			continue;
+		if (scan_window_empty(keep, pr))
+			break;
+		scan_prune_set_tids(src, pr->top, i, preds[i].col, set[i], nset[i], keep);
+	}
+	pfree(set);
+	pfree(nset);
 	pfree(lo);
 	pfree(range);
 	pfree(late);
