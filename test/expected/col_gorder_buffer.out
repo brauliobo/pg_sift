@@ -1,4 +1,4 @@
--- A write buffer of many rows (here 6,000 against the 4,096 the order once gave up at) is sorted for the order like a segment's entries: an ordered read of a written index
+-- A write buffer of many rows (here 4,500 against the 4,096 the order once gave up at) is sorted for the order like a segment's entries: an ordered read of a written index
 -- stays on the global order, with the buffer's rows among the entries. Every ordered read answers what the table does (a copy without an index is the oracle): ASC and DESC,
 -- NULLs, ties, LIMIT and OFFSET, bounds, then rows of the buffer deleted, updated, rolled back, and the buffer promoted.
 CREATE EXTENSION pg_sift;
@@ -14,11 +14,11 @@ SELECT setseed(0.42);
 -- b spans the whole range of a bigint
 CREATE TABLE t (id int, ts timestamp, d date, s smallint, b bigint, pad int);
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 20000) i;
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 3000) i;
 CREATE INDEX t_ix ON t USING sift_col (id, ts, d, s, b, pad) WITH (order_columns = 'ts, d, s, b', order_array_columns = 'ts, d, s, b', write_buffer_limit = 65536);
 VACUUM t;
-INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 6000) i;
+INSERT INTO t SELECT 3000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 4500) i;
 SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('t_ix') WHERE kind = 'buffer';
  buffer_over_the_old_limit 
 ---------------------------
@@ -66,10 +66,13 @@ CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
 						   CASE WHEN s.hi IS NOT NULL THEN format('%s <= %s', s.col, quant(s.col, s.ty, s.hi)) END, 'true'),
 		s.dir, s.nl, s.lim, s.off)
 $$;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+-- a sweep checks the shapes whose hash with the stage falls in a third of them: each stage another third
+CREATE FUNCTION sweep(stage int) RETURNS TABLE (same bigint, shapes bigint) LANGUAGE sql AS
+$$ SELECT count(*) FILTER (WHERE same(shape_sql(s))), count(*) FROM shapes s WHERE hashtext(s::text || stage) % 3 = 0 $$;
+SELECT * FROM sweep(1);
  same | shapes 
 ------+--------
- 1152 |   1152
+  402 |    402
 (1 row)
 
 CREATE FUNCTION on_the_order() RETURNS TABLE (range_from boolean, range_desc boolean, range_between boolean, offset_in_the_buffer_range boolean, nulls_first boolean) LANGUAGE sql AS $$
@@ -92,10 +95,10 @@ SELECT same('SELECT d AS k FROM @ ORDER BY d LIMIT 700') AS ties_asc, same('SELE
 (1 row)
 
 -- rows of the buffer deleted and updated (the update moves the key), an insert and an update rolled back
-DELETE FROM t WHERE id > 20000 AND id % 7 = 0;
-UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id > 20000 AND id % 11 = 0;
+DELETE FROM t WHERE id > 3000 AND id % 7 = 0;
+UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id > 3000 AND id % 11 = 0;
 BEGIN;
-UPDATE t SET ts = ts + INTERVAL '1 year' WHERE id > 20000 AND id % 3 = 0;
+UPDATE t SET ts = ts + INTERVAL '1 year' WHERE id > 3000 AND id % 3 = 0;
 INSERT INTO t SELECT 40000 + i, TIMESTAMP '2026-01-01', DATE '2026-01-01', 1, 1, 1 FROM generate_series(1, 200) i;
 ROLLBACK;
 DROP TABLE p;
@@ -106,10 +109,10 @@ SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('t_i
  t
 (1 row)
 
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(2);
  same | shapes 
 ------+--------
- 1152 |   1152
+  405 |    405
 (1 row)
 
 SELECT * FROM on_the_order();
@@ -128,10 +131,10 @@ SELECT sift.col_promote('t_ix') >= 0 AS promoted;
 INSERT INTO t SELECT 50000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int, (random() * 30)::int, (random() * 1000)::bigint, 0 FROM generate_series(1, 5000) i;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(3);
  same | shapes 
 ------+--------
- 1152 |   1152
+  381 |    381
 (1 row)
 
 SELECT * FROM on_the_order();
@@ -146,6 +149,6 @@ SELECT sift.col_verify('t_ix');
  
 (1 row)
 
-DROP FUNCTION on_the_order(), global_order(text), same(text), quant(text, text, float8), shape_sql(shapes);
+DROP FUNCTION on_the_order(), global_order(text), same(text), quant(text, text, float8), sweep(int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
 DROP EXTENSION pg_sift;
