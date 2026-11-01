@@ -770,9 +770,18 @@ The group form serves the queries that name the group: a query that does not (`O
 | an aggregate over a range of entities | 14.9 ms, 59.1M, 11,004 | 0.93 ms, 8.97M, 718 | 0.86 ms, 8.97M, 718 |
 | a list of 10 entities | 0.40 ms, 3.61M, 533 | 0.38 ms, 3.50M, 573 | 2.22 ms, 12.6M, 431 |
 | a list of 60 entities | 3.55 ms, 20.2M, 2,820 | 3.38 ms, 19.8M, 2,731 | 4.99 ms, 27.6M, 431 |
+| entity and one week of `ts`, the rows | 0.06 ms, 0.21M, 8 | 0.10 ms, 0.35M, 36 | 0.12 ms, 0.59M, 68 |
+| entity and one week, `count(*)`, `sum` | 0.07 ms, 0.21M, 8 | 0.16 ms, 0.72M, 66 | 0.16 ms, 0.72M, 71 |
+| entity and one week, `min`, `max` | 0.09 ms, 0.45M, 8 | 0.21 ms, 1.13M, 60 | 0.20 ms, 1.13M, 65 |
+| 10 entities and one week, `sum` per entity | 0.11 ms, 0.53M, 63 | 0.24 ms, 1.62M, 101 | 0.23 ms, 1.56M, 109 |
+| 60 entities and one week, `sum` per entity | 0.24 ms, 2.04M, 369 | 0.28 ms, 2.10M, 101 | 0.27 ms, 2.03M, 109 |
+| `LATERAL` count of one week, 100 entities | 0.24 ms, 1.80M, 307 | 0.72 ms, 7.45M, 90 | 0.69 ms, 7.40M, 98 |
+| `LATERAL` latest 3 of one week, 100 entities | 0.26 ms, 2.07M, 310 | 3.77 ms, 38.4M, 4,084 | 0.63 ms, 6.23M, 421 |
 | join on 1,000 (entity, ts) pairs | 3.4 ms, 12.9M, 4,011 | 78 ms, 211M, 11,650 | 18.9 ms, 173M, 44,250 |
 | *not served:* `ORDER BY entity, ts OFFSET 10,000` | 1.7 ms, 18.1M, 10,054 | 0.43 ms, 4.84M, 195 | 14.9 ms, 128M, 433 |
 | *not served:* `ORDER BY ts OFFSET 10,000` (100,000 rows) | 23.4 ms, 142M, 3,884 | 0.41 ms, 4.16M, 77 | 4.49 ms, 34.6M, 61 |
+
+The rows with `ts BETWEEN` (a day, a week, a tenth of the entity's rows give the same cost; 1,000,000 rows, a `date` second key and a table sorted by the entity give 0.33M to 0.62M for the rows, 0.5M to 0.8M for the aggregates) are the default's cost, 2 to 3.5 times a b-tree's in instructions and 5 to 15 times in blocks, except the latest rows of a range, which come from the grouped order (6x fewer than the default's): a range with no `LIMIT` reads the unit of the group (30,368 rows scanned for 2 found) and not two positions of the grouped order, so a `count(*)` of a range takes the same 0.7M whatever its width. `key_order` takes one column or `group, key` (two); a third column is an error (`at most two columns`), the group must be an integer, date or timestamp (a text first key is an error), and a `date` key behaves as a `timestamp` one.
 
 The lists of entities are the one within-key loss: the entities are not an array of their own, so a list of 10 reads the entries of the grouped order one entity after the other (3.5x the default's instructions, 1.3x at 60, none at 500). A point directory on the entity gives the list back (3.3M and 18.0M instructions, the index +16%: 6.25 to 7.24 MB) but a list of 500 then costs 198M (ms 90.6 against 19.9) and `count(*)` of one big entity 5 to 18 times more; an array of its own for the entity gives it back for +22% index: by the weighted formula neither pays (B +3.6 against C +11 for the array), so the loss is documented, not fixed. The index is 47% larger than the default's on a table in arrival order (6.25 against 4.25 MB; +18% at 100,000 rows) and 15% smaller on a table sorted by the entity (5.62 against 6.59 MB), where the latest row of 100 entities takes 3.9M instead of 15.8M and the other rows of the table 1.3x to 1.2x fewer instructions. Weighing these ten within-key rows equally (B = mean of log2(S) / log2(1.05), C = G / 3 + W / 5): in arrival order B 9.3 against C 6.2 at 100,000 rows and 8.5 against 15.7 at 300,000, so the form is not the default there; on a table sorted by the entity B 6.4 against C -4.9, where it pays. Set it where the queries are the latest rows of each entity; leave the default where they are lists of entities or whole-table pages.
 
