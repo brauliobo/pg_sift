@@ -8,7 +8,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_am (id int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_am SELECT g, 'cat_' || (g % 4), g % 97, repeat('x', 150) FROM generate_series(1, 20000) g;
-	CREATE INDEX iso_am_idx ON iso_am USING sift_col (id, kind, amount) WITH (write_buffer_limit = 4096);
+	CREATE INDEX iso_am_idx ON iso_am USING sift_col (id, kind, amount) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 50);
 }
 
 setup
