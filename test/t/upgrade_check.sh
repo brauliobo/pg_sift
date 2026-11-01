@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 79
+plan 82
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -103,11 +103,16 @@ q clean "CREATE INDEX facts_late_hll ON facts USING sift_col (id, g, n) WITH (cu
 check "hll_columns set after the build warns that the old units have no sketch, with the REINDEX" grep -q -E '^warn +facts_late_hll +option +hll_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_hll;' <<<"$(uc clean)"
 check "to 3.3: an index with sketches (format 20) is a blocker that says to reset hll_columns" grep -q -E '^blocker +facts_hll .*ALTER INDEX facts_hll RESET \(hll_columns\), then REINDEX INDEX facts_hll' <<<"$(uc --to 3.3 clean)"
 q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
-# the global order of order_array_columns is column format 30 (chunks of 512 entries; 21 with 1,024), which 3.5 cannot read
+# the global order of order_array_columns with no point directory codes its addresses with the bits of the largest offset of a chunk: column format 38, which 3.6 and older refuse
+# (the setting 14 writes no array); 3.6 and 3.7 wrote it as column format 30, whose advice is to turn the option off
 q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_columns = 'id', order_array_columns = 'id')" >/dev/null
-check "to 3.3: an index with a global order (format 30) is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
-check "to 3.5: the same index is a blocker that says to turn order_array_columns off" grep -q -E "^blocker +facts_gord .*ALTER INDEX facts_gord SET \(order_array_columns = 'off'\), then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
-check "to 3.6: the same index is ok" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
+check "an index with a global order is column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
+check "to 3.3: an index with a global order is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
+check "to 3.5: the same index is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
+check "to 3.6: the same index is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord" <<<"$(uc --to 3.6 clean)"
+check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
+q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
+check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
 q clean "DROP INDEX facts_gord" >/dev/null
 # a compact global order (order_layout = 'compact') is column format 41, which 3.7 cannot read: the setting 14 and a REINDEX write what it reads; the whole order of the same index
 # is what 3.7 wrote. The compact order needs a segment of many rows (a testing build lowers the threshold)
