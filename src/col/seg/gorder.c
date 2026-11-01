@@ -728,6 +728,47 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
 	return true;
 }
 
+/*
+ * How many entries of the global order of leaf col (ungrouped) between lo and hi have an address in a unit that is not set in dirty (a bit for each unit), counted from the chunks with
+ * no list of addresses made. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
+ */
+bool
+sift_cseg_gorder_count_outside(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, const uint64 *dirty, uint32 *count)
+{
+	SiftCGOrdBuf memo;
+	uint32		a,
+				b,
+				n = 0,
+				crows,
+				sb = PG_UINT32_MAX,
+				u = 0;
+
+	memo.at = UINT32_MAX;
+	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
+		return false;
+	crows = seg_gord_leaf(seg, col)->hdr.crows;
+	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)
+	{
+		uint32		from = Max(a, c * crows),
+					to = Min(b, (c + 1) * crows);
+
+		(void) gorder_chunk_memo(seg, col, c, &memo);
+		for (uint32 i = from; i < to; i++)
+		{
+			uint32		blk_sb = sift_block_sb(sift_key_block(memo.addr[i - c * crows]));
+
+			if (blk_sb != sb)
+			{
+				sb = blk_sb;
+				u = sift_cseg_unit_of_sb(seg, sb);
+			}
+			n += u >= seg->nsb || !((dirty[u / 64] >> (u % 64)) & 1);
+		}
+	}
+	*count = n;
+	return true;
+}
+
 /* The keys of chunk c of leaf col (the buckets of a compact one) into memo */
 static void
 gord_chunk_keys(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, SiftCGOrdBuf *memo)

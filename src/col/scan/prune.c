@@ -400,6 +400,7 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	c->ps = NULL;
 	c->count_ok = false;
+	c->count_dirty = NULL;
 	if (src->pcnt && c->full && col_count_segment(src, c, preds, npreds))
 	{
 		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
@@ -409,9 +410,14 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 		c->ptidv = NULL;
 		c->nptidv = 0;
 		c->keep = palloc(nw * sizeof(uint64));
-		memset(c->keep, 0xFF, nw * sizeof(uint64));
-		if (seg->nsb % 64)
-			c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+		if (c->count_dirty != NULL)
+			memcpy(c->keep, c->count_dirty, nw * sizeof(uint64));
+		else
+		{
+			memset(c->keep, 0xFF, nw * sizeof(uint64));
+			if (seg->nsb % 64)
+				c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+		}
 		c->setcut = palloc0(nw * sizeof(uint64));
 		return;
 	}

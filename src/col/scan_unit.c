@@ -640,6 +640,62 @@ count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, in
 	return true;
 }
 
+/* Unit u is exact on its own: every page its rows are on is all-visible (the summary's page mask against the snapshot) and it has no dead row or exception */
+static bool
+unit_exact(SiftColSource *src, SiftColSegment *seg, uint32 u)
+{
+	uint64		pm[SIFT_PAGEMASK_WORDS],
+				av[SIFT_PAGEMASK_WORDS];
+
+	if (sift_cseg_dirty(seg, u) || !sift_cseg_unit_pagemask(seg, u, pm))
+		return false;
+	src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, u), av);
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		if (pm[w] & ~av[w])
+			return false;
+	return true;
+}
+
+/*
+ * The rows of the global order between the bounds, when some units of the segment are not exact (the pages of rows inserted since the last VACUUM, a dead row): the
+ * order counts every entry of the range, so the entries whose address lies in such a unit are taken off its count and those units are read after it, with the tests of the
+ * scan. Not when the range has more entries than SIFT_CORDER_MAX_ROWS (their addresses are decoded), more than a quarter of the units are not exact, or the segment is cut by key.
+ */
+static bool
+count_dirty_units(SiftColSource *src, ColCursor *c, int64 lo, int64 hi)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		nw = SIFT_COL_NWORDS(seg->nsb),
+				most = Max(2, seg->nsb / 4),
+				nd = 0,
+				n,
+				rows = 0;
+	uint64	   *dirty;
+
+	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src))
+		return false;
+	dirty = palloc0(nw * sizeof(uint64));
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (unit_exact(src, seg, u))
+			rows += seg->sbdir[u].nrows;
+		else
+		{
+			sift_col_bit_set(dirty, u);
+			if (++nd > most)
+				break;
+		}
+	if (nd == 0 || nd > most || !sift_cseg_gorder_count_outside(seg, src->pcnt - 1, lo, hi, SIFT_CORDER_MAX_ROWS, dirty, &n))
+	{
+		pfree(dirty);
+		return false;
+	}
+	c->count_ok = true;
+	c->count_rows = n;
+	c->count_unit_rows = rows;
+	c->count_dirty = dirty;
+	return true;
+}
+
 /*
  * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), whose global order holds the keys of the
  * leaf of sift_col_count_cmp (order_array_columns: the rows of the range are the entries between its bounds), or whose point directory lists the rows of the value
@@ -675,12 +731,12 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 		return false;
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
-			return false;
+			return src->pcnt_int && count_dirty_units(src, c, lo, hi);
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
-		return false;
+		return src->pcnt_int && count_dirty_units(src, c, lo, hi);
 	if (src->pcnt_int)
 	{
 		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, lo, hi);
@@ -716,6 +772,8 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		take_units(c, cu, 0, seg->nsb, c->count_unit_rows);
 		cu->counted = true;
 		cu->crows = c->count_rows;
+		if (c->count_dirty != NULL)
+			c->cur = 0;			/* the units that are not exact follow, one by one */
 		return true;
 	}
 	if (src->whole && col_whole_take(src, c, cu))

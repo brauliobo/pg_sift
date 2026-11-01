@@ -56,6 +56,7 @@ TESTING_REGRESS += col_gorder_autogroup col_topn_ties
 TESTING_REGRESS += col_key_cut_narrow
 TESTING_REGRESS += col_gorder_narrow col_gorder_ends col_gorder_truncate col_gorder_layout col_gorder_fullrange col_order_layout
 TESTING_REGRESS += col_gorder_text col_gorder_text_buffer col_gorder_textperm
+TESTING_REGRESS += col_range_count_dirty
 TESTING_REGRESS += col_date_bounds
 TESTING_REGRESS += col_plain_window col_text_ilike col_text_patterns col_text_prefilter
 TESTING_REGRESS += col_dict_blocks_hash

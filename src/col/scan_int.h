@@ -49,6 +49,7 @@ typedef struct ColCursor
 	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
 	uint64		count_rows;
 	uint32		count_unit_rows;	/* the rows of the segment's units */
+	uint64	   *count_dirty;	/* count_ok with units that are not exact: those (bit u) are read after the counted unit, which counts the rows of the others (col_count_segment) */
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
