@@ -236,6 +236,7 @@ struct SiftColSource
 	int			nmem;
 	int			capmem;
 	bool		mem_loaded;
+	int			gdirect;		/* the orders of one group of the write buffers made by reading all their rows (col/scan/gmem.c): past a few, the rows are put in groups once */
 	struct SiftCWbufToken *wtok;	/* the state of each kept batch set the write buffer batches came from, in the order of the segments; NULL when some batch came from elsewhere (sift_col_add_batches) */
 	int			nwtok;
 	ColMem	  **order;

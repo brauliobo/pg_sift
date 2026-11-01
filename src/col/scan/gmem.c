@@ -56,21 +56,12 @@ gord_mem_rows(const SiftColSource *src)
 	return n;
 }
 
-/* The rows of the write buffers sorted like a segment's entries, in mc; false when collect refuses a row */
-static bool
-gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryContext mc)
+/* The order of the entries pv (nv, with a value) and pn (nn, without one) of the write buffers, in mc as value v of the scan; pv is freed, pn left to the caller */
+static void
+gord_mem_make(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryContext mc, GOrdPair *pv, uint32 nv, GOrdPair *pn, uint32 nn)
 {
 	ColGOrdMem *g;
-	uint64		n = gord_mem_rows(src);
-	GOrdPair   *pv,
-			   *pn;
-	uint32		nv,
-				nn;
 
-	pv = palloc((n + 1) * sizeof(GOrdPair));
-	pn = palloc((n + 1) * sizeof(GOrdPair));
-	if (!gord_collect(src, leaf, gleaf, gval, NULL, pv, &nv, pn, &nn))
-		return false;
 	gord_pairs_sort(pn, nn);
 	g = MemoryContextAllocZero(mc, sizeof(ColGOrdMem));
 	g->leaf = leaf;
@@ -87,6 +78,23 @@ gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryC
 		g->tid[nv + i] = pn[i].tid;
 	}
 	src->gmem[v] = g;
+}
+
+/* The rows of the write buffers sorted like a segment's entries, in mc; false when collect refuses a row */
+static bool
+gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryContext mc)
+{
+	uint64		n = gord_mem_rows(src);
+	GOrdPair   *pv,
+			   *pn;
+	uint32		nv,
+				nn;
+
+	pv = palloc((n + 1) * sizeof(GOrdPair));
+	pn = palloc((n + 1) * sizeof(GOrdPair));
+	if (!gord_collect(src, leaf, gleaf, gval, NULL, pv, &nv, pn, &nn))
+		return false;
+	gord_mem_make(src, leaf, gleaf, gval, v, mc, pv, nv, pn, nn);
 	pfree(pn);
 	return true;
 }
@@ -413,12 +421,208 @@ gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gva
 	gkept_use(src, k, v);
 }
 
+/*
+ * ---- the rows of the write buffers by value of a group leaf ----
+ * A probe for each of many groups (a LATERAL over the entities) reads every row of the buffers to find the rows of its group: with the buffers holding thousands of rows, that is
+ * the cost of the probe. After GPART_AFTER such probes the rows are put in groups once, by one pass that counts them and one that places them, and kept by the backend under the state
+ * of the sets (SiftCWbufToken) like the orders; the order of a group is made from its rows alone. Rows in buffer order, so that an order made from them is the one the full read makes.
+ */
+#define GPART_AFTER		3
+
+typedef struct GOrdPart
+{
+	MemoryContext cx;
+	Oid			db;
+	RelFileNumber rel;
+	int			ntok;
+	SiftCWbufToken *tok;
+	int			leaf,
+				gleaf;
+	uint32		mask;			/* the table of the values of the group leaf: slots (mask + 1, a power of 2) of the value and of the number of its group + 1 */
+	int64	   *gval;
+	uint32	   *gid;
+	uint32	   *vs;				/* the entries with a value of group g are pv[vs[g] .. vs[g + 1]), those without one pn[ns[g] .. ns[g + 1]) */
+	uint32	   *ns;
+	GOrdPair   *pv;
+	GOrdPair   *pn;
+} GOrdPart;
+
+static GOrdPart *gpart;
+
+static uint32
+gpart_slot(const GOrdPart *p, int64 val)
+{
+	uint32		i = (uint32) (((uint64) val * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & p->mask;
+
+	while (p->gid[i] != 0 && p->gval[i] != val)
+		i = (i + 1) & p->mask;
+	return i;
+}
+
+static bool
+gpart_isnull(const SiftCVals *v, uint32 r)
+{
+	return v->nulls && (v->nulls[r / 64] >> (r % 64) & 1);
+}
+
+/* The rows of the buffers put in groups; false when a row is one collect refuses */
+static GOrdPart *
+gpart_build(SiftColSource *src, int leaf, int gleaf)
+{
+	uint64		n = gord_mem_rows(src);
+	MemoryContext cx = AllocSetContextCreate(gkept_cxt, "sift cache write buffer groups", ALLOCSET_DEFAULT_SIZES);
+	GOrdPart   *p = MemoryContextAllocZero(cx, sizeof(GOrdPart));
+	uint32	   *row = MemoryContextAlloc(cx, (n + 1) * sizeof(uint32));
+	uint32	   *cv,
+			   *cn;
+	uint32		ng = 0,
+				at = 0,
+				fv = 0,
+				fn = 0;
+	uint32		slots = 1024;
+
+	while (slots < 2 * n)
+		slots *= 2;
+	p->cx = cx;
+	p->db = src->index->rd_locator.dbOid;
+	p->rel = src->index->rd_locator.relNumber;
+	p->leaf = leaf;
+	p->gleaf = gleaf;
+	p->mask = slots - 1;
+	p->gval = MemoryContextAlloc(cx, (Size) slots * sizeof(int64));
+	p->gid = MemoryContextAllocZero(cx, (Size) slots * sizeof(uint32));
+	cv = MemoryContextAllocZero(cx, (n + 2) * sizeof(uint32));
+	cn = MemoryContextAllocZero(cx, (n + 2) * sizeof(uint32));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf],
+				   *gv = &b->col[gleaf];
+
+		for (uint32 r = 0; r < b->nrows; r++, at++)
+		{
+			uint32		s;
+
+			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || (gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)))
+				goto refused;
+			if (gpart_isnull(gv, r))
+			{
+				row[at] = PG_UINT32_MAX;
+				continue;
+			}
+			s = gpart_slot(p, gv->key[r]);
+			if (p->gid[s] == 0)
+			{
+				p->gval[s] = gv->key[r];
+				p->gid[s] = ++ng;
+			}
+			row[at] = p->gid[s] - 1;
+			if (gpart_isnull(v, r))
+				cn[row[at]]++;
+			else
+				cv[row[at]]++;
+		}
+	}
+	p->vs = MemoryContextAlloc(cx, (Size) (ng + 1) * sizeof(uint32));
+	p->ns = MemoryContextAlloc(cx, (Size) (ng + 1) * sizeof(uint32));
+	for (uint32 g = 0; g < ng; g++)
+	{
+		p->vs[g] = fv;
+		p->ns[g] = fn;
+		fv += cv[g];
+		fn += cn[g];
+		cv[g] = p->vs[g];			/* now the next place of its group */
+		cn[g] = p->ns[g];
+	}
+	p->vs[ng] = fv;
+	p->ns[ng] = fn;
+	p->pv = MemoryContextAlloc(cx, (Size) (fv + 1) * sizeof(GOrdPair));
+	p->pn = MemoryContextAlloc(cx, (Size) (fn + 1) * sizeof(GOrdPair));
+	at = 0;
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf];
+
+		for (uint32 r = 0; r < b->nrows; r++, at++)
+		{
+			if (row[at] == PG_UINT32_MAX)
+				continue;
+			if (gpart_isnull(v, r))
+				p->pn[cn[row[at]]++] = (GOrdPair) {0, (uint64) b->keys[r]};
+			else
+				p->pv[cv[row[at]]++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
+		}
+	}
+	pfree(row);
+	pfree(cv);
+	pfree(cn);
+	p->ntok = src->nwtok;
+	p->tok = MemoryContextAlloc(cx, src->nwtok * sizeof(SiftCWbufToken));
+	memcpy(p->tok, src->wtok, src->nwtok * sizeof(SiftCWbufToken));
+	return p;
+refused:
+	MemoryContextDelete(cx);
+	return NULL;
+}
+
+/* The rows of the buffers in groups, kept from an earlier scan or made now; NULL when the buffers are not named by a state, are too big, or the scan has not read enough single groups */
+static GOrdPart *
+gpart_get(SiftColSource *src, int leaf, int gleaf)
+{
+	GOrdPart   *p = gpart;
+
+	if (!gkept_named(src))
+		return NULL;
+	if (p != NULL && p->db == src->index->rd_locator.dbOid && p->rel == src->index->rd_locator.relNumber && p->leaf == leaf && p->gleaf == gleaf && p->ntok == src->nwtok &&
+		memcmp(p->tok, src->wtok, src->nwtok * sizeof(SiftCWbufToken)) == 0)
+		return p;
+	if (src->gdirect < GPART_AFTER || gord_mem_rows(src) > GKEPT_BYTES / 64)
+		return NULL;
+	if (gkept_cxt == NULL)
+		gkept_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer orders", ALLOCSET_DEFAULT_SIZES);
+	if (gpart != NULL)
+	{
+		MemoryContextDelete(gpart->cx);
+		gpart = NULL;
+	}
+	gpart = gpart_build(src, leaf, gleaf);
+	return gpart;
+}
+
+/* The order of the group gval made from its rows */
+static void
+gord_mem_part(SiftColSource *src, const GOrdPart *p, int leaf, int gleaf, int64 gval, int v, MemoryContext mc)
+{
+	uint32		s = gpart_slot(p, gval),
+				g = p->gid[s] - 1;
+	uint32		nv = 0,
+				nn = 0;
+	GOrdPair   *pv,
+			   *pn;
+
+	if (p->gid[s] != 0)
+	{
+		nv = p->vs[g + 1] - p->vs[g];
+		nn = p->ns[g + 1] - p->ns[g];
+	}
+	pv = palloc((nv + 1) * sizeof(GOrdPair));
+	pn = palloc((nn + 1) * sizeof(GOrdPair));
+	if (nv > 0)
+		memcpy(pv, p->pv + p->vs[g], nv * sizeof(GOrdPair));
+	if (nn > 0)
+		memcpy(pn, p->pn + p->ns[g], nn * sizeof(GOrdPair));
+	gord_mem_make(src, leaf, gleaf, gval, v, mc, pv, nv, pn, nn);
+	pfree(pn);
+}
+
 /* The rows of the write buffers sorted like a segment's entries; false when a text key under a locale has more than maxrows rows, another key more than SIFT_CGORD_MEM_MAX, or one holds an overflow value of the leaf or an address a block of the global order cannot name */
 bool
 gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, int v, uint32 collid)
 {
 	ColGOrdMem *g = src->gmem[v];
 	GOrdKept   *k;
+	GOrdPart   *part;
 	MemoryContext cx;
 	bool		ok;
 
@@ -436,6 +640,12 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		return true;
 	}
 	cx = AllocSetContextCreate(gorder_cx(src), "sift cache write buffer order", ALLOCSET_DEFAULT_SIZES);
+	if (collid == 0 && gleaf >= 0 && (part = gpart_get(src, leaf, gleaf)) != NULL)
+	{
+		/* cheap to make again from the groups: not kept with the orders of whole reads, which it would push out */
+		gord_mem_part(src, part, leaf, gleaf, gval, v, cx);
+		return true;
+	}
 	ok = collid != 0 ? gord_mem_text(src, leaf, collid, v, cx) : gord_mem_num(src, leaf, gleaf, gval, v, cx);
 	if (!ok)
 	{
@@ -444,6 +654,8 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		return false;
 	}
 	GKEPT_STAT(2);
+	if (gleaf >= 0)
+		src->gdirect++;
 	gkept_store(src, cx, leaf, gleaf, gval, collid, v);
 	return true;
 }

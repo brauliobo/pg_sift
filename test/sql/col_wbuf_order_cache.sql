@@ -2,7 +2,8 @@
 -- named by the state of the kept sets, and extended when rows are appended. Every read is checked against a copy of the table without an index, and the counters of the
 -- kept orders (sift._test_col_gkept_stats) say which way the read went: found the order as it was, extended it, made it. The steps: a repeated read, rows appended inside the
 -- range of the keys the order was cut for, rows with NULL keys, a key outside the range and more rows than twice the order's (made again), rows deleted and updated, an insert rolled back,
--- VACUUM (the set is dropped), a cursor that holds the order while the buffer grows and other orders push it out of the cache, an extension that fails, and a promotion.
+-- VACUUM (the set is dropped), a cursor that holds the order while the buffer grows and other orders push it out of the cache, an extension that fails, and a promotion. The last section is a LATERAL top-N
+-- for 200 groups over a buffer of thousands of rows: the rows are put in groups once, so a full read of the buffer is made three times, not for every group.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -182,6 +183,49 @@ SELECT sift.col_verify('t_ix') IS NOT NULL AS verified;
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;
 SELECT * FROM reads();
 SELECT * FROM moves('after the promotion');
+
+CREATE TABLE wg AS SELECT i AS id, 1 + (i * 7919) % 250 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts FROM generate_series(1, 20000) i;
+CREATE INDEX wg_i ON wg USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE TABLE wg_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 250 END AS g FROM generate_series(1, 200) n;
+VACUUM (FREEZE, ANALYZE) wg, wg_o;
+-- a LATERAL top-N for each of many groups: the rows of the buffer by group (col/scan/gmem.c), the orders made by a full read of the buffer are three for 200 probes, none for the next statement
+SET sift.agg_force = on;
+SET enable_seqscan = off;
+SET enable_sort = off;
+
+CREATE FUNCTION wg_rows(on_ bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', on_::text, true);
+	SELECT string_agg(z::text, ',' ORDER BY z.i, z.ts) INTO r FROM (
+		SELECT v.i, x.ts FROM wg_o v LEFT JOIN LATERAL (SELECT ts FROM wg WHERE g = v.g ORDER BY ts DESC LIMIT 2) x ON true
+		UNION ALL SELECT v.i, (SELECT ts FROM wg WHERE g = v.g ORDER BY ts LIMIT 1) FROM wg_o v) z;
+	RETURN r;
+END $$;
+-- the orders made by a full read of the buffer, and whether the rows are the heap's
+CREATE FUNCTION wg_check(label text, OUT step text, OUT full_reads int, OUT same boolean) LANGUAGE plpgsql AS $$
+DECLARE b0 bigint; a text; b text;
+BEGIN
+	step := label;
+	SELECT builds INTO b0 FROM sift._test_col_gkept_stats();
+	a := wg_rows(true);
+	SELECT builds - b0 INTO full_reads FROM sift._test_col_gkept_stats();
+	b := wg_rows(false);
+	same := a = b;
+END $$;
+
+SELECT * FROM wg_check('no buffer');
+INSERT INTO wg SELECT 20000 + n, CASE WHEN n % 97 = 0 THEN NULL ELSE 1 + (n * 7) % 240 END, CASE WHEN n % 89 = 0 THEN NULL ELSE timestamp '2025-01-01' + n * interval '41 seconds' END FROM generate_series(1, 3000) n;
+SELECT * FROM wg_check('3,000 rows in the write buffer');
+SELECT * FROM wg_check('the same buffer again');
+DELETE FROM wg WHERE id % 13 = 0;
+INSERT INTO wg SELECT 30000 + n, 1 + (n * 3) % 250, timestamp '2026-01-01' + n * interval '43 seconds' FROM generate_series(1, 500) n;
+SELECT * FROM wg_check('rows deleted and appended');
+SELECT * FROM wg_check('and again');
+RESET enable_sort; RESET enable_seqscan; RESET sift.agg_force;
+DROP FUNCTION wg_check(text);
+DROP FUNCTION wg_rows(bool);
+DROP TABLE wg, wg_o;
 
 DROP FUNCTION on_both(text), global_order(text), same(text), same_keys(text), reads(), moves(text);
 DROP TABLE t, p, last_stats, expect, got;
