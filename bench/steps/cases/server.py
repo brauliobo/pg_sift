@@ -34,6 +34,7 @@ def dataset(rows):
     if psql("SELECT to_regclass('public.orders_src') IS NULL") == 't' or int(psql('SELECT count(*) FROM public.orders_src')) != rows:
         log('generating %s orders' % format(rows, ','))
         subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', GEN], check=True, capture_output=True, env=ENV)
+        settle_visibility('public')   # the generator of a dataset stops on a table of this schema with pages that are not all visible
         psql('ANALYZE orders_src')
     csv = os.path.join(os.environ.get('CASES_TMP', '/dev/shm/sift-cases'), 'orders-%d.csv' % rows)
     if not os.path.exists(csv):
@@ -80,7 +81,7 @@ def generate(case, rows):
         r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
                            env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
         if r.returncode:
-            die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
+            die('%s: %s' % (os.path.relpath(path, REPO), ' '.join((r.stdout.strip()[-300:], r.stderr.strip()[:500]))))   # the generator\'s \\echo says which table
         if 'VACUUM' in gen:
             settle_visibility(schema)
         KEPT[schema] = psql("SELECT string_agg(quote_literal(relname), ',') FROM pg_class WHERE relnamespace = '%s'::regnamespace" % schema)
