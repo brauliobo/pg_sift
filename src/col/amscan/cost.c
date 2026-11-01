@@ -11,6 +11,8 @@
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "access/genam.h"
+#include "catalog/pg_statistic.h"
+#include "utils/syscache.h"
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
@@ -307,16 +309,23 @@ index_holds_columns_read(PlannerInfo *root, IndexOptInfo *ii)
 
 /* the most keys of an IN list for which an index scan with a heap fetch for each competes with the unit reads of SiftAgg (SIFT_CORDER_MAX_KEYS) */
 #define POINT_LOOKUP_KEYS	512
+/*
+ * ... and the rows they return: an index scan prices the heap addresses of a lookup as in heap order, which holds for a few rows and not for hundreds (250,000 rows, one day of 216: priced 76
+ * against 187 for SiftAgg, takes 1.4 ms against 0.55), so a column of hundreds of rows a key is SiftAgg's, whose zones and key lists keep few units
+ */
+#define POINT_LOOKUP_ROWS_KEY	16
+#define POINT_LOOKUP_ROWS		1024
 
 /* whether qual is a constant key or a list of up to POINT_LOOKUP_KEYS of them for a column of the index (of the table heapid) that has a point directory of addresses or an order array */
 static bool
-point_lookup_qual(Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols, const char *ord_cols)
+point_lookup_qual(PlannerInfo *root, Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols, const char *ord_cols)
 {
 	Node	   *l,
 			   *r;
 	Var		   *var;
 	Const	   *c;
 	char	   *colname;
+	double		keys = 1.0;
 
 	if (IsA(qual, OpExpr) && list_length(((OpExpr *) qual)->args) == 2)
 	{
@@ -360,7 +369,8 @@ point_lookup_qual(Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols
 	{
 		ArrayType  *arr = DatumGetArrayTypeP(c->constvalue);
 
-		if (ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr)) > POINT_LOOKUP_KEYS)
+		keys = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+		if (keys > POINT_LOOKUP_KEYS)
 			return false;
 	}
 	colname = get_attname(heapid, var->varattno, true);
@@ -368,7 +378,22 @@ point_lookup_qual(Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols
 		return false;
 	for (int i = 0; i < ii->nkeycolumns; i++)
 		if (ii->indexkeys[i] == var->varattno)
-			return sift_col_list_has(tid_cols, colname) || sift_col_list_has(ord_cols, colname);
+		{
+			HeapTuple	stats;
+			double		distinct,
+						per_key;
+
+			if (!sift_col_list_has(tid_cols, colname) && !sift_col_list_has(ord_cols, colname))
+				return false;
+			/* the statistics of the column by their cache: the relation is not in the planner's arrays yet, so examine_variable cannot be asked */
+			stats = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(heapid), Int16GetDatum(var->varattno), BoolGetDatum(false));
+			if (!HeapTupleIsValid(stats))
+				return false;
+			distinct = ((Form_pg_statistic) GETSTRUCT(stats))->stadistinct;
+			ReleaseSysCache(stats);
+			per_key = distinct < 0 ? 1.0 / -distinct : ii->rel->tuples * Max(sift_plan_scale, 1.0) / Max(distinct, 1.0);
+			return per_key <= POINT_LOOKUP_ROWS_KEY && keys * per_key <= POINT_LOOKUP_ROWS;
+		}
 	return false;
 }
 
@@ -399,7 +424,7 @@ point_lookup_only(PlannerInfo *root, IndexOptInfo *ii)
 	if (IsA(q->jointree->quals, BoolExpr) && ((BoolExpr *) q->jointree->quals)->boolop == AND_EXPR)
 		quals = ((BoolExpr *) q->jointree->quals)->args;
 	foreach_ptr(Node, qual, quals)
-		if (!point_lookup_qual(qual, ii, planner_rt_fetch(ii->rel->relid, root)->relid, tid_cols, ord_cols))
+		if (!point_lookup_qual(root, qual, ii, planner_rt_fetch(ii->rel->relid, root)->relid, tid_cols, ord_cols))
 		{
 			ok = false;
 			break;
