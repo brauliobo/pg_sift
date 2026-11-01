@@ -456,6 +456,22 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave it on. The build picks the integer column of most values (at least 100 values and 64 rows apiece, scattered in the heap) when an array of a date or timestamp is built; set order_array_group = 'off' and REINDEX to drop the second order, or name a column to group every array.
 
+#### sift_col(key_order)
+
+`sift_col` · opt-in · since 3.8 · default ''
+
+- **What it does:** one name for the layout of a table that is stored in the order of its key (or of its group and key): key_cut, order_columns, order_array_columns and point_tid_columns (and, for 'group, key', order_array_group) take that column while you have not set them, an option you wrote wins. On a heap sorted by the key, OFFSET 10,000 reads 5.5M instead of 39.7M instructions and 500 points 8.0M instead of 54M (100,000 rows, 11 columns); on a heap in arrival order a range of the key costs what key_cut alone costs (0.53M against 2.09M by default) and ORDER BY .. LIMIT what the default costs (top-20 0.25M, key_cut alone 0.50M; OFFSET 10,000 5.4M, key_cut alone 36M)
+- **Gain:** 100,000 rows, 11 columns, a table sorted by the key against the default layout, instructions of one backend: OFFSET 10,000 ORDER BY key 39.7M to 5.5M (4.71 to 0.51 ms), 500 points 54M to 8.0M (16.7 to 0.67 ms), range of the key 0.64M to 0.59M; table in arrival order, against the default: range of the key 2.09M to 0.53M, top-20 0.25M to 0.25M, OFFSET 10,000 5.41M to 5.41M; against key_cut alone: top-20 0.50M to 0.25M, keyset page 0.57M to 0.31M, OFFSET 10,000 36M to 5.4M
+- **Gain and cost:** 7.20x fewer instructions (34200k saved a query), index +30.0%, build +0.0%, automatic
+- **Impact:** index size: index of 100,000 rows, 11 columns: sorted heap 0.58 to 0.75 MB (+30%), arrival heap 1.33 to 1.37 MB (+3%); 'group, key' with a group 1.55 to 2.13 MB (+38%) sorted, 1.73 to 2.52 MB (+46%) arrival; after 12 rounds of churn (1,000 rows of insert, update and delete each) the index of the bundle is 1,808 KB against 1,880 KB by default and 1,536 KB with key_cut alone (random keys); build, merge and writes: 12 rounds of 1% inserts, 1% updates, 0.33% key moves and 1% deletes on 100,000 rows, with maintenance: random keys 5,711M instructions against 6,957M by default (-18%) and 5,661M with key_cut alone, tail keys 4,207M against 5,065M (-17%), monotone keys 5,743M against 9,703M (-41%); WAL 12.3 against 12.1 MB, 8.5 against 8.2, 12.2 against 18.1 MB; REINDEX 593M against 1,045M instructions; CREATE INDEX 0.30 to 0.31 s against 0.40 to 0.46 s by default; other: the index of a sorted heap is 30% larger than the default's (0.75 against 0.58 MB, 100,000 rows) because of the order arrays, 3% on an arrival heap, and 38 to 46% with a group; against key_cut alone 12 rounds of churn (1% inserts, 1% updates, 1% deletes) write 10 to 24% more WAL and keep an index 18 to 57% larger; against the default it writes 18 to 41% fewer instructions and the same WAL (+1%, +3%, -32%)
+- **When:** ORDER BY key [DESC] LIMIT n [OFFSET m], a range or list of the key, and an equality on the group with ORDER BY key LIMIT n, on a table stored in the order of the key; on a table in arrival order only the range of the key gains over the default
+- **Default:** '' — It is not the default: it passes the formula only for a table stored in the order of its key, and no statistic of the table says so yet (a correlation of 0.9 or more would); key_cut alone is smaller and cheaper to maintain on a table in arrival order, and the index of the bundle is 30% larger than the default's on a sorted heap
+- **Why not the default:** no statistic says which columns it pays on
+- **Turn off:** ALTER INDEX .. RESET (key_order) then REINDEX; the options you wrote stay. New segments only: older ones keep their layout until a merge or REINDEX.
+- **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them
+- **Advice:** Set it on an index of a table that is written in the order of its key (a load sorted by it, CLUSTER, an append-only table in time order, or an entity and time): ORDER BY key LIMIT with a large OFFSET, ranges and lists of points then read entries and units, not rows at random. Use key_cut alone when the table is not stored in that order and you want the smaller index and the lower WAL of churn; use the default when the queries do not range or order by the key. The three choices, 100,000 rows, 12 rounds of churn: random keys key_cut 5,661M instructions, 11.1 MB WAL, 1,536 KB index, key_order 5,711M, 12.3 MB, 1,808 KB, default 6,957M, 12.1 MB, 1,880 KB; top-20 0.50M against 0.25M and OFFSET 10,000 36M against 5.4M for key_cut alone and key_order
+- **Sources:** benchmark `test:col_key_order`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
+
 #### sift_col(superunit)
 
 `sift_col` · default · since 3.3 · default 16
@@ -2278,6 +2294,7 @@ No default changed since 3.7; new: `order_layout`.
 
 | Option | 3.7 | 3.8 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
+| `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `order_layout` | (new) | auto | 41 | unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
 <!-- sift-upgrade:end -->
@@ -2298,6 +2315,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut/autocut.c` | `key_cut` |
 | NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut/autocut.c` | `key_cut` |
 | NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
+| NOTICE | sift_col index "%s": key_order = '%s' sets %s | `src/col/build/notice.c` | `key_order` |
 | NOTICE | sift_col index %s: compression of the text of %s column%s chosen by the formula (lz4 for %s, zstd kept for %s) | `src/col/build/build.c` | `compression` |
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build/build.c` |  |
 | NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build/build.c` | `point_tid_columns` |
