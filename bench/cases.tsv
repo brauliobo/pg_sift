@@ -162,7 +162,7 @@ topn_offset_exact	an OFFSET reads the sorted array of the key and does not confi
 topn_numeric_offset	an ORDER BY numeric(p, s) LIMIT reads the sorted array of the column, whose key is the number scaled by 10^s	orders	default	Global Order: true	native	btree:search_path = topn_numeric_btree	ms	faster33	no	-
 topn_offset_deep	an OFFSET past the 100,000 rows a top-N heap holds is walked in the array	orders	default	Global Order: true	native	btree:search_path = topn_offset_deep_btree	ms	faster33	no	-
 order_layout_offset	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = c_order_layout_offset__whole,btree:search_path = c_order_layout_offset__btree	ms	faster33	no	-
-order_layout_range	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = c_order_layout_range__whole,btree:search_path = c_order_layout_range__btree	ms	faster33	no	-
+order_layout_range	keeps a chunk of an order array compact where that is at least a fifth smaller	orders	default	Global Order: true	native	whole:search_path = c_order_layout_range__whole,btree:search_path = c_order_layout_range__btree	ms	faster33	no	-
 group_order_window	emits its groups in that order	orders	default	\([1-9][0-9]* order keys\)	native	-	ms	faster33	no	-
 tpch_shipping_priority_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 tpch_returned_items_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
@@ -246,12 +246,12 @@ count_key_outside_index	count_key_outside_index	events	-	Custom Scan \(SiftAgg	n
 topn_list_page_ordered_walk	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-
 topn_equality_filter_page	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 topn_soft_delete_global_order	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
-topn_text_tiebreak_global_order	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
+topn_text_tiebreak_global_order	followed by another key or an id tie-break	orders	default	Global Order: true	native	-	ms	faster33	no	-
 topn_text_locale_tiebreak_global_order	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
 topn_text_c_buffer_5k	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
 topn_text_locale_buffer_5k	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
 topn_page_dirty_pages_5pct	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	\A(?!.*[0-9]{3,} vetted by heap).*Top-N: k, id	native	-	ms	faster33	no	-
-topn_page_dirty_pages_20pct	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	\A(?!.*[0-9]{3,} vetted by heap).*Top-N: k, id	native	-	ms	faster33	no	-
+topn_page_dirty_pages_20pct	walks the array, where any condition outside the key sent the scan to the units	orders	default	\A(?!.*[0-9]{3,} vetted by heap).*Top-N: k, id	native	-	ms	faster33	no	-
 topn_pass_rate_one_in_100	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg.*Top-N: k, id	native	walk:sift.test_topn_gbudget = 1000000,units:sift.test_topn_gorder = off	ms	faster33	no	-
 topn_pass_rate_one_in_100_dirty_pages	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg.*Top-N: k, id	native	walk:sift.test_topn_gbudget = 1000000,units:sift.test_topn_gorder = off	ms	faster33	no	-
 topn_pass_rate_one_in_10000	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg.*Top-N: k, id	native	walk:sift.test_topn_gbudget = 1000000,units:sift.test_topn_gorder = off	ms	faster33	no	-
@@ -306,7 +306,7 @@ order_layout_count	the reloption `order_layout` of a `sift_col` index	events	-	P
 order_layout_ties_offset	the reloption `order_layout` of a `sift_col` index	events	-	Top-N: d \(limit	native	whole:search_path = c_order_layout_ties_offset__whole,compact:search_path = c_order_layout_ties_offset__compact,btree:search_path = c_order_layout_ties_offset__btree	ms	faster33	no	-
 order_layout_ties_count	the reloption `order_layout` of a `sift_col` index	events	-	Pushed Aggregates: count	native	whole:search_path = c_order_layout_ties_count__whole,compact:search_path = c_order_layout_ties_count__compact,btree:search_path = c_order_layout_ties_count__btree	ms	faster33	no	-
 wbuf_layout_topn	the reloption `order_layout` of a `sift_col` index	events	-	Top-N: created_at	native	whole:search_path = c_wbuf_layout_topn__whole,compact:search_path = c_wbuf_layout_topn__compact,btree:search_path = c_wbuf_layout_topn__btree	ms	faster33	no	-
-wbuf_layout_offset	the reloption `order_layout` of a `sift_col` index	events	-	Top-N: created_at \(limit	native	whole:search_path = c_wbuf_layout_offset__whole,compact:search_path = c_wbuf_layout_offset__compact,btree:search_path = c_wbuf_layout_offset__btree	ms	faster33	no	-
+wbuf_layout_offset	gives the order of a key in ranges that are sorted when a read touches them	events	-	Top-N: created_at \(limit	native	whole:search_path = c_wbuf_layout_offset__whole,compact:search_path = c_wbuf_layout_offset__compact,btree:search_path = c_wbuf_layout_offset__btree	ms	faster33	no	-
 wbuf_layout_count	the reloption `order_layout` of a `sift_col` index	events	-	Pushed Aggregates: count	native	whole:search_path = c_wbuf_layout_count__whole,compact:search_path = c_wbuf_layout_count__compact,btree:search_path = c_wbuf_layout_count__btree	ms	faster33	no	-
 wbuf_layout_text_topn	the reloption `order_layout` of a `sift_col` index	events	-	Top-N: txt	native	btree:search_path = c_wbuf_layout_text_topn__btree	ms	faster33	no	-
 wbuf_layout_text_offset	the reloption `order_layout` of a `sift_col` index	events	-	Top-N: txt \(limit	native	btree:search_path = c_wbuf_layout_text_offset__btree	ms	faster33	no	-
@@ -326,4 +326,10 @@ col_merge_cuts_free_end	the merge of a `sift_col` index (the maintenance worker'
 topn_offset_tiebreak	a deep `OFFSET` over the sorted array of the first key with a tie-break key after it	orders	default	Top-N: d	native	btree:search_path = c_topn_offset_tiebreak__btree	ms	faster33	no	-
 topn_offset_after_vacuum	an `OFFSET` over the sorted array of a key does not confirm in the heap the entries it throws away after a `VACUUM`	orders	default	Top-N: created_at	native	btree:search_path = c_topn_offset_after_vacuum__btree	ms	faster33	no	-
 search_ingest_fanin	`merge_fanin` defaults to 4 (8 before)	docs	-	^[1-9]	native	-	ms,wal_bytes,minstr	faster33	no	-
-point_scattered_subselect	the reloption `order_layout` of a `sift_col` index	events	-	Pushed Aggregates: count\(\*\), sum\(v\)	native	btree:search_path = c_point_scattered_subselect__btree	ms	faster33	no	-
+point_scattered_subselect	is an IN list of the scan, read when the scan starts	events	-	Pushed Aggregates: count\(\*\), sum\(v\)	native	btree:search_path = c_point_scattered_subselect__btree	ms	faster33	no	-
+wbuf_big_batches_kept	the batches of a write buffer that an index allows to grow big	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+count_churn_no_vacuum	the check against the heap of the rows a scan selects on a page that is not all-visible	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+sum_dead_units	reads its liveness bits 64 at a time	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+count_distinct_sparse_sets	give way to hash sets when they pass 1 MB	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+dict_shared_order_array	the hash table and the sorted order of a dictionary that the backends share	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+topn_walk_condition_offset	the walk of the global order with a condition on another column	orders	default	Top-N: k, id	native	btree:search_path = c_topn_walk_condition_offset__btree	ms	faster33	no	-

@@ -14,7 +14,7 @@ CREATE TABLE c_order_layout_range__btree.orders_olr AS TABLE orders_olr;
 CREATE INDEX orders_olr_bt ON c_order_layout_range__btree.orders_olr (created_at);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orders_olr;
 -- stop the setup if the key follows the heap: the sizes and times of a clustered key are not those of a scattered one
-SELECT CASE WHEN abs(correlation) < 0.05 THEN 1 ELSE 1 / 0 END FROM pg_stats WHERE tablename = 'orders_olr' AND attname = 'created_at';
+DO $$ BEGIN IF (SELECT abs(correlation) FROM pg_stats WHERE tablename = 'orders_olr' AND attname = 'created_at') >= 0.05 THEN RAISE EXCEPTION 'created_at follows the heap'; END IF; END $$;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) c_order_layout_range__whole.orders_olr;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) c_order_layout_range__btree.orders_olr;
 --@ pg
