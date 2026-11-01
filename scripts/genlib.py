@@ -1,4 +1,4 @@
-"""What the generators of scripts/ (gen-options.sh, gen-limits.sh, gen-reference.sh) share: reading C source and writing markdown cells.
+"""What the generators of scripts/ (gen-options.sh, gen-limits.sh, gen-reference.sh, gen-messages.sh) share: reading C source and writing markdown cells.
 They import it with `sys.path.insert(0, 'scripts')` from the repository root (they run as `python3 -I -`, which has no script directory)."""
 import functools
 import re
@@ -41,3 +41,39 @@ def norm(s):
 
 def esc(s):
     return s.replace('|', '\\|')
+
+
+def call_end(text, i):
+    depth = 0
+    while True:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while text[i] != '"':
+                i += 2 if text[i] == '\\' else 1
+        elif c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+
+
+@functools.lru_cache(maxsize=None)
+def testing_lines(text):
+    """-> the set of line numbers (1-based) inside #ifdef SIFT_TESTING (its #else branch is outside)"""
+    stack, out = [], set()
+    for n, line in enumerate(text.split('\n'), 1):
+        m = re.match(r'\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b\s*(.*)', line)
+        if m:
+            d, rest = m.groups()
+            if d in ('ifdef', 'ifndef', 'if'):
+                stack.append((d == 'ifdef' and rest.strip() == 'SIFT_TESTING') or (d == 'ifndef' and rest.strip() == 'SIFT_TESTING' and 'neg'))
+            elif d == 'else' and stack:
+                stack[-1] = {True: False, False: False, 'neg': True}[stack[-1]]
+            elif d == 'endif' and stack:
+                stack.pop()
+        if any(stack):
+            out.add(n)
+    return out

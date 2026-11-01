@@ -11,7 +11,7 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import esc, norm, split_args, strip_comments
+from genlib import call_end, esc, norm, split_args, strip_comments, testing_lines
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
@@ -34,46 +34,10 @@ def read(path):
         return f.read()
 
 
-def call_end(text, i):
-    depth = 0
-    while True:
-        c = text[i]
-        if c == '"':
-            i += 1
-            while text[i] != '"':
-                i += 2 if text[i] == '\\' else 1
-        elif c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-
-
 def string(a):
     if a == 'NULL':
         return ''
     return ''.join(re.sub(r'\\(.)', r'\1', s) for s in re.findall(r'"((?:\\.|[^"\\])*)"', a))
-
-
-@functools.lru_cache(maxsize=None)
-def testing_lines(text):
-    """-> the set of line numbers (1-based) inside #ifdef SIFT_TESTING (its #else branch is outside)"""
-    stack, out = [], set()
-    for n, line in enumerate(text.split('\n'), 1):
-        m = re.match(r'\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b\s*(.*)', line)
-        if m:
-            d, rest = m.groups()
-            if d in ('ifdef', 'ifndef', 'if'):
-                stack.append((d == 'ifdef' and rest.strip() == 'SIFT_TESTING') or (d == 'ifndef' and rest.strip() == 'SIFT_TESTING' and 'neg'))
-            elif d == 'else' and stack:
-                stack[-1] = {True: False, False: False, 'neg': True}[stack[-1]]
-            elif d == 'endif' and stack:
-                stack.pop()
-        if any(stack):
-            out.add(n)
-    return out
 
 
 # ---- the sources ----
