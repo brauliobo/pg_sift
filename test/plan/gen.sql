@@ -1,6 +1,6 @@
 -- The tables of the plan-choice gate (scripts/plangate.sh, test/plan/shapes.sql): events (the fact rows, :n of them), dims (the parents, one per
 -- 500 events, at least 60), facts (a second, smaller fact table), a month spine, spans and a partitioned copy of the events. Every draw is a
--- hash of (row number, seed): the same arguments give the same rows, and ANALYZE reads every row (statistics target 1000), so the planner sees
+-- hash of (row number, seed): the same arguments give the same rows, and ANALYZE reads every row (statistics target 1000) and VACUUM marks every page visible, so the planner sees
 -- the same statistics on every run.
 --
 --   psql -v n=30000 -v seed=1 -f gen.sql
@@ -58,4 +58,17 @@ INSERT INTO events_part SELECT id, parent_id, ts, kind, amount, deleted_at FROM 
 SELECT format('CREATE INDEX %1$s_parent ON %1$s (parent_id, ts, deleted_at); CREATE INDEX %1$s_col ON %1$s USING sift_col (id, parent_id, ts, kind, amount, deleted_at)', c.relname) AS ddl
 	FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid ORDER BY c.relname \gexec
 
+-- the visible fraction of a table prices the index-only scans of the native plan and so every cost ratio of the gate, and a first pass has been seen to set the all-visible bit of only
+-- part of the pages it freezes (a different part each time): a table left with pages that are not all visible gets a second pass, and one that still has them stops the run
+\set unseen 'SELECT count(*) > 0 AS partial, coalesce(string_agg(relname || '' '' || relallvisible || ''/'' || relpages, '', ''), '''') AS tables FROM pg_class WHERE relnamespace = ''public''::regnamespace AND relkind = ''r'' AND relallvisible < relpages'
 VACUUM (FREEZE, ANALYZE) dims, events, facts, buckets, events_part;
+:unseen \gset
+\if :partial
+\echo gen.sql: pages not all visible after the first VACUUM (allvisible/pages): :tables
+VACUUM (FREEZE, ANALYZE) dims, events, facts, buckets, events_part;
+:unseen \gset
+\endif
+\if :partial
+\echo gen.sql: pages not all visible after the second VACUUM: :tables
+DO $$ BEGIN RAISE EXCEPTION 'gen.sql: a table has pages that are not all visible after two VACUUMs (a transaction holding the horizon?)'; END $$;
+\endif
