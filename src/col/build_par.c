@@ -245,7 +245,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 		return false;
 	sh = ldr->shared;
 	out = ldr->parts;
-	*sh = (MergeShared) {.common = {index->rd_index->indrelid, RelationGetRelid(index), false}, .n = n, .nslices = nslices};
+	*sh = (MergeShared) {.common = {InvalidOid, RelationGetRelid(index), false}, .n = n, .nslices = nslices};
 	pg_atomic_init_u32(&sh->next, 0);
 	memcpy(sh->in, in, n * sizeof(SiftSegEntry));
 	memset(out, 0, nslices * sizeof(SiftSegEntry));

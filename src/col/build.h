@@ -74,6 +74,7 @@ extern PGDLLIMPORT int sift_test_col_segment_kb;
 extern PGDLLIMPORT int sift_test_col_max_segments;
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
 extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with key_cut is made whatever its merge (on: the tests of the participants run on small tables; off: build_pays decides) */
+extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif

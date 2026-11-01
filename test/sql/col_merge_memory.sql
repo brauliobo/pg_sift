@@ -19,6 +19,8 @@ SELECT count(*) > 1 AS partitions, max(bytes) < 4 * 1024 * 1024 AS each_under_th
 SELECT sift.col_maintenance_due('mm_idx', false) IS NULL AS partitions_are_left_alone;
 SELECT sift.col_verify('mm_idx', true);
 
+-- one process: from 12 MB of segments the workers would write a segment each (col_rewrite_slices)
+SET max_parallel_maintenance_workers = 0;
 SET maintenance_work_mem = '1GB';
 SELECT sift.col_merge('mm_idx', true);
 SELECT count(*) AS segments FROM sift.col_segments('mm_idx') WHERE kind = 'immutable';

@@ -221,6 +221,29 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 }
 
 /*
+ * A merge outside a build whose output is one segment (under a partition: the memory of its writer is what the merge of one process needs) is made by the
+ * backend and 2 of its max_parallel_maintenance_workers workers, a slice of the key range each, from MERGE_PAR_BYTES of input, and leaves 3 segments disjoint in the key
+ * (a query reads them as it reads one). Every participant decodes the rows of the inputs and writes its share: the instructions rise 2 to 4%, the blocks 7 to 8% and the
+ * index 3% for the 3 segments (5 to 7% for 5, which is why there are 3: 4 workers do not shorten the wall time, 631 against 623 ms at 1,000,000 rows). Rewrite of the
+ * 7-column index of a churned table, medians of 3 (2 at 3,000,000), wall ms with 0 / 2 / 4 workers, index MB with 0 / 2: 300,000 rows (7.3 MB) 458 / 368 / 398; 500,000
+ * (10.7) 872 / 746 / 815; 700,000 (14.6) 855 / 457 / 424; 1,000,000 (20.8) 965 / 623 / 631; 3,000,000 (62.5) 2,985 / 1,219 / 1,076. The gain in wall time is worth what the
+ * peers cost (the weighted net crosses zero) from 12 MB of index: between 500,000 and 700,000 rows.
+ */
+#define MERGE_PAR_BYTES ((uint64) 12 << 20)
+#define MERGE_WORKERS_MAX 2
+
+/* the input from which a merge outside a build is made by workers (under it one segment is the end state) */
+static uint64
+merge_par_bytes(void)
+{
+#ifdef SIFT_TESTING
+	return (uint64) sift_test_col_merge_par_kb * 1024;
+#else
+	return MERGE_PAR_BYTES;
+#endif
+}
+
+/*
  * The segments one step of the rewrite (SIFT_GOAL_REWRITE) replaces, in sel. With no partitions (sift.col_auto_merge_partition_kb 0) all of them. Else, in
  * this order: the overlays together into one segment, when there are several or one has a dead row (cheap, and cut into partitions they would be overlays
  * again); when the units listed per superblock covered ask for it and one overlay is left, that overlay, the segments that hold a unit of a superblock
@@ -299,10 +322,27 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	for (int i = 0; i < v->n; i++)
 		if (take[i])
 			sel[nsel++] = v->imm[i];
+	/* without partitions the end state of a key-cut index over the input a merge by workers starts from is also segments no dead row and no unit in common keep apart: its slices */
+	if (keyed && maint_part_kb == 0 && nsel > 1 && nsel == v->n)
+	{
+		uint64		bytes = 0;
+		bool		apart;
+
+		for (int i = 0; i < nsel; i++)
+			bytes += sel[i].bytes;
+		apart = bytes >= merge_par_bytes();
+		for (int i = 0; i < v->n && apart; i++)
+			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
+		for (int i = 0; i < v->n && apart; i++)
+			for (int j = i + 1; j < v->n && apart; j++)
+				apart = !share_superblock(&v->span[i], &v->span[j], 1);
+		if (apart)
+			nsel = 0;
+	}
 	for (int i = 0; i < v->n; i++)
 		sift_cseg_close(v->seg[i]);
 	MemoryContextDelete(cx);
-	/* one clean segment is the end state */
+	/* one clean segment is the end state (and segments no unit is in two of, above) */
 	return nsel > 1 || (nsel == 1 && (sel[0].flags & SIFT_SEG_DIRTY)) ? nsel : 0;
 }
 
@@ -677,20 +717,21 @@ sift_col_merge_sliced(uint64 bytes)
 }
 
 /*
- * The merge of the segments of a parallel build with key_cut, by the participants, when its output is cut into partitions (the rewrite of an index of the size
- * of one is a single segment, which a single process writes): a slice of the key range for each partition the serial merge would write, so the next step finds
- * the partitions it leaves alone. The participants take the slices, so the rows are read and written once, in parallel. Once: the steps after it are not
- * the build's. false: the merge is made by one process.
+ * The merge of the segments with key_cut by the participants of a parallel context: of a parallel build, when its output is cut into partitions (the rewrite of an
+ * index of the size of one is a single segment, which a single process writes), a slice of the key range for each partition the serial merge would write, so the
+ * next step finds the partitions it leaves alone; of a merge or rewrite outside a build, when the output is one segment, a slice for each participant. The
+ * participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the build's. false: the merge is
+ * made by one process.
  */
 static bool
 merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int room)
 {
 	uint64		bytes = 0;
 	uint64		share = (uint64) maint_part_kb * 1024 / 4 * 3;
-	int			workers = maint_merge_workers;
+	int			workers = maint_after_build ? maint_merge_workers : Min(max_parallel_maintenance_workers, MERGE_WORKERS_MAX);
 	int			nslices;
 
-	if (workers == 0 || !cut || n < 2 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+	if (workers == 0 || cut != maint_after_build || n < 2 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	for (int i = 0; i < n; i++)
 	{
@@ -698,9 +739,18 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 			return false;
 		bytes += sel[i].bytes;
 	}
-	nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
-	if (nslices < MERGE_SLICES_MIN)
-		return false;
+	if (maint_after_build)
+	{
+		nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
+		if (nslices < MERGE_SLICES_MIN)
+			return false;
+	}
+	else
+	{
+		if (bytes < merge_par_bytes() || room < 2)
+			return false;
+		nslices = Min(workers + 1, room);
+	}
 	maint_merge_workers = 0;
 #ifdef SIFT_TESTING
 	sift_test_col_merge_slices = nslices;
