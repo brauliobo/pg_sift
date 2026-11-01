@@ -59,6 +59,7 @@
 #define COL_SCAN_KEY		20.0	/* a key of an IN list past the first that is not looked up in a directory of addresses (the units that may hold it are read, or the sorted keys are sought for it): the units that may hold it are searched for it, 2.5 us measured a key (60 to 500 keys of 300,000 and 1,000,000 rows, 0.16 to 1.15 ms) where the b-tree's probe takes 0.8 us and is priced 7: the price of a b-tree's cached probe is 9 units to the microsecond, and a scan that is priced by its microseconds would take the lookup of 500 keys from it for twice the time */
 #define COL_SCAN_FETCH		0.5		/* the heap row of each tuple an index scan (not a bitmap) hands over, for the probes of a scan repeated for the rows of a join: PostgreSQL's price of the page falls with the loops (the pages stay in the cache) and the tuple stays 1.2 us (124 rows a probe, 200 us measured, priced 94 units) */
 #define COL_SCAN_FETCH_ROW	0.1		/* ... and for the rows of a scan that is not repeated, the heap row beside the index tuple: PostgreSQL prices the pages (sequential or cached) and 10 ns the tuple */
+#define COL_SCAN_IOS_PROBE	15.0	/* the tuple of the columns an index-only scan forms for the row of each probe of a scan repeated for the rows of a join, whose unit it decodes: 17 to 26 us a probe (1,000 probes of 100,000 to 1,000,000 rows, 100 of 20,000) where the plain index scan hands over the address and the heap reads the row, 1.4 to 9.5 */
 #define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
 
 bool		sift_enable_col_scan = true;
@@ -230,7 +231,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
 		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
-		+ (path->path.pathtype == T_IndexScan ? idx_rows * (repeat > 1.0 ? COL_SCAN_FETCH : COL_SCAN_FETCH_ROW) * scale : 0.0)
+		+ (path->path.pathtype == T_IndexScan ? idx_rows * (repeat > 1.0 ? COL_SCAN_FETCH : COL_SCAN_FETCH_ROW) * scale : (repeat > 1.0 ? COL_SCAN_IOS_PROBE * scale : 0.0))
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns + COL_SCAN_EMIT_IOS_VAR * ios_var_columns(index) : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
@@ -268,6 +269,26 @@ col_scale_rel(RelOptInfo *rel)
 static set_rel_pathlist_hook_type prev_pathlist_hook;
 
 /*
+ * The probes a parameterized path is run for: the rows of the smallest outer relation it reads (indxpath.c's get_loop_count, which is not exported). The path beside an
+ * index-only scan of a join is priced for as many as the scan is: for one probe a unit is walked, not looked up, and the plain path never beat the index-only one.
+ */
+static double
+probe_loops(PlannerInfo *root, Relids outer)
+{
+	double		loops = 0.0;
+	int			x = -1;
+
+	while ((x = bms_next_member(outer, x)) >= 0)
+	{
+		RelOptInfo *o = root->simple_rel_array[x];
+
+		if (o != NULL && o->reloptkind == RELOPT_BASEREL)
+			loops = loops == 0.0 ? o->rows : Min(loops, o->rows);
+	}
+	return Max(loops, 1.0);
+}
+
+/*
  * A query the index covers gets an index-only path, and the bitmap path PostgreSQL builds beside it carries the price of that one: a read of every kept unit (the
  * lookup of a key in the point directory returns the addresses and reads none, when the directory lists them). A lookup by one clause of the directory therefore
  * reads its units through the index-only path, 20 to 50 times slower than the bitmap path on the addresses. The bitmap path is added priced as what it does.
@@ -286,7 +307,7 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
 			ip->indexorderbys != NIL)
 			continue;
 		bp = create_index_path(root, ip->indexinfo, ip->indexclauses, ip->indexorderbys, ip->indexorderbycols, ip->path.pathkeys, ip->indexscandir, false,
-							   PATH_REQ_OUTER(&ip->path), 1.0, false);
+							   PATH_REQ_OUTER(&ip->path), probe_loops(root, PATH_REQ_OUTER(&ip->path)), false);
 		if (bp->path.total_cost >= ip->path.total_cost)
 			continue;
 		added = lappend(added, bp);
