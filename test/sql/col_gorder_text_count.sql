@@ -1,0 +1,64 @@
+-- count(*) WHERE text <op> const (equality, a half line, a prefix) or two bounds of a range of a column with a text order array and no count_columns: a segment whose units are all exact counts the entries between the ranks of
+-- the bounds instead of reading its units. The strings repeat, share prefixes, end in 0xFF bytes, are empty or NULL, and the segment is under the C collation (the bytes are the order); a column under a
+-- locale reads the units. The answers are the heap's after deleted, updated and rolled back rows, VACUUM, a write buffer and a promotion.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION tc_str(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 17 WHEN 0 THEN '' WHEN 1 THEN 'ab' ELSE '' END
+		|| (ARRAY['customer-', 'customer-0', 'order-', 'Zeta-', 'été-', 'a', 'zz', 'ab', 'abc'])[1 + (i * 7) % 9] || lpad(((i::bigint * 7919) % 700)::text, 3, '0') $$;
+CREATE TABLE tc (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 100));
+ALTER TABLE tc ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tc (id, c, l) SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tc_str(i) END, CASE WHEN i % 43 = 0 THEN NULL ELSE tc_str(i * 3) END FROM generate_series(1, 40000) i;
+INSERT INTO tc (id, c, l) VALUES (40001, convert_from('\xc3bf', 'LATIN1'), 'x'), (40002, '', ''), (40003, 'ab', 'ab'), (40004, 'ab', 'ab');
+CREATE INDEX tc_i ON tc USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) tc;
+
+-- the count is the heap's; 'counted' says no unit was read
+CREATE FUNCTION tc_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; counted bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP counted := counted OR pl LIKE '%Rows: 0 scanned%'; END LOOP;
+	EXECUTE q INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE q INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN counted THEN 'counted' ELSE 'units' END;
+END $$;
+CREATE FUNCTION tc_all() RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
+$$ SELECT c, tc_chk(format('SELECT count(*) FROM tc WHERE %s', replace(w, '@', c))), 1::bigint
+   FROM unnest(ARRAY['c', 'l']) c,
+		unnest(ARRAY['@ = ''ab''', '@ = ''''', '@ = ''nothing''', '@ < ''customer-0''', '@ <= ''customer-0''', '@ > ''order-''', '@ >= ''order-''', '@ < ''''', '@ >= ''''', '@ > ''zzz''', '@ > ''ab''', '@ < ''ab''', '@ <= ''ab''', '@ >= ''ab''', '@ > ''''', '@ <= ''''',
+					 '@ LIKE ''a%''', '@ LIKE ''ab%''', '@ LIKE ''customer-%''', '@ LIKE ''customer-0%''', '@ LIKE ''%''', '@ LIKE ''nothing%''', '@ LIKE ''é%''', '@ LIKE ''Z%''', '@ LIKE ''zz%''',
+					 '@ >= ''customer-0'' AND @ < ''order-''', '@ > ''ab'' AND @ <= ''abc''', '@ >= ''a'' AND @ <= ''a''', '@ < ''order-'' AND @ >= ''customer-0''', '@ > ''z'' AND @ < ''a''', '@ >= '''' AND @ < ''zz''']) w $$;
+SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- a write buffer next to the segment, then a promotion
+INSERT INTO tc (id, c, l) SELECT 60000 + i, tc_str(i * 5), tc_str(i * 11) FROM generate_series(1, 1500) i;
+SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT sift.col_promote('tc_i') >= 0 AS promoted;
+VACUUM tc;
+SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
+DELETE FROM tc WHERE id % 53 = 0;
+UPDATE tc SET c = 'u' || c, l = 'u' || l WHERE id % 97 = 0;
+BEGIN;
+UPDATE tc SET c = 'a', l = 'a' WHERE id % 3 = 0;
+INSERT INTO tc (id, c, l) SELECT 50000 + i, 'customer-', 'customer-' FROM generate_series(1, 300) i;
+ROLLBACK;
+SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+VACUUM tc;
+SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+
+SELECT sift.col_verify('tc_i');
+
+DROP FUNCTION tc_all(), tc_chk(text), tc_str(int);
+DROP TABLE tc;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

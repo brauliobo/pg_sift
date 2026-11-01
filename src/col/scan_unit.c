@@ -644,7 +644,16 @@ count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, in
 static bool
 count_str_keys(SiftColSource *src, SiftColSegment *seg, int64 *lo, int64 *hi)
 {
-	return sift_cseg_gorder_strkeys(seg, src->pcnt - 1, src->pcnt_box.collid, src->pcnt_box.lo, src->pcnt_box.lolen, src->pcnt_box.lo_excl, src->pcnt_box.hi, src->pcnt_box.hilen,
+	uint32		collid = src->pcnt_box.collid;
+
+	/* collid 0: the test is bytewise, which is the order of a block of the C collation */
+	if (collid == 0)
+	{
+		collid = sift_cseg_gorder_collation(seg, src->pcnt - 1);
+		if (collid == 0 || !sift_collate_is_c(collid))
+			return false;
+	}
+	return sift_cseg_gorder_strkeys(seg, src->pcnt - 1, collid, src->pcnt_box.lo, src->pcnt_box.lolen, src->pcnt_box.lo_excl, src->pcnt_box.hi, src->pcnt_box.hilen,
 									src->pcnt_box.hi_excl, lo, hi);
 }
 
@@ -670,7 +679,7 @@ unit_exact(SiftColSource *src, SiftColSegment *seg, uint32 u)
  * scan. Not when the range has more entries than SIFT_CORDER_MAX_ROWS (their addresses are decoded), more than a quarter of the units are not exact, or the segment is cut by key.
  */
 static bool
-count_dirty_units(SiftColSource *src, ColCursor *c, int64 lo, int64 hi)
+count_dirty_units(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi)
 {
 	SiftColSegment *seg = c->seg;
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb),
@@ -692,7 +701,7 @@ count_dirty_units(SiftColSource *src, ColCursor *c, int64 lo, int64 hi)
 			if (++nd > most)
 				break;
 		}
-	if (nd == 0 || nd > most || !sift_cseg_gorder_count_outside(seg, src->pcnt - 1, src->pcnt_str, lo, hi, SIFT_CORDER_MAX_ROWS, dirty, &n))
+	if (nd == 0 || nd > most || !sift_cseg_gorder_count_outside(seg, src->pcnt - 1, str, lo, hi, SIFT_CORDER_MAX_ROWS, dirty, &n))
 	{
 		pfree(dirty);
 		return false;
@@ -722,6 +731,8 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	uint64		n;
 	int64		lo = 0,
 				hi = 0;
+	bool		order = src->pcnt_int,
+				str = src->pcnt_str;
 
 	if (fan == 0 || seg->nsb == 0)
 		return false;
@@ -737,18 +748,23 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 			return false;
 	}
 	else if (!sift_cseg_dict_counted(seg, src->pcnt - 1))
-		return false;
+	{
+		/* no row counts in the dictionary: a prefix is counted by the ranks of the order of the leaf, as the strings between two bounds are */
+		if (!src->pcnt_alt || !sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_str_keys(src, seg, &lo, &hi))
+			return false;
+		order = str = true;
+	}
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
-			return src->pcnt_int && count_dirty_units(src, c, lo, hi);
+			return order && count_dirty_units(src, c, str, lo, hi);
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
-		return src->pcnt_int && count_dirty_units(src, c, lo, hi);
-	if (src->pcnt_int)
+		return order && count_dirty_units(src, c, str, lo, hi);
+	if (order)
 	{
-		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, src->pcnt_str, lo, hi);
+		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, str, lo, hi);
 
 		if (m == UINT32_MAX)
 			return false;

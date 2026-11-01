@@ -8,6 +8,7 @@
 #include "storage/predicate.h"
 #include "utils/acl.h"
 #include "core/cmp.h"
+#include "col/gorder.h"
 #include "col/scan_int.h"
 #include "fmgr.h"
 #include "utils/fmgrprotos.h"
@@ -727,6 +728,22 @@ sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, 
 	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
 	src->pcnt_op = op;
 	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
+	/* the strings that pass the test are those between two bounds in the order of the bytes (the test is bytewise: the C collation): a prefix is those from s up to, not including, the least string after them */
+	src->pcnt_alt = true;
+	memset(&src->pcnt_box, 0, sizeof(src->pcnt_box));
+	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_GT || op == SIFT_COLOP_GE || op == SIFT_COLOP_PREFIX)
+	{
+		src->pcnt_box.lo = s, src->pcnt_box.lolen = len, src->pcnt_box.lo_excl = op == SIFT_COLOP_GT;
+	}
+	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_LT || op == SIFT_COLOP_LE)
+	{
+		src->pcnt_box.hi = s, src->pcnt_box.hilen = len, src->pcnt_box.hi_excl = op == SIFT_COLOP_LT;
+	}
+	else if (op == SIFT_COLOP_PREFIX)
+	{
+		src->pcnt_box.hi = sift_cgord_prefix_end(s, len, &src->pcnt_box.hilen);
+		src->pcnt_box.hi_excl = true;
+	}
 }
 
 void

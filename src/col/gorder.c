@@ -607,6 +607,22 @@ str_cmp_bytes(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 	return c != 0 ? c : SIFT_CMP3(la, lb);
 }
 
+char *
+sift_cgord_prefix_end(const char *s, uint32 len, uint32 *olen)
+{
+	char	   *e;
+
+	while (len > 0 && (uint8) s[len - 1] == 0xFF)
+		len--;
+	if (len == 0)
+		return NULL;
+	e = palloc(len);
+	memcpy(e, s, len);
+	e[len - 1]++;
+	*olen = len;
+	return e;
+}
+
 int
 sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 {

@@ -215,6 +215,7 @@ struct SiftColSource
 		bool		lo_excl;
 		bool		hi_excl;
 	}			pcnt_box;
+	bool		pcnt_alt;		/* ... a prefix (sift_col_count_range): a segment whose dictionary holds no row counts counts the strings between the bounds of pcnt_box by the ranks of its global order */
 	bool		pcnt_elem;		/* ... the rows that own the value of the only test, an element of a list, counted by its point directory (sift_col_count_elem) */
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */

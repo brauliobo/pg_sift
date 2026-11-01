@@ -63,7 +63,7 @@ SELECT n, left(w, 60) AS w, d_agg(w) = d_heap(w) AS agree, d_heap(w) AS rows, d_
  17 | b < 100 OR b > 99900                             | t     |    239 | f
  18 | s >= 'c' AND s < 'f'                             | t     |  13329 | t
  19 | s > 'm5' AND s <= 'q'                            | t     |  15781 | t
- 20 | s = 'a12'                                        | t     |      9 | f
+ 20 | s = 'a12'                                        | t     |      9 | t
  21 | s < 'b'                                          | t     |   6955 | t
  22 | s >= 'z'                                         | t     |   4442 | t
  23 | s BETWEEN 'd' AND 'd9'                           | t     |   3952 | t
@@ -73,7 +73,7 @@ SELECT n, left(w, 60) AS w, d_agg(w) = d_heap(w) AS agree, d_heap(w) AS rows, d_
  27 | s > 'k' AND s > 'm'                              | t     |  62201 | f
  28 | s >= 'e' AND s < 'e'                             | t     |      0 | t
  29 | s <= 'h100'                                      | t     |  33625 | t
- 30 | s = ''                                           | t     |   2512 | f
+ 30 | s = ''                                           | t     |   2512 | t
  31 | s COLLATE "C" >= 'c' AND s COLLATE "C" < 'f'     | t     |  13329 | f
 (31 rows)
 

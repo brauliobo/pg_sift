@@ -73,6 +73,7 @@ TESTING_REGRESS += agg_explain_why_scan
 TESTING_REGRESS += col_topn_offset agg_child_warm agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_keyed agg_topn_key_only
 TESTING_REGRESS += col_unit_of_block
 TESTING_REGRESS += tbl_hot_sift_index merge_parts merge_heal
+TESTING_REGRESS += col_topn_text_offset col_gorder_text_count
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)

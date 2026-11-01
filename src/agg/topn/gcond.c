@@ -123,23 +123,6 @@ gcond_box(const SiftTopGPred *p)
 	return r;
 }
 
-/* the least string after every string that starts with s, in the order of the bytes (the C collation); NULL when there is none (no byte left to carry into) */
-static char *
-prefix_end(const char *s, uint32 len, uint32 *olen)
-{
-	char	   *e;
-
-	while (len > 0 && (uint8) s[len - 1] == 0xFF)
-		len--;
-	if (len == 0)
-		return NULL;
-	e = palloc(len);
-	memcpy(e, s, len);
-	e[len - 1]++;
-	*olen = len;
-	return e;
-}
-
 static SBox
 gcond_sbox(const SiftTopGPred *p, Oid collid)
 {
@@ -172,7 +155,7 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
-				r.hi = prefix_end(p->str, p->slen, &r.hilen);
+				r.hi = sift_cgord_prefix_end(p->str, p->slen, &r.hilen);
 				r.has_hi = r.hi != NULL;
 				r.hi_excl = true;
 				break;

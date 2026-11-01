@@ -168,6 +168,8 @@ extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint
 typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 extern SiftCStrCmp sift_cgord_strcmp;
 /* The order of the strings of a text block: the collation, then the bytes (what the b-tree of the column does) */
+/* The least string after every string that starts with s, in the order of the bytes (the C collation): palloc'd, *olen bytes; NULL when there is none (no byte left to carry into) */
+extern char *sift_cgord_prefix_end(const char *s, uint32 len, uint32 *olen);
 extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 /* perm: the block names the strings by their dictionary codes (version 5) instead of holding them (version 3) */
 extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, bool perm, StringInfo out);
