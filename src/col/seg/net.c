@@ -271,6 +271,14 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 					nulls[k / 64] |= UINT64CONST(1) << (k % 64);
 				vals[k++] = vals[i];
 			}
+		{
+			bool		any_null = false;
+
+			for (uint32 w = 0; !any_null && w < SIFT_COL_NWORDS(nl); w++)
+				any_null = nulls[w] != 0;
+			if (!any_null)
+				nulls = NULL;	/* the loops over a leaf without a NULL test no bit */
+		}
 		pcol[c] = (SiftCPaggCol) {vals, nulls, NULL, nl, def->store != SIFT_COLS_VAR && ch.enc != SIFT_COLENC_ISTR};
 		sift_cseg_agg(seg, c, u, &orig);
 		if (!pcol[c].ready)
@@ -286,7 +294,7 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 		{
 			SiftCLeafAgg la;
 
-			sift_cpagg_leaf(&pcol[c], &la);
+			sift_cpagg_leaf_in(&pcol[c], z.min, z.max, &la);
 			agg[c].sum = la.sum;
 			agg[c].sumsq = la.sumsq;
 			agg[c].flags = la.flags;

@@ -29,7 +29,37 @@
 void
 sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a)
 {
+	sift_cpagg_leaf_in(c, INT64_MIN, INT64_MAX, a);
+}
+
+/*
+ * The same, for a leaf whose values are known to lie in [lo, hi] (its zone): within 2^31 of zero a square fits 62 bits and 74,496 of them cannot leave int128, so the loop
+ * multiplies in 64 bits and checks no overflow.
+ */
+void
+sift_cpagg_leaf_in(const SiftCPaggCol *c, int64 lo, int64 hi, SiftCLeafAgg *a)
+{
 	memset(a, 0, sizeof(*a));
+	if (lo >= -((int64) 1 << 31) && hi < ((int64) 1 << 31))
+	{
+		const int64 *key = c->key;
+		const uint64 *nulls = c->nulls;
+		SiftCI128	sum = 0,
+					sumsq = 0;
+
+		for (uint32 i = 0; i < c->n; i++)
+		{
+			int64		k = key[i];
+
+			if (nulls != NULL && (nulls[i >> 6] >> (i & 63) & 1))
+				continue;
+			sum += k;
+			sumsq += (SiftCI128) (uint64) (k * k);
+		}
+		a->sum = sum;
+		a->sumsq = sumsq;
+		return;
+	}
 	for (uint32 i = 0; i < c->n; i++)
 	{
 		SiftCI128	k;

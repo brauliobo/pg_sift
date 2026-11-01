@@ -226,6 +226,7 @@ extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec
 
 /* The exact sums of one INT leaf's values */
 extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
+extern void sift_cpagg_leaf_in(const SiftCPaggCol *c, int64 lo, int64 hi, SiftCLeafAgg *a);
 /*
  * The cube of a unit of nrows rows, appended to out as one blob (nothing appended when no dim fits). unit_bytes is the encoded size of the unit,
  * the base of the default byte budget. Deterministic: the same columns give the same bytes.

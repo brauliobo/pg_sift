@@ -41,12 +41,28 @@ sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, 
 				mx = PG_INT64_MIN,
 				carry = 0;		/* the sum is carry * 2^64 + sum (unsigned): exact, whatever the order of the additions */
 	uint64		sum = 0;
-	uint32		nnull = 0;
+	uint32		nnull = 0,
+				from = 0;
 	bool		nosum;
 
 	memset(z, 0, sizeof(*z));
 	z->nvals = n;
-	for (uint32 i = 0; i < n; i++)
+	if (nulls == NULL && (store == SIFT_COLS_INT || store == SIFT_COLS_VAR))
+	{
+		/* the common unit: integers without a NULL, one loop with no tests but the sum's carry */
+		for (uint32 i = 0; i < n; i++)
+		{
+			int64		k = key[i];
+			uint64		before = sum;
+
+			mn = Min(mn, k);
+			mx = Max(mx, k);
+			sum += (uint64) k;
+			carry += (sum < before) - (k < 0);
+		}
+		from = n;
+	}
+	for (uint32 i = from; i < n; i++)
 	{
 		int64		k = key[i];
 
