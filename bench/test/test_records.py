@@ -279,6 +279,12 @@ class Report(unittest.TestCase):
         row = [l for l in text.split('\n') if l.startswith('| heap ')][0]
         self.assertIn('| 52 |', row)
 
+    def test_variants_are_rows_of_their_own_not_one_average(self):
+        rs = clean() + [dict(r, variant='B', heap_order='sorted', heap_corr=0.99, exec_ms=9.0) for r in clean()]
+        text = report.report(rs)
+        self.assertEqual(len([l for l in text.split('\n') if l.startswith('| heap ') or l.startswith('| B: heap ')]), 4)   # warm and cold table, each variant
+        self.assertIn('| B: sift*', text)
+
     def test_a_refused_set_has_no_table(self):
         with self.assertRaisesRegex(ValueError, 'MIXED STATE'):
             report.report(mutate(table_state='churned_unvacuumed'))

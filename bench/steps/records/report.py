@@ -45,18 +45,21 @@ def blocks(rs, kinds, parts=('hit', 'read')):
 def cells(rs):
     out = defaultdict(list)
     for r in rs:
-        out[(r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
+        out[(r['variant'], r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
     return out
 
 
 def rows_of(rs, temp):
-    order = sorted((k for k in cells(rs) if k[3] == temp), key=lambda k: (k[0] != 'default', k[1], k[2]))
+    order = sorted((k for k in cells(rs) if k[4] == temp), key=lambda k: (k[0], k[1] != 'default', k[2], k[3]))
     return [(k, cells(rs)[k]) for k in order]
 
 
 def label(k, rs):
+    variant, mode, arm, option = k[:4]
     mark = '*' if rs[0].get('picked') == 1 else ''
-    return ('default plan: %s' % k[1] if k[0] == 'default' else '%s%s' % (k[1], '' if k[2] == 'default' else ' ' + k[2])) + mark + (' %s' % '(%s)' % rs[0]['structure'] if k[0] == 'default' and rs[0]['structure'] != k[1] else '')
+    text = 'default plan: %s' % arm if mode == 'default' else '%s%s' % (arm, '' if option == 'default' else ' ' + option)
+    named = ' (%s)' % rs[0]['structure'] if mode == 'default' and rs[0]['structure'] != arm else ''
+    return ('' if variant == 'main' else '%s: ' % variant) + text + mark + named
 
 
 def warm_table(rs):

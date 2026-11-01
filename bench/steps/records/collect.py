@@ -262,9 +262,10 @@ class WorkerMonitor:
 
 # --- the measurement
 
-def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monitor=None, temps=('warm', 'cold')):
+def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monitor=None, temps=('warm', 'cold'), hash_text=None):
     """the records of SQL on the default plan and on each of ARMS: a list of dicts for schema.write. PREPARE (before each repetition of a maintenance or a load) and MONITOR as in the
-    module docstring. A harness with several statements calls it once for each."""
+    module docstring. A harness with several statements calls it once for each. HASH_TEXT is the text whose hash names the statement when a harness runs one question on
+    tables of other names (the text with a placeholder for the table): the variants of a comparison then share one sql_hash."""
     pid = backend_pid(s)
     post = postmaster_pid(pid)
     index_am = index_methods(s)
@@ -274,7 +275,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     vis, corr, structures = table_facts(s, subject.table, subject.key)
     base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, variant=subject.variant, rows=subject.rows, keys=subject.keys,
                 rows_per_key=(subject.rows / subject.keys) if subject.keys else None, heap_order=subject.heap_order, heap_corr=corr, table_state=subject.table_state,
-                allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(sql), kind=subject.kind, protocol=subject.protocol,
+                allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(hash_text or sql), kind=subject.kind, protocol=subject.protocol,
                 cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),
                 maintenance=env.maintenance, **srv)
     out, default = [], None
