@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One transaction that writes a lot of rows through single-row INSERTs into a sift_table with a primary key, the way an application loop or a
 # migration script does. Run once under the perf lock (it is a load, not a gate: the regress test tbl_writepath and the isolation and TAP tests
-# lower the directory limit to cover the same paths in seconds). It builds and starts its own cluster under ~/.cache, inside the caps of the
+# lower the directory limit to cover the same paths in seconds). It builds and starts its own cluster under /dev/shm, inside the caps of the
 # other benchmarks (2 CPUs, 12 GB, no swap), and prints a line "RESULT key=value ..." per measurement, so that two builds compare with diff:
 # run it from the worktree of each build.
 #
@@ -18,7 +18,7 @@
 #   throughput  TP_ROWS (ROWS / 20) single-row INSERTs per table access method (AMS, default "sift_table heap"): one transaction each
 #               (autocommit), all in one transaction from psql, and in one transaction from a PL/pgSQL loop; rows per second
 #
-# Environment: ROWS PSQL_ROWS SP_ROWS TP_ROWS MODES (comma list) AMS ROLLBACK_RUN, SIFT_TMP (default ~/.cache/sift-bench-writepath) and SIFT_PORT
+# Environment: ROWS PSQL_ROWS SP_ROWS TP_ROWS MODES (comma list) AMS ROLLBACK_RUN, SIFT_TMP (default /dev/shm/sift-bench-writepath) and SIFT_PORT
 # (56100-56299, default a free one in 56150-56250), LOW_LIMITS=1 (the directory of 16 entries and write buffers of 2 MB in every session, a testing
 # setting, to see the pressure with a few hundred thousand rows), KEEP=1 (do not remove the cluster), LOCK_WAIT (seconds to wait for the perf
 # lock, default 900; it never queues longer), NO_CAPS=1 (no systemd scope).
@@ -47,7 +47,7 @@ for ((waited = 0; ; waited += 10)); do
 	sleep 10
 done
 
-export SIFT_TMP=${SIFT_TMP:-$HOME/.cache/sift-bench-writepath}
+export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-bench-writepath}
 if [[ -z ${SIFT_PORT:-} ]]; then
 	for _ in $(seq 1 50); do
 		SIFT_PORT=$((56150 + RANDOM % 101))
@@ -65,7 +65,7 @@ fail=0
 check() { if [[ $2 == "$3" ]]; then echo "ok   $1: $2"; else echo "FAIL $1: got $2, want $3"; fail=1; fi; }
 [[ -z ${LOW_LIMITS:-} ]] || export PGOPTIONS="-c sift.table_max_segments=16 -c sift.table_write_buffer_limit=2048"
 
-WORK=$(mktemp -d "${TMPDIR:-$HOME/.cache}/sift-wp-work.XXXXXX")
+WORK=$(mktemp -d "$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-wp-work.XXXXXX")
 cleanup() {
 	touch "$WORK/stop.mem" "$WORK/stop.dir"
 	wait 2>/dev/null

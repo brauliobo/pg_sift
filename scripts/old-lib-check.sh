@@ -25,7 +25,7 @@
 # to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
-# the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
+# the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP (scratch, default under /dev/shm) and SIFT_PORT as
 # for scripts/pgtest.sh (`run`), ROWS (rows of a table, default 40000), KEEP=1 (keep the cluster of `run`).
 set -uo pipefail
 
@@ -139,7 +139,7 @@ load_table() { # NAME
 
 run() {
 	local data
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-run}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-run}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	build >/dev/null || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -173,7 +173,7 @@ run() {
 upgrade() {
 	local root log rows=${UP_ROWS:-150000} want
 	want="$rows:$((rows * (rows + 1) / 2))"
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-upgrade}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-upgrade}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -211,7 +211,7 @@ upgrade() {
 cycle() {
 	local root log new_md5 old_md5 s
 	OLD_REF=${SIFT_OLD_REF:-v3.6.0}
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-$CY_NAME}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-$CY_NAME}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -303,7 +303,7 @@ gorder() {
 include() {
 	local root log want ids
 	OLD_REF=${SIFT_OLD_REF:-v3.7.0}
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-include}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-include}
 	export SIFT_PORT=${SIFT_PORT:-56142}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }

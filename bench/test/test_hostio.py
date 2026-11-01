@@ -13,6 +13,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import engine_io  # noqa: E402
 import hostio  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 DISKSTATS = '259 2 nvme0n1p2 {r} 5 {s} 100 {w} 3 {ws} 50 0 10 20 0 0 0 0 {f} 7\n'
 

@@ -42,6 +42,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import hostio  # noqa: E402  (the device, process and cgroup counters around a run)
+from tmpfs import fs_type  # noqa: E402,F401  (the file system of a data directory: tmpfs has no page cache to empty)
 
 MB = 2 ** 20
 EXPLAINABLE = re.compile(r'\s*(select|with|insert|update|delete|merge|values|table)\b', re.I)
@@ -150,22 +151,6 @@ def delta(a, b):
     out = {'stat_' + k: (b['stat'][k] - a['stat'][k] if a['stat'] and b['stat'] and b['stat'][k] is not None else None) for k in STAT_FIELDS}
     out.update(wal_bytes=None if a['wal'] is None else b['wal'] - a['wal'], proc_read_bytes=None if a['proc'] is None or b['proc'] is None else b['proc'] - a['proc'])
     return out
-
-
-def fs_type(path):
-    """the file system type of the longest mount point that holds PATH ('' when /proc/mounts cannot say)"""
-    best = ('', '')
-    try:
-        with open('/proc/mounts') as f:
-            for line in f:
-                _, mnt, typ = line.split()[:3]
-                mnt = mnt.replace('\\040', ' ')
-                if (path == mnt or path.startswith(mnt.rstrip('/') + '/')) and len(mnt) >= len(best[0]):
-                    best = (mnt, typ)
-    except OSError:
-        pass
-    return best[1]
-
 
 def relations(tables):
     """SQL for the oids a table holds data in: itself, its TOAST table and the indexes of both (the recipe of cold_table in steps/lib.sh)"""

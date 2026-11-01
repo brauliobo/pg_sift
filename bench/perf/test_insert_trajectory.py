@@ -8,6 +8,9 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 from test_perf_gate import gate
+import os, sys  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 CASE = gate.CASES[13]
 

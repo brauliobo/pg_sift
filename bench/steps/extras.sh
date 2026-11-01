@@ -57,7 +57,7 @@ locked() { # one timed run at a time on the host, started when the pressure of t
 # ---- builds -------------------------------------------------------------------------------------------------------------------------------
 build_up() { # ITEM LABEL: a scratch cluster of the build; VERSION, BUILD_LABEL
 	build_prepare "$2"
-	export SIFT_BUILD=$(build_dir "$2") SIFT_ROOT=$EXTRAS_CACHE/$2/root SCRATCH_ROOT=${SCRATCH_ROOT:-$HOME/.cache/sift-bench-scratch}
+	export SIFT_BUILD=$(build_dir "$2") SIFT_ROOT=$EXTRAS_CACHE/$2/root SCRATCH_ROOT=${SCRATCH_ROOT:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-bench-scratch}
 	[[ -z ${PG:-} ]] || scratch_down
 	unset KEEP
 	rm -rf "$SCRATCH_ROOT/$1-$2"

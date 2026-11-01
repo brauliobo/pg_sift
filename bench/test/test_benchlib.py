@@ -6,6 +6,8 @@ import json, os, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import benchlib  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 FAKE = {'/proc/cpuinfo': 'processor\t: 0\nmodel name\t: Test CPU @ 3 GHz\nprocessor\t: 1\nmodel name\t: Test CPU @ 3 GHz\n', '/proc/meminfo': 'MemTotal:       16777216 kB\n',
         '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor': 'performance\n'}

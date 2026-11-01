@@ -22,6 +22,7 @@ sys.path.insert(0, HERE)
 import pgq  # noqa: E402  (steps/pgq.py)
 import store_lib  # noqa: E402  (the queries and their statements)
 import store_render  # noqa: E402  (the tables and the stored results)
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 DB = 'gap'
 FLOOR = "SELECT country, count(*) FROM orders WHERE created_at > '2100-01-01' GROUP BY country"   # every unit pruned by its zone map: the cost of a SiftAgg that reads nothing

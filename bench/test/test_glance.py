@@ -8,6 +8,8 @@ import xml.dom.minidom
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
 import glance  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 TABLE = [('page', 'p_big', 'native', 'no'), ('page', 'p_small', 'btree', 'no'), ('count', 'c1', 'native', 'yes')]
 

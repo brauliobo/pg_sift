@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """bench/steps/iolib.py: the pure parts (the pg_stat_io query of PostgreSQL 17 and 18, the rows of a results file, the eviction list), then a live test on a tiny table in a
-throwaway cluster under /var/tmp (about 10 s; skipped without initdb or pg_buffercache). It checks the cold run reads, the warm run after it does not, that EXPLAIN's blocks and pg_stat_io's
+throwaway cluster on tmpfs (about 10 s; skipped without initdb or pg_buffercache). It checks the cold run reads, the warm run after it does not, that EXPLAIN's blocks and pg_stat_io's
 bytes agree, and that a script EXPLAIN cannot wrap still reports its WAL and size.
 
     python3 -I bench/test/test_iolib.py
 """
 import os
 import shutil
-import socket
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import iolib  # noqa: E402
+sys.path.insert(0, HERE)
+import cluster  # noqa: E402
 from duckdb import Session  # noqa: E402
 
 
@@ -88,7 +88,7 @@ class Pure(unittest.TestCase):
         with mock.patch('builtins.open', mock.mock_open(read_data=mounts)):
             self.assertEqual(iolib.fs_type('/dev/shm/x/data'), 'tmpfs')
             self.assertEqual(iolib.fs_type('/dev/shm/deeper/data'), 'btrfs')
-            self.assertEqual(iolib.fs_type('/var/tmp/x'), 'ext4')
+            self.assertEqual(iolib.fs_type('/srv/x'), 'ext4')
             self.assertEqual(iolib.fs_type('/dev/shmx'), 'ext4')
 
 
@@ -98,16 +98,11 @@ def which(name):
 
 @unittest.skipUnless(which('initdb') and which('pg_ctl'), 'needs initdb and pg_ctl')
 class Live(unittest.TestCase):
+    root = None   # tmpfs; LiveOnDisk names a directory of a disk
+
     @classmethod
     def setUpClass(cls):
-        cls.dir = tempfile.mkdtemp(prefix='sift-io-selftest.', dir='/var/tmp')   # a disk: the page cache is there to be emptied
-        with socket.socket() as sk:
-            sk.bind(('127.0.0.1', 0))
-            cls.port = sk.getsockname()[1]
-        data = os.path.join(cls.dir, 'data')
-        subprocess.run([which('initdb'), '-D', data, '-U', 'postgres', '-A', 'trust', '--locale=C'], check=True, capture_output=True)
-        subprocess.run([which('pg_ctl'), '-D', data, '-w', '-l', os.path.join(cls.dir, 'log'), '-o', "-p %d -k %s -c listen_addresses='' -c shared_buffers=32MB -c fsync=off" % (cls.port, cls.dir), 'start'],
-                       check=True, capture_output=True)
+        cls.dir, data, cls.port = cluster.start(cls, 'sift-io-selftest.', '-c shared_buffers=32MB', cls.root)
         cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
         if cls.s.run("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_buffercache' AND current_setting('server_version_num')::int >= 170000")[1] == ['0']:   # the eviction functions are PostgreSQL 17's (the lint runner's server is 16, with the extension)
             cls.tearDownClass()
@@ -119,8 +114,6 @@ class Live(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.s.close()
-        subprocess.run([which('pg_ctl'), '-D', os.path.join(cls.dir, 'data'), '-m', 'immediate', 'stop'], capture_output=True)
-        shutil.rmtree(cls.dir, ignore_errors=True)
 
     def test_cold_then_warm(self):
         sql = 'SELECT count(*) FROM t WHERE i < 30000'
@@ -133,9 +126,16 @@ class Live(unittest.TestCase):
         self.assertAlmostEqual(cold['stat_read_bytes'] / 8192, cold['read'], delta=30)
         self.assertEqual(cold['read_bytes'], cold['read'] * 8192)   # the MB of a row are the plan's blocks
         self.assertEqual(warm['read_bytes'], 0)
-        if cold['proc_read_bytes'] is not None and iolib.fs_type(self.dir) != 'tmpfs':
-            self.assertGreater(cold['proc_read_bytes'], 0)   # physical bytes: a compressing file system reads fewer than the blocks say
-        self.assertTrue(cold['how'].startswith('evict'), cold['how'])
+        fs = iolib.fs_type(self.dir)
+        if fs == 'tmpfs':   # what tmpfs can prove: the shared buffers were emptied, the OS cache is the data itself and was not
+            self.assertTrue(cold['how'].startswith('evict (tmpfs)'), cold['how'])
+        else:
+            self.assertEqual(cold['how'][:14], 'evict+fadvise')
+            if cold['proc_read_bytes'] is not None:
+                self.assertGreater(cold['proc_read_bytes'], 0)   # physical bytes: a compressing file system reads fewer than the blocks say
+
+    def test_the_scratch_is_tmpfs_unless_a_disk_was_asked_for(self):
+        self.assertEqual(iolib.fs_type(self.dir), 'tmpfs' if self.root is None else iolib.fs_type(self.root))
 
     def test_cold_finds_pg_buffercache_whatever_the_search_path(self):
         # a lane's search_path is its case's schema (dropped after the case): the extension must not live there, and a later lane with another path must find it
@@ -182,6 +182,11 @@ class Live(unittest.TestCase):
     def test_a_failing_statement_raises(self):
         with self.assertRaises(RuntimeError):
             iolib.measure(self.s, 'SELECT * FROM missing_table')
+
+
+@unittest.skipUnless(os.environ.get('SIFT_OS_DROP_DIR') and os.environ.get('SIFT_ALLOW_DISK') == '1', 'the drop of the OS cache needs a disk: SIFT_OS_DROP_DIR (a directory of a disk) and SIFT_ALLOW_DISK=1, a host-window run')
+class LiveOnDisk(Live):
+    root = os.environ.get('SIFT_OS_DROP_DIR')
 
 
 if __name__ == '__main__':

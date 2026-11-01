@@ -8,6 +8,9 @@ import unittest
 from unittest.mock import patch
 from test_restoration_pair import gate, CASE, IDENTITY, Revision
 import test_restoration_pair as restoration
+import os, sys  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 
 class InsertThroughput(unittest.TestCase):

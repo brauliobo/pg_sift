@@ -9,6 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
 from cases import coverage, registry  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 HEAD = ('id', 'changelog', 'dataset', 'index', 'plan', 'baselines', 'variants', 'metric', 'block', 'headline', 'peers')
 RESULT_HEAD = 'version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n'

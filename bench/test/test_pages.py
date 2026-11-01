@@ -10,6 +10,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, '..', '..')
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import readme  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 # The scripts that render or check the pages of a RELEASE name docs/BENCHMARKS.md, docs/perf and docs/img on purpose: the release commit ships the scrubbed pages generated into bench/out
 # (docs/BENCHMARKS.md, docs/img and the curated results). The bench generators (bench/ and every other script) must not name them: they write bench/out.

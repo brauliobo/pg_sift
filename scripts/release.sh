@@ -19,7 +19,7 @@
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # --skip-ci leaves out the ci check only, for a release whose CI the person releasing accepts as it is (no full-scope run, or a lighter one): it prints
 #   ci: SKIPPED by --skip-ci (no green full-scope run required), records it in the manifest (--resume and the last line show it), and every other check runs.
-# Environment: NEUTRAL_VOCAB_FILE or NEUTRAL_VOCAB (the wording vocabulary, required), RELEASE_TMP (scratch, default ~/.cache), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
+# Environment: NEUTRAL_VOCAB_FILE or NEUTRAL_VOCAB (the wording vocabulary, required), RELEASE_TMP (scratch, default /dev/shm), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -81,7 +81,7 @@ step() { # NAME KEY CMD...: CMD, unless the manifest has the step passed with th
 	return $rc
 }
 
-W=$(mktemp -d "${RELEASE_TMP:-$HOME/.cache}/sift-release.XXXXXX") && mkdir -p "$STATE/logs" || exit 1
+W=$(mktemp -d "${RELEASE_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")}/sift-release.XXXXXX") && mkdir -p "$STATE/logs" || exit 1
 trap 'cp -f "$W"/*.log "$STATE/logs/" 2>/dev/null; rm -rf "$W"' EXIT
 if [[ -n $DRY ]]; then R=$W/repo; git clone -q "$REPO" "$R" && git -C "$R" remote set-url origin "$(git -C "$REPO" remote get-url origin)" && git -C "$R" remote set-url --push origin no-push://dry-run; else R=$REPO; fi
 g() { git -C "$R" "$@"; }

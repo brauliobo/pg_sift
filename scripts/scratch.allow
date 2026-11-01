@@ -1,0 +1,10 @@
+scripts/tap.sh	the Perl modules of the TAP tests, installed once and read afterwards
+scripts/scaling-gate.sh	the PostgreSQL build of a flavour, built once and read afterwards
+scripts/valgrind.sh	the valgrind image of the PostgreSQL build, built once and read afterwards
+scripts/gen-docs.py	a small cache of generated pages, read to skip work
+scripts/check-neutral.sh	a checkout of a tag, made once and read afterwards
+scripts/ci-times.py	the weights of the previous runs, a few kB
+bench/steps/builds.sh	the releases of the product built once each for the benchmarks that compare them (a build, not data of a run)
+scripts/lint-cache.sh	the passes of the lint, a few kB, read to skip a check that passed
+scripts/pg-assert.sh	the PostgreSQL build with assertions and the Perl modules, built once and read afterwards
+scripts/old-lib-check.sh	the older release library, built once; its clusters are under /dev/shm
