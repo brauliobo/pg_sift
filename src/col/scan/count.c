@@ -97,7 +97,7 @@ outside_entry(void *arg, SiftKey tid)
 }
 
 static bool
-count_dirty_units(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi)
+count_dirty_units(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi)
 {
 	SiftColSegment *seg = c->seg;
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb),
@@ -120,7 +120,7 @@ count_dirty_units(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi
 				break;
 		}
 	o = (OutsideCount) {seg, dirty, 0, PG_UINT32_MAX, 0};
-	if (nd == 0 || nd > most || !sift_cseg_gorder_each(seg, src->pcnt - 1, str, lo, hi, PG_UINT32_MAX, outside_entry, &o))
+	if (nd == 0 || nd > most || !sift_cseg_gorder_each(seg, col, str, group, lo, hi, PG_UINT32_MAX, outside_entry, &o))
 	{
 		pfree(dirty);
 		return false;
@@ -177,14 +177,14 @@ count_entry(void *arg, SiftKey tid)
  * read a chunk at a time, so the memory is that of the addresses on pages that are not all-visible (up to SIFT_CORDER_MAX_ROWS of them). Not when the range holds more than limit entries or a unit cannot say.
  */
 static bool
-count_by_entries(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi, uint32 limit)
+count_by_entries(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi, uint32 limit)
 {
 	SiftColSegment *seg = c->seg;
 	EntryCount	e = {src, c - src->seg, 0, NULL, 0, 0, false};
 	uint32		rows = 0;
 
 	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src) ||
-		!sift_cseg_gorder_each(seg, src->pcnt - 1, str, lo, hi, limit, count_entry, &e) || e.fail)
+		!sift_cseg_gorder_each(seg, col, str, group, lo, hi, limit, count_entry, &e) || e.fail)
 	{
 		if (e.chk)
 			pfree(e.chk);
@@ -217,7 +217,7 @@ count_by_entries(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi,
  * else the units are read after the exact ones are counted (count_dirty_units), else the entries.
  */
 static bool
-count_inexact(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi)
+count_inexact(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi)
 {
 	SiftColSegment *seg = c->seg;
 	uint64		drows = 0;
@@ -227,8 +227,8 @@ count_inexact(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi)
 	for (uint32 u = 0; u < seg->nsb; u++)
 		if (!unit_exact(src, seg, u))
 			drows += seg->sbdir[u].nrows;
-	return (drows / 8 >= 256 && count_by_entries(src, c, str, lo, hi, (uint32) (drows / 8))) || (str && count_by_entries(src, c, str, lo, hi, PG_UINT32_MAX)) ||
-		count_dirty_units(src, c, str, lo, hi) || (!str && count_by_entries(src, c, str, lo, hi, PG_UINT32_MAX));
+	return (drows / 8 >= 256 && count_by_entries(src, c, col, str, group, lo, hi, (uint32) (drows / 8))) || (str && count_by_entries(src, c, col, str, group, lo, hi, PG_UINT32_MAX)) ||
+		count_dirty_units(src, c, col, str, group, lo, hi) || (!str && count_by_entries(src, c, col, str, group, lo, hi, PG_UINT32_MAX));
 }
 
 /*
@@ -251,6 +251,8 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 				hi = 0;
 	bool		order = src->pcnt_int,
 				str = src->pcnt_str;
+	int			col = src->pcnt - 1;
+	bool		group = false;
 
 	if (fan == 0 || seg->nsb == 0)
 		return false;
@@ -261,9 +263,16 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	}
 	else if (src->pcnt_int)
 	{
-		if (!sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 ||
-			!(src->pcnt_str ? count_str_keys(src, seg, &lo, &hi) : count_keys(src, seg, preds, npreds, &lo, &hi)))
+		if (!(src->pcnt_str ? count_str_keys(src, seg, &lo, &hi) : count_keys(src, seg, preds, npreds, &lo, &hi)))
 			return false;
+		if (!sift_cseg_gorder(seg, col, &entries, &values) || sift_cseg_gorder_group(seg, col) >= 0)
+		{
+			/* the leaf has no array of its own but is the group of the second order of another: an equality counts the entries of its group */
+			col = src->pcnt_str || lo != hi ? -1 : sift_cseg_gorder_group_slot(seg, col);
+			if (col < 0)
+				return false;
+			group = true;
+		}
 	}
 	else if (!sift_cseg_dict_counted(seg, src->pcnt - 1))
 	{
@@ -274,15 +283,15 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	}
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
-			return order && count_inexact(src, c, str, lo, hi);
+			return order && count_inexact(src, c, col, str, group, lo, hi);
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
-		return order && count_inexact(src, c, str, lo, hi);
+		return order && count_inexact(src, c, col, str, group, lo, hi);
 	if (order)
 	{
-		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, str, lo, hi);
+		uint32		m = sift_cseg_gorder_count(seg, col, str, group, lo, hi);
 
 		if (m == UINT32_MAX)
 			return false;

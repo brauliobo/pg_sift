@@ -331,8 +331,9 @@ extern uint32 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint
 extern int	sift_cseg_gorder_group(SiftColSegment *seg, int col);	/* the leaf the block is grouped by, -1 when it is not */
 extern void sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the entries of a group (all of a block that is not grouped) */
 extern bool sift_cseg_gorder_strkeys(SiftColSegment *seg, int col, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl, int64 *klo, int64 *khi);	/* the keys of the entries of a text block between two bounds (a NULL one: none) */
-extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi);
-extern bool sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg);
+extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi);
+extern int sift_cseg_gorder_group_slot(SiftColSegment *seg, int col);
+extern bool sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg);
 extern bool sift_cseg_gorder_tids(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
 extern bool sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint32 nkeys, uint32 limit, SiftKey **tids, uint32 *ntids);
 extern bool sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);	/* of the entries [vs, ve), how many come before v in a scan from the front (desc: the back): clo certainly, chi at most; a compact block answers from its buckets */

@@ -657,10 +657,21 @@ sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 
  * ranks of the segment's strings (str: those of sift_cseg_gorder_strkeys), not the codes of its dictionary that a range of the scan is in.
  */
 static bool
-gorder_span(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 *a, uint32 *b, SiftCGOrdBuf *memo)
+gorder_span(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi, uint32 *a, uint32 *b, SiftCGOrdBuf *memo)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
+	/* group: the block is grouped and lo is a group, the span the entries of its rows (a group with NULL rows is two spans, not counted) */
+	if (group)
+	{
+		uint32		ns,
+					ne;
+
+		if (g == NULL || g->hdr.gcol < 0 || str || g->hdr.vtotal != 0)
+			return false;
+		sift_cseg_gorder_range(seg, col, lo, a, b, &ns, &ne);
+		return ns == ne;
+	}
 	if (g == NULL || g->hdr.gcol >= 0 || (g->hdr.strbytes != 0) != str || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
 		return false;
 	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
@@ -684,16 +695,30 @@ sift_cseg_gorder_strkeys(SiftColSegment *seg, int col, uint32 collid, const char
 	return true;
 }
 
+/* The slot of a grouped block whose group is the leaf col (for a count of its rows: sift_cseg_gorder_count with that slot and the group as lo and hi); -1 when the segment has none */
+int
+sift_cseg_gorder_group_slot(SiftColSegment *seg, int col)
+{
+	for (int s = 0; s < 2 * seg->schema->ncols; s++)
+	{
+		GOrdLeaf   *g = seg_gord_leaf(seg, s);
+
+		if (g != NULL && g->hdr.gcol == col && g->hdr.vtotal == 0)
+			return s;
+	}
+	return -1;
+}
+
 /* How many rows of the segment have a key in [lo, hi], by the global order of the leaf; UINT32_MAX when it has none */
 uint32
-sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi)
+sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi)
 {
 	SiftCGOrdBuf memo;
 	uint32		a,
 				b;
 
 	memo.at = UINT32_MAX;
-	return gorder_span(seg, col, str, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
+	return gorder_span(seg, col, str, group, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
 }
 
 /* The addresses of the entries [a, b) of leaf col, appended to t at *n */
@@ -727,7 +752,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi
 	SiftKey    *t;
 
 	memo.at = UINT32_MAX;
-	if (!gorder_span(seg, col, str, lo, hi, &a, &b, &memo) || b - a > limit)
+	if (!gorder_span(seg, col, str, false, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
 	gorder_addrs(seg, col, a, b, &memo, t, &n);
@@ -753,7 +778,7 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
 		uint32		a,
 					b;
 
-		if (!gorder_span(seg, col, false, keys[k], keys[k], &a, &b, &memo) || b - a > limit - n)
+		if (!gorder_span(seg, col, false, false, keys[k], keys[k], &a, &b, &memo) || b - a > limit - n)
 		{
 			pfree(t);
 			return false;
@@ -777,7 +802,7 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
  * one chunk, whatever the range. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
  */
 bool
-sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg)
+sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg)
 {
 	SiftCGOrdBuf memo;
 	uint32		a,
@@ -785,7 +810,7 @@ sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi
 				crows;
 
 	memo.at = UINT32_MAX;
-	if (!gorder_span(seg, col, str, lo, hi, &a, &b, &memo) || b - a > limit)
+	if (!gorder_span(seg, col, str, group, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	crows = seg_gord_leaf(seg, col)->hdr.crows;
 	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)

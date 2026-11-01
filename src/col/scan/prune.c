@@ -84,7 +84,7 @@ range_hint(ColCursor *c, const SiftColPred *preds, int npreds, const bool *range
 				l = Max(l, lo[j]);
 				h = Min(h, hi[j]);
 			}
-		best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, false, l, h));
+		best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, false, false, l, h));
 	}
 	return best;
 }
