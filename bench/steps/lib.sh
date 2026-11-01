@@ -385,11 +385,14 @@ run_procs() { # RUN-ID: the processes that carry the run's id in their environme
   done
   return 0
 }
-run_stop() { # RUN-ID: the run's processes (not this one) stop: TERM, then KILL after 3 s
+run_stop() { # RUN-ID: the run's processes (not this one) stop: TERM, then KILL after 3 s; it returns when none is left (a loaded host delivers a KILL late)
   local p left
   for p in $(run_procs "$1"); do kill -TERM "$p" 2>/dev/null || true; done
   for _ in 1 2 3 4 5 6; do left=$(run_procs "$1"); [[ -z $left ]] && return 0; sleep 0.5; done
-  for p in $left; do kill -KILL "$p" 2>/dev/null || true; done
+  for _ in $(seq 40); do
+    for p in $left; do kill -KILL "$p" 2>/dev/null || true; done
+    sleep 0.25; left=$(run_procs "$1"); [[ -z $left ]] && return 0
+  done
 }
 run_alive() { # RUN-DIR: the process of a run that says it is running is there (a bench, by its command line)
   local pid; [[ -s $1/pid ]] || return 1

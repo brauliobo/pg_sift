@@ -75,6 +75,16 @@ sleep 0.6; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 ( . "$LIBSH"; run_procs orphan$$ ) | grep -q . && fail "the orphan of the killed run is still running" || true
 echo "ok: the processes a killed run left are stopped"
 
+# run_stop returns when the processes are gone, also when a loaded host delivers the KILL late: the orphan ignores TERM and the KILL arrives 0.7 s after it is sent
+id=late$$ f=$T/late.pid
+( BENCH_RUN_ID=$id setsid bash -c 'trap "" TERM; echo $$ >"$1"; exec sleep 300' _ "$f" >/dev/null 2>&1 & )
+for _ in $(seq 200); do [[ -s $f ]] && break; sleep 0.05; done
+[[ -s $f ]] || fail "the late-KILL orphan did not start"
+( . "$LIBSH"; log() { :; }; kill() { if [[ $1 == -KILL ]]; then ( sleep 0.7; builtin kill "$@" ) & else builtin kill "$@"; fi; }; run_stop "$id" ) >/dev/null 2>&1
+left=$( . "$LIBSH"; run_procs "$id" )
+[[ -z $left ]] || { kill -KILL $left 2>/dev/null; fail "run_stop returned with the process of the run still running (the KILL had not taken effect)"; }
+echo "ok: run_stop waits for a late KILL"
+
 started() { local n; for n in $(seq 200); do [[ -s $1/.run/state ]] && return; sleep 0.05; done; }   # the run has its manifest, so its traps are set: a signal sent before that (a loaded host) kills it with the default action
 d=$T/runs/run-crash
 "$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!
