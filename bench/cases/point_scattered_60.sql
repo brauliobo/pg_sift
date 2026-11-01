@@ -1,0 +1,15 @@
+-- a lookup of 60 keys of a column the heap holds in no order (the correlation of id is under 0.05): the scattered heap pages the lookup reads are the cost
+-- label: `count(*), sum(v) WHERE id = ANY of 60 ids` over a heap in the order of a hash of id, `point_tid_columns = 'id'`; the variant `btree` is a b-tree on id
+-- ordered: yes
+--@ setup
+DROP TABLE IF EXISTS ps;
+CREATE TABLE ps AS SELECT g::int AS id, (g % 1000)::int AS v, (g % 97)::int AS w FROM generate_series(1, {rows}) g ORDER BY md5((g * 31 + 7)::text);
+CREATE INDEX ps_col ON ps USING sift_col (id, v, w) WITH (point_tid_columns = 'id');
+CREATE SCHEMA c_point_scattered_60__btree;
+CREATE TABLE c_point_scattered_60__btree.ps AS TABLE ps;
+CREATE INDEX ps_bt ON c_point_scattered_60__btree.ps (id);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ps;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) c_point_scattered_60__btree.ps;
+DO $$ DECLARE c float8 := (SELECT correlation FROM pg_stats WHERE schemaname = 'c_events' AND tablename = 'ps' AND attname = 'id'); BEGIN IF c IS NULL OR abs(c) >= 0.05 THEN RAISE EXCEPTION 'the key follows the heap: correlation %', c; END IF; END $$;
+--@ pg
+SELECT count(*), sum(v) FROM ps WHERE id = ANY (ARRAY[(7919 % {rows} + 1), (15838 % {rows} + 1), (23757 % {rows} + 1), (31676 % {rows} + 1), (39595 % {rows} + 1), (47514 % {rows} + 1), (55433 % {rows} + 1), (63352 % {rows} + 1), (71271 % {rows} + 1), (79190 % {rows} + 1), (87109 % {rows} + 1), (95028 % {rows} + 1), (102947 % {rows} + 1), (110866 % {rows} + 1), (118785 % {rows} + 1), (126704 % {rows} + 1), (134623 % {rows} + 1), (142542 % {rows} + 1), (150461 % {rows} + 1), (158380 % {rows} + 1), (166299 % {rows} + 1), (174218 % {rows} + 1), (182137 % {rows} + 1), (190056 % {rows} + 1), (197975 % {rows} + 1), (205894 % {rows} + 1), (213813 % {rows} + 1), (221732 % {rows} + 1), (229651 % {rows} + 1), (237570 % {rows} + 1), (245489 % {rows} + 1), (253408 % {rows} + 1), (261327 % {rows} + 1), (269246 % {rows} + 1), (277165 % {rows} + 1), (285084 % {rows} + 1), (293003 % {rows} + 1), (300922 % {rows} + 1), (308841 % {rows} + 1), (316760 % {rows} + 1), (324679 % {rows} + 1), (332598 % {rows} + 1), (340517 % {rows} + 1), (348436 % {rows} + 1), (356355 % {rows} + 1), (364274 % {rows} + 1), (372193 % {rows} + 1), (380112 % {rows} + 1), (388031 % {rows} + 1), (395950 % {rows} + 1), (403869 % {rows} + 1), (411788 % {rows} + 1), (419707 % {rows} + 1), (427626 % {rows} + 1), (435545 % {rows} + 1), (443464 % {rows} + 1), (451383 % {rows} + 1), (459302 % {rows} + 1), (467221 % {rows} + 1), (475140 % {rows} + 1)])

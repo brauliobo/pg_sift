@@ -24,6 +24,7 @@ def release(c, left, rows, scaled):
         left[c.schema()] -= 1
     if os.environ.get('CASES_KEEP'):
         return
+    psql("SELECT format('DROP SCHEMA %%I CASCADE', nspname) FROM pg_namespace WHERE starts_with(nspname, 'c_%s__') \\gexec" % c.id)   # the variant copies a setup makes (c_ID__whole): not the case's own schema
     if c.load:   # the schema its statements write to (server.build)
         psql('DROP SCHEMA IF EXISTS c_%s CASCADE' % c.id)
     if c.dataset in DATASETS:

@@ -217,11 +217,13 @@ class Release(unittest.TestCase):
         from cases import run
         cases = [mock.Mock(id=i, dataset='docs', share=None, load=kw.get('load', False), **{'schema.return_value': 'c_docs'}) for i in ids]
         left, out = {'c_docs': len(cases)}, []
-        with mock.patch.object(run, 'psql', side_effect=out.append), mock.patch.object(run, 'drop_added', side_effect=lambda schema: out.append('added to ' + schema + ' dropped')):
+        variants = []
+        with mock.patch.object(run, 'psql', side_effect=lambda sql: variants.append(sql) if 'starts_with' in sql else out.append(sql)), mock.patch.object(run, 'drop_added', side_effect=lambda schema: out.append('added to ' + schema + ' dropped')):
             for c in cases:
                 n = len(out)
                 run.release(c, left, 300000, False)
                 out[n:] = [' '.join(out[n:])]
+        self.variants = variants
         return out
 
     def test_a_dataset_schema_is_dropped_after_its_last_case(self):
@@ -229,6 +231,10 @@ class Release(unittest.TestCase):
 
     def test_a_load_case_drops_its_own_schema_too(self):
         self.assertEqual(self.dropped(['a'], load=True), ['DROP SCHEMA IF EXISTS c_a CASCADE DROP SCHEMA IF EXISTS c_docs CASCADE'])
+
+    def test_the_variant_schemas_of_a_case_are_dropped_with_it(self):
+        self.dropped(['a'])
+        self.assertIn("starts_with(nspname, 'c_a__')", self.variants[0])
 
 
 class Perf(unittest.TestCase):
