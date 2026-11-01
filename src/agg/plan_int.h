@@ -338,6 +338,7 @@ extern bool walk_memo_get(const void *a, const void *b, int skip, bool *r);
 extern void walk_memo_put(const void *a, const void *b, int skip, bool r);
 extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
+extern Param *initplan_param(AggCtx *c, Param *n);
 extern bool single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll);
 extern void hash_param_saop(ScalarArrayOpExpr *sa);
 /* A PARAM_EXEC placeholder of the type given */

@@ -549,7 +549,8 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	int			cmp = builtin_cmp(sa->opno, &lt, &rt),
 				leaf;
 	Node	   *l,
-			   *r;
+			   *r,
+			   *shown = NULL;
 	SiftAggPred *p;
 	SiftSrcLeaf *lf;
 
@@ -557,20 +558,29 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 		return NULL;
 	l = strip_relabel(linitial(sa->args));
 	r = strip_relabel(lsecond(sa->args));
-	if ((leaf = match_leaf(c, l)) < 0 || !pseudo_const(r))
+	if ((leaf = match_leaf(c, l)) < 0)
 		return NULL;
+	/* the output of an ARRAY sub-select is read when the scan starts, as a parameter of the statement is */
+	if (!pseudo_const(r))
+	{
+		if (!IsA(r, Param) || ((Param *) r)->paramkind != PARAM_EXEC || !array_initplan_ok(c, (Param *) r))
+			return NULL;
+		shown = r;
+	}
 	lf = leaf_of(c, leaf);
 	if (lf->kind == SCL_SCALAR && lf->typid == NUMERICOID && lf->vtype == SCV_I64 && type_class(lt) == TC_NUMERIC)
-		return compile_num_in(c, sa, leaf, r);
+		return shown != NULL ? NULL : compile_num_in(c, sa, leaf, r);
 	if (lf->kind != SCL_SCALAR || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64) || type_class(lf->typid) == TC_NONE ||
 		type_class(lf->typid) != type_class(lt) || type_class(lf->typid) != type_class(rt) ||
 		type_class(lf->typid) == TC_FLOAT)
 		return NULL;
+	if (shown != NULL)
+		r = (Node *) initplan_param(c, (Param *) r);
 	p = make_leaf_pred(c, SAP_IN, leaf);
 	p->op = !sa->useOr;
 	p->expr = r;
 	p->argtype = rt;
-	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, r));
+	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), sa->useOr ? "IN" : "NOT IN", expr_text(c, shown != NULL ? shown : r));
 	p->sel = qual_sel(c, (Node *) sa);
 	return p;
 }
