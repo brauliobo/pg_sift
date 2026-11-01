@@ -372,6 +372,7 @@ extern bool		sift_agg_verdict_cache;
 extern bool		sift_test_verdict_fail;
 extern int		sift_test_fail_pick;
 extern bool		sift_test_verdict_gate;
+extern int		sift_test_direct_max;
 #endif
 extern int		sift_agg_combo_cache;
 

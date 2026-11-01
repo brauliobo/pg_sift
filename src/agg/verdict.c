@@ -119,6 +119,7 @@ static bool vshm_failed;
 #ifdef SIFT_TESTING
 bool		sift_test_verdict_fail = false;
 bool		sift_test_verdict_gate = false;
+int			sift_test_direct_max = 0;
 
 /* Testing (sift.test_verdict_gate): a backend whose lookup found no verdict waits for the advisory lock (20984, 1) to be free, so that a test lets another backend plan and keep the same verdict first (test/t/verdict_shared.sh) */
 static void

@@ -392,6 +392,10 @@ table_init(AggExec *ex)
 	 */
 	ex->direct_max = Min((uint64) ex->direct_max,
 						 Max((uint64) LANE_DIRECT_MAX, 2 * (uint64) get_hash_memory_limit() / (sizeof(int64) * (1 + Max(s->naggs, 1)))));
+#ifdef SIFT_TESTING
+	if (sift_test_direct_max > 0 && ex->direct_max > 0)
+		ex->direct_max = sift_test_direct_max;
+#endif
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;

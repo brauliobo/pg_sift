@@ -181,6 +181,10 @@ sift_agg_init(void)
 							"Testing: planning the n-th column index (1 is the second) of a table in an aggregate stage raises an error (0: none).",
 							NULL, &sift_test_fail_pick, 0, 0, 100,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_direct_max",
+							"Testing: groups above which a group by leaves its direct arrays for the hash table, a single key included (0: 1,048,576 for several keys, the memory limit for one).",
+							NULL, &sift_test_direct_max, 0, 0, INT_MAX,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_verdict_gate",
 							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
 							 NULL, &sift_test_verdict_gate, false,
