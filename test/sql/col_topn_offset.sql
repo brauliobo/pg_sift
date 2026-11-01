@@ -90,7 +90,7 @@ SET sift.test_limits = 'topn_rows=50';
 SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
 RESET sift.test_limits;
 
--- a key_cut index (its units are cut by the key, not by superblock): every entry is confirmed by the heap, the rows are the same
+-- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;

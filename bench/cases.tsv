@@ -280,3 +280,4 @@ count_not_null_column_is_count_star	`count(x)` of a column the table declares `N
 date_bin_whole_seconds_step	of whole seconds is a step of its own, like `date_trunc`	events	-	per 900 seconds	native	-	ms	faster33	no	-
 union_all_group_added_above	a `GROUP BY` over a `UNION ALL` of selects (a queue's dept	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 is_null_priced_as_comparison	a test of `IS NULL` or `IS NOT NULL` on a column of a `sif	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+topn_offset_key_cut	the sorted array of the key of a `key_cut` index	orders	default	Top-N: created_at	native	btree:search_path = topn_offset_key_cut_btree	ms	faster33	no	-

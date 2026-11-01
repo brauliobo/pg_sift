@@ -1,0 +1,80 @@
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key of an index cut by another key (key_cut: its units hold the rows of one value of the cut key, wherever they
+-- are in the heap): the entries the OFFSET throws away are not confirmed by the heap when their page is all-visible and their row is not among the dead rows of the segment's
+-- units; the others are fetched. The rows are the plan's without the extension after deleted, updated (HOT and not), rolled back and vacuumed rows, new rows, a promotion,
+-- a merge, and for a cursor opened before an update.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE TABLE ok (id int PRIMARY KEY, c int, n int, s text COLLATE "C", pad text DEFAULT repeat('x', 200));
+ALTER TABLE ok ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ok (id, c, n, s) SELECT i, (i * 7919) % 37, (i * 104729) % 100003, 'k' || lpad(((i::bigint * 7919) % 100003)::text, 6, '0') FROM generate_series(1, 12000) i;
+CREATE INDEX ok_i ON ok USING sift_col (id sift.col_int4_ops, c sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops)
+	WITH (key_cut = 'c', order_columns = 'id, n', order_array_columns = 'id, n, s');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ok;
+SET sift.test_topn_heads = off;
+
+-- the rows are the plan's without the extension, in order; the answer says 'skipped' when the scan fetched no more than the LIMIT and an eighth of the OFFSET more, 'fetched'
+-- when it fetched more, 'units' when the walk of the units answered
+CREATE FUNCTION ok_chk(q text, lim int, off int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; fetches int := -1; ka text; kb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		used := used OR pl LIKE '%Global Order%';
+		IF pl LIKE '%heap fetches%' THEN fetches := substring(pl from '([0-9]+) heap fetches')::int; END IF;
+	END LOOP;
+	EXECUTE 'SELECT string_agg(id || '':'' || n || '':'' || s, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ka;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(id || '':'' || n || '':'' || s, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO kb;
+	RETURN CASE WHEN ka IS DISTINCT FROM kb THEN 'DIFFERS ' || q WHEN NOT used THEN 'units' WHEN fetches <= lim + off / 8 THEN 'skipped' ELSE 'fetched' END;
+END $$;
+
+CREATE FUNCTION ok_all(lim int DEFAULT 10, offs int[] DEFAULT ARRAY[1500, 6000]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT ok_chk(format('SELECT id, n, s FROM ok ORDER BY %s %s LIMIT %s OFFSET %s', k, d, lim, o), lim, o) AS result, count(*)
+   FROM unnest(ARRAY['s', 'n', 'n, id']) k, unnest(ARRAY['ASC', 'DESC']) d, unnest(offs) o GROUP BY 1 ORDER BY 1 $$;
+
+SELECT * FROM ok_all();
+-- deleted and updated rows: their pages are not all-visible, the others are
+DELETE FROM ok WHERE id % 53 = 0;
+UPDATE ok SET n = n + 1, s = 'u' || s WHERE id % 97 = 0;
+SELECT * FROM ok_all();
+-- a VACUUM flags the dead rows of the units and frees their addresses
+VACUUM ok;
+SELECT * FROM ok_all();
+-- a HOT update (no indexed column changes), an update rolled back
+UPDATE ok SET pad = repeat('y', 200) WHERE id % 31 = 0;
+BEGIN;
+UPDATE ok SET n = n + 5, s = 'r' || s WHERE id % 101 = 0;
+ROLLBACK;
+SELECT * FROM ok_all();
+VACUUM ok;
+SELECT * FROM ok_all();
+-- addresses the VACUUM freed are taken by new rows
+INSERT INTO ok (id, c, n, s) SELECT 20000 + i, i % 37, (i * 31) % 100003, 'a' || lpad(i::text, 6, '0') FROM generate_series(1, 900) i;
+SELECT * FROM ok_all();
+SELECT sift.col_promote('ok_i'::regclass) >= 0 AS promoted;
+SELECT * FROM ok_all();
+SELECT sift.col_merge('ok_i'::regclass, true) >= 0 AS merged;
+SELECT * FROM ok_all();
+VACUUM ok;
+SELECT * FROM ok_all();
+-- a cursor opened before an update sees the rows of its snapshot
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SET LOCAL sift.enable_agg = off;
+CREATE TEMP TABLE ok_before AS SELECT id, n, s FROM ok ORDER BY s LIMIT 5 OFFSET 6000;
+SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+DECLARE ok_c CURSOR FOR SELECT id, n, s FROM ok ORDER BY s LIMIT 5 OFFSET 6000;
+UPDATE ok SET s = 'a' || s WHERE id % 3 = 0;
+FETCH ALL FROM ok_c;
+SELECT * FROM ok_before;
+COMMIT;
+SELECT * FROM ok_all();
+
+DROP FUNCTION ok_all(int, int[]), ok_chk(text, int, int);
+DROP TABLE ok;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

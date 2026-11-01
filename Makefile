@@ -69,7 +69,7 @@ TESTING_REGRESS += col_text_scanwrap
 TESTING_REGRESS += col_dict_shared_stale
 TESTING_REGRESS += col_point_auto
 TESTING_REGRESS += agg_explain_why_scan
-TESTING_REGRESS += col_topn_offset agg_child_warm agg_topn_offset_ties agg_topn_offset_dirty
+TESTING_REGRESS += col_topn_offset agg_child_warm agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_keyed
 TESTING_REGRESS += col_unit_of_block
 TESTING_REGRESS += tbl_hot_sift_index merge_parts merge_heal
 ifdef SIFT_SB_SHIFT
