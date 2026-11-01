@@ -254,12 +254,17 @@ def join_keys(s):
                     "INSERT INTO orders SELECT g, (g * 7919) % 5000 + 1, g % 1000 FROM generate_series(1, 100000) g", "VACUUM (FREEZE, ANALYZE) customers", "VACUUM (FREEZE, ANALYZE) orders"]:
         s.run(q)
     q = "SELECT c.region, sum(o.amt) FROM orders o JOIN customers c ON c.id = o.cust_id GROUP BY c.region"
+    qf = "SELECT sum(o.amt) FROM orders o WHERE o.cust_id IN (SELECT id FROM customers WHERE region = 3)"
+    qd = "SELECT count(*), sum(o.amt) FROM customers c JOIN orders o ON o.cust_id = c.id WHERE c.region = 3"
     for state, ic, io in (('both keys are columns of the indexes', 'id, region', 'id, cust_id, amt'), ('the primary key is not a column of customers index', 'region', 'id, cust_id, amt'),
                           ('the foreign key is not a column of orders index', 'id, region', 'id, amt')):
         drop(s, 'm_c', 'm_o')
         s.run("CREATE INDEX m_c ON customers USING sift_col (%s) WITH (key_columns = 'off', %s)" % (ic, OPTS))
         s.run("CREATE INDEX m_o ON orders USING sift_col (%s) WITH (key_columns = 'off', %s)" % (io, OPTS))
         o.stmt('sift: %s (customers index %d B, orders index %d B)' % (state, s.size('m_c'), s.size('m_o')), q, 'm_c,m_o')
+        if 'primary' in state or 'both' in state:
+            o.stmt('sift, customers of one region: %s' % state, qf, 'm_c,m_o')
+            o.stmt('sift, customers of one region joined: %s' % state, qd, 'm_c,m_o')
     drop(s, 'm_c', 'm_o')
     s.run('CREATE INDEX m_bo ON orders (cust_id)')
     o.stmt('b-tree: primary keys and a b-tree on orders(cust_id)', q.replace('SELECT', 'SELECT', 1), 'm_bo')
