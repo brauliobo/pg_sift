@@ -128,6 +128,12 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
 
+-- the group and the bounds of a probe come from the outer query: a LATERAL join and a correlated sub-select take them at each probe (PARAM_EXEC), where the scan once pinned group 0 for all of them and returned no row
+SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x ORDER BY v.g') AS lateral_group;
+SELECT gg_chk('SELECT v.g, x.id, x.t FROM generate_series(0, 9) v(g), LATERAL (SELECT id, t FROM gg WHERE g = v.g AND t > TIMESTAMP ''2000-01-01'' + v.g * interval ''2 hours'' ORDER BY t, id LIMIT 3) x ORDER BY v.g, x.t, x.id') AS lateral_group_and_bound;
+SELECT gg_chk('SELECT v.g, (SELECT k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_group;
+SELECT gg_chk('SELECT v.g, (SELECT max(k) FROM gg WHERE g = v.g) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_max;
+
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
 DROP INDEX gg_i;
 CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k');

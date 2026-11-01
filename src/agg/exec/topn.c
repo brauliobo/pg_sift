@@ -247,7 +247,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		ExprState  *e = operand_state(ex, p->expr);
 		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 		ArrayType  *arr;
 		int16		elen;
@@ -291,7 +291,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		ExprState  *e = operand_state(ex, p->expr);
 		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 
 		MemoryContextSwitchTo(old);
