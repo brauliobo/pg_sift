@@ -21,6 +21,7 @@ typedef struct GCur
 	uint32		ve;
 	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
 	uint32		ne;
+	uint32		sk;				/* the entries sift_gord_skip took off the front of [vs, ve) (the back, descending) */
 	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
 	uint32		pos;			/* the next entry of the region (a group of a descending scan: pos in [gs, ge)) */
 	uint32		end;
@@ -333,9 +334,114 @@ sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid)
 	return g->prev != NULL && sift_colsrc_gorder_exact(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
 }
 
+/* The sum over the cursors of how many of their entries possibly come before v in the scan: the entries a scan that skips the n first cannot reach all of if this is at most n */
+static bool
+skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
+{
+	uint64		total = 0;
+
+	for (int i = 0; i < g->ncur; i++)
+	{
+		GCur	   *c = g->cur[i];
+		uint32		lo,
+					hi;
+
+		if (!sift_colsrc_gorder_before(g->src, c->src, g->leaf, c->vs, c->ve, v, g->desc, &lo, &hi, c->buf))
+			return false;
+		total += hi;
+		if (clo != NULL)
+			clo[i] = lo;
+	}
+	return total <= k;
+}
+
+/*
+ * Takes the first entries off the front of every cursor, as many as can be said to be among the first k of the scan without reading their keys: those whose bucket (a compact
+ * block keeps the bucket of a key, not the key; a whole one its key, a bucket of one) is before v, the largest v before which at most k entries may come. They are all among the
+ * first k (fewer than k entries have a key before v), and each of them stands for a row only if the page of its address is all-visible and the unit's row live
+ * (sift_colsrc_gorder_exact): a cursor stops its skip at the first entry that is not. The scan then goes on with the rest and throws away the other k - n; the result is the same
+ * as the throwing away of the first k. Before the first sift_gord_next; 0 (nothing skipped) when a source cannot say (a write buffer, the ends of an order), a text key, or the
+ * scan starts with NULL rows. Returns n.
+ */
+uint32
+sift_gord_skip(SiftGOrd *g, uint32 k)
+{
+	uint64		lo = 0,
+				hi = UINT64_MAX;
+	int64		v;
+	uint32	   *clo;
+	uint32		total = 0;
+
+	if (g->started || g->collid != 0 || g->ends || k == 0 || g->ncur == 0)
+		return 0;
+	for (int i = 0; i < g->ncur; i++)
+		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
+			return 0;
+	/* the largest v (ascending) before which at most k entries may come, the smallest above which (descending) */
+	if (!skip_count(g, g->desc ? PG_INT64_MAX : PG_INT64_MIN, k, NULL))
+		return 0;
+	while (lo < hi)
+	{
+		uint64		mid = lo + (hi - lo) / 2 + (g->desc ? 0 : (hi - lo) & 1);
+
+		if (skip_count(g, (int64) (mid + (uint64) PG_INT64_MIN), k, NULL))
+		{
+			if (g->desc)
+				hi = mid;
+			else
+				lo = mid;
+		}
+		else
+		{
+			if (g->desc)
+				lo = mid + 1;
+			else
+				hi = mid - 1;
+		}
+	}
+	v = (int64) (lo + (uint64) PG_INT64_MIN);
+	clo = palloc(g->ncur * sizeof(uint32));
+	(void) skip_count(g, v, k, clo);
+	for (int i = 0; i < g->ncur; i++)
+	{
+		GCur	   *c = g->cur[i];
+		uint32		n = 0;
+
+		/* the addresses of the entries come with their chunk; only the front of the chunk is decoded when the skip is short of it */
+		while (n < clo[i])
+		{
+			uint32		p = g->desc ? c->ve - 1 - n : c->vs + n;
+
+			if (p - c->buf->at >= c->buf->cm)
+				sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
+			if (!sift_colsrc_gorder_exact(g->src, c->src, c->buf->addr[p - c->buf->at]))
+				break;
+			n++;
+		}
+		if (g->desc)
+			c->ve -= n;
+		else
+			c->vs += n;
+		c->sk = n;
+		total += n;
+	}
+	pfree(clo);
+	return total;
+}
+
 void
 sift_gord_rewind(SiftGOrd *g)
 {
+	for (int i = 0; i < g->ncur; i++)
+	{
+		GCur	   *c = g->cur[i];
+
+		if (g->desc)
+			c->ve += c->sk;
+		else
+			c->vs -= c->sk;
+		c->sk = 0;
+	}
 	g->started = false;
 	g->last_set = false;
 	g->short_ = false;

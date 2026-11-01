@@ -74,14 +74,14 @@ FROM (VALUES ('ts', 'timestamp'), ('tz', 'timestamptz'), ('d', 'date'), ('s', 's
 	 (VALUES ('ASC'), ('DESC')) d(dir),
 	 (VALUES ('NULLS FIRST'), ('NULLS LAST')) n(nl),
 	 (VALUES (1), (20), (100)) l(lim),
-	 (VALUES (0), (30), (700)) o(off),
+	 (VALUES (0), (30), (700), (3000)) o(off),
 	 (VALUES (NULL::float8), (0.01), (0.5), (0.98)) b1(lo),
 	 (VALUES (NULL::float8), (0.02), (0.5), (0.99)) b2(hi)
 WHERE (lo IS NULL OR hi IS NULL OR lo < hi) AND (off = 0 OR lim = 20);
 SELECT count(*) AS shapes FROM shapes;
  shapes 
 --------
-   1440
+   1728
 (1 row)
 
 CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
@@ -93,7 +93,7 @@ $$;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SELECT count(*) FILTER (WHERE same(format('SELECT %1$s AS k FROM @ WHERE %1$s >= %2$s AND %1$s <= %3$s ORDER BY %1$s', s.col, quant(s.col, s.ty, s.lo), quant(s.col, s.ty, s.hi)))) AS ranges_whole, count(*) AS n
@@ -134,6 +134,14 @@ SELECT sift.col_verify('t_ix');
  
 (1 row)
 
+-- the pages are all-visible after a VACUUM: an OFFSET takes the entries it throws away off the front of the order without reading their keys (sift_gord_skip), where the buckets say they come first
+VACUUM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1728 |   1728
+(1 row)
+
 -- an update that changes a key is not a HOT update (the column is in the index): the old version stays in the segment and the new one is in the write buffer
 UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id % 13 = 0;
 -- one that does not (pad is not in the order, still covered): the chain keeps the key
@@ -148,7 +156,7 @@ CREATE TABLE p AS SELECT * FROM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 -- pruned HOT chains: the root of a chain is a redirect
@@ -156,7 +164,7 @@ VACUUM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -175,7 +183,7 @@ CREATE TABLE p AS SELECT * FROM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -206,7 +214,7 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -227,7 +235,7 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SET sift.test_col_gorder_layout = 1;
@@ -241,7 +249,7 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
  same | shapes 
 ------+--------
- 1440 |   1440
+ 1728 |   1728
 (1 row)
 
 SELECT sift.col_verify('t_ix');

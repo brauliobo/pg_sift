@@ -57,7 +57,7 @@ FROM (VALUES ('ts', 'timestamp'), ('tz', 'timestamptz'), ('d', 'date'), ('s', 's
 	 (VALUES ('ASC'), ('DESC')) d(dir),
 	 (VALUES ('NULLS FIRST'), ('NULLS LAST')) n(nl),
 	 (VALUES (1), (20), (100)) l(lim),
-	 (VALUES (0), (30), (700)) o(off),
+	 (VALUES (0), (30), (700), (3000)) o(off),
 	 (VALUES (NULL::float8), (0.01), (0.5), (0.98)) b1(lo),
 	 (VALUES (NULL::float8), (0.02), (0.5), (0.99)) b2(hi)
 WHERE (lo IS NULL OR hi IS NULL OR lo < hi) AND (off = 0 OR lim = 20);
@@ -77,6 +77,9 @@ SELECT same('SELECT ts AS k FROM @ WHERE ts BETWEEN TIMESTAMP ''2026-04-01'' AND
 SELECT (SELECT count(*) FROM t WHERE ts BETWEEN TIMESTAMP '2026-04-01' AND TIMESTAMP '2026-05-01') = (SELECT count(*) FROM p WHERE ts BETWEEN TIMESTAMP '2026-04-01' AND TIMESTAMP '2026-05-01') AS count_same;
 SELECT same('SELECT dup AS k FROM @ ORDER BY dup LIMIT 700') AS ties_asc, same('SELECT dup AS k FROM @ ORDER BY dup DESC LIMIT 700') AS ties_desc;
 SELECT sift.col_verify('t_ix');
+-- the pages are all-visible after a VACUUM: an OFFSET takes the entries it throws away off the front of the order without reading their keys (sift_gord_skip), where the buckets say they come first
+VACUUM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
 
 -- an update that changes a key is not a HOT update (the column is in the index): the old version stays in the segment and the new one is in the write buffer
 UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id % 13 = 0;

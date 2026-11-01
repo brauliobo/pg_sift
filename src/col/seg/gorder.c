@@ -494,7 +494,7 @@ gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrd
 void
 sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, SiftCGOrdBuf *buf)
 {
-	gord_fill(seg, col, p, w, true, buf);
+	gord_fill(seg, col, p, w, w != UINT32_MAX, buf);
 }
 
 uint32
@@ -579,12 +579,26 @@ gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
  * key (their last key is) and which certainly are not (their first is): the entries between, in the bucket that holds key, are searched by the keys of their heap rows (0.7 of them a seek
  * for keys 4 buckets to a mean gap). The chunk is left in memo with its addresses.
  */
+/* The first entry i0 of the compact chunk in buf that is not certainly before key (its last key is not: before(k) is k < key, or k <= key for after) and the first i1 that certainly is not (its first key is not before) */
+static void
+compact_bounds(const SiftCGOrdBuf *buf, int64 key, bool after, uint32 *i0, uint32 *i1)
+{
+	uint32		lo = 0,
+				hi = buf->rows;
+
+	SIFT_BISECT(uint32, mid, lo, hi, after ? (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) <= key : (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) < key);
+	*i0 = lo;
+	hi = buf->rows;
+	SIFT_BISECT(uint32, mid, lo, hi, after ? buf->kmin[mid] <= key : buf->kmin[mid] < key);
+	*i1 = lo;
+}
+
 static uint32
 compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, uint32 to, int64 key, bool after, SiftCGOrdBuf *memo)
 {
 	GOrdProbe	pr;
 	uint32		at = c * g->hdr.crows,
-				lo = 0,
+				lo,
 				hi,
 				i0,
 				i1;
@@ -592,13 +606,7 @@ compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, u
 
 	if (memo->at != at || !memo->compact || !memo->kmin_ok)
 		compact_load(seg, g, col, c, &d, true, memo);
-	hi = memo->rows;
-	SIFT_BISECT(uint32, mid, lo, hi, after ? (mid == 0 ? memo->kmin[0] : sift_gq_kmax(memo->kmin[mid], memo->sh)) <= key : (mid == 0 ? memo->kmin[0] : sift_gq_kmax(memo->kmin[mid], memo->sh)) < key);
-	i0 = lo;					/* the entries before it are certainly before key */
-	lo = i0;
-	hi = memo->rows;
-	SIFT_BISECT(uint32, mid, lo, hi, after ? memo->kmin[mid] <= key : memo->kmin[mid] < key);
-	i1 = lo;					/* from it on they are certainly not */
+	compact_bounds(memo, key, after, &i0, &i1);
 	lo = Max(i0, from - at);
 	hi = Min(i1, to - at);
 	probe_open(seg, g, col, &pr);
@@ -722,5 +730,107 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 		sift_sort_u64(t, n);
 	*tids = t;
 	*ntids = n;
+	return true;
+}
+
+/* The keys of chunk c of leaf col (the buckets of a compact one) into memo */
+static void
+gord_chunk_keys(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, SiftCGOrdBuf *memo)
+{
+	SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
+	uint32		at = c * g->hdr.crows;
+
+	if (d.pad & SIFT_CGORD_COMPACT)
+	{
+		if (memo->at != at || !memo->compact || !memo->kmin_ok)
+			compact_load(seg, g, col, c, &d, true, memo);
+	}
+	else if (memo->at != at || memo->compact || memo->cm < sift_cgord_chunk_rows(&g->hdr, c))
+		gord_fill(seg, col, at, UINT32_MAX, false, memo);
+}
+
+/*
+ * Of the entries [vs, ve) (value entries ascending by key), how many come first in a scan that reaches v (ascending: the keys below v; desc: those above it), counted from the
+ * end the scan starts at: *clo of them certainly do (their bucket does), *chi may (the bucket of one more starts before v). A complete source answers exactly (clo == chi); the chunk
+ * that holds v is left in memo. False when the segment has no complete block of the leaf.
+ */
+bool
+sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, SiftCGOrdBuf *memo)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+	uint32		crows,
+				lo,
+				hi,
+				cs,
+				base,
+				m,
+				pc,
+				pp;
+
+	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col) || ve > g->hdr.values)
+		return false;
+	*clo = *chi = 0;
+	if (vs >= ve)
+		return true;
+	crows = g->hdr.crows;
+	lo = vs / crows + 1;
+	hi = (ve - 1) / crows + 1;
+	seg_gord_dir_read(seg, g);
+	if (!desc)
+	{
+		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dirent(seg, g, col, mid).first < v);
+		cs = lo - 1;
+		if (seg_gord_dirent(seg, g, col, cs).first >= v)
+			return true;
+	}
+	else
+	{
+		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dirent(seg, g, col, mid).first <= v);
+		cs = lo - 1;
+		if (seg_gord_dirent(seg, g, col, cs).first > v)
+		{
+			*clo = *chi = ve - vs;
+			return true;
+		}
+	}
+	gord_chunk_keys(seg, g, col, cs, memo);
+	base = cs * crows;
+	m = memo->rows;
+	if (!memo->compact)
+	{
+		lo = 0;
+		hi = m;
+		SIFT_BISECT(uint32, mid, lo, hi, desc ? memo->key[mid] <= v : memo->key[mid] < v);
+		pc = pp = base + lo;
+	}
+	else if (!desc)
+	{
+		uint32		i0,
+					i1;
+
+		compact_bounds(memo, v, false, &i0, &i1);
+		pc = base + i0;
+		pp = base + i1;
+	}
+	else
+	{
+		uint32		i0,
+					i1;
+
+		/* the entries certainly above v start at the first whose first key is, those that may be at the first whose last key is */
+		compact_bounds(memo, v, true, &i0, &i1);
+		pc = base + i1;
+		pp = base + i0;
+	}
+	if (!desc)
+	{
+		*clo = Min(Max(pc, vs), ve) - vs;
+		*chi = Min(Max(pp, vs), ve) - vs;
+	}
+	else
+	{
+		*clo = ve - Min(Max(pc, vs), ve);
+		*chi = ve - Min(Max(pp, vs), ve);
+	}
 	return true;
 }

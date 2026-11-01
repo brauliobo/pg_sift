@@ -390,6 +390,12 @@ sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 v
 }
 
 bool
+sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo)
+{
+	return src->prov->gorder_before && src->prov->gorder_before(src->impl, i, leaf, vs, ve, v, desc, clo, chi, memo);
+}
+
+bool
 sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
 {
 	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, tid);

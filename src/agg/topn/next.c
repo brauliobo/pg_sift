@@ -23,6 +23,18 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 	bool		isnull;
 	ItemPointerData tid;
 
+	if (!t->skip_tried)
+	{
+		t->skip_tried = true;
+		if (t->nkey == 1 && t->gcond == NULL && t->skip > 0)
+			t->bulk = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
+	}
+	if (t->bulk > 0)
+	{
+		t->bulk--;
+		t->emitted++;
+		return skipped_row(t, slot);
+	}
 	while (t->emitted < t->limit && (t->nkey > 1 ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
 	{
 		bool		call_again = false,
@@ -266,6 +278,8 @@ sift_topn_rewind(SiftTopN *t)
 	t->pos = 0;
 	t->emitted = 0;
 	t->gqpos = 0;
+	t->skip_tried = false;
+	t->bulk = 0;
 	if (t->go)
 		sift_gord_rewind(t->go);
 	if (t->sort)

@@ -259,6 +259,8 @@ struct SiftTopN
 	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
+	bool		skip_tried;		/* the global order was asked to take the OFFSET off its front (sift_gord_skip) */
+	int64		bulk;			/* ... and the rows it took, which go out as the rows the Limit throws away, with no entry read */
 	int64		nrun;			/* units read through their sorted run */
 	int64		nlazy;			/* ... of them with no filter run (sift_topn_lazy) */
 	int64		nrhead;			/* units answered from the head of their sorted run */
