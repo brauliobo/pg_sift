@@ -9,6 +9,7 @@ use SiftTest;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use Time::HiRes ();
 
 my $node = sift_node('autodefrag');
 $node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_auto_defrag = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nsift.table_auto_defrag_delay = 0\nsift.table_write_buffer_limit = 2048\nmax_parallel_maintenance_workers = 0");
@@ -29,7 +30,7 @@ sub fill
 	# settled into column segments, the tombstone log empty: the thresholds are about what the churn adds
 	$node->safe_psql('postgres', "VACUUM $tbl");
 	# the VACUUM closes a buffer too and may have asked for a pass; a request inside the naptime of that one is not made
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 }
 # rows written again so that write buffers fill and close (the point where the backend looks)
 sub churn_writes
@@ -45,7 +46,8 @@ sub fired
 sub quiet_for
 {
 	my ($offset, $seconds) = @_;
-	sleep $seconds;
+	# the naptime is 200 ms, so half of the seconds named are still five naptimes of the worker without a start
+	Time::HiRes::sleep($seconds / 2);
 	return slurp_file($node->logfile, $offset) !~ $worker;
 }
 
@@ -110,7 +112,7 @@ subtest 'a read after the deletes asks for the pass' => sub {
 	# the session that deletes does not ask (a statement slower than the naptime would ask for rows that are not committed yet): the read does
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM e WHERE id % 10 < 4');
 	my $offset = -s $node->logfile;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM e');	# the aggregate source
 	ok(fired($offset), 'a worker started and finished');
 	is($node->safe_psql('postgres', "SELECT sum(dead_rows) FROM sift.table_segments('e') WHERE kind = 'columns'"), '0', 'the dead rows were cleared and dropped');
@@ -121,7 +123,7 @@ subtest 'a delete after the earlier ones committed asks for the pass' => sub {
 	fill('f');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM f WHERE id % 10 < 4');
 	my $offset = -s $node->logfile;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'DELETE FROM f WHERE id = 5');
 	ok(fired($offset), 'a worker started and finished');
 };
@@ -132,7 +134,7 @@ subtest 'a read below the thresholds, or with the setting off, asks for nothing'
 	fill('h');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM h WHERE id % 10 < 4');
 	my $offset = -s $node->logfile;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM g; SELECT * FROM g WHERE id = 7');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; SELECT count(*) FROM h');
 	ok(quiet_for($offset, 2), 'no worker started');
@@ -145,14 +147,14 @@ subtest 'a pass that could remove nothing is not asked for until the old transac
 	$old->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM n');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM n WHERE id % 10 < 4');
 	my $offset = -s $node->logfile;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM n');
 	$node->safe_psql('postgres', 'DELETE FROM n WHERE id = 5');
 	ok(quiet_for($offset, 3), 'no worker started');
 	is($node->safe_psql('postgres', "SELECT sum(dead_rows) FROM sift.table_segments('n') WHERE kind = 'columns'"), '0', 'no segment was read for it');
 	$old->query_safe('COMMIT');
 	$old->quit;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM n');
 	ok(fired($offset), 'a worker started once the old transaction ended');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM n'), $rows * 6 / 10 - 1, 'the live rows are all there');
@@ -169,7 +171,7 @@ subtest 'the pass waits while the clients are busy' => sub {
 	$holder->query_safe('SELECT pg_advisory_lock(17)');
 	my @busy = map { my $b = $node->background_psql('postgres'); $b->query_until(qr/started/, "\\echo started\nSELECT pg_advisory_lock(17), pg_advisory_unlock(17);\n"); $b } 1 .. 2;
 	my $offset = -s $node->logfile;
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM m');
 	ok(quiet_for($offset, 3), 'no pass while two other clients run a statement');
 	$holder->query_safe('SELECT pg_advisory_unlock(17)');
@@ -187,7 +189,7 @@ subtest 'the pass keeps to a WAL rate' => sub {
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM w WHERE id % 10 < 4');
 	my $expected = $node->safe_psql('postgres', sprintf($digest, 'w'));
 	$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.table_auto_defrag_wal_rate = 512; SELECT pg_reload_conf()');
-	sleep 1;
+	Time::HiRes::sleep(0.5);
 	my $offset = -s $node->logfile;
 	my $lsn = $node->safe_psql('postgres', 'SELECT pg_current_wal_lsn()');
 	$node->safe_psql('postgres', 'SELECT count(*) FROM w');
@@ -218,7 +220,7 @@ subtest 'a pass merges the small groups next to the one it rewrites' => sub {
 		$node->safe_psql('postgres', "SET sift.table_auto_defrag = off; DELETE FROM $t WHERE id <= 4000 AND id % 10 < 7; DELETE FROM $t WHERE id > 4000 AND id <= 8000 AND id % 10 < 4");
 		my $expected = $node->safe_psql('postgres', sprintf($digest, $t));
 		my $offset = -s $node->logfile;
-		sleep 1;
+		Time::HiRes::sleep(0.5);
 		$node->safe_psql('postgres', "SELECT count(*) FROM $t");
 		ok(fired($offset), "$coalesce: a worker started and finished");
 		$after{$coalesce} = $node->safe_psql('postgres', $groups);
