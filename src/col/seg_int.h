@@ -358,6 +358,8 @@ typedef struct GOrdLeaf
 	bool		deadset;		/* ... and, in a segment with rows bulkdelete cleared, whether their addresses are listed in dead (ascending), which the heap no longer says anything of */
 	uint32		ndead;
 	SiftKey    *dead;
+	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
+	uint32		gprobes;
 } GOrdLeaf;
 
 /* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */

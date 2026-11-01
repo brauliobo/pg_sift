@@ -1,0 +1,154 @@
+-- A scan that an enclosing query starts over for each of its rows (a LATERAL top-1 per entity, a correlated sub-select) finds the entries of its group in the order array by searching the group table
+-- of the segment. The first probe searches it where it is; a segment probed again holds the table in memory, so the 200 probes of one statement pin a handful of buffers each, not one for every step of
+-- a search over 250 groups. The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
+-- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE rk AS SELECT i AS id, 1 + (i * 7919) % 250 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts, repeat('x', 100) AS pad FROM generate_series(1, 20000) i;
+CREATE INDEX rk_i ON rk USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE TABLE rk_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 250 END AS g FROM generate_series(1, 200) n;
+VACUUM (FREEZE, ANALYZE) rk, rk_o;
+-- the buffers the SiftAgg node of a statement pins for each of its probes (shared hit and read of the node over its loops), and whether its last probe read the global order (a NULL group goes to the units)
+CREATE FUNCTION probe_buffers(q text, OUT per_probe numeric, OUT probes int, OUT global_order boolean) LANGUAGE plpgsql AS $$
+DECLARE l text; seen boolean := false; blocks bigint := 0;
+BEGIN
+	global_order := false; probes := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN seen := true; probes := substring(l FROM 'loops=([0-9]+)')::int; END IF;
+		IF seen AND l ~ 'Global Order: true' THEN global_order := true; END IF;
+		IF seen AND l ~ '^\s+Buffers: shared' THEN
+			blocks := coalesce(substring(l FROM 'hit=([0-9]+)')::bigint, 0) + coalesce(substring(l FROM 'read=([0-9]+)')::bigint, 0);
+			seen := false;
+		END IF;
+	END LOOP;
+	per_probe := round(blocks::numeric / greatest(probes, 1), 1);
+END $$;
+SET sift.agg_force = on;
+SET enable_seqscan = off;
+SET enable_sort = off;
+-- warm: the first statement reads the segment
+SELECT count(*) FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true;
+ count 
+-------
+   200
+(1 row)
+
+SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
+ probes | global_order | few_buffers 
+--------+--------------+-------------
+    200 | t            | t
+(1 row)
+
+SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, (SELECT id FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM rk_o v') p;
+ probes | global_order | few_buffers 
+--------+--------------+-------------
+    200 | t            | t
+(1 row)
+
+SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v, LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
+ probes | global_order | few_buffers 
+--------+--------------+-------------
+    200 | t            | t
+(1 row)
+
+RESET enable_sort; RESET enable_seqscan; RESET sift.agg_force;
+-- the rows are the heap's: the same statements with the engine off, before and after each change between probes
+CREATE FUNCTION rk_rows(on_ bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', on_::text, true);
+	PERFORM set_config('sift.agg_force', on_::text, true);
+	SELECT string_agg(z::text, ',' ORDER BY z.i, z.ts) INTO r FROM (
+		SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 2) x ON true
+		UNION ALL SELECT v.i, (SELECT ts FROM rk WHERE g = v.g AND id % 3 = 0 ORDER BY ts LIMIT 1) FROM rk_o v
+		UNION ALL SELECT v.i, (SELECT max(ts) FROM rk WHERE g = v.g) FROM rk_o v) z;
+	RETURN r;
+END $$;
+CREATE TABLE rk_step (n int, what text, same boolean);
+CREATE FUNCTION rk_check(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	INSERT INTO rk_step SELECT coalesce(max(n), 0) + 1, label, rk_rows(true) = rk_rows(false) FROM rk_step;
+END $$;
+SELECT rk_check('as built');
+ rk_check 
+----------
+ 
+(1 row)
+
+DELETE FROM rk WHERE id % 13 = 0;
+UPDATE rk SET ts = ts + interval '3 days' WHERE id % 17 = 0;
+INSERT INTO rk SELECT 20000 + n, 1 + (n * 7) % 250, timestamp '2025-01-01' + n * interval '41 seconds', 'x' FROM generate_series(1, 500) n;
+SELECT rk_check('writes in the write buffer, deleted and updated rows');
+ rk_check 
+----------
+ 
+(1 row)
+
+VACUUM rk;
+SELECT rk_check('after VACUUM');
+ rk_check 
+----------
+ 
+(1 row)
+
+SELECT sift.col_promote('rk_i'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT rk_check('after a promotion');
+ rk_check 
+----------
+ 
+(1 row)
+
+SELECT n, what, same FROM rk_step ORDER BY n;
+ n |                         what                         | same 
+---+------------------------------------------------------+------
+ 1 | as built                                             | t
+ 2 | writes in the write buffer, deleted and updated rows | t
+ 3 | after VACUUM                                         | t
+ 4 | after a promotion                                    | t
+(4 rows)
+
+-- a promotion and writes in the middle of the statement: the outer rows call a function that does them between two probes; the statement keeps its snapshot
+CREATE FUNCTION rk_mut(i int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	IF i = 100 AND current_setting('rk.mut', true) = 'on' THEN
+		DELETE FROM rk WHERE id % 11 = 0;
+		INSERT INTO rk SELECT 40000 + n, 1 + (n * 3) % 250, timestamp '2026-01-01' + n * interval '43 seconds', 'x' FROM generate_series(1, 300) n;
+		PERFORM sift.col_promote('rk_i'::regclass);
+	END IF;
+	RETURN i;
+END $$;
+DO $$
+DECLARE before text; during text; q text := 'SELECT string_agg((v.i, x.ts)::text, '','' ORDER BY v.i, x.ts) FROM (SELECT i, g, rk_mut(i) AS m FROM rk_o OFFSET 0) v, LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x';
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE q INTO before;
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	PERFORM set_config('rk.mut', 'on', true);
+	EXECUTE q INTO during;
+	RAISE WARNING 'writes in the statement: %', CASE WHEN during = before THEN 'the rows of the snapshot' ELSE 'DIFFERS' END;
+END $$;
+WARNING:  writes in the statement: the rows of the snapshot
+-- a cursor read both ways: the rows forward, then backward, are the heap's
+DO $$
+DECLARE r record; fwd text := ''; bwd text := ''; ref text; rk_c refcursor;
+BEGIN
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	OPEN rk_c SCROLL FOR SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true ORDER BY v.i;
+	LOOP FETCH NEXT FROM rk_c INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r::text; END LOOP;
+	LOOP FETCH PRIOR FROM rk_c INTO r; EXIT WHEN NOT FOUND; bwd := r::text || bwd; END LOOP;
+	CLOSE rk_c;
+	SET LOCAL sift.enable_agg = off;
+	SELECT string_agg(z::text, '' ORDER BY z.i) INTO ref FROM (SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true) z;
+	RAISE WARNING 'cursor: forward % the heap, backward % forward', CASE WHEN fwd = ref THEN 'is' ELSE 'DIFFERS from' END, CASE WHEN bwd = fwd THEN 'is' ELSE 'DIFFERS from' END;
+END $$;
+WARNING:  cursor: forward is the heap, backward is forward
+DROP FUNCTION probe_buffers(text), rk_rows(bool), rk_check(text), rk_mut(int);
+DROP TABLE rk, rk_o, rk_step;
+DROP EXTENSION pg_sift;

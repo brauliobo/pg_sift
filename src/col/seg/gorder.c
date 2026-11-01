@@ -492,13 +492,27 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		return;
 	}
 	hi = g->hdr.ngroups;
-	/* the groups are searched where they are: a table of many groups is not read whole for one probe */
+	/*
+	 * The groups are searched where they are for the first probe: a table of many groups is not read whole for one. A segment probed again (a scan that an enclosing query
+	 * starts over for each of its rows) reads the table whole, once, and searches it in memory: the search was 12 pins of the buffers for each probe. The segment does not
+	 * change while the source is open, so the copy cannot go stale.
+	 */
+	if (g->grps == NULL && ++g->gprobes > 1 && g->hdr.ngroups > 0 && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
+	{
+		SiftCGOrdGrp *all = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
+
+		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, all);
+		g->grps = all;
+	}
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;
 		SiftCGOrdGrp e;
 
-		seg_read(seg, g->at + g->gat + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		if (g->grps != NULL)
+			e = g->grps[mid];
+		else
+			seg_read(seg, g->at + g->gat + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group < group)
 			lo = mid + 1;
 		else
@@ -508,7 +522,10 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	{
 		SiftCGOrdGrp e;
 
-		seg_read(seg, g->at + g->gat + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		if (g->grps != NULL)
+			e = g->grps[lo];
+		else
+			seg_read(seg, g->at + g->gat + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group == group)
 		{
 			if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
