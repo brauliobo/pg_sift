@@ -450,7 +450,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 	{
 		for (int k = 0; k < 2; k++)
 		{
-			const GOrdLeaf *g = seg_gord_leaf(seg, col + k * seg->schema->ncols);
+			GOrdLeaf   *g = seg_gord_leaf(seg, col + k * seg->schema->ncols);
 
 			if (g != NULL)
 			{
@@ -463,7 +463,18 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 				{
 					acc->gord_rows += g->hdr.entries;
 					acc->gord_bytes += g->bytes;
-					acc->gord_compact_rows += g->hdr.quant != 0 ? g->hdr.entries : 0;
+					acc->gord_chunks += g->hdr.chunks;
+					if (g->hdr.quant != 0)
+					{
+						seg_gord_dir_read(seg, g);
+						for (uint32 c = 0; c < g->hdr.chunks; c++)
+						{
+							uint32		pad = seg_gord_dirent(seg, g, col + k * seg->schema->ncols, c).pad;
+
+							acc->gord_compact_chunks += (pad & SIFT_CGORD_COMPACT) != 0;
+							acc->gord_tie_chunks += (pad & SIFT_CGORD_TIES) != 0;
+						}
+					}
 				}
 				if (g->hdr.strbytes != 0)
 					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;

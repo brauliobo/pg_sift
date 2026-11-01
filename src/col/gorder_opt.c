@@ -7,8 +7,9 @@
 #include "col/gorder.h"
 #include "col/preagg.h"
 
-/* The layout a column with no order_layout gets, from the rows of the segment being written. One line to change when the numbers say another default. */
-#define AUTO_LAYOUT(nvals)	SIFT_CGORD_L_WHOLE
+/* The layout a column with no order_layout (or 'auto') gets, from the rows of the segment being written: each chunk of the middle of its order compact where that is at least a fifth smaller
+ * than the whole one (sift_cgord_build decides a chunk at a time; a segment with no such chunk is the whole order). One line to change when the numbers say another default. */
+#define AUTO_LAYOUT(nvals)	SIFT_CGORD_L_AUTO
 
 int
 sift_cgord_layout_pick(uint8 want, uint32 nvals)
@@ -17,19 +18,7 @@ sift_cgord_layout_pick(uint8 want, uint32 nvals)
 		return SIFT_CGORD_L_WHOLE;
 	if (want == SIFT_CGORD_OL_COMPACT)
 		return SIFT_CGORD_L_COMPACT;
-#ifdef SIFT_TESTING
-	if (sift_test_col_gorder_layout == 1)
-		return SIFT_CGORD_L_COMPACT;
-	if (sift_test_col_gorder_layout == 2)
-		return SIFT_CGORD_L_SMALLER;
-#endif
 	return AUTO_LAYOUT(nvals);
-}
-
-const char *
-sift_cgord_layout_name(int layout)
-{
-	return layout == SIFT_CGORD_L_COMPACT ? "compact" : "whole";
 }
 
 static const char *

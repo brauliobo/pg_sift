@@ -119,7 +119,7 @@ static int
 order_minor(const SiftColLeafStats *ls, int ncols)
 {
 	for (int c = 0; c < ncols; c++)
-		if (ls[c].gord_compact_rows > 0)
+		if (ls[c].gord_compact_chunks > 0)
 			return SIFT_COL_FORMAT_ORDLAYOUT;
 	return SIFT_COL_FORMAT_ADDRPACK;
 }
@@ -202,34 +202,45 @@ colb_notice_order_array(Relation index)
 				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
 }
 
-/* The layout of the order array of each column, and its bytes a row, when the option asks for one or the build chose the compact layout */
+/* The layout of the order array of each column, the share of its chunks that are compact and its bytes a row: said when the option asks for one or the build kept a compact chunk */
 void
 colb_notice_order_layout(Relation index)
 {
 	const SiftColLeafStats *ls;
 	const SiftColIndexMeta *d;
-	StringInfoData out;
+	StringInfoData out,
+				ties;
 	bool		any = false;
+	const char *opt = sift_col_options_order_array_columns(index);
 
+	/* no order array, no layout to say (and the leaf statistics are not read for an index that has none) */
+	if (opt == NULL || opt[0] == '\0' || strcmp(opt, "off") == 0)
+		return;
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	initStringInfo(&out);
+	initStringInfo(&ties);
 	for (int c = 0; c < d->ncols; c++)
 	{
-		const char *layout;
+		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
 
 		if (ls[c].gord_rows <= 0)
 			continue;
-		any = any || ls[c].gord_compact_rows > 0;
-		layout = ls[c].gord_compact_rows <= 0 ? "whole" : ls[c].gord_compact_rows >= ls[c].gord_rows ? "compact" : "compact and whole";
-		appendStringInfo(&out, "%s%s: %s, %.1f bytes a row", out.len ? "; " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname), layout, ls[c].gord_bytes / ls[c].gord_rows);
+		any = any || ls[c].gord_compact_chunks > 0;
+		if (ls[c].gord_tie_chunks > 0)
+			appendStringInfo(&ties, "%s%s: %.0f chunks have long runs of equal keys; order_layout = auto would keep exact keys there", ties.len ? "; " : "", name, ls[c].gord_tie_chunks);
+		appendStringInfo(&out, "%s%s: %s, %.1f bytes a row", out.len ? "; " : "", name,
+						 ls[c].gord_compact_chunks <= 0 ? "exact keys" : psprintf("rounded keys in %.1f%% of %.0f chunks, exact in the rest", 100.0 * ls[c].gord_compact_chunks / ls[c].gord_chunks, ls[c].gord_chunks),
+						 ls[c].gord_bytes / ls[c].gord_rows);
 	}
+	if (ties.len > 0)
+		appendStringInfoChar(&ties, '.');
 	if (out.len == 0 || !(any || sift_col_options_order_layout(index)[0] != '\0'))
 		return;
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": order_layout: %s", RelationGetRelationName(index), out.data),
-			 errdetail("A compact order keeps the heap address of every row and its key to within a bucket of a few bits, and reads the exact key of the rows it needs from the table; the segments that have one are column format minor %d, which a library before %s cannot read. A whole order keeps every key.", SIFT_COL_FORMAT_ORDLAYOUT, minor_lib(SIFT_COL_FORMAT_ORDLAYOUT)),
-			 errhint("ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write the whole order again; 'compact: column' and 'whole: column' choose it for a column.")));
+			 errdetail("A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of %d equal keys or more. The segments with a compact chunk are column format minor %d, which a library before %s cannot read.%s%s", SIFT_CGORD_TIE_RUN, SIFT_COL_FORMAT_ORDLAYOUT, minor_lib(SIFT_COL_FORMAT_ORDLAYOUT), ties.len ? " " : "", ties.data),
+			 errhint("ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write exact keys only; 'compact: column' and 'whole: column' choose it for a column.")));
 }
 
 /*

@@ -158,7 +158,7 @@ REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
  format | segments 
 --------+----------
-     38 |        1
+     41 |        1
 (1 row)
 
 SELECT count(*) FILTER (WHERE same(s.col, shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;

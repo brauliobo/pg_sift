@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 \set VERBOSITY terse
 
 CREATE TABLE tb (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 200));

@@ -3,7 +3,6 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.test_col_gorder_ends = 64;
-SET sift.test_col_gorder_layout = 1;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SELECT setseed(0.42);
@@ -17,7 +16,7 @@ INSERT INTO f SELECT i,
 	CASE WHEN i % 9 = 0 THEN NULL ELSE ((random() * 2 - 1) * 9.2e18)::bigint END
 FROM generate_series(1, 6000) i;
 CREATE TABLE o AS SELECT * FROM f;
-CREATE INDEX f_ix ON f USING sift_col (id, wide, same, two, i4, ts, n) WITH (order_columns = 'wide, same, two, i4, ts, n', order_array_columns = 'wide, same, two, i4, ts, n', write_buffer_limit = 64);
+CREATE INDEX f_ix ON f USING sift_col (id, wide, same, two, i4, ts, n) WITH (order_columns = 'wide, same, two, i4, ts, n', order_array_columns = 'wide, same, two, i4, ts, n', write_buffer_limit = 64, order_layout = 'compact');
 -- rows that stay in the write buffer
 INSERT INTO f SELECT 6000 + i, ((random() * 2 - 1) * 9.2e18)::bigint, -5, CASE WHEN i % 2 = 0 THEN -9223372036854775807 - 1 ELSE 9223372036854775807 END, ((random() * 2 - 1) * 2147483647)::int, TIMESTAMP '2000-01-01' + random() * 8000 * INTERVAL '1 day', ((random() * 2 - 1) * 9.2e18)::bigint FROM generate_series(1, 5000) i;
 INSERT INTO o SELECT * FROM f WHERE id > 6000;

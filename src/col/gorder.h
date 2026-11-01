@@ -45,9 +45,11 @@
 #define SIFT_CGORD_VERSION_TEXT	3
 #define SIFT_CGORD_VERSION_COMPACT	4
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
+#define SIFT_CGORD_TIES	4		/* SiftCGOrdDir.pad bit 2, with SIFT_CGORD_COMPACT: the chunk has a run of SIFT_CGORD_TIE_RUN equal keys or more, which the buckets do not tell apart */
+#define SIFT_CGORD_TIE_RUN	8
 #define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
-#define SIFT_CGORD_L_COMPACT	1
-#define SIFT_CGORD_L_SMALLER	2		/* compact for the chunks where it is smaller than the whole one */
+#define SIFT_CGORD_L_COMPACT	1		/* every chunk of the middle of the order compact */
+#define SIFT_CGORD_L_AUTO	2		/* each chunk of the middle compact where that is at least a fifth smaller than the whole one */
 #define SIFT_CGORD_OL_AUTO	0		/* what the option order_layout asks of a column (SiftCPAgg.glayout) */
 #define SIFT_CGORD_OL_WHOLE	1
 #define SIFT_CGORD_OL_COMPACT	2
@@ -145,7 +147,7 @@ typedef struct SiftCGOrdDir
  * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  * ends: a segment of more than 2 * SIFT_CGORD_ENDS values keeps the ends only.
  * layout: SIFT_CGORD_L_COMPACT writes a block of version 4 when the segment has more than 8 * SIFT_CGORD_ENDS (32,768) values and dense is set, else the whole order;
- * SIFT_CGORD_L_SMALLER the same with a compact chunk only where it is smaller than the whole one (a block with none is the whole order).
+ * SIFT_CGORD_L_AUTO the same with a compact chunk only where it is at least a fifth smaller than the whole one (a block with none is the whole order).
  */
 extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
@@ -174,7 +176,6 @@ extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 
 
 #ifdef SIFT_TESTING
 extern bool sift_test_col_gorder_noskip;	/* sift.test_col_gorder_noskip: an OFFSET walks the entries it throws away (sift_gord_skip takes none) */
-extern int	sift_test_col_gorder_layout;	/* sift.test_col_gorder_layout: 1 writes the order of every plain leaf of many rows as a compact block */
 extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
 extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
 extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
@@ -219,7 +220,6 @@ extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
 extern bool sift_cgord_leaf_array_ok(const SiftColSchema *s, const SiftColDef *d);
 /* The layout (SIFT_CGORD_L_*) of the block of a segment of nvals values for a column whose order_layout is want (SIFT_CGORD_OL_*): the option, or for 'auto' the rule of this function */
 extern int	sift_cgord_layout_pick(uint8 want, uint32 nvals);
-extern const char *sift_cgord_layout_name(int layout);
 /* The value of order_layout into want[column]; s NULL: the syntax only. NULL, or why it is not valid */
 extern const char *sift_cgord_layout_parse(const char *opt, const SiftColSchema *s, const char *const *names, uint8 *want);
 /* a text leaf: its block is version 3 */

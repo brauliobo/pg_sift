@@ -1,11 +1,10 @@
--- order_layout = compact (here forced by the testing setting sift.test_col_gorder_layout): the order of a leaf of many rows keeps the key of every 32nd entry; the others are read from the
+-- order_layout = compact: the order of a leaf of many rows keeps the heap address of each row and its key rounded to a bucket; the exact keys are read from the
 -- rows of the heap. Every ordered read answers what the table does (a copy without an index is the oracle): each column type, ASC and DESC, NULLs, LIMIT and OFFSET, bounds at the ends, in the middle and
 -- in a bracket, a write buffer, dead rows (a segment that has one reads its units), updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
 -- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.test_col_gorder_ends = 64;
-SET sift.test_col_gorder_layout = 1;
 SET max_parallel_workers_per_gather = 0;
 SELECT setseed(0.42);
 
@@ -13,7 +12,7 @@ CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigi
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30000)::int - 15000 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (random() * 1000000000000)::bigint - 500000000000 END, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint
 FROM generate_series(1, 6000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad, tie) WITH (order_columns = 'ts, tz, d, s, b, dup, tie', order_array_columns = 'ts, tz, d, s, b, dup, tie', write_buffer_limit = 64);
+CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad, tie) WITH (order_columns = 'ts, tz, d, s, b, dup, tie', order_array_columns = 'ts, tz, d, s, b, dup, tie', write_buffer_limit = 64, order_layout = 'compact');
 INSERT INTO t SELECT 6000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 1500) i;
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;
@@ -129,12 +128,19 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
 SELECT sift.col_verify('t_ix');
 
--- REINDEX writes it as the setting says: whole again
-SET sift.test_col_gorder_layout = 0;
+-- REINDEX writes it as the option says: whole again
+ALTER INDEX t_ix SET (order_layout = 'whole');
 REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
-SET sift.test_col_gorder_layout = 1;
+ALTER INDEX t_ix SET (order_layout = 'compact');
+REINDEX INDEX t_ix;
+SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT sift.col_verify('t_ix');
+
+-- auto chooses a chunk at a time: the columns of scattered keys are compact, the heavy ties (tie, dup) stay whole, and a column can be both
+ALTER INDEX t_ix RESET (order_layout);
 REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;

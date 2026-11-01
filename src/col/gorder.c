@@ -243,9 +243,25 @@ whole_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, 
 	pad8(body);
 }
 
+/* The longest run of equal keys of the chunk (sorted) */
+static uint32
+longest_run(const int64 *kv, uint32 m)
+{
+	uint32		best = 0,
+				run = 0;
+
+	for (uint32 i = 0; i < m; i++)
+	{
+		run = i > 0 && kv[i] == kv[i - 1] ? run + 1 : 1;
+		best = Max(best, run);
+	}
+	return best;
+}
+
 /*
- * Writes the chunk compact when that is smaller than the whole one (keys that tie are cheap to address as a run, a compact chunk has no such form), the whole one otherwise; true
- * when it is the compact one. d has the first key and the offset of the chunk.
+ * Writes the chunk compact when that is at least a fifth smaller than the whole one and has no run of SIFT_CGORD_TIE_RUN equal keys, the whole one otherwise; true when it is the compact
+ * one. A run of equal keys is cheap to address as a run, which a compact chunk has no form for, and a bound that falls on it makes the compact chunk ask the heap for the exact key of
+ * every row of the run (a table of half unique timestamps and half 50 days read up to 4 times the blocks of the whole order). d has the first key and the offset of the chunk.
  */
 static bool
 compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, bool dense, const SiftCcPolicy *pol)
@@ -260,7 +276,7 @@ compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *
 	initStringInfo(&wb);
 	compact_chunk(&cb, &cd, kv, av, m, pol);
 	whole_chunk(&wb, &wd, kv, av, m, dense, pol);
-	smaller = cb.len < wb.len;
+	smaller = (uint64) cb.len * 5 <= (uint64) wb.len * 4 && longest_run(kv, m) < SIFT_CGORD_TIE_RUN;
 	*d = smaller ? cd : wd;
 	appendBinaryStringInfo(body, smaller ? cb.data : wb.data, smaller ? cb.len : wb.len);
 	pfree(cb.data);
@@ -367,6 +383,8 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 			if (layout == SIFT_CGORD_L_COMPACT)
 			{
 				compact_chunk(&body, &dir[c], kv, av, m, &pol);
+				if (longest_run(kv, m) >= SIFT_CGORD_TIE_RUN)
+					dir[c].pad |= SIFT_CGORD_TIES;
 				anycompact = true;
 			}
 			else
@@ -414,8 +432,6 @@ int			sift_test_col_gorder_rows = 0;
 int			sift_test_col_gorder_ends = 0;
 
 int			sift_test_col_gorder_choice = 0;
-
-int			sift_test_col_gorder_layout = 0;
 
 bool		sift_test_col_gorder_noskip = false;
 #endif
@@ -807,7 +823,7 @@ sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 	if (c >= h->chunks)
 		return false;
 	memcpy(d, ent, sizeof(*d));
-	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
+	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | SIFT_CGORD_TIES | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (!(d->pad & SIFT_CGORD_TIES) || (d->pad & SIFT_CGORD_COMPACT)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
 		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
 }
 

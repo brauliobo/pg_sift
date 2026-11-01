@@ -14,6 +14,7 @@ INSERT INTO nd SELECT i, CASE WHEN i % 89 = 0 THEN NULL ELSE timestamp '2020-01-
 ANALYZE nd;
 CREATE INDEX nd_i ON nd USING sift_col (ts);
 NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.7% of 293 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            
 ----------------------------------
@@ -23,7 +24,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
 SELECT min(format) AS format FROM sift.col_segments('nd_i') WHERE kind = 'immutable';
  format 
 --------
-     38
+     41
 (1 row)
 
 SELECT sift.col_verify('nd_i');
@@ -91,6 +92,7 @@ SELECT sift.col_verify('nd_i');
 
 REINDEX INDEX nd_i;
 NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.9% of 298 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            
 ----------------------------------

@@ -119,7 +119,7 @@ SELECT sift.col_verify('gc_i', true);
 SELECT format, count(*) AS segments FROM sift.col_segments('gc_i') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------
-     38 |        1
+     41 |        1
 (1 row)
 
 SELECT gc_ids('k BETWEEN 100 AND 5000', 'ORDER BY id', true) = gc_ids('k BETWEEN 100 AND 5000', 'ORDER BY id', false) AS range_same,
