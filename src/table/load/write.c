@@ -210,7 +210,7 @@ int
 load_share_units(LoadRun *r, Size bytes, int participants)
 {
 	r->per = LOAD_SBS;
-	if (participants > 1 && bytes >= LOAD_PARALLEL_BYTES)
+	if (participants > 1 && bytes >= load_parallel_bytes())
 	{
 		int			groups = Max((r->units + LOAD_SBS - 1) / LOAD_SBS, Min(participants, r->units / LOAD_MIN_UNITS));
 

@@ -38,6 +38,14 @@
  */
 #define LOAD_PARALLEL_BYTES	((Size) 16 << 20)
 #define LOAD_MIN_UNITS	2
+/* sift.test_load_unit_bytes (a testing build) takes the place of the write buffer limit as the bytes of a unit and sets the parallel start at its multiples, so that a small load reaches the ring */
+#ifdef SIFT_TESTING
+#define load_unit_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 : (Size) sift_tbl_write_buffer_limit * 1024)
+#define load_parallel_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 * LOAD_SBS : LOAD_PARALLEL_BYTES)
+#else
+#define load_unit_bytes()	((Size) sift_tbl_write_buffer_limit * 1024)
+#define load_parallel_bytes()	LOAD_PARALLEL_BYTES
+#endif
 
 /* A row in the buffer of a run: this header, then the tuple in heap format (the fields of the transaction unset), each record at a MAXALIGN */
 typedef struct LoadRec

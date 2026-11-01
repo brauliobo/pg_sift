@@ -7,10 +7,10 @@
 # second COPY and an INSERT during the load change nothing for it; and a load that dies at each stage of the ring leaves nothing: power loss while a worker writes the first group,
 # while groups are written and none is published, and while some are published and the last are not, a COPY that fails on a row after the workers started, a savepoint rolled back
 # after the ring ran. After each the table is empty on the primary and the standby, VACUUM leaves the file as small as the empty table's and no orphan block, the store verifies,
-# and the same load works. SIFT_LR_ROWS (300000, 100000 quick).
+# and the same load works. SIFT_LR_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LR_UNIT) so that rows of 3 MB are enough for the ring).
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_LR_ROWS 300000 100000)
+ROWS=$(knob SIFT_LR_ROWS 300000 20000)
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 32MB
@@ -35,7 +35,7 @@ wal_consistency_checking = 'generic'"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1")
+OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LR_UNIT 0 128)" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id, ctid)) FROM lt" | tail -1; }

@@ -47,6 +47,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_load_publish",
 							"Testing: segments of a COPY's ring the backend takes before it publishes them (0 = the default of 8).",
 							NULL, &sift_test_load_publish, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_load_unit_bytes",
+							"Testing: kB of rows a unit of a COPY into a sift_table holds, and the start of its workers at eight times that (0 = the write buffer limit and 16 MB).",
+							NULL, &sift_test_load_unit_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_fanin",
 							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
 							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

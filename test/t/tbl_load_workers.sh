@@ -5,10 +5,10 @@
 # transaction block, with FREEZE and into a partitioned table writes the same rows too; and a load that dies leaves nothing: a worker ended by pg_terminate_backend, a
 # worker cancelled, a worker killed with kill -9 (the postmaster restarts the cluster), the statement timeout while the participants write, and the backend killed with kill -9. After
 # each the table is empty, VACUUM leaves the file as small as that of an empty table (no orphan group), the same load works and equals the heap twin, and the standby counts as the primary.
-# SIFT_LW_ROWS (300000, 150000 quick).
+# SIFT_LW_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LW_UNIT) so that rows of 3 MB are enough for the workers).
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_LW_ROWS 300000 150000)
+ROWS=$(knob SIFT_LW_ROWS 300000 20000)
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 32MB
@@ -27,7 +27,7 @@ wal_receiver_status_interval = 1s"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_par_workers = 0")
+OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LW_UNIT 0 128)" "SET sift.test_par_workers = 0")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id)) FROM lt" | tail -1; }

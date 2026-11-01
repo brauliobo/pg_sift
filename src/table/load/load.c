@@ -21,6 +21,7 @@ bool		sift_tbl_bulk_groups = true;
 bool		sift_tbl_load_from_copy = false;
 #ifdef SIFT_TESTING
 int			sift_test_load_publish = 0;
+int			sift_test_load_unit_bytes = 0;
 #endif
 static List *loads = NIL;
 static bool callbacks_registered = false;
@@ -121,7 +122,7 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 	ld->open = false;
 	if (r->units == 0)
 		return;
-	if (more && parallel && ring_wanted(ld, rel) && participants > 1 && r->units == LOAD_RING_UNITS && ld->rows.len >= LOAD_PARALLEL_BYTES * LOAD_RING_UNITS / LOAD_SBS)
+	if (more && parallel && ring_wanted(ld, rel) && participants > 1 && r->units == LOAD_RING_UNITS && ld->rows.len >= load_parallel_bytes() * LOAD_RING_UNITS / LOAD_SBS)
 	{
 		ld->open = true;
 		if (load_ring_start(ld, rel, st))
@@ -329,7 +330,7 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool 
 	{
 		if (!ld->open)
 			reserve_run(ld, rel, st);
-		else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= (Size) sift_tbl_write_buffer_limit * 1024)
+		else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes())
 		{
 			load_end_unit(ld);
 			if (ld->run.units == ld->maxunits)
