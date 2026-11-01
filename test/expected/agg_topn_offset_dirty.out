@@ -10,6 +10,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE od (id int PRIMARY KEY, n int, s text COLLATE "C", pad text DEFAULT repeat('x', 200));
 ALTER TABLE od ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO od (id, n, s) SELECT i, (i * 7919) % 1000, 'k' || lpad(((i::bigint * 7919) % 100003)::text, 6, '0') FROM generate_series(1, 12000) i;
+-- pages with gaps (the rows of a page are then a bitmap of its offsets in the unit)
+DELETE FROM od WHERE id % 5 = 2;
+VACUUM od;
 CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s');
 NOTICE:  sift_col index "od_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
@@ -80,23 +83,23 @@ SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_
 DECLARE od_c CURSOR FOR SELECT id, n, s FROM od ORDER BY s LIMIT 5 OFFSET 6000;
 UPDATE od SET s = 'a' || s WHERE id % 3 = 0;
 FETCH ALL FROM od_c;
-  id   |  n  |    s    
--------+-----+---------
-   499 | 581 | k051464
- 10248 | 912 | k051479
-  4881 | 639 | k051481
-  9263 | 697 | k051498
-  3896 | 424 | k051500
+  id  |  n  |    s    
+------+-----+---------
+ 5413 | 547 | k064263
+   46 | 274 | k064265
+ 9795 | 605 | k064280
+ 4428 | 332 | k064282
+ 8810 | 390 | k064299
 (5 rows)
 
 SELECT * FROM od_before;
-  id   |  n  |    s    
--------+-----+---------
-   499 | 581 | k051464
- 10248 | 912 | k051479
-  4881 | 639 | k051481
-  9263 | 697 | k051498
-  3896 | 424 | k051500
+  id  |  n  |    s    
+------+-----+---------
+ 5413 | 547 | k064263
+   46 | 274 | k064265
+ 9795 | 605 | k064280
+ 4428 | 332 | k064282
+ 8810 | 390 | k064299
 (5 rows)
 
 COMMIT;

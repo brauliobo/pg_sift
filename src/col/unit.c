@@ -736,12 +736,30 @@ sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uin
 	return found;
 }
 
+/* The offset (1-based) of the i-th row of a page whose rows are the set bits of bm */
+static uint32
+sparse_offset(const uint8 *bm, uint32 i)
+{
+	uint32		o = 0;
+
+	for (;; o += 8)
+	{
+		uint32		c = sift_pc64(bm[o / 8]);
+
+		if (i < c)
+			break;
+		i -= c;
+	}
+	for (uint32 b = bm[o / 8];; b &= b - 1, i--)
+		if (i == 0)
+			return o + pg_rightmost_one_pos32(b) + 1;
+}
+
 /* The keys of the rows ords (ascending) only: the pages that hold them are decoded, the others skipped */
 void
 sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out)
 {
 	const uint8 *bm = v->sparse;
-	uint16		offs[MaxHeapTuplesPerPage];
 	uint32		k = 0;
 
 	if (v->keyed)
@@ -763,9 +781,8 @@ sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint3
 		{
 			SiftKey		blk = sift_cunit_page_block(v, sb, p);
 
-			page_offsets(v, p, sl > 0 ? bm : NULL, offs);
 			for (; k < n && ords[k] < v->rowstart[p + 1]; k++)
-				out[k] = (blk << 16) | offs[ords[k] - v->rowstart[p]];
+				out[k] = (blk << 16) | (sl == 0 ? ords[k] - v->rowstart[p] + 1 : sparse_offset(bm, ords[k] - v->rowstart[p]));
 		}
 		bm += sl;
 	}

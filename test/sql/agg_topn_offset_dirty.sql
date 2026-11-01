@@ -10,6 +10,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE od (id int PRIMARY KEY, n int, s text COLLATE "C", pad text DEFAULT repeat('x', 200));
 ALTER TABLE od ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO od (id, n, s) SELECT i, (i * 7919) % 1000, 'k' || lpad(((i::bigint * 7919) % 100003)::text, 6, '0') FROM generate_series(1, 12000) i;
+-- pages with gaps (the rows of a page are then a bitmap of its offsets in the unit)
+DELETE FROM od WHERE id % 5 = 2;
+VACUUM od;
 CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
 SET sift.test_topn_heads = off;
