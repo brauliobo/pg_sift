@@ -13,8 +13,8 @@ SET client_min_messages = warning;
 CREATE TABLE src AS SELECT (i::bigint * 7919 % 1000003)::int AS k, i % 1000 AS a, 'name ' || i % 3000 AS t FROM generate_series(1, 1000000) i;
 CREATE TABLE arrival AS TABLE src;
 CREATE TABLE sorted AS SELECT * FROM src ORDER BY k;
-CREATE INDEX arrival_c ON arrival USING sift_col (k, a, t);
-CREATE INDEX sorted_c ON sorted USING sift_col (k, a, t);
+CREATE INDEX arrival_c ON arrival USING sift_col (k, a, t) WITH (point_tid_columns = 'off');
+CREATE INDEX sorted_c ON sorted USING sift_col (k, a, t) WITH (point_tid_columns = 'off');
 CREATE TABLE kk AS SELECT (i::bigint * 7919 % 1000003)::int AS k FROM generate_series(1, 1000) i;
 VACUUM (FREEZE, ANALYZE) arrival, sorted, kk;
 

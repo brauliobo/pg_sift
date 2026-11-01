@@ -9,7 +9,7 @@ node_init mc 12 "autovacuum = off
 sift.async_maintenance = off"
 node_start mc || bail "start failed"
 sql mc "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \
-	"CREATE INDEX t_idx ON t USING sift_col (id, key, kind, amount)" >/dev/null || bail "setup failed"
+	"CREATE INDEX t_idx ON t USING sift_col (id, key, kind, amount) WITH (point_tid_columns = 'off')" >/dev/null || bail "setup failed"
 # batches that each become a segment of their own: the merge writes one segment into the lowest free blocks and frees the last ones of the file
 for b in 0 1 2 3 4 5; do
 	sql mc "INSERT INTO t SELECT $b * 20000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 50) FROM generate_series(1, 20000) g" "SELECT sift.col_promote('t_idx')" >/dev/null || bail "batch $b failed"

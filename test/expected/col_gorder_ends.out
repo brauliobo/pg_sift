@@ -201,11 +201,11 @@ CREATE INDEX zone_o_ix ON zone_o USING sift_col (id, ts, counter_a) WITH (key_cu
 CREATE INDEX zone_r_ix ON zone_r USING sift_col (id, ts, counter_a) WITH (key_cut = 'off');
 CREATE INDEX zone_s_ix ON zone_s USING sift_col (tenant_id, id, ts, counter_a) WITH (key_cut = 'tenant_id');
 SELECT reloptions FROM pg_class WHERE relname IN ('zone_o_ix', 'zone_r_ix', 'zone_s_ix') ORDER BY relname;
-                                                     reloptions                                                     
---------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_columns=auto: counter_a","point_tid_columns=auto: counter_a"}
- {key_cut=off,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: counter_a"}
- {key_cut=tenant_id,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: counter_a",key_columns=auto}
+                                                       reloptions                                                       
+------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,"order_array_columns=auto: counter_a","point_tid_columns=auto: id, counter_a"}
+ {key_cut=off,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: id, counter_a"}
+ {key_cut=tenant_id,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: id, counter_a",key_columns=auto}
 (3 rows)
 
 CREATE FUNCTION middle_from_the_order(tbl text, col text) RETURNS boolean LANGUAGE plpgsql AS $$

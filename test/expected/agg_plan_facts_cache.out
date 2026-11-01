@@ -32,6 +32,8 @@ INSERT INTO price SELECT 'scaled', scan_price();
 RESET sift.plan_scale;
 INSERT INTO price SELECT 'unscaled again', scan_price();
 REINDEX INDEX ev_col;
+NOTICE:  sift_col index "ev_col": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +33%, 3 bytes a row, benefit 28 against cost 8)
+HINT:  ALTER INDEX ev_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 INSERT INTO price SELECT 'after reindex', scan_price();
 SELECT (SELECT p FROM price WHERE step = 'start') = (SELECT p FROM price WHERE step = 'same') AS same_state_same_price,
        (SELECT p FROM price WHERE step = 'after growth') > (SELECT p FROM price WHERE step = 'start') AS grows_with_the_index,

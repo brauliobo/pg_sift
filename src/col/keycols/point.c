@@ -35,6 +35,14 @@
 #define POINT_AUTO_OVERHEAD		0.4			/* the bytes a row of an index beyond its values: units, zones, headers */
 #define POINT_AUTO_ORDER_SPEEDUP 1.7		/* an equality through the directory against through the order array of the column (0.24 to 0.14 M instructions for a key at 1,000,000 rows; 2 to 2.6 for 10 to 500) */
 #define POINT_AUTO_BTREE_FILL	0.9			/* the fill of a b-tree page: the b-tree the directory saves the index from is that much of the bytes of its entries */
+/*
+ * A key that follows the order of the table (correlation 0.9 or more) reads one unit for an equality, and a unit holds up to POINT_AUTO_UNIT_ROWS rows: 1,000,000 rows of an id,
+ * 1 / 10 / 60 / 500 keys 0.216 / 0.173 / 0.721 / 1.665 ms without the directory (a unit of 520,960 rows read for 60 keys, 7 M instructions), 0.021 / 0.033 / 0.058 / 0.591 with it
+ * (a b-tree 0.013 / 0.029 / 0.120 / 0.865); it saves POINT_AUTO_MIN_SAVED_ORDERED instructions a key or it is not worth the bytes (about 42,000 rows).
+ */
+#define POINT_AUTO_UNIT_ROWS	47000.0
+#define POINT_AUTO_ORDER_ROW	13.0
+#define POINT_AUTO_MIN_SAVED_ORDERED	500000.0
 #define POINT_AUTO_UNIQUE		0.5			/* the distinct values of the column over the rows of the table: nearly unique */
 
 /*
@@ -225,29 +233,33 @@ sift_col_auto_point(Relation heap, Relation index)
 					Gc,
 					dir_bytes;
 		int32		width;
-		bool		inord;
+		bool		inord,
+					ordered;
 		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
 		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
 			continue;
-		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || corr >= 0.9 || sift_col_leaf_unique(heap, index, d))
+		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || sift_col_leaf_unique(heap, index, d))
 			continue;
-		inord = !ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d));
-		S = inord ? POINT_AUTO_ORDER_SPEEDUP : (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / POINT_AUTO_LOOKUP;
+		ordered = corr >= 0.9;
+		inord = !ordered && !ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d));
+		S = ordered ? (POINT_AUTO_FIXED + POINT_AUTO_ORDER_ROW * Min(rows, POINT_AUTO_UNIT_ROWS)) / POINT_AUTO_LOOKUP :
+			inord ? POINT_AUTO_ORDER_SPEEDUP : (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / POINT_AUTO_LOOKUP;
 		dir_bytes = point_dir_bytes(rows, int_range_bits(heap, hatt, TupleDescAttr(RelationGetDescr(heap), hatt - 1)));
 		G = 100.0 * dir_bytes / base;
 		B = log2(Max(S, 1.0)) / log2(1.05);
 		Gc = G;
-		if (inord)
+		if (inord || ordered)
 			Gc = 100.0 * dir_bytes / (base + (MAXALIGN(8 + TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attlen) + sizeof(ItemIdData)) / POINT_AUTO_BTREE_FILL);
 		C = Gc / 3 + POINT_AUTO_BUILD_PCT / 5;
-		if (S < 1.05 || (S - 1) * POINT_AUTO_LOOKUP < POINT_AUTO_MIN_SAVED || B < C)
+		if (S < 1.05 || (S - 1) * POINT_AUTO_LOOKUP < (ordered ? POINT_AUTO_MIN_SAVED_ORDERED : POINT_AUTO_MIN_SAVED) || B < C)
 			continue;
 		keycols_append_name(&list, keycols_leaf_name(index, d));
 		base += dir_bytes;
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": point_tid_columns includes \"%s\", chosen by the default formula: %s; predicted index size %+.0f%%, %.1f bytes a row, benefit %.0f against cost %.0f)",
+				(errmsg("sift_col index \"%s\": point_tid_columns includes \"%s\", chosen by the default formula: %s; predicted index size %+.0f%%, %.0f bytes a row, benefit %.0f against cost %.0f)",
 						RelationGetRelationName(index), keycols_leaf_name(index, d),
+						ordered ? psprintf("an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ORDER_ROW * Min(rows, POINT_AUTO_UNIT_ROWS)) / 1e6, POINT_AUTO_LOOKUP / 1e6) :
 						inord ? psprintf("an equality on its nearly unique values takes %.1f times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows", S) :
 						psprintf("an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6),
 						G, dir_bytes, B, C),
