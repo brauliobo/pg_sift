@@ -236,6 +236,7 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 	const uint8 *cb = sift_cseg_cube(seg, u, &clen);
 	const uint8 *eb = sift_cseg_ecube(seg, u, &elen);
 	SiftCPaggCol pcol[SIFT_COL_MAX_COLS];
+	uint32	   *dead = palloc((ndead + 1) * sizeof(uint32));
 	bool		ok = clen + elen > 0 && sift_cseg_xcube(seg, u, &xlen) == NULL;
 
 	for (int c = 0; ok && c < sc->ncols; c++)
@@ -244,6 +245,10 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 		return false;
 	if (!sift_cunit_parse(rec, len, sc, &v) || v.nrows != r->nrows)
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
+	for (uint32 w = 0, nd = 0; nd < ndead; w++)
+		for (uint64 x = ~live[w]; x != 0 && nd < ndead; x &= x - 1)
+			dead[nd++] = w * 64 + pg_rightmost_one_pos64(x);
+	dead[ndead] = r->nrows;
 	for (int c = 0; ok && c < sc->ncols; c++)
 	{
 		const SiftColDef *def = &sc->cols[c];
@@ -263,21 +268,33 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 		}
 		vals = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
 		sift_cchunk_decode(&ch, vals);
-		nulls = palloc0((SIFT_COL_NWORDS(nl) + 1) * sizeof(uint64));
-		for (uint32 i = 0; i < r->nrows; i++)
-			if (live[i / 64] >> (i % 64) & 1)
-			{
-				if (ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1))
-					nulls[k / 64] |= UINT64CONST(1) << (k % 64);
-				vals[k++] = vals[i];
-			}
+		for (uint32 j = 0, prev = 0; j <= ndead; prev = dead[j++] + 1)
 		{
-			bool		any_null = false;
+			if (k != prev)
+				memmove(vals + k, vals + prev, (dead[j] - prev) * sizeof(int64));
+			k += dead[j] - prev;
+		}
+		nulls = NULL;
+		if (ch.nulls)
+		{
+			uint32		kk = 0;
 
-			for (uint32 w = 0; !any_null && w < SIFT_COL_NWORDS(nl); w++)
-				any_null = nulls[w] != 0;
-			if (!any_null)
-				nulls = NULL;	/* the loops over a leaf without a NULL test no bit */
+			nulls = palloc0((SIFT_COL_NWORDS(nl) + 1) * sizeof(uint64));
+			for (uint32 i = 0; i < r->nrows; i++)
+				if (live[i / 64] >> (i % 64) & 1)
+				{
+					if (ch.nulls[i / 64] >> (i % 64) & 1)
+						nulls[kk / 64] |= UINT64CONST(1) << (kk % 64);
+					kk++;
+				}
+			{
+				bool		any_null = false;
+
+				for (uint32 w = 0; !any_null && w < SIFT_COL_NWORDS(nl); w++)
+					any_null = nulls[w] != 0;
+				if (!any_null)
+					nulls = NULL;	/* the loops over a leaf without a NULL test no bit */
+			}
 		}
 		pcol[c] = (SiftCPaggCol) {vals, nulls, NULL, nl, def->store != SIFT_COLS_VAR && ch.enc != SIFT_COLENC_ISTR};
 		sift_cseg_agg(seg, c, u, &orig);
@@ -288,6 +305,9 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 			continue;
 		}
 		sift_cchunk_zone_keys(vals, nulls, NULL, nl, def->store, &z);
+		pcol[c].ranged = z.nvals > z.nnull;
+		pcol[c].lo = z.min;
+		pcol[c].hi = z.max;
 		agg[c] = (SiftCAgg) {.nvals = z.nvals,.nnull = z.nnull,.min = z.min,.max = z.max,.sum_f = z.sum_f,.zflags = z.flags | (orig.zflags & SIFT_COLZ_JNULL),
 			.has_sums = orig.has_sums};
 		if (orig.has_sums)

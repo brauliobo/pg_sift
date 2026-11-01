@@ -209,6 +209,9 @@ typedef struct SiftCPaggCol
 	const uint64 *ovf;
 	uint32		n;
 	bool		ready;					/* key is usable: false for a STR leaf stored inline and for a leaf that was not decoded */
+	bool		ranged;					/* the caller knows the zone: lo and hi bound the keys of the rows that are not NULL (false: not known) */
+	int64		lo,
+				hi;
 } SiftCPaggCol;
 
 /*

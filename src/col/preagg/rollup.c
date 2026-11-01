@@ -123,7 +123,9 @@ ru_encode(const RuBuild *b, StringInfo out)
 {
 	uint32		nt = b->nt,
 			   *ord = palloc(nt * sizeof(uint32)),
-			   *nn = palloc(nt * sizeof(uint32));
+			   *nn = palloc(nt * sizeof(uint32)),
+			   *perm = palloc(Max(b->n, 1) * sizeof(uint32)),
+			   *gstart = palloc((nt + 1) * sizeof(uint32));
 	RuOrder		od = {b->nd, b->tkey, b->tnull};
 	SiftCI128  *si = palloc(nt * sizeof(SiftCI128));
 	int64	   *mn = palloc(nt * sizeof(int64)),
@@ -132,6 +134,7 @@ ru_encode(const RuBuild *b, StringInfo out)
 			   *fmn = palloc(nt * sizeof(double)),
 			   *fmx = palloc(nt * sizeof(double));
 
+	cpagg_group_rows(b->gid, b->n, b->cnt, nt, nn, perm, gstart);
 	for (uint32 t = 0; t < nt; t++)
 		ord[t] = t;
 	ru_order = &od;
@@ -182,16 +185,15 @@ ru_encode(const RuBuild *b, StringInfo out)
 
 		initStringInfo(&ms);
 		memset(nn, 0, nt * sizeof(uint32));
-		for (uint32 i = 0; i < b->n; i++)
-		{
-			uint32		g = b->gid[i];
-
-			if (is_null(mc->nulls, i))
-				continue;
-			if (b->mfl[m])
+		if (b->mfl[m])
+			for (uint32 i = 0; i < b->n; i++)
 			{
-				double		v = sift_col_f8_from_key(mc->key[i]);
+				uint32		g = b->gid[i];
+				double		v;
 
+				if (is_null(mc->nulls, i))
+					continue;
+				v = sift_col_f8_from_key(mc->key[i]);
 				if (nn[g]++ == 0)
 					sf[g] = fmn[g] = fmx[g] = v;
 				else
@@ -201,20 +203,8 @@ ru_encode(const RuBuild *b, StringInfo out)
 					fmx[g] = v > fmx[g] ? v : fmx[g];
 				}
 			}
-			else
-			{
-				int64		v = mc->key[i];
-
-				if (nn[g]++ == 0)
-				{
-					si[g] = 0;
-					mn[g] = mx[g] = v;
-				}
-				si[g] += v;
-				mn[g] = Min(mn[g], v);
-				mx[g] = Max(mx[g], v);
-			}
-		}
+		else if (!cpagg_measure_int(mc, perm, gstart, nt, b->n, si, nn, mn, mx, true))
+			memcpy(nn, b->cnt, nt * sizeof(uint32));
 		for (uint32 i = 0; i < nt; i++)
 			sift_col_put_varint(&ms, nn[ord[i]]);
 		for (uint32 i = 0; i < nt; i++)
@@ -249,6 +239,8 @@ ru_encode(const RuBuild *b, StringInfo out)
 	}
 	pfree(ord);
 	pfree(nn);
+	pfree(perm);
+	pfree(gstart);
 	pfree(si);
 	pfree(mn);
 	pfree(mx);

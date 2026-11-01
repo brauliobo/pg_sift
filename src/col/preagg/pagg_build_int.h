@@ -33,6 +33,8 @@ extern bool	cpagg_cal_days(const SiftCPaggCol *c, bool date, uint32 nrows, int64
 
 extern void	cpagg_cal_cells(const SiftCPaggCol *c, uint32 nrows, int grain, const int64 *days, int64 *out);
 
+extern void	cpagg_group_rows(const uint32 *gid, uint32 n, const uint32 *cnt, uint32 ng, uint32 *pos, uint32 *perm, uint32 *gstart);
+extern bool	cpagg_measure_int(const SiftCPaggCol *mc, const uint32 *perm, const uint32 *gstart, uint32 ng, uint32 nrows, SiftCI128 *si, uint32 *nn, int64 *mn, int64 *mx, bool minmax);
 extern void	cpagg_emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out);
 
 extern void	cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 cubeg, Size cal_budget, DimBuild *db);
