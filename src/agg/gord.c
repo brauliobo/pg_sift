@@ -346,8 +346,9 @@ skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
 		uint32		lo,
 					hi;
 
+		/* a source that cannot say (a write buffer) may have all its entries before v, and none of them is taken off */
 		if (!sift_colsrc_gorder_before(g->src, c->src, g->leaf, c->vs, c->ve, v, g->desc, &lo, &hi, c->buf))
-			return false;
+			lo = 0, hi = c->ve - c->vs;
 		total += hi;
 		if (clo != NULL)
 			clo[i] = lo;
@@ -360,8 +361,8 @@ skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
  * block keeps the bucket of a key, not the key; a whole one its key, a bucket of one) is before v, the largest v before which at most k entries may come. They are all among the
  * first k (fewer than k entries have a key before v), and each of them stands for a row only if the page of its address is all-visible and the unit's row live
  * (sift_colsrc_gorder_exact): a cursor stops its skip at the first entry that is not. The scan then goes on with the rest and throws away the other k - n; the result is the same
- * as the throwing away of the first k. Before the first sift_gord_next; 0 (nothing skipped) when a source cannot say (a write buffer, the ends of an order), a text key, or the
- * scan starts with NULL rows. Returns n.
+ * as the throwing away of the first k. A source that cannot say (a write buffer) counts all its entries as possibly first and gives none up. Before the first sift_gord_next; 0 (nothing
+ * skipped) for the ends of an order, a text key, or when the scan starts with NULL rows. Returns n.
  */
 uint32
 sift_gord_skip(SiftGOrd *g, uint32 k)
