@@ -168,9 +168,9 @@ sift_colk_int_stats_scalar(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64
 	for (uint32 i = 0; i < n; i++)
 	{
 		int64		v = a[i];
-		uint64		sqr = (uint64) (v * v);
+		uint64		sqr = (uint64) v * (uint64) v;	/* unsigned: a value past 2^31 (a float key, a wide integer) is not in the contract, but its square must not be undefined */
 
-		s += v;
+		s = (int64) ((uint64) s + (uint64) v);
 		lo = Min(lo, v);
 		hi = Max(hi, v);
 		q0 += sqr & 0xFFFFFFFF;
@@ -194,7 +194,7 @@ sift_colk_gather_stats_scalar(const int64 *a, const uint32 *idx, uint32 n, int64
 	{
 		int64		v = a[idx[k]];
 
-		s += v;
+		s = (int64) ((uint64) s + (uint64) v);
 		lo = Min(lo, v);
 		hi = Max(hi, v);
 	}

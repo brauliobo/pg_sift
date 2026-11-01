@@ -90,7 +90,7 @@ sift_colk_int_stats_avx2(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *
 		{
 			lo = Min(lo, l[j]);
 			hi = Max(hi, h[j]);
-			s += as[j];
+			s = (int64) ((uint64) s + as[j]);
 			q0 += a0[j];
 			q1 += a1[j];
 		}
@@ -98,9 +98,9 @@ sift_colk_int_stats_avx2(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *
 	for (; i < n; i++)
 	{
 		int64		v = a[i];
-		uint64		sqr = (uint64) (v * v);
+		uint64		sqr = (uint64) v * (uint64) v;	/* unsigned: a value past 2^31 (a float key, a wide integer) is not in the contract, but its square must not be undefined */
 
-		s += v;
+		s = (int64) ((uint64) s + (uint64) v);
 		lo = Min(lo, v);
 		hi = Max(hi, v);
 		q0 += sqr & 0xFFFFFFFF;
@@ -145,13 +145,13 @@ sift_colk_gather_stats_avx2(const int64 *a, const uint32 *idx, uint32 n, int64 *
 			hi = Max(hi, h[j]);
 		}
 		vs = _mm256_add_epi64(vs, _mm256_permute4x64_epi64(vs, 0x4E));
-		s = _mm256_extract_epi64(vs, 0) + _mm256_extract_epi64(vs, 1);
+		s = (int64) ((uint64) _mm256_extract_epi64(vs, 0) + (uint64) _mm256_extract_epi64(vs, 1));
 	}
 	for (; i < n; i++)
 	{
 		int64		v = a[idx[i]];
 
-		s += v;
+		s = (int64) ((uint64) s + (uint64) v);
 		lo = Min(lo, v);
 		hi = Max(hi, v);
 	}

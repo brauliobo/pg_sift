@@ -406,7 +406,7 @@ test_gather(Test *t)
 	mix(t, dst, (k + GUARD) * sizeof(uint32));
 }
 
-/* The statistics of the rows of a group gathered from a column: the sum is of values within 2^31 of zero, as the caller proves */
+/* The statistics of the rows of a group gathered from a column: the sum wraps modulo 2^64 for any values (the caller proves that it fits), so it is compared for the extremes of int64 too */
 static void
 test_gather_stats(Test *t)
 {
@@ -415,16 +415,18 @@ test_gather_stats(Test *t)
 	int64	   *a = in_array(t, sizeof(int64), na);
 	uint32	   *idx = in_array(t, sizeof(uint32), k);
 	int64		out[3];
+	bool		wide = rnd(t, 4) == 0;
 
 	for (uint32 i = 0; i < na; i++)
-		a[i] = (int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
+		a[i] = wide ? (rnd(t, 4) == 0 ? (int64) (rnd(t, 2) ? PG_INT64_MAX - rnd(t, 3) : PG_INT64_MIN + rnd(t, 3)) : (int64) pg_prng_uint64(&t->rs)) :
+			(int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
 	for (uint32 i = 0; i < k; i++)
 		idx[i] = rnd(t, na);
 	t->k->gather_stats(a, idx, k, &out[0], &out[1], &out[2]);
 	mix(t, out, sizeof(out));
 }
 
-/* The statistics of a column: the sums are compared when every value is within 2^31 of zero (the kernel's contract), the extremes always */
+/* The statistics of a column: the sums of squares are compared when every value is within 2^31 of zero (the kernel's contract), the extremes and the wrapping sum always (the extremes of int64 among them) */
 static void
 test_int_stats(Test *t)
 {
@@ -437,13 +439,14 @@ test_int_stats(Test *t)
 	uint64		sq[2];
 
 	for (uint32 i = 0; i < n; i++)
-		a[i] = wide ? (int64) pg_prng_uint64(&t->rs) : (int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
+		a[i] = wide ? (rnd(t, 4) == 0 ? (int64) (rnd(t, 2) ? PG_INT64_MAX - rnd(t, 3) : PG_INT64_MIN + rnd(t, 3)) : (int64) pg_prng_uint64(&t->rs)) :
+			(int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
 	t->k->int_stats(a, n, &mn, &mx, &sum, sq);
 	mix64(t, (uint64) mn);
 	mix64(t, (uint64) mx);
+	mix64(t, (uint64) sum);			/* wraps modulo 2^64 for any values, in every implementation */
 	if (!wide)
 	{
-		mix64(t, (uint64) sum);
 		mix64(t, sq[0]);
 		mix64(t, sq[1]);
 	}
