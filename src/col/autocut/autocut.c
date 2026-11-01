@@ -527,7 +527,7 @@ sift_col_auto_cut(Relation heap, Relation index)
 		appendStringInfo(&opt, "auto: %s%s%s", v.leaf, v.second[0] ? ", " : "", v.second);
 		sift_col_set_option(index, "key_cut", opt.data);
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%, benefit %.0f against cost %.0f)",
+				(errmsg("sift_col index \"%s\": key_cut = 'auto' chooses '%s': %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%, benefit %.0f against cost %.0f)",
 						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth, v.benefit, v.cost),
 				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table%s. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
 						   v.sampled, v.leaf,

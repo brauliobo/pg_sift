@@ -136,7 +136,7 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "ka_auto": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +10.2%, benefit 18 against cost 7)
+NOTICE:  sift_col index "ka_auto": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +10.2%, benefit 18 against cost 7)
 DETAIL:  A sample of 31 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX ka_auto SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
@@ -154,7 +154,7 @@ INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random(
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "kg_narrow": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 102 of 105 units, where 1 hold its rows (predicted index size +15.9%, benefit 39 against cost 12)
+NOTICE:  sift_col index "kg_narrow": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 102 of 105 units, where 1 hold its rows (predicted index size +15.9%, benefit 39 against cost 12)
 DETAIL:  A sample of 27 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX kg_narrow SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it

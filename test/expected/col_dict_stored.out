@@ -524,7 +524,7 @@ CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_
 CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', key_columns = 's');
 NOTICE:  sift_col index "ds_auto_set": the keys of "s" are a bloom filter, not a list, in 50% of 4 units, which hold more than 32 distinct keys
 DETAIL:  The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to 2898 distinct keys.
-NOTICE:  sift_col index "ds_auto_set": key_columns wrote no summary of "s" in 50% of 4 units, whose keys are one value, or every integer of a range, or inline text
+NOTICE:  sift_col index "ds_auto_set": key_columns writes no summary of "s" in 50% of 4 units, whose keys are one value, or every integer of a range, or inline text
 DETAIL:  A summary that could not skip a unit is not stored; a query that filters by the column scans those units.
 HINT:  Leave "s" out of key_columns, or sort the table by it before REINDEX.
 CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 'u');

@@ -233,7 +233,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			{
 				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
 
-				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chose the column \"%s\" of few values: benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
+				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chooses the column \"%s\" of few values: benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
 								 errdetail("ORDER BY %s, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index) and CREATE INDEX about %.0f%% longer.",
 										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write),
 								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
@@ -242,7 +242,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			{
 				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
 
-				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
+				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chooses the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
 								 errdetail("ORDER BY %s LIMIT n reads n entries of each segment, where the units compare the strings of every row (100,000 rows: 82.8 M to 0.27 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX does about %.0f%% more instructions (W)%s: the benefit is log2(%.0f) / log2(1.05), the cost G / 3 + W / 5.",
 										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write, cand[i].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation" : "", GORD_TEXT_SPEEDUP),
 								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
@@ -259,7 +259,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		{
 			const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[rej].leaf]);
 
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' did not choose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[rej].benefit, cand[rej].cost),
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' does not choose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[rej].benefit, cand[rej].cost),
 							 errdetail("ORDER BY %s LIMIT n would read n entries of each segment, where the units compare the strings of every row. The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX would do about %.0f%% more instructions (W)%s: the cost is G / 3 + W / 5 against the benefit log2(%.0f) / log2(1.05).",
 									   name, cand[rej].bytes, cand[rej].bytes / index_bytes * 100.0, cand[rej].write, cand[rej].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation, in a share of the build that falls as the index has more columns" : "", GORD_TEXT_SPEEDUP),
 							 errhint("CREATE INDEX .. WITH (order_array_columns = '%s'), or ALTER INDEX %s SET (order_array_columns = '%s') and REINDEX, if ORDER BY %s LIMIT n matters more than the build.", name, quote_identifier(RelationGetRelationName(index)), name, name)));

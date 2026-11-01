@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE wc (id int, grp int, amount int, label text, pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
 INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(1, 3000) i;
 CREATE INDEX wc_col ON wc USING sift_col (id, grp, amount, label);
-NOTICE:  sift_col index "wc_col": writes a rollup of the rows by grp, label
+NOTICE:  sift_col index "wc_col": rollup_dims = 'auto' writes a rollup of the rows by grp, label
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 91 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX wc_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) wc;
@@ -247,7 +247,7 @@ DROP EXTENSION pg_sift_helpers;
 CREATE TABLE wn (id int PRIMARY KEY, g int NOT NULL, kind int NOT NULL, ts timestamp NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
 INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(1, 60000) i;
 CREATE INDEX wn_col ON wn USING sift_col (id, g, kind, ts, amount) WITH (key_cut = 'g');
-NOTICE:  sift_col index "wn_col": keeps the keys of id in every unit
+NOTICE:  sift_col index "wn_col": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 136 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX wn_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) wn;

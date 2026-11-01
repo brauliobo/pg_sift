@@ -12,9 +12,9 @@ ALTER TABLE ga ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ga SELECT i, abs(hashint4(i)) % 5000000, i % 50, timestamp '2024-01-01' + i * interval '1 second', md5(i::text) || md5(i::text || 'x') FROM generate_series(1, 120000) i;
 -- no statistics yet: the build analyzes the table and chooses
 CREATE INDEX ga_nostats ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_nostats": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_nostats": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_nostats SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_nostats": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
+NOTICE:  sift_col index "ga_nostats": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
 HINT:  ALTER INDEX ga_nostats SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_nostats": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
 DETAIL:  3.7 bytes a row for each column, 0.4 MB together; the segments are column format minor 41, which a library before 3.8 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: r: the whole order (a bound in the middle of its values reads many units)
@@ -32,9 +32,9 @@ DROP INDEX ga_nostats;
 ANALYZE ga;
 -- r is scattered, g has 50 values, id and ts follow the heap
 CREATE INDEX ga_auto ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_auto": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_auto": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_auto SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_auto": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
+NOTICE:  sift_col index "ga_auto": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
 HINT:  ALTER INDEX ga_auto SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_auto": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
 DETAIL:  3.7 bytes a row for each column, 0.4 MB together; the segments are column format minor 41, which a library before 3.8 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: r: the whole order (a bound in the middle of its values reads many units)
@@ -64,14 +64,14 @@ FROM sift._test_col_counters('ga_auto', '1:ge:2000000;1:le:2004000', 24) p, sift
 
 -- off and a list are the user's
 CREATE INDEX ga_off ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_columns = off);
-NOTICE:  sift_col index "ga_off": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_off": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_off SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_off": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "ga_off": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 28 against cost 6)
 HINT:  ALTER INDEX ga_off SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_columns = 'g', order_array_columns = 'g');
-NOTICE:  sift_col index "ga_list": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_list": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_list SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_list": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "ga_list": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 28 against cost 6)
 HINT:  ALTER INDEX ga_list SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_list": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 DETAIL:  0.5 bytes a row for each column, 0.1 MB together; the segments are column format minor 38, which a library before 3.7 cannot read.
@@ -110,9 +110,9 @@ DROP INDEX ga_narrow;
 CREATE TABLE gs AS SELECT id, r, g, ts, pad FROM ga WHERE id <= 90000;
 ANALYZE gs;
 CREATE INDEX gs_i ON gs USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "gs_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "gs_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX gs_i SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "gs_i": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.6 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 23 against cost 6)
+NOTICE:  sift_col index "gs_i": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.6 M instructions against 0.2 M with the directory; predicted index size +5%, 4 bytes a row, benefit 23 against cost 6)
 HINT:  ALTER INDEX gs_i SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 SELECT reloptions FROM pg_class WHERE relname = 'gs_i';
             reloptions             
@@ -122,9 +122,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'gs_i';
 
 -- the choice is made again by REINDEX: after the statistics change the column is dropped
 CREATE INDEX ga_re ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_re": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_re": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_re SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_re": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
+NOTICE:  sift_col index "ga_re": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 5)
 HINT:  ALTER INDEX ga_re SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_re": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
 DETAIL:  3.7 bytes a row for each column, 0.4 MB together; the segments are column format minor 41, which a library before 3.8 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: r: the whole order (a bound in the middle of its values reads many units)
@@ -141,9 +141,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
 UPDATE ga SET r = id;
 ANALYZE ga;
 REINDEX INDEX ga_re;
-NOTICE:  sift_col index "ga_re": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_re": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_re SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "ga_re": point_tid_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ga_re": point_tid_columns = 'auto' chooses "r" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX ga_re SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
                          reloptions                         
@@ -162,9 +162,9 @@ SELECT setseed(0.5);
 
 INSERT INTO gt SELECT i, (random() * 100000000)::int, timestamptz '2024-01-01' + random() * interval '700 days', md5(i::text) || md5(i::text || 'x') FROM generate_series(1, 120000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id, v, ts, pad);
-NOTICE:  sift_col index "gt_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "gt_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +4%, 3 bytes a row, benefit 28 against cost 5)
 HINT:  ALTER INDEX gt_i SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "gt_i": point_tid_columns includes "v", chosen by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 6)
+NOTICE:  sift_col index "gt_i": point_tid_columns = 'auto' chooses "v" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +5%, 4 bytes a row, benefit 11 against cost 6)
 HINT:  ALTER INDEX gt_i SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "gt_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of v, ts
 DETAIL:  3.4 bytes a row for each column, 0.8 MB together; the segments are column format minor 41, which a library before 3.8 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: v: the whole order (a bound in the middle of its values reads many units); ts: the whole order (a bound in the middle of its values reads many units)

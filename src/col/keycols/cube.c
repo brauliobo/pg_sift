@@ -433,7 +433,7 @@ sift_col_auto_cube(Relation heap, Relation index)
 	appendStringInfo(&v, "auto: %s", list.data);
 	sift_col_set_option(index, "preagg", v.data);
 	if (moved)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": gives the dimensions of its cube to the columns whose histograms fit: %s", RelationGetRelationName(index), first.data),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": preagg = 'auto' gives the dimensions of its cube to the columns whose histograms fit: %s", RelationGetRelationName(index), first.data),
 						 errdetail("The cube holds at most %d dimensions, the calendar cells of the dates among them. A column with more than %d distinct values in a unit has no histogram there, so a dimension given to it holds nothing. Stretches of about a unit (%d of them, spread over the table) were read, and the columns that fit most of them come first.",
 								   SIFT_PAGG_MAX_DIMS, SIFT_PAGG_DEF_GROUPS, nst),
 						 errhint("ALTER INDEX %s SET (preagg = 'default'), then REINDEX, gives them in the order of the columns; preagg = 'cube(...)' names them.", quote_identifier(RelationGetRelationName(index)))));
@@ -562,7 +562,7 @@ sift_col_auto_arrlen(Relation index)
 	if (names.len == 0)
 		return;
 	sift_col_set_option(index, "array_lengths", "on");
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": keeps the lengths of the arrays %s", RelationGetRelationName(index), names.data),
+	ereport(NOTICE, (errmsg("sift_col index \"%s\": array_lengths = 'auto' keeps the lengths of the arrays %s", RelationGetRelationName(index), names.data),
 					 errdetail("cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each."),
 					 errhint("ALTER INDEX %s SET (array_lengths = 'off'), then REINDEX, drops them.", quote_identifier(RelationGetRelationName(index)))));
 }
@@ -620,7 +620,7 @@ sift_col_auto_rows(Relation heap, Relation index)
 	else
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]));
 	sift_col_set_option(index, "rollup_dims", v.data);
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": writes a rollup of the rows by %s", RelationGetRelationName(index), v.data + 6),
+	ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims = 'auto' writes a rollup of the rows by %s", RelationGetRelationName(index), v.data + 6),
 					 errdetail("A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most %d) in at least %d%% of %d sampled stretches of about a unit, about %d of them a unit; the cells add to the index and to its build.",
 							   SIFT_PAGG_ROWS_CELLS, ROWS_AGREE_PCT, nst, (int) (pr[bx * m + by].cells / pr[bx * m + by].ok)),
 					 errhint("ALTER INDEX %s SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.", quote_identifier(RelationGetRelationName(index)))));

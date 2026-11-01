@@ -7,7 +7,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ev (id int, grp int, day date, amount int, expr_key int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, date '2020-01-01' + i / 300, i % 100, i % 13, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_dims = 'off');
-NOTICE:  sift_col index "ev_col": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +26%, 3 bytes a row, benefit 28 against cost 7)
+NOTICE:  sift_col index "ev_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +26%, 3 bytes a row, benefit 28 against cost 7)
 HINT:  ALTER INDEX ev_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats() WHERE name = n), 0) $$;

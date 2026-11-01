@@ -236,8 +236,8 @@ CREATE TABLE tn (id int, s text, w text, q int);
 INSERT INTO tn SELECT i, md5(i::text), md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text), i % 100 FROM generate_series(1, 120000) i;
 ANALYZE tn;
 CREATE INDEX tn_i ON tn USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, w sift.col_text_ops, q sift.col_int4_ops);
-NOTICE:  sift_col index "tn_i": order_array_columns = 'auto' chose the text column "s": benefit 117 against cost 15
-NOTICE:  sift_col index "tn_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "tn_i": order_array_columns = 'auto' chooses the text column "s": benefit 117 against cost 15
+NOTICE:  sift_col index "tn_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "tn_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of s
 SELECT reloptions FROM pg_class WHERE relname = 'tn_i';
                           reloptions                          
@@ -253,7 +253,7 @@ SELECT tt_chk('SELECT s FROM tn ORDER BY s LIMIT 10') AS auto_asc, tt_chk('SELEC
 
 DROP INDEX tn_i;
 CREATE INDEX tn_off ON tn USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, w sift.col_text_ops, q sift.col_int4_ops) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "tn_off": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "tn_off": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
 SELECT reloptions FROM pg_class WHERE relname = 'tn_off';
                        reloptions                       
 --------------------------------------------------------
@@ -273,8 +273,8 @@ CREATE TABLE tc (id int, s text COLLATE "en-x-icu", q int, a int, b int, c int);
 INSERT INTO tc SELECT i, md5(i::text), i % 7, i % 11, i % 13, i % 17 FROM generate_series(1, 120000) i;
 ANALYZE tc;
 CREATE INDEX tc_narrow ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
-NOTICE:  sift_col index "tc_narrow": order_array_columns = 'auto' did not choose the text column "s": benefit 117 against cost 177
-NOTICE:  sift_col index "tc_narrow": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "tc_narrow": order_array_columns = 'auto' does not choose the text column "s": benefit 117 against cost 177
+NOTICE:  sift_col index "tc_narrow": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
 SELECT reloptions FROM pg_class WHERE relname = 'tc_narrow';
            reloptions           
 --------------------------------
@@ -283,7 +283,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'tc_narrow';
 
 DROP INDEX tc_narrow;
 CREATE INDEX tc_named ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (order_array_columns = 's');
-NOTICE:  sift_col index "tc_named": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "tc_named": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "tc_named": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
                       reloptions                      
@@ -293,9 +293,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
 
 DROP INDEX tc_named;
 CREATE INDEX tc_wide ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, q sift.col_int4_ops, a sift.col_int4_ops, b sift.col_int4_ops, c sift.col_int4_ops);
-NOTICE:  sift_col index "tc_wide": writes a rollup of the rows by q, a
-NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' chose the text column "s": benefit 117 against cost 65
-NOTICE:  sift_col index "tc_wide": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +6%, 3 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "tc_wide": rollup_dims = 'auto' writes a rollup of the rows by q, a
+NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' chooses the text column "s": benefit 117 against cost 65
+NOTICE:  sift_col index "tc_wide": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +6%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' adds the sorted keys and heap addresses of s
 SELECT reloptions FROM pg_class WHERE relname = 'tc_wide';
                                       reloptions                                       

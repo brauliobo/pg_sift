@@ -7,7 +7,7 @@ SET sift.agg_force = off;
 CREATE TABLE ev (id int, grp int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 50, i % 7 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, v);
-NOTICE:  sift_col index "ev_col": writes a rollup of the rows by grp, v
+NOTICE:  sift_col index "ev_col": rollup_dims = 'auto' writes a rollup of the rows by grp, v
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 350 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
@@ -32,7 +32,7 @@ INSERT INTO price SELECT 'scaled', scan_price();
 RESET sift.plan_scale;
 INSERT INTO price SELECT 'unscaled again', scan_price();
 REINDEX INDEX ev_col;
-NOTICE:  sift_col index "ev_col": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +33%, 3 bytes a row, benefit 28 against cost 8)
+NOTICE:  sift_col index "ev_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +33%, 3 bytes a row, benefit 28 against cost 8)
 HINT:  ALTER INDEX ev_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 INSERT INTO price SELECT 'after reindex', scan_price();
 SELECT (SELECT p FROM price WHERE step = 'start') = (SELECT p FROM price WHERE step = 'same') AS same_state_same_price,
