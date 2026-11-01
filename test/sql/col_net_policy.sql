@@ -9,7 +9,7 @@ SET sift.test_col_net = off;	-- the units with dead rows are scanned: the rule t
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE np (id int, grp int, v int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO np SELECT g, g % 20, g % 1000, repeat('x', 200) FROM generate_series(1, 100000) g;
+INSERT INTO np SELECT g, g % 20, g % 1000, repeat('x', 1500) FROM generate_series(1, 12000) g;
 CREATE INDEX np_ix ON np USING sift_col (id, grp, v);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) np;
 
@@ -23,7 +23,7 @@ SET sift.col_auto_merge_wal_pct = 0.001;
 SELECT rewrite_due, 'the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last' = ANY (blocked_by) AS wal_gate FROM sift.col_maintenance_status('np_ix');
 
 -- and the buffer rows, 3% of the rows, are promoted nevertheless
-INSERT INTO np SELECT g, g % 20, g % 1000, repeat('x', 200) FROM generate_series(100001, 103000) g;
+INSERT INTO np SELECT g, g % 20, g % 1000, repeat('x', 1500) FROM generate_series(12001, 12360) g;
 SELECT rewrite_due, 'the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last' = ANY (blocked_by) AS wal_gate FROM sift.col_maintenance_status('np_ix');
 SELECT sift.col_verify('np_ix', true);
 DROP TABLE np;
