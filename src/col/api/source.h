@@ -220,6 +220,7 @@ typedef struct SiftColVisibility
 	int			(*filter_page) (void *arg, BlockNumber blk, uint64 *offmask);
 	void		(*counters) (void *arg, int64 *rows_vetted_heap_pages);	/* heap pages read since the last call, may be NULL */
 	void	   *arg;
+	void		(*stream) (void *arg, BlockNumber (*next) (void *nextarg), void *nextarg, bool whole);	/* reads the pages next gives through filter_page's reads, ahead and combined; next NULL ends it; may be NULL */
 } SiftColVisibility;
 
 

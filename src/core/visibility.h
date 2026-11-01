@@ -14,6 +14,9 @@
 
 #define SIFT_VIS_DIRTY_MAX	8192
 
+/* The next block a stream is to read, InvalidBlockNumber at its end */
+typedef BlockNumber (*SiftVisNext) (void *arg);
+
 typedef struct SiftVis
 {
 	Relation	heap;
@@ -31,6 +34,10 @@ typedef struct SiftVis
 	BlockNumber *dirty;
 	MemoryContext mcxt;
 	struct HTAB *pagevis;		/* block -> visibility of its rows, for pages visited twice (sift_vis_filter_page) */
+	struct ReadStream *stream;	/* the heap pages sift_vis_filter_page reads next, in the order it asks for them (sift_vis_stream_begin) */
+	SiftVisNext next;
+	bool		whole;			/* the stream's pages are met again by other units: the first visit computes the whole page */
+	void	   *next_arg;
 	int64		heap_checks;	/* EXPLAIN counters */
 	int64		heap_pages;
 } SiftVis;
@@ -82,6 +89,14 @@ extern void sift_test_wait(int key);
  * under the snapshot; reads the heap page once. Returns the remaining count.
  */
 extern int	sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask);
+/*
+ * Reads the heap pages that sift_vis_filter_page is about to be asked for through a read stream (combined, ahead of the filter): next gives the blocks in the order
+ * the filter takes them, and the stream skips by itself those the filter does not read (past the heap, cached whole). Not for a sift_table, which has no heap pages.
+ * whole: the units cut by a key take a few rows of each page, so the other units of the scan meet it again: the first visit checks every row of the page and a later one is
+ * a mask, where the page would be read again (from disk, once the scan has read more than the buffers hold).
+ */
+extern void sift_vis_stream_begin(SiftVis *v, SiftVisNext next, void *arg, bool whole);
+extern void sift_vis_stream_end(SiftVis *v);
 /* A sift_table with HOT chains: the TIDs an index hands out are those of the first version of a chain, and the table's own scans see the later ones */
 extern bool sift_vis_has_chains(Relation heap);
 typedef void (*SiftVisKeyFn) (void *arg, SiftKey key);

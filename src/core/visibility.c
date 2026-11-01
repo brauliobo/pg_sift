@@ -11,6 +11,7 @@
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
@@ -500,6 +501,48 @@ sift_vis_chain_members(Relation heap, uint32 *pos, BlockNumber blk, const uint64
 	sift_tbl_chain_members(heap, pos, blk, offmask, fn, arg);
 }
 
+/* Whether sift_vis_filter_page reads the page: it is in the heap and its visibility is not cached whole */
+static bool
+page_read_wanted(SiftVis *v, BlockNumber blk)
+{
+	PageVis    *e = v->pagevis ? hash_search(v->pagevis, &blk, HASH_FIND, NULL) : NULL;
+
+	if (blk >= v->heap_nblocks)
+		v->heap_nblocks = sift_vis_nblocks(v->heap);
+	return blk < v->heap_nblocks && (e == NULL || !e->full);
+}
+
+static BlockNumber
+stream_next(ReadStream *stream, void *arg, void *per_buffer)
+{
+	SiftVis    *v = arg;
+
+	for (BlockNumber blk; (blk = v->next(v->next_arg)) != InvalidBlockNumber;)
+		if (page_read_wanted(v, blk))
+			return blk;
+	return InvalidBlockNumber;
+}
+
+void
+sift_vis_stream_begin(SiftVis *v, SiftVisNext next, void *arg, bool whole)
+{
+	if (v->stream != NULL || sift_tbl_is_table(v->heap))
+		return;
+	v->next = next;
+	v->next_arg = arg;
+	v->whole = whole;
+	v->stream = read_stream_begin_relation(READ_STREAM_DEFAULT, NULL, v->heap, MAIN_FORKNUM, stream_next, v, 0);
+}
+
+void
+sift_vis_stream_end(SiftVis *v)
+{
+	if (v->stream == NULL)
+		return;
+	read_stream_end(v->stream);
+	v->stream = NULL;
+}
+
 int
 sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 {
@@ -532,9 +575,10 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 			}
 			return left;
 		}
-		full = e != NULL && found;
+		full = e != NULL && (found || v->whole);
 	}
-	page.buf = ReadBuffer(v->heap, blk);
+	page.buf = v->stream ? read_stream_next_buffer(v->stream, NULL) : ReadBuffer(v->heap, blk);
+	SIFT_INVARIANT(BufferGetBlockNumber(page.buf) == blk, "sift: the heap page stream is out of step (block %u, expected %u)", BufferGetBlockNumber(page.buf), blk);
 	LockBuffer(page.buf, BUFFER_LOCK_SHARE);
 	page.page = BufferGetPage(page.buf);
 	page.maxoff = PageGetMaxOffsetNumber(page.page);

@@ -685,6 +685,58 @@ sel_next(const SiftColSel *sel, uint32 from)
 	return m == 0 ? sel->nwords * 64 : w * 64 + pg_rightmost_one_pos64(m);
 }
 
+/* The walk over the pages of a unit that hold a selected row: r is the next selected row, lo .. hi the rows of the page found, blk its heap block */
+typedef struct VetCursor
+{
+	const ColUnit *cu;
+	const SiftColSel *sel;
+	const uint64 *av;
+	uint32		r;
+	uint32		p;
+	uint32		lo;
+	uint32		hi;
+	BlockNumber blk;
+} VetCursor;
+
+/* The next page that holds a selected row and is not all-visible */
+static bool
+vet_next(VetCursor *c)
+{
+	const ColUnit *cu = c->cu;
+
+	while (c->r < c->sel->nwords * 64)
+	{
+		bool		allvis;
+
+		/* the page of the row: the same or the next one where the selection is dense */
+		if (c->r >= cu->v.rowstart[c->p + 1])
+			c->p = c->p + 1 < cu->v.npages && c->r < cu->v.rowstart[c->p + 2] ? c->p + 1 : sift_cunit_row_page(&cu->v, c->r);
+		c->lo = cu->v.rowstart[c->p];
+		c->hi = cu->v.rowstart[c->p + 1];
+		c->blk = sift_cunit_page_block(&cu->v, cu->sb, c->p);
+		allvis = c->av != NULL && sift_col_bit_test(c->av, cu->v.keyed ? c->p : c->blk & (SIFT_SB_PAGES - 1));
+		c->r = sel_next(c->sel, c->hi);
+#ifdef SIFT_TESTING
+		if (allvis && sift_test_col_paranoid)
+			allvis = false;		/* checked like the others, and reported below */
+#endif
+		if (!allvis)
+			return true;
+	}
+	return false;
+}
+
+static BlockNumber
+vet_stream_next(void *arg)
+{
+	VetCursor  *c = arg;
+
+	return vet_next(c) ? c->blk : InvalidBlockNumber;
+}
+
+/* The pages a vet reads on its own before it asks the heap for the others through a stream */
+#define VET_STREAM_AFTER	8
+
 bool
 sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 {
@@ -692,6 +744,10 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	SiftColSource *src = cu->src;
 	const SiftColVisibility *vis = &src->visibility;
 	const uint64 *av = unit_allvisible(cu);
+	VetCursor	cur,
+				ahead;
+	int			npages = 0;
+	bool		streamed = false;
 
 	SIFT_COL_JITTER();
 #ifdef SIFT_TESTING
@@ -709,30 +765,34 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	if (sift_col_sel_count(sel) >= cu->v.nrows / 16)
 		sift_cunit_page_offsets_all(&cu->v);
 	/* the pages that hold a selected row, found from the rows: a unit lists thousands of pages and the selection a few dozen rows */
-	for (uint32 r = sel_next(sel, 0), hi, p = 0; r < sel->nwords * 64; r = sel_next(sel, hi))
+	cur = (VetCursor) {cu, sel, av, sel_next(sel, 0)};
+	for (;;)
 	{
 		uint32		lo,
+					hi,
+					p,
 					n = 0;
+
 		BlockNumber blk;
 		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
 		uint16		offs[MaxHeapTuplesPerPage];		/* the offsets of the rows of the page: only a page that is not all-visible and holds a selected row has them decoded */
-		bool		allvis,
-					dense;
+		bool		dense;
 
-		/* the page of the row: the same or the next one where the selection is dense */
-		if (r >= cu->v.rowstart[p + 1])
-			p = p + 1 < cu->v.npages && r < cu->v.rowstart[p + 2] ? p + 1 : sift_cunit_row_page(&cu->v, r);
-		lo = cu->v.rowstart[p];
-		hi = cu->v.rowstart[p + 1];
-		blk = sift_cunit_page_block(&cu->v, cu->sb, p);
-		allvis = av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1));
-#ifdef SIFT_TESTING
-		if (allvis && sift_test_col_paranoid)
-			allvis = false;		/* checked like the others, and reported below */
-		else
-#endif
-		if (allvis)
-			continue;
+		if (!streamed)
+			ahead = cur;
+		if (!vet_next(&cur))
+			break;
+		lo = cur.lo;
+		hi = cur.hi;
+		p = cur.p;
+		blk = cur.blk;
+
+		/* a vet of many pages reads them through a stream from here on (the first few are read as they come: a point query vets one) */
+		if (++npages == VET_STREAM_AFTER && vis->stream != NULL)
+		{
+			vis->stream(vis->arg, vet_stream_next, &ahead, cu->v.keyed);
+			streamed = true;
+		}
 		/* a dense page (no row gone when the unit was built) has the offsets 1 .. n in the order of the rows: only the others decode them */
 		dense = !cu->v.keyed && sift_cunit_page_sparse_len(&cu->v, p) == 0;
 		if (!dense)
@@ -764,6 +824,8 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 			sift_col_bit_clear(sel->bits, q);
 		}
 	}
+	if (streamed)
+		vis->stream(vis->arg, NULL, NULL, false);
 	if (vis->counters)
 	{
 		int64		pages = 0;

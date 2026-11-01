@@ -59,6 +59,15 @@ vis_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 }
 
 static void
+vis_stream(void *arg, BlockNumber (*next) (void *), void *nextarg, bool whole)
+{
+	if (next == NULL)
+		sift_vis_stream_end(arg);
+	else
+		sift_vis_stream_begin(arg, next, nextarg, whole);
+}
+
+static void
 vis_counters(void *arg, int64 *heap_pages)
 {
 	SiftVis    *v = arg;
@@ -153,7 +162,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
-	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
+	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis, vis_stream};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
 	for (int i = 0; i < src->nseg; i++)
