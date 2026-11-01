@@ -17,9 +17,9 @@ INSERT INTO gc SELECT 200000 + i, NULL, timestamp '2024-02-01', i, 'n' FROM gene
 CREATE INDEX gc_i ON gc USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gc;
 SELECT reloptions FROM pg_class WHERE relname = 'gc_i';
-                                                      reloptions                                                      
-----------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id","order_array_columns=auto: created, score"}
+                                                                    reloptions                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
 (1 row)
 
 -- the count is the heap's; 'counted' says the scan read no unit but the rows of a write buffer (fewer than 5,000)
