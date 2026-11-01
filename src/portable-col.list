@@ -35,6 +35,7 @@ col/seg/prune.c
 col/seg/verify.c
 col/seg/vers.c
 col/seg/dict.c
+col/seg/dictkeep.c
 col/seg/pagg.c
 col/seg/points.c
 col/seg/sets.c

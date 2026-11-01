@@ -155,6 +155,40 @@ SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET
 
 DROP FUNCTION og_fetches(text);
 DROP TABLE og;
+-- random strings: the dictionary of a text key is in compressed blocks, a string read decompresses one; the bisections of the cut read a block again within a few reads, which is kept (168 blocks decompressed without, 110 with; they are
+-- sift._test_col_gdead_stats().blocks)
+CREATE TABLE orr (id int PRIMARY KEY, r text, pad text DEFAULT repeat('x', 100));
+ALTER TABLE orr ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO orr (id, r) SELECT i, left(md5(i::text), 10) FROM generate_series(1, 20000) i;
+CREATE INDEX orr_i ON orr USING sift_col (id sift.col_int4_ops, r sift.col_text_ops) WITH (order_columns = 'id', order_array_columns = 'id, r');
+NOTICE:  sift_col index "orr_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orr;
+DELETE FROM orr WHERE id % 53 = 0;
+UPDATE orr SET r = 'u' || r WHERE id % 97 = 0;
+VACUUM orr;
+CREATE FUNCTION orr_blocks(q text) RETURNS int8 LANGUAGE plpgsql AS $$
+DECLARE c0 int8; c1 int8; r int8;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	SELECT blocks INTO c0 FROM sift._test_col_gdead_stats();
+	EXECUTE format('SELECT count(*) FROM (%s) x', q) INTO r;
+	SELECT blocks INTO c1 FROM sift._test_col_gdead_stats();
+	RETURN c1 - c0;
+END $$;
+SELECT orr_blocks('SELECT id, r FROM orr ORDER BY r, id LIMIT 20 OFFSET 7000') < 140 AS blocks_kept;
+ blocks_kept 
+-------------
+ t
+(1 row)
+
+SELECT ob_chk(format('SELECT id, r AS k FROM orr ORDER BY r %s, id LIMIT 20 OFFSET %s', d, o)) AS result, count(*) FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[2100, 7000]) o GROUP BY 1;
+ result | count 
+--------+-------
+ bulk   |     4
+(1 row)
+
+DROP FUNCTION orr_blocks(text);
+DROP TABLE orr;
 DROP FUNCTION ob_all(), ob_twice(text), ob_chk(text), ob_cut(text, bool);
 DROP TABLE ob;
 DROP EXTENSION pg_sift_test;

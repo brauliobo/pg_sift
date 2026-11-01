@@ -244,6 +244,7 @@ extern bool sift_lst_sampled(const SiftColDef *def);
 #define DICT_LZ4_COST		6000
 #define BISECT_MIN			2048	/* the dictionaries of fewer strings are parsed after DICT_PARSE_AFTER tests: their bisection is short */
 #define BISECT_SLOTS_MAX	8192
+#define LOOK_KEEP			32		/* compressed blocks kept per dictionary: 14,600 instructions to decompress against 200 to copy; the rank bisections of a text cut read 261 blocks, 110 of them again within 64 reads */
 #define BISECT_STR			24	/* a string up to this long is kept in its slot */
 #define BISECT_NOSTR		UINT16_MAX
 
@@ -285,6 +286,22 @@ typedef struct SiftCBisect
 	BisectSlot	slot[FLEXIBLE_ARRAY_MEMBER];
 } SiftCBisect;
 
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* the blocks look_block decompressed (sift._test_col_gdead_stats) */
+#define DICT_BLOCK_DECODED() (sift_cseg_dict_blocks++)
+#else
+#define DICT_BLOCK_DECODED() ((void) 0)
+#endif
+
+/* A block of strings that was decompressed for a string by code, kept for the next ones of the backend (look_block) */
+typedef struct LookKept
+{
+	uint32		b1;				/* block + 1, 0: empty */
+	uint32		cap;
+	uint16		off[DICT_BLOCK + 1];
+	uint8	   *raw;
+} LookKept;
+
 /* A dictionary stored plain or in blocks (DICT_PLAIN, DICT_BLOCKS, DICT_LOOKUP): where its parts lie in the stream */
 typedef struct DictLook
 {
@@ -313,12 +330,17 @@ typedef struct DictLook
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
 	bool		bc_tried;
+	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
+	uint32		kept_next;
 	/* written before they are read, so not cleared with the rest (look_alloc) */
 	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
 	uint8		blkraw[DICT_BLOCK_RAW_MAX];
 	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
+
+extern void sift_cseg_look_load(DictLook *l, uint32 b);
+extern void sift_cseg_look_block(DictLook *l, uint32 b);
 
 /* The block of a leaf's point directory (col/point.h): stream offset of its table, slots, distinct keys, rows listed, words of the lists after the table */
 typedef struct PointLeaf
