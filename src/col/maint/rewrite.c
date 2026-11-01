@@ -43,7 +43,7 @@ peers_overlap(const RewriteView *v)
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
  * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent). It waits too while the blocks the last rewrite freed are held back by a snapshot.
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent), which defers the rewrite of the segments and not the promotion of the write buffer. It waits too while the blocks the last rewrite freed are held back by a snapshot.
  * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with dirty_pct of its units dirty is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
@@ -57,6 +57,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	const char *why = NULL;
 	bool		partitioned,
 				part_dirty = false,
+				buffer_due,
 				build_peers;
 	uint64		listed = 0,
 				dirty = 0,
@@ -118,7 +119,8 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		why = "dirty units";
 	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
 		why = "fragmented units";
-	if (why == NULL && buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
+	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
+	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
 	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
 	if (why != NULL && automatic && build_peers && gates != NULL && maint_rewrite_all(why))
@@ -127,7 +129,10 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	{
 		if (gates != NULL)
 			*gates |= SIFT_COL_GATE_WAL;
-		return NULL;
+		/* the budget defers the rewrite of the segments, not the promotion of the write buffer, which costs its rows: reads would walk them until the budget is back */
+		if (!buffer_due)
+			return NULL;
+		why = WHY_BUFFER;
 	}
 	/*
 	 * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
