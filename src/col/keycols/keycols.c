@@ -555,7 +555,7 @@ sift_col_auto_keys_report(Relation index)
 		if (left.len > 0)
 			appendStringInfo(&detail, " Left out: %s.%s", why.data,
 							 cube_left ? " The units written now keep the lists of a column the cube holds; a REINDEX drops them." : "");
-		ereport(NOTICE, (errmsg("sift_col index %s keeps the keys of %s in every unit", name, kept.data), errdetail_internal("%s", detail.data),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": keeps the keys of %s in every unit", RelationGetRelationName(index), kept.data), errdetail_internal("%s", detail.data),
 						 errhint("ALTER INDEX %s SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
 	}
 	MemoryContextDelete(cx);
@@ -615,7 +615,7 @@ sift_col_auto_paths(Relation heap, Relation index)
 				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
 			if (both.len > 0)
 				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
-			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s", name, only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": keeps the elements of the arrays %s", RelationGetRelationName(index), only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
 							 errdetail_internal("%s", detail.data),
 							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, leaves the elements out.", name)));
 		}
@@ -624,13 +624,12 @@ sift_col_auto_paths(Relation heap, Relation index)
 		return;
 	{
 		StringInfoData v;
-		const char *name = quote_identifier(RelationGetRelationName(index));
 
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", spec.data);
 		sift_col_set_option(index, "paths", v.data);
 		if (ncols + ngroups > 0)
-			ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": reads the jsonb paths %s", RelationGetRelationName(index), spec.data),
 							 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
 									   SIFT_COL_AUTO_PATHS_SAMPLE),
 							 errhint("Write paths = '...' to fix them by hand.")));

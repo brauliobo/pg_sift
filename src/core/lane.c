@@ -244,7 +244,7 @@ seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, 
 				const char *why = last_failure(snap);
 
 				ereport(NOTICE,
-						(errmsg("sift index \"%s\" has %d segments: its write buffer stays open", RelationGetRelationName(index), snap->nsegs),
+						(errmsg("sift index \"%s\": it has %d segments and its write buffer stays open", RelationGetRelationName(index), snap->nsegs),
 						 why ? errdetail("The last maintenance step failed: %s", why) : 0,
 						 errhint("Run sift.merge() on the index; sift.workers shows what the background did.")));
 			}

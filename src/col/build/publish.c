@@ -149,7 +149,7 @@ sift_colb_scan_report(Relation index, ColScanAcc *acc)
 	if (first == NULL)
 		return;
 	ereport(NOTICE,
-			(errmsg("sift_col index %s: compression of the text of %d column%s chosen by the formula (lz4 for %d, zstd kept for %d)", iname, nlz4 + nkept, nlz4 + nkept == 1 ? "" : "s", nlz4, nkept),
+			(errmsg("sift_col index \"%s\": compression of the text of %d column%s chosen by the formula (lz4 for %d, zstd kept for %d)", RelationGetRelationName(index), nlz4 + nkept, nlz4 + nkept == 1 ? "" : "s", nlz4, nkept),
 			 errdetail_internal("%s", detail.data),
 			 errhint("ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX keeps zstd for a column, 'auto; %s=lz4' takes lz4.%s", iname, first, first,
 					 dict ? " SET sift.col_format_minor = 14 before CREATE INDEX writes no LZ4 blocks of dictionaries (they need minor 29), which releases before 3.6 refuse." : "")));

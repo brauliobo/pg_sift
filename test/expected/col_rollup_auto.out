@@ -58,7 +58,7 @@ SELECT * FROM ra_check();
 DROP INDEX ra_none;
 -- no option: the same choice as 'auto'
 CREATE INDEX ra_default ON ra USING sift_col (id, v, a, b, c, e, h);
-NOTICE:  sift_col index ra_default writes a rollup of the rows by a, b
+NOTICE:  sift_col index "ra_default": writes a rollup of the rows by a, b
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 35 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ra_default SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 SELECT ra_option('ra_default');
@@ -77,7 +77,7 @@ SELECT * FROM ra_check();
 
 DROP INDEX ra_default;
 CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'auto');
-NOTICE:  sift_col index ra_auto writes a rollup of the rows by a, b
+NOTICE:  sift_col index "ra_auto": writes a rollup of the rows by a, b
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 35 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ra_auto SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 SELECT ra_option('ra_auto');
@@ -104,7 +104,7 @@ SELECT * FROM ra_check();
 UPDATE ra SET a = id % 400;
 VACUUM (FREEZE, ANALYZE) ra;
 REINDEX INDEX ra_auto;
-NOTICE:  sift_col index ra_auto: rollup_dims wrote no rollup of "a, b" in 100% of 5 units, which hold more combinations of them than a unit may keep
+NOTICE:  sift_col index "ra_auto": rollup_dims wrote no rollup of "a, b" in 100% of 5 units, which hold more combinations of them than a unit may keep
 DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
 SELECT ra_option('ra_auto');
@@ -115,10 +115,10 @@ SELECT ra_option('ra_auto');
 
 ALTER INDEX ra_auto SET (rollup_dims = 'auto');
 REINDEX INDEX ra_auto;
-NOTICE:  sift_col index ra_auto writes a rollup of the rows by b, c
+NOTICE:  sift_col index "ra_auto": writes a rollup of the rows by b, c
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 38 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ra_auto SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index ra_auto: rollup_dims wrote no rollup of "b, c" in 20% of 5 units, which hold more combinations of them than a unit may keep
+NOTICE:  sift_col index "ra_auto": rollup_dims wrote no rollup of "b, c" in 20% of 5 units, which hold more combinations of them than a unit may keep
 DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
 SELECT ra_option('ra_auto');

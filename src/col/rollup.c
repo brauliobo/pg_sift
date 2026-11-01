@@ -467,7 +467,7 @@ sift_col_report_caps(Relation index)
 	/* check-memory: allow the loop reads segments (buffer locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
 	const SiftColRel *rel = sift_col_rel(index);
 	const SiftCPaggSpec *spec = &rel->pagg;
-	const char *name = quote_identifier(RelationGetRelationName(index));
+	const char *name = RelationGetRelationName(index);
 	SiftDirSnapshot *snap;
 	MemoryContext cx;
 	uint32		units = 0,
@@ -552,36 +552,36 @@ sift_col_report_caps(Relation index)
 	}
 	for (int d = 0; units > 0 && spec->fixed && d < spec->ndims; d++)
 		if ((units - with_dim[d]) * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			ereport(NOTICE, (errmsg("sift_col index %s: the cube dim \"%s\" has no histogram in %d%% of %u units, which hold more than %u groups of it",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube dim \"%s\" has no histogram in %d%% of %u units, which hold more than %u groups of it",
 									name, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), share_pct(units - with_dim[d], units), units, spec->max_groups),
 							 errdetail("A query that groups or filters by it scans those units (sift.col_rollup_misses counts them)."),
 							 errhint("Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.")));
 	for (int l = 0; units > 0 && !spec->keyauto && l < rel->schema->ncols; l++)
 	{
 		if (!spec->pres[l] && bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			ereport(NOTICE, (errmsg("sift_col index %s: the keys of \"%s\" are a bloom filter, not a list, in %d%% of %u units, which hold more than %d distinct keys",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": the keys of \"%s\" are a bloom filter, not a list, in %d%% of %u units, which hold more than %d distinct keys",
 									name, leaf_label(index, &rel->schema->cols[l]), share_pct(bloom[l], units), units, SIFT_CSET_LIMIT),
 							 errdetail("The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to %u distinct keys.", keys[l])));
 		if (cap_hits(no_set[l], sets_units))
-			ereport(NOTICE, (errmsg("sift_col index %s: key_columns wrote no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns wrote no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
 									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_set[l], sets_units), sets_units),
 							 errdetail("A summary that could not skip a unit is not stored; a query that filters by the column scans those units."),
 							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
 		if (cap_hits(no_pres[l], pres_units))
-			ereport(NOTICE, (errmsg("sift_col index %s: key_columns wrote no key list or bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns wrote no key list or bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
 									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_pres[l], pres_units), pres_units, SIFT_CSET_PRES_PCT),
 							 errdetail("A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than %d, else exact or, where they fill their range, nothing.", SIFT_CSET_LIMIT),
 							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
 	}
 	for (int r = 0; rows_units > 0 && r < spec->nrollups; r++)
 		if (spec->rollup[r].list < 0 && cap_hits(rows_units - with_roll[r], rows_units))
-			ereport(NOTICE, (errmsg("sift_col index %s: rollup_dims wrote no rollup of \"%s\" in %d%% of %u units, which hold more combinations of them than a unit may keep",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims wrote no rollup of \"%s\" in %d%% of %u units, which hold more combinations of them than a unit may keep",
 									name, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims),
 									share_pct(rows_units - with_roll[r], rows_units), rows_units),
 							 errdetail("A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", SIFT_PAGG_ROWS_CELLS),
 							 errhint("Name fewer columns, or columns with fewer values per unit.")));
 	if (nleft > 0)
-		ereport(NOTICE, (errmsg("sift_col index %s: the cube holds %d dimensions and left out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube holds %d dimensions and left out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
 						 errdetail("The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",
 								   strncmp(sift_col_options_preagg(index), "auto:", 5) == 0 ? "the columns in the order chosen at CREATE INDEX, those whose histograms fit first" : "the columns in their order"),
 						 errhint("Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.")));
@@ -595,7 +595,7 @@ sift_col_report_caps(Relation index)
 		for (int i = 0; i < n && i < lengthof(missing); i++)
 			appendStringInfo(&names, "%s\"%s\"", i ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
 		if (n > 0)
-			ereport(NOTICE, (errmsg("sift_col index %s: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out %d column%s: %s",
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out %d column%s: %s",
 									name, n, n == 1 ? "" : "s", names.data),
 							 errdetail("The cube holds at most %d dimensions, and the other columns of the index take the rest; a query that groups by those dates scans the units.", SIFT_PAGG_MAX_DIMS),
 							 errhint("Name the columns the queries group by in calendar_columns (the list must fit the %d dimensions), or give preagg = 'cube(...)' only the dims they need.", SIFT_PAGG_MAX_DIMS)));

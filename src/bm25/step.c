@@ -151,7 +151,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 		ReThrowError(err);
 	ereport(WARNING,
 			(errcode(err->sqlerrcode),
-			 errmsg("maintenance of sift index \"%s\" failed: %s", RelationGetRelationName(index), err->message),
+			 errmsg("sift index \"%s\": maintenance failed: %s", RelationGetRelationName(index), err->message),
 			 errdetail("It is retried later, after a growing delay.")));
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);

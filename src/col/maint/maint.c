@@ -185,7 +185,7 @@ sift_col_maint_merge_step(Relation index, bool wait)
  * shutdown go on as they were.
  */
 static void
-worker_failed(Oid indexoid, MemoryContext cx)
+worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 {
 	ErrorData  *err;
 
@@ -197,7 +197,7 @@ worker_failed(Oid indexoid, MemoryContext cx)
 		ReThrowError(err);
 	ereport(WARNING,
 			(errcode(err->sqlerrcode),
-			 errmsg("maintenance of sift_col index %u failed: %s", indexoid, err->message),
+			 errmsg("sift_col index \"%s\": maintenance failed: %s", name, err->message),
 			 errdetail("It is retried later, after a growing delay.")));
 	sift_maint_record_failure(indexoid, err);
 	FreeErrorData(err);
@@ -210,6 +210,7 @@ sift_col_maint_worker_main(Datum main_arg)
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);	/* the name of the index, once it is open: a failure before that names the oid */
 
 	PG_TRY();
 	{
@@ -218,6 +219,8 @@ sift_col_maint_worker_main(Datum main_arg)
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 		index = try_index_open(indexoid, RowExclusiveLock);
+		if (index != NULL)
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
@@ -233,7 +236,7 @@ sift_col_maint_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, cx);
+		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
 }
@@ -264,6 +267,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
 
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
 	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
@@ -277,6 +281,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 			if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
 			{
 				TimestampTz start = GetCurrentTimestamp();
@@ -291,7 +296,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, cx);
+		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
 }

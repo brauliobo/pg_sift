@@ -293,7 +293,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
 
 DROP INDEX tc_named;
 CREATE INDEX tc_wide ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, q sift.col_int4_ops, a sift.col_int4_ops, b sift.col_int4_ops, c sift.col_int4_ops);
-NOTICE:  sift_col index tc_wide writes a rollup of the rows by q, a
+NOTICE:  sift_col index "tc_wide": writes a rollup of the rows by q, a
 NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' chose the text column "s": benefit 117 against cost 65
 NOTICE:  sift_col index "tc_wide": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +6%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' adds the sorted keys and heap addresses of s

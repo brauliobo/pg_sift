@@ -250,7 +250,7 @@ SELECT sift.parse_query('Häuser AND "Hund und Katze" OR Wet*', 'dg_idx'::regcla
 
 -- the metapage keeps the configuration the index was built with: the option naming another one is another analyzer, which verify names
 ALTER INDEX dg_idx SET (stemmer = 'french');
-WARNING:  index "dg_idx" was built with other analyzer options
+WARNING:  sift index "dg_idx": it was built with other analyzer options
 DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
 HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT sift.verify('dg_idx');
