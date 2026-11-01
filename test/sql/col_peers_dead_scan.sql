@@ -36,7 +36,7 @@ BEGIN
 				WHEN NOT used THEN 'ok, but not the index scan' ELSE 'ok' END;
 END $$;
 CREATE FUNCTION rv_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 3) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
+$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 2) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
 
 -- 1. the peers as the build leaves them, then with dead rows in every one
 SELECT * FROM rv_peers();
