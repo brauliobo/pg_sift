@@ -73,6 +73,12 @@ INSERT INTO o_q VALUES
 	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
 	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
+	-- the ORDER BY of the query that groups by sets: the keys a set leaves out are NULL, in the position the sort puts NULL
+	(24, 2, 'SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c) ORDER BY b NULLS FIRST, c NULLS FIRST', 'ordered'),
+	(25, 2, 'SELECT a AS c1, e AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((a, e), (a), (e), ()) ORDER BY a DESC NULLS LAST, e NULLS FIRST', 'ordered'),
+	(26, 1, 'SELECT c AS c1, b AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((c, b), (c), (b)) ORDER BY c DESC NULLS FIRST', 'ordered'),
+	(27, 0, 'SELECT b AS c1, c AS c2, count(*) AS n, lag(count(*)) OVER (PARTITION BY b ORDER BY c DESC) AS l FROM o GROUP BY GROUPING SETS ((b, c), (b))', 'ordered'),
+	(28, 0, 'SELECT a AS c1, count(*) AS n FROM o GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST', 'ordered'),
 	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- jsonb keys: the rank of the 3,000 distinct values, ascending, descending, nulls first, with a window on top
 	(30, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1', 'ordered'),
@@ -104,11 +110,16 @@ SELECT n, o_plan(q) = want AS plan FROM o_q ORDER BY n;
  21 | t
  22 | t
  23 | t
+ 24 | t
+ 25 | t
+ 26 | t
+ 27 | t
+ 28 | t
  30 | t
  31 | t
  32 | t
  33 | t
-(22 rows)
+(27 rows)
 
 -- rows in the normal plan's order (key columns), with no worker and with three
 SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k, true, 3) = o_keys(q, k, false, 0) AS workers FROM o_q WHERE want = 'ordered' ORDER BY n;
@@ -129,11 +140,16 @@ SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k,
  21 | t      | t
  22 | t      | t
  23 | t      | t
+ 24 | t      | t
+ 25 | t      | t
+ 26 | t      | t
+ 27 | t      | t
+ 28 | t      | t
  30 | t      | t
  31 | t      | t
  32 | t      | t
  33 | t      | t
-(19 rows)
+(24 rows)
 
 -- the groups are the same rows
 CREATE FUNCTION o_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -165,11 +181,16 @@ SELECT n, o_rows(q, true) = o_rows(q, false) AS rows FROM o_q ORDER BY n;
  21 | t
  22 | t
  23 | t
+ 24 | t
+ 25 | t
+ 26 | t
+ 27 | t
+ 28 | t
  30 | t
  31 | t
  32 | t
  33 | t
-(22 rows)
+(27 rows)
 
 -- adversarial keys: strings that sort differently by collation (case, accents, punctuation, digits, the empty string), numeric with NaN, floats with -0, NaN and infinities,
 -- dates and timestamps with infinity, booleans, negative bigints, NULLs everywhere; every key, both directions, both nulls orders, alone and with a second key that breaks the ties

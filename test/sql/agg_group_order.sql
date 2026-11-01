@@ -73,6 +73,12 @@ INSERT INTO o_q VALUES
 	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
 	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
+	-- the ORDER BY of the query that groups by sets: the keys a set leaves out are NULL, in the position the sort puts NULL
+	(24, 2, 'SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c) ORDER BY b NULLS FIRST, c NULLS FIRST', 'ordered'),
+	(25, 2, 'SELECT a AS c1, e AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((a, e), (a), (e), ()) ORDER BY a DESC NULLS LAST, e NULLS FIRST', 'ordered'),
+	(26, 1, 'SELECT c AS c1, b AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((c, b), (c), (b)) ORDER BY c DESC NULLS FIRST', 'ordered'),
+	(27, 0, 'SELECT b AS c1, c AS c2, count(*) AS n, lag(count(*)) OVER (PARTITION BY b ORDER BY c DESC) AS l FROM o GROUP BY GROUPING SETS ((b, c), (b))', 'ordered'),
+	(28, 0, 'SELECT a AS c1, count(*) AS n FROM o GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST', 'ordered'),
 	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- jsonb keys: the rank of the 3,000 distinct values, ascending, descending, nulls first, with a window on top
 	(30, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1', 'ordered'),

@@ -328,7 +328,7 @@ groups_order(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	uint32		n = ex->nglist,
-				nord = s->nord;
+				nord = s->nord + (s->nsets > 0);
 	MemoryContext tmp,
 				old;
 	uint32	   *ids,
@@ -344,10 +344,13 @@ groups_order(AggExec *ex)
 	old = MemoryContextSwitchTo(tmp);
 	ids = palloc((Size) n * nord * sizeof(uint32));
 	tup = palloc((Size) n * nord * sizeof(uint32));
-	for (uint32 o = 0; o < nord; o++)
+	for (uint32 o = 0; o < s->nord; o++)
 		for (uint32 i = 0; i < n; i++)
 			ids[(Size) i * nord + o] = key_id(ex, s->ord[o].key, ex->glist[i]);
-	for (uint32 o = 0; o < nord; o++)
+	/* groups of equal keys (a NULL a set leaves out, and a NULL the data has): the set with more keys first, as the rows of a rollup reach PostgreSQL's sort */
+	for (uint32 i = 0; s->nsets > 0 && i < n; i++)
+		tup[(Size) i * nord + nord - 1] = 32 - pg_popcount32(s->setmask[key_id(ex, s->nkeys - 1, ex->glist[i]) - 1]);
+	for (uint32 o = 0; o < s->nord; o++)
 	{
 		uint32		maxid;
 		uint32	   *rank = key_ranks(ex, &s->ord[o], ids, n, nord, o, &maxid);

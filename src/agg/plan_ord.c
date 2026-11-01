@@ -320,10 +320,10 @@ agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *inpu
 	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0))
 		return;
 	ord_table_big = table > (double) get_hash_memory_limit();
-	/* grouping sets: a key a set leaves out is NULL in its groups, which the keys of this level (the columns themselves) do not say; the parent's pathkeys, on the columns of the sub-select, do */
-	if (root->sort_pathkeys != NIL && s->nsets == 0)
+	/* grouping sets: the group keys of the query are the columns as the sets null them, which is what its pathkeys name, and a key a set leaves out has the id of NULL */
+	if (root->sort_pathkeys != NIL)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->sort_pathkeys, nworkers, &seen);
-	if (root->window_pathkeys != NIL && s->nsets == 0)
+	if (root->window_pathkeys != NIL)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->window_pathkeys, nworkers, &seen);
 	ordered_parent(c, s, root, input_rel, output_rel, target, scan_tlist, keys, nworkers, &seen);
 }
