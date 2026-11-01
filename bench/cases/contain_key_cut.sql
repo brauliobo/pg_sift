@@ -5,7 +5,7 @@ DROP SCHEMA IF EXISTS contain_key_cut_off CASCADE;
 DROP SCHEMA IF EXISTS contain_key_cut_gist CASCADE;
 CREATE SCHEMA contain_key_cut_off;
 CREATE SCHEMA contain_key_cut_gist;
-CREATE TABLE cut AS SELECT i AS id, int4range(a, a + 1 + (hashint8extended(i, 3) & 1048575)::int % 5000) AS r, inet '20.0.0.0' + (hashint8extended(i, 5) & 16777215)::int AS ip, repeat(md5(i::text), 4) AS note FROM (SELECT i, ((hashint8extended(i, 7) & 8388607) * 10000000 / 8388608)::int AS a FROM generate_series(1, 3000000) i) s;
+CREATE TABLE cut AS SELECT i AS id, int4range(a, a + 1 + (hashint8extended(i, 3) & 1048575)::int % 5000) AS r, inet '20.0.0.0' + (hashint8extended(i, 5) & 16777215)::int AS ip, repeat(md5(i::text), 4) AS note FROM (SELECT i, ((hashint8extended(i, 7) & 8388607) * 10000000 / 8388608)::int AS a FROM generate_series(1, {rows} * 3) i) s;
 CREATE INDEX cut_col ON cut USING sift_col (r, ip);
 CREATE TABLE contain_key_cut_off.cut AS SELECT id, r, ip FROM cut;
 CREATE INDEX cut_col ON contain_key_cut_off.cut USING sift_col (r, ip) WITH (key_cut = 'off');

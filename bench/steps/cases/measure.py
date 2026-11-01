@@ -25,7 +25,7 @@ def expand(sql, case):
         if key not in IDS:
             IDS[key] = psql("SELECT string_agg(id::text, ',' ORDER BY id) FROM %s.%s WHERE n = %s" % key)
         return IDS[key]
-    return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql)
+    return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql).replace('{rows}', str(runcfg.ROWS))
 
 
 def tie_rows(case, native):

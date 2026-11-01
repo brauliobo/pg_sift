@@ -22,6 +22,7 @@ def run_point(args, cases, rows, engines, results, failed):
     """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
     scaled = bool(args.scales)
     tag = '@%d' % rows if scaled else ''
+    runcfg.ROWS = rows
     t0 = time.time()
     csv = dataset(rows) if args.duck_port or any(c.dataset not in DATASETS for c in cases) else ''   # the orders: only the cases on them, the load cases and pg_duckdb read the CSV
     TIMES['(dataset)' + tag] = [round(time.time() - t0, 1), 0]

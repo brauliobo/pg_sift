@@ -154,3 +154,21 @@ class PlanShape(unittest.TestCase):
         a = 'HashAggregate  (cost=1 rows=2) (actual time=1 rows=3 loops=1)\n  Group Key: x\n  ->  Seq Scan on t  (cost=1)\nPlanning Time: 0.1 ms'
         self.assertEqual(cases.plan_shape(a), cases.plan_shape(a.replace('rows=3', 'rows=9').replace('0.1', '7')))
         self.assertNotEqual(cases.plan_shape(a), cases.plan_shape(a.replace('Seq Scan on t', 'Index Scan using i on t')))
+
+
+class Sizes(unittest.TestCase):
+    def test_rows_is_the_number_of_the_point_in_a_statement_and_a_setup(self):
+        from cases import runcfg
+        from cases.measure import expand
+        runcfg.ROWS = 300000
+        self.assertEqual(expand('SELECT 1 WHERE id <= {rows} * 3 / 20', None), 'SELECT 1 WHERE id <= 300000 * 3 / 20')
+
+    def test_no_case_builds_a_table_above_the_rows_of_its_point(self):
+        """a fixed table of millions of rows fills the memory of a small run (a 3,000,000-row table at --rows 100000): the size is `{rows}` times a factor"""
+        import re
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cases')
+        fixed = []
+        for name in sorted(os.listdir(root)):
+            with open(os.path.join(root, name)) as f:
+                fixed += [name for m in re.finditer(r'generate_series\s*\(\s*1\s*,\s*([0-9_]+)\s*\)', f.read()) if int(m.group(1).replace('_', '')) > 1000000]
+        self.assertEqual(fixed, [])

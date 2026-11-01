@@ -66,7 +66,7 @@ def build(case, rows):
         return
     if case.dataset in DATASETS:
         if case.sec.get('setup'):
-            psql('SET search_path = %s, public;\n' % DATASETS[case.dataset][0] + case.sec['setup'] + ';\n')
+            psql('SET search_path = %s, public;\n' % DATASETS[case.dataset][0] + case.sec['setup'].replace('{rows}', str(rows)) + ';\n')
         return
     if case.share and (case.schema(), rows) in BUILT:
         return
@@ -75,7 +75,7 @@ def build(case, rows):
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
     for schema, pre in [(case.schema(), '')] + ([(case.schema() + '_base', 'SET %s;\n' % case.opt['base'])] if case.base_settings() else []):
-        sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
+        sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS).replace('{rows}', str(rows)) + ';\n'
         if case.opt.get('vacuum', 'yes') == 'yes':
             # every table of the case, not only orders: without the visibility map the scan checks the heap of each page for its rows (many_groups: 17,668 blocks read against 1,500 of the index)
             sql += "SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec\n" % schema

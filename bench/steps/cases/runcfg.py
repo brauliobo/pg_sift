@@ -33,6 +33,7 @@ MIN_RUNS = 3
 SCAN = re.compile(r'Custom Scan \(Sift')
 FORCED = ('agg_forced', 'sift.agg_force = on')   # the lane of a fallback case: what the scan can do where the planner declines it
 TIMES = {}   # case id -> [build seconds, run seconds] of the last point
+ROWS = 0   # the rows of the point being measured: `{rows}` in a statement or a setup is this number
 IO_HOW = set()   # how the cold runs were made cold (iolib.cool), for the meta lines of the results file
 
 
