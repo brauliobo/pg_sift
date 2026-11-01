@@ -310,6 +310,8 @@ extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	sift_col_jitter()
 extern PGDLLIMPORT int sift_test_col_open_gate;	/* sift.test_col_open_gate: a scan waits for the advisory lock of this number right after it read the directory */
 extern void sift_col_open_gate(void);
+extern PGDLLIMPORT uint64 sift_col_gkept_stat[4];	/* the kept orders of the write buffers (col/scan/gorder.c): reads that found the order as it was, extended it, made it, dropped it */
+extern PGDLLIMPORT bool sift_test_col_gkept_fail;	/* sift.test_col_gkept_fail: extending a kept order fails after the new arrays are made, before the order takes them */
 #define SIFT_COL_OPEN_GATE()	sift_col_open_gate()
 #else
 #define SIFT_COL_JITTER()	((void) 0)

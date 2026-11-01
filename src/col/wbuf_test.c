@@ -26,6 +26,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/wbuf.h"
 #include "core/lane.h"
 
@@ -36,6 +37,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_long);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
+PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
@@ -507,7 +509,7 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 
 		if (!is_wbuf(&snap->segs[i]))
 			continue;
-		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb) :
+		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb, NULL) :
 			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
 		for (int k = 0; k < nb; k++)
 		{
@@ -539,6 +541,21 @@ sift_test_col_dir_version(PG_FUNCTION_ARGS)
 
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT64(version);
+}
+
+/* (): the kept orders of the write buffers: reads that found the order as it was, extended it, made it, and orders dropped, in this backend */
+Datum
+sift_test_col_gkept_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[4];
+	bool		nulls[4] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < 4; i++)
+		values[i] = Int64GetDatum((int64) sift_col_gkept_stat[i]);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
 typedef struct DeleteState

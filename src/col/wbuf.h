@@ -81,11 +81,22 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
 extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n);
 
 /*
+ * What a scan was given of a kept set: the set (a serial, never reused) and the rows added to it in place since it was made. A cache of the scan that
+ * is keyed by it (the order of the buffer's rows, col/scan/gorder.c) holds while both are the same; the rows of a set only grow, and a set that is dropped is
+ * replaced by one with another serial
+ */
+typedef struct SiftCWbufToken
+{
+	uint64		serial;
+	uint32		fills;
+} SiftCWbufToken;
+
+/*
  * The same for a scan: kept by the backend, which reads the records appended since the last scan only; not to be changed, alive until mcxt is reset or deleted.
  * dirver is the version of the directory the scan read before this call: while it is the one the kept set was checked at, no VACUUM has flagged a record since and the
  * pages of the buffer are not read to find out.
  */
-extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n);
+extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok);
 
 /* The heap addresses of the live records whose plain leaf holds one of the constants of the EQ or IN predicate (an overflow value is kept for the heap to check), ascending, in mcxt; no batch is built (sift_col_wbuf_lookup). *n = the count; *rows = the live records of the leaf */
 extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows);

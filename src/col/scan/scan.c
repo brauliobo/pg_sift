@@ -235,6 +235,8 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 void
 sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatches)
 {
+	src->wtok = NULL;
+	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
 		add_mem(src, batches[i], false);
 }
@@ -242,6 +244,13 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 void
 scan_load_wbuf(SiftColSource *src)
 {
+	bool		own = src->nwtok >= 0;
+
+	if (own)
+	{
+		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir.nsegs, 1) * sizeof(SiftCWbufToken));
+		src->nwtok = 0;
+	}
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		int			n;
@@ -256,7 +265,7 @@ scan_load_wbuf(SiftColSource *src)
 		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
 		 * after that snapshot, which the heap check does not return.
 		 */
-		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n);
+		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL);
 		for (int j = 0; j < n; j++)
 			add_mem(src, bs[j], true);
 	}

@@ -52,6 +52,8 @@ typedef struct BatchSet
 	Oid			db;
 	RelFileNumber rel;
 	uint64		gen;
+	uint64		serial;			/* the set among all the sets this backend made: what a cache of the scans names it by (a freed set's address can be reused, its serial not) */
+	uint32		fills;			/* the times rows were added to it in place */
 	uint32		dirver;			/* the version of the directory when the stamps were last checked: a VACUUM that flagged records moves it (sift_mops_bulkdelete) */
 	WbufLane	lane[SIFT_LANES];
 	StampList	stamp[SIFT_LANES];	/* the pages of each lane, in the order read */
@@ -73,6 +75,8 @@ static MemoryContext sets_cxt;
 static BatchSet *sets[BATCH_SETS];
 
 static uint64 sets_clock;
+
+static uint64 sets_serial;
 
 static int
 held_cmp(const void *a, const void *b)
@@ -131,12 +135,19 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 static void
 fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 {
+	bool		located = true;
+
 	f->cap = 256;
 	f->nheld = 0;
 	f->held = palloc(f->cap * sizeof(Held));
 	initStringInfo(&f->arena);
+	/* a lane read before is read on from where it ended, which names its page: the header page is read only for a lane not yet located (its head is fixed at the creation of the buffer) */
 	for (int l = 0; l < SIFT_LANES; l++)
-		if (BlockNumberIsValid(r->it.head[l]))
+		located &= BlockNumberIsValid(lane[l].blk);
+	if (!located)
+		wbuf_load_heads(r);
+	for (int l = 0; l < SIFT_LANES; l++)
+		if (BlockNumberIsValid(lane[l].blk) || BlockNumberIsValid(r->it.head[l]))
 		{
 			r->pagefn = stamp ? stamp_page : NULL;
 			r->pagearg = stamp ? &stamp[l] : NULL;
@@ -288,6 +299,7 @@ set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, 
 	s->db = index->rd_locator.dbOid;
 	s->rel = index->rd_locator.relNumber;
 	s->gen = entry->gen;
+	s->serial = ++sets_serial;
 	s->dirver = dirver;
 	lanes_unread(s->lane);
 	for (int l = 0; l < SIFT_LANES; l++)
@@ -328,7 +340,7 @@ set_unchanged(BatchSet *s, Relation index)
 static BatchSet *
 set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext tmp)
 {
-	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
+	SiftCWbufReader *r = wbuf_open_lazy(index, entry, schema, tmp);
 	BatchSet   *s = NULL;
 	WbufLane	lane[SIFT_LANES];
 	Fresh		f;
@@ -367,6 +379,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 		if (s->refs == 0 && set_fill(s, r, &f))
 		{
 			memcpy(s->lane, lane, sizeof(lane));
+			s->fills++;
 			return s;
 		}
 rebuild:
@@ -386,7 +399,7 @@ rebuild:
  * address of the dead tuple may be reused); a scan that holds a set keeps its copy, which it checks against the heap.
  */
 SiftColBatch **
-sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n)
+sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -419,6 +432,8 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 	MemoryContextRegisterResetCallback(mcxt, cb);
 	s->refs++;
 	*n = s->n;
+	if (tok)
+		*tok = (SiftCWbufToken) {s->serial, s->fills};
 	out = MemoryContextAlloc(mcxt, Max(s->n, 1) * sizeof(SiftColBatch *));
 	memcpy(out, s->b, s->n * sizeof(SiftColBatch *));
 	return out;

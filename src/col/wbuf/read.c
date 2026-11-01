@@ -6,8 +6,9 @@
 #include "postgres.h"
 #include "col/wbuf/wbuf_int.h"
 
+/* A reader whose lanes are not yet located: wbuf_load_heads reads the header page for them */
 SiftCWbufReader *
-sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
+wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
 {
 	SiftCWbufReader *r;
 
@@ -21,7 +22,26 @@ sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *
 	r->cur.page = r->page;
 	r->val = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue));
 	r->elem = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue *));
-	sift_lane_iter_init(&r->it, index, &r->entry);
+	r->it.index = index;
+	r->it.entry = &r->entry;
+	r->it.nextblk = InvalidBlockNumber;
+	for (int l = 0; l < SIFT_LANES; l++)
+		r->it.head[l] = InvalidBlockNumber;
+	return r;
+}
+
+void
+wbuf_load_heads(SiftCWbufReader *r)
+{
+	sift_lane_iter_init(&r->it, r->cur.index, &r->entry);
+}
+
+SiftCWbufReader *
+sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
+{
+	SiftCWbufReader *r = wbuf_open_lazy(index, entry, schema, mcxt);
+
+	wbuf_load_heads(r);
 	return r;
 }
 

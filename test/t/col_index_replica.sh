@@ -10,7 +10,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 21
+plan 22
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -30,15 +30,29 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 		EXECUTE q INTO b;
 		RETURN a = b;
 	END \$\$" \
+	"CREATE FUNCTION ordered_same(tbl regclass) RETURNS bool LANGUAGE plpgsql AS \$\$
+	DECLARE q text = format('SELECT md5(string_agg(id::text, '','' ORDER BY ord)) FROM (SELECT row_number() OVER () AS ord, id FROM (SELECT id FROM %s ORDER BY k, id LIMIT 300) s) s', tbl);
+		a text; b text;
+	BEGIN
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		PERFORM set_config('sift.enable_col_scan', 'on', true);
+		EXECUTE q INTO a;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		PERFORM set_config('sift.enable_col_scan', 'off', true);
+		EXECUTE q INTO b;
+		RETURN a = b;
+	END \$\$" \
 	"INSERT INTO orders (tenant_id, status, qty, gone, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, CASE WHEN i % 500 = 0 THEN i END,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
 	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, gone, doc) WITH (key_cut = off, write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)', hll_columns = 'tenant_id, status, qty')" \
 	>/dev/null || bail "setup failed"
-for T in kept_a kept_b kept_c; do
+# kept_o has the global order of k: a session that keeps the rows of the write buffer keeps their order too
+for T in kept_a kept_b kept_c kept_o; do
+	OPTS=; [[ $T == kept_o ]] && OPTS="WITH (order_columns = 'k', order_array_columns = 'k')"
 	sql primary "CREATE TABLE $T (id int PRIMARY KEY, k int NOT NULL, grp int NOT NULL, v int NOT NULL, doc jsonb)" \
 		"INSERT INTO $T SELECT i, i % 3000, i % 40, i % 17, jsonb_build_object('a', i % 9) FROM generate_series(1, 40000) i" \
-		"CREATE INDEX ${T}_col ON $T USING sift_col (id, k, grp, v, doc)" "VACUUM (FREEZE, ANALYZE) $T" >/dev/null || bail "setup of $T failed"
+		"CREATE INDEX ${T}_col ON $T USING sift_col (id, k, grp, v, doc) $OPTS" "VACUUM (FREEZE, ANALYZE) $T" >/dev/null || bail "setup of $T failed"
 done
 
 node_clone primary standby 3 "hot_standby_feedback = on
@@ -107,26 +121,28 @@ check "standby immutable segments equal the primary's" test "$(sql standby "$SEG
 
 # A session of the standby keeps the rows of the write buffer between statements. After updates and deletes the primary's VACUUM flags the records of the tuples it removes
 # (replayed here) and frees their addresses: the session's next read must be the heap's, not what it kept
-for T in kept_a kept_b kept_c; do
+for T in kept_a kept_b kept_c kept_o; do
 	sql primary "SET sift.async_maintenance = off" "UPDATE $T SET doc = NULL WHERE id % 11 = 0" "UPDATE $T SET grp = (grp + 1) % 40 WHERE id % 17 = 0" "UPDATE $T SET v = v + 3 WHERE id % 13 = 0" \
 		"DELETE FROM $T WHERE id % 19 = 0" >/dev/null
 done
 catchup primary standby
+check "the standby reads the rows of the write buffer through the global order of k" \
+	grep -q "Global Order: true" <<<"$(sql standby "SET max_parallel_workers_per_gather = 0" "SET sift.agg_force = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT id FROM kept_o ORDER BY k, id LIMIT 300")"
 # the version of the directory is what tells a reader that keeps batches that the VACUUM flagged records: it must replay with the flags, before the addresses are reused
-VERS="SELECT string_agg(sift._test_col_dir_version(i::regclass)::text, ' ' ORDER BY i) FROM unnest(ARRAY['kept_a_col', 'kept_b_col', 'kept_c_col']) i"
+VERS="SELECT string_agg(sift._test_col_dir_version(i::regclass)::text, ' ' ORDER BY i) FROM unnest(ARRAY['kept_a_col', 'kept_b_col', 'kept_c_col', 'kept_o_col']) i"
 VBEFORE=$(sql standby "$VERS")
 rm -f "$P/kept.go"
 cat >"$P/kept.sql" <<EOF
 SET max_parallel_workers_per_gather = 0;
-SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c');
+SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c') AND ordered_same('kept_o');
 \! until [ -f $P/kept.go ]; do sleep 0.1; done
-SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c');
+SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c') AND ordered_same('kept_o');
 EOF
 psql -X -At -q -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -d postgres -f "$P/kept.sql" >"$P/kept.log" 2>&1 &
 KEPT=$!
 for _ in $(seq 100); do [[ -s $P/kept.log ]] && break; sleep 0.1; done
 sleep 2   # the standby's feedback holds the horizon below the deletes until it reports its session done, and a VACUUM below it removes nothing
-sql primary "SET sift.async_maintenance = off" "VACUUM kept_a, kept_b, kept_c" >/dev/null
+sql primary "SET sift.async_maintenance = off" "VACUUM kept_a, kept_b, kept_c, kept_o" >/dev/null
 catchup primary standby
 VAFTER=$(sql standby "$VERS")
 touch "$P/kept.go"

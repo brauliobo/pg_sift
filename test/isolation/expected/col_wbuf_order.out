@@ -1,0 +1,128 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1w s2d s1b s2l s1q s2v s2h s2r s2u s1m s1c s1z s2q s2x
+step s1w: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+260|t    |t      
+(1 row)
+
+step s2d: DELETE FROM iso_wo WHERE id > 1030;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wo;
+count
+-----
+  230
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7002);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT n, agree, ordered FROM iso_wo_q(7002); <waiting ...>
+step s2v: VACUUM iso_wo;
+step s2h: UPDATE iso_wo SET pad = 'y' WHERE id BETWEEN 1001 AND 1030;
+step s2r: SELECT count(*) AS reused FROM iso_wo w JOIN iso_wo_gone g ON w.ctid = g.t;
+reused
+------
+    30
+(1 row)
+
+step s2u: SELECT pg_advisory_unlock(7002);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+  n|agree|ordered
+---+-----+-------
+230|t    |t      
+(1 row)
+
+step s1m: SELECT hits > 0 AS order_found, extends > 0 AS order_extended FROM sift._test_col_gkept_stats();
+order_found|order_extended
+-----------+--------------
+t          |f             
+(1 row)
+
+step s1c: COMMIT;
+step s1z: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+230|t    |t      
+(1 row)
+
+step s2q: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+230|t    |t      
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wo_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wo_idx')) AS index_rows, (SELECT count(*) FROM iso_wo) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       260|      230
+(1 row)
+
+
+starting permutation: s1w s1b s2l s1q s2i s2a s2u s1m s1c s1z s2q s2x
+step s1w: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+260|t    |t      
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wo;
+count
+-----
+  260
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7002);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT n, agree, ordered FROM iso_wo_q(7002); <waiting ...>
+step s2i: INSERT INTO iso_wo SELECT 2000 + g, (g * 3) % 41, 'x' FROM generate_series(1, 40) g;
+step s2a: BEGIN; INSERT INTO iso_wo SELECT 3000 + g, g % 7, 'x' FROM generate_series(1, 40) g; ROLLBACK;
+step s2u: SELECT pg_advisory_unlock(7002);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+  n|agree|ordered
+---+-----+-------
+260|t    |t      
+(1 row)
+
+step s1m: SELECT hits > 0 AS order_found, extends > 0 AS order_extended FROM sift._test_col_gkept_stats();
+order_found|order_extended
+-----------+--------------
+t          |t             
+(1 row)
+
+step s1c: COMMIT;
+step s1z: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+300|t    |t      
+(1 row)
+
+step s2q: SELECT n, agree, ordered FROM iso_wo_q(0);
+  n|agree|ordered
+---+-----+-------
+300|t    |t      
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wo_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wo_idx')) AS index_rows, (SELECT count(*) FROM iso_wo) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       301|      300
+(1 row)
+

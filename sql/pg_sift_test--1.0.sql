@@ -185,6 +185,8 @@ CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bo
 -- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
 CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_gkept_stats(OUT hits int8, OUT extends int8, OUT builds int8, OUT drops int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_gkept_stats' LANGUAGE C STRICT;
 -- VACUUM's pass: flags the rows with id % modulus = 0, then bumps the version; returns how many
 CREATE FUNCTION sift._test_col_wbuf_delete(index regclass, modulus int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_delete' LANGUAGE C STRICT;

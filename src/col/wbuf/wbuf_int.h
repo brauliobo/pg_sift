@@ -94,6 +94,10 @@ typedef struct RawRec
 
 extern uint32	wbuf_limit_pages(Relation index);
 
+extern SiftCWbufReader *	wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt);
+
+extern void	wbuf_load_heads(SiftCWbufReader *r);
+
 extern void	wbuf_cursor_set(PageCursor *c, Page page);
 
 extern const SiftColRecHead *	wbuf_rec_at(PageCursor *c, Size *size);
