@@ -306,3 +306,22 @@ class Profile(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_record('echo "Permission denied" >&2; exit 1', tmp)
         self.assertIn('Permission denied', die.call_args.args[0])
+
+
+class Param(unittest.TestCase):
+    def test_a_list_parameter_is_a_psql_variable_the_session_sends_once(self):
+        from unittest import mock
+        from cases import measure, server
+        from duckdb import Session
+        case = mock.Mock(**{'schema.return_value': 'c_keys'})
+        server.IDS[('c_keys', 'keyset', '3')] = '1,2,3'
+        sql = measure.expand('SELECT 1 WHERE k = ANY({param:keyset:3})', case)
+        self.assertEqual(sql, "SELECT 1 WHERE k = ANY(:'ids_keyset_3'::int[])")
+        self.assertEqual(Session.VARS['ids_keyset_3'], '{1,2,3}')
+        sent = []
+        with mock.patch.object(Session.__bases__[0], 'run', side_effect=lambda text, capture: sent.append(text) or ['Time: 1.0 ms']), mock.patch.object(Session.__bases__[0], '__init__', return_value=None):
+            session = Session(1, 1, None)
+            session.run(sql)
+            session.run(sql)
+        self.assertIn("\\set ids_keyset_3 '{1,2,3}'", sent[0])
+        self.assertNotIn('\\set', sent[1])

@@ -87,11 +87,16 @@ class Session(pgq.Backend):
     def __init__(self, port, timeout, setting, db='bench', host='127.0.0.1'):
         super().__init__(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db], {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout},
                          setup=['\\set VERBOSITY terse'], strict=False)
+        self.sent = set()
         if setting:
             self.run('SET duckdb.force_execution = %s' % setting)
 
+    VARS = {}   # psql variables a statement may name as :'name' (bench/steps/cases/measure.py expand: the id list of a case); sent once per session, outside the timing
+
     def run(self, sql):
-        lines = super().run('\\timing on\n%s;\n\\timing off' % sql.rstrip(';'), capture=True)
+        names = [n for n in re.findall(r":'(\w+)'", sql) if n in self.VARS and n not in self.sent]
+        self.sent.update(names)
+        lines = super().run(''.join("\\set %s '%s'\n" % (n, self.VARS[n]) for n in names) + '\\timing on\n%s;\n\\timing off' % sql.rstrip(';'), capture=True)
         ms = next((float(m.group(1)) for l in reversed(lines) if (m := re.match(r'Time: ([0-9.]+) ms', l))), None)
         err = next((l[6:].strip() for l in lines if l.startswith('ERROR:')), '')
         warn = next((l[8:].strip() for l in lines if l.startswith('WARNING:')), '')

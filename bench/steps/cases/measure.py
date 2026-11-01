@@ -12,6 +12,7 @@ from collections import Counter
 
 import benchlib
 import iolib
+from duckdb import Session
 
 from . import runcfg
 from .runcfg import FORCED, HERE, IO_HOW, MIN_RUNS, SCAN, die, log
@@ -19,12 +20,19 @@ from .server import Fresh, IDS, build, equal, equal_ties, plan_note, plan_shape,
 
 
 def expand(sql, case):
-    """`{ids:TABLE:N}` is the list of the ids of the rows of TABLE with n = N, in the statement: a literal IN list of 50,000 or 500,000 values is not a thing to write in a file"""
+    """`{ids:TABLE:N}` is the list of the ids of the rows of TABLE with n = N, in the statement: a literal IN list of 50,000 or 500,000 values is not a thing to write in a file; `{param:TABLE:N}`
+    is the same list as one int[] (a psql variable, :'ids_TABLE_N'::int[], sent once per session): the statement carries no 3 MB of SQL to parse and the planner still sees the array"""
     def ids(m):
         key = (case.schema(), m.group(1), m.group(2))
         if key not in IDS:
             IDS[key] = psql("SELECT string_agg(id::text, ',' ORDER BY id) FROM %s.%s WHERE n = %s" % key)
         return IDS[key]
+
+    def param(m):
+        name = 'ids_%s_%s' % (m.group(1), m.group(2))
+        Session.VARS[name] = '{' + ids(m) + '}'
+        return ":'%s'::int[]" % name
+    sql = re.sub(r'\{param:(\w+):(\d+)\}', param, sql)
     return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql).replace('{rows}', str(runcfg.ROWS))
 
 
