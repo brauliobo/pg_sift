@@ -3,12 +3,12 @@
 # and merges run side by side: the two counts are equal. A VACUUM that removes the index entries of tuples deleted before the snapshot and
 # marks their pages all-visible while a count has read the liveness and not yet the map made the index count more rows than the snapshot
 # holds (2.0.2: about one query in 100000, a few per minute under 6 readers). Runs on the release build too (no test functions).
-# A time-boxed soak, not a size-bound test: it runs SIFT_CHURN_SECS (40 s, 10 s in a quick run) whatever the speed, and a totals
+# A time-boxed soak, not a size-bound test: it runs SIFT_CHURN_SECS (8 s, 6 s in a quick run) whatever the speed, and a totals
 # list of the tests keeps it apart.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 40 10)
-ROWS=100000
+SECS=$(knob SIFT_CHURN_SECS 8 6)
+ROWS=10000
 plan 3
 node_init vs 17 "autovacuum = off
 max_worker_processes = 16
@@ -34,7 +34,7 @@ printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ;' 'SELECT chk();' 'COMMIT;'
 printf '%s\n' '\set r random(0, 999)' "DELETE FROM st WHERE id % 1000 = :r AND id <= $ROWS;" >"$D/delete.sql"
 printf '%s\n' '\set r random(0, 999)' "UPDATE st SET body = body || ' u' WHERE id % 1000 = :r AND id <= $ROWS;" >"$D/update.sql"
 printf '%s\n' "INSERT INTO st (body) SELECT 'zzword n' || i FROM generate_series(1, 300) i;" >"$D/insert.sql"
-pgbench_bg vs 1 "$SECS" -f "$D/read.sql@20" -f "$D/delete.sql@3" -f "$D/update.sql@1" -f "$D/insert.sql@1"
+pgbench_bg vs 8 "$SECS" -f "$D/read.sql@20" -f "$D/delete.sql@3" -f "$D/update.sql@1" -f "$D/insert.sql@1"
 
 n=0
 : >"$D/maint.out"
