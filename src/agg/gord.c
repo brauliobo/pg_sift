@@ -100,6 +100,7 @@ struct SiftGOrd
 	uint32		npend;
 	uint32		cpend;
 	bool		last_set;
+	bool		repeat;			/* the last sift_gord_next dropped an entry that repeated the one before it */
 	int			last_cls;
 	int64		last_key;
 	uint64		last_tid;
@@ -334,10 +335,16 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	return g;
 }
 
-bool
-sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid)
+int
+sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid)
 {
-	return g->prev != NULL && sift_colsrc_gorder_exact(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
+	return g->prev == NULL ? SIFT_GORD_UNKNOWN : sift_colsrc_gorder_state(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
+}
+
+bool
+sift_gord_repeated(const SiftGOrd *g)
+{
+	return g->repeat;
 }
 
 /* The sum over the cursors of how many of their entries possibly come before v in the scan: the entries a scan that skips the n first cannot reach all of if this is at most n */
@@ -695,6 +702,7 @@ gord_next_text(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		/* the entry of another source can repeat the last one */
 		dup = g->last_set && g->last_cls == best->cls && g->last_tid == best->tid &&
 			(best->cls == 1 ? g->last_len == best->slen && memcmp(g->last_str, best->str, best->slen) == 0 : g->last_key == best->k);
+		g->repeat |= dup;
 		g->prev = best;
 		if (!dup)
 		{
@@ -731,6 +739,7 @@ sift_gord_group(const SiftGOrd *g)
 bool
 sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
+	g->repeat = false;
 	if (g->collid != 0)
 		return gord_next_text(g, key, isnull, tid);
 	if (!g->started)
@@ -777,6 +786,7 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		/* a source holds an entry once: only the entry of another source can repeat the last one */
 		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_tid == best->tid && g->last_key == best->k)
 		{
+			g->repeat = true;
 			g->prev = best;
 			cur_next(g, best);
 			continue;

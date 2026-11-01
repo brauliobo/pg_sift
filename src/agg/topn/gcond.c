@@ -350,11 +350,13 @@ text_is(Datum d, const char *str, uint32 len)
 	return VARSIZE_ANY_EXHDR(v) == len && memcmp(VARDATA_ANY(v), str, len) == 0;
 }
 
-/* The entry passes the condition by its key alone and is exact (live, on an all-visible page): the heap does not confirm it. The condition is asked first: when another column decides it, the entry is never exact and the dead list of its unit is not read */
-bool
-gord_entry_exact(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull)
+/* What is known of the entry (sift_gord_state), the condition counting: SIFT_GORD_EXACT when it passes the condition by its key alone and is live on an all-visible page (the heap does not confirm it). The condition is asked first: when another column decides it, the entry is never exact and the dead list of its unit is not read */
+int
+gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull)
 {
-	return (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1) && sift_gord_exact(t->go, tid);
+	if (t->gcond != NULL && gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) != 1)
+		return SIFT_GORD_CHECK;
+	return sift_gord_state(t->go, tid);
 }
 
 /*
@@ -366,6 +368,7 @@ typedef struct GGroup
 {
 	ItemPointerData *tid;
 	bool	   *exact;			/* per entry: live and visible, and passes the condition by its key alone */
+	bool	   *dead;			/* per entry: its segment lost the row and no other source repeats it: nothing stands for it, the heap is not asked */
 	int			n;
 	int			room;
 	StringInfoData str;			/* the string of the group, for a text key (the key of the array is the rank in a segment) */
@@ -401,6 +404,8 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 			t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
 		}
 		r = &t->gq[t->gqn];
+		if (g->dead[i])
+			continue;
 		memset(r, 0, sizeof(GRow));
 		r->tid = entry;
 		if (thrown)
@@ -452,10 +457,11 @@ gord_prep(SiftTopN *t)
 	bool		isnull,
 				gnull = false,
 				closed = false;
-	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .room = 64};
+	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .dead = palloc(64 * sizeof(bool)), .room = 64};
 	ItemPointerData tid;
 	const char *str = NULL;
 	uint32		slen = 0;
+	int			st;
 
 	initStringInfo(&g.str);
 
@@ -463,6 +469,8 @@ gord_prep(SiftTopN *t)
 	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), t->gqroom * sizeof(GRow));
 	while (sift_gord_next(t->go, &key, &isnull, &tid))
 	{
+		if (g.n > 0 && sift_gord_repeated(t->go))
+			g.dead[g.n - 1] = false;
 		if (++scanned > cap)
 			return false;
 		if (t->gtext && !isnull)
@@ -489,15 +497,21 @@ gord_prep(SiftTopN *t)
 			g.room *= 2;
 			g.tid = repalloc(g.tid, g.room * sizeof(ItemPointerData));
 			g.exact = repalloc(g.exact, g.room * sizeof(bool));
+			g.dead = repalloc(g.dead, g.room * sizeof(bool));
 		}
-		g.exact[g.n] = gord_entry_exact(t, &tid, key, isnull);
+		st = gord_entry_state(t, &tid, key, isnull);
+		g.exact[g.n] = st == SIFT_GORD_EXACT;
+		g.dead[g.n] = st == SIFT_GORD_DEAD;
 		g.tid[g.n++] = tid;
 	}
 	/* the end of the array closes the last group */
+	if (g.n > 0 && sift_gord_repeated(t->go))
+		g.dead[g.n - 1] = false;
 	if (!closed && !gord_group(t, &g, gkey, gnull))
 		return false;
 	pfree(g.tid);
 	pfree(g.exact);
+	pfree(g.dead);
 	pfree(g.str.data);
 	return closed || !sift_gord_short(t->go) || (uint32) t->gqn >= t->limit;
 }
@@ -524,7 +538,7 @@ gord_probe(SiftTopN *t)
 					hnull;
 		Datum		d;
 
-		if (n < t->skip && gord_entry_exact(t, &tid, key, isnull))
+		if (n < t->skip && gord_entry_state(t, &tid, key, isnull) == SIFT_GORD_EXACT)
 		{
 			n++;
 			continue;

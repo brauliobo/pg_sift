@@ -388,7 +388,7 @@ extern SiftSrcZone key_zone(const TopKey *k, const SiftSrcZone *z);
 extern bool next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part);
 
 extern bool gcond_test(const SiftTopGPred *p, TupleTableSlot *slot);
-extern bool gord_entry_exact(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
+extern int gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
 extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull);
 extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);
 

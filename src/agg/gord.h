@@ -39,8 +39,11 @@ extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool des
 extern const char *sift_gord_str(const SiftGOrd *g, uint32 *len);
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
-/* The entry sift_gord_next just gave is of a row that is live and visible to every snapshot: the heap need not confirm it (the first rows an OFFSET throws away) */
-extern bool sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid);
+/* What its source knows of the entry sift_gord_next just gave (SIFT_GORD_EXACT: a row live and visible to every snapshot, the heap need not confirm it, as the first rows an OFFSET throws away; SIFT_GORD_DEAD: its segment lost the row,
+ * nothing in that source stands for it, and a repeat of it in another source (sift_gord_repeated) is the row that took its address) */
+extern int sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid);
+/* The sift_gord_next just made dropped an entry that repeated the one it gave before */
+extern bool sift_gord_repeated(const SiftGOrd *g);
 /* An entry sift_gord_skip took off the front that the heap has to confirm: the address, and its key when the block has it exactly (check) */
 typedef struct SiftGPend
 {

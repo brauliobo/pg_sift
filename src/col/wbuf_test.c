@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
+PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
@@ -555,6 +556,21 @@ sift_test_col_gkept_stats(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
 	for (int i = 0; i < 4; i++)
 		values[i] = Int64GetDatum((int64) sift_col_gkept_stat[i]);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* (): the kept lists of dead rows of the units of the segments: lists found as they were, lists made, in this backend */
+Datum
+sift_test_col_gdead_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[2];
+	bool		nulls[2] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < 2; i++)
+		values[i] = Int64GetDatum((int64) sift_col_gdead_stat[i]);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 

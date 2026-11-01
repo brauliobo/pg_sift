@@ -102,7 +102,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 			tid = r->tid;
 		}
 		/* an entry of an exact unit is not confirmed in the heap when the Limit throws it away (its key is the array's) or when the key is all that goes out */
-		else if ((t->emitted < t->skip || t->gkeyout) && gord_entry_exact(t, &tid, key, isnull))
+		else if ((t->emitted < t->skip || t->gkeyout) && gord_entry_state(t, &tid, key, isnull) == SIFT_GORD_EXACT)
 		{
 			if (t->emitted++ < t->skip)
 				return skipped_row(t, slot);
