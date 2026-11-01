@@ -94,7 +94,11 @@ INSERT INTO u3 SELECT NULL, NULL, NULL FROM generate_series(1, 10);
 SELECT leaf, nrows, nunits, ndistinct, min, max, elems_per_row FROM sift._test_aggstub_stats('u3_col') ORDER BY leaf;
 SELECT count(*) AS units, sum(nrow) AS rows FROM sift._test_aggstub_units('u3_col');
 
-DROP TABLE u, u2, u3;
+-- the source reads heap pages: a table of another access method is refused
+CREATE TABLE u4 (id int, seg int) USING sift_table;
+CREATE INDEX u4_col ON u4 USING sift_colstub (id, seg);
+
+DROP TABLE u, u2, u3, u4;
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;
