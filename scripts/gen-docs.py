@@ -13,7 +13,7 @@ The parts:
                                                           results file is missing or empty says it is not measured yet
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
   <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the settings table (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
-                                                          one setting, inline; tests: the test counts, inline
+                                                          one setting, inline
 """
 import argparse
 import hashlib
@@ -165,21 +165,6 @@ def gucs_table(root):
     return '\n'.join(rows)
 
 
-# ---- counts of the tree ----------------------------------------------------------------------------------------------------------------
-
-def count(root, pattern):
-    d, _, suffix = pattern.partition('*')
-    d = os.path.join(root, d)
-    return sum(1 for f in os.listdir(d) if f.endswith(suffix)) if os.path.isdir(d) else 0
-
-
-def tests_line(root):
-    rows = sum(1 for l in read(os.path.join(root, 'docs', 'coverage.tsv')).splitlines() if l and not l.startswith(('#', 'id\t')))
-    return '%d regression tests (`test/sql`), %d isolation specs, %d TAP tests (`test/t`), %d column fixtures and %d coverage rows' % (
-        count(root, 'test/sql/*.sql'), count(root, 'test/isolation/specs/*.spec'), count(root, 'test/t/*.pl') + count(root, 'test/t/*.sh'),
-        count(root, 'test/col/fixtures/*.sql'), rows)
-
-
 # ---- the parity of the two column engines -----------------------------------------------------------------------------------------------
 
 def providers(root):
@@ -229,8 +214,6 @@ def fill_gen_blocks(root):
         if name == 'gucs':
             cfg.setdefault('gucs', gucs_table(root))
             return '\n' + cfg['gucs'] + '\n'
-        if name == 'tests':
-            return tests_line(root)
         if name == 'parity':
             return '\n\n' + parity_table(root) + '\n\n'
         if name.startswith('guc:'):
