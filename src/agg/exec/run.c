@@ -548,6 +548,35 @@ engine_rels(AggExec *ex)
 	ex->heap_opened = true;
 }
 
+/* the vectors a unit is read into, one per leaf of the source */
+static void
+open_vectors(AggExec *ex)
+{
+	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+}
+
+/* what engine_open left for a walk of the global order that may answer the scan alone (open_deferred): the rest of a scan the units read */
+void
+engine_open_rest(AggExec *ex)
+{
+	MemoryContext old;
+
+	if (!ex->open_deferred)
+		return;
+	ex->open_deferred = false;
+	old = MemoryContextSwitchTo(ex->cxt);
+	open_vectors(ex);
+	register_combos(ex);
+	prune_init(ex);
+	table_init(ex);
+	MemoryContextSwitchTo(old);
+}
+
 /* The scan engine on the relations of the spec: shared by the node and by a parallel worker */
 void
 engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
@@ -567,12 +596,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);
 	ex->lay = sift_colsrc_source_layout(ex->src);
 	extend_layout(ex);
-	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
-	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
-	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
-	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
-	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
-	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	if (!ex->open_deferred)
+		open_vectors(ex);
 	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
 	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ex->lutcx = CreateStandaloneExprContext();
@@ -588,12 +613,14 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
-	register_combos(ex);
+	if (!ex->open_deferred)
+		register_combos(ex);
 	join_filters(ex, old);
 	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok) */
 	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
-	prune_init(ex);
+	if (!ex->open_deferred)
+		prune_init(ex);
 	filter_init(ex);
 	type_init(ex);
 	recheck_init(ex);

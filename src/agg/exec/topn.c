@@ -374,9 +374,12 @@ topn_run(AggExec *ex)
 				bufs = false;
 
 	ex->started = true;
+	/* the walk of the global order answers a scan with no aggregate, group, join or search from the index alone */
+	ex->open_deferred = ex->spec->naggs == 0 && ex->spec->group < 0 && ex->spec->ncombo == 0 && ex->spec->search == NULL;
 	engine_open(ex, ex->snap, ex->params);
 	agg_test_wait();
-	table_init(ex);
+	if (!ex->open_deferred)
+		table_init(ex);
 	t = ex->topn;
 	if (sift_topn_empty(t))
 		return;
@@ -393,6 +396,7 @@ topn_run(AggExec *ex)
 		if ((ex->spec->npred == 0 || cond != NULL) && sift_topn_gorder(t, ex->src, cond))
 			return;
 	}
+	engine_open_rest(ex);
 	/* a lookup by the order array (above) reads no vector, which a LATERAL probe saves at every call */
 	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
 		topn_buffers(ex, &bufs);

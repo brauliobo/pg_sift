@@ -56,6 +56,13 @@ typedef struct Touch
 
 extern PGDLLIMPORT bool sift_child_warm_test;
 
+/* the state of an operand expression of a condition (operand_state) */
+typedef struct OperandState
+{
+	Node	   *expr;
+	ExprState  *state;
+} OperandState;
+
 typedef struct AggExec
 {
 	CustomScanState css;
@@ -116,7 +123,9 @@ typedef struct AggExec
 	KeyState   *ks;
 	DictSlot	dslot[NDICT_SLOTS];
 	uint64		dtick;
+	List	   *operands;		/* operand_state: the states made for the scan */
 	bool		started;
+	bool		open_deferred;	/* a top-N whose walk of the global order never reads the combos, the zone tests, the vectors or the group table: engine_open_rest makes them when the walk gives the scan to the units */
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
 	int			widen;			/* TOPN_TIES: the scan this engine runs is the widen-th start again (topn_widen) */
@@ -381,6 +390,7 @@ Datum agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull);
 void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
 void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
+void engine_open_rest(AggExec *ex);
 void engine_close(AggExec *ex);
 void topn_items(AggExec *ex);
 
