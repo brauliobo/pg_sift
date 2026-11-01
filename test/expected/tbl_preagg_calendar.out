@@ -417,21 +417,21 @@ VACUUM (DISABLE_PAGE_SKIPPING) tcm;
 SELECT * FROM pm_check('tcm', keep => pm_dirty());
  n  |      shape       | pre  | same 
 ----+------------------+------+------
-  1 | month, date      | some | t
-  5 | extract month    | some | t
+  1 | month, date      | all  | t
+  5 | extract month    | all  | t
   9 | day              | none | t
  12 | extract dow      | none | t
  20 | year of the week | none | t
- 23 | range of days    | some | t
+ 23 | range of days    | all  | t
  24 | range cuts a day | none | t
- 26 | range, no key    | some | t
+ 26 | range, no key    | all  | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
  33 | two keys: scan   | scan | t
  35 | date, month      | none | t
- 42 | tz at UTC, month | some | t
+ 42 | tz at UTC, month | all  | t
  44 | tz session: scan | scan | t
- 45 | tz, range        | some | t
+ 45 | tz, range        | all  | t
 (15 rows)
 
 -- 7. a transaction's own rows (not final: their units are scanned), then its rollback
@@ -609,19 +609,19 @@ SELECT * FROM pm_check('tcm', 35, 48);
  n  |        shape        | pre  | same 
 ----+---------------------+------+------
  35 | date, month         | none | t
- 36 | date, year          | some | t
+ 36 | date, year          | all  | t
  37 | date, dow           | none | t
- 38 | date, via timestamp | some | t
- 39 | date, range         | some | t
- 40 | date, test          | some | t
+ 38 | date, via timestamp | all  | t
+ 39 | date, range         | all  | t
+ 40 | date, test          | all  | t
  41 | date, test in       | none | t
- 42 | tz at UTC, month    | some | t
- 43 | tz at UTC, year     | some | t
+ 42 | tz at UTC, month    | all  | t
+ 43 | tz at UTC, year     | all  | t
  44 | tz session: scan    | scan | t
- 45 | tz, range           | some | t
+ 45 | tz, range           | all  | t
  46 | tz, range at +03    | none | t
- 47 | tz at UTC, range    | some | t
- 48 | tz 3-arg UTC        | some | t
+ 47 | tz at UTC, range    | all  | t
+ 48 | tz 3-arg UTC        | all  | t
 (14 rows)
 
 SET TimeZone = 'America/Sao_Paulo';

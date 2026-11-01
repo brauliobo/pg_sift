@@ -266,18 +266,18 @@ VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
  n  |      shape       | pre  | same 
 ----+------------------+------+------
-  1 | key int, nulls   | some | t
-  2 | key int, numeric | some | t
-  3 | key text         | some | t
-  4 | key date         | some | t
-  5 | whole table      | some | t
-  6 | test of dim      | some | t
-  7 | null group       | some | t
-  8 | key in list      | some | t
+  1 | key int, nulls   | all  | t
+  2 | key int, numeric | all  | t
+  3 | key text         | all  | t
+  4 | key date         | all  | t
+  5 | whole table      | all  | t
+  6 | test of dim      | all  | t
+  7 | null group       | all  | t
+  8 | key in list      | all  | t
   9 | zone covers some | some | t
  10 | other test: scan | none | t
  11 | no rows          | none | t
- 12 | having, limit    | some | t
+ 12 | having, limit    | all  | t
  13 | float: scan      | scan | t
 (13 rows)
 
@@ -297,18 +297,18 @@ VACUUM (DISABLE_PAGE_SKIPPING) tp;
 SELECT * FROM pa_check('tp');
  n  |      shape       | pre  | same 
 ----+------------------+------+------
-  1 | key int, nulls   | some | t
-  2 | key int, numeric | some | t
-  3 | key text         | some | t
-  4 | key date         | some | t
-  5 | whole table      | some | t
-  6 | test of dim      | some | t
-  7 | null group       | some | t
-  8 | key in list      | some | t
+  1 | key int, nulls   | all  | t
+  2 | key int, numeric | all  | t
+  3 | key text         | all  | t
+  4 | key date         | all  | t
+  5 | whole table      | all  | t
+  6 | test of dim      | all  | t
+  7 | null group       | all  | t
+  8 | key in list      | all  | t
   9 | zone covers some | some | t
  10 | other test: scan | none | t
  11 | no rows          | none | t
- 12 | having, limit    | some | t
+ 12 | having, limit    | all  | t
  13 | float: scan      | scan | t
 (13 rows)
 

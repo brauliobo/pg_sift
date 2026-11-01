@@ -531,6 +531,7 @@ static const SiftSrcProvider tbl_provider = {
 	.read_rows = tbl_read_rows,
 	.preagg = tbl_preagg,
 	.unit_exact = tbl_unit_exact,
+	.unit_dead = tbl_unit_dead,
 	.whole = tbl_whole,
 	.super_span = tbl_super_span,
 	.split = tbl_split,

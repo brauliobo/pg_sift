@@ -143,7 +143,7 @@ sift_col_unit_dead(SiftColUnit *unit, int max_pct, bool bounds)
 		MemoryContext old = MemoryContextSwitchTo(cu->src->arena);
 
 		cu->delta = d = palloc0(sizeof(ColDelta));
-		d->can = cu->seg != NULL && cu->nsu == 0 && !cu->lane && !(cu->src->flags & COLO_TABLE) && !unit_clean(cu) && unit_pages_allvisible(cu);
+		d->can = cu->seg != NULL && cu->nsu == 0 && !cu->lane && !unit_clean(cu) && unit_pages_allvisible(cu);
 		MemoryContextSwitchTo(old);
 	}
 	if (!d->can)

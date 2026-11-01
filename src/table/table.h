@@ -559,6 +559,8 @@ extern int	sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, b
 #define SIFT_TBL_ROOM_STEPS		16
 /* Clears the unfrozen flag of the groups whose live rows all committed before oldest; the maintenance lock held. The groups changed. */
 extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* VACUUM: the column segments with dead rows get the pre-aggregates net of them (table/net.c) */
+extern void sift_tbl_net_refresh(Relation rel, SiftTblRel *st);
 
 /* Keys (blk << 16 | off), runs of consecutive rows of a unit: nothing else of the table lies between the ends of one */
 typedef struct SiftTblKeyRuns

@@ -414,6 +414,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
 	(void) merge_steps(rel, st, v->oldest);
+	sift_tbl_net_refresh(rel, st);
 	if (tomb_changes(st, v))
 		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
 	(void) sift_recycle(rel);
