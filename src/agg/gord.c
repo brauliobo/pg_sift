@@ -362,35 +362,101 @@ skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
 	return total <= k;
 }
 
+/* An OFFSET of a text key shorter than this is walked: the cut below costs about as many string fetches as the walk of 2,000 entries */
+#define GORD_TEXT_SKIP_MIN	2048
+
+/* How many entries of the cursor come before the string s in the scan: the strings below it (ascending), above it (descending) */
+static uint32
+cur_before_str(const SiftGOrd *g, const GCur *c, const char *s, uint32 len)
+{
+	uint32		rank = sift_colsrc_gorder_strrank(g->src, c->src, g->leaf, s, len, g->desc);
+	uint32		pos = sift_colsrc_gorder_seek(g->src, c->src, g->leaf, c->vs, c->ve, rank, false, NULL);
+
+	return g->desc ? c->ve - pos : pos - c->vs;
+}
+
+/* The string of the m-th entry of the cursor in the order of the scan, in str */
+static uint32
+cur_nth_str(SiftGOrd *g, GCur *c, uint32 m, char *str)
+{
+	int64		key;
+	uint64		addr;
+	uint32		len;
+	const char *s;
+
+	cur_at(g, c, g->desc ? c->ve - 1 - m : c->vs + m, &key, &addr);
+	s = sift_colsrc_gorder_str(g->src, c->src, g->leaf, key, &len);
+	memcpy(str, s, len);
+	return len;
+}
+
+/* The entries of the sources that come before the string s in the scan, at most k of them (false: more) */
+static bool
+text_cut(SiftGOrd *g, const char *s, uint32 len, uint32 k, uint32 *clo)
+{
+	uint64		total = 0;
+
+	for (int i = 0; i < g->ncur; i++)
+	{
+		clo[i] = cur_before_str(g, g->cur[i], s, len);
+		total += clo[i];
+	}
+	return total <= k;
+}
+
 /*
- * Takes the first entries off the front of every cursor, as many as can be said to be among the first k of the scan without reading their keys: those whose bucket (a compact
- * block keeps the bucket of a key, not the key; a whole one its key, a bucket of one) is before v, the largest v before which at most k entries may come. They are all among the
- * first k (fewer than k entries have a key before v). An entry stands for a row if the page of its address is all-visible and the unit's row live (sift_colsrc_gorder_exact): those are
- * counted (returned); the others are kept for the caller (sift_gord_pending) to confirm in the heap, as the scan would have, and to count the ones that stand for a row. The scan then goes on
- * with the rest and throws away the other k less the rows counted; the result is the same as the throwing away of the first k. A source that cannot say (a write buffer) counts all its
- * entries as possibly first and gives none up. Before the first sift_gord_next; 0 (nothing skipped) for the ends of an order, a text key, or when the scan starts with NULL rows.
+ * The cut of a text key: the string v, the last of the entries of the sources that at most k entries come before. Each source is bisected for its last entry whose string has at
+ * most k entries before it in all the sources (each source finds the rank of a string in its own, by the collation), and v is the one of those that comes last in the scan. The entries
+ * before v are among the first k whatever the others hold. clo is how many of each source's entries that is; false when there is none to take.
  */
-uint32
-sift_gord_skip(SiftGOrd *g, uint32 k)
+static bool
+text_skip(SiftGOrd *g, uint32 k, uint32 *clo)
+{
+	char	   *best = palloc(SIFT_CGORD_STR_MAX),
+			   *str = palloc(SIFT_CGORD_STR_MAX);
+	uint32	   *tmp = palloc(g->ncur * sizeof(uint32));
+	uint32		blen = 0;
+	bool		have = false;
+	bool		ok;
+
+	for (int i = 0; i < g->ncur; i++)
+	{
+		GCur	   *c = g->cur[i];
+		uint32		lo = 0,
+					hi = (uint32) Min((uint64) (c->ve - c->vs), (uint64) k * 2 + 512);
+
+		uint32		len,
+					cmp = 0;
+
+		SIFT_BISECT(uint32, mid, lo, hi, text_cut(g, str, cur_nth_str(g, c, mid, str), k, tmp));
+		if (lo == 0)
+			continue;
+		len = cur_nth_str(g, c, lo - 1, str);
+		if (have)
+			cmp = sift_cgord_str_order(str, len, best, blen, g->collid);
+		if (!have || (g->desc ? (int) cmp < 0 : (int) cmp > 0))
+		{
+			memcpy(best, str, len);
+			blen = len;
+			have = true;
+		}
+	}
+	ok = have && text_cut(g, best, blen, k, clo);
+	pfree(best);
+	pfree(str);
+	pfree(tmp);
+	return ok;
+}
+
+/* The cut of a numeric key: the largest v (ascending) before which at most k entries may come, the smallest above which (descending); clo is how many of each source's entries that is */
+static bool
+num_skip(SiftGOrd *g, uint32 k, uint32 *clo)
 {
 	uint64		lo = 0,
 				hi = UINT64_MAX;
-	int64		v;
-	uint32	   *clo;
-	uint32		total = 0;
 
-#ifdef SIFT_TESTING
-	if (sift_test_col_gorder_noskip)
-		return 0;
-#endif
-	if (g->started || g->collid != 0 || g->ends || k == 0 || g->ncur == 0)
-		return 0;
-	for (int i = 0; i < g->ncur; i++)
-		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
-			return 0;
-	/* the largest v (ascending) before which at most k entries may come, the smallest above which (descending) */
 	if (!skip_count(g, g->desc ? PG_INT64_MAX : PG_INT64_MIN, k, NULL))
-		return 0;
+		return false;
 	while (lo < hi)
 	{
 		uint64		mid = lo + (hi - lo) / 2 + (g->desc ? 0 : (hi - lo) & 1);
@@ -410,9 +476,39 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 				hi = mid - 1;
 		}
 	}
-	v = (int64) (lo + (uint64) PG_INT64_MIN);
+	(void) skip_count(g, (int64) (lo + (uint64) PG_INT64_MIN), k, clo);
+	return true;
+}
+
+/*
+ * Takes the first entries off the front of every cursor, as many as can be said to be among the first k of the scan without reading their keys: those whose bucket (a compact
+ * block keeps the bucket of a key, not the key; a whole one its key, a bucket of one) is before v, the largest v before which at most k entries may come. They are all among the
+ * first k (fewer than k entries have a key before v). An entry stands for a row if the page of its address is all-visible and the unit's row live (sift_colsrc_gorder_exact): those are
+ * counted (returned); the others are kept for the caller (sift_gord_pending) to confirm in the heap, as the scan would have, and to count the ones that stand for a row. The scan then goes on
+ * with the rest and throws away the other k less the rows counted; the result is the same as the throwing away of the first k. A source that cannot say (a write buffer) counts all its
+ * entries as possibly first and gives none up. A text key is cut at a string instead of a bucket (text_skip). Before the first sift_gord_next; 0 (nothing skipped) for the ends of an order, or when the scan starts with NULL rows.
+ */
+uint32
+sift_gord_skip(SiftGOrd *g, uint32 k)
+{
+	uint32	   *clo;
+	uint32		total = 0;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_gorder_noskip)
+		return 0;
+#endif
+	if (g->started || g->ends || k == 0 || g->ncur == 0 || (g->collid != 0 && k < GORD_TEXT_SKIP_MIN))
+		return 0;
+	for (int i = 0; i < g->ncur; i++)
+		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
+			return 0;
 	clo = palloc(g->ncur * sizeof(uint32));
-	(void) skip_count(g, v, k, clo);
+	if (!(g->collid != 0 ? text_skip(g, k, clo) : num_skip(g, k, clo)))
+	{
+		pfree(clo);
+		return 0;
+	}
 	for (int i = 0; i < g->ncur; i++)
 	{
 		GCur	   *c = g->cur[i];
@@ -431,8 +527,8 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 			st = sift_colsrc_gorder_state(g->src, c->src, a);
 			if (st == SIFT_GORD_EXACT)
 				total++;
-			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
-				break;
+			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && (g->npend >= GORD_PEND_MAX || g->collid != 0)))
+				break;		/* a text key's entry cannot be confirmed against the heap by key: the walk takes it */
 			else if (st == SIFT_GORD_CHECK)
 			{
 				if (g->npend == g->cpend)
@@ -450,7 +546,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 		else
 			c->vs += n;
 		c->sk = n;
-	}
+		}
 	pfree(clo);
 	return total;
 }
