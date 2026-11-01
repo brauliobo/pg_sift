@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 82
+plan 85
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -108,11 +108,14 @@ q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
 q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_columns = 'id', order_array_columns = 'id')" >/dev/null
 check "an index with a global order is column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 check "to 3.3: an index with a global order is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
-check "to 3.5: the same index is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
-check "to 3.6: the same index is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord" <<<"$(uc --to 3.6 clean)"
+check "to 3.5: the same index is a blocker that says to write the setting 14 and that its arrays are left out" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord.*written without its arrays: an ORDER BY \.\. LIMIT above 32 rows on those columns reads their units \(slower\) until a REINDEX at the normal setting writes them again" <<<"$(uc --to 3.5 clean)"
+check "to 3.6: the same index is a blocker that says to write the setting 14 and that its arrays are left out" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord.*written without its arrays: an ORDER BY \.\. LIMIT above 32 rows on those columns reads their units \(slower\) until a REINDEX at the normal setting writes them again" <<<"$(uc --to 3.6 clean)"
 check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
+check "... and it is written without the arrays: column format 13, and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 13 ' <<<"$(uc clean)"
+q clean "REINDEX INDEX facts_gord" >/dev/null
+check "a REINDEX at the normal setting writes the arrays again: column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 q clean "DROP INDEX facts_gord" >/dev/null
 # a compact global order (order_layout = 'compact') is column format 41, which 3.7 cannot read: the setting 14 and a REINDEX write what it reads; the whole order of the same index
 # is what 3.7 wrote. The compact order needs a segment of many rows (a testing build lowers the threshold)
@@ -159,6 +162,7 @@ q clean "DROP INDEX facts_cnt" >/dev/null
 q clean "CREATE INDEX facts_exact ON key_facts USING sift_col (id, k) WITH (cube_minmax = false, key_columns = 'off', point_columns = 'id')" >/dev/null
 check "an index with a point directory is column format 35 or later" grep -q -E '^ok +facts_exact +index +format 1\.[0-9]+, column format (3[5-9]|[4-9][0-9])' <<<"$(uc clean)"
 check "to 3.6: an index with a point directory is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_exact .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_exact" <<<"$(uc --to 3.6 clean)"
+check "... and an index with no order arrays is not told about arrays" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact | grep "without its arrays")"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_exact" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact)"
 q clean "DROP INDEX facts_exact" >/dev/null

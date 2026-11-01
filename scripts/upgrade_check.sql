@@ -123,6 +123,10 @@ BEGIN
 				adv := format('SET sift.col_format_minor = %s, then VACUUM FULL %s rewrites it in what %s reads (ACCESS EXCLUSIVE lock)',
 							  col_setting->>tgt, r.rel, tgt);
 			END IF;
+			-- the setting 14 writes no global order: the option stays on the index and its arrays are left out until a REINDEX at the normal setting
+			IF adv LIKE 'SET sift.col_format_minor = 14,%' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'order_array_columns=%' AND o <> 'order_array_columns=off') THEN
+				adv := adv || '; the index keeps order_array_columns but is written without its arrays: an ORDER BY .. LIMIT above 32 rows on those columns reads their units (slower) until a REINDEX at the normal setting writes them again';
+			END IF;
 			advice := adv;
 		END IF;
 		RETURN NEXT;
