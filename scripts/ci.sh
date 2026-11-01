@@ -4,6 +4,7 @@
 #   scripts/ci.sh [quick|full]        (make check | make check-full)
 #   scripts/ci.sh affected [--list|--github] [BASE]   quick, only the jobs the diff against BASE (default origin/main, with the working tree) can break
 #                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
+#   scripts/ci.sh stop [DIR]          ends the run of the scratch directory DIR (default $SIFT_CI_TMP) by the pid it recorded in DIR/run.pid, never by a name
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
 #   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
 #
@@ -63,6 +64,12 @@ MODE=${1:-quick}
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
 	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 4; fi
+	exit
+fi
+# stop [DIR]: ends the run whose scratch directory is DIR (default $SIFT_CI_TMP) by the pid it recorded there (stop_run in scripts/ci/procs.sh); no other process is looked up or touched
+if [[ $MODE == stop ]]; then
+	source "$REPO/scripts/ci/procs.sh"
+	stop_run "${2:-${SIFT_CI_TMP:-}}"
 	exit
 fi
 if [[ $MODE == --times ]]; then
