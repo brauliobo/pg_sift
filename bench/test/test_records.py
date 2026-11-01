@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
 import check  # noqa: E402
+import collect  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402
 
@@ -65,6 +66,56 @@ class Schema(unittest.TestCase):
     def test_the_statement_hash_ignores_white_space(self):
         self.assertEqual(schema.sql_hash('SELECT  1\n FROM t;'), schema.sql_hash('select 1 from t'.replace('select', 'SELECT').replace('from', 'FROM')))
         self.assertNotEqual(schema.sql_hash('SELECT 1'), schema.sql_hash('SELECT 2'))
+
+
+PLAN = {'Node Type': 'Limit', 'Total Cost': 50.0, 'Plans': [{'Node Type': 'Index Scan', 'Index Name': 'ix', 'Relation Name': 't'}]}
+AM = {'ix': 'btree', 'gx': 'gin', 'sx': 'sift_col'}
+
+
+class Collect(unittest.TestCase):
+    def test_the_structure_is_the_access_method_of_the_index_the_plan_names(self):
+        def plan(*nodes):
+            return {'Node Type': 'Aggregate', 'Plans': list(nodes)}
+        self.assertEqual(collect.plan_structure(PLAN, AM), 'btree')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Seq Scan'}), AM), 'heap')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Bitmap Heap Scan', 'Plans': [{'Node Type': 'Bitmap Index Scan', 'Index Name': 'gx'}]}), AM), 'gin')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Index Only Scan', 'Index Name': 'sx'}), AM), 'sift')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Custom Scan', 'Custom Plan Provider': 'SiftAgg'}), AM), 'sift')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Seq Scan'}, {'Node Type': 'Index Scan', 'Index Name': 'ix'}), AM), 'mixed')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Result'}), AM), 'mixed')
+        self.assertEqual(collect.plan_structure(plan({'Node Type': 'Index Scan', 'Index Name': 'unknown'}), AM), 'mixed')
+
+    def test_the_facts_of_an_explain_document_include_the_workers_of_every_gather(self):
+        doc = {'Planning Time': 0.2, 'Execution Time': 3.0, 'Plan': {'Node Type': 'Gather', 'Total Cost': 9.0, 'Workers Planned': 2, 'Workers Launched': 1,
+                                                                      'Plans': [{'Node Type': 'Seq Scan'}]}}
+        self.assertEqual(collect.plan_facts(doc, AM), (0.2, 3.0, 9.0, 'heap', 2, 1))
+
+    def test_blocks_are_the_difference_of_two_snapshots_by_kind(self):
+        before = {('heap', 'hit'): 5, ('heap', 'read'): 1, ('btree', 'hit'): 2}
+        after = {('heap', 'hit'): 15, ('heap', 'read'): 4, ('btree', 'hit'): 2, ('sift', 'read'): 7}
+        self.assertEqual(collect.block_deltas(before, after), {'heap_hit': 10, 'heap_read': 3, 'btree_hit': 0, 'sift_read': 7})
+
+    def test_the_host_and_the_server_figures(self):
+        self.assertEqual(collect.psi('some avg10=12.50 avg60=1.00 avg300=0.50 total=1\nfull avg10=3.00'), 12.5)
+        self.assertEqual(collect.cpu_quota('200000 100000', 8), 2.0)
+        self.assertEqual(collect.cpu_quota('max 100000', 8), 8.0)
+        self.assertEqual(collect.cpu_quota('', 4), 4.0)
+        self.assertEqual([collect.pg_bytes_mb(x) for x in ('256MB', '4096kB', '1GB')], [256.0, 4.0, 1024.0])
+        self.assertEqual([collect.cache_dropped(x) for x in ('evict+fadvise', 'evict (tmpfs)', 'warm: no eviction')], [1, 0, None])
+
+
+@unittest.skipUnless(os.environ.get('RECORDS_HOST'), 'RECORDS_HOST (a socket directory) and RECORDS_PORT name a server with a table t(id, k) with an index on k')
+class Live(unittest.TestCase):
+    def test_a_measured_set_passes_the_checker_and_has_instructions_with_workers(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
+        from duckdb import Session
+        import iolib
+        s = Session(int(os.environ['RECORDS_PORT']), 60, None, db=os.environ.get('RECORDS_DB', 'postgres'), host=os.environ['RECORDS_HOST'])
+        env = collect.Env('abc123456789', 'test', schema.run_id('abc123456789'), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), cool=iolib.cool)
+        recs = collect.measure_statement(s, 'range', 'SELECT count(*) FROM t WHERE k BETWEEN 100 AND 400', collect.Subject('t', 1, 'hash', 'fresh_vacuumed', 't', key='k'),
+                                         [collect.Arm('heap'), collect.Arm('btree')], env)
+        self.assertEqual(check.check(recs), [])
+        self.assertTrue(all(r['instr_m'] for r in recs if r['temp'] == 'warm'))
 
 
 class Doc(unittest.TestCase):

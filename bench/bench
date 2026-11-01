@@ -69,6 +69,7 @@ Commands
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
              asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--any-plan] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh); `cases --check [--strict] [--host-plan]` checks that every claim of the release has a case, current rows, peer rows and a block
+  records     the measurement records (steps/records/README.md): `records check FILE...` refuses a set that mixes runs, table states or settings, `records report [--tsv] FILE...` writes its tables
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)
   release    the one authoritative run after a release, every table of the docs, one command: `release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN]` (steps/release.sh;
@@ -661,7 +662,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases compare final release resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases records compare final release resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -685,6 +686,7 @@ case $cmd in
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
   cases) exec "$STEPS/cases.sh" "$@" ;;
+  records) exec python3 -I "$STEPS/records" "$@" ;;
   generic) exec python3 -I "$STEPS/generic.py" run "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
