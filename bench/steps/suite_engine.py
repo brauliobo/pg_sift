@@ -47,6 +47,7 @@ class Server:
     SOURCE = False
     FALLBACK_PG = True      # a case with no section of the engine's dialect runs its pg statement
     section = 'pg'
+    data_path = None        # where the container keeps its data (GENERIC_TMPFS puts it in memory)
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -75,6 +76,9 @@ class Server:
     def docker_run(self, port_map, *args, env=(), run_args=()):
         sh('docker', 'rm', '-fv', self.name, check=False)
         flags = ['--label', 'sift-generic=1', '--cpus', str(self.ctx.cpus), '--memory', self.ctx.memory, '--memory-swap', self.ctx.memory]
+        self.on_tmpfs = bool(os.environ.get('GENERIC_TMPFS') and self.data_path)
+        if self.on_tmpfs:   # a local run keeps the data in memory (GENERIC_TMPFS=2g): no wear on the disk, and the device columns are '-' as for the cases
+            flags += ['--tmpfs', '%s:rw,size=%s' % (self.data_path, os.environ['GENERIC_TMPFS'])]
         env = [x for e in env for x in ('-e', e)]
         sh('docker', 'run', '-d', '--name', self.name, *flags, *run_args, '-p', '127.0.0.1:%d:%d' % (self.ctx.port, port_map), *env, *args)
 
@@ -84,7 +88,7 @@ class Server:
 
     def datadir(self):
         """a path on the file system of the engine's data: a container's is under docker's root (volumes and layers), an in-process engine's is its work directory"""
-        return sh('docker', 'info', '-f', '{{.DockerRootDir}}')
+        return '/dev/shm' if getattr(self, 'on_tmpfs', False) else sh('docker', 'info', '-f', '{{.DockerRootDir}}')
 
     def native_io(self):
         """the engine's own cumulative IO counters ({name: number}), extra columns beside the host's; none by default"""

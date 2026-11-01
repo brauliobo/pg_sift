@@ -99,7 +99,7 @@ def main():
                     if not note:
                         sink = []
                         med, lo, hi, got = timed(engine_io.metered(eng, eng.runner(arm, sql), sink) if runs else eng.runner(arm, sql), runs)
-                        io_rows += [(c.id, arm, 'io_warm_' + k, v) for k, v in engine_io.medians(sink, runs).items()]
+                        io_rows.extend((c.id, arm, 'io_warm_' + k, v) for k, v in engine_io.medians(sink, runs).items())   # extend: `+=` would make io_rows local to this function
                         got = canon(got)
                         if arm == 'pg':
                             reference[c.id] = got

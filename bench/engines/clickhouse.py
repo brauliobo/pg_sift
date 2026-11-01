@@ -9,6 +9,7 @@ from suite_engine import SQL, Server, Unsupported, image, sh  # noqa: F401
 
 class Engine(Server):
     section = 'ch'
+    data_path = '/var/lib/clickhouse'
 
     def __init__(self, ctx):
         super().__init__(ctx)

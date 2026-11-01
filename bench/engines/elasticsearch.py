@@ -25,6 +25,7 @@ def dialect(sql):
 
 class Engine(Server):
     section = 'es'
+    data_path = '/usr/share/elasticsearch/data'
 
     def __init__(self, ctx):
         super().__init__(ctx)
