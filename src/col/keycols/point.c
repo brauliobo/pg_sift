@@ -20,6 +20,10 @@
  * rows, point_columns, reads a unit for each key: 0.74 M). Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
  * 0.17 M + 5 instructions a row), 0.2 M with it (a b-tree 0.14 M); the index 16.5 bytes a row larger with the table sized to a power of two (8.3 to 25.4 MB at 1,000,000 int8 rows, a b-tree 22.5 MB), 10.9 to 12.2 with the exact slot count (column format minor 33; 400,000 rows of 1.0, 0.75 and 0.5 distinct values a row: 10.9, 12.2 and 11.1), 3.6 to 4.7 with the packed table (minor 35, point_dir_bytes); CREATE INDEX
  * +21% instructions (1,756 to 2,126 a row, 1,719 to 2,092 for int4). B = log2(S) / log2(1.05) against C = G / 3 + W / 5.
+ * A column that the order array answers (order_array_columns lists it, and the index is not cut by a key) is weighed for the directory's gain over the array, S = 1.7
+ * (0.24 to 0.14 M instructions for a key at 1,000,000 rows, 2 to 2.6 times for 10 to 500 keys: 1,000,000 rows, 3 columns, 0.025 / 0.050 / 0.205 / 1.08 ms for 1 / 10 / 60 / 500 keys
+ * to 0.020 / 0.029 / 0.101 / 0.50 against a b-tree 0.010 / 0.033 / 0.070 / 0.72), and its growth G is counted against the index and the b-tree of the column that the user would
+ * build otherwise (22 bytes a row for an int, 36.9 MB of three b-trees against 11.4 MB, 14.8 with it): the index with the directory is 40% of its b-tree twin.
  * A column with a unique b-tree of its own (a primary key) gets none: the planner takes the b-tree for an equality (0.14 M against 0.2 M) and the key lists answer an IN list, so the directory is size alone
  * (1,000,000 rows, 13 leaves, primary key on the column: 38.4 MB with it, 36.3 without, an IN list of 60 keys 75 cold blocks either way).
  */
@@ -29,6 +33,8 @@
 #define POINT_AUTO_MIN_SAVED	100000.0
 #define POINT_AUTO_BUILD_PCT	21.0
 #define POINT_AUTO_OVERHEAD		0.4			/* the bytes a row of an index beyond its values: units, zones, headers */
+#define POINT_AUTO_ORDER_SPEEDUP 1.7		/* an equality through the directory against through the order array of the column (0.24 to 0.14 M instructions for a key at 1,000,000 rows; 2 to 2.6 for 10 to 500) */
+#define POINT_AUTO_BTREE_FILL	0.9			/* the fill of a b-tree page: the b-tree the directory saves the index from is that much of the bytes of its entries */
 #define POINT_AUTO_UNIQUE		0.5			/* the distinct values of the column over the rows of the table: nearly unique */
 
 /*
@@ -216,26 +222,35 @@ sift_col_auto_point(Relation heap, Relation index)
 					B,
 					C,
 					G,
+					Gc,
 					dir_bytes;
 		int32		width;
+		bool		inord;
 		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
-		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || (!ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d))) || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
+		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
 			continue;
 		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || corr >= 0.9 || sift_col_leaf_unique(heap, index, d))
 			continue;
-		S = (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / POINT_AUTO_LOOKUP;
+		inord = !ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d));
+		S = inord ? POINT_AUTO_ORDER_SPEEDUP : (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / POINT_AUTO_LOOKUP;
 		dir_bytes = point_dir_bytes(rows, int_range_bits(heap, hatt, TupleDescAttr(RelationGetDescr(heap), hatt - 1)));
 		G = 100.0 * dir_bytes / base;
 		B = log2(Max(S, 1.0)) / log2(1.05);
-		C = G / 3 + POINT_AUTO_BUILD_PCT / 5;
+		Gc = G;
+		if (inord)
+			Gc = 100.0 * dir_bytes / (base + (MAXALIGN(8 + TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attlen) + sizeof(ItemIdData)) / POINT_AUTO_BTREE_FILL);
+		C = Gc / 3 + POINT_AUTO_BUILD_PCT / 5;
 		if (S < 1.05 || (S - 1) * POINT_AUTO_LOOKUP < POINT_AUTO_MIN_SAVED || B < C)
 			continue;
 		keycols_append_name(&list, keycols_leaf_name(index, d));
 		base += dir_bytes;
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": point_tid_columns includes \"%s\", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory; predicted index size %+.0f%%, %.1f bytes a row, benefit %.0f against cost %.0f)",
-						RelationGetRelationName(index), keycols_leaf_name(index, d), (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6, G, dir_bytes, B, C),
+				(errmsg("sift_col index \"%s\": point_tid_columns includes \"%s\", chosen by the default formula: %s; predicted index size %+.0f%%, %.1f bytes a row, benefit %.0f against cost %.0f)",
+						RelationGetRelationName(index), keycols_leaf_name(index, d),
+						inord ? psprintf("an equality on its nearly unique values takes %.1f times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows", S) :
+						psprintf("an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6),
+						G, dir_bytes, B, C),
 				 errhint("ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX keep the index without it.", RelationGetRelationName(index))));
 	}
 	if (list.len == 0)

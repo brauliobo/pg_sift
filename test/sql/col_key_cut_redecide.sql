@@ -36,7 +36,7 @@ SELECT pg_relation_size('rc_ix') AS maintained \gset
 SELECT reloptions::text ~ 'key_cut=auto: foreign_id' AS cut_after_rewrite FROM pg_class WHERE relname = 'rc_ix';
 SELECT sift.col_verify('rc_ix');
 -- an option the user wrote is not changed by the rewrite
-SELECT reloptions::text ~ 'key_cut=off' AND reloptions::text !~ 'point_tid_columns' AS user_option_kept FROM pg_class WHERE relname = 'rc_off';
+SELECT reloptions::text ~ 'key_cut=off' AND reloptions::text !~ 'key_cut=auto' AS user_option_kept FROM pg_class WHERE relname = 'rc_off';
 DROP INDEX rc_off;
 
 -- the answers are the table's

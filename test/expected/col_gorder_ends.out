@@ -203,8 +203,8 @@ CREATE INDEX zone_s_ix ON zone_s USING sift_col (tenant_id, id, ts, counter_a) W
 SELECT reloptions FROM pg_class WHERE relname IN ('zone_o_ix', 'zone_r_ix', 'zone_s_ix') ORDER BY relname;
                                                      reloptions                                                     
 --------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_columns=auto: counter_a"}
- {key_cut=off,"order_array_columns=auto: ts, counter_a"}
+ {key_cut=off,"order_array_columns=auto: counter_a","point_tid_columns=auto: counter_a"}
+ {key_cut=off,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: counter_a"}
  {key_cut=tenant_id,"order_array_columns=auto: ts, counter_a","point_tid_columns=auto: counter_a",key_columns=auto}
 (3 rows)
 

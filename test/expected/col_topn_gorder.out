@@ -177,6 +177,8 @@ SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY
 (1 row)
 
 SELECT sift.col_merge('gt_i'::regclass, true) >= 0 AS merged;
+NOTICE:  sift_col index "gt_i": point_tid_columns includes "c", chosen by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +19%, 3.9 bytes a row, benefit 11 against cost 7)
+NOTICE:  sift_col index "gt_i": the rewrite chose again from the data: point_tid_columns = 'auto: c' (was '')
  merged 
 --------
  t

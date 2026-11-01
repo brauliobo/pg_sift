@@ -71,10 +71,10 @@ SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gg_check();
 -- and the merge that takes it with the rows added since writes the packed one
 SET sift.test_col_point_unrooted = on;
 SET sift.test_col_gorder_unpacked = on;
-CREATE INDEX gg_oo_old ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off');
+CREATE INDEX gg_oo_old ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off', point_tid_columns = 'off');
 RESET sift.test_col_point_unrooted;
 RESET sift.test_col_gorder_unpacked;
-CREATE INDEX gg_oo_new ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off');
+CREATE INDEX gg_oo_new ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off', point_tid_columns = 'off');
 SELECT sift.col_verify('gg_oo_old', true), sift.col_verify('gg_oo_new', true);
 SELECT 'gg_oo_old' AS idx, format FROM sift.col_segments('gg_oo_old') WHERE kind = 'immutable' UNION ALL SELECT 'gg_oo_new', format FROM sift.col_segments('gg_oo_new') WHERE kind = 'immutable' ORDER BY 1;
 SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section = 'dict_other') AS smaller;
