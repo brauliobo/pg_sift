@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 71
+plan 77
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -109,6 +109,22 @@ check "to 3.3: an index with a global order (format 30) is a blocker" test -n "$
 check "to 3.5: the same index is a blocker that says to turn order_array_columns off" grep -q -E "^blocker +facts_gord .*ALTER INDEX facts_gord SET \(order_array_columns = 'off'\), then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
 check "to 3.6: the same index is ok" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
 q clean "DROP INDEX facts_gord" >/dev/null
+# a compact global order (order_layout = 'compact') is column format 41, which 3.7 cannot read: the setting 14 and a REINDEX write what it reads; the whole order of the same index
+# is what 3.7 wrote. The compact order needs a segment of many rows (a testing build lowers the threshold)
+if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_gorder_ends'") == 1 ]]; then
+	q clean "SET sift.test_col_gorder_ends = 64" "CREATE TABLE gord_rows AS SELECT i AS id, TIMESTAMP '2026-01-01' + (i * 7919 % 20011) * INTERVAL '1 minute' AS ts FROM generate_series(1, 20000) i" \
+		"CREATE INDEX gord_whole ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'whole')" \
+		"CREATE INDEX gord_compact ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact')" >/dev/null
+	check "an index with a whole order is column format 38 to 40" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format (3[89]|40)' <<<"$(uc clean)"
+	check "an index with a compact order is column format 41" grep -q -E '^ok +gord_compact +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
+	check "to 3.7: the compact order is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_compact .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_compact" <<<"$(uc --to 3.7 clean)"
+	check "to 3.8: the compact order is ok" test -z "$(row "$(uc --to 3.8 clean)" blocker gord_compact)"
+	q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_compact" >/dev/null
+	check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_compact)"
+	q clean "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
+	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
+	q clean "DROP TABLE gord_rows" >/dev/null
+else skip 6 "a release build has no test settings: the threshold of the compact order cannot be lowered"; fi
 # the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15; fat repeats below 1,024 strings, so no dictionary hash (column format 25) hides the 22
 q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad, md5((i % 500)::text) || md5((i % 500)::text || 'a') AS fat FROM generate_series(1, 20000) i" \
 	"CREATE INDEX facts_ktab ON key_facts USING sift_col (id, k, fat) WITH (cube_minmax = false, superunit = 0, key_columns = 'k')" \
