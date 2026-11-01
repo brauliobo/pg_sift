@@ -634,6 +634,39 @@ dist_update_narrow(AggExec *ex, Dist *d, int ai, int64 *cnt, const uint64 *ok, i
 	return j;
 }
 
+/*
+ * DD_BITS of one group (no GROUP BY) whose bitmaps fit the cache: the directory of the group is read once, not for each value, so a value is the chunk's test and
+ * the bit. Stops at the first value whose chunk is not there (dist_bits_slow takes it) and returns the tuple it stopped at.
+ */
+static int
+dist_bits_one(Dist *d, int64 *cnt, const uint64 *ok, int nsel, const uint32 *v, int j)
+{
+	DistView	vw = dist_view(d);
+	DistChunk  *dir = vw.ngd > 0 ? vw.gd[0] : NULL;
+	int64		added = 0;
+
+	for (; j < nsel; j++)
+	{
+		int64		x;
+		uint64		c,
+					m;
+		uint64	   *w;
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		x = dist_vx(&vw, v[j]);
+		c = (uint64) ((x >> DB_SHIFT) - vw.cbase);
+		if (unlikely(dir == NULL || c >= vw.ncd || dir[c] == NULL))
+			break;
+		m = UINT64CONST(1) << (x & 63);
+		w = &dir[c][(x >> 6) & (DB_WORDS - 1)];
+		added += !(*w & m);
+		*w |= m;
+	}
+	cnt[0] += added;
+	return j;
+}
+
 /* adds the selected values (v[j] of tuple j, in the group ex->gid[j]); the count of a group goes up for each new one */
 void
 dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
@@ -644,6 +677,8 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 	int			j = d->mode == DD_WORDS ? dist_update_narrow(ex, d, ai, cnt, ok, nsel, v) : 0;
 	DistView	vw = dist_view(d);
 
+	if (ex->spec->nkeys == 0 && d->mode == DD_BITS && d->bytes < DB_PREFETCH)
+		j = dist_bits_one(d, cnt, ok, nsel, v, j);
 	/* bits that fit the cache are set one by one; past that, a batch at a time: the words are found and prefetched first, since each is a miss */
 	for (; j < nsel && d->mode == DD_BITS && d->bytes < DB_PREFETCH; j++)
 	{
