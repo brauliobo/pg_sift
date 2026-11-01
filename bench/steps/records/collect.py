@@ -224,20 +224,23 @@ def pressure():
     return psi(read_text('/proc/pressure/cpu')), psi(read_text('/proc/pressure/io'))
 
 
-def count_instructions(s, sql, pid, post):
+def count_instructions(s, sql, pid, post, tries=3):
     """(millions of instructions, millions of cycles) of one run of SQL on the backend PID and the postmaster POST (the workers are its children, forked after perf attached), or
-    (None, None) when perf cannot count: the record then has no instructions, never a count of the backend alone"""
-    p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-    time.sleep(1)
-    s.run(sql)
-    p.send_signal(signal.SIGTERM)
-    try:
-        out, _ = p.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
-        return None, None
-    f = out.split()
-    return (int(f[1]) / 1e6, int(f[0]) / 1e6) if len(f) == 3 and f[0].isdigit() and f[1].isdigit() else (None, None)
+    (None, None) when perf cannot count after TRIES attempts (a busy host signals perf before it attached): the record then has no instructions, never a count of the backend alone"""
+    for _ in range(tries):
+        p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        time.sleep(1)
+        s.run(sql)
+        p.send_signal(signal.SIGTERM)
+        try:
+            out, _ = p.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            continue
+        f = out.split()
+        if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
+            return int(f[1]) / 1e6, int(f[0]) / 1e6
+    return None, None
 
 
 class WorkerMonitor:
