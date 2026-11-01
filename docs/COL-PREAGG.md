@@ -235,3 +235,27 @@ the units of a table (637 of 721 at 3,000,000 rows and 20% a month, with 7.6% of
 - **Exactness.** The answer of every statement is the same with the setting on, off (`sift.agg_dead_delta = 0`) and with the pushdown off; `col_dead_delta` and the `dead` family of `diff_fuzz` (NULLs, numeric, int8,
   calendar groups, rollups, ranges of ctid, deletes, updates, VACUUM, promotions and merges) check it. A float sum keeps the policy it had: nothing is reordered.
 
+## 13. Dirty units with pre-aggregates net of their dead rows (VACUUM writes them; `SIFT_SEG_NET`, no format minor)
+
+Section 12 takes the dead rows off a unit's stored aggregates one by one, and gives counts and integer sums only; a minimum, a maximum, a float sum, a rollup of the elements of a list and a unit with more than
+`sift.agg_dead_delta` percent dead rows were read by their rows, and the churn of a few percent a round put a dead row in every unit within rounds (14 to 16 times the read of a rewritten segment after 8 rounds of 4%).
+The segment is not rewritten for that any more: the VACUUM that cleared the bits writes, after the segment's stream, the cube, the rollups and the sums of each dirty unit **computed over its live rows**
+(`col/seg/net.c`, `col/maint/net.c`; the layout is in docs/FORMATS.md section 5).
+
+- **What a reader does.** Under the conditions of section 12 (every page of the unit all-visible, read before the liveness) a unit whose dead rows are exactly the ones its sidecar was made for (liveness bits are only
+  cleared, so the same number is the same rows) answers from the sidecar as a clean unit does from its own: the same code, with the blobs of the sidecar and the live row count. Any aggregate the cube gives is
+  exact, a minimum, a maximum and a float sum (added in the order of the live rows, as a rewrite would) included. A unit with other dead rows, or without a sidecar, goes on to section 12.
+- **What it does not give.** Everything that is a list of the values of the unit rather than a summary of it: `count(DISTINCT)` of a key, the sketches (`approx_count_distinct`), the key lists and presence sets, sorted runs, point directories
+  and superunits still describe the dead rows too; a query that needs them reads the unit by its rows, as before. A unit with exceptions, a leaf with overflow values, an element leaf (rollups of lists), an inline
+  string leaf has no sidecar (the pass notes its dead rows and does not try it again) and keeps section 12.
+- **What writes it.** VACUUM, before the merges it decides (`vacuum_net`): a segment with a unit whose dead rows the sidecar does not know gets a new one, one pass over the leaves of its dirty units, the cost of a
+  verification of them; the segment keeps its generation, a new header page lists the extents of the stream and of the new sidecar, and the old header and sidecar pages are released with the directory switch (the
+  relocation of a segment does the same). A crash after the pages and before the switch leaves unreferenced pages, which the orphan sweep returns.
+- **What it changes for the rewrite.** The units a sidecar answers for count as clean in the rule of the automatic rewrite (`sift.col_auto_merge_dirty_pct`) and in the cost of `dead_rewrite_pct = 0`; a segment still is rewritten when half of it is dead, when its
+  units are fragmented, when the write buffer is large, and by the merge tiers. A rewrite or a merge writes no sidecar (its output has no dead rows) and drops the one of its inputs with their pages.
+- **Cost.** One sidecar is about the cube and rollups of the dirty units (a share of the segment's pre-aggregates section) and the sums of each leaf per unit (80 bytes); `sift.col_sections` shows it as `net`. It is written again whole
+  by every VACUUM that clears more bits. `sift.col_verify` rebuilds each unit's blobs from its live rows and compares the bytes.
+- **Measured** (8 rounds of 4% churn, `bench/churn/waste.sh` lane, promote and VACUUM each round). Maintenance WAL at 100,000 rows: 9.5 MB with sidecars, 5.7 MB leaving units dirty, 15.6 MB rewriting every round; the sidecar pass writes 3.9 MB where the rewrite writes 9.9 (-61%), of totals that include 2.3 MB of the heap's VACUUM (-39%); at 1,000,000 rows 53.8, 49.7 and 206.9 MB.
+  Reads (instructions of one query, sidecar vs delta alone vs the same index rewritten): grouped sum 1.51 / 4.60 / 0.71 M at 100,000 rows, 16.0 / 46.2 / 10.0 M at 1,000,000; minimum and maximum 1.57 / 2.80 / 0.80 M and 16.1 / 32.1 / 10.4 M. The sidecar does not reach the rewritten index: the dirty index keeps several segments (3 against 1) with the blocks and instructions that go with them, which only a merge returns. Shapes the sidecar does not cover (distinct count, sketches, key lists, point directories) read what the delta alone reads.
+  `sift.agg_dead_delta` stays for the units a sidecar cannot cover (overflow values, exceptions, element leaves, inline strings): it is the same dead-row subtraction, and the sidecar replaces it for the units it covers.
+

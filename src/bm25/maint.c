@@ -415,6 +415,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	promote_locked(ops, index, false, false);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
+	if (ops->vacuum_net)
+		ops->vacuum_net(index);
 	vacuum_merge(ops, index);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)

@@ -3,6 +3,7 @@
 -- the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
 -- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.col_format_minor = 6.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

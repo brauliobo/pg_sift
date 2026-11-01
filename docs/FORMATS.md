@@ -93,9 +93,16 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_TBL_SEG_WBUF` | 0x0100 | `sift_table` write buffer |
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
+| `SIFT_SEG_NET` | 0x2000 | column segment with the pre-aggregates of its dirty units net of their dead rows, in whole pages at the end of the stream (below) |
 
 - `SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of leaves holding a JSON null; 3.2 only.
 - `SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment and the smallest xid when `SIFT_SEG_VERS` is set.
+- `SIFT_SEG_NET` (3.8) needs no column format minor, as the leaf statistics (`SIFT_SEG_LSTATS`) needed none: a build that does not know the flag lists the pages in the header's extents like any others and never looks in them, so it reads the
+  segment as written and a rewrite or merge by it drops the sidecar with the segment. The sidecar starts at a page boundary after the segment's own stream (and its leaf statistics); the last 16 bytes of the stream are
+  `{magic 0x5445474e, offset of the sidecar}`. The sidecar is `NetHeader`, `NetUnit[nsb]` (the dead rows the unit had when it was made, the lengths of its cube and rollup blobs), `NetAgg[ncols][nsb]` (the zone and exact
+  sums of each leaf over the live rows) and the blobs, the bytes `sift_cpagg_cube` writes for the live rows with the dims, rollups and measures of the unit's own blobs (`src/col/seg/net.c`). VACUUM writes it
+  (`src/col/maint/net.c`): the segment keeps its generation and its header page is written again, as a relocation does, with the extents of the stream and those of the new sidecar; the old header page and the old sidecar
+  are released together with the directory switch. A reader uses the unit's net blobs when the unit has exactly the number of dead rows they were made for (liveness bits are only cleared), else it reads the unit as before.
 - A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
 
 Zone flags: `SIFT_COLZ_NOSUM` 0x1, `SIFT_COLZ_NAN` 0x2,

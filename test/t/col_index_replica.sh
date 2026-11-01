@@ -7,9 +7,10 @@
 # index are not answered net of exceptions (an IS NULL on the leaf that is mostly NULL scans them), which the check of the merged segment asks for.
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_col.bash"
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 16
+plan 19
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -126,6 +127,19 @@ catchup primary standby
 touch "$P/kept.go"
 wait "$KEPT"
 check "a session of the standby that read the write buffer reads the heap as it is after the VACUUM" test "$(tr '\n' ' ' <"$P/kept.log")" == "t t "
+
+# deletes alone (no row for the write buffer, so no rewrite) and a VACUUM leave dead rows in the units of a table of its own, and the pre-aggregates net of them; their pages replay on the standby like any others net of them, whose pages replay on the standby like any others
+sql primary "SET sift.async_maintenance = off" "CREATE TABLE net_d (id int PRIMARY KEY, k int NOT NULL, grp int NOT NULL, v int NOT NULL, doc jsonb)" \
+	"INSERT INTO net_d SELECT i, i % 3000, i % 40, i % 17, jsonb_build_object('a', i % 9) FROM generate_series(1, 40000) i" "CREATE INDEX net_d_col ON net_d USING sift_col (id, k, grp, v, doc)" "VACUUM (FREEZE, ANALYZE) net_d" \
+	"DELETE FROM net_d WHERE id % 23 = 1" >/dev/null
+sleep 2   # the standby's feedback holds the horizon below the delete until it reports again
+sql primary "SET sift.async_maintenance = off" "VACUUM (disable_page_skipping) net_d" >/dev/null
+catchup primary standby
+MINMAX="SELECT grp, min(v), max(v), count(*) FROM net_d GROUP BY grp ORDER BY grp"
+check "the standby answers the minima and maxima of a table net of the dead rows its primary's VACUUM left" \
+	grep -qE "[1-9][0-9]* net of dead rows" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $MINMAX")"
+check "... and gives the groups of the heap" test "$(sql standby "SET seq_page_cost = 10000" "$MINMAX" | "$REPO/scripts/sha256.sh")" == "$(sql primary "SET sift.enable_agg = off" "$MINMAX" | "$REPO/scripts/sha256.sh")"
+check "... and the index verifies there" test -z "$(sql standby "SELECT sift.col_verify('net_d_col', true)" 2>&1)"
 
 node_promote standby
 for _ in $(seq 100); do [[ $(sql standby "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done

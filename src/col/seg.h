@@ -393,6 +393,23 @@ extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPres
 
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);
+
+/*
+ * The pre-aggregates of a dirty unit net of its dead rows (col/seg/net.c): sift_cseg_net_has says the unit has them for exactly ndead dead rows (its cube, rollups and sums
+ * are then those of its live rows), sift_cseg_net_stale that the unit has more dead rows than the sidecar knows. sift_cseg_net_build is the sidecar of the segment as it is
+ * now, sift_cseg_net_finish ends it for the stream, whose pages start at at; sift_cseg_net_pages is how many the segment's own sidecar takes and where it starts.
+ */
+extern bool sift_cseg_net_has(SiftColSegment *seg, uint32 u, uint32 ndead);
+extern bool sift_cseg_net_stale(SiftColSegment *seg, uint32 u, uint32 ndead);
+extern bool sift_cseg_net_due(SiftColSegment *seg);
+extern uint32 sift_cseg_net_uncovered(SiftColSegment *seg);
+extern const uint8 *sift_cseg_net_blob(SiftColSegment *seg, uint32 u, int kind, uint32 *len);
+extern const uint8 *sift_cseg_net_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
+extern bool sift_cseg_net_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
+extern StringInfo sift_cseg_net_build(SiftColSegment *seg);
+extern void sift_cseg_net_finish(StringInfo net, uint64 at);
+extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
+extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
 

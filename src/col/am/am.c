@@ -11,6 +11,7 @@
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 #ifdef SIFT_TESTING
 bool		sift_test_col_rel_inval = false;
+bool		sift_test_col_net = true;
 #endif
 
 /*

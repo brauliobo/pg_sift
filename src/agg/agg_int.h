@@ -296,7 +296,8 @@ typedef struct AggExec
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
 	int			pa_dead_miss;	/* its dirty units that read their dead rows and were scanned all the same */
-	bool		pa_dead;		/* ... and one with dead rows from what it stored minus theirs (sift.agg_dead_delta): the aggregates are counts and integer sums */
+	bool		pa_dead;		/* ... and one with dead rows from what it stored minus theirs (sift.agg_dead_delta), or net of them */
+	bool		pa_dead_sub;	/* ... minus theirs is possible for the aggregates: counts and integer sums (a unit net of its dead rows has any) */
 	SiftPaWhy	pa_why;			/* why not, when pa_on is false */
 	int			pa_xleaf;		/* the conjunct IS NULL on this leaf is answered as the unit net of its exceptions (-1: none; hist_net) */
 	int64		n_exc_units;	/* units answered net of their exceptions, and the units with some that were scanned (a missing dim, a float sum that cancels) */

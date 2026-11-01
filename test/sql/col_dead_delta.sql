@@ -2,6 +2,7 @@
 -- rows: counts and integer or numeric sums exact, NULLs counted; a minimum, a maximum, a distinct count, a float sum and a unit with a page that is not all-visible are scanned.
 -- The answers never change: with the setting on, off and with the scan planner off they are the same.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.col_auto_merge = off;

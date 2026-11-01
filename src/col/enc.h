@@ -610,5 +610,7 @@ extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *cons
 
 /* The zone recomputed from a chunk (for verification: C4). set is meaningful for STR leaves only. */
 extern void sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z);
+/* ... of keys that are not in a chunk (the live rows of a unit) */
+extern void sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z);
 
 #endif							/* SIFT_COL_ENC_H */

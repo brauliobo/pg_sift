@@ -63,23 +63,32 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 	return true;
 }
 
+/* The blobs of the rows cols[0..nrows) with the dims, rollups and measures of the stored ones (blob, eblob): what a unit that held these rows only would store. false: the stored ones do not decode */
 bool
-sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
-				 int format)
+sift_cpagg_cube_like(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+					 int format, StringInfo out, StringInfo eout)
 {
 	SiftCPaggSpec spec;
-	StringInfoData again,
-				eagain;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
 	bool		ok = spec_of(s, blob, len, eblob, elen, format, cx, &spec);
 
 	MemoryContextDelete(cx);
-	if (!ok)
-		return false;
+	if (ok)
+		sift_cpagg_cube(s, &spec, cols, nrows, 0, out, elen > 0 ? eout : NULL);
+	return ok;
+}
+
+bool
+sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+				 int format)
+{
+	StringInfoData again,
+				eagain;
+	bool		ok;
+
 	initStringInfo(&again);
 	initStringInfo(&eagain);
-	sift_cpagg_cube(s, &spec, cols, nrows, 0, &again, elen > 0 ? &eagain : NULL);
-	ok = same_bytes(&again, blob, len) && same_bytes(&eagain, eblob, elen);
+	ok = sift_cpagg_cube_like(s, cols, nrows, blob, len, eblob, elen, format, &again, &eagain) && same_bytes(&again, blob, len) && same_bytes(&eagain, eblob, elen);
 	pfree(again.data);
 	pfree(eagain.data);
 	return ok;

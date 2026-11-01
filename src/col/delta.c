@@ -23,6 +23,7 @@ typedef struct ColDelta
 	bool		can;			/* the cheap tests passed */
 	bool		built;
 	bool		ok;				/* built, and the dead rows are few */
+	bool		net;			/* the segment's pre-aggregates net of the dead rows (col/seg/net.c) stand for the unit: nothing is taken off them */
 	uint32		ndead;
 	uint32	   *dead;			/* [ndead] the dead rows, ascending */
 	int64	  **key;			/* [ncols] the values of the dead rows of a leaf, when read */
@@ -94,16 +95,20 @@ delta_build(ColUnit *cu, ColDelta *d, int max_pct)
 				nd = 0;
 	uint64	   *live;
 
-	sift_cseg_cube(seg, cu->u, &clen);
-	sift_cseg_ecube(seg, cu->u, &elen);
-	if (clen + elen == 0 || sift_cseg_xcube(seg, cu->u, &xlen) != NULL)
-		return false;
 	live = palloc0(SIFT_COL_NWORDS(n) * sizeof(uint64));
 	sift_cseg_live(seg, cu->u, live);
 	cu->live = live;			/* the scan of the unit, if it comes to that, takes its selection from them */
 	for (uint32 w = 0; w < nw; w++)
 		nd += sift_pc64(~live[w] & (w == nw - 1 && n % 64 ? (UINT64CONST(1) << (n % 64)) - 1 : ~UINT64CONST(0)));
-	if ((uint64) nd * 100 > (uint64) n * max_pct)
+	if (sift_cseg_net_has(seg, cu->u, nd))
+	{
+		d->ndead = nd;
+		d->net = true;
+		return true;
+	}
+	sift_cseg_cube(seg, cu->u, &clen);
+	sift_cseg_ecube(seg, cu->u, &elen);
+	if (clen + elen == 0 || sift_cseg_xcube(seg, cu->u, &xlen) != NULL || (uint64) nd * 100 > (uint64) n * max_pct)
 		return false;
 	d->ndead = nd;
 	d->dead = palloc(Max(nd, 1) * sizeof(uint32));
@@ -170,6 +175,22 @@ sift_col_unit_dead_on(const SiftColUnit *unit)
 	return ((ColUnit *) unit->priv)->delta_on;
 }
 
+/* The unit is read from the segment's pre-aggregates net of its dead rows: its cube, rollups and sums are those of its live rows, any aggregate may come from them */
+bool
+sift_col_unit_net(const SiftColUnit *unit)
+{
+	ColUnit    *cu = unit->priv;
+
+	return cu->delta_on && !cu->delta_bounds && cu->delta->net;
+}
+
+/* ... and the dead rows it is net of */
+uint32
+sift_col_unit_net_dead(const SiftColUnit *unit)
+{
+	return sift_col_unit_net(unit) ? ((ColUnit *) unit->priv)->delta->ndead : 0;
+}
+
 /* what the dead rows take off the aggregate of an integer or text leaf: their number, their NULLs and, for an integer leaf, their exact sums. false for a leaf the delta cannot read (a float, inline text) */
 bool
 sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *ndead, uint32 *nnull, SiftCLeafAgg *la)
@@ -179,7 +200,7 @@ sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *ndead, uint32 
 	SiftCPaggCol c;
 	const SiftColDef *def = &cu->seg->schema->cols[col];
 
-	if (!cu->delta_on || cu->delta_bounds || (def->store != SIFT_COLS_INT && def->store != SIFT_COLS_STR) || (d->ndead > 0 && !dead_col(cu, d, col, &c)))
+	if (!cu->delta_on || cu->delta_bounds || d->net || (def->store != SIFT_COLS_INT && def->store != SIFT_COLS_STR) || (d->ndead > 0 && !dead_col(cu, d, col, &c)))
 		return false;
 	*ndead = d->ndead;
 	*nnull = 0;
@@ -242,7 +263,7 @@ sift_col_unit_dead_hist(const SiftColUnit *unit, SiftCHistDim *h)
 
 	if (cu->delta_bounds)
 		return false;
-	if (d->ndead == 0)
+	if (d->ndead == 0 || d->net)
 		return true;
 	if (!dead_col(cu, d, leaf, &kc))
 		return false;
@@ -317,7 +338,7 @@ sift_col_unit_dead_rollup(const SiftColUnit *unit, SiftCRollup *r)
 
 	if (cu->delta_bounds)
 		return false;
-	if (d->ndead == 0)
+	if (d->ndead == 0 || d->net)
 		return true;
 	if (r->list >= 0)
 		return false;

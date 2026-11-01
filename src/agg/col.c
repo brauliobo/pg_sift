@@ -764,6 +764,8 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 static int
 col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
 {
+	if (mode == SSD_NET)
+		return sift_col_unit_net(&((ColSource *) impl)->unit);
 	return sift_col_unit_dead(&((ColSource *) impl)->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
 }
 

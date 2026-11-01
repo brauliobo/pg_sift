@@ -23,7 +23,8 @@ typedef enum SiftSrcDead
 {
 	SSD_OFF,
 	SSD_BOUNDS,
-	SSD_ON
+	SSD_ON,
+	SSD_NET					/* asks, after SSD_ON, whether the unit is read from the pre-aggregates net of its dead rows: 1 or 0 */
 } SiftSrcDead;
 
 typedef enum SiftSrcVecType

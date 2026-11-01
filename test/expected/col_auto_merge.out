@@ -3,6 +3,7 @@
 -- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. The end state after the rewrite is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;

@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 CREATE TABLE dn (id int PRIMARY KEY, kind int, amount int) WITH (autovacuum_enabled = off);
 CREATE TABLE dc (id int PRIMARY KEY, kind int, amount int, pad text) WITH (autovacuum_enabled = off);
 CREATE TABLE dw (id int PRIMARY KEY, kind int, tags text[]) WITH (autovacuum_enabled = off);

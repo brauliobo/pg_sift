@@ -34,8 +34,8 @@ put_pad(StringInfo out, Size align)
  * ------------------------------------------------------------------------- */
 
 /* The one definition of a zone: the encoder and the verification of a stored chunk both come through here */
-static void
-zone_of_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z)
+void
+sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z)
 {
 	int64		mn = PG_INT64_MAX,
 				mx = PG_INT64_MIN,
@@ -148,7 +148,7 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
 		if (c->enc == SIFT_COLENC_CC)
 			sift_cc_close(cc_open(c, true));
 		sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
-		zone_of_keys(key, c->nulls, c->ovf, c->n, store, z);
+		sift_cchunk_zone_keys(key, c->nulls, c->ovf, c->n, store, z);
 	}
 	z->flags |= zone_jnull(c->kmask);
 	pfree(key);
@@ -325,7 +325,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 	int64		base;
 	uint8		head[8];
 
-	zone_of_keys(key, nulls, ovf, n, store, z);
+	sift_cchunk_zone_keys(key, nulls, ovf, n, store, z);
 	z->flags |= zone_jnull(kmask);
 	flags = chunk_flags(z, tags, kmask);
 	span = (uint64) z->max - (uint64) z->min;

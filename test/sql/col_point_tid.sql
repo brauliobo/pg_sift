@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE pt (id int, k int, s text, u uuid, pad text DEFAULT repeat('x', 400));

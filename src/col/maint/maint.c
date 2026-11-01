@@ -93,6 +93,7 @@ const SiftMaintOps maint_col_ops = {
 	.merge_next = maint_merge_next,
 	.bulkdelete_immutable = maint_bulkdelete_immutable,
 	.bulkdelete_wbuf = maint_bulkdelete_wbuf,
+	.vacuum_net = maint_net_refresh,
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
 	.rewrite_all = maint_rewrite_all,

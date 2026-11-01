@@ -49,6 +49,8 @@ extern bool sift_col_unit_except(SiftColUnit *unit, int leaf);
  */
 extern int	sift_col_unit_dead(SiftColUnit *unit, int max_pct, bool bounds);
 extern bool sift_col_unit_dead_on(const SiftColUnit *unit);
+extern bool sift_col_unit_net(const SiftColUnit *unit);
+extern uint32 sift_col_unit_net_dead(const SiftColUnit *unit);
 extern bool sift_col_unit_dead_bounds(const SiftColUnit *unit);
 /* ... and the histogram and rollup of the unit minus its dead rows, row by row: false when a leaf cannot be read at them */
 extern bool sift_col_unit_dead_hist(const SiftColUnit *unit, SiftCHistDim *h);

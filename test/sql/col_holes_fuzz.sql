@@ -3,6 +3,7 @@
 -- reusable, the free blocks are a small share of the file, a second VACUUM changes nothing, and both count and sum what a heap table
 -- that took the same statements holds. The sequence is the same on every run.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 CREATE TABLE fz_ref (id int, grp int, v bigint, note text) WITH (autovacuum_enabled = off);
 CREATE TABLE fz_col (LIKE fz_ref) WITH (autovacuum_enabled = off);
 CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp, order_array_columns = 'note');

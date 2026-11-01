@@ -364,6 +364,8 @@ typedef struct SegPriv
 	bool		unit_kept;		/* unitbuf goes back to the backend's spare buffers when the segment's context ends (seg.c, unit_room) */
 	PaggHeader *pagg;			/* the sidecar's header, read on first use */
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
+	struct SegNet *net;		/* the net pre-aggregates of the dirty units (col/seg/net.c), NULL: the segment has none */
+	bool		net_read;
 	const uint8 *lst;			/* the leaf statistics block (LstHeader first), NULL: the segment has none */
 	bool		lst_read;
 	uint64	   *cubedir;		/* nsb + 1 */

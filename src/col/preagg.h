@@ -361,6 +361,9 @@ extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eb
 /* The measure slot of leaf m in the dim, -1 if it is not stored */
 extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
+/* The cube and rollups of the rows cols[0..nrows) in the dims and measures of the stored blobs; false: the stored ones do not decode */
+extern bool sift_cpagg_cube_like(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+								 int format, StringInfo out, StringInfo eout);
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
  * false on any difference, or when the cube holds min and max (minmax) a calendar dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.

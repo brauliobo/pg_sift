@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE pm (id int, grp text, amt numeric(10,2), qty int);
 ALTER TABLE pm SET (autovacuum_enabled = false, fillfactor = 10);

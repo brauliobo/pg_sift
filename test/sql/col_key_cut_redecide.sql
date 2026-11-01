@@ -2,6 +2,7 @@
 -- so an index built on a table in the order of its tenants and rewritten after rows of every tenant were appended is as small as a rebuild of it
 --: the maintained size is within 5% of the REINDEX of the same rows, the answers are the table's, and the choice is the build's.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

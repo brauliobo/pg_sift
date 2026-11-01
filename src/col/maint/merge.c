@@ -20,7 +20,7 @@ int			sift_test_col_refresh_sleep_armed = 0;
 #endif
 
 /*
- * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
+ * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
  * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 430, rows * 45) a unit (a grouped sum over 300,000
  * rows: 10.7 M with 5% of them dead in every unit, 17.2 M with 13%, 1.3 M with the first 13% dead, which are whole units). The rewrite re-encodes every live row, 900 + 463 *
  * bytes instructions (300,000 rows: 4,200 at 7.1 bytes a row, 35,400 at 74.5). It pays once the SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a
@@ -47,6 +47,8 @@ rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 		for (uint32 w = 0; w < SIFT_COL_NWORDS(n); w++)
 			dead += pg_popcount64(bits[w]);
 		dead = n - dead;
+		if (sift_cseg_net_has(seg, u, dead))
+			continue;			/* the unit answers from its net pre-aggregates (col/seg/net.c) as a clean one does */
 		scan += Min((uint64) dead * SIFT_COL_DEAD_ROW, (uint64) n * SIFT_COL_DEAD_SCAN_ROW);
 	}
 	pfree(bits);
@@ -138,15 +140,11 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	return n > 0 && !clean_apart(index, snap, sel, n) ? n : sift_merge_pick_dead(index, &pol, snap, sel);
 }
 
-/* Units of the segment that hold a dead row */
+/* Units of the segment that hold a dead row its net pre-aggregates do not answer for (col/seg/net.c): the rest read as clean ones */
 uint32
 maint_dirty_units(SiftColSegment *seg)
 {
-	uint32		d = 0;
-
-	for (uint32 u = 0; u < seg->nsb; u++)
-		d += sift_cseg_dirty(seg, u);
-	return d;
+	return sift_cseg_net_uncovered(seg);
 }
 
 static SbSpans
