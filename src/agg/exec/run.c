@@ -393,6 +393,53 @@ group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 	ExecStoreVirtualTuple(slot);
 }
 
+/*
+ * The groups of an ordered result are read in the order of the sort, which is not the order they sit in: every key id and accumulator of the next group is a cache miss.
+ * They are fetched ahead in two steps (the ids of a group, then what the ids point at), a few groups before the tuple is built.
+ */
+#define GROUP_AHEAD 16
+
+static void
+group_prefetch_state(AggExec *t, uint32 g)
+{
+	if (t->hash)
+		__builtin_prefetch(&t->hkey[(Size) g * t->spec->nkeys]);
+	for (int i = 0; i < t->spec->naggs; i++)
+	{
+		const AggAcc *acc = &t->acc[i];
+
+		if (acc->n)
+			__builtin_prefetch(&acc->n[g]);
+		if (acc->i)
+			__builtin_prefetch(&acc->i[g]);
+		if (acc->w)
+			__builtin_prefetch(&acc->w[g]);
+		if (acc->d)
+			__builtin_prefetch(&acc->d[g]);
+		if (acc->nf)
+			__builtin_prefetch(&acc->nf[g]);
+	}
+}
+
+static void
+group_prefetch_keys(AggExec *t, uint32 g)
+{
+	for (int j = 0; j < t->spec->nkeys; j++)
+	{
+		const KeyState *k = &t->ks[j];
+		uint32		id = key_id(t, j, g);
+
+		if (id == 0)
+			continue;
+		if (k->numk)
+			__builtin_prefetch(&k->im.val[id - 1]);
+		else if (k->ident)
+			__builtin_prefetch(&k->idval[id - 1]);
+		else
+			__builtin_prefetch(&k->ot.val[id - 1]);
+	}
+}
+
 /* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
 static bool
 group_slot(AggExec *ex, TupleTableSlot *slot)
@@ -402,6 +449,10 @@ group_slot(AggExec *ex, TupleTableSlot *slot)
 	while (ex->gpos >= t->nglist)
 		if (!spill_more(ex))
 			return false;
+	if (ex->gpos + GROUP_AHEAD < t->nglist)
+		group_prefetch_state(t, t->glist[ex->gpos + GROUP_AHEAD]);
+	if (ex->gpos + GROUP_AHEAD / 2 < t->nglist)
+		group_prefetch_keys(t, t->glist[ex->gpos + GROUP_AHEAD / 2]);
 	group_tuple(t, t->glist[ex->gpos++], slot);
 	return true;
 }
