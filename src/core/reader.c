@@ -49,6 +49,7 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->gen = gen;
 	sr->buf = InvalidBuffer;
 	sr->blkno = InvalidBlockNumber;
+	sr->miss_page = -9;
 	sr->pagestart = palloc((nextents + 1) * sizeof(uint32));
 	for (int i = 0; i < nextents; i++)
 	{
@@ -135,6 +136,39 @@ sr_unpin(SiftStreamReader *sr)
 	sr->buf = InvalidBuffer;
 }
 
+/* The pages [page, end) of a range one get reads, for the stream that brings them in with the fewest reads: the blocks of an extent that follow each other are one read */
+typedef struct SrRange
+{
+	const SiftStreamReader *sr;
+	uint32		page;
+	uint32		end;
+	int			cur;
+} SrRange;
+
+static BlockNumber
+sr_range_cb(ReadStream *stream, void *arg, void *per_buffer_data)
+{
+	SrRange    *r = arg;
+
+	return r->page < r->end ? page_block(r->sr, r->page++, &r->cur) : InvalidBlockNumber;
+}
+
+/*
+ * Reads the pages [first, end) into shared buffers, each run of blocks that follow each other (up to io_combine_limit) in one read, where the get of each page would read it alone.
+ * A get that spans pages calls this after its first page missed: the rest of the range is then in the buffers when it reads them. Nothing is read of pages that are cached.
+ */
+static void
+sr_read_range(const SiftStreamReader *sr, uint32 first, uint32 end)
+{
+	SrRange		r = {sr, first, end, sr->cur};
+	ReadStream *stream = read_stream_begin_relation(READ_STREAM_FULL, NULL, sr->index, MAIN_FORKNUM, sr_range_cb, &r, 0);
+	Buffer		b;
+
+	while (BufferIsValid(b = read_stream_next_buffer(stream, NULL)))
+		ReleaseBuffer(b);
+	read_stream_end(stream);
+}
+
 /*
  * The stream only reads ahead: its buffers come in the order of its pages and go back at once, and the get reads its page through the buffer
  * manager like any other (a hit once the stream has passed the page). The buffer of the first page after lpage is held until a get reaches it.
@@ -144,7 +178,9 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 {
 	Buffer		buf;
 	uint64		reads;
-	bool		timed;
+	bool		timed,
+				seq;
+	uint32		end;
 	instr_time	t0,
 				t1;
 
@@ -174,9 +210,23 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 	}
 	timed = sr->ahead != NULL && !sr->cold;
 	reads = pgBufferUsage.shared_blks_read;
+	seq = lpage > sr->miss_page && lpage - sr->miss_page <= 2 && sr->stream == NULL;
+	end = Min((uint32) lpage + (seq ? Max(Min(sr->ra * 2, (uint32) io_combine_limit), 4) : 0), sr->npages);
+	/*
+	 * A page a page or two after the last that waited for the device: the reader walks the segment in order, in gets of a few hundred bytes to a few pages, between gets of
+	 * pages it has cached, and this page and the next 3 come in one read where each would be a read of its own, then 7, up to io_combine_limit (the kernel reads ahead of a file it
+	 * reads in order, but the buffer manager asks it page by page). A page that is cached is no read: the stream finds it there.
+	 */
+	if (seq)
+		sr_read_range(sr, lpage, end);
 	if (timed)
 		INSTR_TIME_SET_CURRENT(t0);
 	buf = ReadBufferExtended(sr->index, MAIN_FORKNUM, blk, RBM_NORMAL, NULL);
+	if (pgBufferUsage.shared_blks_read != reads)
+	{
+		sr->miss_page = seq ? end - 1 : lpage;
+		sr->ra = seq ? end - lpage : 0;
+	}
 	if (timed && pgBufferUsage.shared_blks_read != reads)
 	{
 		INSTR_TIME_SET_CURRENT(t1);
@@ -225,6 +275,8 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 	uint32		lpage = off / SIFT_PAGE_PAYLOAD;
 	size_t		in = off % SIFT_PAGE_PAYLOAD;
 	char	   *dst = scratch;
+	uint32		last = (off + len - 1) / SIFT_PAGE_PAYLOAD + 1;	/* the page past the range */
+	bool		ranged = true;
 
 	if (len == 0)
 		return scratch;
@@ -236,6 +288,7 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 	while (len > 0)
 	{
 		size_t		n = Min(len, SIFT_PAGE_PAYLOAD - in);
+		uint64		reads = pgBufferUsage.shared_blks_read;
 
 		memcpy(dst, sr_bytes(sr, lpage++, in, n), n);
 		LockBuffer(sr->buf, BUFFER_LOCK_UNLOCK);
@@ -244,6 +297,14 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 		dst += n;
 		len -= n;
 		in = 0;
+		/* the first page waited for the device (and no stream of the scan brings the others): the rest of the range is read now, in the fewest reads */
+		if (ranged && reads != pgBufferUsage.shared_blks_read && sr->stream == NULL && lpage < last)
+		{
+			sr_read_range(sr, lpage, last);
+			sr->miss_page = last - 1;
+			sr->ra = 0;
+		}
+		ranged = false;
 	}
 	return scratch;
 }

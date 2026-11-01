@@ -516,6 +516,8 @@ typedef struct SiftStreamReader
 	uint32		pf_end;			/* ... and the page past it */
 	Buffer		pf_buf;			/* the stream's next buffer, taken from it but not used yet, or InvalidBuffer */
 	uint32		pf_buf_page;	/* its logical page */
+	uint32		ra;				/* the pages of the last sequential read of that kind, doubled while the reads go on in order (0: the last miss was not one) */
+	int64		miss_page;		/* the page of the last fetch that waited for the device (-9: none): a miss a page or two after it is a sequential read */
 } SiftStreamReader;
 
 extern void sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents,

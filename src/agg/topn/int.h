@@ -274,6 +274,7 @@ struct SiftTopN
 	bool		rwide[TOP_RESID];
 	bool		nogord;			/* TOPN_NOGORD: the plan counts on the heads of the sorted runs */
 	bool		gtext;			/* ... the one key is a text column, ranked in the arrays by its collation (key[0].collid) */
+	bool		gkeyout;		/* every output column is the first key, a plain integer or time column: the row of an exact entry is the entry's key, no heap row is read */
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];

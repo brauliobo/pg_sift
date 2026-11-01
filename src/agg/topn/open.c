@@ -458,6 +458,13 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		}
 	}
 	t->gok = order_gok(t, lay, heap);
+	/* the output is the first key alone, as the entry of the array has it */
+	if (t->gok && t->nkey == 1 && !t->gtext && t->nout > 0 && t->key[0].xk == TXK_NONE && t->key[0].x == NULL && !t->key[0].blob && !t->key[0].nenum)
+	{
+		t->gkeyout = sift_topn_out_ok(&lay->leaf[t->key[0].leaf]);
+		for (int c = 0; c < t->nout && t->gkeyout; c++)
+			t->gkeyout = t->oleaf[c] == t->key[0].leaf;
+	}
 	t->snap = snapshot;
 	t->src = src;
 	t->rel = heap;

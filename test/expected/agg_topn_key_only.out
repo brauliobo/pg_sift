@@ -1,0 +1,162 @@
+-- ORDER BY key LIMIT n over the global order of the key where the key is all that goes out (SELECT k ... ORDER BY k): the rows of the entries that are exact (the page all-visible,
+-- the row not dead in its unit) are the entries' keys and no heap row is read; the other entries are confirmed by the heap as before. The rows are the plan's without the extension after
+-- deleted, updated (HOT and not), rolled back and vacuumed rows, new rows, a promotion and a merge, and for a cursor opened before an update.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+CREATE TABLE ko (id int PRIMARY KEY, i int, b int8, d date, t timestamp, pad text DEFAULT repeat('x', 200));
+ALTER TABLE ko ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ko (id, i, b, d, t)
+SELECT n, CASE WHEN n % 29 = 0 THEN NULL ELSE (n * 7919) % 5003 - 2000 END, CASE WHEN n % 31 = 0 THEN NULL ELSE (n::int8 * 104729) % 1000003 * 5000000 - 2000000000000 END,
+	   CASE WHEN n % 37 = 0 THEN NULL ELSE DATE '2000-01-01' + (n * 7) % 9000 END, CASE WHEN n % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((n * 7919) % 900000) * interval '1 second' END
+FROM generate_series(1, 12000) n;
+CREATE INDEX ko_i ON ko USING sift_col (id sift.col_int4_ops, i sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops)
+	WITH (order_columns = 'id, i, b, d, t', order_array_columns = 'id, i, b, d, t', order_layout = 'whole');
+NOTICE:  sift_col index "ko_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 5 columns
+NOTICE:  sift_col index "ko_i": order_layout: id: exact keys, 0.4 bytes a row; i: exact keys, 1.8 bytes a row; b: exact keys, 2.7 bytes a row; d: exact keys, 2.1 bytes a row; t: exact keys, 2.6 bytes a row
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ko;
+SET sift.test_topn_heads = off;
+-- the rows are the plan's without the extension, in order; the answer says 'index' when the scan fetched no heap row, 'fetched' when it fetched more than the rows it gave out, 'units' when
+-- the walk of the units answered; the key goes out twice in one of the shapes
+CREATE FUNCTION ko_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; fetches int := -1; ka text; kb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		used := used OR pl LIKE '%Global Order%';
+		IF pl LIKE '%heap fetches%' THEN fetches := substring(pl from '([0-9]+) heap fetches')::int; END IF;
+	END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ka;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO kb;
+	RETURN CASE WHEN ka IS DISTINCT FROM kb THEN 'DIFFERS ' || q WHEN NOT used THEN 'units' WHEN fetches = 0 THEN 'index' ELSE 'fetched' END;
+END $$;
+CREATE FUNCTION ko_all(lim int DEFAULT 500, offs int[] DEFAULT ARRAY[0, 300]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT ko_chk(format('SELECT %s FROM ko %s ORDER BY %s %s %s LIMIT %s OFFSET %s', sel, w, c, d, nl, lim, o)) AS result, count(*)
+   FROM unnest(ARRAY['i', 'b', 'd', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(offs) o,
+	    LATERAL (VALUES (c, ''), (c || ', ' || c, ''), (c, 'WHERE ' || c || ' IS NOT NULL')) q(sel, w)
+   GROUP BY 1 ORDER BY 1 $$;
+SELECT * FROM ko_all();
+ result | n  
+--------+----
+ index  | 96
+(1 row)
+
+-- deleted and updated rows: their pages are not all-visible
+DELETE FROM ko WHERE id % 53 = 0;
+UPDATE ko SET i = i + 1, b = b + 1, d = d + 1, t = t + interval '1 day' WHERE id % 97 = 0;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+-- a VACUUM flags the dead rows of the units and frees their addresses
+VACUUM ko;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 88
+ index   |  8
+(2 rows)
+
+-- a HOT update (no indexed column changes), an update rolled back, an insert rolled back
+UPDATE ko SET pad = repeat('y', 200) WHERE id % 31 = 0;
+BEGIN;
+UPDATE ko SET i = i + 5, b = b + 5, d = d + 5, t = t + interval '5 days' WHERE id % 101 = 0;
+INSERT INTO ko (id, i, b, d, t) SELECT 30000 + n, n, n, DATE '1990-01-01' + n, TIMESTAMP '1990-01-01' + n * interval '1 hour' FROM generate_series(1, 300) n;
+ROLLBACK;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+VACUUM ko;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+-- addresses the VACUUM freed are taken by new rows
+INSERT INTO ko (id, i, b, d, t) SELECT 20000 + n, -n % 50, n, DATE '1990-01-01' + n, TIMESTAMP '1990-01-01' + n * interval '1 hour' FROM generate_series(1, 900) n;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+SELECT sift.col_promote('ko_i'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+SELECT sift.col_merge('ko_i'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+VACUUM ko;
+SELECT * FROM ko_all();
+ result | n  
+--------+----
+ index  | 96
+(1 row)
+
+-- a cursor opened before an update sees the rows of its snapshot
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SET LOCAL sift.enable_agg = off;
+CREATE TEMP TABLE ko_before AS SELECT t FROM ko ORDER BY t DESC NULLS LAST LIMIT 5 OFFSET 100;
+SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+DECLARE ko_c CURSOR FOR SELECT t FROM ko ORDER BY t DESC NULLS LAST LIMIT 5 OFFSET 100;
+UPDATE ko SET t = t + interval '10 years' WHERE id % 3 = 0;
+FETCH ALL FROM ko_c;
+            t             
+--------------------------
+ Tue Jan 11 07:56:53 2000
+ Tue Jan 11 07:55:00 2000
+ Tue Jan 11 07:54:20 2000
+ Tue Jan 11 07:53:07 2000
+ Tue Jan 11 07:52:27 2000
+(5 rows)
+
+SELECT * FROM ko_before;
+            t             
+--------------------------
+ Tue Jan 11 07:56:53 2000
+ Tue Jan 11 07:55:00 2000
+ Tue Jan 11 07:54:20 2000
+ Tue Jan 11 07:53:07 2000
+ Tue Jan 11 07:52:27 2000
+(5 rows)
+
+COMMIT;
+SELECT * FROM ko_all();
+ result  | n  
+---------+----
+ fetched | 96
+(1 row)
+
+DROP FUNCTION ko_all(int, int[]), ko_chk(text);
+DROP TABLE ko;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

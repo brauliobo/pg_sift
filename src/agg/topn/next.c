@@ -15,6 +15,9 @@
 
 #define TOPN_MAGIC	0x544F5031
 
+/* The skip of an OFFSET bisects the key over every cursor, about 0.4 M instructions whatever the offset; walking the entries of exact units costs about 600 an entry, so it pays from about 3,000 */
+#define GORD_SKIP_MIN	2048
+
 /* The entries the skip of the order left to the heap: each that is a row the scan would have given (visible, and with the entry's key where the block has it) is one more the Limit throws away */
 static uint32
 gord_pending(SiftTopN *t)
@@ -56,7 +59,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 	if (!t->skip_tried)
 	{
 		t->skip_tried = true;
-		if (t->nkey == 1 && t->gcond == NULL && t->skip > 0)
+		if (t->nkey == 1 && t->gcond == NULL && t->skip >= GORD_SKIP_MIN)
 		{
 			t->bulk = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
 			t->bulk += gord_pending(t);
@@ -86,11 +89,19 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 			}
 			tid = r->tid;
 		}
-		/* an entry of an exact unit that the Limit throws away is not confirmed in the heap: its key is the array's */
-		else if (t->emitted < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
+		/* an entry of an exact unit is not confirmed in the heap when the Limit throws it away (its key is the array's) or when the key is all that goes out */
+		else if ((t->emitted < t->skip || t->gkeyout) && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
 		{
-			t->emitted++;
-			return skipped_row(t, slot);
+			if (t->emitted++ < t->skip)
+				return skipped_row(t, slot);
+			ExecClearTuple(slot);
+			for (int c = 0; c < t->nout; c++)
+			{
+				slot->tts_isnull[c] = isnull;
+				slot->tts_values[c] = isnull ? (Datum) 0 : leaf_datum(t->gtyp[0], key);
+			}
+			ExecStoreVirtualTuple(slot);
+			return true;
 		}
 		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;

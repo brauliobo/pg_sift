@@ -104,8 +104,8 @@ SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
  confirmed | 26
- partly    | 32
- skipped   | 38
+ partly    | 30
+ skipped   | 40
 (3 rows)
 
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
