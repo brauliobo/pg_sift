@@ -224,7 +224,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->tab[2] = eval_bool(ex, e, (Datum) 0, true);
 		return g;
 	}
-	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf == keyleaf && p->leaf < ex->nbase && (g->attno = sift_topn_text_attno(ex->lay, p->leaf)) > 0)
+	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf < ex->nbase && (g->attno = sift_topn_text_attno(ex->lay, p->leaf)) > 0)
 	{
 		SiftSrcStrTest st = {0};
 
@@ -235,7 +235,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->str = st.vals[0];
 		g->slen = st.lens[0];
 		g->collid = st.collid;
-		g->lead = true;
+		g->lead = p->leaf == keyleaf;
 		g->pinned = pinned;
 		g->leaf = p->leaf;
 		g->typid = ex->lay->leaf[p->leaf].typid;

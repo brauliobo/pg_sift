@@ -130,6 +130,9 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 
 	if (p->kind == STG_STR)
 	{
+		/* a string of another column bounds nothing: the heap row decides */
+		if (!p->lead)
+			return r;
 		switch (p->sop)
 		{
 			case SSTR_EQ:
@@ -208,12 +211,12 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 	return r;
 }
 
-/* is every condition on a text string one that compares under the collation the array ranks by */
+/* is every condition on the text key one that compares under the collation the array ranks by (another column's string is tested on the heap row, under its own) */
 static bool
 gcond_coll_ok(const SiftTopGPred *p, Oid collid)
 {
 	if (p->kind == STG_STR)
-		return p->collid == collid;
+		return !p->lead || p->collid == collid;
 	for (int i = 0; i < p->nchild; i++)
 		if (!gcond_coll_ok(p->child[i], collid))
 			return false;

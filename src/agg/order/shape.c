@@ -190,7 +190,7 @@ topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, in
 static bool
 topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top, Oid collid, bool *loose)
 {
-	/* the walk tests integer and time columns (topn_gpred): a numeric one is left to the units */
+	/* the walk tests integer, time and text columns (topn_gpred): a numeric one is left to the units */
 	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf >= 0 && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->typid == NUMERICOID)
 		return false;
 	if (p->kind == SAP_AND || p->kind == SAP_OR)
@@ -217,7 +217,13 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 	{
 		SiftSrcStrTest st = {0};
 
-		return p->leaf == key && sift_aggspec_text_bound(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && st.collid == collid;
+		if (!sift_aggspec_text_bound(p, c->lay, c->lay->nleaves - c->nvleaf, &st))
+			return false;
+		if (p->leaf == key)
+			return st.collid == collid;
+		/* the string of another column is tested on the heap row of each entry, under its own collation, as the equalities and the flags are */
+		*loose = true;
+		return p->level == 0 && !p->late && p->leaf < c->lay->nleaves - c->nvleaf && sift_topn_text_attno(c->lay, p->leaf) > 0;
 	}
 	/* the IN list of the group (as many elements as one scan reads at once: sift_topn_gorder, SIFT_GORD_PIN_MAX), tested by the heap row as the equalities are */
 	if (p->kind == SAP_IN && p->op == 0 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0 &&
