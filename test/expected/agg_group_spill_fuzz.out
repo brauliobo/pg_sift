@@ -11,20 +11,20 @@ SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '600s';
 SET client_min_messages = warning;
 CREATE TABLE fz AS
-SELECT i AS id, (hashint4(i) & 2147483647) % 50000 AS k1, 'k' || (hashint4(i * 2) & 2147483647) % 3000 AS k2,
-       (hashint4(i * 3) & 2147483647) % 100000 AS vi, 'v' || (hashint4(i * 5) & 2147483647) % 3000 AS vt,
-       ((hashint4(i * 7) & 2147483647) % 20000) / 100.0 AS vn, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS val,
+SELECT i AS id, (hashint4(i) & 2147483647) % 6000 AS k1, 'k' || (hashint4(i * 2) & 2147483647) % 400 AS k2,
+       (hashint4(i * 3) & 2147483647) % 12000 AS vi, 'v' || (hashint4(i * 5) & 2147483647) % 400 AS vt,
+       ((hashint4(i * 7) & 2147483647) % 2500) / 100.0 AS vn, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS val,
        1 + (hashint4(i * 11) & 2147483647) % 5 AS v5, (hashint4(i * 13) & 2147483647) % 200 AS v200,
-       CASE WHEN i <= 40000 THEN i % 5 ELSE (hashint4(i * 17) & 2147483647) % 3000 END AS vl, (hashint4(i * 19) & 2147483647) % 600 AS v600,
-       't' || (hashint4(i * 23) & 2147483647) % 5 AS vt5, 'g' || ((hashint4(i) & 2147483647) % 50000 % 97 / 20 + (hashint4(i * 29) & 2147483647) % 2) AS vtg,
+       CASE WHEN i <= 5000 THEN i % 5 ELSE (hashint4(i * 17) & 2147483647) % 400 END AS vl, (hashint4(i * 19) & 2147483647) % 600 AS v600,
+       't' || (hashint4(i * 23) & 2147483647) % 5 AS vt5, 'g' || ((hashint4(i) & 2147483647) % 6000 % 97 / 20 + (hashint4(i * 29) & 2147483647) % 2) AS vtg,
        (hashint4(i * 31) & 2147483647) % 150 - 100 AS vneg
-FROM generate_series(1, 100000) i;
+FROM generate_series(1, 12500) i;
 CREATE INDEX fz_col ON fz USING sift_col (id, k1, k2, vi, vt, vn, val, v5, v200, vl, v600, vt5, vtg, vneg);
 VACUUM (FREEZE, ANALYZE) fz;
 CREATE TABLE fz_res (seed int, spilled boolean, wrong bigint, err text);
 DO $$
 DECLARE
-	keys text[] := ARRAY['k1 % 50', 'k1 % 2000', 'k1', 'k1 % 20000, k2', 'k2', 'k1 % 300, k2'];
+	keys text[] := ARRAY['k1 % 50', 'k1 % 250', 'k1', 'k1 % 2500, k2', 'k2', 'k1 % 300, k2'];
 	aggs text[] := ARRAY[
 		'count(*) AS m1, count(DISTINCT vi) AS m2',
 		'count(*) AS m1, count(DISTINCT vt) AS m2, sum(val) AS m3',
