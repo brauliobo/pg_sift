@@ -597,6 +597,15 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 		buf->addr[k] = g->tid[buf->at + k];
 }
 
+/* The memory of what the reads of the global order make, for sift_col_rescan to drop */
+MemoryContext
+gorder_cx(SiftColSource *src)
+{
+	if (src->gcx == NULL)
+		src->gcx = AllocSetContextCreate(src->mcxt, "sift col global order", ALLOCSET_DEFAULT_SIZES);
+	return src->gcx;
+}
+
 /* ---- what is known of an entry of the order: exact, dead, to be confirmed by the heap ---- */
 
 /*
@@ -636,7 +645,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 			return -2;
 	}
 	if (c->gexact == NULL)
-		c->gexact = MemoryContextAllocZero(src->mcxt, (keyed ? 1 : seg->nsb) * sizeof(GExact));
+		c->gexact = MemoryContextAllocZero(gorder_cx(src), (keyed ? 1 : seg->nsb) * sizeof(GExact));
 	x = &c->gexact[u];
 	if (x->state == 0)
 	{
@@ -651,7 +660,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 		{
 			SIFT_COL_JITTER();
 			if (!keyed)
-				ok = sift_cseg_unit_dead(seg, u, src->mcxt, &x->dead, &x->ndead, &room);
+				ok = sift_cseg_unit_dead(seg, u, gorder_cx(src), &x->dead, &x->ndead, &room);
 			else
 			{
 				uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
@@ -659,7 +668,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 				sift_cseg_dirty_units(seg, dirty);
 				for (uint32 k = 0; ok && k < seg->nsb; k++)
 					if (sift_col_bit_test(dirty, k))
-						ok = sift_cseg_unit_dead(seg, k, src->mcxt, &x->dead, &x->ndead, &room);
+						ok = sift_cseg_unit_dead(seg, k, gorder_cx(src), &x->dead, &x->ndead, &room);
 				pfree(dirty);
 				if (x->ndead > 1)
 					qsort(x->dead, x->ndead, sizeof(SiftKey), sift_cmp_u64);

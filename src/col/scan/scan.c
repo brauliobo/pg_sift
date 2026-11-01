@@ -176,6 +176,24 @@ sift_col_close(SiftColSource *src)
 		UnregisterSnapshot(src->snap);
 }
 
+bool
+sift_col_rescan(SiftColSource *src)
+{
+	if ((src->flags & COLO_TABLE) || src->begun || src->super || src->whole || src->pcnt || !segments_current(src))
+		return false;
+	if (src->gcx)
+		MemoryContextReset(src->gcx);
+	for (int i = 0; i < src->nseg; i++)
+		src->seg[i].gexact = NULL;
+	memset(src->gmem, 0, sizeof(src->gmem));
+	src->gpin_leaf = -1;
+	src->gpin_n = src->gper = 0;
+	memset(&src->cnt, 0, sizeof(src->cnt));
+	src->cnt.segments = src->nseg;
+	src->vis.heap_pages = 0;
+	return true;
+}
+
 void
 sift_col_unpin(SiftColSource *src)
 {
@@ -418,6 +436,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	MemoryContext old;
 	bool		cached;
 
+	src->begun = true;
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
 	for (int i = 0; i < npreds; i++)

@@ -123,6 +123,12 @@ sift_colsrc_close(SiftSrcSource *src)
 	src->prov->close(src->impl);
 }
 
+bool
+sift_colsrc_rescan(SiftSrcSource *src)
+{
+	return src->prov->rescan != NULL && src->prov->rescan(src->impl);
+}
+
 void
 sift_colsrc_unpin(SiftSrcSource *src)
 {

@@ -64,7 +64,7 @@ typedef struct ColCursor
 	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
 	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
 	SiftCGOrdCuts gcuts;
-	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's mcxt; reset by sift_col_gorder_open) */
+	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's gcx; reset by sift_col_gorder_open) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
 	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */
 	bool		others;			/* the scan has predicates besides the directory's: a unit with many of its addresses is read and filtered, not handed to the heap */
@@ -204,6 +204,8 @@ struct SiftColSource
 	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
+	bool		begun;			/* a begin ran: sift_col_rescan refuses */
+	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
 	bool		super;			/* sift_col_super */
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
 	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
@@ -361,6 +363,7 @@ typedef struct PruneRange
 
 extern void	scan_load_wbuf(SiftColSource *src);
 extern bool	segments_current(SiftColSource *src);
+extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
 extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
 extern bool	scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep);

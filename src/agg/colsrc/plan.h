@@ -29,6 +29,7 @@ extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot s
 extern bool sift_colsrc_can_part(Oid relam, bool index);
 extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 extern void sift_colsrc_close(SiftSrcSource *src);
+extern bool sift_colsrc_rescan(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
 

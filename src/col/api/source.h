@@ -203,6 +203,8 @@ extern uint32 sift_col_super_span(SiftColSource *src);
  */
 extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags);
 extern void sift_col_close(SiftColSource *src);
+/* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
+extern bool sift_col_rescan(SiftColSource *src);
 /* Releases the buffers the source keeps pinned between units (a partitioned table's scan leaves a partition for good); reading on takes them again */
 extern void sift_col_unpin(SiftColSource *src);
 

@@ -20,6 +20,8 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 	void		(*close) (void *impl);
+	/* Optional: make a source that has read nothing (no begin, no test but the filters) ready for another scan of the same statement, the counters at zero; false: it holds state of the last (the caller opens again) */
+	bool		(*rescan) (void *impl);
 	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
 	void		(*unpin) (void *impl);
 	const SiftSrcLayout *(*source_layout) (const void *impl);

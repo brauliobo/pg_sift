@@ -556,8 +556,13 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 
 	ex->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
 	ex->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
-	ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
-		sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
+	if (ex->kept)
+		ex->src = ex->kept;
+	else if (ex->param_scan && ex->spec->topn && ex->spec->nparts == 0)
+		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES));
+	else
+		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
+			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);
 	ex->lay = sift_colsrc_source_layout(ex->src);
@@ -747,7 +752,11 @@ agg_end(CustomScanState *node)
 	spill_end(ex);
 	if (ex->started && !ex->fuse)
 		stats_run(ex);
+	if (ex->kept && ex->src == NULL)
+		ex->src = ex->kept;
 	engine_close(ex);
+	if (ex->kept)
+		MemoryContextDelete(GetMemoryChunkContext(ex->kept));
 	foreach_ptr(AggExec, w, ex->retries)
 	{
 		engine_close(w);
@@ -770,10 +779,23 @@ agg_restart(AggExec *ex)
 {
 	bool		rescannable = ex->rescannable;
 	SiftAggSpec *unpacked = ex->unpacked;
+	SiftSrcSource *kept = NULL;
+	Relation	heap = ex->heap,
+				index = ex->index;
 
 	if (ex->started)
 		stats_run(ex);
+	/* the source and the relations it holds stay for the next probe when the source has read nothing but its filters; else it ends with the scan */
+	if (ex->kept && (ex->src == NULL || sift_colsrc_rescan(ex->src)))
+	{
+		kept = ex->kept;
+		ex->src = NULL;
+		ex->index = NULL;
+		ex->heap_opened = false;
+	}
 	engine_close(ex);
+	if (ex->kept && kept == NULL)
+		MemoryContextDelete(GetMemoryChunkContext(ex->kept));
 	MemoryContextDelete(ex->cxt);
 	memset((char *) ex + sizeof(CustomScanState), 0, sizeof(AggExec) - sizeof(CustomScanState));
 	ex->unpacked = unpacked;
@@ -783,7 +805,15 @@ agg_restart(AggExec *ex)
 	ex->rescannable = rescannable;
 	ex->param_scan = true;
 	scan_spec(ex, ex->css.ss.ps.state->es_query_cxt);
-	engine_rels(ex);
+	if (kept)
+	{
+		ex->kept = kept;
+		ex->heap = heap;
+		ex->index = index;
+		ex->heap_opened = true;
+	}
+	else
+		engine_rels(ex);
 }
 
 static void

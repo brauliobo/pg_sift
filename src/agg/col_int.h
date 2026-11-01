@@ -81,7 +81,8 @@ typedef struct ColSource
 	Relation	index;
 	Snapshot	snapshot;
 	SiftAggSel	sel;			/* the match set the units are restricted to */
-	SiftAggFilters flt;			/* the filters set_filters accepted */
+	SiftAggFilters flt;			/* the filters set_filters accepted, in rcx (reset by the next set_filters) */
+	MemoryContext rcx;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
 	int		   *spmap;			/* per spred: the test of prune_str it stands for */
@@ -116,6 +117,7 @@ extern int col_set_wide(void *impl, const SiftSrcWideTest *t, int nt);
 extern bool col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
 extern uint64 col_set_filters(void *impl, const SiftSrcFilter *f, int nf);
 extern bool col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits);
+extern bool col_rescan(void *impl);
 extern void col_tolerate_ovf(void *impl, int leaf);
 extern void col_set_raw(void *impl, int leaf);
 extern void col_set_numsum(void *impl, int leaf);

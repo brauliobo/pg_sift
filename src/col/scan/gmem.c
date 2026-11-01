@@ -162,10 +162,11 @@ gkept_release(void *arg)
 static void
 gkept_use(SiftColSource *src, GOrdKept *k, int v)
 {
-	MemoryContextCallback *cb = MemoryContextAlloc(src->mcxt, sizeof(MemoryContextCallback));
+	MemoryContext gcx = gorder_cx(src);
+	MemoryContextCallback *cb = MemoryContextAlloc(gcx, sizeof(MemoryContextCallback));
 
 	*cb = (MemoryContextCallback) {gkept_release, k};
-	MemoryContextRegisterResetCallback(src->mcxt, cb);
+	MemoryContextRegisterResetCallback(gcx, cb);
 	k->refs++;
 	k->used = ++gkept_clock;
 	src->gmem[v] = k->g;
@@ -434,7 +435,7 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		gkept_use(src, k, v);
 		return true;
 	}
-	cx = AllocSetContextCreate(src->mcxt, "sift cache write buffer order", ALLOCSET_DEFAULT_SIZES);
+	cx = AllocSetContextCreate(gorder_cx(src), "sift cache write buffer order", ALLOCSET_DEFAULT_SIZES);
 	ok = collid != 0 ? gord_mem_text(src, leaf, collid, v, cx) : gord_mem_num(src, leaf, gleaf, gval, v, cx);
 	if (!ok)
 	{

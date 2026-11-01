@@ -65,6 +65,7 @@ typedef struct AggExec
 	bool		heap_opened;
 	Relation	index;
 	SiftSrcSource *src;
+	SiftSrcSource *kept;		/* the source of a top-N that a probe of an enclosing query starts over (agg_restart): opened in a context of its own, handed on while sift_colsrc_rescan says it can serve the next scan */
 	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
 	SiftTopN   *topn;			/* ORDER BY .. LIMIT n: the scan keeps the best rows instead of groups (spec->topn) */
 	const SiftSrcLayout *lay;

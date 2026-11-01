@@ -892,6 +892,7 @@ static const SiftSrcProvider col_provider = {
 	.unpin = col_unpin,
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,
+	.rescan = col_rescan,
 	.begin = col_begin,
 	.kept = col_kept,
 	.next = col_next,
