@@ -48,19 +48,22 @@ CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
 			WHEN 'mid' THEN format('%s >= (SELECT percentile_disc(0.3) WITHIN GROUP (ORDER BY %s) FROM o) AND %s <= (SELECT percentile_disc(0.6) WITHIN GROUP (ORDER BY %s) FROM o)', s.col, s.col, s.col, s.col)
 			ELSE 'true' END, s.dir, s.nl, s.lim, s.off)
 $$;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+-- a sweep checks the shapes whose hash with the stage falls in a 1 / per share: each stage another share
+CREATE FUNCTION sweep(stage int, per int) RETURNS TABLE (same bigint, shapes bigint) LANGUAGE sql AS
+$$ SELECT count(*) FILTER (WHERE same(shape_sql(s))), count(*) FROM shapes s WHERE hashtext(s::text || stage) % per = 0 $$;
+SELECT * FROM sweep(1, 3);
 SELECT same('SELECT wide AS k FROM @ WHERE wide = -9223372036854775807 - 1 ORDER BY wide LIMIT 20') AS at_min, same('SELECT wide AS k FROM @ WHERE wide = 9223372036854775807 ORDER BY wide DESC LIMIT 20') AS at_max,
 	   same('SELECT ts AS k FROM @ WHERE ts = ''infinity'' ORDER BY ts LIMIT 20') AS infinity;
 
 -- the same after the buffer is promoted, a merge and a REINDEX
 SELECT sift.col_promote('f_ix') >= 0 AS promoted;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(2, 6);
 SELECT sift.col_merge('f_ix', true) >= 0 AS merged;
 REINDEX INDEX f_ix;
 SELECT DISTINCT format FROM sift.col_segments('f_ix') WHERE kind = 'immutable' ORDER BY format;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(3, 6);
 SELECT sift.col_verify('f_ix');
 
-DROP FUNCTION same(text), shape_sql(shapes);
+DROP FUNCTION same(text), sweep(int, int), shape_sql(shapes);
 DROP TABLE shapes, f, o;
 DROP EXTENSION pg_sift;
