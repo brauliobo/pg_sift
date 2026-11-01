@@ -31,8 +31,8 @@ else:
         if not errors:
             print('options: live ok, the library agrees with src/ on every setting and reloption')
     elif not errors:
-        readme, settings, reloptions, cases, upgrade, notes_block = render(opts, notes, released)
-        files = {'README.md': [('sift-options', readme)], 'docs/USAGE.md': [('sift-settings', settings), ('sift-reloptions', reloptions)], 'docs/OPTIONS.md': [('sift-cases', cases), ('sift-upgrade', upgrade), ('sift-notices', notes_block)]}
+        readme, settings, reloptions, cases, upgrade = render(opts, notes, released)
+        files = {'README.md': [('sift-options', readme)], 'docs/USAGE.md': [('sift-settings', settings), ('sift-reloptions', reloptions)], 'docs/OPTIONS.md': [('sift-cases', cases), ('sift-upgrade', upgrade)]}
         for path, blocks in files.items():
             old = new = read(path)
             for tag, block in blocks:

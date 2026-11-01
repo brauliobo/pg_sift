@@ -1,32 +1,7 @@
-# The tables generated from the options: release labels, notices, the --missing list, --snapshot and the README, USAGE and OPTIONS blocks.
+# The tables generated from the options: release labels, the --missing list, --snapshot and the README, USAGE and OPTIONS blocks.
 # Run into the namespace of main.py (exec), not imported; not a script of its own.
 def release_label():
     return re.search(r"default_version\s*=\s*'(\d+\.\d+)", read('pg_sift.control')).group(1)
-
-
-def notices(opts):
-    """-> [(level, message, source file, [the options it names])] of every NOTICE and WARNING the library raises (a message of #ifdef SIFT_TESTING code or of a test-only file is not listed)"""
-    names = sorted({o['name'] for o in opts if not o['testing'] and o['kind'] in ('guc', 'rel')}, key=len, reverse=True)
-    out = []
-    for path, text in sorted(sources().items()):
-        if re.search(r'(^|/)(test\.c|[^/]*_test[^/]*\.[ch])$', path):
-            continue
-        t = strip_comments(text)
-        skip = testing_lines(text)
-        for m in re.finditer(r'\b(?:ereport|elog)\(\s*(NOTICE|WARNING)\b', t):
-            if t.count('\n', 0, m.start()) + 1 in skip:
-                continue
-            i = t.index('(', m.start())
-            body = t[i + 1:call_end(t, i)]
-            e = re.search(r'\berrmsg(?:_internal)?\s*\(', body)
-            if e:
-                j = body.index('(', e.start())
-                msg = string(split_args(body[j + 1:call_end(body, j)])[0])
-            else:
-                msg = string(split_args(body)[1])
-            if msg:
-                out.append((m.group(1), msg, path, [n for n in names if re.search(r'(?<![\w])%s(?![\w])' % re.escape(n), msg)]))
-    return out
 
 
 def lead_rows(notes):
@@ -196,11 +171,6 @@ def generate(opts, notes, released, version, old_version):
             sections += lines
     sections.append('<!-- sift-cases:end -->')
 
-    nt = ['<!-- sift-notices:start -->', '| Level | Message (`%s` is a placeholder) | Raised in | Options it names |', '|---|---|---|---|']
-    for level, msg, path, named in notices(opts):
-        nt.append('| %s | %s | `src/%s` | %s |' % (level, esc(re.sub(r'%[-+ 0#]*[0-9*]*(?:\.[0-9*]+)?(?:l|ll|z)?[a-zA-Z]', '%s', msg)), path, ', '.join('`%s`' % n for n in named) or ''))
-    nt.append('<!-- sift-notices:end -->')
-
     up_new = [o['key'] for o in opts if not o['testing'] and o['key'] not in released]
     up_def = [o['key'] for o in opts if not o['testing'] and o['key'] in released and released[o['key']] != fmt(o, o['default'])]
     upgrade = ['<!-- sift-upgrade:start -->', '%s since %s; new: %s.' % ('No default changed' if not up_def else 'Defaults changed: ' + ', '.join(up_def), released_label(), ', '.join('`%s`' % k for k in up_new) or 'none')]
@@ -223,4 +193,4 @@ def generate(opts, notes, released, version, old_version):
         else:
             rs.append('| `%s` | `%s` | %s | %s | %s | %s | %s |' % (o['name'], o['am'], default(o), meta(r, 'class'), values(o, r), esc(d), esc(c)))
     return ('\n'.join(readme), '\n'.join(['<!-- sift-settings:start -->'] + gs + ['<!-- sift-settings:end -->']), '\n'.join(['<!-- sift-reloptions:start -->'] + rs + ['<!-- sift-reloptions:end -->']),
-            '\n'.join(sections), '\n'.join(upgrade), '\n'.join(nt))
+            '\n'.join(sections), '\n'.join(upgrade))
