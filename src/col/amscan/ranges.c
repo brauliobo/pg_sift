@@ -349,7 +349,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			{
 				int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[col]) : 0;
 
-				if (strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
+				if (strategy == BTEqualStrategyNumber || strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
 					ranges = lappend(ranges, ri);
 				else
 					other = true;
