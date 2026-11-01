@@ -28,6 +28,7 @@ CHECKS=(
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
+	'bench-resume	bash bench/test/test_resume.sh'
 	'bench-coverage	bench/bench cases --check'
 	'slugs		scripts/check-slugs.sh'
 	'file-size	scripts/check-file-size.sh'

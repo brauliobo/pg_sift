@@ -100,10 +100,6 @@ class Ties(unittest.TestCase):
         self.assertTrue(self.equal(ORDERING[0:1], ['9|5.0000000000001|2025-01-05|8|40.00']))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class Takeaway(unittest.TestCase):
     def fig(self, case, native, sift, others, plan):
         c = type('C', (), dict(id=case, metrics=['ms']))
@@ -331,3 +327,7 @@ class Param(unittest.TestCase):
             session.run(sql)
         self.assertIn("\\set ids_keyset_3 '{1,2,3}'", sent[0])
         self.assertNotIn('\\set', sent[1])
+
+
+if __name__ == '__main__':
+    unittest.main()
