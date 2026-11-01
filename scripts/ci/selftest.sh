@@ -249,6 +249,12 @@ if [[ $MODE == --selftest ]]; then
 		fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 	done
+	# the scaling gate is a job of the full tier, and of the quick tier only for the files of the geometry (scripts/areas.tsv); a col change alone does not pick it
+	[[ -z $(SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep scaling_slope) && -n $(SIFT_CI_PG_MAJOR=18 "$0" --plan full | grep scaling_slope) ]] || { echo "FAIL: tap-shell-scaling_slope is not in the full plan only"; bad=1; }
+	for f in "src/core/sift.h 1" "src/col/scan/gorder.c 0"; do
+		n=$("$0" affected --list --files ${f% *} | grep -c 'tap-shell-scaling_slope')
+		[[ $n == "${f#* }" ]] || { echo "FAIL: affected for ${f% *} picks the scaling gate $n times, not ${f#* }"; bad=1; }
+	done
 	# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
 	t=$ST/reaper; mkdir "$t"; ( exit 0 ) & dead=$!; wait "$dead"
 	mkdir -p "$t/sift-ci-$dead/lane1/data" "$t/sift-ci-$$/lane1" "$t/sift-ci-1$dead" "$t/sift-ci-1$dead/data"

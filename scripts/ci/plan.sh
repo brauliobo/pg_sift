@@ -143,7 +143,8 @@ else
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
-	tap_shell $(rest t .sh $SLOW_SHELL)
+	# the scaling gate (a build of the 8-page flavour of the library and 50 s of timings) is a job of the quick tier only when the run was asked for it by the diff: scripts/areas.tsv names its files
+	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL); else tap_shell $(rest t .sh $SLOW_SHELL scaling_slope); fi
 	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert

@@ -91,7 +91,7 @@ if [[ $MODE == affected ]]; then
 			FASTRE=$RE
 		fi
 	fi
-	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
+	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_AFFECTED="$RE" SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
 	for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
