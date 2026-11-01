@@ -1,4 +1,4 @@
--- a LATERAL top-1 over a table partitioned by hash of the key runs the one partition that holds the key, where PostgreSQL scanned it and sorted for each outer row
+-- a LATERAL top-1 over a table partitioned by hash of the key runs the one partition that holds the key, where PostgreSQL scanned it and sorted for each outer row; the milliseconds are of whole statements, planning included
 -- label: `LEFT JOIN LATERAL (SELECT created_at FROM lh_ev WHERE dim_a_id = d.id ORDER BY created_at DESC LIMIT 1)` for 100 entities, over rows events in 16 hash partitions, `order_array_group = dim_a_id`; the variant `btree` is the same rows with a b-tree on (dim_a_id, created_at)
 -- ordered: yes
 --@ setup
