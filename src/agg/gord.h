@@ -41,8 +41,17 @@ extern const char *sift_gord_str(const SiftGOrd *g, uint32 *len);
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
 /* The entry sift_gord_next just gave is of a row that is live and visible to every snapshot: the heap need not confirm it (the first rows an OFFSET throws away) */
 extern bool sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid);
-/* Takes off the front of the sources the entries (at most k, returned) that are certainly among the first k of the scan and of rows that need no check in the heap; the caller throws the same number of rows away. Before the first sift_gord_next */
+/* An entry sift_gord_skip took off the front that the heap has to confirm: the address, and its key when the block has it exactly (check) */
+typedef struct SiftGPend
+{
+	uint64		tid;
+	int64		key;
+	bool		check;
+} SiftGPend;
+/* Takes off the front of the sources the entries that are certainly among the first k of the scan: those of rows that need no check in the heap are counted (returned), the others are listed (sift_gord_pending) for the caller to confirm; it throws the same number of rows away. Before the first sift_gord_next */
 extern uint32 sift_gord_skip(SiftGOrd *g, uint32 k);
+extern const SiftGPend *sift_gord_pending(const SiftGOrd *g, uint32 *n);
+extern void sift_gord_pending_done(SiftGOrd *g);
 extern void sift_gord_rewind(SiftGOrd *g);
 /* Some source is the ends of a segment's order: the entries it has end where the segment's go on. The scan that reads them may find the order short of rows (sift_gord_short) */
 extern bool sift_gord_ends(const SiftGOrd *g);

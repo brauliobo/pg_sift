@@ -15,6 +15,36 @@
 
 #define TOPN_MAGIC	0x544F5031
 
+/* The entries the skip of the order left to the heap: each that is a row the scan would have given (visible, and with the entry's key where the block has it) is one more the Limit throws away */
+static uint32
+gord_pending(SiftTopN *t)
+{
+	TopFetch   *f = &t->pf[0];
+	uint32		n,
+				rows = 0;
+	const SiftGPend *pend = sift_gord_pending(t->go, &n);
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+		bool		call_again = false,
+					all_dead,
+					hnull;
+		Datum		d;
+
+		ItemPointerSet(&tid, (BlockNumber) (pend[i].tid >> 16), (OffsetNumber) (pend[i].tid & 0xFFFF));
+		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+			continue;
+		d = slot_getattr(f->slot, t->gatt[0], &hnull);
+		if (hnull || (pend[i].check && heap_key(t->gtyp[0], d) != pend[i].key))
+			continue;
+		t->fetched++;
+		rows++;
+	}
+	sift_gord_pending_done(t->go);
+	return rows;
+}
+
 static bool
 gord_next(SiftTopN *t, TupleTableSlot *slot)
 {
@@ -27,7 +57,10 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 	{
 		t->skip_tried = true;
 		if (t->nkey == 1 && t->gcond == NULL && t->skip > 0)
+		{
 			t->bulk = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
+			t->bulk += gord_pending(t);
+		}
 	}
 	if (t->bulk > 0)
 	{

@@ -45,6 +45,7 @@ typedef struct GCur
  * it has used, and a scan gets them back through the reset callback of its context.
  */
 #define GBUF_KEEP	64
+#define GORD_PEND_MAX	(1 << 20)	/* the entries a skip leaves to the heap: the rest of a longer one is walked */
 static MemoryContext gbuf_cx;
 static SiftCGOrdBuf *gbuf_spare[GBUF_KEEP];
 static int	ngbuf_spare;
@@ -94,6 +95,10 @@ struct SiftGOrd
 	int		   *tree;			/* a text key: the tournament of the cursors, tree[0] the winner and tree[1..] the loser of each match (log2 of the sources compares a step, where the scan of them compares each) */
 	bool		ends;			/* some source is the ends of a segment's order */
 	bool		short_;			/* a source of the ends is spent: the order is not known past the last entry given */
+	MemoryContext cxt;
+	SiftGPend  *pend;			/* the entries sift_gord_skip took off the front that need the heap's word (sift_gord_pending) */
+	uint32		npend;
+	uint32		cpend;
 	bool		last_set;
 	int			last_cls;
 	int64		last_key;
@@ -275,6 +280,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		return NULL;
 	g = MemoryContextAllocZero(cxt, sizeof(SiftGOrd));
 	g->src = src;
+	g->cxt = cxt;
 	g->leaf = leaf;
 	g->grouped = grouped;
 	g->desc = desc;
@@ -359,10 +365,10 @@ skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
 /*
  * Takes the first entries off the front of every cursor, as many as can be said to be among the first k of the scan without reading their keys: those whose bucket (a compact
  * block keeps the bucket of a key, not the key; a whole one its key, a bucket of one) is before v, the largest v before which at most k entries may come. They are all among the
- * first k (fewer than k entries have a key before v), and each of them stands for a row only if the page of its address is all-visible and the unit's row live
- * (sift_colsrc_gorder_exact): a cursor stops its skip at the first entry that is not. The scan then goes on with the rest and throws away the other k - n; the result is the same
- * as the throwing away of the first k. A source that cannot say (a write buffer) counts all its entries as possibly first and gives none up. Before the first sift_gord_next; 0 (nothing
- * skipped) for the ends of an order, a text key, or when the scan starts with NULL rows. Returns n.
+ * first k (fewer than k entries have a key before v). An entry stands for a row if the page of its address is all-visible and the unit's row live (sift_colsrc_gorder_exact): those are
+ * counted (returned); the others are kept for the caller (sift_gord_pending) to confirm in the heap, as the scan would have, and to count the ones that stand for a row. The scan then goes on
+ * with the rest and throws away the other k less the rows counted; the result is the same as the throwing away of the first k. A source that cannot say (a write buffer) counts all its
+ * entries as possibly first and gives none up. Before the first sift_gord_next; 0 (nothing skipped) for the ends of an order, a text key, or when the scan starts with NULL rows.
  */
 uint32
 sift_gord_skip(SiftGOrd *g, uint32 k)
@@ -412,31 +418,63 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 		GCur	   *c = g->cur[i];
 		uint32		n = 0;
 
-		/* the addresses of the entries come with their chunk; only the front of the chunk is decoded when the skip is short of it */
-		while (n < clo[i])
+		/* the addresses of the entries come with their chunk; one that is not exact goes to the caller to be confirmed in the heap, with its key where the block has it */
+		for (; n < clo[i]; n++)
 		{
 			uint32		p = g->desc ? c->ve - 1 - n : c->vs + n;
+			uint64		a;
+			int			st;
 
 			if (p - c->buf->at >= c->buf->cm)
 				sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
-			if (!sift_colsrc_gorder_exact(g->src, c->src, c->buf->addr[p - c->buf->at]))
+			a = c->buf->addr[p - c->buf->at];
+			st = sift_colsrc_gorder_state(g->src, c->src, a);
+			if (st == SIFT_GORD_EXACT)
+				total++;
+			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
 				break;
-			n++;
+			else if (st == SIFT_GORD_CHECK)
+			{
+				if (g->npend == g->cpend)
+				{
+					g->cpend = Max(g->cpend * 2, 1024);
+					g->pend = g->pend == NULL ? MemoryContextAlloc(g->cxt, g->cpend * sizeof(SiftGPend)) : repalloc(g->pend, g->cpend * sizeof(SiftGPend));
+				}
+				g->pend[g->npend].tid = a;
+				g->pend[g->npend].key = c->buf->compact ? 0 : c->buf->key[p - c->buf->at];
+				g->pend[g->npend++].check = !c->buf->compact;
+			}
 		}
 		if (g->desc)
 			c->ve -= n;
 		else
 			c->vs += n;
 		c->sk = n;
-		total += n;
 	}
 	pfree(clo);
 	return total;
 }
 
+const SiftGPend *
+sift_gord_pending(const SiftGOrd *g, uint32 *n)
+{
+	*n = g->npend;
+	return g->pend;
+}
+
+void
+sift_gord_pending_done(SiftGOrd *g)
+{
+	if (g->pend != NULL)
+		pfree(g->pend);
+	g->pend = NULL;
+	g->npend = g->cpend = 0;
+}
+
 void
 sift_gord_rewind(SiftGOrd *g)
 {
+	sift_gord_pending_done(g);
 	for (int i = 0; i < g->ncur; i++)
 	{
 		GCur	   *c = g->cur[i];

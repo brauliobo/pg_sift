@@ -395,10 +395,16 @@ sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32
 	return src->prov->gorder_before && src->prov->gorder_before(src->impl, i, leaf, vs, ve, v, desc, clo, chi, memo);
 }
 
+int
+sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid)
+{
+	return src->prov->gorder_exact ? src->prov->gorder_exact(src->impl, i, tid) : SIFT_GORD_UNKNOWN;
+}
+
 bool
 sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
 {
-	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, tid);
+	return sift_colsrc_gorder_state(src, i, tid) == SIFT_GORD_EXACT;
 }
 
 void

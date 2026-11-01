@@ -99,6 +99,19 @@ VACUUM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
 SELECT sift.col_verify('t_ix');
 
+-- the pages are all-visible but a few (a row updated in every tenth page, one deleted in every twentieth; no VACUUM has visited them): the skip of an OFFSET counts the entries of the other pages
+-- and has the heap confirm those of these, whose rows it counts if the snapshot sees them; an aborted update leaves versions nobody sees on pages of its own
+ALTER TABLE t SET (autovacuum_enabled = off);
+UPDATE t SET pad = 3 WHERE (ctid::text::point)[0]::int % 10 = 0 AND id % 9 = 0;
+DELETE FROM t WHERE (ctid::text::point)[0]::int % 20 = 3 AND id % 11 = 0;
+BEGIN;
+UPDATE t SET ts = ts + INTERVAL '30 days', s = s - 1 WHERE (ctid::text::point)[0]::int % 10 = 5 AND id % 13 = 0;
+ROLLBACK;
+DROP TABLE p;
+CREATE TABLE p AS SELECT * FROM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT sift.col_verify('t_ix');
+
 -- dead rows: the segment has a row bulkdelete cleared, so its order is not read from the heap (the units answer), and a new row may take the address of a dead one
 DELETE FROM t WHERE ts < TIMESTAMP '2026-02-01' OR id % 17 = 0;
 VACUUM t;

@@ -718,7 +718,7 @@ col_gorder_before(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 v, bo
 	return sift_col_gorder_before(((ColSource *) impl)->cs, i, leaf, vs, ve, v, desc, clo, chi, memo);
 }
 
-static bool
+static int
 col_gorder_exact(void *impl, int i, SiftKey tid)
 {
 	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, tid);

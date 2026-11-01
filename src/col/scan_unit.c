@@ -373,13 +373,14 @@ siftkey_cmp(const void *a, const void *b)
 }
 
 /*
- * Is the entry of the global order of stored segment i at heap address tid of a row that is live and visible to every snapshot, so that nothing needs the heap to
- * confirm it (an OFFSET throws it away unread)? Its page must be all-visible and its row not among the dead rows of its unit, which are listed once for the unit, in the
+ * What is known of the entry of the global order of stored segment i at heap address tid: 1 if it is of a row that is live and visible to every snapshot, so that nothing needs
+ * the heap to confirm it (an OFFSET throws it away unread): its page is all-visible and its row not among the dead rows of its unit; -1 if the row is among them; 0 if the unit holds it
+ * live on a page that is not all-visible, which the heap confirms for the snapshot; -2 if the unit cannot say. The dead rows of a unit are listed once for the unit, in the
  * order of col_super_take: the map, the directory, the liveness. A segment cut by key has no unit of the superblock of the page: the page is looked up in the map by block
- * and the dead rows of the segment (those of its units that have any) are one list. A dead row is still asked of the heap: a vacuumed address may hold a row of another
- * source with the same key, which the merge of the sources has already dropped as the repeat of this entry.
+ * and the dead rows of the segment (those of its units that have any) are one list. The scan asks the heap about a dead row: a vacuumed address may hold a row of another
+ * source with the same key, which the merge of the sources has already dropped as the repeat of this entry; the skip of an OFFSET counts it for none, as that row is another source's.
  */
-bool
+int
 sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 {
 	ColCursor  *c;
@@ -394,7 +395,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 	uint64		av[SIFT_PAGEMASK_WORDS];
 
 	if (i >= src->nseg || (src->flags & COLO_TABLE))
-		return false;
+		return -2;
 	c = &src->seg[i];
 	seg = c->seg;
 	keyed = sift_cseg_keyed(&seg->entry);
@@ -405,7 +406,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 		if (u >= seg->nsb || sift_cseg_unit_sb(seg, u) != sb)
 			u = sift_cseg_unit_of_sb(seg, sb);
 		if (u >= seg->nsb)
-			return false;
+			return -2;
 	}
 	if (c->gexact == NULL)
 		c->gexact = MemoryContextAllocZero(src->mcxt, (keyed ? 1 : seg->nsb) * sizeof(GExact));
@@ -436,23 +437,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 		}
 	}
 	if (x->state != 1)
-		return false;
-	if (keyed)
-	{
-		BlockNumber blk = sift_key_block(tid);
-
-		if (src->vis.heap == NULL)
-			return false;
-		sift_vis_blocks_allvisible(&src->vis, &blk, 1, av);
-		pg = 0;
-	}
-	else
-	{
-		memcpy(av, x->av, sizeof(av));
-		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES;
-	}
-	if (!(av[pg / 64] >> (pg % 64) & 1))
-		return false;
+		return -2;
 	hi = x->ndead;
 	while (lo < hi)
 	{
@@ -463,7 +448,23 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 		else
 			hi = mid;
 	}
-	return lo == x->ndead || x->dead[lo] != tid;
+	if (lo < x->ndead && x->dead[lo] == tid)
+		return -1;
+	if (keyed)
+	{
+		BlockNumber blk = sift_key_block(tid);
+
+		if (src->vis.heap == NULL)
+			return -2;
+		sift_vis_blocks_allvisible(&src->vis, &blk, 1, av);
+		pg = 0;
+	}
+	else
+	{
+		memcpy(av, x->av, sizeof(av));
+		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES;
+	}
+	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
 }
 
 int
