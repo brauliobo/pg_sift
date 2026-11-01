@@ -1,0 +1,67 @@
+-- the order arrays over the whole range of a 64-bit key: the smallest and the largest bigint together (a range of 2^64 - 1 for the quantized buckets and the ranges of a write buffer), a bigint that all rows share, two values only, an int4
+-- from end to end, a timestamp with -infinity and infinity, NULLs and a write buffer. Every ordered read (ASC and DESC, LIMIT, OFFSET, bounds at the extremes) answers what a copy without the index does.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_col_gorder_ends = 64;
+SET sift.test_col_gorder_layout = 1;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SELECT setseed(0.42);
+
+CREATE TABLE f (id int, wide bigint, same bigint, two bigint, i4 int, ts timestamp, n bigint);
+INSERT INTO f SELECT i,
+	CASE WHEN i % 500 = 1 THEN -9223372036854775807 - 1 WHEN i % 500 = 2 THEN 9223372036854775807 ELSE ((random() * 2 - 1) * 9.2e18)::bigint END,
+	-5, CASE WHEN i % 2 = 0 THEN -9223372036854775807 - 1 ELSE 9223372036854775807 END,
+	CASE WHEN i % 300 = 1 THEN -2147483648 WHEN i % 300 = 2 THEN 2147483647 ELSE ((random() * 2 - 1) * 2147483647)::int END,
+	CASE WHEN i % 700 = 1 THEN '-infinity'::timestamp WHEN i % 700 = 2 THEN 'infinity'::timestamp ELSE TIMESTAMP '2000-01-01' + random() * 8000 * INTERVAL '1 day' END,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE ((random() * 2 - 1) * 9.2e18)::bigint END
+FROM generate_series(1, 6000) i;
+CREATE TABLE o AS SELECT * FROM f;
+CREATE INDEX f_ix ON f USING sift_col (id, wide, same, two, i4, ts, n) WITH (order_columns = 'wide, same, two, i4, ts, n', order_array_columns = 'wide, same, two, i4, ts, n', write_buffer_limit = 64);
+-- rows that stay in the write buffer
+INSERT INTO f SELECT 6000 + i, ((random() * 2 - 1) * 9.2e18)::bigint, -5, CASE WHEN i % 2 = 0 THEN -9223372036854775807 - 1 ELSE 9223372036854775807 END, ((random() * 2 - 1) * 2147483647)::int, TIMESTAMP '2000-01-01' + random() * 8000 * INTERVAL '1 day', ((random() * 2 - 1) * 9.2e18)::bigint FROM generate_series(1, 5000) i;
+INSERT INTO o SELECT * FROM f WHERE id > 6000;
+SELECT DISTINCT format FROM sift.col_segments('f_ix') WHERE kind = 'immutable' ORDER BY format;
+SELECT sift.col_verify('f_ix');
+
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'f')) INTO a;
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'o')) INTO b;
+	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+CREATE TABLE shapes AS
+SELECT col, dir, nl, lim, off, bound
+FROM (VALUES ('wide'), ('same'), ('two'), ('i4'), ('ts'), ('n')) c(col),
+	 (VALUES ('ASC'), ('DESC')) d(dir),
+	 (VALUES ('NULLS FIRST'), ('NULLS LAST')) nn(nl),
+	 (VALUES (1), (20), (300)) l(lim),
+	 (VALUES (0), (30), (2500), (6000)) o(off),
+	 (VALUES ('min'), ('max'), ('mid'), ('none')) b(bound);
+SELECT count(*) AS shapes FROM shapes;
+CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT %1$s AS k FROM @ WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', s.col,
+		CASE s.bound
+			WHEN 'min' THEN format('%s <= (SELECT percentile_disc(0.01) WITHIN GROUP (ORDER BY %s) FROM o)', s.col, s.col)
+			WHEN 'max' THEN format('%s >= (SELECT percentile_disc(0.99) WITHIN GROUP (ORDER BY %s) FROM o)', s.col, s.col)
+			WHEN 'mid' THEN format('%s >= (SELECT percentile_disc(0.3) WITHIN GROUP (ORDER BY %s) FROM o) AND %s <= (SELECT percentile_disc(0.6) WITHIN GROUP (ORDER BY %s) FROM o)', s.col, s.col, s.col, s.col)
+			ELSE 'true' END, s.dir, s.nl, s.lim, s.off)
+$$;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT same('SELECT wide AS k FROM @ WHERE wide = -9223372036854775807 - 1 ORDER BY wide LIMIT 20') AS at_min, same('SELECT wide AS k FROM @ WHERE wide = 9223372036854775807 ORDER BY wide DESC LIMIT 20') AS at_max,
+	   same('SELECT ts AS k FROM @ WHERE ts = ''infinity'' ORDER BY ts LIMIT 20') AS infinity;
+
+-- the same after the buffer is promoted, a merge and a REINDEX
+SELECT sift.col_promote('f_ix') >= 0 AS promoted;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT sift.col_merge('f_ix', true) >= 0 AS merged;
+REINDEX INDEX f_ix;
+SELECT DISTINCT format FROM sift.col_segments('f_ix') WHERE kind = 'immutable' ORDER BY format;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT sift.col_verify('f_ix');
+
+DROP FUNCTION same(text), shape_sql(shapes);
+DROP TABLE shapes, f, o;
+DROP EXTENSION pg_sift;

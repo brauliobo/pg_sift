@@ -222,12 +222,12 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
  units        |    96
 (2 rows)
 
--- a write buffer of more rows than the scan sorts for so few reads the units
+-- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted: the order answers
 INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
- big_buffer 
-------------
- units
+  big_buffer  
+--------------
+ global order
 (1 row)
 
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)

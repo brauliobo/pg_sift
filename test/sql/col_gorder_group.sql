@@ -124,7 +124,7 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
 SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
--- a write buffer of more rows than the scan sorts for so few reads the units
+-- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted: the order answers
 INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
 

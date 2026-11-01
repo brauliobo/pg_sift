@@ -10,6 +10,12 @@
 
 /* ---- the global order of a leaf as a source of sorted entries (col/gorder.h): the stored segments and the rows of the write buffers ---- */
 
+typedef struct GOrdPair
+{
+	int64		key;
+	uint64		tid;
+} GOrdPair;
+
 typedef struct ColGOrdMem
 {
 	int			leaf;
@@ -19,6 +25,13 @@ typedef struct ColGOrdMem
 	uint32		nvals;
 	int64	   *key;
 	uint64	   *tid;
+	/* numeric key: key and tid of a range hold its entries once the range is sorted (gmem_sort); raw holds them by range, unsorted */
+	GOrdPair   *raw;
+	uint32	   *bstart;			/* the first entry of each of the nb ranges of the key (nb + 1 values) */
+	bool	   *bdone;
+	uint32		nb;
+	int			shift;			/* the range of a key is (key - kmin) >> shift */
+	int64		kmin;
 	uint32		collid;
 	uint32		nstr;			/* a text key: the key of an entry is the rank of its string among the nstr distinct ones, which are str[rank] (len[rank] bytes, in the batches of the buffers) */
 	const char **str;
@@ -44,19 +57,74 @@ gord_text_cmp(const void *a, const void *b)
 	return c != 0 ? c : SIFT_CMP3(x->tid, y->tid);
 }
 
-typedef struct GOrdPair
-{
-	int64		key;
-	uint64		tid;
-} GOrdPair;
+#define GORD_PAIR_LESS(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->tid < (y)->tid)
+SIFT_DEFINE_SORT(gord_pair_cmp_sort, GOrdPair, GORD_PAIR_LESS)
 
-static int
-gord_pair_cmp(const void *a, const void *b)
+/* a copy of the entries for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+gord_pair_copy(size_t bytes)
 {
-	const GOrdPair *x = a,
-			   *y = b;
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+}
 
-	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->tid, y->tid);
+#define GORD_PAIR_KEY(x) ((x)->key)
+#define GORD_PAIR_NOKEY(x) ((int64) 0)
+#define GORD_PAIR_TID(x) ((x)->tid)
+/* the rows of the buffers come in the order of their addresses (the comparison sort takes any other order): by key, then address */
+SIFT_DEFINE_RADIX_SORT(gord_pair_sort, GOrdPair, GORD_PAIR_KEY, GORD_PAIR_NOKEY, GORD_PAIR_TID, gord_pair_copy, pfree, gord_pair_cmp_sort)
+
+/* The ranges of the key of the buffer sorted so far: what a scan reads is a few ranges of them, and a seek or a count by key sorts the one the key falls in */
+static void
+gmem_sort(ColGOrdMem *g, uint32 b)
+{
+	uint32		from = g->bstart[b],
+				to = g->bstart[b + 1];
+
+	if (g->bdone[b])
+		return;
+	gord_pair_sort(g->raw + from, to - from);
+	for (uint32 i = from; i < to; i++)
+	{
+		g->key[i] = g->raw[i].key;
+		g->tid[i] = g->raw[i].tid;
+	}
+	g->bdone[b] = true;
+}
+
+/* The entries [from, to) with a value are in order */
+static void
+gmem_sort_range(ColGOrdMem *g, uint32 from, uint32 to)
+{
+	uint32		lo = 0,
+				hi = g->nb;
+
+	if (from >= to || g->nb == 0)
+		return;
+	SIFT_BISECT(uint32, mid, lo, hi, g->bstart[mid + 1] <= from);
+	for (uint32 b = lo; b < g->nb && g->bstart[b] < to; b++)
+		gmem_sort(g, b);
+}
+
+/* The entries with a value whose key is before key (after: up to it): the position a bisection of the sorted array gives */
+static uint32
+gmem_rank(ColGOrdMem *g, int64 key, bool after)
+{
+	uint64		d;
+	uint32		b,
+				lo,
+				hi;
+
+	if (key < g->kmin)
+		return 0;
+	d = ((uint64) key - (uint64) g->kmin) >> g->shift;
+	if (g->nb == 0 || d >= g->nb)
+		return g->nvals;
+	b = (uint32) d;
+	gmem_sort(g, b);
+	lo = g->bstart[b];
+	hi = g->bstart[b + 1];
+	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
+	return lo;
 }
 
 /* The rows of the write buffers of a text leaf sorted like the entries of a text block: by string (the collation, then the bytes) and address, the key the rank of the string; false as gord_mem, or a string longer than a dictionary entry */
@@ -134,7 +202,50 @@ gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v
 	return true;
 }
 
-/* The rows of the write buffers sorted like a segment's entries; false when they are more than maxrows (sorting them whole costs more than reading them as units), or one holds an overflow value of the leaf or an address a block of the global order cannot name */
+/* The entries with a value cut into ranges of the key of the same width, as many as 1 / 64 of them (4,096 at most): one pass counts them, one puts them in the order of the ranges. pv is freed */
+static void
+gmem_ranges(ColGOrdMem *g, MemoryContext mcxt, GOrdPair *pv, uint32 nv)
+{
+	int64		kmax;
+	uint64		range;
+	int			bits = 0,
+				lg = 0;
+	uint32	   *cnt;
+
+	g->kmin = kmax = nv > 0 ? pv[0].key : 0;
+	for (uint32 i = 1; i < nv; i++)
+	{
+		g->kmin = Min(g->kmin, pv[i].key);
+		kmax = Max(kmax, pv[i].key);
+	}
+	range = (uint64) kmax - (uint64) g->kmin;
+	while (bits < 64 && (range >> bits) != 0)
+		bits++;
+	while (lg < 12 && (nv >> (lg + 6)) != 0)
+		lg++;
+	g->shift = Min(bits > lg ? bits - lg : 0, 63);
+	g->nb = nv == 0 ? 0 : (uint32) (range >> g->shift) + 1;
+	g->bstart = MemoryContextAllocZero(mcxt, ((Size) g->nb + 2) * sizeof(uint32));
+	g->bdone = MemoryContextAllocZero(mcxt, ((Size) g->nb + 1) * sizeof(bool));
+	g->raw = MemoryContextAlloc(mcxt, ((Size) nv + 1) * sizeof(GOrdPair));
+	cnt = g->bstart + 1;
+	for (uint32 i = 0; i < nv; i++)
+		cnt[((uint64) pv[i].key - (uint64) g->kmin) >> g->shift]++;
+	for (uint32 b = 0; b < g->nb; b++)
+		cnt[b] += g->bstart[b];
+	/* cnt[b] is now the end of range b, which is bstart[b + 1]; the entries go in at the start of theirs, which moves to the end */
+	for (uint32 i = 0; i < nv; i++)
+		g->raw[g->bstart[((uint64) pv[i].key - (uint64) g->kmin) >> g->shift]++] = pv[i];
+	for (uint32 b = g->nb; b > 0; b--)
+		g->bstart[b] = g->bstart[b - 1];
+	g->bstart[0] = 0;
+	for (uint32 b = 0; b < g->nb; b++)
+		if (g->bstart[b + 1] - g->bstart[b] <= 1)
+			gmem_sort(g, b);
+	pfree(pv);
+}
+
+/* The rows of the write buffers sorted like a segment's entries; false when a text key has more than maxrows rows, a numeric one more than SIFT_CGORD_MEM_MAX, or one holds an overflow value of the leaf or an address a block of the global order cannot name */
 static bool
 gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, int v, uint32 collid)
 {
@@ -149,11 +260,10 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		return true;
 	for (int i = 0; i < src->nmem; i++)
 		n += src->mem[i].b->nrows;
-	/* the rows of one group are the ones sorted: a buffer of many rows is looked through for them, up to 64 times what an ungrouped scan sorts */
-	if (n > (gleaf < 0 ? maxrows : 64 * maxrows))
-		return false;
 	if (collid != 0)
 		return gord_mem_text(src, leaf, maxrows, collid, v);
+	if (n > SIFT_CGORD_MEM_MAX)
+		return false;
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(GOrdPair));
 	for (int i = 0; i < src->nmem; i++)
@@ -184,10 +294,7 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 				pv[nv++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
 		}
 	}
-	if ((uint64) nv + nn > maxrows)
-		return false;
-	qsort(pv, nv, sizeof(GOrdPair), gord_pair_cmp);
-	qsort(pn, nn, sizeof(GOrdPair), gord_pair_cmp);
+	gord_pair_sort(pn, nn);
 	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
 	g->leaf = leaf;
 	g->gleaf = gleaf;
@@ -196,18 +303,13 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 	g->nvals = nv;
 	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
 	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
-	for (uint32 i = 0; i < nv; i++)
-	{
-		g->key[i] = pv[i].key;
-		g->tid[i] = pv[i].tid;
-	}
+	gmem_ranges(g, src->mcxt, pv, nv);
 	for (uint32 i = 0; i < nn; i++)
 	{
 		g->key[nv + i] = 0;
 		g->tid[nv + i] = pn[i].tid;
 	}
 	src->gmem[v] = g;
-	pfree(pv);
 	pfree(pn);
 	return true;
 }
@@ -450,12 +552,14 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	const ColGOrdMem *g = src->gmem[v];
+	ColGOrdMem *g = src->gmem[v];
 	uint32		lo = vs,
 				hi = ve;
 
 	if (j < src->nseg)
 		return sift_cseg_gorder_seek(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, key, after, keep);
+	if (g->raw != NULL)
+		return Max(vs, Min(ve, gmem_rank(g, key, after)));
 	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
 	return lo;
 }
@@ -465,23 +569,20 @@ sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve,
 {
 	int			vv,
 				j = gorder_src(src, i, &vv);
-	const ColGOrdMem *g = src->gmem[vv];
+	ColGOrdMem *g = src->gmem[vv];
 	uint32		lo = vs,
 				hi = ve;
 
 	if (j < src->nseg)
 		return sift_cseg_gorder_before(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, v, desc, clo, chi, memo);
 	/* the write buffer's entries are sorted in memory: the count of those that may come first is exact, and none of them is certainly a row (it is not in the heap's all-visible pages yet), so none is given up */
-	if (!desc)
-	{
+	if (g->raw != NULL)
+		lo = Max(vs, Min(ve, gmem_rank(g, v, desc)));
+	else if (!desc)
 		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] < v);
-		*chi = lo - vs;
-	}
 	else
-	{
 		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] <= v);
-		*chi = ve - lo;
-	}
+	*chi = desc ? ve - lo : lo - vs;
 	*clo = 0;
 	return true;
 }
@@ -491,7 +592,7 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	const ColGOrdMem *g = src->gmem[v];
+	ColGOrdMem *g = src->gmem[v];
 
 	if (j < src->nseg)
 	{
@@ -501,6 +602,7 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 	buf->at = p / SIFT_CGORD_ROWS * SIFT_CGORD_ROWS;
 	buf->rows = Min(g->n - buf->at, (uint32) SIFT_CGORD_ROWS);
 	buf->cm = Min(buf->rows, Max(w, p - buf->at + 1));
+	gmem_sort_range(g, buf->at, Min(buf->at + buf->cm, g->nvals));
 	buf->compact = false;
 	buf->kfrom = 0;
 	buf->kn = buf->cm;

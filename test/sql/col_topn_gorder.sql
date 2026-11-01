@@ -120,7 +120,7 @@ SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY
 INSERT INTO gt (id, a, b, c, d, t, z) SELECT 20000 + i, -i, i, -i, DATE '1980-01-01' + i, TIMESTAMP '1980-01-01' + i * interval '1 hour', TIMESTAMPTZ '1980-01-01+00' + i * interval '1 hour' FROM generate_series(1, 50) i;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
 
--- a write buffer of more rows than the scan sorts for so few (4,096, or 8 times the rows wanted) is read as units; its promotion gives the order back
+-- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted, whatever the rows wanted; its promotion gives the order back
 INSERT INTO gt (id, a, b, c, d, t, z) SELECT 40000 + i, i % 90, i, i, DATE '2022-01-01' + i % 100, TIMESTAMP '2022-01-01' + i * interval '1 second', NULL FROM generate_series(1, 5000) i;
 SELECT gt_chk('b', 'ASC', 'LAST', 100) AS big_buffer, gt_chk('b', 'ASC', 'LAST', 2000) AS buffer_under_8_times;
 SELECT sift.col_promote('gt_i'::regclass) >= 0 AS promoted;
