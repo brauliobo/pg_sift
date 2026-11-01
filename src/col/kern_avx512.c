@@ -376,6 +376,37 @@ gather_u32_avx512(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst)
 	}
 }
 
+/* The sum (wrapping), minimum and maximum of a[idx[i]]: 8 rows a step, the last step masked; VPMINSQ and VPMAXSQ are one instruction where AVX2 compares and blends */
+F5 void
+gather_stats_avx512(const int64 *a, const uint32 *idx, uint32 n, int64 *sum, int64 *mn, int64 *mx)
+{
+	__m512i		vs = _mm512_setzero_si512(),
+				vlo = _mm512_set1_epi64(INT64_MAX),
+				vhi = _mm512_set1_epi64(INT64_MIN);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+	{
+		__m512i		v = _mm512_i32gather_epi64(_mm256_loadu_si256((const __m256i *) (idx + i)), a, 8);
+
+		vs = _mm512_add_epi64(vs, v);
+		vlo = _mm512_min_epi64(vlo, v);
+		vhi = _mm512_max_epi64(vhi, v);
+	}
+	if (i < n)
+	{
+		__mmask8	k = (__mmask8) LANES(n, i, 8);
+		__m512i		v = _mm512_mask_i32gather_epi64(_mm512_setzero_si512(), k, _mm256_maskz_loadu_epi32(k, idx + i), a, 8);
+
+		vs = _mm512_mask_add_epi64(vs, k, vs, v);
+		vlo = _mm512_mask_min_epi64(vlo, k, vlo, v);
+		vhi = _mm512_mask_max_epi64(vhi, k, vhi, v);
+	}
+	*sum = (int64) _mm512_reduce_add_epi64(vs);
+	*mn = _mm512_reduce_min_epi64(vlo);
+	*mx = _mm512_reduce_max_epi64(vhi);
+}
+
 /* dst[i..] = base + zero extended elements of 8 lanes: load(k, i) fetches the elements in the lanes k as qwords */
 #define FOR_I64_AVX512(name, T, load) \
 F5 void \
@@ -468,7 +499,7 @@ const SiftColKernels sift_col_kernels_avx512 = {
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = gather_u32_avx512,
 	.int_stats = sift_colk_int_stats_avx2,	/* the AVX2 form, which every AVX-512 CPU runs */
-	.gather_stats = sift_colk_gather_stats_avx2,	/* the AVX2 form, which every AVX-512 CPU runs */
+	.gather_stats = gather_stats_avx512,
 	.f8_from_keys = f8_from_keys_avx512,
 	.bits_to_flags = bits_to_flags_avx512,
 	.expand_parents = expand_parents_avx512,
