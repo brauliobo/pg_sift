@@ -714,6 +714,77 @@ count_dirty_units(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi
 }
 
 /*
+ * The rows of the entries of the global order between the bounds, when most units are not exact (a dead row or a page that is not all-visible in each, after updates and deletes spread
+ * over the table): reading those units costs their rows, the entries of the range cost themselves. An entry of a row that is live in its unit and on an all-visible page counts; one on a page
+ * that is not is counted when the snapshot sees the row (the filter of the unit scans, a page at a time over the addresses in order); a dead row of its unit counts for none. Not when the
+ * range holds more than limit entries or a unit cannot say.
+ */
+static bool
+count_by_entries(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi, uint32 limit)
+{
+	SiftColSegment *seg = c->seg;
+	SiftKey    *tids;
+	uint32		nt,
+				rows = 0;
+	uint64		n = 0;
+
+	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src) || !sift_cseg_gorder_tids(seg, src->pcnt - 1, str, lo, hi, limit, &tids, &nt))
+		return false;
+	for (uint32 i = 0; i < nt;)
+	{
+		BlockNumber blk = sift_key_block(tids[i]);
+		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
+		bool		check = false;
+
+		for (; i < nt && sift_key_block(tids[i]) == blk; i++)
+		{
+			int			st = sift_col_gorder_exact(src, c - src->seg, tids[i]);
+
+			if (st == -2)
+			{
+				pfree(tids);
+				return false;
+			}
+			if (st == 1)
+				n++;
+			else if (st == 0)
+			{
+				sift_col_bit_set(offmask, (tids[i] & 0xFFFF) - 1);
+				check = true;
+			}
+		}
+		if (check)
+			n += src->visibility.filter_page(src->visibility.arg, blk, offmask);
+	}
+	pfree(tids);
+	for (uint32 u = 0; u < seg->nsb; u++)
+		rows += seg->sbdir[u].nrows;
+	c->count_ok = true;
+	c->count_rows = n;
+	c->count_unit_rows = rows;
+	return true;
+}
+
+/*
+ * The count of a range when the segment has units that are not exact: the entries of the range when they are fewer than an eighth of the rows of those units (each costs a heap page filter,
+ * a row of a unit a few instructions), else the units are read after the exact ones are counted (count_dirty_units), else the entries up to SIFT_CORDER_MAX_ROWS.
+ */
+static bool
+count_inexact(SiftColSource *src, ColCursor *c, bool str, int64 lo, int64 hi)
+{
+	SiftColSegment *seg = c->seg;
+	uint64		drows = 0;
+
+	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src))
+		return false;
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (!unit_exact(src, seg, u))
+			drows += seg->sbdir[u].nrows;
+	return (drows / 8 >= 256 && count_by_entries(src, c, str, lo, hi, (uint32) Min(drows / 8, (uint64) SIFT_CORDER_MAX_ROWS))) ||
+		count_dirty_units(src, c, str, lo, hi) || count_by_entries(src, c, str, lo, hi, SIFT_CORDER_MAX_ROWS);
+}
+
+/*
  * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), whose global order holds the keys or the ranks of the
  * strings of the leaf of sift_col_count_cmp or sift_col_count_strs (order_array_columns: the rows of the range are the entries between its bounds), or whose point directory lists the rows of the value
  * of sift_col_count_elem, answers the count for all its units
@@ -756,12 +827,12 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	}
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
-			return order && count_dirty_units(src, c, str, lo, hi);
+			return order && count_inexact(src, c, str, lo, hi);
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
-		return order && count_dirty_units(src, c, str, lo, hi);
+		return order && count_inexact(src, c, str, lo, hi);
 	if (order)
 	{
 		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, str, lo, hi);

@@ -46,6 +46,11 @@ typedef struct ColCursor
 	uint32		ahead_end;		/* the units below this one are in the cluster cursor_ahead is on, which it reads ahead (ahead_skip false) or leaves to the kernel */
 	bool		ahead_skip;
 	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
+	uint32		cmemo_epoch;	/* the count of the segment (count_rows, count_unit_rows) answered for the scan numbered cmemo_epoch of SiftColSource.pcnt_epoch, in cmemo_seg at cmemo_gen: the prune of a scan runs more than once */
+	SiftColSegment *cmemo_seg;
+	uint64		cmemo_gen;
+	uint64		cmemo_rows;
+	uint64		cmemo_unit_rows;
 	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
 	uint64		count_rows;
 	uint32		count_unit_rows;	/* the rows of the segment's units */
@@ -201,6 +206,7 @@ struct SiftColSource
 	SiftColVisibility visibility;
 	bool		super;			/* sift_col_super */
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
+	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
 	SiftColOp	pcnt_op;
 	bool		pcnt_int;		/* ... an integer or text leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp, sift_col_count_strs) */

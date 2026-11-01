@@ -725,6 +725,7 @@ void
 sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	src->pcnt = leaf + 1;
+	src->pcnt_epoch++;
 	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
 	src->pcnt_op = op;
 	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
@@ -750,6 +751,7 @@ void
 sift_col_count_cmp(SiftColSource *src, int leaf)
 {
 	src->pcnt = leaf + 1;
+	src->pcnt_epoch++;
 	src->pcnt_int = true;
 	src->pcnt_str = src->pcnt_elem = false;
 }
@@ -758,6 +760,7 @@ void
 sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
 {
 	src->pcnt = leaf + 1;
+	src->pcnt_epoch++;
 	src->pcnt_int = src->pcnt_str = true;
 	src->pcnt_elem = false;
 	src->pcnt_box.lo = lo, src->pcnt_box.lolen = lolen, src->pcnt_box.lo_excl = lo_excl;
@@ -769,6 +772,7 @@ void
 sift_col_count_elem(SiftColSource *src)
 {
 	src->pcnt = 1;
+	src->pcnt_epoch++;
 	src->pcnt_int = src->pcnt_str = false;
 	src->pcnt_elem = true;
 }

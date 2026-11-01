@@ -39,7 +39,19 @@ gord_pending(SiftTopN *t)
 		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull || (pend[i].check && gkey_of(t, 0, d) != pend[i].key))
+		if (hnull)
+			continue;
+		if (t->gtext)
+		{
+			/* the entry's string is the heap row's: a row an UPDATE or a vacuumed address replaced holds another */
+			uint32		slen;
+			const char *str = sift_gord_pend_str(t->go, &pend[i], &slen);
+			struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+			if (VARSIZE_ANY_EXHDR(v) != slen || memcmp(VARDATA_ANY(v), str, slen) != 0)
+				continue;
+		}
+		else if (pend[i].check && gkey_of(t, 0, d) != pend[i].key)
 			continue;
 		t->fetched++;
 		rows++;

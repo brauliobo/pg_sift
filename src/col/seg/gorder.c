@@ -701,7 +701,7 @@ gorder_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *mem
  * one chunk each, and the chunks between are decoded. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
  */
 bool
-sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids)
+sift_cseg_gorder_tids(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids)
 {
 	SiftCGOrdBuf memo;
 	uint32		a,
@@ -710,7 +710,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 	SiftKey    *t;
 
 	memo.at = UINT32_MAX;
-	if (!gorder_span(seg, col, false, lo, hi, &a, &b, &memo) || b - a > limit)
+	if (!gorder_span(seg, col, str, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
 	gorder_addrs(seg, col, a, b, &memo, t, &n);

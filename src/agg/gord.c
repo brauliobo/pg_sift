@@ -486,7 +486,7 @@ num_skip(SiftGOrd *g, uint32 k, uint32 *clo)
  * first k (fewer than k entries have a key before v). An entry stands for a row if the page of its address is all-visible and the unit's row live (sift_colsrc_gorder_exact): those are
  * counted (returned); the others are kept for the caller (sift_gord_pending) to confirm in the heap, as the scan would have, and to count the ones that stand for a row. The scan then goes on
  * with the rest and throws away the other k less the rows counted; the result is the same as the throwing away of the first k. A source that cannot say (a write buffer) counts all its
- * entries as possibly first and gives none up. A text key is cut at a string instead of a bucket (text_skip). Before the first sift_gord_next; 0 (nothing skipped) for the ends of an order, or when the scan starts with NULL rows.
+ * entries as possibly first and gives none up. A text key is cut at a string instead of a bucket (text_skip), and an entry the heap must confirm is confirmed by its string. Before the first sift_gord_next; 0 (nothing skipped) for the ends of an order, or when the scan starts with NULL rows.
  */
 uint32
 sift_gord_skip(SiftGOrd *g, uint32 k)
@@ -527,8 +527,8 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 			st = sift_colsrc_gorder_state(g->src, c->src, a);
 			if (st == SIFT_GORD_EXACT)
 				total++;
-			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && (g->npend >= GORD_PEND_MAX || g->collid != 0)))
-				break;		/* a text key's entry cannot be confirmed against the heap by key: the walk takes it */
+			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
+				break;
 			else if (st == SIFT_GORD_CHECK)
 			{
 				if (g->npend == g->cpend)
@@ -538,6 +538,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 				}
 				g->pend[g->npend].tid = a;
 				g->pend[g->npend].key = c->buf->compact ? 0 : c->buf->key[p - c->buf->at];
+				g->pend[g->npend].cur = i;
 				g->pend[g->npend++].check = !c->buf->compact;
 			}
 		}
@@ -546,9 +547,15 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 		else
 			c->vs += n;
 		c->sk = n;
-		}
+	}
 	pfree(clo);
 	return total;
+}
+
+const char *
+sift_gord_pend_str(SiftGOrd *g, const SiftGPend *p, uint32 *len)
+{
+	return sift_colsrc_gorder_str(g->src, g->cur[p->cur]->src, g->leaf, p->key, len);
 }
 
 const SiftGPend *

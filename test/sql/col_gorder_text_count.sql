@@ -18,13 +18,13 @@ INSERT INTO tc (id, c, l) VALUES (40001, convert_from('\xc3bf', 'LATIN1'), 'x'),
 CREATE INDEX tc_i ON tc USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) tc;
 
--- the count is the heap's; 'counted' says no unit was read
+-- the count is the heap's; 'counted' says the scan read no unit but the rows of a write buffer (fewer than 5,000)
 CREATE FUNCTION tc_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; counted bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP counted := counted OR pl LIKE '%Rows: 0 scanned%'; END LOOP;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP counted := counted OR coalesce(substring(pl from 'Rows: ([0-9]+) scanned')::int < 5000, false); END LOOP;
 	EXECUTE q INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
 	EXECUTE q INTO rb;

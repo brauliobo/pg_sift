@@ -339,7 +339,7 @@ scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo
 	uint32		n,
 				limit;
 
-	if (!gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids(c->seg, col, lo, hi, limit, &tids, &n))
+	if (!gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }

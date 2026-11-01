@@ -401,8 +401,22 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	c->ps = NULL;
 	c->count_ok = false;
 	c->count_dirty = NULL;
-	if (src->pcnt && c->full && col_count_segment(src, c, preds, npreds))
+	if (src->pcnt && c->full && c->cmemo_epoch == src->pcnt_epoch && c->cmemo_seg == seg && c->cmemo_gen == seg->entry.gen)
 	{
+		c->count_ok = true;
+		c->count_rows = c->cmemo_rows;
+		c->count_unit_rows = c->cmemo_unit_rows;
+	}
+	if (c->count_ok || (src->pcnt && c->full && col_count_segment(src, c, preds, npreds)))
+	{
+		if (c->count_dirty == NULL)
+		{
+			c->cmemo_epoch = src->pcnt_epoch;
+			c->cmemo_seg = seg;
+			c->cmemo_gen = seg->entry.gen;
+			c->cmemo_rows = c->count_rows;
+			c->cmemo_unit_rows = c->count_unit_rows;
+		}
 		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
 		c->prow = NULL;
 		c->pexact = 0;

@@ -47,9 +47,12 @@ typedef struct SiftGPend
 	uint64		tid;
 	int64		key;
 	bool		check;
+	int			cur;			/* a text key: the source of the entry, whose string the key is the rank of (sift_gord_pend_str) */
 } SiftGPend;
 /* Takes off the front of the sources the entries that are certainly among the first k of the scan: those of rows that need no check in the heap are counted (returned), the others are listed (sift_gord_pending) for the caller to confirm; it throws the same number of rows away. Before the first sift_gord_next */
 extern uint32 sift_gord_skip(SiftGOrd *g, uint32 k);
+/* The string of the pending entry of a text key, valid until the next call */
+extern const char *sift_gord_pend_str(SiftGOrd *g, const SiftGPend *p, uint32 *len);
 extern const SiftGPend *sift_gord_pending(const SiftGOrd *g, uint32 *n);
 extern void sift_gord_pending_done(SiftGOrd *g);
 extern void sift_gord_rewind(SiftGOrd *g);
