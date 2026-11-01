@@ -14,6 +14,7 @@ ALLOW = os.path.join('scripts', 'bench-cases.allow')
 RESULTS = os.path.join('bench', 'results')
 OUT = os.path.join('bench', 'out')   # the generated pages are untracked: they exist after a run of `bench/bench cases --docs`
 PAGES = (os.path.join(OUT, 'README-blocks.md'), os.path.join(OUT, 'BENCHMARKS.md'))
+VERSION = re.compile(r'\b\d+\.\d+\.\d+\b')   # a release number (`3.4.0 to 3.7.1`) is no figure of a speed
 CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 FOOTER = re.compile(r'`n/a`: (?:a measure )?not measured under')   # steps/triple.py NOT_MEASURED, whatever the version it names
 LANES = ('sift', 'native')
@@ -39,7 +40,7 @@ def landed(root, since):
     for block in git(root, 'log', '--first-parent', '--format=%x00%h%x01%B%x01', '--name-only', since + '..HEAD').split('\0')[1:]:
         sha, message, files = block.split('\x01')
         files = files.split()
-        if any(f.startswith(('src/', 'sql/')) for f in files) and CLAIM.search(message):
+        if any(f.startswith(('src/', 'sql/')) for f in files) and CLAIM.search(VERSION.sub('', message)):
             out.append((sha, message.split('\n')[0], 'CHANGELOG.md' in files))
     return out
 
@@ -52,7 +53,7 @@ def unreleased(root):
             on = line.startswith('## Unreleased')
         elif on and line.startswith('- '):
             kind = line[2:].split(':', 1)[0]
-            if kind in ('Added', 'Changed') or kind in ('Improved', 'Fixed') and CLAIM.search(line):
+            if kind in ('Added', 'Changed') or kind in ('Improved', 'Fixed') and CLAIM.search(VERSION.sub('', line)):
                 out.append(line)
     return out
 

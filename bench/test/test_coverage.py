@@ -106,6 +106,12 @@ class Landed(Fixture):
         self.t.land('docs: topn: 30 ms against 4 ms in the text', path='docs/USAGE.md')
         self.assertEqual(self.messages(), [])
 
+    def test_a_range_of_releases_is_not_a_ratio(self):
+        self.t.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n- Fixed: pg_sift: wrong rows from 3.4.0 to 3.7.1: a join took a parameter as 0.\n\n## 3.7.0\n')
+        self.assertEqual(self.messages(), [])
+        self.t.land('agg: topn: wrong rows from 3.4.0 to 3.7.1 are fixed')
+        self.assertEqual(self.messages(), [])
+
     def test_a_waiver_with_a_reason_covers_it_and_an_unused_waiver_is_an_error(self):
         self.t.land(SPEED)
         sha = self.t.git('rev-parse', '--short', 'HEAD').strip()
