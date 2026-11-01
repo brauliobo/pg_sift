@@ -138,7 +138,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
-										"not an integer, date, timestamp or text column")) != NULL)
+										"not an integer, date, timestamp, numeric or text column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))

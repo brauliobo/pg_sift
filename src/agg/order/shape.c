@@ -185,6 +185,9 @@ topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, in
 static bool
 topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top, Oid collid)
 {
+	/* the walk tests integer and time columns (topn_gpred): a numeric one is left to the units */
+	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf >= 0 && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->typid == NUMERICOID)
+		return false;
 	if (p->kind == SAP_AND || p->kind == SAP_OR)
 	{
 		for (int i = 0; p->kind == SAP_AND && i < p->nchild && !pinned; i++)
@@ -250,6 +253,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
 
 		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID &&
+									   !(typ == NUMERICOID && leaf_of(c, leaf[j])->vtype == SCV_I64 && !leaf_of(c, leaf[j])->wide) &&
 									   !(j == 0 && nkey == 1 && (typ == TEXTOID || typ == VARCHAROID))))
 			return false;
 	}

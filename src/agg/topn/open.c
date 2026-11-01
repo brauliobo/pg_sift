@@ -17,11 +17,13 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
 #include "utils/varlena.h"
 
+#include "col/am.h"
 #include "agg/topn/int.h"
 
 bool		sift_topn_zone_keys = true;
@@ -303,6 +305,17 @@ sift_topn_same_scale(Oid a, Oid b)
 	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
 }
 
+/* The key of a numeric heap value as the arrays hold it; a NaN or an infinity (the array has none: a segment with one has no array) is a key no entry has */
+int64
+numeric_gkey(int scale, Datum d)
+{
+	Numeric		n = DatumGetNumeric(d);
+
+	if (numeric_is_nan(n) || numeric_is_inf(n))
+		return PG_INT64_MIN;
+	return sift_col_numeric_key(scale, d, SIFT_COL_ROUND_NEAREST);
+}
+
 /* Can the global order of the first key stand for the scan, the others being read from the heap rows: plain integer and time columns of a heap */
 static bool
 order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
@@ -313,9 +326,15 @@ order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 	{
 		const TopKey *k = &t->key[j];
 
-		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->nenum || (t->gatt[j] = k->blob ? leaf_var_attno(lay, k->leaf) : sift_topn_leaf_attno(lay, k->leaf)) == 0)
+		const SiftSrcLeaf *lf = k->leaf < 0 ? NULL : &lay->leaf[k->leaf];
+		/* a numeric(p <= 18, s): its key in the arrays is the number scaled by 10^s */
+		bool		num = lf != NULL && lf->typid == NUMERICOID && lf->vtype == SCV_I64 && !lf->wide && !k->blob;
+
+		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->nenum ||
+			(t->gatt[j] = num ? leaf_var_attno(lay, k->leaf) : k->blob ? leaf_var_attno(lay, k->leaf) : sift_topn_leaf_attno(lay, k->leaf)) == 0)
 			return false;
-		t->gtyp[j] = lay->leaf[k->leaf].typid;
+		t->gtyp[j] = lf->typid;
+		t->gscale[j] = num ? lf->scale : 0;
 		if (k->blob)
 		{
 			/*
@@ -473,7 +492,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 	/* the output is the first key alone, as the entry of the array has it */
 	if (t->gok && t->nkey == 1 && !t->gtext && t->nout > 0 && t->key[0].xk == TXK_NONE && t->key[0].x == NULL && !t->key[0].blob && !t->key[0].nenum)
 	{
-		t->gkeyout = sift_topn_out_ok(&lay->leaf[t->key[0].leaf]);
+		t->gkeyout = t->gtyp[0] != NUMERICOID && sift_topn_out_ok(&lay->leaf[t->key[0].leaf]);
 		for (int c = 0; c < t->nout && t->gkeyout; c++)
 			t->gkeyout = t->oleaf[c] == t->key[0].leaf;
 	}

@@ -228,6 +228,7 @@ extern uint32 sift_cgord_ends(void);
 /* Does the leaf get a block: a plain integer, date or timestamp attribute of the top level whose key is the integer itself (what the scan reads back as the value) */
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
 /* ... or a text one of the top level (version 3): the leaves order_array_columns names */
+extern bool sift_cgord_leaf_numeric(const SiftColSchema *s, const SiftColDef *d);
 extern bool sift_cgord_leaf_array_ok(const SiftColSchema *s, const SiftColDef *d);
 /* The layout (SIFT_CGORD_L_*) of the block of a segment of nvals values for a column whose order_layout is want (SIFT_CGORD_OL_*): the option, or for 'auto' the rule of this function */
 extern int	sift_cgord_layout_pick(uint8 want, uint32 nvals);

@@ -159,6 +159,7 @@ topn_run_range	starts at the first entry of the range, found by two binary searc
 order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no	-
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no	-
 topn_offset_exact	an OFFSET reads the sorted array of the key and does not confirm the entries before it in the heap	orders	default	Global Order: true	native	btree:search_path = topn_offset_btree	ms	faster33	no	-
+topn_numeric_offset	an ORDER BY numeric(p, s) LIMIT reads the sorted array of the column, whose key is the number scaled by 10^s	orders	default	Global Order: true	native	btree:search_path = topn_numeric_btree	ms	faster33	no	-
 topn_offset_deep	an OFFSET past the 100,000 rows a top-N heap holds is walked in the array	orders	default	Global Order: true	native	btree:search_path = topn_offset_deep_btree	ms	faster33	no	-
 order_layout_offset	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = c_order_layout_offset__whole,btree:search_path = c_order_layout_offset__btree	ms	faster33	no	-
 order_layout_range	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = c_order_layout_range__whole,btree:search_path = c_order_layout_range__btree	ms	faster33	no	-

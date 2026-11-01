@@ -93,7 +93,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 
 		bool		text = sift_cgord_leaf_text(d);
 
-		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d)))
+		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_numeric(rel->schema, d)))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;

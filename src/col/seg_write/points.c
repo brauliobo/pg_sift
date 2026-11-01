@@ -161,7 +161,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 			SiftCGOrdHdr h;
 
 			/* the build's own choice of leaves keeps the ends of the order of a segment of many rows; a list of the user's keeps all of it */
-			int			layout = a->ends ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], a->n);
+			int			layout = a->ends || w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], a->n);
 
 			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, a->ends, layout, &ob->tab);
 			if (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h))

@@ -39,7 +39,7 @@ gord_pending(SiftTopN *t)
 		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull || (pend[i].check && heap_key(t->gtyp[0], d) != pend[i].key))
+		if (hnull || (pend[i].check && gkey_of(t, 0, d) != pend[i].key))
 			continue;
 		t->fetched++;
 		rows++;
@@ -120,7 +120,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 				if (VARSIZE_ANY_EXHDR(v) != slen || memcmp(VARDATA_ANY(v), str, slen) != 0)
 					continue;
 			}
-			else if (!hnull && heap_key(t->gtyp[0], d) != key)
+			else if (!hnull && gkey_of(t, 0, d) != key)
 				continue;
 			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 				continue;

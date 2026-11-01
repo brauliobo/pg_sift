@@ -433,7 +433,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 				continue;
 			t->fetched++;
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
-			if (hnull != gnull || (!hnull && (t->gtext ? !text_is(d, g->str.data, g->str.len) : heap_key(t->gtyp[0], d) != gkey)))
+			if (hnull != gnull || (!hnull && (t->gtext ? !text_is(d, g->str.data, g->str.len) : gkey_of(t, 0, d) != gkey)))
 				continue;
 			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 				continue;
@@ -441,7 +441,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 			for (int j = 0; !thrown && j < t->nkey; j++)
 			{
 				d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
-				r->key[j] = r->isnull[j] ? 0 : heap_key(t->gtyp[j], d);
+				r->key[j] = r->isnull[j] ? 0 : gkey_of(t, j, d);
 			}
 		}
 		t->gqn++;
@@ -542,7 +542,7 @@ gord_probe(SiftTopN *t)
 		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
+		if (hnull != isnull || (!hnull && gkey_of(t, 0, d) != key))
 			continue;
 		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 			continue;
