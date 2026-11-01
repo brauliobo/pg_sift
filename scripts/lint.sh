@@ -23,7 +23,7 @@ CHECKS=(
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host_stubs.o && make -s -C mariadb OUT=$b $b/host_stubs.o && echo "host_stubs.c compiles for the SQLite and MariaDB hosts"'
 	'neutral	scripts/check-neutral.sh'
 	'limits		scripts/gen-limits.sh --check'
-	'options		scripts/gen-options.sh --check'
+	'options		scripts/gen-options.sh --check && scripts/gen-options.sh --selftest'
 	'docs		scripts/lint-cache.sh docs . -- python3 scripts/gen-docs.py --check'
 	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'
 	'errors		scripts/check-errors.sh'

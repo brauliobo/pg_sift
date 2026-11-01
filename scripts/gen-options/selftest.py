@@ -15,6 +15,7 @@ def selftest():
     snapshot = read('scripts/options-released.tsv')
     without_fresh = ''.join(l for l in snapshot.splitlines(True) if not l.startswith(fresh + '\t'))
     fresh_row = rows[fresh]
+    rows_vis = rows['sift.vis_page_cache']      # its bench is a results table
 
     def set_cell(row, col, v):
         f = row.split('\t')
@@ -46,6 +47,7 @@ def selftest():
         ('a test that does not exist', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'bench', 'test:no_such_test'))), 'no_such_test is no regress test'),
         ('a new option with no upgrade line', dict(notes_text=text.replace(fresh_row, set_cell(fresh_row, 'upgrade', '')), released_text=without_fresh), fresh + ': is new since the last release'),
         ('a column format minor with no upgrade_check entry', dict(srcs={**srcs, 'col/col.h': srcs['col/col.h'] + '\n#define SIFT_COL_FORMAT_ZZ 99\n'}), 'no entry for column format minor 99'),
+        ('a figure that no row of the results table holds', dict(notes_text=text.replace(rows_vis, set_cell(rows_vis, 'gain', 'a key-cut range query 987.65 ms off'))), 'figures that no row of docs/results/options-evidence.tsv holds (987.65)'),
         ('a link to nowhere', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'link', 'NOWHERE.md#x'))), 'NOWHERE.md#x is not a file'),
     ]
     for what, kw, want in cases:

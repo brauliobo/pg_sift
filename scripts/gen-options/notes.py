@@ -36,6 +36,31 @@ def values(o, row):
 
 
 # ---- the notes ----
+
+UNITS = r'(?:%|x\b|ms\b|s\b|us\b|µs\b|MiB\b|MB\b|GB\b|M\b|instructions\b)'
+
+
+def figures(text):
+    """the measured figures of a cell: a number with a decimal point or with a unit (ms, MB, %, x, M instructions ..), as floats; the sizes of a data set (`200,000 rows`) and what is in backticks are not figures"""
+    t = re.sub(r'`[^`]*`', '', text)
+    t = re.sub(r'\bv?\d+\.\d+\.\d+\b', '', t)
+    t = re.sub(r'(\d),(\d{3})', r'\1\2', t)
+    t = re.sub(r'(\d),(\d{3})', r'\1\2', t)
+    return {float(m.group(1)) for m in re.finditer(r'(?<![\w.])(\d+(?:\.\d+)?)(?:\s*%s)' % UNITS, t)} | {float(x) for x in re.findall(r'(?<![\w.])(\d+\.\d+)(?![\w])', t)}
+
+
+def table_figures(text):
+    """every number of a results table, and a size in bytes as KB, MB and MiB (a cell quotes 4.05 MB for 4046848 bytes)"""
+    t = re.sub(r'(\d),(\d{3})', r'\1\2', text)
+    out = set()
+    for x in re.findall(r'(?<![\w.])-?\d+(?:\.\d+)?(?![\w])', t):
+        v = abs(float(x))
+        out |= {v, round(v, 1), float(round(v))}
+        if v >= 10000:
+            for d in (1e3, 1e6, 1024.0, 1048576.0):
+                out |= {round(v / d, k) for k in (0, 1, 2)}
+    return out
+
 def read_tsv(text, cols, name, errors):
     rows = {}
     for n, line in enumerate(text.split('\n'), 1):
@@ -168,6 +193,12 @@ def check(opts, notes, errors, released, srcs=None):
                 errors.append('%s: bench %s is no regress test (test/sql) or TAP test (test/t)' % (n, b))
         elif b and b != '-' and not b.startswith('n/a') and b not in cases and not (bf.startswith('docs/') and os.path.exists(os.path.join(ROOT, bf)) and (not ba or ba in anchors(bf[5:]))):
             errors.append('%s: bench %s is neither a case of bench/cases.tsv, `test:NAME`, `n/a: reason`, `-`, nor a file%s of docs/ (written docs/results/x.tsv)' % (n, b, ' and heading' if ba else ''))
+        if bf.startswith('docs/results/') and os.path.exists(os.path.join(ROOT, bf)):
+            have = table_figures(read(bf))
+            for c in ('gain', 'growth', 'write'):
+                lost = sorted(f for f in figures(r[c] or first[c]) if f not in have)
+                if lost:
+                    errors.append('%s: %s has figures that no row of %s holds (%s): quote a measured value of the table, or remove the figure' % (n, c, bf, ', '.join('%g' % f for f in lost[:6])))
         if o['type'] == 'bool' and cls in ('default', 'opt-in') and (cls == 'opt-in') == bool(o['default']):
             errors.append('%s: class %s but the default is %s' % (n, cls, 'on' if o['default'] else 'off'))
         changed = (tuple(map(int, r['since'].split('.'))) > tuple(map(int, released_label().split('.')))) if k in auto else (o['key'] not in released or released[o['key']] != fmt(o, o['default']) or (r['minor'] and int(r['minor']) > released_max_read()))
