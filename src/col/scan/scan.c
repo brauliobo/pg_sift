@@ -185,6 +185,13 @@ sift_col_close(SiftColSource *src)
 		UnregisterSnapshot(src->snap);
 }
 
+/* Do the segments the source opened still stand in the directory of the index (a promotion adds one and replaces none) */
+bool
+sift_col_current(SiftColSource *src)
+{
+	return !(src->flags & COLO_TABLE) && segments_current(src);
+}
+
 bool
 sift_col_rescan(SiftColSource *src)
 {

@@ -26,8 +26,11 @@ typedef struct ColScanOpaque
 {
 	MemoryContext cxt;
 	MemoryContext batch;		/* the values of the unit being returned */
+	MemoryContext scx;			/* the source, which a rescan keeps for the next probe while the snapshot and the segments are the same (col_scan_source) */
 	Relation	heap;
 	SiftColSource *src;
+	Snapshot	ssnap;			/* the snapshot the source was opened with, and the flags */
+	uint32		sflags;
 	SiftColPred *preds;
 	int			npreds;
 	bool		started;
@@ -197,6 +200,7 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 	ColScanOpaque *so = palloc0(sizeof(ColScanOpaque));
 
 	so->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col scan", ALLOCSET_DEFAULT_SIZES);
+	so->scx = AllocSetContextCreate(CurrentMemoryContext, "sift_col scan source", ALLOCSET_DEFAULT_SIZES);
 	so->batch = AllocSetContextCreate(so->cxt, "sift_col scan batch", ALLOCSET_DEFAULT_SIZES);
 	scan->opaque = so;
 	scan->xs_itupdesc = RelationGetDescr(index);
@@ -221,14 +225,17 @@ col_fetch_end(ColScanOpaque *so)
 }
 
 static void
-col_scan_end(ColScanOpaque *so)
+col_scan_end(ColScanOpaque *so, bool keep)
 {
 	col_fetch_end(so);
-	if (so->src)
+	if (so->src && !keep)
+	{
 		sift_col_close(so->src);
+		so->src = NULL;
+		MemoryContextReset(so->scx);
+	}
 	MemoryContextReset(so->cxt);
 	so->batch = AllocSetContextCreate(so->cxt, "sift_col scan batch", ALLOCSET_DEFAULT_SIZES);
-	so->src = NULL;
 	so->started = so->unsat = so->recheck = false;
 	so->n = so->pos = so->cap = 0;
 	so->tids = so->dtids = NULL;
@@ -246,7 +253,7 @@ col_scan_end(ColScanOpaque *so)
 void
 sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
 {
-	col_scan_end(scan->opaque);
+	col_scan_end(scan->opaque, true);
 	if (keys && scan->numberOfKeys > 0)
 		memcpy(scan->keyData, keys, scan->numberOfKeys * sizeof(ScanKeyData));
 }
@@ -261,7 +268,30 @@ sift_col_amendscan(IndexScanDesc scan)
 		sift_col_close(so->src);
 	if (so->heap)
 		table_close(so->heap, NoLock);
+	MemoryContextDelete(so->scx);
 	MemoryContextDelete(so->cxt);
+}
+
+/*
+ * The source of the scan. A scan that its executor starts over for each row of an outer query (the inner side of a nested loop) finds the segments it opened for
+ * the last probe still current under the same snapshot, and begins on them again: the directory and the headers of the segments are not read for every key.
+ */
+static SiftColSource *
+col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
+{
+	if (so->src != NULL && (so->sflags != flags || so->ssnap != scan->xs_snapshot || !sift_col_current(so->src)))
+	{
+		sift_col_close(so->src);
+		so->src = NULL;
+		MemoryContextReset(so->scx);
+	}
+	if (so->src == NULL)
+	{
+		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags);
+		so->sflags = flags;
+		so->ssnap = scan->xs_snapshot;
+	}
+	return so->src;
 }
 
 /* Opens the source and makes the predicates of the keys; the executor checked the privileges and the row security of the table, and the planner only offers operators it knows leak nothing */
@@ -294,8 +324,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys; i++)
 		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
-	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt,
-							SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
+	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
 	if (sat)
 	{
 		ItemPointerData *wt = NULL;
@@ -390,7 +419,7 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		ntids += sel.count;
 	}
 	MemoryContextSwitchTo(old);
-	col_scan_end(so);
+	col_scan_end(so, true);
 	return ntids;
 }
 
