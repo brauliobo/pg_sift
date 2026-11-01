@@ -310,3 +310,4 @@ point_scattered_1	the reloption `order_layout` of a `sift_col` index	events	-	fr
 point_scattered_10	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_10__btree	ms	faster33	no	-
 point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_60__btree	ms	faster33	no	-
 point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_500__btree	ms	faster33	no	-
+search_open_buffer	a search reads the documents of the open write buffer of a BM25 index by their hashes	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-

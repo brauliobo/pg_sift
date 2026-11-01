@@ -363,7 +363,7 @@ rec_at(SiftWbufReader *r, Size *size)
 {
 	const SiftWbufDocData *d = (const SiftWbufDocData *) (RECS(r->page) + r->pos);
 	const uint8 *len;
-	int			sum = 0;
+	uint32		sum;
 
 	if (r->pos + sizeof(SiftWbufDocData) > r->used)
 		corrupt(r->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", r->pos, r->used);
@@ -372,10 +372,9 @@ rec_at(SiftWbufReader *r, Size *size)
 		corrupt(r->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a write buffer page.",
 				*size, r->pos, r->used);
 	len = (const uint8 *) (d + 1) + d->nterms * 5;
-	for (int i = 0; i < d->nterms; i++)
-		sum += len[i];
+	sum = sift_sum_u8(len, d->nterms);
 	if (sum != d->termbytes)
-		corrupt(r->index, "A write buffer record lists %u term bytes but its terms add up to %d.", d->termbytes, sum);
+		corrupt(r->index, "A write buffer record lists %u term bytes but its terms add up to %u.", d->termbytes, sum);
 	return d;
 }
 
