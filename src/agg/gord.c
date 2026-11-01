@@ -412,47 +412,76 @@ text_cut(SiftGOrd *g, const char *s, uint32 len, uint32 k, uint32 *clo)
 }
 
 /*
- * The cut of a text key: the string v, the last of the entries of the sources that at most k entries come before. Each source is bisected for its last entry whose string has at
- * most k entries before it in all the sources (each source finds the rank of a string in its own, by the collation), and v is the one of those that comes last in the scan. The entries
- * before v are among the first k whatever the others hold. clo is how many of each source's entries that is; false when there is none to take.
+ * The cut of a text key: a string v that at most k entries of the sources come before (clo: how many of each), as late in the scan as a few rounds find. A round takes the string at the
+ * fraction f of what is left to take of each source's remaining entries (the sources hold alike strings), tries the latest of those first, and moves the cut there when at most k come
+ * before it; the rounds take 90% of what is left, then half, then a fifth, and the walk that follows reads the rest. Every cut is counted over all the sources (text_cut), so a skew in
+ * them costs a shorter cut, never a wrong one. false when nothing comes before the first string.
  */
 static bool
 text_skip(SiftGOrd *g, uint32 k, uint32 *clo)
 {
-	char	   *best = palloc(SIFT_CGORD_STR_MAX),
-			   *str = palloc(SIFT_CGORD_STR_MAX);
-	uint32	   *tmp = palloc(g->ncur * sizeof(uint32));
-	uint32		blen = 0;
-	bool		have = false;
-	bool		ok;
+	static const double frac[] = {0.9, 0.5, 0.2};
+	char	   *cand = palloc(g->ncur * SIFT_CGORD_STR_MAX);
+	uint32	   *tmp = palloc(g->ncur * sizeof(uint32)),
+			   *clen = palloc(g->ncur * sizeof(uint32));
+	int		   *ord = palloc(g->ncur * sizeof(int));
+	uint32		total = 0;
 
-	for (int i = 0; i < g->ncur; i++)
+	memset(clo, 0, g->ncur * sizeof(uint32));
+	for (int round = 0, f = 0; round < 8 && f < lengthof(frac) && k - total > 32; round++)
 	{
-		GCur	   *c = g->cur[i];
-		uint32		lo = 0,
-					hi = (uint32) Min((uint64) (c->ve - c->vs), (uint64) k * 2 + 512);
+		uint64		rem = 0;
+		int			nc = 0;
+		bool		moved = false;
 
-		uint32		len,
-					cmp = 0;
-
-		SIFT_BISECT(uint32, mid, lo, hi, text_cut(g, str, cur_nth_str(g, c, mid, str), k, tmp));
-		if (lo == 0)
-			continue;
-		len = cur_nth_str(g, c, lo - 1, str);
-		if (have)
-			cmp = sift_cgord_str_order(str, len, best, blen, g->collid);
-		if (!have || (g->desc ? (int) cmp < 0 : (int) cmp > 0))
+		for (int i = 0; i < g->ncur; i++)
+			rem += (g->cur[i]->ve - g->cur[i]->vs) - clo[i];
+		for (int i = 0; rem > 0 && i < g->ncur; i++)
 		{
-			memcpy(best, str, len);
-			blen = len;
-			have = true;
+			GCur	   *c = g->cur[i];
+			uint64		left = (c->ve - c->vs) - clo[i],
+						q = clo[i] + (uint64) (frac[f] * (k - total) * ((double) left / rem));
+
+			if (q >= (uint64) (c->ve - c->vs))
+				continue;
+			clen[nc] = cur_nth_str(g, c, (uint32) q, cand + (size_t) nc * SIFT_CGORD_STR_MAX);
+			ord[nc] = nc;
+			nc++;
 		}
+		/* latest in the scan first: insertion sort, the candidates are as many as the sources */
+		for (int i = 1; i < nc; i++)
+			for (int j = i; j > 0; j--)
+			{
+				int			x = ord[j - 1],
+							y = ord[j],
+							cmp = sift_cgord_str_order(cand + (size_t) x * SIFT_CGORD_STR_MAX, clen[x], cand + (size_t) y * SIFT_CGORD_STR_MAX, clen[y], g->collid);
+
+				if (g->desc ? cmp <= 0 : cmp >= 0)
+					break;
+				ord[j - 1] = y, ord[j] = x;
+			}
+		for (int i = 0; i < nc && !moved; i++)
+			if (text_cut(g, cand + (size_t) ord[i] * SIFT_CGORD_STR_MAX, clen[ord[i]], k, tmp))
+			{
+				uint32		t2 = 0;
+
+				for (int j = 0; j < g->ncur; j++)
+					t2 += tmp[j];
+				if (t2 > total)
+				{
+					memcpy(clo, tmp, g->ncur * sizeof(uint32));
+					total = t2;
+					moved = true;
+				}
+			}
+		if (!moved)
+			f++;
 	}
-	ok = have && text_cut(g, best, blen, k, clo);
-	pfree(best);
-	pfree(str);
+	pfree(cand);
 	pfree(tmp);
-	return ok;
+	pfree(clen);
+	pfree(ord);
+	return total > 0;
 }
 
 /* The cut of a numeric key: the largest v (ascending) before which at most k entries may come, the smallest above which (descending); clo is how many of each source's entries that is */

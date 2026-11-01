@@ -60,6 +60,18 @@ gord_pending(SiftTopN *t)
 	return rows;
 }
 
+/* The rows of the OFFSET that the order takes off its front and the heap is not asked for (0 when the OFFSET is short or a condition decides the rows) */
+int64
+gord_skip(SiftTopN *t)
+{
+	int64		rows;
+
+	if (t->gcond != NULL || t->skip < GORD_SKIP_MIN)
+		return 0;
+	rows = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
+	return rows + gord_pending(t);
+}
+
 static bool
 gord_next(SiftTopN *t, TupleTableSlot *slot)
 {
@@ -71,11 +83,8 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 	if (!t->skip_tried)
 	{
 		t->skip_tried = true;
-		if (t->nkey == 1 && t->gcond == NULL && t->skip >= GORD_SKIP_MIN)
-		{
-			t->bulk = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
-			t->bulk += gord_pending(t);
-		}
+		if (!t->gprep)
+			t->bulk = gord_skip(t);
 	}
 	if (t->bulk > 0)
 	{
@@ -335,7 +344,7 @@ sift_topn_rewind(SiftTopN *t)
 	t->emitted = 0;
 	t->gqpos = 0;
 	t->skip_tried = false;
-	t->bulk = 0;
+	t->bulk = t->gprep ? t->gbulk : 0;
 	if (t->go)
 		sift_gord_rewind(t->go);
 	if (t->sort)

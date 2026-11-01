@@ -281,6 +281,7 @@ struct SiftTopN
 	int			gscale[TOP_GKEYS];	/* a numeric key (gtyp NUMERICOID): the digits after the point, its key in the arrays is the number scaled by 10^gscale */
 	struct GRow *gq;			/* sift_topn_gorder with more keys: the rows of the whole groups of the first key that make the n, in order */
 	int			gqn;
+	int64		gbulk;			/* gprep: the rows of the OFFSET the order took off its front before the walk (gord_skip); the walk queues the rest */
 	int			gqroom;
 	int			gqpos;
 	bool		gprep;			/* the rows of the walk are queued before the first goes out (gord_prep): more keys, or a condition that the heap row of an entry decides */
@@ -388,6 +389,7 @@ extern SiftSrcZone key_zone(const TopKey *k, const SiftSrcZone *z);
 extern bool next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part);
 
 extern bool gcond_test(const SiftTopGPred *p, TupleTableSlot *slot);
+extern int64 gord_skip(SiftTopN *t);
 extern int gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
 extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull);
 extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);

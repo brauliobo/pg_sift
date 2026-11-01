@@ -377,7 +377,7 @@ typedef struct GGroup
 static bool
 gord_giveup(const SiftTopN *t)
 {
-	double		need = (double) t->limit - t->gqn;
+	double		need = (double) t->limit - t->gbulk - t->gqn;
 
 	if (t->gtried < GORD_TRY_MIN || need <= 0)
 		return false;
@@ -390,7 +390,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 {
 	TopFetch   *f = &t->pf[0];
 	int			gstart = t->gqn;
-	bool		thrown = (int64) t->gqn + g->n <= t->skip;
+	bool		thrown = t->gbulk + t->gqn + g->n <= t->skip;
 
 	for (int i = 0; i < g->n; i++)
 	{
@@ -465,6 +465,8 @@ gord_prep(SiftTopN *t)
 
 	initStringInfo(&g.str);
 
+	t->gbulk = gord_skip(t);
+	t->bulk = t->gbulk;
 	t->gqroom = 64;
 	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), t->gqroom * sizeof(GRow));
 	while (sift_gord_next(t->go, &key, &isnull, &tid))
@@ -479,7 +481,7 @@ gord_prep(SiftTopN *t)
 		{
 			if (!gord_group(t, &g, gkey, gnull))
 				return false;
-			if (t->gqn >= t->limit)
+			if (t->gbulk + t->gqn >= t->limit)
 			{
 				closed = true;
 				break;
@@ -513,7 +515,7 @@ gord_prep(SiftTopN *t)
 	pfree(g.exact);
 	pfree(g.dead);
 	pfree(g.str.data);
-	return closed || !sift_gord_short(t->go) || (uint32) t->gqn >= t->limit;
+	return closed || !sift_gord_short(t->go) || t->gbulk + t->gqn >= t->limit;
 }
 
 /*
