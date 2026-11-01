@@ -9,10 +9,10 @@ ANALYZE aa;
 CREATE INDEX aa_col ON aa USING sift_col (id, uniq, rep, mid, ids);
 NOTICE:  sift_col index "aa_col": array_lengths = 'auto' keeps the lengths of the arrays uniq, rep, mid, ids
 DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  ALTER INDEX aa_col SET (array_lengths = 'off'), then REINDEX, drops them.
+HINT:  To drop them, run ALTER INDEX aa_col SET (array_lengths = 'off') and REINDEX.
 NOTICE:  sift_col index "aa_col": paths = 'auto' keeps the elements of the arrays uniq, ids, mid
 DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
-HINT:  ALTER INDEX aa_col SET (paths = ''), then REINDEX, leaves the elements out.
+HINT:  To leave the elements out, run ALTER INDEX aa_col SET (paths = '') and REINDEX.
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'aa_col';
                             options                            
 ---------------------------------------------------------------
@@ -88,7 +88,7 @@ CREATE TABLE ab AS SELECT i AS id, ARRAY['a' || i] AS uniq FROM generate_series(
 CREATE INDEX ab_col ON ab USING sift_col (id, uniq);
 NOTICE:  sift_col index "ab_col": array_lengths = 'auto' keeps the lengths of the arrays uniq
 DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  ALTER INDEX ab_col SET (array_lengths = 'off'), then REINDEX, drops them.
+HINT:  To drop them, run ALTER INDEX ab_col SET (array_lengths = 'off') and REINDEX.
 SELECT leaf, path FROM sift.col_leaves('ab_col') ORDER BY leaf;
  leaf |  path  
 ------+--------
@@ -110,10 +110,10 @@ SELECT reltuples FROM pg_class WHERE relname = 'ac';
 CREATE INDEX ac_col ON ac USING sift_col (id, uniq, rep);
 NOTICE:  sift_col index "ac_col": array_lengths = 'auto' keeps the lengths of the arrays uniq, rep
 DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  ALTER INDEX ac_col SET (array_lengths = 'off'), then REINDEX, drops them.
+HINT:  To drop them, run ALTER INDEX ac_col SET (array_lengths = 'off') and REINDEX.
 NOTICE:  sift_col index "ac_col": paths = 'auto' keeps the elements of the arrays uniq
 DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.
-HINT:  ALTER INDEX ac_col SET (paths = ''), then REINDEX, leaves the elements out.
+HINT:  To leave the elements out, run ALTER INDEX ac_col SET (paths = '') and REINDEX.
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
                options               
 -------------------------------------

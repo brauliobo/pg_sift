@@ -14,7 +14,7 @@ FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (set_id, day, kind, amount);
 NOTICE:  sift_col index "ev_col": rollup_dims = 'auto' writes a rollup of the rows by set_id, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 5 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX ev_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- the units a statement reads, and those it prunes ('normal' when SiftAgg does not run it)
 CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_read(q) $$;

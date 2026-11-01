@@ -263,7 +263,7 @@ sift_col_auto_point(Relation heap, Relation index)
 						inord ? psprintf("an equality on its nearly unique values takes %.1f times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows", S) :
 						psprintf("an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6),
 						G, dir_bytes, B, C),
-				 errhint("ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX keep the index without it.", RelationGetRelationName(index))));
+				 errhint("To keep the index without it, run ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX.", RelationGetRelationName(index))));
 	}
 	if (list.len == 0)
 	{

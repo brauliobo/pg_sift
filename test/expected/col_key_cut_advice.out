@@ -36,8 +36,8 @@ CREATE INDEX kt_arrival_col ON kt_arrival USING sift_col (id, tenant_id, day) WI
 CREATE INDEX kt_clustered_col ON kt_clustered USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
 CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
 NOTICE:  sift_col index "kt_refilled_col": an equality on "tenant_id" reads 34 of 34 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kt_refilled_col SET (key_cut = 'tenant_id') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
+DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.
+HINT:  Run CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kt_refilled_col SET (key_cut = 'tenant_id') and REINDEX; SET sift.cluster_advice = off silences this advice.
 RESET sift.col_format_minor;
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) kt_arrival, kt_clustered, kt_refilled;

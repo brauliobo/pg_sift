@@ -126,33 +126,33 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
 
 - **array-lengths** (NOTICE)
   - DETAIL: cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-  - HINT: ALTER INDEX %s SET (array_lengths = 'off'), then REINDEX, drops them.
+  - HINT: To drop them, run ALTER INDEX %s SET (array_lengths = 'off') and REINDEX.
 - **jsonb-paths** (NOTICE)
   - DETAIL: They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
   - HINT: Write paths = '...' to fix them by hand.
 - **key-lists** (NOTICE)
-  - HINT: ALTER INDEX %s SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+  - HINT: To turn it off, run ALTER INDEX %s SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
 - **array-elements** (NOTICE)
-  - HINT: ALTER INDEX %s SET (paths = ''), then REINDEX, leaves the elements out.
+  - HINT: To leave the elements out, run ALTER INDEX %s SET (paths = '') and REINDEX.
 - **cube-ranking** (NOTICE)
   - DETAIL: The cube holds at most %d dimensions, the calendar cells of the dates among them. A column with more than %d distinct values in a unit has no histogram there, so a dimension given to it holds nothing. Stretches of about a unit (%d of them, spread over the table) were read, and the columns that fit most of them come first.
-  - HINT: ALTER INDEX %s SET (preagg = 'default'), then REINDEX, gives them in the order of the columns; preagg = 'cube(...)' names them.
+  - HINT: To give them in the order of the columns, run ALTER INDEX %s SET (preagg = 'default') and REINDEX; preagg = 'cube(...)' names them.
 - **rows-rollup** (NOTICE)
   - DETAIL: A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most %d) in at least %d% of %d sampled stretches of about a unit, about %d of them a unit; the cells add to the index and to its build.
-  - HINT: ALTER INDEX %s SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+  - HINT: To drop it, run ALTER INDEX %s SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 - **text-compression** (NOTICE)
-  - HINT: ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX keeps zstd for a column, 'auto; %s=lz4' takes lz4.%s
+  - HINT: To keep zstd for a column, run ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX; 'auto; %s=lz4' takes lz4.%s
 - **key-cut-chosen** (NOTICE)
   - DETAIL: A sample of %.0f superblocks shows the values of "%s" spread over the units, and no other leaf of the index follows the order of the table%s. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s
-  - HINT: ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.
+  - HINT: To keep the units by block range, run ALTER INDEX %s SET (key_cut = 'off') and REINDEX.
 - **key-cut-advised** (NOTICE)
   - DETAIL: The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
-  - HINT: CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX, if the lookups of this key matter more than the size.
+  - HINT: If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX.
 - **key-cut-clustering-advice** (NOTICE)
-  - DETAIL: key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
-  - HINT: CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.
+  - DETAIL: key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.
+  - HINT: Run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; SET sift.cluster_advice = off silences this advice.
 - **point-directory-auto** (NOTICE)
-  - HINT: ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX keep the index without it.
+  - HINT: To keep the index without it, run ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX.
 - **point-tid-explicit** (NOTICE)
   - DETAIL: A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
   - HINT: Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
@@ -160,13 +160,13 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
   - DETAIL: The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.
 - **order-array-auto** (NOTICE)
   - DETAIL: %.1f bytes a row for each whole array, %.1f MB together. An ends-only array keeps the first and last entries of each segment and its first NULL rows, under 0.1 bytes a row of those columns. The segments are column format minor N, which a library before 3.7 or 3.8 cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most 2 of them, and for a text column or a column of few values that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block), else the ends. The choice of each column: ... order_array_group = 'auto' adds a second order of each date, timestamp and integer array sorted by the group first. ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order, read n entries of an end, whatever the number of units; a range of a whole-order column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit; a range in the middle of an ends-only column reads the units. Then one sentence for each column weighed by the default formula (a text column, a column of few values): chosen or not, benefit against cost, bytes a row and build cost.
-  - HINT: To drop them, ALTER INDEX x SET (order_array_columns = 'off'), then REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none. order_array_group = 'off' drops the second order.
+  - HINT: To drop them, run ALTER INDEX x SET (order_array_columns = 'off') and REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none. To drop the second order, set order_array_group = 'off'.
 - **order-array-listed** (NOTICE)
-  - DETAIL: %.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read.
-  - HINT: ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+  - DETAIL: %.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
+  - HINT: Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
 - **order-layout** (NOTICE)
   - DETAIL: A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of %d equal keys or more. The segments with a compact chunk are column format minor %d, which a library before %s cannot read.%s%s
-  - HINT: ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write exact keys only; 'compact: column' and 'whole: column' choose it for a column.
+  - HINT: To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.
 - **primary-key-not-indexed** (NOTICE)
   - DETAIL: %d table%s ("%s"%s) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.
   - HINT: Add the column to the index if queries join on it.
@@ -178,7 +178,7 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
   - HINT: Leave the column out of the index if it is rewritten far more often than it is aggregated; keep it if its aggregates are the reason for the index.
 - **key-order** (NOTICE)
   - DETAIL: The options you wrote stay. The rows of each unit are kept in the order of the key and the order arrays are built on it, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. On a table in arrival order an ordered LIMIT costs what it does without the option; with 'group, key' the latest rows of each group cost b-tree-class instructions and key_cut is left to the build.
-  - HINT: ALTER INDEX %s RESET (key_order), then REINDEX, builds the index without it.
+  - HINT: To build the index without it, run ALTER INDEX %s RESET (key_order) and REINDEX.
 - **wildcard-keys-overflow** (NOTICE)
   - DETAIL: The keys and values past the limit are read from the heap, and a query that reads the leaf keeps the normal plan.
   - HINT: Declare the keys that queries read by name in the paths option instead of a wildcard, or keep the map out of the index.
@@ -212,14 +212,14 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
   - HINT: Run VACUUM on it from a job, or RESET autovacuum_enabled.
 - **rewrite-chose-again** (NOTICE)
   - DETAIL: Rows appended since the build, or a different spread of the values, change what the default formulas choose for key_cut, order_array_columns and point_tid_columns (an option you wrote is never changed); the segments written now are the ones a REINDEX would write.
-  - HINT: ALTER INDEX %s SET (key_cut = 'off') (and the same for the others) keeps a choice off.
+  - HINT: To keep a choice off, run ALTER INDEX %s SET (key_cut = 'off') (and the same for the others).
 - **maintenance-failed-text-index** (WARNING)
   - DETAIL: It is retried later, after a growing delay.
 - **maintenance-failed-column-index** (WARNING)
   - DETAIL: It is retried later, after a growing delay.
 - **write-buffer-stays-open** (NOTICE)
   - DETAIL: The last maintenance step failed: %s
-  - HINT: Run sift.merge() on the index; sift.workers shows what the background did.
+  - HINT: Run sift.merge() on the index, and read sift.workers for what the background did.
 - **analyzer-options-changed** (WARNING)
   - DETAIL: Queries and inserts on its table fail until the index is rebuilt with REINDEX.
   - HINT: To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.

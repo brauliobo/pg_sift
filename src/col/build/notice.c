@@ -71,7 +71,7 @@ colb_notice_key_order(Relation index)
 			(errmsg("sift_col index \"%s\": key_order = '%s' sets %s", RelationGetRelationName(index), sift_col_options_key_order(index), what.data),
 			 errdetail("The options you wrote stay. The rows of each unit are kept in the order of the key and the order arrays are built on it, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. "
 					   "On a table in arrival order an ordered LIMIT costs what it does without the option; with 'group, key' the latest rows of each group cost b-tree-class instructions and key_cut is left to the build."),
-			 errhint("ALTER INDEX %s RESET (key_order), then REINDEX, builds the index without it.", quote_identifier(RelationGetRelationName(index)))));
+			 errhint("To build the index without it, run ALTER INDEX %s RESET (key_order) and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 }
 
 /* The option writes column format minor 16, which a library before 3.3 refuses, and takes a longer build for the heap addresses it lists: said once, where it is used */
@@ -219,8 +219,8 @@ colb_notice_order_array(Relation index)
 	{
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
-				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read.", bytes / rows, bytes / (1024.0 * 1024.0), minor, minor_lib(minor)),
-				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.", bytes / rows, bytes / (1024.0 * 1024.0), minor, minor_lib(minor)),
+				 errhint("Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
 		return;
 	}
 	initStringInfo(&why);
@@ -243,9 +243,9 @@ colb_notice_order_array(Relation index)
 	if (lines != NULL)
 		appendStringInfo(&detail, " %s", lines);
 	initStringInfo(&hint);
-	appendStringInfo(&hint, "To drop them, ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none.", quote_identifier(RelationGetRelationName(index)));
+	appendStringInfo(&hint, "To drop them, run ALTER INDEX %s SET (order_array_columns = 'off') and REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none.", quote_identifier(RelationGetRelationName(index)));
 	if (gauto && glist[0] != '\0')
-		appendStringInfoString(&hint, " order_array_group = 'off' drops the second order.");
+		appendStringInfoString(&hint, " To drop the second order, set order_array_group = 'off'.");
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": order_array_columns = 'auto' keeps %s%s", RelationGetRelationName(index), n + ne > 0 ? "sorted arrays of " : "no sorted array", n + ne > 0 ? names.data : ""),
 			 errdetail_internal("%s", detail.data),
@@ -290,7 +290,7 @@ colb_notice_order_layout(Relation index)
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": order_layout: %s", RelationGetRelationName(index), out.data),
 			 errdetail("A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of %d equal keys or more. The segments with a compact chunk are column format minor %d, which a library before %s cannot read.%s%s", SIFT_CGORD_TIE_RUN, SIFT_COL_FORMAT_ORDLAYOUT, minor_lib(SIFT_COL_FORMAT_ORDLAYOUT), ties.len ? " " : "", ties.data),
-			 errhint("ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write exact keys only; 'compact: column' and 'whole: column' choose it for a column.")));
+			 errhint("To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.")));
 }
 
 /*

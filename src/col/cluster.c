@@ -366,8 +366,8 @@ sift_col_report_key_cut(Relation index)
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": an equality on \"%s\" reads %.0f of %lld units, and no other leaf of the index follows the order of the table",
 						RelationGetRelationName(index), leaf, kc.point, (long long) units),
-				 errdetail("key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.", leaf),
-				 errhint("CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; sift.cluster_advice() says the same for an index built before, and the setting sift.cluster_advice = off silences both.", leaf, name, leaf)));
+				 errdetail("key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.", leaf),
+				 errhint("Run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; SET sift.cluster_advice = off silences this advice.", leaf, name, leaf)));
 		MemoryContextSwitchTo(cx);
 	}
 close:

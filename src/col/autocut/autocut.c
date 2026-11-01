@@ -535,7 +535,7 @@ sift_col_auto_cut(Relation heap, Relation index)
 						   v.range ? "a range" : "an equality",
 						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
 						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to grow by at most %d%% more than with the key alone, counting the units of 4,096 rows into which a key of 8,192 rows or more is cut), so a range of its values skips the units outside it.", v.second, AUTOCUT_SECOND_SLACK) : ""),
-				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));
+				 errhint("To keep the units by block range, run ALTER INDEX %s SET (key_cut = 'off') and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else
 	{
@@ -550,7 +550,7 @@ sift_col_auto_cut(Relation heap, Relation index)
 							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys, v.growth),
 					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5%% in a lookup is one unit of benefit, 3%% of growth and 5%% of build instructions one of cost). No other leaf follows the order of the table.",
 							   v.sampled, v.benefit, v.cost),
-					 errhint("CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX, if the lookups of this key matter more than the size.",
+					 errhint("If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX.",
 							 keys, quote_identifier(RelationGetRelationName(index)), keys)));
 		}
 	}

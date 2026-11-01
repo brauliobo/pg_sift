@@ -148,9 +148,11 @@ sift_colb_scan_report(Relation index, ColScanAcc *acc)
 		}
 	if (first == NULL)
 		return;
+	if (dict)
+		appendStringInfoString(&detail, "\nLZ4 blocks of dictionaries need column format minor 29, which releases before 3.6 refuse.");
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": compression = 'auto' takes lz4 for %d and keeps zstd for %d of the %d text column%s", RelationGetRelationName(index), nlz4, nkept, nlz4 + nkept, nlz4 + nkept == 1 ? "" : "s"),
 			 errdetail_internal("%s", detail.data),
-			 errhint("ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX keeps zstd for a column, 'auto; %s=lz4' takes lz4.%s", iname, first, first,
-					 dict ? " SET sift.col_format_minor = 14 before CREATE INDEX writes no LZ4 blocks of dictionaries (they need minor 29), which releases before 3.6 refuse." : "")));
+			 errhint("To keep zstd for a column, run ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX; 'auto; %s=lz4' takes lz4.%s", iname, first, first,
+					 dict ? " To write no LZ4 blocks of dictionaries, SET sift.col_format_minor = 14 before CREATE INDEX." : "")));
 }

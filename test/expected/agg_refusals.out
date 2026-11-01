@@ -14,7 +14,7 @@ FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
 NOTICE:  sift_col index "events_col": key_columns = 'auto' keeps the keys of parent_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 192 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+HINT:  To turn it off, run ALTER INDEX events_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i FROM generate_series(0, 599) i;
 CREATE TABLE plain (id int, kind text, val int);
@@ -27,7 +27,7 @@ INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 200
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
 NOTICE:  sift_col index "parted_0_col": rollup_dims = 'auto' writes a rollup of the rows by kind, val
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX parted_0_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX parted_0_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 -- a series longer than a spine can be
 CREATE TABLE ticks (a int, b int);
 INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 12000) i;

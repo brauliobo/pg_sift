@@ -19,7 +19,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, document, jsonb_exists(document, 'flag_a'))
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
 NOTICE:  sift_col index "facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +23%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  ALTER INDEX facts_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
+HINT:  To keep the index without it, run ALTER INDEX facts_col SET (point_tid_columns = 'off') and REINDEX.
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
 CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
 INSERT INTO odd_facts
@@ -33,7 +33,7 @@ CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
 NOTICE:  sift_col index "plain_facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +37%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  ALTER INDEX plain_facts_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
+HINT:  To keep the index without it, run ALTER INDEX plain_facts_col SET (point_tid_columns = 'off') and REINDEX.
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
 SELECT id, dim_a_id, kind,
@@ -42,7 +42,7 @@ FROM facts;
 CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, dim_a_id, kind, document, (document ? 'flag_a'), (document ->> 'tag'), jsonb_typeof(document))
  WITH (paths = 'document.parts[]{category text}');
 NOTICE:  sift_col index "ops_facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +7%, 3 bytes a row, benefit 28 against cost 6)
-HINT:  ALTER INDEX ops_facts_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
+HINT:  To keep the index without it, run ALTER INDEX ops_facts_col SET (point_tid_columns = 'off') and REINDEX.
 VACUUM (FREEZE, ANALYZE) ops_facts;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (FREEZE, ANALYZE) odd_facts;

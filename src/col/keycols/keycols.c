@@ -310,7 +310,7 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 			(errmsg("sift_col index \"%s\": the rewrite chooses again from the data: %s", RelationGetRelationName(index), what.data),
 			 errdetail("Rows appended since the build, or a different spread of the values, change what the default formulas choose for key_cut, order_array_columns and point_tid_columns "
 					   "(an option you wrote is never changed); the segments written now are the ones a REINDEX would write."),
-			 errhint("ALTER INDEX %s SET (key_cut = 'off') (and the same for the others) keeps a choice off.", quote_identifier(RelationGetRelationName(index)))));
+			 errhint("To keep a choice off, run ALTER INDEX %s SET (key_cut = 'off') (and the same for the others).", quote_identifier(RelationGetRelationName(index)))));
 	return changed;
 }
 
@@ -556,7 +556,7 @@ sift_col_auto_keys_report(Relation index)
 			appendStringInfo(&detail, " Left out: %s.%s", why.data,
 							 cube_left ? " The units written now keep the lists of a column the cube holds; a REINDEX drops them." : "");
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns = 'auto' keeps the keys of %s in every unit", RelationGetRelationName(index), kept.data), errdetail_internal("%s", detail.data),
-						 errhint("ALTER INDEX %s SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
+						 errhint("To turn it off, run ALTER INDEX %s SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
 	}
 	MemoryContextDelete(cx);
 	pfree(snap);
@@ -617,7 +617,7 @@ sift_col_auto_paths(Relation heap, Relation index)
 				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' keeps the elements of the arrays %s", RelationGetRelationName(index), only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
 							 errdetail_internal("%s", detail.data),
-							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, leaves the elements out.", name)));
+							 errhint("To leave the elements out, run ALTER INDEX %s SET (paths = '') and REINDEX.", name)));
 		}
 	}
 	if (spec.len == 0)

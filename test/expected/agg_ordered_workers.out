@@ -13,7 +13,7 @@ INSERT INTO ow SELECT i, i % 40, i * 0.37, i % 5 FROM generate_series(1, 30000) 
 CREATE INDEX ow_col ON ow USING sift_col (id, g, amount, grade);
 NOTICE:  sift_col index "ow_col": rollup_dims = 'auto' writes a rollup of the rows by g, grade
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 40 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ow_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX ow_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 VACUUM ANALYZE ow;
 CREATE FUNCTION ow_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scan bool := false; workers bool := false;
