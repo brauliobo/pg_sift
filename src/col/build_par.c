@@ -153,6 +153,25 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 	SpinLockInit(&sh->mutex);
 }
 
+/*
+ * Does a parallel build pay? Without key_cut the participants take disjoint superblocks and their segments stay as they are: the scan is shared and nothing follows
+ * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8), as it does in a build that is not merged (CONCURRENTLY). With key_cut every participant holds all the keys, and the merge that follows
+ * rewrites every row: 0.7 (300,000 rows) to 0.9 (1,000,000) of the time of the scan alone, which the workers cannot take unless the merge is cut into partitions and
+ * made in 3 slices or more; one process merging costs more than the scan saves (300,000 rows, 2 workers: 1,270 ms against 1,200 alone, CPU +50%; 1,000,000 rows, 2 workers: 3,800
+ * against 2,930). The index is that of the statistics (build_gap), 1.7 times what the build writes of this table (1.7 at 300,000 and 1,000,000 rows; 1.7 to 2.0 in SIZING.md).
+ */
+static bool
+build_pays(Relation heap, Relation index, IndexInfo *info)
+{
+	if (info->ii_Concurrent || !sift_col_key_cut(sift_col_rel(index)))
+		return true;
+#ifdef SIFT_TESTING
+	if (sift_test_col_parallel_always)
+		return true;
+#endif
+	return sift_col_merge_sliced((uint64) sift_col_build_gap(heap, index) * BLCKSZ * 10 / 17);
+}
+
 /* NULL when no worker could be launched: nothing is written and the caller builds alone */
 static SiftParLeader *
 begin_parallel(Relation heap, Relation index, IndexInfo *info)
@@ -259,7 +278,7 @@ IndexBuildResult *
 sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res;
-	SiftParLeader *ldr = begin_parallel(heap, index, info);
+	SiftParLeader *ldr;
 	ColShared  *sh;
 	SiftSegEntry *segs;
 	int			nsegs;
@@ -267,6 +286,9 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	uint32		gapn;
 	int			nmerge;
 
+	if (!build_pays(heap, index, info))
+		return NULL;
+	ldr = begin_parallel(heap, index, info);
 	if (ldr == NULL)
 		return NULL;
 	sh = ldr->shared;

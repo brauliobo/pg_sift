@@ -57,6 +57,7 @@ extern bool maint_after_build;
 extern const SiftMaintOps maint_col_ops;
 
 extern void	maint_use_partitions(const SiftDirSnapshot *snap);
+extern int	maint_part_kb_for(uint64 bytes);
 
 extern bool	maint_is_partition(const SiftSegEntry *e);
 

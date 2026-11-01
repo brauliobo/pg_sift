@@ -44,10 +44,10 @@ cancelled() {
 check "a cancel in the middle of the merge ends the build" cancelled
 check "... and leaves no index" test "$(has_index)" == 0
 
-# the participants merge only when the output is cut into 8 partitions or more: fewer are written by one process in less CPU and WAL
+# the participants merge only when the output is cut into 3 partitions or more (and a key_cut build is parallel only then, col_build_pays.sh): fewer are written by one process
 slices_of() { sql mc "DROP INDEX IF EXISTS t_idx" "$@" "$OPTS" "$SMALL" "$SEG" "$CREATE" "SHOW sift.test_col_merge_slices" | tail -n 1; }
-check "an output of many partitions is merged by the participants (8 slices or more)" test "$(slices_of "$PART")" -ge 8
-check "an output of fewer than 8 partitions is merged by one process" test "$(slices_of "SET sift.col_auto_merge_partition_kb = 65536")" == 0
+check "an output of many partitions is merged by the participants (3 slices or more)" test "$(slices_of "$PART")" -ge 3
+check "an output of fewer than 3 partitions is merged by one process" test "$(slices_of "SET sift.col_auto_merge_partition_kb = 65536")" == 0
 sql mc "DROP INDEX IF EXISTS t_idx" >/dev/null
 build "SET sift.test_col_merge_workers = 0" || bail "the build with one merging process failed"
 read -r OSEG OUNIT OROWS OOVER OFILE <<<"$(shape)"

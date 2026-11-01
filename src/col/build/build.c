@@ -21,6 +21,7 @@ int			sift_test_col_fail_sb = 0;
 int			sift_test_col_gap_blocks = -1;
 
 int			sift_test_col_merge_workers = -1;
+bool		sift_test_col_parallel_always = true;
 
 int			sift_test_col_merge_slices = 0;
 #endif

@@ -34,22 +34,30 @@ int			sift_col_auto_merge_max_workers = 0;
  */
 int	maint_part_kb = 0;
 
+int
+maint_part_kb_for(uint64 bytes)
+{
+	int			kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
+		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+	uint64		mem_kb;
+
+	if (sift_col_auto_merge_partition_kb > 0)
+		return kb;
+	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
+	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
+		kb = (int) Min(mem_kb, (uint64) INT_MAX);
+	return kb;
+}
+
 void
 maint_use_partitions(const SiftDirSnapshot *snap)
 {
 	uint64		bytes = 0;
-	uint64		mem_kb;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			bytes += snap->segs[i].bytes;
-	maint_part_kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
-		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
-	if (sift_col_auto_merge_partition_kb > 0)
-		return;
-	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
-	if (bytes / 1024 > mem_kb && (maint_part_kb == 0 || mem_kb < (uint64) maint_part_kb))
-		maint_part_kb = (int) Min(mem_kb, (uint64) INT_MAX);
+	maint_part_kb = maint_part_kb_for(bytes);
 }
 
 /*

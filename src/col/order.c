@@ -438,6 +438,7 @@ typedef struct BoundKey
 {
 	int64		k[2];
 	bool		nul[2];
+	uint32		rows;			/* the rows of the unit the point stands for, a share of the points of the unit */
 } BoundKey;
 
 typedef struct MergeSrc
@@ -534,10 +535,15 @@ bound_order(const void *a, const void *b)
 }
 
 /*
- * The bounds of the slices of a merge: the smallest keys of every unit of every input, from the zones of the first two leaves, sorted; the bound before slice j
- * of nslices is the one that j / nslices of the units come before. The same for every slice that asks, whatever the keys each input holds (the participants of a
- * build hold the rows of the superblocks they claimed). Returns the sorted bounds, in *n.
+ * The bounds of the slices of a merge: points that cut the rows of the inputs into slices of about the same count, from the zones of the first two leaves. A unit holds
+ * thousands of rows between its smallest and largest key of the first leaf (a build leaves a few units in each segment, every segment over the whole range), so the
+ * smallest keys alone crowd at a few values and most slices hold no row: SLICE_POINTS points are taken in each unit, the first its smallest keys and the others
+ * evenly between the smallest and largest of the first leaf (the rows of a unit counted as even in that range), and sorted; the bound before slice j of nslices is
+ * the one that j / nslices of the rows come before. The same for every slice that asks, whatever the keys each input holds (the participants of a build hold the
+ * rows of the superblocks they claimed). Returns the sorted bounds, in *n.
  */
+#define SLICE_POINTS 8
+
 static BoundKey *
 slice_bounds(const MergeSrc *m, SiftColSegment *const *seg, int nseg, uint64 *n)
 {
@@ -546,25 +552,67 @@ slice_bounds(const MergeSrc *m, SiftColSegment *const *seg, int nseg, uint64 *n)
 
 	for (int i = 0; i < nseg; i++)
 		units += seg[i]->nsb;
-	bk = palloc(Max(units, 1) * sizeof(BoundKey));
+	bk = palloc(Max(units, 1) * SLICE_POINTS * sizeof(BoundKey));
 	*n = 0;
 	for (int i = 0; i < nseg; i++)
 		for (uint32 u = 0; u < seg[i]->nsb; u++)
 		{
 			BoundKey   *b = &bk[(*n)++];
+			int64		hi[2] = {0, 0};
+			uint32		rows = seg[i]->sbdir[u].nrows;
 
 			memset(b, 0, sizeof(BoundKey));
+			b->rows = Max(rows / SLICE_POINTS, 1);
 			for (int t = 0; t < bound_leaves(m->ctx); t++)
 			{
 				SiftCZone	z;
+				const SiftColDef *col = &seg[i]->schema->cols[m->ctx->leaf[t]];
 
 				sift_cseg_zone(seg[i], m->ctx->leaf[t], u, &z);
 				b->nul[t] = z.nnull >= z.nvals;
-				b->k[t] = b->nul[t] ? 0 : sift_crun_key(&seg[i]->schema->cols[m->ctx->leaf[t]], z.min);
+				b->k[t] = b->nul[t] ? 0 : sift_crun_key(col, z.min);
+				hi[t] = b->nul[t] ? 0 : sift_crun_key(col, z.max);
+			}
+					if (b->nul[0])
+			{
+				b->rows = rows;
+				continue;
+			}
+			/* a unit of one value of the first leaf is cut by the second */
+			for (int q = 1; q < SLICE_POINTS; q++)
+			{
+				BoundKey   *p = &bk[(*n)++];
+				int			t = bound_leaves(m->ctx) > 1 && !b->nul[1] && b->k[0] == hi[0] ? 1 : 0;
+
+				memset(p, 0, sizeof(BoundKey));
+				p->k[0] = b->k[0];
+				p->k[1] = PG_INT64_MIN;
+				p->k[t] = b->k[t] + (int64) (((__int128) hi[t] - b->k[t]) * q / SLICE_POINTS);
+				p->rows = Max(rows / SLICE_POINTS, 1);
 			}
 		}
 	qsort(bk, *n, sizeof(BoundKey), bound_order);
 	return bk;
+}
+
+/* The bound before slice j of nslices: the first point that j / nslices of the rows come before */
+static const BoundKey *
+slice_bound(const BoundKey *bk, uint64 n, int j, int nslices)
+{
+	uint64		total = 0,
+				seen = 0,
+				want;
+
+	for (uint64 i = 0; i < n; i++)
+		total += bk[i].rows;
+	want = total * j / nslices;
+	for (uint64 i = 0; i < n; i++)
+	{
+		if (seen >= want)
+			return &bk[i];
+		seen += bk[i].rows;
+	}
+	return &bk[n - 1];
 }
 
 static int
@@ -756,8 +804,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 		if (nb == 0)
 			return 0;
-		m.lo = slice > 0 ? &bk[nb * slice / nslices] : NULL;
-		m.hi = slice < nslices - 1 ? &bk[nb * (slice + 1) / nslices] : NULL;
+		m.lo = slice > 0 ? slice_bound(bk, nb, slice, nslices) : NULL;
+		m.hi = slice < nslices - 1 ? slice_bound(bk, nb, slice + 1, nslices) : NULL;
 	}
 	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg, unit_base);
 	MemoryContextDelete(m.scratch);

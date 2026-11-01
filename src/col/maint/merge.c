@@ -659,11 +659,22 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 }
 
 /*
- * Fewer slices than this are merged by one process: the second round of workers (their start, a segment each, the rows decoded again) costs more than it saves.
- * 1,000,000 rows, 8 workers, 3 slices: CPU 6.0 s against 7.7 s, WAL 159 against 259 MB, wall 4.7 against 5.1 s (medians of 5); 3,000,000 rows, 9 slices:
- * wall 24.7 against 35.6 s at the same CPU.
+ * Fewer slices than this are merged by one process. The slices hold the same count of rows (slice_bounds), but every one reads all the inputs, so the merge costs more
+ * instructions than one process (+80% in a build of 1,000,000 rows) and 2 slices take about what the scan the workers shared saved; from 3 the build is faster than one
+ * process (1,000,000 rows, 3 slices, 2 / 4 / 8 workers: 2,310 / 2,150 / 1,780 ms against 2,830 alone; 4,000,000 rows, 10 slices: 10.1 / 6.3 / 5.7 s against 13.0 s),
+ * and with 2 it is not (800,000 rows, 2 slices, 2 workers: 3.4 to 4.4 s against 2.3 to 3.4 s).
  */
-#define MERGE_SLICES_MIN 8
+#define MERGE_SLICES_MIN 3
+
+/* Is a merge of this many bytes made in slices by the participants of a build? (the same count of slices as merge_by_workers) */
+bool
+sift_col_merge_sliced(uint64 bytes)
+{
+	int			kb = maint_part_kb_for(bytes);
+	uint64		share = (uint64) kb * 1024 / 4 * 3;
+
+	return kb > 0 && (bytes + share - 1) / share >= MERGE_SLICES_MIN;
+}
 
 /*
  * The merge of the segments of a parallel build with key_cut, by the participants, when its output is cut into partitions (the rewrite of an index of the size
