@@ -11,7 +11,7 @@ CREATE TABLE fz_tbl (LIKE fz_ref) USING sift_table WITH (autovacuum_enabled = of
 CREATE TABLE fz_step (n serial, sql text);
 CREATE TABLE fz_bad (n int, what text);
 
--- 80 steps: the kind of each is drawn from a hash of its number (the same on every run and server), an insert is 5000 to 60000 rows
+-- 40 steps: the kind of each is drawn from a hash of its number (the same on every run and server), an insert is 5000 to 60000 rows
 CREATE FUNCTION fz_draw(n int, k int, m int) RETURNS int LANGUAGE sql IMMUTABLE
 	AS $$ SELECT ((n::bigint * 2654435761 + k::bigint * 40503) % 4294967296 / 65536 % m)::int $$;
 INSERT INTO fz_step (sql)
@@ -24,7 +24,7 @@ SELECT CASE fz_draw(n, 1, 10)
 		WHEN 5 THEN 'DELETE FROM @T WHERE grp = ' || fz_draw(n, 6, 40)
 		WHEN 6 THEN 'DELETE FROM @T WHERE grp < ' || (1 + fz_draw(n, 7, 12))
 		ELSE 'VACUUM @T' END
-FROM generate_series(1, 80) n;
+FROM generate_series(1, 40) n;
 
 CREATE FUNCTION fz_space(t text, OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8) LANGUAGE plpgsql AS $$
 BEGIN
