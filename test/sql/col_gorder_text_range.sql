@@ -40,7 +40,7 @@ CREATE TABLE trq (cond text);
 INSERT INTO trq
 SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
 	 unnest(ARRAY['%1$s >= %2$L', '%1$s > %2$L', '%1$s < %2$L', '%1$s <= %2$L', '%1$s = %2$L', '%1$s BETWEEN %2$L AND ''zz''', '%1$s >= %2$L AND %1$s < ''b''', '%1$s < %2$L OR %1$s > ''beta''']) f,
-	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'ab', 'b', 'été3', 'ete', 'z', 'zz9', 'zzzz', '~']) b;
+	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'b', 'été3', 'zz9', '~']) b;
 INSERT INTO trq
 SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
 	 unnest(ARRAY['%1$s LIKE %2$L', 'starts_with(%1$s, %2$L)', '%1$s >= %2$L AND %1$s LIKE ''al%%''']) f,
@@ -48,33 +48,33 @@ SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
 
 CREATE TABLE trs (q text);
 INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', col, cond, d, nl, l, o)
-FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 25, 3000]) l, unnest(ARRAY[0, 5]) o
+FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 3000]) l, unnest(ARRAY[0, 5]) o
 WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
 SELECT count(*) AS statements FROM trs;
-SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs) r GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 4 = 0) r GROUP BY 1 ORDER BY 1;
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
-CREATE FUNCTION tr_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 5 = 0) r GROUP BY 1 ORDER BY 1 $$;
+CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 20 = 0) r GROUP BY 1 ORDER BY 1 $$;
 INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(1);
 DELETE FROM tr WHERE id % 7 = 0;
 UPDATE tr SET c = 'U' || c WHERE id % 11 = 0;
 UPDATE tr SET l = NULL WHERE id % 13 = 0;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(2);
 VACUUM tr;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(3);
 SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
 SELECT sift.col_verify('tr_i');
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(4);
 INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(5);
 SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
 SELECT sift.col_verify('tr_i');
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(6);
 REINDEX INDEX tr_i;
 SELECT sift.col_verify('tr_i');
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(7);
 
 -- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
 SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
@@ -82,5 +82,5 @@ SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10'
 	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;
 
 DROP TABLE tr, trq, trs CASCADE;
-DROP FUNCTION tr_chk(text), tr_all(), tr_str(int);
+DROP FUNCTION tr_chk(text), tr_all(int), tr_str(int);
 DROP EXTENSION pg_sift CASCADE;

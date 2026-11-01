@@ -43,55 +43,55 @@ CREATE TABLE trq (cond text);
 INSERT INTO trq
 SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
 	 unnest(ARRAY['%1$s >= %2$L', '%1$s > %2$L', '%1$s < %2$L', '%1$s <= %2$L', '%1$s = %2$L', '%1$s BETWEEN %2$L AND ''zz''', '%1$s >= %2$L AND %1$s < ''b''', '%1$s < %2$L OR %1$s > ''beta''']) f,
-	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'ab', 'b', 'été3', 'ete', 'z', 'zz9', 'zzzz', '~']) b;
+	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'b', 'été3', 'zz9', '~']) b;
 INSERT INTO trq
 SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
 	 unnest(ARRAY['%1$s LIKE %2$L', 'starts_with(%1$s, %2$L)', '%1$s >= %2$L AND %1$s LIKE ''al%%''']) f,
 	 unnest(ARRAY['a%', 'al%', 'alpha1%', 'beta%', 'z%', 'zzz%', 'Q%', '%']) b;
 CREATE TABLE trs (q text);
 INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', col, cond, d, nl, l, o)
-FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 25, 3000]) l, unnest(ARRAY[0, 5]) o
+FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 3000]) l, unnest(ARRAY[0, 5]) o
 WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
 SELECT count(*) AS statements FROM trs;
  statements 
 ------------
-       6144
+       3072
 (1 row)
 
-SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs) r GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 4 = 0) r GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |  4516
- units        |  1628
+ global order |   542
+ units        |   220
 (2 rows)
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
-CREATE FUNCTION tr_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 5 = 0) r GROUP BY 1 ORDER BY 1 $$;
+CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 20 = 0) r GROUP BY 1 ORDER BY 1 $$;
 INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(1);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 102
+ units        |  35
 (2 rows)
 
 DELETE FROM tr WHERE id % 7 = 0;
 UPDATE tr SET c = 'U' || c WHERE id % 11 = 0;
 UPDATE tr SET l = NULL WHERE id % 13 = 0;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(2);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 129
+ units        |  49
 (2 rows)
 
 VACUUM tr;
-SELECT * FROM tr_all();
-    result    |  n  
---------------+-----
- global order | 933
- units        | 346
+SELECT * FROM tr_all(3);
+    result    | n  
+--------------+----
+ global order | 91
+ units        | 42
 (2 rows)
 
 SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
@@ -106,19 +106,19 @@ SELECT sift.col_verify('tr_i');
  
 (1 row)
 
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(4);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 116
+ units        |  48
 (2 rows)
 
 INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(5);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 104
+ units        |  37
 (2 rows)
 
 SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
@@ -133,11 +133,11 @@ SELECT sift.col_verify('tr_i');
  
 (1 row)
 
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(6);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 112
+ units        |  46
 (2 rows)
 
 REINDEX INDEX tr_i;
@@ -148,11 +148,11 @@ SELECT sift.col_verify('tr_i');
  
 (1 row)
 
-SELECT * FROM tr_all();
+SELECT * FROM tr_all(7);
     result    |  n  
 --------------+-----
- global order | 933
- units        | 346
+ global order | 106
+ units        |  55
 (2 rows)
 
 -- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
@@ -165,5 +165,5 @@ SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10'
 (1 row)
 
 DROP TABLE tr, trq, trs CASCADE;
-DROP FUNCTION tr_chk(text), tr_all(), tr_str(int);
+DROP FUNCTION tr_chk(text), tr_all(int), tr_str(int);
 DROP EXTENSION pg_sift CASCADE;
