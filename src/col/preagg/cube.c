@@ -146,6 +146,12 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 		else
 		{
 			memset(si, 0, ng * sizeof(SiftCI128));
+			/* a group without a value keeps these, and is not written (nn is 0): no first-value branch in the loop */
+			for (uint32 i = 0; i < ng; i++)
+			{
+				mn[i] = INT64_MAX;
+				mx[i] = INT64_MIN;
+			}
 			for (uint32 i = 0; i < nrows; i++)
 				if (!is_null(mc->nulls, i))
 				{
@@ -153,13 +159,9 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 					int64		v = mc->key[i];
 
 					si[g] += v;
-					if (nn[g]++ == 0)
-						mn[g] = mx[g] = v;
-					else
-					{
-						mn[g] = Min(mn[g], v);
-						mx[g] = Max(mx[g], v);
-					}
+					nn[g]++;
+					mn[g] = Min(mn[g], v);
+					mx[g] = Max(mx[g], v);
 				}
 			for (uint32 i = 0; i < ng; i++)
 				sift_col_put_varint(out, nn[ord[i].g]);
