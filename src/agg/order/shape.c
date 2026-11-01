@@ -330,17 +330,18 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 }
 
 /*
- * Does the scan read each unit through its sorted run (run_unit): the first key is a plain integer or time column that has runs in the units, and the only conditions are
- * comparisons of that key, which bound the part of the run that is read. Any other condition tests the rows the walk takes and may need many of them.
+ * Does the scan read each unit through its sorted run (run_unit): the first key is a plain integer or time column that has runs in the units. Comparisons of that key
+ * bound the part of the run that is read; any other condition is tested on every row of the unit first (the mask the run keeps the rows of), which the price of the runs adds
+ * (*resid).
  */
 bool
-topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf)
+topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, bool *resid)
 {
+	*resid = false;
 	if (!sift_topn_runs || leaf[0] < 0 || xf[0].kind != TXK_NONE || c->stats.head_cover[leaf[0]] < 0.9 || c->search != NULL)
 		return false;
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->leaf != leaf[0] || !(s->pred[i]->kind == SAP_CMP || (s->pred[i]->kind == SAP_NULL && s->pred[i]->op == 1)))
-			return false;
+		*resid |= s->pred[i]->leaf != leaf[0] || !(s->pred[i]->kind == SAP_CMP || (s->pred[i]->kind == SAP_NULL && s->pred[i]->op == 1));
 	return true;
 }
 

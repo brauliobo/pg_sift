@@ -411,7 +411,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
-		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf);
+		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf, &c->topn_resid);
 		if (c->topn_array && topn_heads_win(c, s, leaf[0], rows))
 		{
 			c->topn_array = false;

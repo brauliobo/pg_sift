@@ -187,7 +187,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				share,
 				entries,
 				key_ops,
-				ids;
+				ids,
+				mask_cost;
 	Cost		startup;
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
@@ -200,6 +201,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
 	k.scan_cost = c->search ? sift_search_cost(c->search, k.rows, k.units, &k.rows, &k.units) : 0;
 	cost_read(c, s, &k);
+	mask_cost = k.scan_cost;
 	cost_tuples(c, s, input_rel, &k);
 	cost_joins(c, s, &k);
 	cost_work(c, s, &k);
@@ -213,8 +215,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		double		open = k.open_cost * AGG_SCAN_SPEED,
 					scan = (k.scan_cost - open) * c->topn_frac + open;
 
-		/* through the sorted runs, a unit costs a seek and the rows wanted, never more than its rows scanned */
-		k.scan_cost = c->topn_runs ? Min(scan, open + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW)) : scan;
+		/* through the sorted runs, a unit costs a seek and the rows wanted (and the conditions on its rows, when they are not on the key), never more than its rows scanned */
+		k.scan_cost = c->topn_runs ? Min(scan, open + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW) +
+										 (c->topn_resid ? mask_cost * AGG_SCAN_SPEED * c->topn_frac : 0.0)) : scan;
 	}
 	k.scan_cost *= cpu_operator_cost;
 	/*
@@ -269,9 +272,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	}
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
-	/* the rows of a top-N are fetched from the heap, one page each; the entries a walk tests are visited in the order of the key, as the pages of a vet */
+	/* the rows of a top-N are fetched from the heap, one page each; those the order array or a sorted run gives come in the order of the key (the entries a walk tests too), a page in the buffers, the cache or the disk */
 	if (s->topn)
-		p->total_cost += c->topn_array && c->topn_walk > 0 ? c->topn_walk * heap_visit_ops(rel_pages(c)) * cpu_operator_cost : c->topn_fetch * random_page_cost * 0.5;
+		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost :
+			c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 	if (c->having_sel > 0 && !s->topn)
