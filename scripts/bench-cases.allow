@@ -8,3 +8,25 @@ while a physical standby streams, `VACUUM` of a `sift_col` index moves the segme
 use two new SIMD kernels	case col_vacuum_13cols: VACUUM of a 13-column index after churn, instructions and time
 the sidecar a VACUUM writes for the units with dead rows takes a sixth fewer instructions	case col_vacuum_churn_sidecar: the VACUUM after churn whose sidecar is the cost
 keeps the buffer's order ranges with its batches	case wbuf_layout_topn: a page of the order of a key under a write buffer, scan after scan
+returns the keys from the entries and reads no row of the table	case topn_scattered_time: the key-only page of a scattered time column (0.51 ms and 2.1 million instructions in 46 blocks at 300,000 rows against PostgreSQL's plan 16.9 ms and 1,911 blocks)
+reads the sorted array of the column like an integer one	case topn_numeric_offset: ORDER BY amount, id LIMIT 20 OFFSET 10000 over a numeric(12, 2) column (0.80 ms and 7.7 million instructions at 300,000 rows, a b-tree 0.66 ms and 6.6 million)
+commit 8aab48d7e	CHANGELOG line written after the commit; case point_scattered_subselect
+commit da8761c87	CHANGELOG line written after the commit; case topn_text_tiebreak_global_order
+commit ea24f1cdb	CHANGELOG line written after the commit; case order_layout_range
+commit 4a4950427	CHANGELOG line written after the commit; case wbuf_layout_offset
+commit e4337adbf	CHANGELOG line written after the commit; case topn_page_dirty_pages_20pct
+commit f725d7dcb	a few blocks on a point read (9 / 13 / 17 to 9 / 11 / 15 for an equality, a short range and an IN list of 16 keys); no statement of the registry isolates the read of the directory header, and the time of no statement moves; test/sql/col_gorder_point.sql counts the blocks
+commit 95bf906bf	the planner price of the keys of an IN list on an order array; the point_scattered_N cases plan the point directory in the builds before and after (60 keys: 2.7 million instructions and 561 against 563 blocks in both), so they do not show it; test/sql/col_gorder_point.sql covers the lists
+commit cf7a0678d	a plan choice between the scan and the b-tree plan of one table; the b-tree variants of the registry are tables of their own, so no case shows it; test/sql/agg_unique_key_in_list.sql covers it
+commit 672d457c2	the decode of a compact chunk costs 5.5 instructions an entry with AVX2 against 45 (a unit test and the tools/gquant microbenchmark); the statements that read compact chunks are order_layout_range and order_layout_offset_deep, whose time is not decode-bound
+commit 570bd2526	the case wbuf_narrowest_condition_first shows no difference from PostgreSQL's plan at 300,000 rows (0.58 ms against 0.63 ms, 41 blocks each): the 1,203-block shape of the commit is not reproduced at this size; test/sql covers the rows
+commit a3f3dfef0	a plan price (514 against 82 for k = ANY(300 keys) AND k = 7) held by test/sql; keys_in_few_256 runs the same plan as PostgreSQL at 300,000 rows (0.65 ms against 0.64 ms), so no case shows a gain
+commit 466aa2f9f	a lateral top-1 over a key-cut grouped order array of 1,000,000 rows (24.2 to 17.8 million instructions, 2.6 to 2.0 ms) is a size no registry case runs at 300,000 rows; test/sql/col_gorder_group.sql checks the rows
+commit 1148c0f74	2,000 hash partitions planned from a new connection, a statistics-sharing test; test/t/leaf_stats_shared.sh checks that every connection finds the records shared
+commit 170199310	a planner price of the rows a lookup gets through a b-tree index; test/plan/bands.tsv, calibrate.tsv, planning.tsv and test/expected/agg_lookup_rows_read.out hold the plan choice of 140 entities of mid rank
+commit f786fbc57	repairs the cost that 5ce93b74c added on every read of a kept batch set (116 to 43 blocks, 5,287,447 to 5,228,487 instructions on the narrow statement of a 15-page buffer); not a gain over a released version
+commit c7468b07c	comment and option text only; no code path changes
+commit ca46315a9	comment and option text only; the choice of the layout is not changed
+commit 5ce93b74c	a repair of wrong rows after VACUUM in a development version that never shipped; its cost is measured: 69,711 instructions to stamp a buffer of 15 pages and 20,151 for each read that finds the set (0.5% of the page statement)
+goes on past the entries whose pages are not all-visible	case topn_offset_after_vacuum: the OFFSET of a page after deletes, updates and a VACUUM (23.4 million instructions at 300,000 rows against 307 million before the skip went on, a b-tree 42.6 million)
+commit 9e574ccc6	CHANGELOG line written after the commit; case topn_offset_after_vacuum
