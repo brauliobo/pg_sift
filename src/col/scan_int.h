@@ -268,6 +268,8 @@ struct SiftColSource
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
 extern bool col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds);
+extern bool units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
+extern bool units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows);
 /* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
 extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 

@@ -49,10 +49,10 @@ INSERT INTO tc (id, c, l) SELECT 60000 + i, tc_str(i * 5), tc_str(i * 11) FROM g
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col | result  | count 
 -----+---------+-------
- c   | counted |     8
- c   | units   |    23
- l   | counted |    11
- l   | units   |    20
+ c   | counted |    30
+ c   | units   |     1
+ l   | counted |    22
+ l   | units   |     9
 (4 rows)
 
 SELECT sift.col_promote('tc_i') >= 0 AS promoted;
@@ -89,10 +89,10 @@ VACUUM tc;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col | result  | count 
 -----+---------+-------
- c   | counted |    23
- c   | units   |     8
- l   | counted |    15
- l   | units   |    16
+ c   | counted |    30
+ c   | units   |     1
+ l   | counted |    22
+ l   | units   |     9
 (4 rows)
 
 SELECT sift.col_verify('tc_i');

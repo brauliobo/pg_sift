@@ -1,6 +1,6 @@
 -- count(*) of a range of a leaf with a global order, when a few units of the segment are not exact (the heap pages of rows inserted since the last VACUUM, a deleted row): the units that are exact are
 -- counted from the entries between the bounds of the range and the others are read, so the rows read are those of the units that are not exact, not the table's. The counts must be the heap's through
--- inserts, deletes, an aborted delete, updates, ties, NULLs and a bigint over its whole range, and a range of more entries than the order hands over is read from the units.
+-- inserts, deletes, an aborted delete, updates, ties, NULLs and a bigint over its whole range, and a range of more entries than the order hands out as a list (16,384) is counted the same way.
 -- A text leaf is counted the same way, from the ranks of its strings between the bounds of its comparisons (ties, the empty string, NULLs, bounds that no string equals or that lie
 -- outside the strings, an empty range).
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -51,6 +51,10 @@ SELECT n, d_agg(w) = d_heap(w) AS agree FROM d_w ORDER BY n;
 SELECT d_scanned('SELECT count(*) FROM d WHERE b BETWEEN 1000 AND 1600') < 5000 AS buffer_and_dirty_units_only,
        d_scanned('SELECT count(*) FROM d WHERE b BETWEEN 1000 AND 1600') > 0 AS but_not_nothing,
        d_scanned('SELECT count(*) FROM d WHERE s >= ''c'' AND s < ''f''') BETWEEN 1 AND 4999 AS text_buffer_and_dirty_units_only;
+-- a range of most of the rows (far more entries than a list of addresses holds) is counted from the entries too: the units read are the buffer's and the dirty ones
+SELECT d_scanned('SELECT count(*) FROM d WHERE b BETWEEN 0 AND 100002') < 5000 AS wide_int_range_counted,
+       d_scanned('SELECT count(*) FROM d WHERE s >= ''a'' AND s < ''t''') < 5000 AS wide_text_range_counted,
+       d_agg('s >= ''a'' AND s < ''t''') = d_heap('s >= ''a'' AND s < ''t''') AS wide_text_range_agrees;
 
 -- a deleted row in one unit, committed, then one aborted in another
 DELETE FROM d WHERE id BETWEEN 100 AND 140;
