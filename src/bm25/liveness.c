@@ -592,6 +592,7 @@ typedef struct DeadScan
 	SiftSegment *seg;
 	MemoryContext tcxt;
 	sift_grp  **grp;			/* by SB from sb_lo: the dead docs as rows, NULL when the SB has none */
+	sift_dead_sb *flat;			/* ... and as a row for each of the group's pages, to test a posting by its page and offset */
 	uint32	   *dead;			/* by slot */
 	uint32		nslots;
 } DeadScan;
@@ -647,6 +648,15 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	c = sift_post_open(&seg->sr, info, ds->tcxt);
 	sift_sr_unlock(&seg->sr);
 	cur = sift_post_cursor(c);
+	n = sift_cur_count_in(cur, ds->flat, seg->hdr->sb_lo, seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
+	if (n != ~(uint64) 0)
+	{
+		ds->dead[info->slot] = n;
+		MemoryContextReset(ds->tcxt);
+		CHECK_FOR_INTERRUPTS();
+		return true;
+	}
+	n = 0;
 	for (const sift_grp *g = sift_next(cur); g; g = sift_next(cur))
 	{
 		const sift_grp *d;
@@ -675,6 +685,7 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 
 	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
 	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
+	ds.flat = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_dead_sb));
 	memset(dead, 0, (Size) h->nslots * sizeof(uint32));
 	sift_live2_dirty(&l, h, dirty);
 	live2(seg)->rok = false;
@@ -683,7 +694,20 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 		uint32		idx = dm->dir[i].sb - seg->hdr->sb_lo;
 
 		if (dirty[idx / 8] >> (idx % 8) & 1)
-			ds.grp[idx] = dead_rows(seg, dm, i, cx);
+		{
+			const sift_grp *g = ds.grp[idx] = dead_rows(seg, dm, i, cx);
+
+			if (g != NULL)
+			{
+				uint8	   *bits = MemoryContextAllocZero(cx, (Size) SIFT_GROUP_PAGES * g->w);
+				const uint8 *row = g->off;
+
+				for (int j = 0; j < 4; j++)
+					for (uint64 m = g->pages[j]; m != 0; m &= m - 1, row += g->w)
+						memcpy(bits + ((Size) j * 64 + pg_rightmost_one_pos64(m)) * g->w, row, g->w);
+				ds.flat[idx] = (sift_dead_sb) {.bits = bits,.w = g->w};
+			}
+		}
 		CHECK_FOR_INTERRUPTS();
 	}
 	live2(seg)->rok = false;

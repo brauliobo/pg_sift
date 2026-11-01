@@ -432,6 +432,39 @@ uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
 	return ng;
 }
 
+/*
+ * The postings of an unused LIST cursor that sit on a set bit of dead[gid - lo] (bits NULL: none in that group), counted posting by
+ * posting: no group is built for them. Another cursor answers all ones: the caller counts its groups.
+ */
+uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb)
+{
+	uint64_t n = 0;
+	uint32_t i = 0, tot = c->ls.n;
+
+	if (c->seek != ls_seek || c->state != 0) return ~(uint64_t) 0;
+	while (i < tot) {
+		/* the window of decoded postings that holds posting i, then a tight loop over it */
+		const sift_tid *t;
+		uint32_t o, end;
+
+		(void) ls_at(c, &i, 0);
+		t = c->ls.t ? c->ls.t : c->ls.blk;
+		o = c->ls.t ? 0 : c->ls.bi;
+		end = c->ls.t ? tot : c->ls.bi + c->ls.bn;
+		for (; i < end; i++) {
+			sift_tid x = t[i - o];
+			uint32_t gid = SIFT_GID(x) - lo, row = SIFT_BLK(x) & (SIFT_GROUP_PAGES - 1), off = SIFT_OFF(x) - 1;
+			const sift_dead_sb *d;
+
+			if (gid >= nsb) sift_codec_corrupt("a posting lies outside the superblocks of its segment");
+			d = &dead[gid];
+			if (d->bits == NULL || (off >> 3) >= d->w) continue;
+			n += d->bits[(size_t) row * d->w + (off >> 3)] >> (off & 7) & 1;
+		}
+	}
+	return n;
+}
+
 /* the first and last gid of an unpositioned, non-empty LIST cursor: only the block headers are read */
 void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi)
 {

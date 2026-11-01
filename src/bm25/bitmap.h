@@ -146,6 +146,10 @@ void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf);   /* kid[0] AND
 /* the ascending distinct gids of a LIST cursor that has not been used (out holds sift_blob_n entries); the cursor must be rewound afterwards */
 uint32_t sift_cur_gids(sift_cur *c, uint32_t *out);
 void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi);
+/* the rows (SIFT_GROUP_PAGES of w bytes, a bit for each offset) of one superblock where docs are dead; bits NULL: none */
+typedef struct { const uint8_t *bits; uint32_t w; } sift_dead_sb;
+/* the postings of an unused LIST cursor on a bit set in dead[gid - lo] (nsb entries), all ones for another cursor */
+uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb);
 static inline const sift_grp *sift_seek(sift_cur *c, uint32_t gid) { return c->seek(c, gid); }
 /* the group of exactly gid or NULL; operators do not look past gid, so a miss costs no leapfrogging */
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid);
