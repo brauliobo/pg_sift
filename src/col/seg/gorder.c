@@ -635,30 +635,48 @@ sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 
 	return gorder_seek(seg, col, vs, ve, key, after, keep != NULL ? keep : &memo);
 }
 
-/* The entries [*a, *b) of the global order of leaf col (ungrouped) whose key lies in [lo, hi]; false when the segment has no such block */
+/*
+ * The entries [*a, *b) of the global order of leaf col (ungrouped) whose key lies in [lo, hi]; false when the segment has no such block. The keys of a text block are
+ * ranks of the segment's strings (str: those of sift_cseg_gorder_strkeys), not the codes of its dictionary that a range of the scan is in.
+ */
 static bool
-gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 *b, SiftCGOrdBuf *memo)
+gorder_span(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 *a, uint32 *b, SiftCGOrdBuf *memo)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
-	/* the keys of a text block are ranks of the segment's strings, not the codes of its dictionary that a range of the scan is in */
-	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
+	if (g == NULL || g->hdr.gcol >= 0 || (g->hdr.strbytes != 0) != str || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
 		return false;
 	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
 	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);
 	return true;
 }
 
+/*
+ * The ranks of the strings of a text block that lie between two bounds, as the keys [*klo, *khi] of its entries (empty: *klo > *khi): the rows of the strings from lo (after
+ * it when lo_excl) to hi (before it when hi_excl); a NULL bound is none. False when the leaf has no text block of the collation of the comparison.
+ */
+bool
+sift_cseg_gorder_strkeys(SiftColSegment *seg, int col, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl, int64 *klo, int64 *khi)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+
+	if (g == NULL || g->hdr.strbytes == 0 || g->hdr.collid != collid)
+		return false;
+	*klo = lo == NULL ? 0 : sift_cseg_gorder_strrank(seg, col, lo, lolen, lo_excl);
+	*khi = hi == NULL ? PG_INT64_MAX : (int64) sift_cseg_gorder_strrank(seg, col, hi, hilen, !hi_excl) - 1;
+	return true;
+}
+
 /* How many rows of the segment have a key in [lo, hi], by the global order of the leaf; UINT32_MAX when it has none */
 uint32
-sift_cseg_gorder_count(SiftColSegment *seg, int col, int64 lo, int64 hi)
+sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi)
 {
 	SiftCGOrdBuf memo;
 	uint32		a,
 				b;
 
 	memo.at = UINT32_MAX;
-	return gorder_span(seg, col, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
+	return gorder_span(seg, col, str, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
 }
 
 /* The addresses of the entries [a, b) of leaf col, appended to t at *n */
@@ -692,7 +710,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 	SiftKey    *t;
 
 	memo.at = UINT32_MAX;
-	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
+	if (!gorder_span(seg, col, false, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
 	gorder_addrs(seg, col, a, b, &memo, t, &n);
@@ -718,7 +736,7 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
 		uint32		a,
 					b;
 
-		if (!gorder_span(seg, col, keys[k], keys[k], &a, &b, &memo) || b - a > limit - n)
+		if (!gorder_span(seg, col, false, keys[k], keys[k], &a, &b, &memo) || b - a > limit - n)
 		{
 			pfree(t);
 			return false;
@@ -742,7 +760,7 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
  * no list of addresses made. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
  */
 bool
-sift_cseg_gorder_count_outside(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, const uint64 *dirty, uint32 *count)
+sift_cseg_gorder_count_outside(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, const uint64 *dirty, uint32 *count)
 {
 	SiftCGOrdBuf memo;
 	uint32		a,
@@ -753,7 +771,7 @@ sift_cseg_gorder_count_outside(SiftColSegment *seg, int col, int64 lo, int64 hi,
 				u = 0;
 
 	memo.at = UINT32_MAX;
-	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
+	if (!gorder_span(seg, col, str, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	crows = seg_gord_leaf(seg, col)->hdr.crows;
 	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)

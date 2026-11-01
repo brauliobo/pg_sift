@@ -186,6 +186,8 @@ extern void sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, 
 extern void sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len);
 /* ... or of an integer leaf with a global order (order_array_columns): a segment of exact units counts the rows of the range of the scan's comparisons, all on that leaf, from it */
 extern void sift_col_count_cmp(SiftColSource *src, int leaf);
+/* ... or of a text leaf with a global order of the collation of the comparisons (order_array_columns): the rows of the strings between two bounds (a NULL one: none), all the conditions of the scan, are the entries between their ranks */
+extern void sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl);
 /* A count of the rows that own one value of a list (the lone equality on an element leaf), answered by the point directory of a segment whose units are all exact; call after sift_col_super */
 extern void sift_col_count_elem(SiftColSource *src);
 extern bool sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows);

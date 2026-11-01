@@ -203,7 +203,18 @@ struct SiftColSource
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
 	SiftColOp	pcnt_op;
-	bool		pcnt_int;		/* ... an integer leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp) */
+	bool		pcnt_int;		/* ... an integer or text leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp, sift_col_count_strs) */
+	bool		pcnt_str;		/* ... the key of a text leaf: the rows whose string lies between the bounds of pcnt_box, counted by the ranks of its global order (sift_col_count_strs) */
+	struct
+	{
+		const char *lo;			/* NULL: no lower bound */
+		const char *hi;
+		uint32		lolen;
+		uint32		hilen;
+		uint32		collid;
+		bool		lo_excl;
+		bool		hi_excl;
+	}			pcnt_box;
 	bool		pcnt_elem;		/* ... the rows that own the value of the only test, an element of a list, counted by its point directory (sift_col_count_elem) */
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */

@@ -99,6 +99,8 @@ typedef struct SiftSrcProvider
 	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
+	/* Optional: the same for the comparisons of a text leaf that lie between two bounds (a NULL one: none) under the collation collid, all the conditions of the scan: a segment whose global order of the leaf holds the ranks of its strings counts them */
+	void		(*count_strs) (void *impl, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl);
 	/* Optional: the same for the only condition, an equality on an element of a list (the prune_str test that stands for it): a segment whose point directory lists the rows of the value counts them */
 	void		(*count_elem) (void *impl);
 	bool		(*unit_count) (void *impl, const SiftSrcUnit *unit, int64 *rows);

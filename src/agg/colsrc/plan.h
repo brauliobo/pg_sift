@@ -251,6 +251,13 @@ sift_colsrc_count_cmp(SiftSrcSource *src, int leaf)
 		src->prov->count_cmp(src->impl, leaf);
 }
 
+static inline void
+sift_colsrc_count_strs(SiftSrcSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
+{
+	if (src->prov->count_strs != NULL)
+		src->prov->count_strs(src->impl, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
+}
+
 static inline uint64
 sift_colsrc_point_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
 {

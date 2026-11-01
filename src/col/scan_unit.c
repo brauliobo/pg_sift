@@ -640,6 +640,14 @@ count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, in
 	return true;
 }
 
+/* ... and of a text leaf (sift_col_count_strs): the keys of the entries of its global order between the ranks of the two bounds */
+static bool
+count_str_keys(SiftColSource *src, SiftColSegment *seg, int64 *lo, int64 *hi)
+{
+	return sift_cseg_gorder_strkeys(seg, src->pcnt - 1, src->pcnt_box.collid, src->pcnt_box.lo, src->pcnt_box.lolen, src->pcnt_box.lo_excl, src->pcnt_box.hi, src->pcnt_box.hilen,
+									src->pcnt_box.hi_excl, lo, hi);
+}
+
 /* Unit u is exact on its own: every page its rows are on is all-visible (the summary's page mask against the snapshot) and it has no dead row or exception */
 static bool
 unit_exact(SiftColSource *src, SiftColSegment *seg, uint32 u)
@@ -684,7 +692,7 @@ count_dirty_units(SiftColSource *src, ColCursor *c, int64 lo, int64 hi)
 			if (++nd > most)
 				break;
 		}
-	if (nd == 0 || nd > most || !sift_cseg_gorder_count_outside(seg, src->pcnt - 1, lo, hi, SIFT_CORDER_MAX_ROWS, dirty, &n))
+	if (nd == 0 || nd > most || !sift_cseg_gorder_count_outside(seg, src->pcnt - 1, src->pcnt_str, lo, hi, SIFT_CORDER_MAX_ROWS, dirty, &n))
 	{
 		pfree(dirty);
 		return false;
@@ -697,8 +705,8 @@ count_dirty_units(SiftColSource *src, ColCursor *c, int64 lo, int64 hi)
 }
 
 /*
- * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), whose global order holds the keys of the
- * leaf of sift_col_count_cmp (order_array_columns: the rows of the range are the entries between its bounds), or whose point directory lists the rows of the value
+ * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), whose global order holds the keys or the ranks of the
+ * strings of the leaf of sift_col_count_cmp or sift_col_count_strs (order_array_columns: the rows of the range are the entries between its bounds), or whose point directory lists the rows of the value
  * of sift_col_count_elem, answers the count for all its units
  * at once when every one is exact on its own, as col_whole_take wants of a segment: every page all-visible, no dead row or exception, the directory current.
  * The checks come in the order of col_super_take (all-visible bits, directory, liveness). Then col_super_take hands the segment over as one unit.
@@ -724,7 +732,8 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	}
 	else if (src->pcnt_int)
 	{
-		if (!sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_keys(src, seg, preds, npreds, &lo, &hi))
+		if (!sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 ||
+			!(src->pcnt_str ? count_str_keys(src, seg, &lo, &hi) : count_keys(src, seg, preds, npreds, &lo, &hi)))
 			return false;
 	}
 	else if (!sift_cseg_dict_counted(seg, src->pcnt - 1))
@@ -739,7 +748,7 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 		return src->pcnt_int && count_dirty_units(src, c, lo, hi);
 	if (src->pcnt_int)
 	{
-		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, lo, hi);
+		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, src->pcnt_str, lo, hi);
 
 		if (m == UINT32_MAX)
 			return false;

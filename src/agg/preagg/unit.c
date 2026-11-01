@@ -331,10 +331,19 @@ preagg_init(AggExec *ex)
 		else if (ex->super_on && only && t == NULL)
 		{
 			int			leaf = sift_agg_cmp_only_leaf(ex);
+			const SiftSrcStrTest *lo,
+					   *hi;
 
 			if (leaf >= 0)
 			{
 				sift_colsrc_count_cmp(ex->src, leaf);
+				ex->pcount = ex->pcount_cmp = true;
+			}
+			/* ... or of the strings of a text leaf between two bounds: the ranks of its global order */
+			else if ((leaf = sift_agg_text_range(ex, &lo, &hi)) >= 0)
+			{
+				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0] : NULL, lo != NULL ? lo->lens[0] : 0, lo != NULL && lo->op == SSTR_GT,
+									   hi != NULL ? hi->vals[0] : NULL, hi != NULL ? hi->lens[0] : 0, hi != NULL && hi->op == SSTR_LT);
 				ex->pcount = ex->pcount_cmp = true;
 			}
 		}

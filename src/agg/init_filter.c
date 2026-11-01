@@ -308,6 +308,55 @@ sift_agg_cmp_only_leaf(AggExec *ex)
 	return leaf;
 }
 
+/*
+ * Is the WHERE of the statement only comparisons of one text leaf with constants that bound its strings in the order of its collation (a lower and an upper bound at most, an
+ * equality being both), and which: a count(*) of it is the number of rows whose string lies between them, which a segment's global order of the leaf counts by their ranks
+ * (sift_colsrc_count_strs). lo and hi are the tests of the bounds, NULL for none.
+ */
+static bool
+text_range(AggExec *ex, SiftAggPred *p, int *leaf, const SiftSrcStrTest **lo, const SiftSrcStrTest **hi)
+{
+	SiftSrcStrTest *t;
+
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (!text_range(ex, p->child[i], leaf, lo, hi))
+				return false;
+		return true;
+	}
+	t = palloc0(sizeof(SiftSrcStrTest));
+	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SSTR_PREFIX)
+		return false;
+	if ((*leaf >= 0 && *leaf != p->leaf) || ((*lo != NULL || *hi != NULL) && (*lo ? (*lo)->collid : (*hi)->collid) != t->collid))
+		return false;
+	*leaf = p->leaf;
+	if (t->op == SSTR_EQ && *lo == NULL && *hi == NULL)
+		*lo = *hi = t;
+	else if ((t->op == SSTR_GT || t->op == SSTR_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SSTR_EQ))
+		*lo = t;
+	else if ((t->op == SSTR_LT || t->op == SSTR_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SSTR_EQ))
+		*hi = t;
+	else
+		return false;
+	return true;
+}
+
+/* the leaf of the only comparisons of the statement when they are text_range, -1 when they are anything else */
+int
+sift_agg_text_range(AggExec *ex, const SiftSrcStrTest **lo, const SiftSrcStrTest **hi)
+{
+	int			leaf = -1;
+
+	*lo = *hi = NULL;
+	if (ex->spec->npred == 0)
+		return -1;
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (!text_range(ex, ex->spec->pred[i], &leaf, lo, hi))
+			return -1;
+	return leaf;
+}
+
 /* the entries of the leaves the conjuncts compare (preagg_zones), then those of the ORs: all of them prune the scan */
 void
 prune_init(AggExec *ex)

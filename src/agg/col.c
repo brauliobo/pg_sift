@@ -534,6 +534,15 @@ col_count_cmp(void *impl, int leaf)
 }
 
 static void
+col_count_strs(void *impl, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep == NULL)
+		sift_col_count_strs(src->cs, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
+}
+
+static void
 col_count_elem_src(void *impl)
 {
 	ColSource  *src = impl;
@@ -888,6 +897,7 @@ static const SiftSrcProvider col_provider = {
 	.whole = col_whole,
 	.count_range = col_count_range,
 	.count_cmp = col_count_cmp,
+	.count_strs = col_count_strs,
 	.count_elem = col_count_elem_src,
 	.unit_count = col_unit_count,
 	.point_exact = col_point_exact,
