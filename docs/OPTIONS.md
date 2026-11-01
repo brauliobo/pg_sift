@@ -103,10 +103,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `BM25` · default · since 1.2 · default true
 
 - **What it does:** phrase queries are decided by the index, not rechecked in the heap
-- **Gain:** phrase queries 4.1x and phrase counts 7.3x faster than positions = off (218,058 documents); word queries unchanged
-- **Impact:** index size: +149% of the index (52.5 to 130.9 MiB, 218,058 documents); v3.1: +44% (1M short rows), +138% (50,000 documents); build, merge and writes: build about 30% slower (1.7 to 2.2 s, 218,058 documents); v3.1 build CPU +13% (1M short rows), +38% (50,000 documents); other: index about 2.5x the size of positions=false (130.9 against 52.5 MiB on 218,058 articles); REINDEX to change
+- **Gain:** word queries are unchanged by the positions: a count 1.364 ms with and without them (1,000,000 short rows), 0.213 against 0.208 ms (50,000 articles); the phrase queries they serve are decided by the index, not rechecked in the heap
+- **Impact:** index size: +44% of the index on 1,000,000 short rows (11.58 against 8.03 MB), +138% on 50,000 articles (32.85 against 13.79 MB); build, merge and writes: build CPU +13% on 1,000,000 short rows (264 against 233 ms), +38% on 50,000 articles (820 against 594 ms); other: index about 2.5x the size of positions=false (130.9 against 52.5 MiB on 218,058 articles); REINDEX to change
 - **When:** Phrase queries ("two words"). Word, AND, OR queries are unchanged. Phrases are rechecked in the heap for rows without positions: positions = off, rows inserted since an old build, phrases under NOT.
-- **Default:** true — On: phrases 4.1x and phrase counts 7.3x faster (>= 5% on a relevant class) although the index is 2.5x larger and the build about 30% slower, over the 3% and 5% limits; on since 1.2.
+- **Default:** true — On: phrase queries are decided by the index, not rechecked in the heap, although the index is 1.4 to 2.4 times larger and the build 13% to 38% slower, over the 3% and 5% limits; on since 1.2.
 - **Turn off:** CREATE INDEX .. WITH (positions = off): smaller index, phrases rechecked in the heap. Existing index: ALTER INDEX .. SET (positions = off) then REINDEX; units written before keep their positions until then.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on so phrases are decided by the index. Set positions = off when phrases are rare and index size matters; phrases are then rechecked in the heap. Needs REINDEX.
@@ -201,7 +201,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · default · since 2.0 · default 0
 
 - **What it does:** a lone segment is rewritten above this percent of dead rows, so that its units answer from pre-aggregates again; 0 rewrites it when the scans of its dirty units would cost more than the rewrite
-- **Gain:** GROUP BY after three rounds of 30% updates and VACUUM: 0.82 ms (never rewritten) to 0.16 ms (10) (100,000 rows)
+- **Gain:** GROUP BY after three rounds of updates of 30 rows in every 100 and VACUUM: 0.82 ms (never rewritten) to 0.16 ms (10) (100,000 rows)
 - **Impact:** index size: 4.05 MB (never rewritten) to 2.15 MB (10) (-46.8%, 100,000 rows after three rounds); build, merge and writes: VACUUM of the third round 61 ms (never rewritten), 56 ms (10): within noise (100,000 rows); other: a rewrite writes the whole segment and re-encodes every live row (4,200 instructions a row at 7 bytes, 35,400 at 75); 100 never rewrites
 - **When:** VACUUM rewrites a lone segment of a sift_col index when half of it is dead or, with 0, when 100 scans of its dirty units (about 430 instructions a dead row up to 45 a row of a unit a tenth dead) cost more than the rewrite of its live rows (900 + 463 * bytes of a row); with a percent, above that share of dead rows. The tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units, which answer from their pre-aggregates net of the dead rows. The BM25 index keeps 50.
 - **Default:** 0 — 0, by cost: a rewrite re-encodes 900 + 463 * bytes instructions a live row, a query pays 430 a dead row of a dirty unit up to 45 a row, so 100 scans between two VACUUMs break even at about 9% dead rows in every unit of a 7 bytes a row segment and never below half for 75. 300,000 rows, 13% dead: VACUUM 1,356 against 1,354 Minstr at 7 bytes a row (unchanged), 292 against 9,528 at 75 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite (docs/results/col-dead-rewrite.tsv).
@@ -244,7 +244,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** smaller chunks: zstd:3 -7.0%, lz4 -6.2% of the index against auto (6 columns, 100,000 rows)
 - **Gain:** -
-- **Impact:** index size: zstd:3 -7.0% and lz4 -6.2% of the index against auto, none +111.6% (2.12 MB auto; 6 columns, 100,000 rows); zstd:3 -2.8% on the 1,000,000-row store table; build, merge and writes: build 69 ms (auto, lz4), 81 ms (zstd:3), 54 ms (none); a grouped scan 10.1 ms (auto), 14.4 ms (zstd:3, 1.4x), 11.7 ms (none) (100,000 rows); other: zstd:3 builds 17% slower and a grouped scan reads 1.4x slower than auto (100,000 rows); REINDEX to apply
+- **Impact:** index size: zstd:3 -7.0% and lz4 -6.2% of the index against auto, none +111.6% (2.12 MB auto; 6 columns, 100,000 rows); build, merge and writes: build 69 ms (auto, lz4), 81 ms (zstd:3), 54 ms (none); a grouped scan 10.1 ms (auto), 14.4 ms (zstd:3, 1.4x), 11.7 ms (none) (100,000 rows); other: zstd:3 builds 17% slower and a grouped scan reads 1.4x slower than auto (100,000 rows); REINDEX to apply
 - **When:** Every chunk of the columns of a sift_col index when a segment is written; per column with 'auto; col=zstd:9'. Segments already written keep their chunks until REINDEX.
 - **Default:** '' — auto adds LZ4 or zstd only where the cost rule says the saved bytes pay (LZ4 needs 25% on hot streams, zstd 70%). zstd:3 is -7.0% but builds 17% slower and scans 1.4x slower, over the limits.
 - **Turn off:** SET (compression = 'none') stores plain chunks (index +111.6%, fastest scans); 'auto' or RESET (compression) is the default. REINDEX applies it to segments already written.
@@ -272,7 +272,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** names the leaves of array elements and map values a rollup groups by
 - **Gain:** GROUP BY of an array element key 1,888 ms normal plan, 9.2 scanned, 2.0 ms from rollups (1,000,000 documents); 151 to 0.08 ms at 100,000
-- **Impact:** index size: +2.0% of the index (100,000 and 1,000,000 documents, default rollups against rollup = 'off'); build, merge and writes: +3.4% to +4.2% build instructions (1,000,000 documents); serial build cpu 268 against 257 ms (100,000), inside the noise; other: explicit names hold up to 4096 tuples a unit with no byte budget; the default rule has a budget of 2% of the unit per list
+- **Impact:** index size: +2.0% of the index (100,000 and 1,000,000 documents, default rollups against rollup = 'off'); build, merge and writes: serial build cpu 268 against 257 ms with the default rollups at 100,000 documents and 2,508 against 2,521 ms at 1,000,000: inside the noise; other: explicit names hold up to 4096 tuples a unit with no byte budget; the default rule has a budget of 2% of the unit per list
 - **When:** Array elements and map values of shredded jsonb paths (lists) of a sift_col index: the rollup groups them by their low-cardinality leaves, up to 4096 tuples a unit. Scalar columns use rollup_dims.
 - **Default:** '' — The automatic rule has a 2% byte budget a list: +2.0% of the index, +3.4% to +4.2% build instructions (1,000,000 documents), GROUP BY of an array key 1,888 to 2.0 ms: inside the 3% and 5% limits.
 - **Turn off:** SET (rollup = 'off') removes the rollups and keeps the cube; 'default' or RESET returns to the automatic rule. Segments written afterwards; older units change at a merge, REINDEX or sift.col_refresh(index).
@@ -285,8 +285,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · default · since 3.1 · default true
 
 - **What it does:** a scan that reads units for lack of their rollups asks the worker to rebuild them
-- **Gain:** every unit answers from the rollups 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents, 276 units, worker on)
-- **Impact:** index size: -; build, merge and writes: background rewrite of the segment (about 0.7 s for an 8 MB segment); the query itself writes nothing; other: a background rewrite of the segment; the query itself writes nothing
+- **Gain:** once the worker has rebuilt the missing rollups after ALTER INDEX SET rollup, GROUP BY of an array element key answers in 1.99 ms (9.21 ms scanning the units, 1,887.98 ms by the normal plan; 1,000,000 documents)
+- **Impact:** index size: -; build, merge and writes: a background rewrite of the segments; the query itself writes nothing; other: a background rewrite of the segment; the query itself writes nothing
 - **When:** A SiftAgg scan of exact units that lack their rollup (other dims, a missing measure). Not asked for: dirty units, minor 3 segments, units over the 4096-tuple cap; a hot standby never queues a request.
 - **Default:** true — On: the only way old units get rollups without REINDEX or a merge: all answer from them 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents); the query writes nothing, a worker rewrites 8 MB in 0.7 s.
 - **Turn off:** ALTER INDEX .. SET (rollup_on_demand = false) for one index; SET sift.col_rollup_on_demand = off for a session; sift.col_rollup_worker = off keeps requests queued for sift.col_rollup_refresh(index).
@@ -605,8 +605,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · default · since 3.1 · default on
 
 - **What it does:** the rebuild of missing rollups by the worker, and the worker that makes them
-- **Gain:** every unit answers from the rollups 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents, 276 units)
-- **Impact:** index size: -; build, merge and writes: background rewrites of segments (about 0.7 s for an 8 MB segment); the query itself writes nothing; other: background rewrites of segments; off leaves the units as they are until a merge or REINDEX
+- **Gain:** once the worker has rebuilt the missing rollups after ALTER INDEX SET rollup, GROUP BY of an array element key answers in 1.99 ms (9.21 ms scanning the units, 1,887.98 ms by the normal plan; 1,000,000 documents)
+- **Impact:** index size: -; build, merge and writes: background rewrites of segments; the query itself writes nothing; other: background rewrites of segments; off leaves the units as they are until a merge or REINDEX
 - **When:** A SiftAgg scan of exact units that lack their rollup, in this session. Not asked for: dirty units, minor 3 segments, units over the 4096-tuple cap, a hot standby; the index option rollup_on_demand switches one index.
 - **Default:** on — On: every unit answers from the rollups 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents, 276 units); the query writes nothing, the worker rewrites about 0.7 s for an 8 MB segment.
 - **Turn off:** SET sift.col_rollup_on_demand = off (session, ALTER ROLE/DATABASE, postgresql.conf): units stay as they are until a merge or REINDEX. Per index: rollup_on_demand = false.
@@ -969,7 +969,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.2 · default 1
 
 - **What it does:** a unit is answered from its rollup only when that costs less than scanning its elements
-- **Gain:** GROUP BY kind with count, 13,800 elements in 1,440 rollup tuples: 14.6M instructions from the rollup, 7.0M from the scan (100,000 documents)
+- **Gain:** GROUP BY kind with count on 100,000 documents: 0.82 ms scanning the units, 0.09 ms from the rollups; with three keys 5.52 and 5.54 ms, where the rollup is no cheaper and the cost keeps the scan
 - **Impact:** index size: -; build, merge and writes: -; other: none; planning only (0 always, large never)
 - **When:** Units that have a rollup (GROUP BY an element or map key): per unit, the rollup is read only when its tuples cost less than scanning the elements; units without a rollup are unaffected.
 - **Default:** 1 — 1 prices a rollup tuple as one element scan: rollups of a tenth of the elements were slower than the scan (14.6M against 7.0M instructions for GROUP BY kind), so always-from-rollup was dropped.
@@ -1168,7 +1168,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** chunk compression of the column segments the table writes
 - **Gain:** -
-- **Impact:** index size: zstd:3 -4.7% of the table against auto (2.10 to 2.00 MB, 100,000 rows); none 30 MiB against 13 MiB with auto (1,000,000 rows); build, merge and writes: load in 20 statements 318 ms (auto), 263 ms (zstd:3): within noise; query equal (1.15 ms); other: the sift_col trade-off: zstd:3 -4.7% of the table, scans no slower in a small run (100,000 rows)
+- **Impact:** index size: zstd:3 -4.7% of the table against auto (2.10 to 2.00 MB, 100,000 rows); build, merge and writes: load in 20 statements 318 ms (auto), 263 ms (zstd:3): within noise; query equal (1.15 ms); other: the sift_col trade-off: zstd:3 -4.7% of the table, scans no slower in a small run (100,000 rows)
 - **When:** Column segments a sift_table writes from now on (promotion, merge, bulk load): auto, none, lz4[:N], zstd[:N], encodings; per column 'auto; col=zstd:9'. Autovacuum uses the server setting. Not sift_col.
 - **Default:** '' — Unset (auto): encodings plus lz4 or zstd only where the cost rule says the bytes repay the decode; none was 2x the bytes (30 against 13 MiB) and zstd:3 4.7% smaller with equal load time and query (100,000 rows).
 - **Turn off:** SET sift.table_compression = 'none' for no compression (scans fastest at 2x bytes); RESET returns auto. Segments already written keep their codec until a merge or rewrite.
@@ -1742,11 +1742,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `BM25` · opt-in · since 1.0 · default 0
 
 - **What it does:** prefix queries of up to n characters need no term expansion (autocomplete)
-- **Gain:** prefix queries of up to n characters, 200,000 short rows (instructions of one backend): the first call of a backend for a 1-letter prefix 112.1 M to 0.9 M, 3-letter 111.3 M to 0.2 M, warm 0.5 M to 0.2 M; a prefix of 4 or more characters is expanded as before. 1-letter prefix on a million short rows: 10-15 ms first call in a backend (under 1 ms cached) without, under 1 ms with
+- **Gain:** prefix query `w12*` on 100,000 documents: 41.81 to 23.75 ms with n = 3 and 37.95 to 18.34 ms with n = 15; a prefix of more than n characters is expanded as before
 - **Gain and cost:** 124.00x fewer instructions (111200k saved a query), index +100.0%, build +92.6%, opt-in (fails: cost)
-- **Impact:** index size: a million rows: 17 MB, 34 MB at n=3, 73 MB at n=15 (2 to 4x); 300,000 rows 8.4 to 20 MB; build, merge and writes: n = 3: CREATE INDEX +92.6% instructions (1,321 M to 2,544 M, 200,000 rows); build 428 to 854 ms, insert of 20,000 documents 72 to 266 ms; n = 15: build 385 to 1,544 ms, insert 67 to 549 ms (100,000 documents); other: a larger index (more terms, growing with n); REINDEX to change
+- **Impact:** index size: 100,000 documents: 8.78 to 12.03 MB at n = 3 (+36.9%) and to 24.62 MB at n = 15 (+180.3%); build, merge and writes: n = 3: build 428 to 854 ms (+99.7%), insert of 20,000 documents 72 to 266 ms; n = 15: build 385 to 1,544 ms, insert 67 to 549 ms (100,000 documents); other: a larger index (more terms, growing with n); REINDEX to change
 - **When:** Prefix queries (ab*) of up to n characters; longer prefixes, wildcard, regex and fuzzy leaves still expand terms. n up to 15. Pairs with fields for autocomplete.
-- **Default:** 0 — 0 (off): grows the index 2 to 4x (17 to 34 to 73 MB on a million rows), more growth than a default may cost, build 2-4x and insert 3.7-8x; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
+- **Default:** 0 — 0 (off): grows the index 1.4 to 2.8 times (8.78 MB to 12.03 MB at n = 3 and 24.62 MB at n = 15 on 100,000 documents), more growth than a default may cost, build 2 to 4 times and insert 3.7 to 8 times; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
 - **Why not the default:** the index grows over 25%, the gain does not pay for the growth and the build
 - **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
 - **Upgrade from 3.7:** unchanged
@@ -1759,14 +1759,14 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** weights and queries over named sections of the indexed text
 - **Gain:** -
-- **Impact:** index size: two sections 15.6 MB against 8.3 MB for the first alone (1,000,000 rows); build, merge and writes: build 489 to 973 ms, insert of 20,000 documents 107 to 340 ms with three fields declared against none (100,000 documents); other: REINDEX to change
+- **Impact:** index size: index 8.92 to 13.79 MB (+54.5%) with three fields declared against none (100,000 documents); build, merge and writes: build 489 to 973 ms, insert of 20,000 documents 107 to 340 ms with three fields declared against none (100,000 documents); other: REINDEX to change
 - **When:** Text built with sift.sections() whose leading sections are named; queries name:word, sift.field_query. At most 14 names. Phrases, regex and NOT are not scoped to a field; one analyzer for all.
-- **Default:** '' — Unset: named sections add 88% to the index (15.6 against 8.3 MB on a million rows) and insert 107 to 340 ms with three fields, and a colon is plain text without it.
+- **Default:** '' — Unset: named sections add 54.5% to the index (8.92 to 13.79 MB on 100,000 documents) and the insert of 20,000 documents takes 107 to 340 ms with three fields, and a colon is plain text without it.
 - **Why not the default:** changes results or semantics, the index grows over 25%
 - **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
-- **Sources:** benchmark [docs/results/fields.tsv](results/fields.tsv); [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
+- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
 
 #### sift_col(point_columns)
 
@@ -1912,7 +1912,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · opt-in · since 3.1 · default off
 
 - **What it does:** the integer aggregates of a scan run on a Vulkan device
-- **Gain:** device vs one CPU core, chunks resident, 6 integer count/sum queries: 0.77x to 1.07x at 1,000,000 rows, 0.99x to 1.00x at 10,000,000 (one discrete GPU)
+- **Gain:** device against one CPU core, chunks resident, median of 9: 1,000,000 rows count-amount-date 0.440 ms on the core, 0.575 ms on the device, group-country-sums 2.054 and 1.972 ms; 10,000,000 rows group-month-sum 22.917 and 22.844 ms (one discrete GPU)
 - **Impact:** index size: -; build, merge and writes: -; other: needs a build with VULKAN=1 and a device; without them the CPU runs whatever this says
 - **When:** sift_col on a VULKAN=1 build: integer count/sum/avg of clean all-visible units; auto takes grouped ones above sift.gpu_min_rows, on also ungrouped. Not floats, min/max, text filters, sift_table.
 - **Default:** off — Off: the 3.2.0 pass found 0.77x-1.07x of one CPU core at 1M rows and 0.99x-1.00x at 10M (speedup under 1.05), at 0.2 s and about 100 MB per backend context; packages are built without Vulkan.
