@@ -1,5 +1,5 @@
 -- an IN list of 60 keys of a column the heap holds in the order of the key, with `point_tid_columns`: the index and bitmap scans of the sift_col index stay beside the aggregate scan and the costs choose
--- label: `count(*), sum(v) WHERE id = ANY of 60 ids` over a heap in the order of id, `point_tid_columns = 'id'`; the variant `btree` is a b-tree on id
+-- label: `count(*), sum(v) WHERE id = ANY of 60 ids` over a heap in the order of id, `point_tid_columns = 'id'`; the variant `btree` is a b-tree on id and `scan` the aggregate scan (`sift.agg_force`); the times are the statement as psql times it, planning included
 -- ordered: yes
 --@ setup
 DROP TABLE IF EXISTS pi;
