@@ -13,6 +13,7 @@ autovacuum = off
 max_parallel_maintenance_workers = 0
 sift.async_maintenance = off
 sift.col_auto_merge = off
+sift.test_col_net = off
 sift.test_col_floor_sbs = 4"
 node_start fl || bail "start failed"
 sql fl "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE fl (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
