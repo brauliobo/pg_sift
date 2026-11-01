@@ -162,6 +162,8 @@ typedef struct AggExec
 	uint64		dist_hash;		/* the aggregates (below 64) whose sets had left their bitmaps when the table spilled: the next table starts them as hash sets */
 	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
 	int			n_spills;		/* ... and the times it did */
+	int			n_pass_restarts;	/* ... and the times the scan or a pass was stopped to be read again with fewer shares */
+	int			n_passes;		/* a scan read in passes (agg/spill/pass.c): the passes that ended */
 	struct GStream *gs;			/* an ordered scan whose groups are final in turn (spill.c gstream_begin): the superblocks in the order of the key and what the sweep holds */
 	int			n_gs;			/* ... and the batches of final groups it gave */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
@@ -183,6 +185,14 @@ typedef struct AggExec
 	bool		gp_one;			/* ... a single share: the hashes of its keys are [gp_lo, gp_lo + gp_w) */
 	uint32		gp_lo;
 	uint32		gp_w;
+	uint32		pass_w;			/* a serial scan that reads the table in passes, each for this many of the 32 shares of the keys of one leaf (agg/spill/pass.c); 0: one pass */
+	bool		pass_stop;		/* ... the scan is being stopped to start again in passes */
+	bool		pass_all;		/* ... one share did not fit: the shares left are read together and spill as a scan does */
+	bool		pass_fixed;		/* ... a pass overflowed: the number of shares of a pass no longer grows */
+	int			pass_key;		/* ... the key it splits by */
+	const void *gp_dict;		/* a text key: the dictionary gp_code was made for */
+	uint8	   *gp_code;		/* ... 1 for an entry of it in the share */
+	uint32		gp_ncode;
 	struct AggPar *par;			/* workers launched by the leader */
 	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
 	uint32		nvorder;
@@ -383,6 +393,7 @@ void finish_groups(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
 void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);
+void done_put(AggExec *ex);
 void groups_order(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);

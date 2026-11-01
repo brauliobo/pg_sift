@@ -145,7 +145,7 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	lo = Max(lo, ex->tid_sb_lo);
 	hi = Min(hi, ex->tid_sb_hi);
-	if (lo >= hi || range_skipped(ex, lo, hi))
+	if (lo >= hi || ex->pass_stop || range_skipped(ex, lo, hi))
 		return;
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nzone);
 	while (sift_colsrc_next(ex->src, &ex->unit))
@@ -153,7 +153,7 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 		process_unit(ex);
 		if (ex->spill)
 			spill_check(ex);
-		if (sift_aggbe_stopped(ex->be, ex->be_state))
+		if (ex->pass_stop || sift_aggbe_stopped(ex->be, ex->be_state))
 			break;				/* the scan is run again without the backend (backend_finish) */
 	}
 }
@@ -275,14 +275,14 @@ scan_items(AggExec *ex)
 	/* the participants that split the groups by a key read all the items, each for its share of the keys */
 	if (ex->gp_mine)
 	{
-		for (item = next_item(ex, 0); item < ex->shared->nitems; item = next_item(ex, item + 1))
+		for (item = next_item(ex, 0); item < ex->shared->nitems && !ex->pass_stop; item = next_item(ex, item + 1))
 		{
 			scan_item(ex, item);
 			item_done(ex, item);
 		}
 		return;
 	}
-	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
+	while (!ex->pass_stop && !sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
 	{
 		scan_item(ex, item);
 		item_done(ex, item);

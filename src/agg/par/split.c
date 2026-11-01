@@ -8,6 +8,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
+#include "common/hashfn.h"
 #include "optimizer/optimizer.h"
 
 #include "agg/par/int.h"
@@ -47,6 +48,18 @@ split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
 			return lf->vtype == SCV_I32 || lf->vtype == SCV_I64;
 	}
 	return false;
+}
+
+/* a text key too, for the passes of a serial scan (agg/spill/pass.c): it is hashed once for each entry of the dictionary of a unit, not for each row */
+bool
+split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
+{
+	const SiftAggKey *k = &s->key[j];
+
+	if (split_key_ok(s, j, lf))
+		return true;
+	return k->kind == SAK_LEAF && lf->kind == SCL_SCALAR && lf->parent < 0 && !lf->wide && !lf->lossy && lf->vtype == SCV_CODE &&
+		(lf->typid == TEXTOID || lf->typid == VARCHAROID);
 }
 
 /* may the scan split the groups by the key the plan chose: the spec still fits, and no unit is answered without its rows */
@@ -127,6 +140,34 @@ word_shares(const SiftSrcVec *v, bool wide, int at, uint32 n, uint32 mine)
 	return pack_flags(flag);
 }
 
+/* The entries of a unit's dictionary whose hash is in the share, as flags (made once for each dictionary of a pass) */
+static const uint8 *
+code_flags(AggExec *ex, const SiftSrcDict *d)
+{
+	char		buf[SIFT_SRC_DICT_ENTRY + 1];
+
+	if (ex->gp_dict == d->id && ex->gp_code != NULL)
+		return ex->gp_code;
+	d = sift_srcdict_whole(d);
+	if (ex->gp_code == NULL || ex->gp_ncode < d->n + 1)
+	{
+		if (ex->gp_code)
+			pfree(ex->gp_code);
+		ex->gp_ncode = Max(d->n + 1, 1024);
+		ex->gp_code = MemoryContextAlloc(ex->cxt, ex->gp_ncode);
+	}
+	ex->gp_code[0] = 0;
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		uint32		len;
+		const char *str = sift_srcdict_str(d, c, &len, buf);
+
+		ex->gp_code[c] = (ex->gp_mine >> share_of(hash_bytes((const unsigned char *) str, len), ex->gp_n)) & 1;
+	}
+	ex->gp_dict = d->id;
+	return ex->gp_code;
+}
+
 /* The shares of this process (gp_mine) out of the n of the scan: the leader's is 0, a worker's its number + 1; a NULL key is the leader's */
 void
 split_begin(AggExec *ex, int key, uint32 n, uint32 mine)
@@ -134,6 +175,7 @@ split_begin(AggExec *ex, int key, uint32 n, uint32 mine)
 	ex->gp_leaf = ex->spec->key[key].leaf;
 	ex->gp_n = n;
 	ex->gp_mine = mine;
+	ex->gp_dict = NULL;
 	/* one share: the hashes in it are [lo, lo + w), the first hash of share s being ceil(s * 2^32 / n) */
 	ex->gp_one = (mine & (mine - 1)) == 0;
 	if (ex->gp_one)
@@ -160,7 +202,16 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 
 		if (rmask[w] == 0)
 			continue;
-		if (!ex->gp_one)
+		if (lf->vtype == SCV_CODE)
+		{
+			const uint8 *flag = code_flags(ex, v->dict);
+			const uint32 *code = (const uint32 *) v->data + w * 64;
+
+			keep = 0;
+			for (int b = 0; b < 64; b++)
+				keep |= (uint64) flag[v->isnull && v->isnull[w * 64 + b] ? 0 : code[b]] << b;
+		}
+		else if (!ex->gp_one)
 			keep = word_shares(v, lf->vtype == SCV_I64, w * 64, ex->gp_n, ex->gp_mine);
 		else if (lf->vtype == SCV_I32)
 			keep = word_i32((const int32 *) v->data + w * 64, ex->gp_lo, ex->gp_w);

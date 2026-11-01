@@ -434,7 +434,7 @@ spill_check(AggExec *ex)
 	/* a sweep that gives batches looks at the table after each superblock (gstream_next) */
 	if (gstream_holds(ex))
 		return;
-	if (spill_over(ex))
+	if (spill_over(ex) && !pass_restart(ex))
 		spill_table(ex);
 }
 
@@ -629,6 +629,37 @@ spill_next(AggExec *ex)
 	}
 	MemoryContextSwitchTo(old);
 	return false;
+}
+
+/*
+ * The end of a pass of a scan read in passes (agg/spill/pass.c): the groups of its share are final, their partial states are not needed, only the tuples of
+ * the result. A table that spilled in the pass has its partitions merged here, one at a time, and the next pass starts with the spill as new.
+ */
+void
+spill_pass_end(AggExec *ex)
+{
+	AggSpill   *sp = ex->spill;
+
+	if (!sp->spilled)
+	{
+		dist_finish_all(ex);
+		mapped_finish(ex);
+		list_groups(ex);
+		if (ex->spec->gtopn_k > 0)
+			groups_topn(ex);
+		done_put(ex);
+		table_reset(ex);
+		return;
+	}
+	spill_finish(ex);
+	while (spill_more(ex))
+	{
+		done_put(ex);
+	}
+	table_reset(ex);
+	sp->spilled = false;
+	sp->groups = 0;
+	sp->keep = 0;
 }
 
 /* the groups of the next partition, or the next batch of the sweep, are the ones to return */

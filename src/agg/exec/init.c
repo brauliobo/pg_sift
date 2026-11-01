@@ -185,6 +185,10 @@ sift_agg_init(void)
 							"Testing: groups above which a group by leaves its direct arrays for the hash table, a single key included (0: 1,048,576 for several keys, the memory limit for one).",
 							NULL, &sift_test_direct_max, 0, 0, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_agg_pass_w",
+							"Testing: the shares (of 32) a pass of a scan in passes reads: n always reads in passes of n, 0 as the memory asks, -1 never.",
+							NULL, &sift_test_agg_pass_w, 0, -1, 31,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_verdict_gate",
 							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
 							 NULL, &sift_test_verdict_gate, false,

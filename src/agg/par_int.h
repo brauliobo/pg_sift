@@ -52,6 +52,7 @@ bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);
 bool split_shape_ok(const SiftAggSpec *s);
+bool split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);
 bool split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);
 bool split_run_ok(const AggExec *ex);
 void split_begin(AggExec *ex, int key, uint32 n, uint32 mine);

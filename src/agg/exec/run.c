@@ -145,6 +145,8 @@ run_scan(AggExec *ex)
 	none = join_none(ex);
 	ex->ndsorder = 0;
 	ex->dsabort = false;
+	ex->pass_w = 0;
+	ex->pass_all = ex->pass_fixed = false;
 	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
 	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
 		par_launch(ex);
@@ -168,7 +170,16 @@ run_scan(AggExec *ex)
 	else if (gstream_begin(ex))
 		return;					/* the superblocks are read as the groups are asked for (spill_more), the last of them ends the scan */
 	else if (ex->par == NULL || parallel_leader_participation)
-		scan_items(ex);
+	{
+		if (pass_forced(ex))
+			pass_scan(ex);
+		else
+		{
+			scan_items(ex);
+			if (ex->pass_stop)
+				pass_scan(ex);
+		}
+	}
 	scan_tail(ex);
 }
 
@@ -464,6 +475,17 @@ group_slot(AggExec *ex, TupleTableSlot *slot)
 void
 part_flush(AggExec *ex)
 {
+	dist_finish_all(ex);
+	mapped_finish(ex);
+	list_groups(ex);
+	done_put(ex);
+	table_reset(ex);
+}
+
+/* the groups listed (glist) as tuples of the result, kept for agg_next */
+void
+done_put(AggExec *ex)
+{
 	TupleTableSlot *slot = ex->css.ss.ss_ScanTupleSlot;
 	MemoryContext tmp = AllocSetContextCreate(ex->cxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES),
 				old = MemoryContextSwitchTo(tmp);
@@ -471,23 +493,21 @@ part_flush(AggExec *ex)
 	if (ex->done == NULL)
 	{
 		MemoryContextSwitchTo(ex->cxt);
-		ex->done = tuplestore_begin_heap(false, false, work_mem);
+		ex->done = tuplestore_begin_heap(true, false, work_mem);
 		MemoryContextSwitchTo(tmp);
 	}
-	dist_finish_all(ex);
-	mapped_finish(ex);
-	list_groups(ex);
 	for (uint32 i = 0; i < ex->nglist; i++)
 	{
 		group_tuple(ex, ex->glist[i], slot);
 		tuplestore_puttupleslot(ex->done, slot);
 	}
 	ex->n_flushed += ex->nglist;
+	if (ex->glist)
+		pfree(ex->glist);
 	ex->glist = NULL;
 	ex->nglist = 0;
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	table_reset(ex);
 }
 
 static TupleTableSlot *
@@ -856,6 +876,11 @@ agg_rescan(CustomScanState *node)
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
 	if (spill_rescan(ex))
 		return;
+	if (ex->done)
+	{
+		tuplestore_rescan(ex->done);
+		return;
+	}
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);
