@@ -198,7 +198,27 @@ def wait_sampler(pid):
     return stop
 
 
-def measure_load(case, csv, rounds, rows, instr=False):
+def record_start(pid, path, perf='perf'):
+    """perf record of the user cycles of the backend PID into PATH (the profile of a load phase: `--profile DIR`); record_stop ends it"""
+    return subprocess.Popen([perf, 'record', '-q', '-F', '2000', '-e', 'cycles:u', '-p', pid, '-o', path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+
+def record_stop(proc, path, perf='perf', top=30):
+    """end the record and write the PATH's symbols by self cycles to PATH.txt (the first TOP); die with perf's message when it recorded nothing"""
+    proc.send_signal(signal.SIGTERM)   # perf record finishes its file on SIGTERM too; a job started in the background has SIGINT ignored
+    try:
+        err = proc.communicate(timeout=60)[1]
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        die('perf record did not end 60 s after the SIGTERM (%s)' % path)
+    if proc.returncode not in (0, -signal.SIGTERM) or not os.path.exists(path):   # perf finishes its file, then raises the signal again
+        die('perf record failed (exit %s, perf_event_paranoid %s): %s' % (proc.returncode, open('/proc/sys/kernel/perf_event_paranoid').read().strip(), err.strip()[-300:] or 'no message'))
+    report = subprocess.run([perf, 'report', '-i', path, '--no-children', '--stdio'], capture_output=True, text=True).stdout
+    with open(path + '.txt', 'w') as f:
+        f.write('\n'.join([l for l in report.split('\n') if l.strip() and not l.startswith('#')][:top]) + '\n')
+
+
+def measure_load(case, csv, rounds, rows, instr=False, profile=None):
     """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the backend's user instructions of the whole load (minstr)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
@@ -220,7 +240,9 @@ def measure_load(case, csv, rounds, rows, instr=False):
             io0 = iolib.snapshot(s)
             lsn, cpu = wal_lsn(s), cpu_ns(pid)
             counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if instr else None
-            if counter:
+            recorded = os.path.join(profile, '%s.%s.data' % (case.id, lane)) if profile else None
+            recorder = record_start(pid, recorded) if profile else None
+            if counter or recorder:
                 time.sleep(1)
             ms = 0
             stop = wait_sampler(pid)
@@ -230,6 +252,8 @@ def measure_load(case, csv, rounds, rows, instr=False):
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
             waits = stop()
+            if recorder:
+                record_stop(recorder, recorded)
             cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
             if ms - cpu / 1e6 > max(20, ms / 5):
                 log('%s %s: %.0f of %.0f ms off the CPU, 2 ms samples of the kernel wait: %s' % (case.id, lane, ms - cpu / 1e6, ms, ', '.join('%s %d' % kv for kv in waits.most_common(4))))

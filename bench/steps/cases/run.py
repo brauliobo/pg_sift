@@ -65,7 +65,7 @@ def run_point(args, cases, rows, engines, results, failed):
         load = server_load()
         if c.load:
             t1 = time.time()
-            out, plans, errors = measure_load(c, csv, args.rounds, rows, args.minstr)
+            out, plans, errors = measure_load(c, csv, args.rounds, rows, args.minstr, args.profile)
             TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():

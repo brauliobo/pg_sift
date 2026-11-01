@@ -268,3 +268,41 @@ class Perf(unittest.TestCase):
         self.assertIn('attempt 2', str(e.exception))
         self.assertIn('perf_event_paranoid', str(e.exception))
         self.assertIn('no permission', str(e.exception))
+
+
+class Profile(unittest.TestCase):
+    """record_start / record_stop against a stand-in for perf: the file of the symbols, and the failure that says why"""
+    def perf(self, record):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        f.write('#!/usr/bin/env bash\nif [ "$1" = record ]; then\n  while [ "$1" != -o ]; do shift; done; out=$2\n  %s\nelse\n  echo "# header"; echo "  9.64%%  postgres  pg_sift.so  [.] sort_rows_rec"; echo; echo "  1.00%%  postgres  postgres  [.] AllocSetAlloc"\nfi\n' % record)
+        f.close()
+        os.chmod(f.name, 0o755)
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def run_record(self, record, tmp):
+        import time
+        from cases import measure
+        perf = self.perf(record)
+        path = os.path.join(tmp, 'c.sift.data')
+        proc = measure.record_start('4242', path, perf)
+        time.sleep(0.5)
+        measure.record_stop(proc, path, perf)
+        return path
+
+    def test_the_symbols_of_the_recording_are_written_beside_it(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.run_record('echo data > "$out"; trap "exit 0" TERM; while :; do sleep 0.05; done', tmp)
+            with open(path + '.txt') as f:
+                self.assertEqual(f.read().split('\n')[0].split()[-1], 'sort_rows_rec')
+
+    def test_a_recording_that_failed_dies_with_the_reason(self):
+        import tempfile
+        from unittest import mock
+        from cases import measure
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(measure, 'die', side_effect=SystemExit('failed')) as die:
+            with self.assertRaises(SystemExit):
+                self.run_record('echo "Permission denied" >&2; exit 1', tmp)
+        self.assertIn('Permission denied', die.call_args.args[0])

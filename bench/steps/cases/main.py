@@ -39,9 +39,12 @@ def main(doc):
     ap.add_argument('--since', help='coverage: the commits since this tag are the landed claims (default: the last tag behind HEAD)')
     ap.add_argument('--root', help='coverage: the checkout to read (default: this one)')
     ap.add_argument('--docs', action='store_true')
+    ap.add_argument('--profile', metavar='DIR', help='load cases: perf record of the backend during the timed load statements, one CASE.LANE.data.txt (symbols by self cycles) for each lane in DIR')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)
     args = ap.parse_args()
+    if args.profile:
+        os.makedirs(args.profile, exist_ok=True)
     if args.work_mem:
         os.environ['CASES_WORK_MEM'] = args.work_mem
     sys.exit({'run': cmd_run, 'list': cmd_list, 'plan': cmd_plan, 'coverage': cmd_coverage}[args.cmd](args))
