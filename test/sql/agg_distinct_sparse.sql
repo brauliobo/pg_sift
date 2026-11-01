@@ -1,0 +1,33 @@
+-- count(DISTINCT x) of an integer column whose values are spread over a domain far wider than the values a group holds: the bitmaps of the sets (a chunk of 512 bytes and
+-- 8 kB of directory for each group, for the 20 values it holds) give way to hash sets, and the pairs that outgrow even those go through a sort in runs on disk. The counts are
+-- the plain plan's with the memory of the hash set from 64kB to 4GB, for a dense column (the bitmaps stay), NULLs and values that repeat inside a group.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET client_min_messages = warning;
+-- 3,000 groups of 20 rows each: sparse is spread over 4,000,000 values, dense is the 60 values of a window, wide takes the 2,000 groups of one value each
+CREATE TABLE sp (id int PRIMARY KEY, grp int NOT NULL, sparse int, dense int, wide bigint);
+INSERT INTO sp
+SELECT i, i % 3000, CASE WHEN i % 41 = 0 THEN NULL ELSE (hashint4(i) & 4194303) END, (i % 3000) * 7 + i % 60, (hashint4(i + 1) & 2147483647)::bigint * 1000003
+FROM generate_series(1, 60000) i;
+CREATE INDEX sp_col ON sp USING sift_col (grp, sparse, dense, wide);
+VACUUM (FREEZE, ANALYZE) sp;
+
+CREATE FUNCTION sparse_case(mem text, col text) RETURNS TABLE (mem_set text, shape text, same boolean)
+LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT grp, count(DISTINCT %s) AS d, count(*) AS n FROM sp GROUP BY grp ORDER BY grp', col); a text; b text;
+BEGIN
+	PERFORM set_config('work_mem', mem, false), set_config('hash_mem_multiplier', '1', false);
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'')) FROM (%s) r', q) INTO a;
+	RESET work_mem; RESET hash_mem_multiplier;
+	SET sift.enable_agg = off;
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'')) FROM (%s) r', q) INTO b;
+	RESET sift.enable_agg;
+	RETURN QUERY SELECT mem, col, a = b;
+END $$;
+
+SELECT c.* FROM (VALUES ('64kB'), ('1MB'), ('4MB'), ('64MB'), ('4GB')) m (mem), (VALUES ('sparse'), ('dense'), ('wide')) k (col), LATERAL sparse_case(m.mem, k.col) c ORDER BY 1, 2;
+
+DROP FUNCTION sparse_case(text, text);
+DROP TABLE sp;
+DROP EXTENSION pg_sift;

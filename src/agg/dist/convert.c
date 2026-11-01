@@ -110,10 +110,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 
 	if (to == DD_SORT)
 	{
-		MemoryContext mc = MemoryContextSwitchTo(ex->cxt);
-
-		d->sort = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, work_mem, NULL, TUPLESORT_RANDOMACCESS);
-		MemoryContextSwitchTo(mc);
+		d->sort = psort_begin(ex->cxt, d->budget);
 		d->nsid = d->nsidcap = d->sidgroups = 0;
 		d->sid = NULL;
 		ex->n_dist_spilled++;

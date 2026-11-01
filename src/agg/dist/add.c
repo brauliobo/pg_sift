@@ -81,19 +81,23 @@ dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)
 	return true;
 }
 
+#define DIST_SPARSE_FROM	(1 << 20)	/* bytes of bitmaps from which they are looked at for the pairs they hold */
+#define DIST_SPARSE_BYTES	128		/* bytes of bitmap chunks per value from which a hash set (32 bytes a pair) is the smaller */
+
 Dist *
-dist_new(AggExec *ex, bool sgn)
+dist_new(AggExec *ex, int ai, bool sgn)
 {
 	Dist	   *d = MemoryContextAllocZero(ex->tcxt, sizeof(Dist));
 
 	d->mode = DD_WORDS;
+	d->ai = ai;
+	d->chk = DIST_SPARSE_FROM;
 	d->sgn = sgn;
 	d->budget = get_hash_memory_limit();
 	d->wmark = PG_INT64_MIN;
 	return d;
 }
 
-#define DIST_SPARSE_BYTES	128		/* bytes of bitmap chunks per value from which a hash set (32 bytes a pair) is the smaller */
 
 /*
  * A table that spilled with sets that had left their bitmaps holds groups of few values: a bitmap costs a directory and a chunk, zeroed, for
@@ -106,25 +110,31 @@ dist_start_hash(Dist *d)
 	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);
 }
 
+/* the pairs the groups of the table hold in the set of aggregate ai: the counts that were taken as they were added */
+static uint64
+dist_held(AggExec *ex, int ai)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+	uint64		pairs = 0;
+
+	for (uint32 g = 0; g < n; g++)
+		pairs += ex->acc[ai].n[g];
+	return pairs;
+}
+
 /* the sets of the table that spilled that are not bitmaps any more, or hold less than a value in 16 bytes of bitmap chunks (dist_start_hash) */
 void
 dist_note_spill(AggExec *ex)
 {
-	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
-
 	if (ex->dist == NULL)
 		return;
 	for (int ai = 0; ai < Min(ex->spec->naggs, 64); ai++)
 	{
 		Dist	   *d = ex->dist[ai];
-		uint64		pairs = 0;
 
 		if (d == NULL || d->mode == DD_WORDS || ex->spec->agg[ai].kind != SAA_COUNT_DISTINCT)
 			continue;
-		if (d->mode == DD_BITS)
-			for (uint32 g = 0; g < n; g++)
-				pairs += ex->acc[ai].n[g];
-		if (d->mode != DD_BITS || d->bytes > DIST_SPARSE_BYTES * pairs)
+		if (d->mode != DD_BITS || d->bytes > DIST_SPARSE_BYTES * dist_held(ex, ai))
 			ex->dist_hash |= UINT64CONST(1) << ai;
 	}
 }
@@ -147,7 +157,7 @@ dist_put_sort(Dist *d, uint32 g, uint32 v)
 	}
 	if (d->sid[g] == 0)
 		d->sid[g] = ++d->nsid;
-	tuplesort_putdatum(d->sort, Int64GetDatum((int64) (d->sid[g] - 1) << 32 | v), false);
+	psort_put(d->sort, (uint64) (d->sid[g] - 1) << 32 | v);
 }
 
 /* the directories cover the chunk xc; false if they cannot (the set is no longer a bitmap) */
@@ -205,6 +215,13 @@ dist_chunk_for(AggExec *ex, Dist *d, uint32 g, int64 xc)
 
 	if (!dist_cover(ex, d, xc))
 		goto full;
+	/* bitmaps that hold a value in each chunk (ids spread over the domain, a few in each group) cost a chunk and a directory a value, and a page fault with them */
+	if (d->bytes >= d->chk && d->ai < ex->spec->naggs && ex->spec->agg[d->ai].kind == SAA_COUNT_DISTINCT)
+	{
+		d->chk = d->bytes * 2;
+		if (d->bytes > DIST_SPARSE_BYTES * dist_held(ex, d->ai))
+			goto full;
+	}
 	if (g >= d->ngd)
 	{
 		uint32		n = Max(Max(g + 1, d->ngd * 2), 64);
