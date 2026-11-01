@@ -1,3 +1,4 @@
+# verdict: the NOTICE that the primary key of a referenced table is not a column of the index was discarded: in the three join shapes of join_keys (primary key in the index or not) the plan is the aggregate scan and the instructions differ by 3.1% at most, while the key adds 19% to 131% to the index
 # case	state	statement	result	instructions	buffers	index_bytes	plan (bench/messages_measure.py: one backend, perf stat -e instructions:u, warm, tmpfs; rows in the statement column of the case)
 cube_dim_no_histogram	sift, histogram (7 groups)	SELECT few, count(*) FROM caps GROUP BY few	7 rows	230142	7	57344	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
 cube_dim_no_histogram	b-tree on few	SELECT few, count(*) FROM caps GROUP BY few	7 rows	62846233	87	712704	GroupAggregate / ->  Index Only Scan using m_bt on caps

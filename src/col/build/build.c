@@ -138,7 +138,6 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	colb_notice_point_tid(index);
 	colb_notice_order_array(index);
 	colb_notice_order_layout(index);
-	colb_notice_pkey(heap, index);
 	colb_notice_fk(heap, index);
 	colb_notice_volatile(heap, index);
 	sift_col_report_caps(index);

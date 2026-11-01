@@ -52,7 +52,6 @@ extern void	colb_notice_key_order(Relation index);
 extern void	colb_notice_order_array(Relation index);
 extern void	colb_notice_order_layout(Relation index);
 
-extern void	colb_notice_pkey(Relation heap, Relation index);
 
 extern void	colb_notice_fk(Relation heap, Relation index);
 
