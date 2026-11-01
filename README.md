@@ -230,6 +230,7 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
 - [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
+- [docs/COLUMN-STORAGE.md](docs/COLUMN-STORAGE.md): what a `sift_col` index stores besides the columns (point directories, sorted arrays, key tables, dictionaries): what each is for, its default, how to turn it off and one measured figure.
 - [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
 - [docs/CONTAINMENT.md](docs/CONTAINMENT.md): range and network containment from `sift_col`, its numbers and what it does not serve.
 - [docs/FORMATS.md](docs/FORMATS.md): the on-disk format numbers (metapage minor, segment formats, flags).

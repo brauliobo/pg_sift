@@ -307,7 +307,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (dict_lookup = off) stores no order (a lookup parses the dictionary whole; blocks still where they add <= 3%); sift.col_format_minor <= 13 writes neither. REINDEX changes older segments.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at auto: strings are searched in place and the lookup order is stored for the columns named in point_columns, key_columns and return_columns. on for every column; off for none. REINDEX to apply.
-- **Sources:** benchmark `dict_equality`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `dict_equality`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
 #### sift_col(cube_minmax)
 
@@ -382,7 +382,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (key_columns = 'off') then REINDEX (the build NOTICE names it); RESET returns to auto. ALTER INDEX alone applies to units written afterwards; older units are scanned.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at auto: non-unique foreign key and *_id columns of int2, int4 and date get a key list or bitmap within 3% of a unit. Name columns for equality filters; off removes it. REINDEX to apply.
-- **Sources:** benchmark `key_presence_distinct`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `key_presence_distinct`; [COLUMN-STORAGE](COLUMN-STORAGE.md#counts-and-keys)
 
 #### sift_col(key_table)
 
@@ -396,7 +396,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_table = off), then REINDEX or the next merge; segments written before keep theirs and are still read.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Set off for an index that is written far more than it is read by key, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
-- **Sources:** benchmark `key_table_point`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `key_table_point`; [COLUMN-STORAGE](COLUMN-STORAGE.md#counts-and-keys)
 
 #### sift_col(count_columns)
 
@@ -411,7 +411,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (count_columns = 'off'), then REINDEX or the next merge; segments written before keep theirs and are still read.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Set off for an index that is written far more than it is counted by prefix or range, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
-- **Sources:** benchmark `test:col_dict_count`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_dict_count`; [COLUMN-STORAGE](COLUMN-STORAGE.md#counts-and-keys)
 
 #### sift_col(key_cut)
 
@@ -426,7 +426,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') then REINDEX (or CREATE INDEX .. WITH (key_cut = 'off')); the choice is written as 'auto: col' and the NOTICE names it. ALTER INDEX .. RESET (key_cut) and a REINDEX decide again.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave it automatic: CREATE INDEX writes key_cut = 'auto: col' and says what it measured and predicted; where it would grow the index it prints the command instead. sift.key_cut_decision(index) says what a REINDEX would decide. Set key_cut = 'off' on an index that also sorts or ranges by another column without the key (an unkeyed ORDER BY .. LIMIT 0.30 against 0.91 ms at 200,000 rows), or name the columns yourself. Segments are format minor 17; RESET and REINDEX roll back.
-- **Sources:** benchmark `keycut_customer_agg`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `keycut_customer_agg`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift_col(key_cut_rows)
 
@@ -440,7 +440,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a size, not a switch. RESET (key_cut_rows) or 0 returns to superblock-sized units; it has no effect without key_cut. Applies to units written afterwards.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 0: units aim at the rows of an average superblock. Fewer rows make more units, more rows a coarser key range per unit. Only used with key_cut.
-- **Sources:** benchmark `keycut_customer_agg`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `keycut_customer_agg`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift_col(order_array_columns)
 
@@ -455,7 +455,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (order_array_columns = 'off') then REINDEX (the build NOTICE names the columns and the MB); RESET returns to auto, decided again at the next REINDEX. New segments only; older ones keep their arrays until a merge or REINDEX, and the scan of the units answers meanwhile.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at auto: a column of 1,000 or more distinct values whose correlation with the heap order is under 0.99, on a table of 100,000 rows or more, gets the array: a date or timestamp column (whatever the width of the index, even a one-column timestamp index of 3.7 bytes a row), an integer column (at most two columns, a date or timestamp before an integer one). The choice is made at CREATE INDEX and REINDEX from the statistics the table has then, and a table of 100,000 rows or more that has none is analyzed first (a NOTICE says so; an ANALYZE afterwards changes nothing until the next REINDEX). Name the columns of order_columns for ORDER BY .. LIMIT on a smaller table or a column the rule leaves out; off removes it. REINDEX to apply.
-- **Sources:** benchmark `test:col_range_order`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_range_order`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift_col(order_array_group)
 
@@ -470,7 +470,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** order_array_group = 'off', then REINDEX: new segments have the plain order only; older ones keep theirs until a merge or REINDEX, and the plain order answers meanwhile.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave it on. The build picks the integer column of most values (at least 100 values and 3 rows apiece, scattered in the heap) when an array of a date, timestamp or integer is built (a numeric or text array has no second order and is not counted), where the weighted formula pays, with the real bytes of the group (5.6 B a row and the 24 B of its entry in the table of groups, shared by the rows of the entity) (B = log2(3.5) / log2(1.05) against C = G / 3 + W / 5: an index of 8 B a row or more); an index of two columns has none; set order_array_group = 'off' and REINDEX to drop the second order, or name a column to group every array.
-- **Sources:** benchmark `test:col_gorder_autogroup`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_gorder_autogroup`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift_col(order_layout)
 
@@ -485,7 +485,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (order_layout = 'whole') then REINDEX (or the next merge); RESET returns to auto. A segment keeps its layout until it is rewritten.
 - **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read.
 - **Advice:** Leave at auto: a column of spread keys (a microsecond timestamp) gets the compact order, a fifth smaller and as fast, and a column of keys that tie much, or a chunk with a run of 8 equal keys, keeps the whole one. Set 'whole' for a column or the index and REINDEX when a 3.7 library must read the index, or 'compact' to force it. The build NOTICE names the share of compact chunks and the bytes a row of each column. Set 'whole' (and REINDEX) for a high-resolution key (a microsecond timestamp) whose pages are read index-only on the key itself, SELECT created_at ... ORDER BY created_at DESC LIMIT 200: a compact entry holds a bucket, so each returned entry reads its heap page for the key (300,000 rows, a week of keys: 41 blocks and 0.17 ms whole against 247 and 0.27 ms); a page that returns a column the index lacks fetches the rows anyway, and OFFSET, ranges and counts read the same.
-- **Sources:** benchmark `order_layout_offset`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `order_layout_offset`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift_col(superunit)
 
@@ -598,7 +598,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.vis_page_cache = off (session, ALTER ROLE/DATABASE, postgresql.conf): the page is checked again each time. No REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on: a heap page the scan reads twice (the units of a key-cut index list rows of one page) is checked for visibility once. Turn it off only to compare.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift.col_rollup_on_demand
 
@@ -850,7 +850,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. ALTER INDEX .. RESET (order_columns) plus REINDEX drops them.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on; it acts only on an index with the reloption order_columns (default none). Name only columns sorted with LIMIT: an unordered column costs 2 bytes a row. Off reads whole units.
-- **Sources:** benchmark `topn_sorted_runs`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `topn_sorted_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift.agg_lookup_pushdown
 
@@ -1132,7 +1132,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_dict_lookup = off (session): new segments return to the compact form; segments already written keep the order until a merge or VACUUM FULL rewrites them. No NOTICE: a sift_table writes its segments in promotion and VACUUM, not in a statement that could report them; sift.table_segments(table) gives their bytes and format.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Set off for a table whose segments are written far more than their strings are tested, or to keep them at 4 bytes a string less; new segments only.
-- **Sources:** benchmark n/a: the first statement of a backend is a per-connection cost; the regress test tbl_topn_order and tbl_fetch_dict read the layout; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark n/a: the first statement of a backend is a per-connection cost; the regress test tbl_topn_order and tbl_fetch_dict read the layout; [COLUMN-STORAGE](COLUMN-STORAGE.md#sift_table)
 
 #### sift.table_key_table
 
@@ -1146,7 +1146,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_key_table = off (or in postgresql.conf), then VACUUM FULL or the next merge; segments written before keep theirs and are still read.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Set off for a table that is written far more than it is read by key, or to keep the segments readable by 3.4. The setting applies to the segments written afterwards.
-- **Sources:** benchmark `test:tbl_key_table`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:tbl_key_table`; [COLUMN-STORAGE](COLUMN-STORAGE.md#sift_table)
 
 #### sift.table_bulk_groups
 
@@ -1286,7 +1286,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: no setting; the rows of a one-row transaction, an ON CONFLICT statement and a row of more than a page are written at once, the others wait for the commit, a read of the index or a savepoint.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave as is; there is nothing to set. Load with COPY or statements of many rows to write the fewest records; one row a transaction writes what it did.
-- **Sources:** benchmark `test:col_wbuf_batch`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_wbuf_batch`; [COLUMN-STORAGE](COLUMN-STORAGE.md#sift_table)
 
 #### auto(lateral-decorrelation)
 
@@ -1315,7 +1315,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'key') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'key'); the NOTICE names the choice.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: key, date' and the NOTICE names both; key_cut = 'off', or a list of your own (say 'key, date' for an index whose cut you set before), is never changed. sift.key_cut_decision says what a REINDEX would decide.
-- **Sources:** benchmark `test:col_key_cut_second`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_key_cut_second`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### auto(key-cut-range-lane)
 
@@ -1330,7 +1330,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: r#1' and the NOTICE names it; key_cut = 'off', or a list of your own, is never changed. sift.key_cut_decision says what a REINDEX would decide. A range column in the order of the table, or another leaf that follows it (a sequential id) or whose zones skip units (a date that drifts over the table), blocks the cut: the units stay by superblock.
-- **Sources:** benchmark `contain_key_cut`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `contain_key_cut`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### auto(key-cut-date-growth)
 
@@ -1345,7 +1345,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: d' and the NOTICE names it; key_cut = 'off' keeps the units by superblock. sift.key_cut_decision(index) says what a REINDEX would decide. A date that follows the table, another leaf that follows it, order_columns or point_tid_columns keep the cut off.
-- **Sources:** benchmark `test:col_key_cut_auto`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_key_cut_auto`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### auto(point-directory-columns)
 
@@ -1360,7 +1360,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (point_tid_columns = 'off') and REINDEX; the NOTICE names the choice.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. The choice is written as point_tid_columns = 'auto: rid' and the NOTICE names it with the gain and the growth; point_tid_columns = 'off' keeps the index without a directory; a list you set is never changed. A column that follows the table, or has few values, or a table that is small for it, gets none (1,000,000 rows of one int8 column: B 66 against C 71, so a one-column index of that size stays without; 3,000,000 rows: B 88 against C 71, chosen).
-- **Sources:** benchmark `test:col_point_auto`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_point_auto`; [COLUMN-STORAGE](COLUMN-STORAGE.md#point-lookups)
 
 #### auto(top-n-per-group)
 
@@ -1444,7 +1444,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** No setting for the guard. ALTER INDEX .. RESET (point_columns) and RESET (point_tid_columns) with a REINDEX drop the directory; SET sift.enable_agg = off turns off the aggregate scan.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. EXPLAIN ANALYZE shows Units From Point Directory and Rows From Point Directory. It needs point_columns or point_tid_columns on the key; a key with many rows each (a status, a tenant) does not use it.
-- **Sources:** benchmark `point_keys_agg`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `point_keys_agg`; [COLUMN-STORAGE](COLUMN-STORAGE.md#point-lookups)
 
 #### auto(run-heads)
 
@@ -1459,7 +1459,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_format_minor = 14 (runs are written without heads; units already written keep them until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off (no top-N scan).
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on for an index with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
-- **Sources:** benchmark [docs/results/col-run-heads.tsv](results/col-run-heads.tsv); [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark [docs/results/col-run-heads.tsv](results/col-run-heads.tsv); [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### auto(table-cube-minmax)
 
@@ -1503,7 +1503,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_format_minor = 14 (no list is written; groups already written keep theirs until rewritten) or SET sift.agg_preagg = off (no unit is answered from pre-aggregates).
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A column that is not a foreign key or named *_id has no list; a sift_col index takes key_columns for the others.
-- **Sources:** benchmark `test:tbl_lists_runs`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:tbl_lists_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#sift_table)
 
 #### auto(table-run-heads)
 
@@ -1518,7 +1518,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_format_minor = 12 (no run is written; groups already written keep theirs until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units Answered By Run Head. A b-tree on the column is still faster for LIMIT 10; heads do not apply to LIMIT above 32 or to a filtered LIMIT.
-- **Sources:** benchmark `test:tbl_lists_runs`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:tbl_lists_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#sift_table)
 
 #### auto(top-n-zone-probe)
 
@@ -1645,7 +1645,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.topn_runs = off (units are tested row by row) or SET sift.enable_topn = off.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. A b-tree is still faster on the same queries (15 us and 140 us against 82 us and 1.05 ms).
-- **Sources:** benchmark `topn_run_probes`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `topn_run_probes`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift.col_leaf_cache_kb
 
@@ -1673,7 +1673,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_dict_shared_cache_kb = 0 (superuser; postgresql.conf for all backends): no segment is made or attached by the backend, and each backend parses and keeps its own dictionaries.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at the default on a server with a few hundred MB of shared memory to spare. 0 turns the sharing off (each backend then parses and keeps its own dictionaries, up to the dict_cache_kb of the index); raise it for dictionaries of more than about 1,000,000 distinct values with their hash tables (a ring of 256 MB held the dictionaries of 1,000,000, 2,000,000 and 3,000,000 rows of the measurement); lower it on a small server or a container, whose /dev/shm is 64 MB.
-- **Sources:** benchmark `test:col_dict_shared_size`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_dict_shared_size`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
 #### auto(dict-tsig)
 
@@ -1688,7 +1688,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_format_minor = 14 (leaves are written without the signature; the index stays readable by a 3.5 library)
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. The leaves that fit the cache are not signed. To opt out set sift.col_format_minor to 14 before building or rebuilding the index.
-- **Sources:** benchmark `test:col_text_tsig`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_text_tsig`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
 #### auto(text-lz4)
 
@@ -1703,7 +1703,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** compression = 'auto; col=zstd' (the NOTICE at CREATE INDEX gives the line), then REINDEX; sift.col_format_minor = 14 writes no LZ4 dictionary blocks
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX; the NOTICE at CREATE INDEX lists the columns that took LZ4 (and the ones that came close) with their numbers.
-- **Sources:** benchmark `test:col_text_scanwrap`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `test:col_text_scanwrap`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
 ### opt-in
 
@@ -1782,7 +1782,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** RESET (point_columns): new segments get no directory; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 13 writes none. No directory, no format change to undo.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Opt-in: set it only where the b-tree on the column can go and a lookup 3x slower is fine. Prefer point_tid_columns, which reads no unit. Larger index; REINDEX to apply.
-- **Sources:** benchmark `point_in_100`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `point_in_100`; [COLUMN-STORAGE](COLUMN-STORAGE.md#point-lookups)
 
 #### sift_col(point_tid_columns)
 
@@ -1798,7 +1798,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** RESET (point_tid_columns); a leaf kept in point_columns then has the rows form. New segments only; REINDEX rewrites older ones; sift.col_format_minor <= 14 writes no addresses.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Opt-in where the b-tree on an id or key can go: lookups of up to 64 keys read no unit. Not for index-only scans; a unit with a dead row is read. Larger index; REINDEX to apply.
-- **Sources:** benchmark `point_in_100`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `point_in_100`; [COLUMN-STORAGE](COLUMN-STORAGE.md#point-lookups)
 
 #### sift_col(order_columns)
 
@@ -1814,7 +1814,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** RESET (order_columns): new units get no run; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 12 writes no runs; 13 to 14 writes runs without heads.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
-- **Sources:** benchmark `topn_sorted_runs`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `topn_sorted_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift_col(key_order)
 
@@ -1845,7 +1845,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** RESET (hll_columns): new units get no sketch; older units keep theirs until a merge or REINDEX, and approx_count_distinct reads rows of units without one. sift.col_format_minor <= 14 writes none.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave unset unless a dashboard needs an approximate distinct count of a high-cardinality column: sift.approx_count_distinct(col) is the same number in every plan and count(DISTINCT) stays exact; list only the columns that ask for it, each costs up to 12 kB a unit.
-- **Sources:** benchmark `approx_distinct_sketch`; [FORMATS 4](FORMATS.md#4-column-segments-siftsegentryformat-of-access-methods-sift_col-and-sift_table)
+- **Sources:** benchmark `approx_distinct_sketch`; [COLUMN-STORAGE](COLUMN-STORAGE.md#counts-and-keys)
 
 #### sift_col(return_columns)
 
