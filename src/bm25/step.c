@@ -719,14 +719,8 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
 	}
-#ifdef SIFT_TESTING
 	/* a long merge of the worker, the segments claimed */
-	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)
-	{
-		pg_usleep(50000);
-		CHECK_FOR_INTERRUPTS();
-	}
-#endif
+	SIFT_TEST_GATE(sift_test_merge_gate && MyBackendType == B_BG_WORKER, 4);
 	for (int i = 0; i < in->n; i++)
 		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of each segment */
 	for (int i = 0; i < in->n && dt == NULL; i++)

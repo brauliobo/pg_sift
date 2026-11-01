@@ -19,8 +19,6 @@
 #ifdef SIFT_TESTING
 /* Testing knob (sift.test_merge_max_kb, 0 = off): bytes of the segments one merge may read, in kB */
 extern PGDLLIMPORT int sift_test_merge_max_kb;
-/* Testing knob (sift.test_merge_sleep_ms, 0 = off): a merge of the background worker sleeps this long, its segments claimed */
-extern PGDLLIMPORT int sift_test_merge_sleep_ms;
 /* Testing knob (sift.test_room_segments, 0 = off): directory entries from which inserters merge */
 extern PGDLLIMPORT int sift_test_room_segments;
 /* Testing knob (sift.test_no_heap_positions): promotions and merges take no positions from the heap, as 3.7.0 did */

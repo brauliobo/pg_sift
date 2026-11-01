@@ -51,7 +51,6 @@
 
 #ifdef SIFT_TESTING
 int			sift_test_merge_max_kb = 0;
-int			sift_test_merge_sleep_ms = 0;
 int			sift_test_room_segments = 0;
 bool		sift_test_no_heap_positions = false;
 #define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_MAX_SEGMENTS) - ROOM_SPARE)

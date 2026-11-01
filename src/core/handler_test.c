@@ -66,6 +66,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_shrink_gate",
 							 "Testing: the online shrink waits for advisory lock (0x51F7, 3) once it reserved the header page of a segment, before it reserves the runs of its data.",
 							 NULL, &sift_test_shrink_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_merge_gate",
+							 "Testing: a merge of the maintenance worker waits for advisory lock (0x51F7, 4) once its segments are claimed.",
+							 NULL, &sift_test_merge_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_ahead_cold",
 							 "Testing: a segment reader reads ahead from its first read, as one whose pages are not in shared buffers does.",
 							 NULL, &sift_test_ahead_cold, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
