@@ -310,8 +310,12 @@ order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 		t->gtyp[j] = lay->leaf[k->leaf].typid;
 		if (k->blob)
 		{
-			/* the one key of a text column (text, varchar): its strings are ranked in the arrays under the collation of the query's order */
-			if (t->nkey != 1 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID))
+			/*
+			 * the first key of a text column (text, varchar): its strings are ranked in the arrays under the collation of the query's order; the keys after it are read from the heap
+			 * rows, and a group of equal strings is told by its bytes, so a collation that calls different bytes equal cannot have them
+			 */
+			if (j != 0 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID) ||
+				(t->nkey > 1 && !get_collation_isdeterministic(k->collid)))
 				return false;
 			t->gtext = true;
 		}

@@ -44,7 +44,7 @@ $$ SELECT tt_chk(format('SELECT %1$s FROM tt ORDER BY %1$s %2$s %3$s LIMIT %4$s 
    FROM unnest(ARRAY['a', 'b', 'v']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) l, unnest(ARRAY[0, 7]) o $$;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
 
--- another collation of the sort than the column's, an expression of the column, a condition, another key after the first, and no LIMIT read the units (or the normal plan)
+-- another collation of the sort than the column's, an expression of the column, a condition, and no LIMIT read the units (or the normal plan); another key after the first is read from the heap rows (col_topn_gorder_text_ties)
 SELECT tt_chk('SELECT a FROM tt ORDER BY a COLLATE "C" LIMIT 10') AS other_collation, tt_chk('SELECT b FROM tt ORDER BY b COLLATE "POSIX" LIMIT 10') AS posix_collation,
 	   tt_chk('SELECT lower(a) FROM tt ORDER BY lower(a) LIMIT 10') AS expression, tt_chk('SELECT a FROM tt WHERE k = 5 ORDER BY a LIMIT 10') AS condition,
 	   tt_chk('SELECT a, id FROM tt ORDER BY a, id LIMIT 10') AS two_keys, tt_chk('SELECT a FROM tt ORDER BY a') AS no_limit;

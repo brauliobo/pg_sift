@@ -52,13 +52,13 @@ SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
  global order |    96
 (1 row)
 
--- another collation of the sort than the column's, an expression of the column, a condition, another key after the first, and no LIMIT read the units (or the normal plan)
+-- another collation of the sort than the column's, an expression of the column, a condition, and no LIMIT read the units (or the normal plan); another key after the first is read from the heap rows (col_topn_gorder_text_ties)
 SELECT tt_chk('SELECT a FROM tt ORDER BY a COLLATE "C" LIMIT 10') AS other_collation, tt_chk('SELECT b FROM tt ORDER BY b COLLATE "POSIX" LIMIT 10') AS posix_collation,
 	   tt_chk('SELECT lower(a) FROM tt ORDER BY lower(a) LIMIT 10') AS expression, tt_chk('SELECT a FROM tt WHERE k = 5 ORDER BY a LIMIT 10') AS condition,
 	   tt_chk('SELECT a, id FROM tt ORDER BY a, id LIMIT 10') AS two_keys, tt_chk('SELECT a FROM tt ORDER BY a') AS no_limit;
- other_collation | posix_collation | expression | condition | two_keys | no_limit 
------------------+-----------------+------------+-----------+----------+----------
- units           | units           | units      | units     | units    | units
+ other_collation | posix_collation | expression | condition |   two_keys   | no_limit 
+-----------------+-----------------+------------+-----------+--------------+----------
+ units           | units           | units      | units     | global order | units
 (1 row)
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX

@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "port/pg_bitutils.h"
+#include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
 #include "agg/gord.h"
@@ -332,6 +333,15 @@ grow_cmp(const void *a, const void *b, void *arg)
 	return ItemPointerCompare(unconstify(ItemPointerData *, &x->tid), unconstify(ItemPointerData *, &y->tid));
 }
 
+/* the heap row's string is the entry's: a row an UPDATE or a vacuumed address replaced holds another */
+static bool
+text_is(Datum d, const char *str, uint32 len)
+{
+	struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+	return VARSIZE_ANY_EXHDR(v) == len && memcmp(VARDATA_ANY(v), str, len) == 0;
+}
+
 /*
  * The entries of one key of the array, in the order of the array. A group wholly before the OFFSET (even if every entry is live) is thrown away by the Limit above and the tie order
  * within it decides nothing: its entries that are exact (live and visible, the condition decided by the key) are counted and not fetched, the others are confirmed by the heap and
@@ -343,6 +353,7 @@ typedef struct GGroup
 	bool	   *exact;			/* per entry: live and visible, and passes the condition by its key alone */
 	int			n;
 	int			room;
+	StringInfoData str;			/* the string of the group, for a text key (the key of the array is the rank in a segment) */
 } GGroup;
 
 static void
@@ -383,7 +394,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 				continue;
 			t->fetched++;
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
-			if (hnull != gnull || (!hnull && heap_key(t->gtyp[0], d) != gkey))
+			if (hnull != gnull || (!hnull && (t->gtext ? !text_is(d, g->str.data, g->str.len) : heap_key(t->gtyp[0], d) != gkey)))
 				continue;
 			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 				continue;
@@ -412,6 +423,10 @@ gord_prep(SiftTopN *t)
 				closed = false;
 	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .room = 64};
 	ItemPointerData tid;
+	const char *str = NULL;
+	uint32		slen = 0;
+
+	initStringInfo(&g.str);
 
 	t->gqroom = 64;
 	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), t->gqroom * sizeof(GRow));
@@ -419,7 +434,9 @@ gord_prep(SiftTopN *t)
 	{
 		if (++scanned > cap)
 			return false;
-		if (g.n > 0 && (key != gkey || isnull != gnull))
+		if (t->gtext && !isnull)
+			str = sift_gord_str(t->go, &slen);
+		if (g.n > 0 && (isnull != gnull || (t->gtext ? !isnull && (slen != g.str.len || memcmp(str, g.str.data, slen) != 0) : key != gkey)))
 		{
 			gord_group(t, &g, gkey, gnull);
 			if (t->gqn >= t->limit)
@@ -427,6 +444,11 @@ gord_prep(SiftTopN *t)
 				closed = true;
 				break;
 			}
+		}
+		if (g.n == 0 && t->gtext && !isnull)
+		{
+			resetStringInfo(&g.str);
+			appendBinaryStringInfo(&g.str, str, slen);
 		}
 		gkey = key;
 		gnull = isnull;
@@ -444,6 +466,7 @@ gord_prep(SiftTopN *t)
 		gord_group(t, &g, gkey, gnull);
 	pfree(g.tid);
 	pfree(g.exact);
+	pfree(g.str.data);
 	return closed || !sift_gord_short(t->go) || (uint32) t->gqn >= t->limit;
 }
 
