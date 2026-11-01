@@ -175,23 +175,31 @@ class Sizes(unittest.TestCase):
 
 
 class Visibility(unittest.TestCase):
-    def settle(self, partial):
-        """settle_visibility against a psql that answers the VACUUM with nothing and the check with PARTIAL"""
+    def settle(self, *partials):
+        """settle_visibility against a psql that answers each check of the maps with the next of PARTIALS ('' is a full map); the statements it ran"""
         from unittest import mock
         from cases import server
-        with mock.patch.object(server, 'psql', side_effect=lambda sql, *a: partial if 'string_agg' in sql else '') as psql:
+        answers = iter(partials)
+        ran = []
+        with mock.patch.object(server, 'psql', side_effect=lambda sql, *a: next(answers) if 'string_agg' in sql else ran.append(sql) or ''):
             server.settle_visibility('c_x')
-        return psql
+        return ran
 
-    def test_a_full_map_passes_after_a_second_vacuum(self):
-        self.assertIn('VACUUM (FREEZE)', self.settle('').call_args_list[0].args[0])
+    def test_a_full_map_needs_the_second_vacuum_only(self):
+        ran = self.settle('')
+        self.assertEqual(len(ran), 1)
+        self.assertIn('VACUUM (FREEZE)', ran[0])
 
-    def test_a_partial_map_fails_loudly(self):
+    def test_emptied_pages_are_removed_by_vacuum_full_and_the_map_checked_again(self):
+        ran = self.settle('c_x.orders 1373 of 1408 pages', '')
+        self.assertEqual([r.split(' %s')[0].split("'")[-1] for r in ran], ['VACUUM (FREEZE)', 'VACUUM FULL', 'VACUUM (FREEZE, ANALYZE)'])
+
+    def test_a_map_that_stays_partial_fails_loudly(self):
         from unittest import mock
         from cases import server
         with mock.patch.object(server, 'die', side_effect=SystemExit('partial')) as die:
             with self.assertRaises(SystemExit):
-                self.settle('c_x.orders 3 of 250 pages')
+                self.settle('c_x.orders 3 of 250 pages', 'c_x.orders 3 of 250 pages')
         self.assertIn('c_x.orders 3 of 250 pages', die.call_args.args[0])
 
     def test_the_harness_sessions_commit_synchronously(self):

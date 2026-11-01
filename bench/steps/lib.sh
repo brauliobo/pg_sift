@@ -214,13 +214,17 @@ rse_cells() {
           if ((between > rse || within > rse) && sqrt(rel2[k] / n[k] / maxr) <= rse) print k } }' "$1"
 }
 
-# vm_settle TABLE: VACUUM (FREEZE) TABLE once more and die unless every page of it is all-visible. A partial map makes index-only scans read the heap and moves the plan choice of the native lane; the
-# first VACUUM of a bulk load leaves the empty pages the file was extended by (relpages counts them, the map does not) and, under `synchronous_commit = off`, the pages whose commit was not flushed yet
+# vm_settle TABLE: VACUUM (FREEZE) TABLE once more and die unless relallvisible = relpages: the planner prices an index-only scan from that ratio, so a partial map moves the native lane's plan
+# choice even when no scan reads the pages outside it. The pages of commits not flushed yet (`synchronous_commit = off`) are set by the second VACUUM; the pages a rewrite of every row emptied
+# in the middle of the heap are removed by VACUUM FULL and a VACUUM (FREEZE, ANALYZE)
 vm_settle() {
-  local bad
+  local sql="SELECT relallvisible < relpages FROM pg_class WHERE oid = '$1'::regclass"
   q -c "VACUUM (FREEZE) $1"
-  bad=$(q -c "SELECT format('%s of %s pages all-visible', relallvisible, relpages) FROM pg_class WHERE oid = '$1'::regclass AND relpages > 0 AND relallvisible < relpages")
-  [[ -z $bad ]] || die "the visibility map of $1 is partial after VACUUM ($bad): the native plans read the heap that a full map spares; load with synchronous_commit = on or wait for the flush"
+  if [[ $(q -c "$sql") == t ]]; then
+    log "visibility map of $1: VACUUM FULL"
+    q -c "VACUUM FULL $1" -c "VACUUM (FREEZE, ANALYZE) $1"
+  fi
+  [[ $(q -c "$sql") != t ]] || die "the visibility map of $1 is partial after VACUUM FULL ($(q -c "SELECT relallvisible || ' of ' || relpages || ' pages' FROM pg_class WHERE oid = '$1'::regclass")): the native plans are priced on it; load with synchronous_commit = on or wait for the flush"
 }
 
 # --- cold cache: empty the relations of a table from shared buffers and the OS page cache, then time one statement

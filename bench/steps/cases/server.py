@@ -41,15 +41,26 @@ def dataset(rows):
     return csv
 
 
+def partial_maps(schema):
+    """the tables of SCHEMA with relallvisible < relpages: 'rel relallvisible of relpages pages', comma separated"""
+    return psql("SELECT string_agg(format('%%s %%s of %%s pages', oid::regclass, relallvisible, relpages), ', ') FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') "
+                "AND relpages > 0 AND relallvisible < relpages" % schema)
+
+
 def settle_visibility(schema):
-    """VACUUM the tables of SCHEMA once more and fail unless every page of each is all-visible (relallvisible = relpages): a partial map makes the index-only and visibility-map plans of the
-    native lane read the heap and moves the planner's choice, and with `synchronous_commit = off` a VACUUM right after a load leaves the pages of tuples whose commit was not flushed (hint bits
-    wait for the WAL writer, ~200 ms). The first VACUUM of a bulk load also leaves the empty pages the file was extended by (relpages counts them, the map does not): the second removes them"""
+    """VACUUM the tables of SCHEMA once more and fail unless relallvisible = relpages for each: the planner prices an index-only scan from relallvisible / relpages, so a partial map moves the
+    native lane's plan choice and its heap fetches even when no scan reads the pages outside it. Two things leave one: under `synchronous_commit = off` the pages of unflushed commits (hint bits
+    wait for the WAL writer, ~200 ms), and the pages a setup that rewrites every row (UPDATE, ALTER COLUMN TYPE) empties in the middle of the heap, which VACUUM keeps. The second is finished
+    by VACUUM FULL of the table and a VACUUM (FREEZE, ANALYZE): the heap of the final rows, as if built directly, and the indexes rebuilt on it"""
     psql("SELECT format('VACUUM (FREEZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
-    bad = psql("SELECT string_agg(format('%%s %%s of %%s pages', oid::regclass, relallvisible, relpages), ', ') FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') "
-               "AND relpages > 0 AND relallvisible < relpages" % schema)
-    if bad:
-        die('the visibility map is partial after VACUUM (all-visible pages of the pages): %s. The native plans would read the heap that a full map spares: load with synchronous_commit = on or wait for the flush' % bad)
+    partial = partial_maps(schema)
+    if partial:
+        log('visibility map: VACUUM FULL of %s' % partial)
+        psql("SELECT format('VACUUM FULL %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') AND relpages > 0 AND relallvisible < relpages \\gexec" % schema)
+        psql("SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
+        bad = partial_maps(schema)
+        if bad:
+            die('the visibility map is partial after VACUUM FULL (all-visible pages of the pages): %s. The native plans would be priced on it: load with synchronous_commit = on or wait for the flush' % bad)
 
 
 def generate(case, rows):
