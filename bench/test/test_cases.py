@@ -201,3 +201,23 @@ class Visibility(unittest.TestCase):
             server.psql('SELECT 1')
         self.assertIn('synchronous_commit=on', run.call_args.kwargs['env']['PGOPTIONS'])
 
+
+class Release(unittest.TestCase):
+    def dropped(self, ids, **kw):
+        """the schemas the run drops, case by case, for the cases IDS of one dataset (`docs`)"""
+        from unittest import mock
+        from cases import run
+        cases = [mock.Mock(id=i, dataset='docs', share=None, load=kw.get('load', False), **{'schema.return_value': 'c_docs'}) for i in ids]
+        left, out = {'c_docs': len(cases)}, []
+        with mock.patch.object(run, 'psql', side_effect=out.append):
+            for c in cases:
+                n = len(out)
+                run.release(c, left, 300000, False)
+                out[n:] = [' '.join(out[n:])]
+        return out
+
+    def test_a_dataset_schema_is_dropped_after_its_last_case(self):
+        self.assertEqual(self.dropped(['a', 'b']), ['', 'DROP SCHEMA IF EXISTS c_docs CASCADE'])
+
+    def test_a_load_case_drops_its_own_schema_too(self):
+        self.assertEqual(self.dropped(['a'], load=True), ['DROP SCHEMA IF EXISTS c_a CASCADE DROP SCHEMA IF EXISTS c_docs CASCADE'])

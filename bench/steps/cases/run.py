@@ -18,6 +18,23 @@ from .server import Fresh, build, dataset, lane_sessions, load_duck, psql, serve
 from .measure import expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
 
 
+def release(c, left, rows, scaled):
+    """drop the tables of C that no later case of the run reads (a copy of the table for each of the 30 cases at 20 million rows is not room the host has; nor is each dataset of a run at 1,000,000 rows)"""
+    if c.share or c.dataset in DATASETS:
+        left[c.schema()] -= 1
+    if os.environ.get('CASES_KEEP'):
+        return
+    if c.load:   # the schema its statements write to (server.build)
+        psql('DROP SCHEMA IF EXISTS c_%s CASCADE' % c.id)
+    if c.dataset in DATASETS:
+        if left[c.schema()] == 0:
+            psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
+            BUILT.discard((c.dataset, rows))
+    elif c.share is None and scaled or c.share and left[c.schema()] == 0:
+        psql('DROP SCHEMA IF EXISTS %s CASCADE; DROP SCHEMA IF EXISTS %s_base CASCADE' % (c.schema(), c.schema()))
+        BUILT.discard((c.schema(), rows))
+
+
 def run_point(args, cases, rows, engines, results, failed):
     """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
     scaled = bool(args.scales)
@@ -31,9 +48,9 @@ def run_point(args, cases, rows, engines, results, failed):
         load_duck(args.duck_port, csv)
         TIMES['(pg_duckdb load)' + tag] = [round(time.time() - t0, 1), 0]
     point = []
-    left = {}   # the cases still to read each shared table: it is dropped after the last
+    left = {}   # the cases still to read each shared table or dataset schema: it is dropped after the last, so a cluster holds one at a time
     for c in cases:
-        if c.share:
+        if c.share or c.dataset in DATASETS:
             left[c.schema()] = left.get(c.schema(), 0) + 1
     for c in cases:
         log('%s%s: %s' % (c.id, ' at %s rows' % format(rows, ',') if scaled else '', c.label))
@@ -54,6 +71,7 @@ def run_point(args, cases, rows, engines, results, failed):
                     if not xs or args.io == 'off' and metric.startswith('io_'):   # no pg_stat_io on this server, or --io off
                         continue
                     point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'BM25 index, segments: %s' if c.dataset == 'docs' else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
+            release(c, left, rows, scaled)
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()
@@ -88,11 +106,7 @@ def run_point(args, cases, rows, engines, results, failed):
             lanes[lane].close()
         if 'why' in notes:
             point.append(dict(case=c.id, arm='why', metric='ms', value='', note=notes['why'], load=load))
-        if c.share:
-            left[c.schema()] -= 1
-        if not os.environ.get('CASES_KEEP') and c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
-            psql('DROP SCHEMA IF EXISTS %s CASCADE; DROP SCHEMA IF EXISTS %s_base CASCADE' % (c.schema(), c.schema()))
-            BUILT.discard((c.schema(), rows))
+        release(c, left, rows, scaled)
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
 
