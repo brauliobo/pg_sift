@@ -1,4 +1,4 @@
--- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start,
+-- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start, whatever the scan: a scan of a few ms that a cheap group by or a lookup of ids prices at 3,000 units is done alone before they start,
 -- the leader a full participant, the partial tables merged by the leader one after the other). The plan the default settings choose is checked
 -- for the classes of statement the curves were measured on, over three families of table (uniform units, skewed tenants, many small units): a scan
 -- of 1,000,000 or 600,000 rows with a few ms of work takes workers, 300,000 rows, a cheap group by and a group by of a hundred thousand groups do not (the groups of such a table are split by their key only from some millions of rows: agg_par_split).
@@ -18,7 +18,9 @@ CREATE INDEX pc_s_col ON pc_s USING sift_col (id, tenant_id, category_id, status
 CREATE TABLE pc_m (LIKE pc_u) WITH (autovacuum_enabled = off);
 INSERT INTO pc_m SELECT i, i % 12000, i % 20, i % 5, (i::bigint * 7919) % 100003, i % 1000, (i % 97) * 0.1 + 1.0 / (1 + i % 13), 'l' || (i % 50) FROM generate_series(1, 600000) i;
 CREATE INDEX pc_m_col ON pc_m USING sift_col (id, tenant_id, category_id, status, foreign_id, a_count, value_num, label) WITH (key_cut = tenant_id);
-VACUUM (FREEZE, ANALYZE) pc_u, pc_s, pc_m;
+-- a tenth of the foreign ids, for the statements that look them up
+CREATE TABLE pc_k AS SELECT DISTINCT foreign_id FROM pc_u WHERE foreign_id % 10 = 0;
+VACUUM (FREEZE, ANALYZE) pc_u, pc_s, pc_m, pc_k;
 CREATE TABLE pc_q (class text, sql text);
 INSERT INTO pc_q VALUES
  ('scalar', 'SELECT count(*), sum(value_num), sum(a_count), min(id), max(foreign_id) FROM %s WHERE a_count > 10'),
@@ -27,7 +29,10 @@ INSERT INTO pc_q VALUES
  ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), sum(value_num), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
  ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
  ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
- ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1'),
+ ('category_count', 'SELECT category_id, count(*) FROM %s GROUP BY 1'),
+ ('bucket_sum', 'SELECT a_count / 10 AS b, sum(status) FROM %s GROUP BY 1'),
+ ('semi_count', 'SELECT status, count(*) FROM %s WHERE foreign_id IN (SELECT foreign_id FROM pc_k) GROUP BY 1');
 -- the plan of the default settings: pushed down, and with workers or not
 CREATE FUNCTION pc_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; pushed bool := false; planned bool := false; split bool := false;
@@ -43,6 +48,8 @@ SELECT t.tbl, q.class, pc_plan(format(q.sql, t.tbl)) AS plan
 FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q.class;
  tbl  |        class        |    plan     
 ------+---------------------+-------------
+ pc_u | bucket_sum          | one process
+ pc_u | category_count      | one process
  pc_u | count_distinct      | one process
  pc_u | expression_two_keys | workers
  pc_u | few_groups_filter   | one process
@@ -50,6 +57,9 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q
  pc_u | many_groups         | one process
  pc_u | scalar              | workers
  pc_u | scalar_many_aggs    | workers
+ pc_u | semi_count          | one process
+ pc_s | bucket_sum          | one process
+ pc_s | category_count      | one process
  pc_s | count_distinct      | one process
  pc_s | expression_two_keys | one process
  pc_s | few_groups_filter   | one process
@@ -57,6 +67,9 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q
  pc_s | many_groups         | one process
  pc_s | scalar              | one process
  pc_s | scalar_many_aggs    | one process
+ pc_s | semi_count          | one process
+ pc_m | bucket_sum          | one process
+ pc_m | category_count      | one process
  pc_m | count_distinct      | one process
  pc_m | expression_two_keys | workers
  pc_m | few_groups_filter   | one process
@@ -64,7 +77,8 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q
  pc_m | many_groups         | one process
  pc_m | scalar              | workers
  pc_m | scalar_many_aggs    | workers
-(21 rows)
+ pc_m | semi_count          | one process
+(30 rows)
 
 -- the same rows with the normal plan, the scan alone and the workers (asked for whatever they save)
 CREATE FUNCTION pc_rows(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
@@ -87,13 +101,18 @@ INSERT INTO pc_r VALUES
  ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), round(sum(value_num)::numeric, 1), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
  ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
  ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
- ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1'),
+ ('category_count', 'SELECT category_id, count(*) FROM %s GROUP BY 1'),
+ ('bucket_sum', 'SELECT a_count / 10 AS b, sum(status) FROM %s GROUP BY 1'),
+ ('semi_count', 'SELECT status, count(*) FROM %s WHERE foreign_id IN (SELECT foreign_id FROM pc_k) GROUP BY 1');
 SELECT t.tbl, q.class,
        pc_rows(format(q.sql, t.tbl), 'scan') = pc_rows(format(q.sql, t.tbl), 'normal') AS scan_equal,
        pc_rows(format(q.sql, t.tbl), 'workers') = pc_rows(format(q.sql, t.tbl), 'scan') AS workers_equal
 FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q.class;
  tbl  |        class        | scan_equal | workers_equal 
 ------+---------------------+------------+---------------
+ pc_u | bucket_sum          | t          | t
+ pc_u | category_count      | t          | t
  pc_u | count_distinct      | t          | t
  pc_u | expression_two_keys | t          | t
  pc_u | few_groups_filter   | t          | t
@@ -101,6 +120,9 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q
  pc_u | many_groups         | t          | t
  pc_u | scalar              | t          | t
  pc_u | scalar_many_aggs    | t          | t
+ pc_u | semi_count          | t          | t
+ pc_s | bucket_sum          | t          | t
+ pc_s | category_count      | t          | t
  pc_s | count_distinct      | t          | t
  pc_s | expression_two_keys | t          | t
  pc_s | few_groups_filter   | t          | t
@@ -108,6 +130,9 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q
  pc_s | many_groups         | t          | t
  pc_s | scalar              | t          | t
  pc_s | scalar_many_aggs    | t          | t
+ pc_s | semi_count          | t          | t
+ pc_m | bucket_sum          | t          | t
+ pc_m | category_count      | t          | t
  pc_m | count_distinct      | t          | t
  pc_m | expression_two_keys | t          | t
  pc_m | few_groups_filter   | t          | t
@@ -115,8 +140,9 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q
  pc_m | many_groups         | t          | t
  pc_m | scalar              | t          | t
  pc_m | scalar_many_aggs    | t          | t
-(21 rows)
+ pc_m | semi_count          | t          | t
+(30 rows)
 
 DROP FUNCTION pc_plan(text), pc_rows(text, text);
-DROP TABLE pc_q, pc_r, pc_u, pc_s, pc_m;
+DROP TABLE pc_q, pc_r, pc_u, pc_s, pc_m, pc_k;
 DROP EXTENSION pg_sift;

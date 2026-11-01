@@ -1,4 +1,4 @@
--- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start,
+-- The workers of a SiftAgg scan are taken where they gain and not where they cost time (the cost of the Gather: 3 ms and 0.5 ms for each worker to start, whatever the scan: a scan of a few ms that a cheap group by or a lookup of ids prices at 3,000 units is done alone before they start,
 -- the leader a full participant, the partial tables merged by the leader one after the other). The plan the default settings choose is checked
 -- for the classes of statement the curves were measured on, over three families of table (uniform units, skewed tenants, many small units): a scan
 -- of 1,000,000 or 600,000 rows with a few ms of work takes workers, 300,000 rows, a cheap group by and a group by of a hundred thousand groups do not (the groups of such a table are split by their key only from some millions of rows: agg_par_split).
@@ -20,7 +20,9 @@ CREATE INDEX pc_s_col ON pc_s USING sift_col (id, tenant_id, category_id, status
 CREATE TABLE pc_m (LIKE pc_u) WITH (autovacuum_enabled = off);
 INSERT INTO pc_m SELECT i, i % 12000, i % 20, i % 5, (i::bigint * 7919) % 100003, i % 1000, (i % 97) * 0.1 + 1.0 / (1 + i % 13), 'l' || (i % 50) FROM generate_series(1, 600000) i;
 CREATE INDEX pc_m_col ON pc_m USING sift_col (id, tenant_id, category_id, status, foreign_id, a_count, value_num, label) WITH (key_cut = tenant_id);
-VACUUM (FREEZE, ANALYZE) pc_u, pc_s, pc_m;
+-- a tenth of the foreign ids, for the statements that look them up
+CREATE TABLE pc_k AS SELECT DISTINCT foreign_id FROM pc_u WHERE foreign_id % 10 = 0;
+VACUUM (FREEZE, ANALYZE) pc_u, pc_s, pc_m, pc_k;
 
 CREATE TABLE pc_q (class text, sql text);
 INSERT INTO pc_q VALUES
@@ -30,7 +32,10 @@ INSERT INTO pc_q VALUES
  ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), sum(value_num), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
  ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
  ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
- ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1'),
+ ('category_count', 'SELECT category_id, count(*) FROM %s GROUP BY 1'),
+ ('bucket_sum', 'SELECT a_count / 10 AS b, sum(status) FROM %s GROUP BY 1'),
+ ('semi_count', 'SELECT status, count(*) FROM %s WHERE foreign_id IN (SELECT foreign_id FROM pc_k) GROUP BY 1');
 
 -- the plan of the default settings: pushed down, and with workers or not
 CREATE FUNCTION pc_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -69,7 +74,10 @@ INSERT INTO pc_r VALUES
  ('four_aggs_two_keys', 'SELECT category_id, status, sum(a_count), round(sum(value_num)::numeric, 1), min(foreign_id), count(*) FROM %s GROUP BY 1, 2'),
  ('few_groups_filter', 'SELECT category_id, count(*), sum(a_count) FROM %s WHERE status = 2 GROUP BY 1'),
  ('count_distinct', 'SELECT category_id, count(DISTINCT foreign_id), count(*) FROM %s GROUP BY 1'),
- ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1');
+ ('many_groups', 'SELECT foreign_id, count(*), sum(a_count), max(value_num) FROM %s GROUP BY 1'),
+ ('category_count', 'SELECT category_id, count(*) FROM %s GROUP BY 1'),
+ ('bucket_sum', 'SELECT a_count / 10 AS b, sum(status) FROM %s GROUP BY 1'),
+ ('semi_count', 'SELECT status, count(*) FROM %s WHERE foreign_id IN (SELECT foreign_id FROM pc_k) GROUP BY 1');
 
 SELECT t.tbl, q.class,
        pc_rows(format(q.sql, t.tbl), 'scan') = pc_rows(format(q.sql, t.tbl), 'normal') AS scan_equal,
@@ -77,5 +85,5 @@ SELECT t.tbl, q.class,
 FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_r q ORDER BY t.tbl DESC, q.class;
 
 DROP FUNCTION pc_plan(text), pc_rows(text, text);
-DROP TABLE pc_q, pc_r, pc_u, pc_s, pc_m;
+DROP TABLE pc_q, pc_r, pc_u, pc_s, pc_m, pc_k;
 DROP EXTENSION pg_sift;

@@ -65,6 +65,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 	}
 	*startup += setup * k->lift;
+	c->par_start = setup * k->lift;
 }
 
 /*
@@ -270,7 +271,9 @@ in_tables_cost(AggCtx *c, const SiftAggPred *p)
  * 1,000,000 pass) caps the tuples that reach the groups (cost_tuples), and the scan is priced at milliseconds when it takes hundreds, so the workers it
  * would need (3 to 4 ms to start) never pay. The price of the scan stays the capped one, which is what the plan above and the normal plan are priced
  * with; the path with workers is priced at the share of it that the workers take of the scan when the tuples are the rows the scan reads: the
- * same scan, serial and with workers, priced without the cap, and the capped serial price times their ratio.
+ * same scan, serial and with workers, priced without the cap, and the capped serial price times their ratio. The start of the workers is a time, not a
+ * share of the scan (3.4 ms for two, whatever they read): it is added after the ratio, or a scan of 3 ms that the cap prices at 2,600 units took
+ * workers that cost 2 ms more than it.
  */
 void
 workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out, double out_cost)
@@ -297,7 +300,7 @@ workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double 
 	PG_END_TRY();
 	if (sw.total_cost <= 0 || pw.total_cost >= sw.total_cost)
 		return;
-	total = sc.total_cost * pw.total_cost / sw.total_cost;
+	total = sc.total_cost * (pw.total_cost - c->par_start) / sw.total_cost + c->par_start;
 	if (total < p->total_cost)
 	{
 		p->total_cost = total;
