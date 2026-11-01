@@ -155,14 +155,14 @@ def generate(opts, notes, released, version, old_version):
         if not f:
             return ''
         S, V, G, W, R, B, C, failed = f
-        return 'S %.2fx saving %.0fk instructions, G %.1f%%, W %.1f%%, R %g: B %.1f against C %.1f, %s' % (S, V, G, W, R, B, C, 'automatic' if not failed else 'opt-in (fails: %s)' % ', '.join(failed))
+        return '%.2fx fewer instructions (%.0fk saved a query), index %+.1f%%, build %+.1f%%, %s' % (S, V, G, W, 'automatic' if not failed else 'opt-in (fails: %s)' % ', '.join(failed))
 
     def shown(r, c):
         return '**not measured**' if ev(r, c) == 'not measured' else ev(r, c)
 
     sections = ['<!-- sift-cases:start -->', '| Class | Entries | Meaning |', '|---|---|---|']
     ents = entries(True)
-    meaning = {'default': 'on by default: automatic behaviour, or a knob whose default is the recommended value', 'opt-in': 'off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it)',
+    meaning = {'default': 'on by default: automatic behaviour, or a knob whose default is the recommended value', 'opt-in': 'off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it)',
                'diagnostic': 'to measure, compare or explain a plan; not for a deployed configuration', 'safety': 'a limit or guard on memory, locks, I/O or replicas',
                'deprecated': 'an older spelling that is still accepted'}
     for c in CLASSES:
@@ -181,7 +181,7 @@ def generate(opts, notes, released, version, old_version):
             lines = ['', '#### %s' % heading(os_), '', '%s · %s%s · default %s' % ('`%s`' % r['applies'].replace(', ', '`, `') if r['applies'] != '-' else 'all', c, ' · since %s' % r['since'] if r['since'] else '', defaults(os_)), '',
                      '- **What it does:** %s' % meta(r, 'buys'),
                      '- **Gain:** %s' % shown(r, 'gain'),
-                     *(['- **Formula:** ' + formula_line(r)] if formula_line(r) else []),
+                     *(['- **Gain and cost:** ' + formula_line(r)] if formula_line(r) else []),
                      '- **Impact:** %s' % '; '.join(imp),
                      '- **When:** %s' % meta(r, 'when'),
                      '- **Default:** %s%s' % (defaults(os_), ' — ' + meta(r, 'default_why') if meta(r, 'default_why') else '')]

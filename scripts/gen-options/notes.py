@@ -58,8 +58,8 @@ CELLS = ('class', 'why', 'gain', 'growth', 'write', 's', 'save', 'g', 'w', 'r', 
 DOCUMENTED = {'buys': 'what it does', 'gain': 'the measured gain', 'growth': 'the impact on the index size', 'write': 'the impact on build, merge and write cost', 'cost': 'the other impact: planning, memory, WAL',
               'when': 'when it applies and when it does not', 'default_why': 'the default and why', 'off': 'how to turn it off'}
 CLASSES = ['default', 'opt-in', 'diagnostic', 'safety', 'deprecated']
-# the terms of the default formula (docs/OPTIONS.md, "The default formula") that an opt-in failed, and the reasons the formula does not cover
-WHY = {'gain': 'the speedup S is under 1.05, or saves under 100k instructions a query', 'cost': 'the benefit B does not reach the cost C', 'ceiling': 'the index grows over 25% (retired: growth is a term of C, the cost)',
+# the terms of the rule for a default (docs/OPTIONS.md, "How a default is chosen") that an opt-in failed, and the reasons the rule does not cover
+WHY = {'gain': 'the speedup is under 1.05, or saves under 100k instructions a query', 'cost': 'the gain does not pay for the growth and the build', 'ceiling': 'the index grows over 25%',
        'detect': 'no statistic says which columns it pays on', 'result': 'changes results or semantics', 'hardware': 'needs hardware', 'memory': 'takes memory',
        'risk': 'not run on real workloads', 'unknown': 'the history does not say'}
 FORMULA = ('s', 'save', 'g', 'w', 'r')      # measured in instructions: speedup of the relevant class, instructions saved a query (thousands), growth %, write/build/merge cost %, relevance 1 or 0.5
@@ -108,7 +108,7 @@ def check(opts, notes, errors, released, srcs=None):
     keys = {o['key'] for o in docs} | auto
     minor_now = next((o['default'] for o in docs if o['key'] == 'sift.col_format_minor'), 0)
     # an option may stamp a minor above the default (point_tid_columns: 16, key_cut: 17, order_columns: 18, hll_columns: 20), which the library reads (SIFT_COL_FORMAT_MAX_READ): the newest one defined
-    colh = (srcs or {}).get('col/col.h') or read('src/col/col.h')
+    colh = ((srcs or {}).get('col/col.h') or read('src/col/col.h')) + ((srcs or {}).get('col/api/format.h') or read('src/col/api/format.h'))
     minors = [int(x) for x in re.findall(r'#define SIFT_COL_FORMAT_[A-Z0-9_]+\s+(\d+)\b', colh)]
     minor_max = max([int(minor_now)] + minors)
     # every minor the library reads has the release that first reads it in scripts/upgrade_check.sql (col_first): without it upgrade_check('3.x') takes it for 3.0's and cannot block an index that 3.x cannot read
