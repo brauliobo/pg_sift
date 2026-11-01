@@ -241,7 +241,7 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
  * entries in the bounds of the key (and of the group the array is read by) that pass, which the statistics of the columns give as the rows of the table's
  * restrictions over the rows of those that name no other column.
  */
-static double
+double
 topn_walk_fetches(AggCtx *c, int key, int group, double rows)
 {
 	RelOptInfo *rel = c->rel;

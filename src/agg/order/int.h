@@ -14,6 +14,8 @@
 #define TOPN_ASSUMED_ROWS	1000
 /* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
 #define TOPN_SORT_ROWS	1024
+#define TOPN_ZONE_FRAC	0.25		/* the share of the units the zones leave, at the most, for the units to be read in place of the walk of a filter */
+#define TOPN_ROWS_PER_FETCH	64		/* the rows of a unit that a scan reads for one heap fetch of the order-array walk of a filter (a row of a unit ~30 instructions, a fetch ~3,400, half of that margin) */
 /* What a row of the heap costs past TOPN_SORT_ROWS, in operator steps: 1.5, 3.1, 9.8 and 19.4 ms over a page of 100 for 2,000, 5,000, 20,000 and 50,000 rows of offset */
 #define TOPN_ROW_STEP	70.0
 /*
@@ -90,6 +92,7 @@ extern void topn_out_leaves(AggCtx *c, List *scan_tlist, int nkey, const int *le
 extern bool window_whole_set(WindowClause *wc);
 extern bool topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tlist);
 extern bool topn_joins_ok(AggCtx *c, SiftAggSpec *s);
+extern double topn_walk_fetches(AggCtx *c, int key, int group, double rows);
 extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked);
 extern bool topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, bool *resid);
 extern bool topn_heads_win(const AggCtx *c, const SiftAggSpec *s, int leaf, double rows);

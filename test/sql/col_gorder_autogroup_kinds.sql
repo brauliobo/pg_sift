@@ -83,6 +83,15 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
 SELECT ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS cut_latest,
 	   ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created, id LIMIT 20') AS cut_page;
 
-DROP TABLE ak, ak1, ak2, ak3, ak4, ak5;
+-- a filter on the column the units are cut by leaves a few units: the page of a tenant reads them, not the walk of the order array that fetches a heap row for each entry
+CREATE TABLE ak6 (id int, tenant_id int, ent_id int, created timestamp, pad text);
+INSERT INTO ak6 SELECT i, i % 40, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
+ANALYZE ak6;
+CREATE INDEX ak6_i ON ak6 USING sift_col (id, tenant_id, ent_id, created, pad) WITH (key_cut = 'tenant_id');
+SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
+SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
+	   ak_chk('SELECT id, created FROM ak6 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
+
+DROP TABLE ak, ak1, ak2, ak3, ak4, ak5, ak6;
 DROP FUNCTION ak_chk(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

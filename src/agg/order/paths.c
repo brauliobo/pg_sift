@@ -23,6 +23,7 @@
 #include "agg/agg.h"
 #include "agg/topn.h"
 #include "agg/order/int.h"
+#include "agg/cost/int.h"
 
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
@@ -411,6 +412,23 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
+		/* the walk of a filter fetches the heap row of each entry it takes (3,400 instructions, 127 for 20 rows of a tenant out of 40, 785 when the sort has a second key), where the units the
+		 * zones leave are read a row in about 30: when the zones leave a quarter of the units or less and those hold fewer rows than TOPN_ROWS_PER_FETCH times the fetches the statistics
+		 * price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
+		if (s->npred > 0 && leaf[0] >= 0 && !(c->topn_array && walked == 0))
+		{
+			int			nkeys;
+			double		share,
+						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], -1, rows),
+						kept = zone_kept(c, s, &nkeys, &share);
+
+			if (kept <= TOPN_ZONE_FRAC && kept * input_rel->rows <= TOPN_ROWS_PER_FETCH * fetches)
+			{
+				c->topn_array = false;
+				c->topn_walk = 0.0;
+				flags |= TOPN_NOGORD;
+			}
+		}
 		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf, &c->topn_resid);
 		/* a walk the statistics price past its budget (topn_array_ok left its fetches in *walked) would only burn that budget before the units are read */
 		if (!c->topn_array && walked > 0)
