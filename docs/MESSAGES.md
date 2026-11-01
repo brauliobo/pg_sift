@@ -145,7 +145,7 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
 - **point-directory-auto** (NOTICE)
   - HINT: To keep the index without it, run ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX.
 - **point-tid-explicit** (NOTICE)
-  - DETAIL: A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
+  - DETAIL: A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor %d or more, which a library before %s cannot read, and the build sorts the keys of the column.
   - HINT: Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 - **point-tid-key-cut** (NOTICE)
   - DETAIL: The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.

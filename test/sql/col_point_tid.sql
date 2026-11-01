@@ -77,11 +77,11 @@ UNION ALL SELECT format('s IN (%s)', string_agg(quote_literal('s' || (i * 31) % 
 UNION ALL SELECT format('u IN (%s)', string_agg(quote_literal(md5((i % 6000)::text)::uuid), ',' ORDER BY i)) FROM generate_series(1, 100) i
 UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORDER BY i)) FROM generate_series(1, 1000) i;
 
--- the directory: the segments are minor 16, verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
+-- the directory: the segments are minor 33 or more, which 3.7 is the first to read (the NOTICE says so), verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
 CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u');
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
-SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
+SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, min(format) >= 33 AS from_37, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
 SELECT p.units AS units_with_addresses, f.units > 2 AS units_without, p.rows = 0 AS no_row_read
 FROM sift._test_col_counters('pt_t', '0:eq:4321', 24) p, sift._test_col_counters('pt_t', '0:eq:4321', 0) f;
 SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read FROM sift._test_col_counters('pt_t', '1:in:s1|s2|s3|none', 24) p;

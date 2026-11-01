@@ -74,7 +74,14 @@ colb_notice_key_order(Relation index)
 			 errhint("To build the index without it, run ALTER INDEX %s RESET (key_order) and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 }
 
-/* The option writes column format minor 16, which a library before 3.3 refuses, and takes a longer build for the heap addresses it lists: said once, where it is used */
+/* The first release that reads a column format minor, as scripts/upgrade_check.sql lists it: the segments of 3.8 are minor 40 and up, the others of 3.7 are 33 to 39 */
+static const char *
+minor_lib(int minor)
+{
+	return minor >= SIFT_COL_FORMAT_ENDORD ? "3.8" : "3.7";
+}
+
+/* The option takes a longer build for the heap addresses it lists, and its segments are column format minor 33 or more (a build of 3.7 writes 37), which a library before 3.7 refuses: said once, where it is used */
 void
 colb_notice_point_tid(Relation index)
 {
@@ -101,7 +108,7 @@ colb_notice_point_tid(Relation index)
 		return;
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": point_tid_columns lists the heap addresses of the rows", RelationGetRelationName(index)),
-			 errdetail("A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column."),
+			 errdetail("A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor %d or more, which a library before %s cannot read, and the build sorts the keys of the column.", SIFT_COL_FORMAT_EXACTSLOT, minor_lib(SIFT_COL_FORMAT_EXACTSLOT)),
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
@@ -155,12 +162,6 @@ order_minor(const SiftColLeafStats *ls, int ncols)
 		if (ls[c].gord_compact_chunks > 0)
 			return SIFT_COL_FORMAT_ORDLAYOUT;
 	return SIFT_COL_FORMAT_ADDRPACK;
-}
-
-static const char *
-minor_lib(int minor)
-{
-	return minor >= SIFT_COL_FORMAT_ENDORD ? "3.8" : "3.7";
 }
 
 /*
