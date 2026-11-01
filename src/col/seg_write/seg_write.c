@@ -264,7 +264,7 @@ segw_gorder_grouped(const SiftColSegWriter *w, int c)
 bool
 segw_gorder_plain(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto || sift_cgord_leaf_text(&w->schema->cols[c]);
+	return w->pagg.gorder_group == 0 || (w->pagg.gorder_group_auto && !w->pagg.gorder_only[c]) || sift_cgord_leaf_text(&w->schema->cols[c]);
 }
 
 void

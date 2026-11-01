@@ -141,6 +141,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 				ntext = 0,
 				nends = 0,
 				pick[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
+	bool		gonly[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
 	double		index_bytes;
 	StringInfoData v;
 
@@ -302,6 +303,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		if ((fit[i] || (grp >= 0 && cand[i].time && cand[i].grouped)) && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
 		{
 			pick[npick++] = cand[i].leaf;
+			gonly[npick - 1] = !fit[i];
 			ntext += cand[i].text;
 			nends += !cand[i].text;
 			if (cand[i].ties && fit[i])
@@ -323,6 +325,10 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	{
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", keycols_leaf_name(index, &rel->schema->cols[grp]));
+		/* the arrays that only the second order serves (a time column the units are cut by or that follows the heap): no plain order beside it */
+		for (int i = 0; i < npick; i++)
+			if (gonly[i])
+				appendStringInfo(&v, ", %s", keycols_leaf_name(index, &rel->schema->cols[pick[i]]));
 		sift_col_set_option(index, "order_array_group", v.data);
 	}
 	else if (gauto)

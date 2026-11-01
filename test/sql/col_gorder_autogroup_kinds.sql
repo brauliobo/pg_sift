@@ -34,6 +34,9 @@ SELECT col, result, count(*) FROM (
 	FROM unnest(ARRAY['d', 'created', 'score']) col, unnest(ARRAY[7, 399, 1000]) e, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
 
+-- a timestamp in heap order has the second order only (no plain order beside it): the page of the whole table is the heap's all the same
+SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
+
 -- rows written after the build, a promotion and a merge keep the answers
 INSERT INTO ak SELECT 200000 + i, i % 400, date '2024-06-01' + i % 30, timestamp '2024-06-01' + i * interval '1 second', i % 5000, i % 100, 'w' FROM generate_series(1, 3000) i;
 UPDATE ak SET d = date '2023-12-31' WHERE id IN (5, 6, 7);
