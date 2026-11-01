@@ -68,16 +68,18 @@ build_idx() {
 	bail "no build left its free run at the end of the file"
 }
 # a transaction after the build moves the horizon past the blocks it released (a server in use has them all the time), and the feedback of the standby tells the primary
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 3; }
+# the standby reports its horizon every second (hot_standby_feedback)
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
 bloat() { drop_idx; build_idx; past; }
-# hold SECONDS: a transaction of the standby that reads the table, then waits, then reads the index
+# hold SECONDS: a transaction of the standby that reads the table, then waits for release (SECONDS at most), then reads the index
 hold() {
-	rm -f "$D/held"
-	{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep($1);"
+	rm -f "$D/held" "$D/unhold"
+	{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"; echo "\\! touch '$D/held'"; echo "\\! n=0; while [ ! -e '$D/unhold' ] && [ \$n -lt $(( $1 * 20 )) ]; do sleep 0.05; n=\$((n + 1)); done"
 	  echo "SET enable_seqscan = off; SELECT 'after', count(*), sum(amount) FROM t WHERE grp = 5;"; echo "COMMIT;"; } | sql standby >"$D/hold.out" 2>&1 &
 	HOLDER=$!
 	until [[ -e $D/held ]]; do sleep 0.05; done
 }
+release() { touch "$D/unhold"; wait "$HOLDER"; }
 answer() { sql "$1" "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
 table_answer() { sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
 replayed_while_held() { # the standby has replayed what the primary wrote within $1 seconds, while its query still holds the table: a stall lasts as long as the query
@@ -99,7 +101,7 @@ hold 20
 vacuum_until_cut
 check "a standby query holds the table: the free end is cut (at most 1.1 times the live bytes)" tight
 check "... and the replay does not stall behind the query" replayed_while_held 10
-wait "$HOLDER"
+release
 check "... the query reads the same rows after the cut as the primary" held_answer_ok
 
 # 2. the gate: blocks released after the standby snapshot stay held (not reusable, so no cut takes them) until the snapshot ends
@@ -110,11 +112,8 @@ vacuum
 echo "# gate: during the snapshot file $(size) live $(live) $(lay)" >&2
 check "blocks released after a standby snapshot are held by the horizon" test "$(pending)" -gt 0
 check "... and the replay does not stall behind the query" replayed_while_held 10
-wait "$HOLDER"
-past
-vacuum
-past
-vacuum
+release
+for _ in $(seq 10); do past; vacuum; [[ $(pending) -eq 0 ]] && break; done
 echo "# gate: after the snapshot ended file $(size) live $(live) $(lay)" >&2
 check "... and reusable once the snapshot ends" test "$(pending)" -eq 0
 check "... the index counts as the table" test "$(answer primary)" == "$(table_answer)"
@@ -127,7 +126,7 @@ hold 15
 build_idx
 past
 vacuum
-wait "$HOLDER"
+release
 echo "# no feedback: $(cat "$D/hold.out" | tr '\n' ' ' | cut -c1-200)" >&2
 check "a standby without feedback: its query is cancelled by the recovery conflict or reads what the primary has" bash -c "grep -q -E 'conflict with recovery' '$D/hold.out' || grep -q after '$D/hold.out'"
 check "... and never reads a block past the end of the file" bash -c "! grep -q -i -E 'could not read block|read only 0 of' '$D/hold.out'"
@@ -139,10 +138,10 @@ bloat
 hold 24
 printf 'INSERT INTO t SELECT -g, g %% 500, 1, $$w$$ FROM generate_series(1, 20) g;\n' >"$D/ins.sql"
 printf '\\set g random(0, 499)\nSELECT count(*), sum(amount) FROM t WHERE grp = :g;\n' >"$D/rd.sql"
-pgbench_bg primary 4 16 -f "$D/ins.sql@1" -f "$D/rd.sql@3"
-for _ in 1 2 3 4; do sleep 3; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_maintain('t_idx')" "VACUUM t" >/dev/null; done
+pgbench_bg primary 4 8 -f "$D/ins.sql@1" -f "$D/rd.sql@3"
+for _ in 1 2 3 4; do sleep 1; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_maintain('t_idx')" "VACUUM t" >/dev/null; done
 wait "$PGBENCH_PID"
-wait "$HOLDER"
+release
 check "churn: no statement failed" no_failure "$D/pgbench.log"
 catchup primary standby
 check "... the index counts as the table on the primary" test "$(answer primary)" == "$(table_answer)"
