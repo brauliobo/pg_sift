@@ -22,6 +22,7 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	PERFORM set_config('sift.enable_col_scan', ios::text, true);
 	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
+	PERFORM set_config('seq_page_cost', CASE WHEN ios THEN '1000' ELSE '1' END, true);	-- the index-only scan is the plan whatever its price against the heap
 	PERFORM set_config('enable_indexscan', 'false', true);
 	PERFORM set_config('enable_indexonlyscan', ios::text, true);
 	PERFORM set_config('enable_bitmapscan', 'false', true);

@@ -50,8 +50,9 @@
 
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
-#define COL_SCAN_EMIT_IOS	0.07	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 0.1 us a row for an index of 3 columns, 0.16 for 12 and 0.22 for 28 (100,000 rows: 3 to 22 ms where the heap of 80 columns takes 6.7 ms), so 0.07 and */
-#define COL_SCAN_EMIT_IOS_COL	0.005	/* ... for each column of the index; the TID of the bitmap node takes 10 ns */
+#define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
+#define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
+#define COL_SCAN_EMIT_IOS_VAR	0.06	/* ... and for each text column the plan reads, which is formed by the path of a variable width (115 ns a row with one, 56 without); the TID of the bitmap node takes 10 ns */
 
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 
@@ -148,6 +149,21 @@ redundant_scans(PlannerInfo *root, IndexPath *path, Bitmapset **narrowed)
 	return redundant;
 }
 
+/* the text columns (the ones with a collation) of the index that the plan reads */
+static int
+ios_var_columns(IndexOptInfo *index)
+{
+	Bitmapset  *used = NULL;
+	int			n = 0;
+
+	pull_varattnos((Node *) index->rel->reltarget->exprs, index->rel->relid, &used);
+	foreach_node(RestrictInfo, ri, index->rel->baserestrictinfo)
+		pull_varattnos((Node *) ri->clause, index->rel->relid, &used);
+	for (int col = 0; col < index->nkeycolumns; col++)
+		n += OidIsValid(index->indexcollations[col]) && bms_is_member(index->indexkeys[col] - FirstLowInvalidHeapAttributeNumber, used);
+	return n;
+}
+
 /*
  * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
@@ -214,7 +230,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
 		+ (repeat > 1.0 && path->path.pathtype == T_IndexScan ? idx_rows * COL_SCAN_FETCH * scale : 0.0)
-		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns : COL_SCAN_EMIT) + cpu_index_tuple_cost);
+		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns + COL_SCAN_EMIT_IOS_VAR * ios_var_columns(index) : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = Max(costs.indexTotalCost, rescan);
