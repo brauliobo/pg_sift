@@ -42,7 +42,7 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 
-#define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
+#define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
 
 bool
 claim(Relation index, uint64 gen, bool wait)
@@ -804,8 +804,12 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 		sift_dir_read(index, snap);
 		if ((sel->n = pick_merge(index, snap, force, goal, sel)) == 0)
 			break;
+		/* a pick that met claimed segments learned them (at least one more), so it is not a try: the policy offers the rest next, and a step that leaves the claimed ones to their owners reaches a merge of its own */
 		if (!claim_all(index, sel))
+		{
+			tries--;
 			continue;
+		}
 		if (all_there(index, sel))
 			r = run_step(index, propagate, merge_segments, sel);
 		for (int i = 0; i < sel->n; i++)
