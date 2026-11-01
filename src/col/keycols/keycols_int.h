@@ -33,6 +33,10 @@
 #define GORD_TEXT_SPEEDUP	300.0	/* S of ORDER BY txt LIMIT 10 on a table at the 100,000-row floor: 82.8 M to 0.27 M instructions (3,000,000 rows 2,429 M to 0.86 M, so the floor is the least) */
 #define GORD_TEXT_WRITE_C	62.0	/* W: CREATE INDEX of (id, text, timestamp, int4) with the text array under the C collation 2.84 G to 4.62 G instructions (500,000 rows) */
 #define GORD_TEXT_WRITE_LOC	420.0	/* ... under a locale (pt_BR.UTF-8), 2.83 G to 14.73 G: the sort of the strings by strcoll. Both for 4 columns; the share of a wider index is smaller */
+#define GORD_TIES_OFFSET	10000	/* a date or timestamp column of fewer than GORD_AUTO_DISTINCT values is chosen by the default formula too, for ORDER BY col, key LIMIT n OFFSET GORD_TIES_OFFSET: the units read every row of the table, the array the rows of the groups the offset ends in */
+#define GORD_TIES_SPEEDUP	0.37	/* S = this * rows / (GORD_TIES_OFFSET + the rows of the largest group, the NULL ones or a value's): 300,000 rows of a date, 365 values 113.4 M to 10.6 M instructions (S 10.7), 100 values 113.6 to 14.9 (7.6), 30 values 114.7 to 27.9 (4.1), 3 values 207 to 215 (0.96) */
+#define GORD_TIES_BYTES		3.0		/* the bytes a row of that array (2.3 to 3.3 measured for a date) */
+#define GORD_TIES_WRITE		11.0	/* W: CREATE INDEX of 7 columns with a date array 475 ms to 530 ms; the share of a wider index is smaller */
 #define GORD_TEXT_WIDTH		64		/* the array holds the strings again (8.8 bytes a row for 9-byte strings, 38 for 61, 100 for 101: the index grows 77%, 158%, 330%): a column of longer strings is left to order_array_columns by name */
 #define GORD_ROW_OVERHEAD	1.3		/* the bytes a row of an index beyond the bits of its distinct values (units, zones, presence): 3.73 measured against 2.4 estimated for one timestamp column */
 #define GORD_GROUP_DISTINCT	100		/* the group of a time column's arrays: an integer of this many distinct values or more (an entity), at most one in GORD_GROUP_DEPTH rows of the table apiece (the 24 bytes of a group stay under a tenth of the 5 of an entry) */
@@ -41,6 +45,7 @@
 
 extern AttrNumber	keycols_heap_attno(Relation index, const SiftColDef *d);
 extern double	keycols_heap_rows(Relation heap);
+extern double	keycols_col_nullfrac(Relation heap, AttrNumber hatt);
 extern bool	keycols_col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32 *width);
 extern bool	keycols_ends_in_id(const char *name);
 extern bool	keycols_is_fk_column(Relation heap, AttrNumber attno);

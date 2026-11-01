@@ -52,6 +52,20 @@ keycols_col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *cor
 	return true;
 }
 
+/* The share of the rows of the table that are NULL in a column (0 without statistics) */
+double
+keycols_col_nullfrac(Relation heap, AttrNumber hatt)
+{
+	HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false));
+	double		f;
+
+	if (tp == NULL)
+		return 0;
+	f = ((Form_pg_statistic) GETSTRUCT(tp))->stanullfrac;
+	ReleaseSysCache(tp);
+	return f;
+}
+
 /* about how many bytes a row of the index takes for a column, from its statistics: the bits of its distinct values, and the strings of a dictionary, at most its width */
 double
 keycols_est_col_bytes(Relation heap, const FormData_pg_attribute *att, double d, int32 width)

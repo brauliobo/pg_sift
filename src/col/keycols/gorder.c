@@ -16,6 +16,7 @@ typedef struct GordCand
 	int			leaf;
 	bool		time;			/* a date or a timestamp: a range or an ORDER BY .. LIMIT is what it is read by */
 	bool		text;			/* a text or varchar column: ORDER BY .. LIMIT is what it is read by */
+	bool		ties;			/* fewer than GORD_AUTO_DISTINCT values: weighed like a text column, by the OFFSET that ends in a group of equal keys */
 	double		corr;
 	double		bytes;			/* a text column: the bytes a row of its array, the share of the build it adds, and its collation */
 	double		write;
@@ -92,6 +93,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		bool		cut = false;
 
 		bool		text = sift_cgord_leaf_text(d);
+		bool		ties;
 
 		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_numeric(rel->schema, d)))
 			continue;
@@ -99,9 +101,22 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			cut |= rel->cut[k] == c;
 		if (cut && sift_col_key_cut(rel))
 			continue;
-		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR || (text && width > GORD_TEXT_WIDTH))
+		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || (text && width > GORD_TEXT_WIDTH))
 			continue;
-		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, cr, 0, 0, 0, 0};
+		ties = ndistinct < GORD_AUTO_DISTINCT;
+		if (ties && (text || !sift_cgord_leaf_time(d) || ndistinct < 2))
+			continue;
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, cr, 0, 0, 0, 0};
+		if (ties)
+		{
+			double		rows = keycols_heap_rows(heap),
+						nullfrac = keycols_col_nullfrac(heap, hatt),
+						group = rows * Max(nullfrac, (1.0 - nullfrac) / ndistinct);
+
+			cand[ncand].bytes = GORD_TIES_BYTES;
+			cand[ncand].write = GORD_TIES_WRITE * 7.0 / index->rd_index->indnatts;
+			cand[ncand].benefit = Max(GORD_TIES_SPEEDUP * rows / (GORD_TIES_OFFSET + group), 1.0);
+		}
 		if (text)
 		{
 			/*
@@ -133,6 +148,15 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		if (cand[i].text)
 		{
 			double		b = log2(GORD_TEXT_SPEEDUP) / log2(1.05),
+						cost = cand[i].bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
+
+			fit[i] = b > cost;
+			cand[i].benefit = b;
+			cand[i].cost = cost;
+		}
+		else if (cand[i].ties)
+		{
+			double		b = log2(cand[i].benefit) / log2(1.05),
 						cost = cand[i].bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
 
 			fit[i] = b > cost;
@@ -174,6 +198,15 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			pick[npick++] = cand[i].leaf;
 			ntext += cand[i].text;
 			nends += !cand[i].text;
+			if (cand[i].ties)
+			{
+				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
+
+				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chose the column \"%s\" of few values: benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
+								 errdetail("ORDER BY %s, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index) and CREATE INDEX about %.0f%% longer.",
+										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write),
+								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
+			}
 			if (cand[i].text)
 			{
 				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
