@@ -52,8 +52,11 @@ memo_grow_tab(StemMemo *m)
 	m->tabmask = size - 1;
 	for (uint32 off = 0; off < m->used;)
 	{
-		const uint16 *h = (const uint16 *) (m->arena + off);
-		uint32		i = (uint32) sift_term_hash((const char *) (h + 2), h[0]) & m->tabmask;
+		uint16		h[2];
+		uint32		i;
+
+		memcpy(h, m->arena + off, sizeof(h));
+		i = (uint32) sift_term_hash(m->arena + off + sizeof(h), h[0]) & m->tabmask;
 
 		while (m->tab[i])
 			i = (i + 1) & m->tabmask;
@@ -76,13 +79,15 @@ memo_stem(StemMemo *m, MemoStemFn fn, void *ctx, char *w, int n)
 	i = (uint32) sift_term_hash(w, n) & m->tabmask;
 	for (; m->tab[i]; i = (i + 1) & m->tabmask)
 	{
-		const uint16 *h = (const uint16 *) (m->arena + m->tab[i] - 1);
+		const char *e = m->arena + m->tab[i] - 1;
+		uint16		h[2];
 
-		if (h[0] == n && memcmp(h + 2, w, n) == 0)
+		memcpy(h, e, sizeof(h));
+		if (h[0] == n && memcmp(e + sizeof(h), w, n) == 0)
 		{
 			if (h[1] == MEMO_STOP)
 				return -1;
-			memcpy(w, (const char *) (h + 2) + n, h[1]);
+			memcpy(w, e + sizeof(h) + n, h[1]);
 			return h[1];
 		}
 	}
