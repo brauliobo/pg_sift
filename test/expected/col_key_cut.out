@@ -32,7 +32,7 @@ SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_
 SELECT kind, format FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
    kind    | format 
 -----------+--------
- immutable |     12
+ immutable |     38
 (1 row)
 
 CREATE FUNCTION kchk(step text) RETURNS TABLE (after_step text, shape text, result text) LANGUAGE plpgsql AS $$

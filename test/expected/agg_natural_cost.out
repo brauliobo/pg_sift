@@ -13,6 +13,12 @@ INSERT INTO nc_rows SELECT i, 1 + (i - 1) / 500, date '2025-01-01' + (hashint4(i
 	jsonb_build_object('catg_j', 1 + i % 10, 'value', 1 + (i * 7) % 10, 'catg_e', 1 + (i * 3) % 10) FROM generate_series(1, 200000) i;
 CREATE INDEX nc_rows_entity ON nc_rows (dim_a_id, day);
 CREATE INDEX nc_rows_col ON nc_rows USING sift_col (id, dim_a_id, day, deleted_at, metrics_a) WITH (paths = 'metrics_a.* float8');
+NOTICE:  sift_col index "nc_rows_col": order_array_columns = 'auto' chose the column "day" of few values: benefit 40 against cost 19
+DETAIL:  ORDER BY day, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about 3 bytes a row (48% of the index) and CREATE INDEX about 15% longer.
+HINT:  ALTER INDEX nc_rows_col SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = 'day' keeps it by name.
+NOTICE:  sift_col index "nc_rows_col": order_array_columns = 'auto' adds the sorted keys and heap addresses of day
+DETAIL:  2.6 bytes a row for each column, 0.5 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: day: the whole order (a bound in the middle of its values reads many units)
+HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 VACUUM (FREEZE, ANALYZE) nc_rows;
 ANALYZE nc_entities;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
