@@ -16,6 +16,11 @@ STRUCTURES = ('heap', 'btree', 'gin', 'sift')
 STATES = ('fresh_vacuumed', 'fresh_unvacuumed', 'churned_vacuumed', 'churned_unvacuumed')
 ORDERS = ('arrival', 'sorted', 'hash', 'other')
 KINDS = ('read', 'maintenance', 'load')
+MAINTENANCE = ('default', 'disabled')
+IDENTITY = ('data_directory', 'config_file', 'hba_file', 'ident_file', 'external_pid_file', 'port', 'unix_socket_directories', 'unix_socket_group', 'unix_socket_permissions', 'listen_addresses',
+            'application_name', 'cluster_name', 'client_encoding', 'DateStyle', 'TimeZone', 'log_timezone', 'default_text_search_config', 'lc_messages', 'lc_monetary', 'lc_numeric', 'lc_time',
+            'lc_collate', 'lc_ctype', 'log_directory', 'log_filename', 'logging_collector', 'log_line_prefix', 'log_destination', 'shared_preload_libraries', 'dynamic_library_path',
+            'max_connections', 'IntervalStyle', 'extra_float_digits', 'server_encoding', 'bytea_output', 'client_min_messages', 'log_min_messages', 'statement_timeout', 'search_path')   # names, not behaviour
 MODES = ('forced', 'default')
 TEMPS = ('warm', 'cold')
 SCOPES = ('backend', 'cluster')
@@ -75,6 +80,9 @@ FIELDS = [
     ('shared_buffers_mb', 'f', True, 'shared_buffers'),
     ('work_mem_mb', 'f', True, 'work_mem'),
     ('pg_version', 's', True, 'the server version'),
+    ('settings', 's', False, 'every setting that is not the default (name=value, sorted, `;` between), the cluster and the session before the arm forced anything'),
+    ('settings_hash', 's', True, 'ten hex digits of `settings`: two rows compared have the same one'),
+    ('maintenance', 's', True, 'default, or disabled when a switch that turns the maintenance off is set (autovacuum, sift.col_auto_merge, sift.async_maintenance, a sift.test_* setting)'),
 ]
 COLUMNS = [f[0] for f in FIELDS]
 TYPE = {f[0]: f[1] for f in FIELDS}
@@ -155,3 +163,23 @@ def doc_table():
 
 if __name__ == '__main__':
     print(doc_table())
+
+
+def settings_text(pairs):
+    """name=value;... of the settings that are not the default, without the names that only identify the server (IDENTITY), sorted"""
+    return ';'.join('%s=%s' % (k, v) for k, v in sorted(pairs.items()) if k not in IDENTITY)
+
+
+def settings_hash(pairs):
+    return hashlib.sha1(settings_text(pairs).encode()).hexdigest()[:10]
+
+
+def maintenance_switches(pairs):
+    """the settings that turn the maintenance off: autovacuum = off, a sift setting of automatic or asynchronous maintenance off, any sift.test_* setting. A state measured with one of them
+    (dead rows no VACUUM took, segments no merge joined) may not exist with the defaults"""
+    out = []
+    for k, v in sorted(pairs.items()):
+        low = str(v).lower()
+        if k.startswith('sift.test_') or (k == 'autovacuum' and low in ('off', 'false', '0')) or (k.startswith('sift.') and re.search(r'auto|async|maint', k) and low in ('off', 'false', '0')):
+            out.append('%s=%s' % (k, v))
+    return out

@@ -8,6 +8,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
 import check  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 import collect  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402
@@ -17,7 +19,7 @@ BASE = dict(run_id='abc123456789-20261101T000000Z-0001', tip='abc123456789', har
             arm='sift', arm_option='default', picked=1, structure='sift', temp='warm', rep=1, est_cost=100.0, plan_ms=0.1, exec_ms=1.0, wall_ms=1.3, instr_m=5.0, cycles_m=4.0,
             instr_scope='cluster', workers_requested=0, workers_launched=0, heap_hit=10, heap_read=0, btree_hit=0, btree_read=0, gin_hit=0, gin_read=0, sift_hit=30, sift_read=0,
             other_hit=0, other_read=0, os_cache_dropped=None, wal_bytes=0, fpw=1, cpus=4.0, psi_cpu_start=1.0, psi_cpu_end=2.0, psi_io_start=0.0, psi_io_end=0.0, shared_buffers_mb=256.0,
-            work_mem_mb=64.0, pg_version='18.1')
+            work_mem_mb=64.0, pg_version='18.1', settings='', settings_hash='da39a3ee5e', maintenance='default')
 
 
 def clean():
@@ -150,6 +152,12 @@ class Checker(unittest.TestCase):
             ('HEAP ORDER NOT AS DECLARED', first(heap_order='sorted', heap_corr=0.02)),
             ('HEAP ORDER NOT AS DECLARED', every(heap_order='hash', heap_corr=0.99)),
             ('NO RECORDS', []),
+            ('MIXED SETTINGS', first(settings_hash='1111111111')),
+            ('TEST SETTINGS NOT LABELLED', every(settings='sift.col_auto_merge=off', settings_hash='2222222222')),
+            ('TEST SETTINGS NOT LABELLED', every(settings='autovacuum=off', settings_hash='2222222222')),
+            ('TEST SETTINGS NOT LABELLED', every(settings='sift.test_col_net=off', settings_hash='2222222222')),
+            ('LABELLED DISABLED WITHOUT A SWITCH', every(maintenance='disabled')),
+            ('MIXED STATE', first(maintenance='disabled', settings='sift.col_auto_merge=off', settings_hash='2222222222')),
             ('MIXED RUNS', first(run_id='abc123456789-20261101T010000Z-0002')),
             ('TWO STATEMENTS', first(sql_hash='bbbbbbbbbbbb')),
             ('WRONG ARM', first(structure='btree')),
@@ -169,6 +177,25 @@ class Checker(unittest.TestCase):
         for reason, rs in cases:
             with self.subTest(reason=reason):
                 self.assertTrue(any(reason in p for p in problems(rs)), '%s was not refused: %s' % (reason, problems(rs)))
+
+    def test_a_set_labelled_maintenance_disabled_is_accepted_and_says_so(self):
+        rs = clean()
+        for r in rs:
+            r.update(settings='sift.col_auto_merge=off;work_mem=64MB', settings_hash='3333333333', maintenance='disabled')
+        self.assertEqual(problems(rs), [])
+        head = report.report(rs).split('\n')[0]
+        self.assertIn('MAINTENANCE DISABLED', head)
+        self.assertIn('3333333333 (sift.col_auto_merge=off, work_mem=64MB)', head)
+
+    def test_the_report_shows_the_hash_of_default_settings(self):
+        self.assertIn('settings da39a3ee5e (all default)', report.report(clean()).split('\n')[0])
+
+    def test_the_hash_ignores_what_only_names_the_server_and_sees_what_changes_behaviour(self):
+        a = schema.settings_hash({'work_mem': '64MB', 'port': '5432'})
+        self.assertEqual(a, schema.settings_hash({'work_mem': '64MB', 'port': '6000', 'data_directory': '/x'}))
+        self.assertNotEqual(a, schema.settings_hash({'work_mem': '4MB'}))
+        self.assertEqual(schema.maintenance_switches({'autovacuum': 'on', 'sift.col_auto_merge': 'on', 'work_mem': '1MB'}), [])
+        self.assertEqual(schema.maintenance_switches({'autovacuum': 'off', 'sift.async_maintenance': 'off'}), ['autovacuum=off', 'sift.async_maintenance=off'])
 
     def test_instructions_of_the_cluster_with_workers_are_accepted(self):
         rs = clean()

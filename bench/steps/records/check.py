@@ -8,6 +8,8 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   one state       the same table state, heap order, keys, visibility and the same server settings (shared_buffers, work_mem, version, cpus, full_page_writes)
   one text        one sql_hash for the statement name, one protocol (a round is not an average of rounds)
   a true heap     a declared heap order is the one measured (sorted: correlation above 0.9, hash: under 0.1)
+  same settings   one settings_hash (every setting that is not the default) and one maintenance label; a switch that turns the maintenance off (autovacuum, sift.col_auto_merge,
+                  sift.async_maintenance, sift.test_*) is refused unless the set is labelled `maintenance disabled`, and the label without a switch is refused
   true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
   a picked flag   the default plan is in the set (mode default), and each forced arm says whether it is that plan (same structure and option)
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
@@ -28,7 +30,7 @@ MIN_REPS = 3
 PSI_SPREAD = 10.0
 NOISY_PSI = 10.0
 NOISY_CV = 10.0
-SAME = ('table_state', 'protocol', 'heap_order', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
+SAME = ('table_state', 'protocol', 'settings_hash', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
 ALLVISIBLE_SPREAD = 5.0
 
 
@@ -44,6 +46,14 @@ def one_record(r):
     for c, allowed in (('table_state', schema.STATES), ('heap_order', schema.ORDERS), ('kind', schema.KINDS), ('mode', schema.MODES), ('temp', schema.TEMPS), ('structure', schema.STRUCTURES + ('mixed',)), ('instr_scope', schema.SCOPES)):
         if r.get(c) not in (None,) + allowed:
             out.append('%s: %s "%s" is none of %s' % (where(r), c, r.get(c), '/'.join(allowed)))
+    if r.get('maintenance') not in (None,) + schema.MAINTENANCE:
+        out.append('%s: maintenance "%s" is none of %s' % (where(r), r.get('maintenance'), '/'.join(schema.MAINTENANCE)))
+    pairs = dict(kv.split('=', 1) for kv in (r.get('settings') or '').split(';') if '=' in kv)
+    switches = schema.maintenance_switches(pairs)
+    if switches and r.get('maintenance') == 'default':
+        out.append('%s: TEST SETTINGS NOT LABELLED: %s turns the maintenance off, so the state measured may not exist with the defaults; label the set maintenance disabled' % (where(r), ', '.join(switches)))
+    if not switches and r.get('maintenance') == 'disabled':
+        out.append('%s: LABELLED DISABLED WITHOUT A SWITCH: no setting turns the maintenance off' % where(r))
     if r.get('arm') not in schema.STRUCTURES:
         out.append('%s: arm "%s" is none of %s' % (where(r), r.get('arm'), '/'.join(schema.STRUCTURES)))
     if (r.get('rep') or 0) < 1:
@@ -66,7 +76,7 @@ def comparison_problems(key, rs, min_reps, psi_spread):
         if len(vals) > 1:
             a = rs[0]
             b = next(r for r in rs if r.get(c) != a.get(c))
-            what = 'MIXED STATE' if c in ('table_state', 'protocol', 'heap_order', 'keys', 'rows_per_key', 'kind') else 'MIXED SETTINGS'
+            what = 'MIXED STATE' if c in ('table_state', 'protocol', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'kind') else 'MIXED SETTINGS'
             out.append('%s: %s: %s is %s at %s and %s at %s' % (name, what, c, a.get(c), where(a), b.get(c), where(b)))
     vis = [r['allvisible_pct'] for r in rs if r.get('allvisible_pct') is not None]
     if vis and max(vis) - min(vis) > ALLVISIBLE_SPREAD:

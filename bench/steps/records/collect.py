@@ -57,9 +57,10 @@ class Arm:
 
 
 class Env:
-    """the build and the harness: the commit (12 hex digits), the harness name, the run id, the cpu quota and the repetitions"""
+    """the build and the harness: the commit (12 hex digits), the harness name, the run id, the cpu quota, the repetitions and whether the server runs with the maintenance disabled"""
 
-    def __init__(self, tip, harness, run, cpus, reps=3, perf=True, cool=None):
+    def __init__(self, tip, harness, run, cpus, reps=3, perf=True, cool=None, maintenance='default'):
+        self.maintenance = maintenance   # 'disabled' declares that the server runs with the maintenance off (a test cluster's configuration): check.py refuses the set otherwise
         self.tip, self.harness, self.run_id, self.cpus, self.reps, self.perf, self.cool = tip, '%s %s' % (harness, schema.LIBRARY), run, cpus, reps, perf, cool
 
 
@@ -171,6 +172,17 @@ def server_env(s):
     return dict(fpw=1 if fpw == 'on' else 0, shared_buffers_mb=pg_bytes_mb(sb), work_mem_mb=pg_bytes_mb(wm), pg_version=ver.split()[0])
 
 
+def settings_of(s):
+    """{name: value} of every setting that is not the default: the cluster (files, command line) and the session as it is before an arm forces anything"""
+    rows = s.run("SELECT name || '=' || current_setting(name) FROM pg_settings WHERE source NOT IN ('default', 'override') ORDER BY name")[1]
+    return dict(r.split('=', 1) for r in rows if '=' in r)
+
+
+def session_base(s):
+    """the statements that restore the settings the harness made in this session (RESET ALL between arms would drop them)"""
+    return ["SELECT set_config('%s', '%s', false)" % (n.replace("'", "''"), v.replace("'", "''")) for n, v in (r.split('|', 1) for r in s.run("SELECT name || '|' || setting FROM pg_settings WHERE source = 'session'")[1] if '|' in r)]
+
+
 def index_methods(s):
     """{index name: access method} of the database"""
     return dict(r.split('|') for r in s.run("SELECT c.relname || '|' || am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i'")[1] if r)
@@ -257,11 +269,14 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     post = postmaster_pid(pid)
     index_am = index_methods(s)
     srv = server_env(s)
+    pairs = settings_of(s)
+    restore = session_base(s)
     vis, corr, structures = table_facts(s, subject.table, subject.key)
     base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, rows=subject.rows, keys=subject.keys,
                 rows_per_key=(subject.rows / subject.keys) if subject.keys else None, heap_order=subject.heap_order, heap_corr=corr, table_state=subject.table_state,
                 allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(sql), kind=subject.kind, protocol=subject.protocol,
-                cpus=env.cpus, **srv)
+                cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),
+                maintenance=env.maintenance, **srv)
     out, default = [], None
     for mode, arm in [('default', Arm('sift', settings=[]))] + [('forced', a) for a in arms]:
         text = arm.sql or sql
@@ -271,6 +286,8 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
             rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, index_am, prepare, monitor, temps)
         finally:
             s.run('RESET ALL')
+            for st in restore:
+                s.run(st)
         if mode == 'default':
             for r in rows:
                 r['arm'], r['arm_option'], r['picked'] = r['structure'], subject.default_option, 1

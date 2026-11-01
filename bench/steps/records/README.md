@@ -71,6 +71,9 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `shared_buffers_mb` | number | yes | shared_buffers |
 | `work_mem_mb` | number | yes | work_mem |
 | `pg_version` | text | yes | the server version |
+| `settings` | text |  | every setting that is not the default (name=value, sorted, `;` between), the cluster and the session before the arm forced anything |
+| `settings_hash` | text | yes | ten hex digits of `settings`: two rows compared have the same one |
+| `maintenance` | text | yes | default, or disabled when a switch that turns the maintenance off is set (autovacuum, sift.col_auto_merge, sift.async_maintenance, a sift.test_* setting) |
 <!-- /columns -->
 
 ## What the checker refuses
@@ -81,7 +84,8 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 |---|---|
 | MIXED RUNS | one `run_id`: the arms were measured together, on one build, under one load |
 | MIXED STATE | one table state, protocol, heap order, key distribution and visibility |
-| MIXED SETTINGS | one `shared_buffers`, `work_mem`, version, cpu quota, `full_page_writes` and harness |
+| MIXED SETTINGS | one `settings_hash` (every setting that is not the default, the cluster and the session before an arm forces anything), `shared_buffers`, `work_mem`, version, cpu quota, `full_page_writes` and harness; the report header shows the hash and the list |
+| TEST SETTINGS NOT LABELLED / LABELLED DISABLED WITHOUT A SWITCH | a setting that turns the maintenance off (`autovacuum`, `sift.col_auto_merge`, `sift.async_maintenance`, any `sift.test_*`, as a test cluster's configuration sets them) is refused unless the set says `maintenance` = `disabled`, which the report prints in capitals; the label without such a setting is refused too |
 | TWO STATEMENTS | one `sql_hash` for a statement name |
 | HEAP ORDER NOT AS DECLARED | `sorted` needs a measured correlation above 0.9, `hash` under 0.1 |
 | WRONG ARM | a forced arm is the structure its EXPLAIN names (a mixed plan is no arm) |
@@ -115,6 +119,7 @@ Each row is a way a reported number was wrong or had to be revised, and the colu
 | a baseline file of an older harness compared with a new run | `harness` with the library version and one `run_id` |
 | a number that held for one setting of a structure stated for all | `arm_option` carries the options that changed the structure |
 | one round quoted as the average of twelve | `protocol` |
+| a state measured on a cluster whose configuration turned the maintenance off (dead rows no VACUUM took, segments no merge joined), reported as the default's | `settings`, `settings_hash`, `maintenance`: TEST SETTINGS NOT LABELLED, MIXED SETTINGS |
 | a time taken while the host was busy beside one taken while it was not | `psi_*`: DIFFERENT LOAD, the noisy mark |
 | a pass read from an empty output | NO RECORDS, and the count of rows the tools print |
 | a CHANGELOG figure that no longer matches the measurement | the claims check against the records |

@@ -98,15 +98,17 @@ def report(records, tsv=False):
     out = []
     for key, rs in sorted(groups.items(), key=lambda kv: str(kv[0])):
         a = rs[0]
+        extra = ', settings %s%s%s' % (a['settings_hash'], (' (%s)' % a['settings'].replace(';', ', ')) if a.get('settings') else ' (all default)',
+                                      ', MAINTENANCE DISABLED' if a['maintenance'] == 'disabled' else '')
         for title, t in (('warm', warm_table(rs)), ('cold', cold_table(rs))):
             if not t:
                 continue
             if tsv:
                 out += ['\t'.join([a['run_id'], a['statement'], a['dataset'], str(a['rows']), title] + row) for row in t[1:]]
             else:
-                out.append('**%s**, %s, %s rows, %s: run %s, %s, heap %s, %s%% all-visible, shared_buffers %s MB, work_mem %s MB, %s cpus, PostgreSQL %s\n\n%s' % (
+                out.append('**%s**, %s, %s rows, %s: run %s, %s, heap %s, %s%% all-visible, shared_buffers %s MB, work_mem %s MB, %s cpus, PostgreSQL %s%s\n\n%s' % (
                     a['statement'], a['dataset'], format(a['rows'], ','), title, a['run_id'], a['table_state'].replace('_', ' '), a['heap_order'], fmt(a.get('allvisible_pct'), 0), fmt(a['shared_buffers_mb'], 0),
-                    fmt(a['work_mem_mb'], 0), fmt(a['cpus'], 1), a['pg_version'], table_md(t)))
+                    fmt(a['work_mem_mb'], 0), fmt(a['cpus'], 1), a['pg_version'], extra, table_md(t)))
     return '\n'.join(out) + ('\n' if tsv else '')
 
 
