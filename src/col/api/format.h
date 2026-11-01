@@ -44,7 +44,7 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_ADDRPACK	38	/* 3.7: the addresses of a chunk of a global order are coded with the bits of the largest offset of the chunk, and as gaps inside a run of equal keys where that is smaller */
 #define SIFT_COL_FORMAT_DICTPACK	39	/* 3.7: the order of a dictionary that is searched in place (code[], DICT_PERM_PACKED) takes the bits of a code where it took 32 */
 #define SIFT_COL_FORMAT_ENDORD	40	/* 3.8: the global order of a leaf the build chose (order_array_columns 'auto') holds the ends of a segment of many rows only */
-#define SIFT_COL_FORMAT_ORDLAYOUT	41	/* 3.8: the global order of a leaf may be a compact block (order_layout = compact: the key of every 32nd entry, the others read from the heap row) or a merge sequence (order_layout = sequence) */
+#define SIFT_COL_FORMAT_ORDLAYOUT	41	/* 3.8: the global order of a leaf may be a compact block (order_layout = compact: the heap address of every row and its key to within a bucket, the exact key read from the heap row) */
 #define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_ORDLAYOUT	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128

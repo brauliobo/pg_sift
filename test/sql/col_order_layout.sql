@@ -22,7 +22,10 @@ SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
 -- the layout names every column, the array is only on ts: the option adds none
 CREATE INDEX u_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'ts', order_layout = 'compact');
 SELECT format FROM sift.col_segments('u_ix') WHERE kind = 'immutable';
-SELECT sift.col_verify('t_ix'), sift.col_verify('u_ix');
+-- the whole order of the same columns, and the minor the notice names for each
+CREATE INDEX w_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'ts', order_layout = 'whole');
+SELECT format FROM sift.col_segments('w_ix') WHERE kind = 'immutable';
+SELECT sift.col_verify('t_ix'), sift.col_verify('u_ix'), sift.col_verify('w_ix');
 
 -- ordered results are the table's, with a write buffer
 INSERT INTO t SELECT 20000 + i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 minute', DATE '2026-06-01', 'm' || i FROM generate_series(1, 300) i;
