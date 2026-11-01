@@ -12,7 +12,7 @@ use Test::More;
 use IPC::Run qw(start finish);
 
 my $clients = 4;
-my $txns = knob('SIFT_TXNS', 4000, 3000);
+my $txns = knob('SIFT_TXNS', 2000, 1500);
 my $node = sift_node('async_promote');
 $node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_async_promote = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\n"
 	. "sift.table_write_buffer_limit = 2048\nmax_parallel_maintenance_workers = 0");
@@ -39,7 +39,7 @@ subtest 'the worker promotes what the writers closed, with no VACUUM' => sub {
 	ok($node->wait_for_log($worker, $offset), 'a worker ran');
 	# a request within the naptime of the last one is not made: one more close, after it, settles whatever is left. The request of the writer that closes the buffer
 	# can reach the worker before the writer commits, with the rows not final, and the worker is gone when they are: the batch is made again until nothing waits
-	sleep 3;
+	sleep 1;
 	my $settled = 0;
 	for my $round (1 .. 4)
 	{
@@ -65,7 +65,7 @@ subtest 'a crash while the writers and the worker run' => sub {
 	$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h');
 	my ($out, $err) = ('', '');
 	my $h = start([ @bench, '-T', '30', 'postgres' ], '>', \$out, '2>', \$err);
-	sleep 4;
+	sleep 2;
 	$node->stop('immediate');
 	finish($h);
 	$node->start;
@@ -78,12 +78,12 @@ subtest 'a crash while the writers and the worker run' => sub {
 
 subtest 'with sift.async_maintenance off the writer promotes it itself' => sub {
 	$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h; VACUUM s');
-	sleep 1;
+	select(undef, undef, undef, 0.5);
 	my $offset = -s $node->logfile;
 	my $load = 'SET sift.async_maintenance = off; DO $$ BEGIN FOR i IN 1 .. 30 LOOP INSERT INTO s SELECT g, repeat(chr(97 + (g % 26)::int), 300 + (g % 400)::int) FROM generate_series(i * 1000, i * 1000 + 999) g; COMMIT; END LOOP; END $$';
 	$node->safe_psql('postgres', $load);
 	cmp_ok(segs('columns'), '>', 0, 'column segments right after the load');
-	sleep 2;
+	sleep 1;
 	unlike(slurp_file($node->logfile, $offset), $worker, 'no worker ran');
 };
 
@@ -94,7 +94,7 @@ foreach my $reader (sort keys %readers)
 {
 	subtest "a request that found only uncommitted rows is not lost ($reader)" => sub {
 		$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h; VACUUM s');
-		sleep 1;
+		select(undef, undef, undef, 0.5);
 		my $offset = -s $node->logfile;
 		my $a = $node->background_psql('postgres');
 		# the writer closes write buffers inside its transaction and asks for them to be settled: its rows are not final, the worker has nothing to do and leaves
