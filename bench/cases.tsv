@@ -234,13 +234,17 @@ page_deep_offset	page_deep_offset	events	-	Top-N: ts DESC NULLS LAST, id	native	
 scope_exists_any_array	scope_exists_any_array	events	-	fallback:Seq Scan on dims	native	-	ms	faster33	no	-
 search_scope_filter	search_scope_filter	events	-	Custom Scan \(SiftScan	native	-	ms	faster33	no	-
 flags_or_null_range	flags_or_null_range	events	-	fallback:Bitmap Heap Scan	native	-	ms	faster33	no	-
-time_event_buckets	time_event_buckets	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+time_event_buckets	a `GROUP BY` over a `UNION ALL` of selects (a queue's depth over time	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 live_counts_by_dim	live_counts_by_dim	events	-	fallback:Seq Scan	native	-	ms	faster33	no	-
 upsert_returning_conflict	upsert_returning_conflict	events	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no	-
 series_snapshot_windows	series_snapshot_windows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 ledger_rollup_grain	ledger_rollup_grain	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 count_key_outside_index	count_key_outside_index	events	-	fallback:Seq Scan on ck_snaps	native	-	ms	faster33	no	-
 topn_list_page_ordered_walk	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-
+topn_soft_delete_filter_page	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+topn_page_after_scattered_updates	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+topn_text_key_tiebreak_page	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+topn_equality_filter_page	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 topn_list_page_not_exists	a page of a list that excludes a scope with `NOT EXISTS (SELECT .. WHERE k = f.k)`	orders	default	Top-N: created_at	native	btree:search_path = topn_not_exists_btree	ms	faster33	no	-
 topn_deep_offset_heap_priced	the scan prices the heap of a deep page (`OFFSET` past 1,024	orders	default	Top-N: created_at DESC	native	btree:search_path = topn_deep_offset_btree	ms	faster33	no	-
 wbuf_narrowest_condition_first	the write buffers are searched by their narrowest condition	events	-	Index Only Scan using wb_narrow_col	native	-	ms	faster33	no	-
