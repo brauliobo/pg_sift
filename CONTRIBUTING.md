@@ -55,6 +55,8 @@ rules out is `SIFT_INVARIANT(cond, "text")` (`core/host.h`, an `Assert` in an as
 damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the lint job and `scripts/ci.sh`; a test-only hook outside a `*_test.c` file says `check-errors: allow` in a
 comment on the call.
 
+**Messages have a row.** Every NOTICE, WARNING and INFO of `src/` and `sql/` is one row of `docs/messages.tsv` (the exact text, where and when, the decision, its benefit and trade-off with numbers quoted from `docs/options.tsv` or a cited file, how to switch it off), and `docs/MESSAGES.md` is generated from the rows. `scripts/gen-messages.sh --skeleton` prints the row of a message that has none, `scripts/gen-messages.sh` writes the page, and `scripts/gen-messages.sh --check` (lint) fails on a message without a row, a row without a message, a changed text, DETAIL or HINT, and a number that is in no cited measurement.
+
 **No source file passes 1000 lines.** A longer C file, header, script, SQL or Python file is split into a directory of context files (`src/<area>/<context>/*.c` and a small private header), a pure move first, then the change. `scripts/check-file-size.sh` enforces it in the lint job; documents, expected outputs and result tables are not counted, and the full install scripts of released minors (`sql/pg_sift--X.Y.sql`, frozen) are the one allowance.
 
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and

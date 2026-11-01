@@ -221,6 +221,8 @@ Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-op
 166 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
 <!-- sift-options:end -->
 
+Every NOTICE, WARNING and `VACUUM VERBOSE` line of the library, with the decision it reports, its benefit and trade-off in numbers, and the switch that changes it, is one row of [docs/MESSAGES.md](docs/MESSAGES.md).
+
 ## Vulkan (experimental)
 
 Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|on` (`auto`: grouped aggregates on indexes of at least `sift.gpu_min_rows`, <!-- gen:guc:sift.gpu_min_rows -->5,000,000<!-- /gen:guc:sift.gpu_min_rows --> rows; `on`: also ungrouped). Grouped and filtered integer and `numeric` counts and sums of a `sift_col` index run on a Vulkan device (clean all-visible units on the device, the rest on the CPU in the same query); a missing or failed device falls back to the CPU. The compressed chunks stay on the device, so use persistent connections (each backend pays about 0.2 s to open it). Not eligible: floats, `min`/`max`, `count(DISTINCT)`, text filters, more than one key, `sift_table`. Measurements and limits: [docs/GPU.md](docs/GPU.md#when-it-helps).

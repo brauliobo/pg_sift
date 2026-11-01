@@ -502,6 +502,8 @@ Index what you filter and group by; an expression such as the month above is a c
 
 A `sift_col` index chooses these from the table at `CREATE INDEX` and says each choice in one NOTICE; each is a default that an explicit option replaces, and none changes an answer (the aggregates are the normal plan's).
 
+Every NOTICE of the build, with its trigger, benefit, trade-off and switch, is listed in [MESSAGES.md](MESSAGES.md); the table below is the short form.
+
 | Decision | Rule | NOTICE says | Replace it with |
 |---|---|---|---|
 | Key lists of the foreign keys (`key_columns`) | `int2`, `int4` and `date` foreign keys and `*_id` columns that are not unique and that the cube does not already hold; kept where a key list or bitmap fits 3% of a unit in at least half of the units | the columns kept, their bytes, the columns left out and why | `key_columns = 'off'` or `'a, b'` |
