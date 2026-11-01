@@ -10,6 +10,9 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "access/genam.h"
+#include "parser/parsetree.h"
+#include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "col/pg.h"
@@ -296,6 +299,109 @@ index_holds_columns_read(PlannerInfo *root, IndexOptInfo *ii)
 	return true;
 }
 
+/* the most keys of an IN list for which an index scan with a heap fetch for each competes with the unit reads of SiftAgg (SIFT_CORDER_MAX_KEYS) */
+#define POINT_LOOKUP_KEYS	512
+
+/* whether qual is a constant key or a list of up to POINT_LOOKUP_KEYS of them for a column of the index (of the table heapid) that has a point directory of addresses or an order array */
+static bool
+point_lookup_qual(Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols, const char *ord_cols)
+{
+	Node	   *l,
+			   *r;
+	Var		   *var;
+	Const	   *c;
+	char	   *colname;
+
+	if (IsA(qual, OpExpr) && list_length(((OpExpr *) qual)->args) == 2)
+	{
+		OpExpr	   *op = (OpExpr *) qual;
+		char	   *name = get_opname(op->opno);
+		bool		eq = name != NULL && strcmp(name, "=") == 0;
+
+		if (!eq)
+			return false;
+		l = linitial(op->args);
+		r = lsecond(op->args);
+	}
+	else if (IsA(qual, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) qual)->useOr)
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) qual;
+		char	   *name = get_opname(sa->opno);
+
+		if (name == NULL || strcmp(name, "=") != 0)
+			return false;
+		l = linitial(sa->args);
+		r = lsecond(sa->args);
+	}
+	else
+		return false;
+	if (IsA(qual, OpExpr) && IsA(r, Var) && IsA(l, Const))
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+	}
+	while (IsA(l, RelabelType))
+		l = (Node *) ((RelabelType *) l)->arg;
+	if (!IsA(l, Var) || !IsA(r, Const))
+		return false;
+	var = (Var *) l;
+	c = (Const *) r;
+	if (var->varno != ii->rel->relid || var->varlevelsup != 0 || c->constisnull)
+		return false;
+	if (IsA(qual, ScalarArrayOpExpr))
+	{
+		ArrayType  *arr = DatumGetArrayTypeP(c->constvalue);
+
+		if (ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr)) > POINT_LOOKUP_KEYS)
+			return false;
+	}
+	colname = get_attname(heapid, var->varattno, true);
+	if (colname == NULL)
+		return false;
+	for (int i = 0; i < ii->nkeycolumns; i++)
+		if (ii->indexkeys[i] == var->varattno)
+			return sift_col_list_has(tid_cols, colname) || sift_col_list_has(ord_cols, colname);
+	return false;
+}
+
+/*
+ * A statement that aggregates and asks for the rows of a few keys of a column the index can look up by itself (an equality or an IN list of constants, a directory of heap
+ * addresses or an order array on the column): the rows are a few heap pages away, and SiftAgg reads a unit chunk of each key (about 40 buffer accesses against the 4 of a heap
+ * page), so the index and bitmap paths stay and the costs choose (1,000,000 rows, 60 keys: 0.47 ms of SiftAgg, 0.07 of the index scan with its aggregate).
+ */
+static bool
+point_lookup_only(PlannerInfo *root, IndexOptInfo *ii)
+{
+	Query	   *q = root->parse;
+	Relation	idx;
+	const char *tid_cols,
+			   *ord_cols;
+	List	   *quals;
+	bool		ok = q->jointree != NULL && q->jointree->quals != NULL && list_length(q->jointree->fromlist) == 1 && q->groupClause == NIL && q->groupingSets == NIL &&
+		q->distinctClause == NIL && !q->hasWindowFuncs && q->sortClause == NIL;
+
+	if (!ok)
+		return false;
+	idx = index_open(ii->indexoid, NoLock);
+	tid_cols = sift_col_options_point_tid_columns(idx);
+	ord_cols = sift_col_options_order_array_columns(idx);
+	if (ord_cols == NULL)
+		ord_cols = "";
+	quals = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
+	if (IsA(q->jointree->quals, BoolExpr) && ((BoolExpr *) q->jointree->quals)->boolop == AND_EXPR)
+		quals = ((BoolExpr *) q->jointree->quals)->args;
+	foreach_ptr(Node, qual, quals)
+		if (!point_lookup_qual(qual, ii, planner_rt_fetch(ii->rel->relid, root)->relid, tid_cols, ord_cols))
+		{
+			ok = false;
+			break;
+		}
+	index_close(idx, NoLock);
+	return ok;
+}
+
 static void
 plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 {
@@ -308,7 +414,7 @@ plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 	for (int i = 0; i < ii->nkeycolumns; i++)
 		if (ii->opcintype[i] != ANYELEMENTOID)
 			return;
-	if (!index_holds_columns_read(root, ii))
+	if (!index_holds_columns_read(root, ii) || point_lookup_only(root, ii))
 		return;
 	ii->amhasgetbitmap = ii->amhasgettuple = false;
 }

@@ -57,6 +57,9 @@ table	partitions_count	either	0.13	0.52
 table	partitions_group	either	0.18	0.71
 table	partitions_join	scan	0.18	0.73
 table	partitions_top	either	0.18	0.72
+table	point_day_count	scan	0.36	1.4
+table	point_days_ten	scan	0.042	0.17
+table	point_days_three	scan	0.12	0.49
 table	range_only_by_month	either	0.050	0.18
 table	rank_within_month	scan	0.062	0.19
 table	running_total	scan	0.064	0.20

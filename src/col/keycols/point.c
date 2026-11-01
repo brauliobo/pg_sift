@@ -153,8 +153,8 @@ sift_col_build_gap(Relation heap, Relation index)
 }
 
 /* whether the comma separated list names the leaf ('a, b'; 'auto: a, b' as written by a build) */
-static bool
-in_list(const char *list, const char *name)
+bool
+sift_col_list_has(const char *list, const char *name)
 {
 	bool		autolist;
 	const char *p = sift_cpagg_auto_list(list, &autolist);
@@ -220,7 +220,7 @@ sift_col_auto_point(Relation heap, Relation index)
 		int32		width;
 		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
-		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || (!ordauto && in_list(ordopt, keycols_leaf_name(index, d))) || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
+		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || (!ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d))) || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
 			continue;
 		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || corr >= 0.9 || sift_col_leaf_unique(heap, index, d))
 			continue;

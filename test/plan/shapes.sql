@@ -460,6 +460,18 @@ SELECT kind, count(*) AS n FROM events WHERE parent_id = ANY (ARRAY (SELECT id F
 -- expect: scan 0.09 0.37
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN (1, 2, 3, 4, 5, 6, 7, 8) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
+-- name: point_day_count
+-- expect: scan 0.34 1.4
+SELECT count(*) AS n, sum(amount) AS total FROM events WHERE ts = date '2025-03-01';
+
+-- name: point_days_three
+-- expect: scan 0.12 0.50
+SELECT count(*) AS n, sum(amount) AS total FROM events WHERE ts IN (date '2024-03-01', date '2024-06-01', date '2025-03-01');
+
+-- name: point_days_ten
+-- expect: scan 0.051 0.20
+SELECT count(*) AS n, sum(amount) AS total FROM events WHERE ts IN (date '2024-01-05', date '2024-02-05', date '2024-03-05', date '2024-04-05', date '2024-05-05', date '2024-06-05', date '2024-07-05', date '2024-08-05', date '2024-09-05', date '2024-10-05');
+
 -- name: range_only_by_month
 -- expect: either 0.21 0.70
 SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;

@@ -58,6 +58,9 @@ partitions_count	415
 partitions_group	636
 partitions_join	1205
 partitions_top	684
+point_day_count	397
+point_days_ten	744
+point_days_three	466
 range_only_by_month	679
 rank_within_month	847
 running_total	666
