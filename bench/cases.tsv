@@ -160,6 +160,8 @@ order_array_keyset	the scan takes the whole groups of rows that share a value of
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no	-
 topn_offset_exact	an OFFSET reads the sorted array of the key and does not confirm the entries before it in the heap	orders	default	Global Order: true	native	btree:search_path = topn_offset_btree	ms	faster33	no	-
 topn_offset_deep	an OFFSET past the 100,000 rows a top-N heap holds is walked in the array	orders	default	Global Order: true	native	btree:search_path = topn_offset_deep_btree	ms	faster33	no	-
+order_layout_offset	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = order_layout_offset_whole,btree:search_path = order_layout_offset_btree	ms	faster33	no	-
+order_layout_range	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = order_layout_range_whole,btree:search_path = order_layout_range_btree	ms	faster33	no	-
 group_order_window	emits its groups in that order	orders	default	\([1-9][0-9]* order keys\)	native	-	ms	faster33	no	-
 tpch_shipping_priority_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 tpch_returned_items_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
