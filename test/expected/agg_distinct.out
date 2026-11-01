@@ -1,6 +1,6 @@
 -- SELECT DISTINCT as a group-by with no aggregate: the distinct stage of the planner takes the SiftAgg path. Every query runs with and without
--- the pushdown; the results must be the same. DISTINCT ON picks rows and a window function runs above the grouping: those keep their plan; the
--- DISTINCT of a grouped query stays above the grouping, which is the scan's.
+-- the pushdown; the results must be the same. A window function runs above the grouping and keeps its plan; the DISTINCT of a grouped query stays above the grouping, which is the scan's. DISTINCT ON
+-- picks the first row of each group in the order of the ORDER BY (agg_distinct_on): here the ORDER BY is the select list, so the row it picks has no other column to differ in.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
@@ -38,7 +38,7 @@ INSERT INTO agg_q VALUES
 SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM agg_q) z ORDER BY query COLLATE "C";
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
- SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k                            | f      | t
+ SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k                            | t      | t
  SELECT DISTINCT c IS NULL, k IS NULL, g FROM ds                              | t      | t
  SELECT DISTINCT date_trunc('month', d) FROM ds                               | t      | t
  SELECT DISTINCT date_trunc('month', d), upper(k), g % 3 FROM ds WHERE v > 20 | t      | t
@@ -67,13 +67,15 @@ EXPLAIN (COSTS OFF) SELECT DISTINCT g, k FROM ds;
 (3 rows)
 
 EXPLAIN (COSTS OFF) SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k;
-         QUERY PLAN         
-----------------------------
- Unique
-   ->  Sort
-         Sort Key: g, k
-         ->  Seq Scan on ds
-(4 rows)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Sort
+   Sort Key: g, k
+   ->  Custom Scan (SiftAgg)
+         Index: ds_col
+         Group Keys: g
+         Pushed Aggregates: first_row(ds.k ORDER BY ds.k)
+(6 rows)
 
 DROP TABLE ds, ds_dim, agg_q;
 DROP FUNCTION agg_rows, agg_pushed;
