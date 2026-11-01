@@ -39,6 +39,8 @@ SELECT digest('t') = digest('twin') AS same_rows_after_commit;
 SET enable_seqscan = off;
 SELECT (SELECT count(*) FROM t WHERE grp = 3) = (SELECT count(*) FROM twin WHERE grp = 3) AS btree_agrees;
 SELECT id FROM t WHERE v @@> '31337';
+-- the positions of a promoted segment are read through the table access method (a sift_table has no heap pages)
+SELECT id FROM t WHERE v @@> '"row 31337"';
 RESET enable_seqscan;
 VACUUM t;
 SELECT digest('t') = digest('twin') AS same_rows_after_vacuum, load_path('t');

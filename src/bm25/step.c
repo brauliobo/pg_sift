@@ -31,6 +31,7 @@
 #include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/build.h"
+#include "core/compat.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
@@ -300,7 +301,7 @@ typedef struct DocText
 	IndexInfo  *info;
 	EState	   *estate;
 	TupleTableSlot *slot;
-	HeapTupleData tup;
+	IndexFetchTableData *fetch;
 	SiftAnalyzer *an;
 	BlockNumber nblocks;
 } DocText;
@@ -323,6 +324,7 @@ doctext_open(Relation index)
 	d->info = BuildIndexInfo(index);
 	d->estate = CreateExecutorState();
 	d->slot = table_slot_create(d->heap, NULL);
+	d->fetch = sift_table_index_fetch_begin(d->heap);
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
 	d->nblocks = RelationGetNumberOfBlocks(d->heap);
@@ -336,49 +338,23 @@ doctext_close(DocText *d)
 	if (d == NULL)
 		return;
 	PopActiveSnapshot();
+	table_index_fetch_end(d->fetch);
 	ExecDropSingleTupleTableSlot(d->slot);
 	FreeExecutorState(d->estate);
 	table_close(d->heap, AccessShareLock);
 }
 
-/* The tuple a key stands for, or the member of its HOT chain that the root redirects to, in d->slot; false when it is gone (dead for every snapshot) */
+/* The tuple a key stands for, in d->slot, through the table access method (a sift_table has no heap pages to read); false when it is gone (dead for every snapshot) */
 static bool
 doctext_fetch(DocText *d, const ItemPointerData *tid)
 {
-	BlockNumber blk = ItemPointerGetBlockNumber(tid);
-	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
-	bool		found = false;
-	Buffer		buf;
-	Page		page;
+	ItemPointerData t = *tid;
+	bool		again = false,
+				all_dead = false;
 
-	if (blk >= d->nblocks)
+	if (ItemPointerGetBlockNumber(tid) >= d->nblocks)
 		return false;
-	buf = ReadBuffer(d->heap, blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-	for (int hops = 0; off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page) && hops < MaxHeapTuplesPerPage; hops++)
-	{
-		ItemId		lp = PageGetItemId(page, off);
-
-		if (ItemIdIsRedirected(lp))
-		{
-			off = ItemIdGetRedirect(lp);
-			continue;
-		}
-		if (ItemIdIsNormal(lp))
-		{
-			d->tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
-			d->tup.t_len = ItemIdGetLength(lp);
-			d->tup.t_tableOid = RelationGetRelid(d->heap);
-			ItemPointerSet(&d->tup.t_self, blk, off);
-			ExecStoreBufferHeapTuple(&d->tup, d->slot, buf);
-			found = true;
-		}
-		break;
-	}
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buf);
-	return found;
+	return table_index_fetch_tuple(d->fetch, &t, SnapshotAny, d->slot, &again, &all_dead);
 }
 
 /* The terms of the doc at tid with their position records, as a build analyzes it; false when its row or its text is gone */
