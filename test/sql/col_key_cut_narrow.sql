@@ -9,7 +9,7 @@ INSERT INTO kn SELECT '2020-01-01'::date + (random() * 1826)::int, (random() * 1
 VACUUM (FREEZE, ANALYZE) kn;
 SELECT pg_relation_size('kn') / 8192 / 256 >= 64 AS units_at_least_64,
        (SELECT reltuples FROM pg_class WHERE relname = 'kn') / (pg_relation_size('kn') / 8192 / 256) > 12500 AS rows_a_unit_over_12500;
-CREATE INDEX kn_i ON kn USING sift_col (d, a);
+CREATE INDEX kn_i ON kn USING sift_col (d, a) WITH (order_array_columns = 'off');
 SELECT leaf, sampled, decision, reason IS DISTINCT FROM 'the units are too large for a sample' AS was_sampled FROM sift.key_cut_decision('kn_i');
 DROP TABLE kn;
 

@@ -31,22 +31,18 @@ gord_dense_ok(const SiftColSegWriter *w)
 
 /*
  * Does the order of leaf c keep the ends of the segment only (column format minor 40): the leaf is of the build's own choice ('auto: a, b'), not text, the segment has more values than the two
- * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units (and of the key the units are cut by, so that a slice of few rows
- * counts the units of the slice). A segment that has such a block is of the rooted layout (segw_rooted_ok), which a minor of 37 or more is read as.
+ * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units, whatever key they are cut by (a range across the keys
+ * reads them all, 24 times the cold blocks of the whole order at 1,000,000 rows). A segment that has such a block is of the rooted layout (segw_rooted_ok), which a minor of 37 or more is read as.
  */
 static bool
 gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 {
 	const SiftCZone *zn = w->zones;
-	int			nc = w->schema->ncols,
-				kc = w->keyed ? w->keycol : -1;
+	int			nc = w->schema->ncols;
 	uint32		nsb = w->nsb;
 	int64	   *mn,
-			   *mx,
-			   *kmn,
-			   *kmx;
-	uint32	   *nv,
-			   *knv;
+			   *mx;
+	uint32	   *nv;
 	SiftCGOrdZones z;
 	SiftCGOrdPay pay;
 
@@ -56,32 +52,15 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 	if (sift_test_col_gorder_choice != 0)
 		return sift_test_col_gorder_choice == 1;
 #endif
-	mn = palloc((Size) nsb * 4 * sizeof(int64));
+	mn = palloc((Size) nsb * 2 * sizeof(int64));
 	mx = mn + nsb;
-	kmn = mx + nsb;
-	kmx = kmn + nsb;
-	nv = palloc((Size) nsb * 2 * sizeof(uint32));
-	knv = nv + nsb;
-	z = (SiftCGOrdZones) {mn, mx, nv, NULL, NULL, NULL, nsb, a->n + a->nn};
-	if (kc == c || (kc >= 0 && w->schema->cols[kc].store != SIFT_COLS_INT))
-		kc = -1;
+	nv = palloc((Size) nsb * sizeof(uint32));
+	z = (SiftCGOrdZones) {mn, mx, nv, nsb, a->n + a->nn};
 	for (uint32 u = 0; u < nsb; u++)
 	{
 		mn[u] = zn[(Size) u * nc + c].min;
 		mx[u] = zn[(Size) u * nc + c].max;
 		nv[u] = zn[(Size) u * nc + c].nvals;
-		if (kc >= 0)
-		{
-			kmn[u] = zn[(Size) u * nc + kc].min;
-			kmx[u] = zn[(Size) u * nc + kc].max;
-			knv[u] = zn[(Size) u * nc + kc].nvals;
-		}
-	}
-	if (kc >= 0)
-	{
-		z.kmin = kmn;
-		z.kmax = kmx;
-		z.knvals = knv;
 	}
 	sift_cgord_pay(&z, &pay);
 	pfree(mn);

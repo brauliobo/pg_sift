@@ -323,7 +323,7 @@ extern const char *sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 ran
 extern uint32 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 len, bool after);	/* the strings of a text block that come before s (after: before or equal), which is the rank of the first one that does not */
 extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
-extern bool sift_cseg_gorder_pay(SiftColSegment *seg, int col, int keycol, SiftCGOrdPay *out);	/* what sift_cgord_pay says of the units' zones of an integer leaf */
+extern bool sift_cseg_gorder_pay(SiftColSegment *seg, int col, SiftCGOrdPay *out);	/* what sift_cgord_pay says of the units' zones of an integer leaf */
 extern bool sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *values, uint32 *head, uint32 *vtotal);	/* a block of the ends only (minor 40), not a complete one */
 extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
 extern void sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);	/* _head for the chunk that holds entry p, into buf */

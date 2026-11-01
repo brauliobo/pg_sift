@@ -378,8 +378,7 @@ sift_cgord_pay(const SiftCGOrdZones *z, SiftCGOrdPay *out)
 	for (int t = 0; t < SIFT_CGORD_PAY_PROBES; t++)
 	{
 		uint32		u0 = (uint32) (((2 * (uint64) t + 1) * z->nsb) / (2 * SIFT_CGORD_PAY_PROBES));
-		int64		b,
-					v = 0;
+		int64		b;
 		double		n = 0,
 					bl = 0;
 
@@ -388,10 +387,8 @@ sift_cgord_pay(const SiftCGOrdZones *z, SiftCGOrdPay *out)
 		if (u0 >= z->nsb)
 			continue;
 		b = z->min[u0] / 2 + z->max[u0] / 2;
-		if (z->kmin != NULL)
-			v = z->kmin[u0] / 2 + z->kmax[u0] / 2;
 		for (uint32 u = 0; u < z->nsb; u++)
-			if (z->nvals[u] > 0 && z->min[u] <= b && b <= z->max[u] && (z->kmin == NULL || (z->knvals[u] > 0 && z->kmin[u] <= v && v <= z->kmax[u])))
+			if (z->nvals[u] > 0 && z->min[u] <= b && b <= z->max[u])
 			{
 				double		width = (double) z->max[u] - (double) z->min[u] + 1;
 

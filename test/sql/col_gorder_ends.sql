@@ -97,9 +97,9 @@ INSERT INTO small SELECT i, TIMESTAMP '2026-01-01' + i * INTERVAL '1 hour' FROM 
 CREATE INDEX small_ix ON small USING sift_col (id, ts) WITH (order_array_columns = 'auto: ts');
 SELECT format, rows FROM sift.col_segments('small_ix') WHERE kind = 'immutable';
 SELECT sift.col_verify('small_ix');
--- the rule: a bound in the middle of the values reads the units whose zone holds it (the units of its key slice when the units are cut by a key); the whole order pays when those
--- cold blocks, at 64 kB of index each, outweigh its bytes. Values in insertion order need no order (the build leaves the column out: the zones prune), a slice of few rows keeps the
--- ends, random values over many units keep all of it
+-- the rule: a bound in the middle of the values reads the units whose zone holds it, whatever key the units are cut by (a range across the keys reads them all); the whole order pays
+-- when those cold blocks, at 64 kB of index each, outweigh its bytes. Values in insertion order need no order (the build leaves the column out: the zones prune), random values over
+-- many units keep all of it, in an index cut by a key too (the ends there made a range across the keys 24 times the cold blocks of the whole order at 1,000,000 rows)
 CREATE TABLE zone_o (id int, tenant_id int, ts timestamp, counter_a int, pad text DEFAULT repeat('x', 100));
 INSERT INTO zone_o (id, tenant_id, ts, counter_a)
 SELECT i, i / 2500, TIMESTAMP '2026-01-01' + i * INTERVAL '10 seconds', abs(hashint4(i + 7)) % 1000000 FROM generate_series(1, 250000) i;

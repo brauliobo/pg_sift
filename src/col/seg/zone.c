@@ -497,20 +497,17 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
 }
 
-/* sift_cgord_pay over the zones of the units of an integer leaf (and of the leaf key the units are cut by, -1: none); false for a leaf with no integer zones */
+/* sift_cgord_pay over the zones of the units of an integer leaf; false for a leaf with no integer zones */
 bool
-sift_cseg_gorder_pay(SiftColSegment *seg, int col, int keycol, SiftCGOrdPay *out)
+sift_cseg_gorder_pay(SiftColSegment *seg, int col, SiftCGOrdPay *out)
 {
 	const ZoneArrays *z;
-	const ZoneArrays *k = NULL;
 	SiftCGOrdZones zn;
 
 	if (seg->schema->cols[col].store != SIFT_COLS_INT || seg->nsb == 0)
 		return false;
 	z = zone_arrays(seg, col);
-	if (keycol >= 0 && keycol != col && seg->schema->cols[keycol].store == SIFT_COLS_INT)
-		k = zone_arrays(seg, keycol);
-	zn = (SiftCGOrdZones) {z->min, z->max, z->nvals, k ? k->min : NULL, k ? k->max : NULL, k ? k->nvals : NULL, seg->nsb, (uint64) seg->entry.ndocs};
+	zn = (SiftCGOrdZones) {z->min, z->max, z->nvals, seg->nsb, (uint64) seg->entry.ndocs};
 	sift_cgord_pay(&zn, out);
 	return true;
 }

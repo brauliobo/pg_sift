@@ -153,10 +153,10 @@ extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes
 #endif
 /*
  * Does a segment's order of a leaf have to hold every row, or the ends only? A scan with a bound in the middle of the values (ts >= x ORDER BY ts LIMIT n, a count of
- * a range, an OFFSET past the ends) reads from the units what a complete block hands the heap: the units whose zone holds the bound (and, when the units are cut by a key, that share a key
- * value with it: a query scoped by the key reads those only). That is units * (SIFT_CGORD_PAY_UNIT_BLOCKS + the blocks of the leaf's bytes in a unit) cold blocks; a block is worth
+ * a range, an OFFSET past the ends) reads from the units what a complete block hands the heap: the units whose zone holds the bound, whatever the key the units are cut by (a query
+ * across the keys reads them all; one scoped by the key would read fewer, but the order cannot know which it will be asked). That is units * (SIFT_CGORD_PAY_UNIT_BLOCKS + the blocks of the leaf's bytes in a unit) cold blocks; a block is worth
  * SIFT_CGORD_PAY_BLOCK bytes of index, so the complete block pays when they exceed its bytes (about log2 of the mean gap of the keys plus log2 of the rows, bits an entry).
- * The zones are the units' (min, max, values) of the leaf and of the key the units are cut by (NULL: none); the bounds tried are the middles of SIFT_CGORD_PAY_PROBES units spread over the segment.
+ * The zones are the units' (min, max, values) of the leaf; the bounds tried are the middles of SIFT_CGORD_PAY_PROBES units spread over the segment.
  */
 #define SIFT_CGORD_PAY_PROBES	16
 #define SIFT_CGORD_PAY_UNIT_BLOCKS	1		/* the blocks a unit read costs besides its leaf: its directory */
@@ -166,9 +166,6 @@ typedef struct SiftCGOrdZones
 	const int64 *min;
 	const int64 *max;
 	const uint32 *nvals;
-	const int64 *kmin;
-	const int64 *kmax;
-	const uint32 *knvals;
 	uint32		nsb;
 	uint64		rows;			/* the rows of the segment, those with no value too */
 } SiftCGOrdZones;

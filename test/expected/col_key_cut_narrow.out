@@ -18,13 +18,10 @@ SELECT pg_relation_size('kn') / 8192 / 256 >= 64 AS units_at_least_64,
  t                 | t
 (1 row)
 
-CREATE INDEX kn_i ON kn USING sift_col (d, a);
+CREATE INDEX kn_i ON kn USING sift_col (d, a) WITH (order_array_columns = 'off');
 NOTICE:  sift_col index "kn_i": key_cut = 'd' was chosen: a range holding the rows of one unit of "d" would read about 65 of 68 units, where 1 hold its rows (predicted index size +18.5%, benefit 51 against cost 16)
 DETAIL:  A sample of 17 superblocks shows the values of "d" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
 HINT:  ALTER INDEX kn_i SET (key_cut = 'off') and REINDEX keep the units by block range.
-NOTICE:  sift_col index "kn_i": order_array_columns = 'auto' keeps the ends of the order of a
-DETAIL:  The first and last 4096 entries of each segment and its first NULL rows, under 0.1 bytes a row of those columns; the segments are column format minor 40, which a library before 3.8 cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block), else the ends: a: the ends (a bound in the middle of its values reads few units: its zones prune it or its key slice is small).
-HINT:  ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range in the middle of the column reads the units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops them; order_array_columns = 'column' keeps the whole order of a column.
 SELECT leaf, sampled, decision, reason IS DISTINCT FROM 'the units are too large for a sample' AS was_sampled FROM sift.key_cut_decision('kn_i');
  leaf | sampled | decision | was_sampled 
 ------+---------+----------+-------------

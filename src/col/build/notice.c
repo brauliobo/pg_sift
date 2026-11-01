@@ -77,7 +77,7 @@ colb_notice_point_tid(Relation index)
 
 /*
  * Why each column of the build's choice has the order it has, from the largest segment: the units a scan with a bound in the middle of the values reads (sift_cgord_pay) are few (the zones prune the
- * bound, or its key slice is small: the ends) or many (the whole order). One phrase a column in the NOTICE, which does not vary with the data of a build; the figures (units, cold blocks, MB at
+ * bound: the ends) or many (the whole order). One phrase a column in the NOTICE, which does not vary with the data of a build; the figures (units, cold blocks, MB at
  * SIFT_CGORD_PAY_BLOCK a block, against the MB of the whole order) are logged at DEBUG1. Nothing when the index has no segment yet.
  */
 static void
@@ -94,7 +94,6 @@ order_choice_lines(Relation index, const SiftColLeafStats *ls, StringInfo out)
 	if (pick >= 0)
 	{
 		SiftColSegment *seg = sift_cseg_open(index, &snap->segs[pick], CurrentMemoryContext);
-		int			kc = sift_cseg_keyed(&snap->segs[pick]) && r->ncut > 0 ? r->cut[0] : -1;
 
 		for (int c = 0; c < r->schema->ncols; c++)
 		{
@@ -102,9 +101,9 @@ order_choice_lines(Relation index, const SiftColLeafStats *ls, StringInfo out)
 			bool		ends = ls[c].gord_ends_rows > 0;
 			const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
 
-			if ((ls[c].gord_rows > 0 || ends) && ls[c].gord_grp_rows < ls[c].gord_rows + ls[c].gord_ends_rows && sift_cseg_gorder_pay(seg, c, kc, &pay))
+			if ((ls[c].gord_rows > 0 || ends) && ls[c].gord_grp_rows < ls[c].gord_rows + ls[c].gord_ends_rows && sift_cseg_gorder_pay(seg, c, &pay))
 			{
-				appendStringInfo(out, "%s%s: %s", out->len ? "; " : "", name, ends ? "the ends (a bound in the middle of its values reads few units: its zones prune it or its key slice is small)" :
+				appendStringInfo(out, "%s%s: %s", out->len ? "; " : "", name, ends ? "the ends (a bound in the middle of its values reads few units: its zones prune it)" :
 								 "the whole order (a bound in the middle of its values reads many units)");
 				elog(DEBUG1, "sift_col index \"%s\": %s: a bound in the middle of its values reads about %.1f units (%.0f cold blocks, %.2f MB at %d kB a block) against %.2f MB for the whole order of a segment of %u rows",
 					 RelationGetRelationName(index), name, pay.units, pay.blocks, pay.saved / (1024.0 * 1024.0), SIFT_CGORD_PAY_BLOCK / 1024, pay.bytes / (1024.0 * 1024.0), (uint32) snap->segs[pick].ndocs);
