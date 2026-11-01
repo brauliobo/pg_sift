@@ -106,6 +106,7 @@ extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
+extern bool sift_aggspec_gstream(const SiftAggSpec *s);
 
 /* a float sum: the order of its additions is part of its result */
 static inline bool

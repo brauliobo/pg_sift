@@ -16,6 +16,11 @@
  * it as another) gives the points that cut the stream into ranges of as many groups. A range that does not fit is cut again by the points of the sample inside it.
  * A range of one value that does not fit is merged as it is. The range of a group depends on its key alone, so the groups of one value are never apart.
  *
+ * A ranged scan whose first key lies in the zones of the superblocks (sift_aggspec_gstream) need not spill when the zones are mostly apart: the superblocks are
+ * read in the order of their zones, and the groups below the zone of the next one are final. They are the next batch of the result, in order, and the others stay
+ * in the table (dumped and loaded again, as a spill does) while the batch is returned: one pass, no partition on disk, no sort of all the groups. When no group
+ * is final (the zones overlap) the scan goes on as the spill does, after the batches it has given.
+ *
  * Only the specs agg/spec.c names (sift_aggspec_spillable) take this path: a table is reset between two items, which the lanes of a parallel
  * scan do not allow, and the states must be blobs. The float sums of a group are added in the order of its partial states: the lane order
  * of the scan inside a table, the order of the spills between tables.
@@ -38,21 +43,12 @@
 #include "agg/spec.h"
 #include "core/limits.h"
 #include "agg/agg_int.h"
+#include "agg/spill/int.h"
 
 #define SPILL_MIN_PARTS		8
 #define SPILL_MAX_PARTS		128		/* one BufFile (8 kB) each */
 #define SPILL_MAX_DEPTH		8
 #define SPILL_SAMPLE		8192	/* values of the first order key of the groups written, for the points that cut the ranges */
-#define SPILL_MIN_GROUPS	128		/* a table with fewer groups is not spilled: its memory is something else (the key ranges) */
-
-typedef struct SpillSet
-{
-	int			depth;
-	int			n;				/* partitions: for ranges, those of the values and one more for NULL */
-	int64	   *bound;			/* ranges: n - 2 points, ascending; partition p < n - 1 holds the values from bound[p - 1] up to bound[p] (those of its parent at the ends) */
-	BufFile    *f[SPILL_MAX_PARTS + 1];
-	uint32		nblobs[SPILL_MAX_PARTS + 1];
-} SpillSet;
 
 typedef struct SpillWork
 {
@@ -64,33 +60,6 @@ typedef struct SpillWork
 	bool		nulls;			/* ranges: the partition of the NULL keys */
 } SpillWork;
 
-typedef struct AggSpill
-{
-	Size		budget;			/* hash memory */
-	Size		floor;			/* what an empty table holds */
-	uint32		keep;			/* groups of the table written last: the next table of the scan starts with room for them */
-	int			nparts;
-	bool		spilled;
-	int64		groups;			/* of the partitions returned so far */
-	Tuplestorestate *out;		/* the groups returned, in order: the table holds one partition, a rescan replays them */
-	TupleTableSlot *mslot;
-	int64		nread;
-	int64		nwritten;
-	bool		replayed;		/* the node was scanned again: the store is read as well as written (the groups made since are stepped over) */
-	bool		done;
-	MemoryContext tmp;			/* the temporaries of one blob, dumped or merged (agg/blob/ keeps them for the life of a process) */
-	SpillSet   *set;			/* the level 0 partitions the scan writes */
-	List	   *work;			/* partitions to merge, as SpillWork */
-	double	   *amax;			/* avg(float8): the largest absolute input of the tables written */
-	bool		ranged;			/* the partitions are ranges of the first order key, in the order of the result */
-	bool		desc;
-	bool		nulls_first;
-	pg_prng_state prng;
-	int64	   *sample;			/* ranged: values of the first order key of the groups written to the stream */
-	uint32		nsample;
-	uint64		nseen;
-	uint64		nstream;		/* ranged: groups written to the stream */
-} AggSpill;
 
 void
 spill_begin(AggExec *ex)
@@ -139,15 +108,15 @@ spill_keep(const AggExec *ex)
 	return ex->spill ? ex->spill->keep : 0;
 }
 
-/* a spilled scan keeps hash tables: the memory of a direct table follows the range of the keys, not the groups */
+/* a spilled scan (or one that gives batches) keeps hash tables: the memory of a direct table follows the range of the keys, not the groups */
 bool
 spill_started(const AggExec *ex)
 {
-	return ex->spill != NULL && ex->spill->spilled;
+	return ex->spill != NULL && (ex->spill->spilled || ex->gs != NULL);
 }
 
-static bool
-over_budget(AggExec *ex)
+bool
+spill_over(AggExec *ex)
 {
 	AggSpill   *sp = ex->spill;
 	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
@@ -166,7 +135,7 @@ spill_would(AggExec *ex, AggSpill *sp)
 	bool		over;
 
 	ex->spill = sp;
-	over = over_budget(ex);
+	over = spill_over(ex);
 	ex->spill = armed;
 	return over;
 }
@@ -183,9 +152,40 @@ set_new(int depth, int n)
 	return set;
 }
 
+/* the integer that sorts as a value of an integer, date or timestamp type does, and the value of that type for it */
+int64
+spill_datum_int(Oid typid, Datum d)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(d);
+		default:
+			return DatumGetInt64(d);
+	}
+}
+
+Datum
+spill_int_datum(Oid typid, int64 v)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return Int16GetDatum((int16) v);
+		case INT4OID:
+		case DATEOID:
+			return Int32GetDatum((int32) v);
+		default:
+			return Int64GetDatum(v);
+	}
+}
+
 /* the first order key of group g, as the integer that sorts as it does; false for NULL */
-static bool
-lead_value(AggExec *ex, uint32 g, int64 *v)
+bool
+spill_lead_value(AggExec *ex, uint32 g, int64 *v)
 {
 	int			j = ex->spec->ord[0].key;
 	bool		isnull;
@@ -193,25 +193,22 @@ lead_value(AggExec *ex, uint32 g, int64 *v)
 
 	if (isnull)
 		return false;
-	switch (ex->spec->key[j].typid)
-	{
-		case INT2OID:
-			*v = DatumGetInt16(d);
-			break;
-		case INT4OID:
-		case DATEOID:
-			*v = DatumGetInt32(d);
-			break;
-		default:
-			*v = DatumGetInt64(d);
-	}
+	*v = spill_datum_int(ex->spec->key[j].typid, d);
 	return true;
 }
 
-/*
- * The range of the first order key in the zones of the superblocks the scan reads, when the key is the value of a leaf of its type or a step of it (so that the
- * zones of the leaf are in the domain of the key): false when there is none
- */
+/* are the zones of the superblocks in the domain of the first order key? It is the value of a leaf of its type, or a step of it */
+bool
+spill_lead_zoned(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggKey *k = &s->key[s->ord[0].key];
+
+	return (k->kind == SAK_LEAF || k->kind == SAK_LUT) && k->leaf >= 0 && k->leaf < ex->nbase && ex->src != NULL && sift_colsrc_has_zone_range(ex->src) &&
+		ex->lay->leaf[k->leaf].typid == k->typid && (ex->lay->leaf[k->leaf].vtype == SCV_I32 || ex->lay->leaf[k->leaf].vtype == SCV_I64);
+}
+
+/* The range of the first order key in the zones of the superblocks the scan reads: false when there is none */
 static bool
 lead_domain(AggExec *ex, int64 *lo, int64 *hi)
 {
@@ -220,8 +217,7 @@ lead_domain(AggExec *ex, int64 *lo, int64 *hi)
 	bool		any = false;
 	uint32		nsb;
 
-	if ((k->kind != SAK_LEAF && k->kind != SAK_LUT) || k->leaf < 0 || k->leaf >= ex->nbase || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src) ||
-		ex->lay->leaf[k->leaf].typid != k->typid || (ex->lay->leaf[k->leaf].vtype != SCV_I32 && ex->lay->leaf[k->leaf].vtype != SCV_I64))
+	if (!spill_lead_zoned(ex))
 		return false;
 	nsb = sift_colsrc_nsb(ex->src);
 	for (uint32 sb = ex->tid_sb_lo; sb < Min(nsb, ex->tid_sb_hi); sb++)
@@ -344,7 +340,7 @@ table_write(AggExec *ex, SpillSet *set)
 			{
 				int64		v;
 
-				if (!lead_value(ex, g, &v))
+				if (!spill_lead_value(ex, g, &v))
 					part[ng] = set->n - 1;
 				else
 				{
@@ -435,7 +431,10 @@ spill_table(AggExec *ex)
 void
 spill_check(AggExec *ex)
 {
-	if (over_budget(ex))
+	/* a sweep that gives batches looks at the table after each superblock (gstream_next) */
+	if (gstream_holds(ex))
+		return;
+	if (spill_over(ex))
 		spill_table(ex);
 }
 
@@ -557,8 +556,11 @@ spill_finish(AggExec *ex)
 {
 	AggSpill   *sp = ex->spill;
 	SpillWork	root = {.lo = PG_INT64_MIN,.hi = PG_INT64_MAX};
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	MemoryContext old;
 
+	if (sp == NULL || !sp->spilled)
+		return;
+	old = MemoryContextSwitchTo(ex->cxt);
 	table_write(ex, sp->set);
 	sp->keep = 0;
 	table_reset(ex);
@@ -593,7 +595,7 @@ spill_next(AggExec *ex)
 			blob_merge(ex, blob_read(w->f));
 			MemoryContextSwitchTo(tmp);
 			MemoryContextReset(sp->tmp);
-			if (whole || !over_budget(ex))
+			if (whole || !spill_over(ex))
 				continue;
 			if (sp->ranged)
 			{
@@ -629,22 +631,31 @@ spill_next(AggExec *ex)
 	return false;
 }
 
-/* the groups of the next partition are the ones to return */
+/* the groups of the next partition, or the next batch of the sweep, are the ones to return */
 bool
 spill_more(AggExec *ex)
 {
-	if (!spill_started(ex) || !spill_next(ex))
+	bool		got = false;
+
+	if (ex->spill == NULL)
 		return false;
-	if (ex->glist)
-		pfree(ex->glist);
-	/* the sets of a partition that went through the sort have their counts when it is done */
-	dist_finish_all(ex);
-	dist_end_all(ex);
-	list_groups(ex);
-	if (ex->spec->gtopn_k > 0)
-		groups_topn(ex);
-	if (ex->spec->nord > 0)
-		groups_order(ex);
+	if (ex->gs)
+		got = gstream_next(ex);
+	if (!got)
+	{
+		if (!ex->spill->spilled || !spill_next(ex))
+			return false;
+		if (ex->glist)
+			pfree(ex->glist);
+		/* the sets of a partition that went through the sort have their counts when it is done */
+		dist_finish_all(ex);
+		dist_end_all(ex);
+		list_groups(ex);
+		if (ex->spec->gtopn_k > 0)
+			groups_topn(ex);
+		if (ex->spec->nord > 0)
+			groups_order(ex);
+	}
 	ex->gpos = 0;
 	ex->spill->groups += ex->nglist;
 	ex->n_groups = ex->spill->groups;

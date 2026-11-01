@@ -165,8 +165,17 @@ run_scan(AggExec *ex)
 		spine_load(ex);
 	if (ex->ndsorder > 0)
 		dist_stream_scan(ex);
+	else if (gstream_begin(ex))
+		return;					/* the superblocks are read as the groups are asked for (spill_more), the last of them ends the scan */
 	else if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
+	scan_tail(ex);
+}
+
+/* the end of the scan: what the rows of the last item leave to do before the groups are the result */
+void
+scan_tail(AggExec *ex)
+{
 	backend_finish(ex);
 	/* the rows of a preserved side that no tuple matched, and of a spine that no cell joined: after the workers told which they matched */
 	if (ex->par && (join_preserved(ex->spec) || ex->spec->spine))
@@ -177,8 +186,7 @@ run_scan(AggExec *ex)
 		spine_tail(ex);
 	if (ex->par && ex->par->pcxt)
 		par_finish(ex);
-	if (spill_started(ex))
-		spill_finish(ex);
+	spill_finish(ex);
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
 		if (ex->acc[i].dt)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
@@ -442,7 +450,8 @@ agg_next(ScanState *node)
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
-		finish_groups(ex);
+		if (ex->gs == NULL)
+			finish_groups(ex);
 		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
 		if (ex->spec->gtopn_k > 0 && !ex->done && !spill_started(ex))
 			groups_topn(ex);

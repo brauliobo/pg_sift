@@ -411,6 +411,22 @@ key_value_id(AggExec *ex, int ki, Datum in, bool in_null)
 	return id;
 }
 
+/* the value key ki takes for an input value, without making an id for it (NULL: isnull) */
+Datum
+key_input_datum(AggExec *ex, int ki, Datum in, bool *isnull)
+{
+	SiftAggKey *sk = &ex->spec->key[ki];
+	MemoryContext old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+	Datum		out = in;
+
+	*isnull = false;
+	if (sk->kind == SAK_LUT)
+		out = eval_with(ex, ex->ks[ki].expr, in, false, isnull);
+	MemoryContextSwitchTo(old);
+	ResetExprContext(ex->lutcx);	/* a key of a by-value type: the result does not live in it */
+	return out;
+}
+
 /* the id of key ki for entry c of the dictionary */
 uint32
 kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c)

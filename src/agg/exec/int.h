@@ -13,7 +13,6 @@ extern void agg_explain(CustomScanState *node, List *ancestors, ExplainState *es
 extern void run_counters(AggExec *c, SiftSrcCounters *cc);
 
 extern void agg_test_wait(void);
-extern void finish_groups(AggExec *ex);
 extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 
 #endif							/* SIFT_AGG_EXEC_DIR_INT_H */

@@ -301,6 +301,7 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	sift_explain_int(&ln, "Ordered Sets Spilled", NULL, "ordered sets spilled", c->n_osa_spilled, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Table Spills", NULL, "group table spills", c->n_spills, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Group Stream Batches", NULL, "group stream batches", c->n_gs, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Distinct Sets Spilled", NULL, "distinct sets spilled", c->n_dist_spilled, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Distinct Chunks Merged", NULL, "distinct chunks merged", c->n_dist_chunks, SIFT_XI_OPT);
 	if (c->ndsorder)

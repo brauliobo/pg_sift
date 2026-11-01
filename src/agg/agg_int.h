@@ -151,6 +151,8 @@ typedef struct AggExec
 	uint64		dist_hash;		/* the aggregates (below 64) whose sets had left their bitmaps when the table spilled: the next table starts them as hash sets */
 	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
 	int			n_spills;		/* ... and the times it did */
+	struct GStream *gs;			/* an ordered scan whose groups are final in turn (spill.c gstream_begin): the superblocks in the order of the key and what the sweep holds */
+	int			n_gs;			/* ... and the batches of final groups it gave */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
 	uint32	   *glist;
@@ -361,6 +363,8 @@ extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);
+void scan_tail(AggExec *ex);
+void finish_groups(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
 void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);

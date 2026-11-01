@@ -804,6 +804,32 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 }
 
 /*
+ * Can a scan give its groups in the order of the ORDER BY as the superblocks it reads are done (agg/spill.c gstream_begin)? The groups of a spilled scan, with the
+ * superblocks read in the order of the zones of the first order key, which is the leaf's value or the calendar step date_trunc of a timestamp (a key that grows with
+ * the leaf: the groups below the zone of the next superblock are final). The rows are read in an order of their own, so what a join, an arm, a match set, a
+ * partition or a float sum would do with the order is not to be had, and a DISTINCT set is not a state that is dumped and loaded between two superblocks.
+ */
+bool
+sift_aggspec_gstream(const SiftAggSpec *s)
+{
+	const SiftAggKey *k;
+
+	if (!sift_aggspec_spillable(s) || !sift_aggspec_ord_range(s) || sift_aggspec_float_sums(s) || s->search || s->spine || s->njoin > 0 || s->ncombo > 0 ||
+		s->nparts > 0 || s->group >= 0 || s->nvleaf > 0)
+		return false;
+	for (int j = 0; j < s->nkeys; j++)
+		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_COMBO)
+			return false;
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+			return false;
+	k = &s->key[s->ord[0].key];
+	if (k->kind == SAK_LEAF)
+		return true;
+	return k->kind == SAK_LUT && k->zoned == 0 && k->expr != NULL && IsA(k->expr, FuncExpr) && ((FuncExpr *) k->expr)->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP;
+}
+
+/*
  * The count(DISTINCT x) of a scan that may visit its superblocks in the order of the zone minimum of x (dist_stream_scan), -1 when there is no
  * such aggregate: the only DISTINCT aggregate of the spec, over a leaf of the source, and every other aggregate exact in any order (counts,
  * integer sums and averages, min and max), over plain keys, with no join, arm, grouping set, unnest, partition, match set or top-N, which read
