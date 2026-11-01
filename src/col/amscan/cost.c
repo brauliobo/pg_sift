@@ -43,7 +43,7 @@
 
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 
-#define COL_SCAN_UNIT_RESCAN	5.0		/* ... for each probe of a scan repeated for the rows of a join after the first: the unit is looked up by the key, not walked (8.5 us a probe of 1,000 in a nested loop over 1,000,000 rows with the heap row and the join) */
+#define COL_SCAN_UNIT_RESCAN	5.0		/* ... for the first unit of each probe of a scan repeated for the rows of a join: the unit is looked up by the key, not walked (8.5 us a probe of 1,000 in a nested loop over 1,000,000 rows with the heap row and the join) */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
 
 #define COL_SCAN_ROW		0.0005	/* the filter of one value of a column of a kept unit by a comparison: 0.4 to 0.5 ns measured over 3,000,000 rows of a date, an integer, a text and a numeric column (the bounds of a range are one pass over the lanes) */
@@ -55,6 +55,7 @@
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 
 #define COL_SCAN_KEY		20.0	/* a key of an IN list past the first that is not looked up in a directory of addresses (the units that may hold it are read, or the sorted keys are sought for it): the units that may hold it are searched for it, 2.5 us measured a key (60 to 500 keys of 300,000 and 1,000,000 rows, 0.16 to 1.15 ms) where the b-tree's probe takes 0.8 us and is priced 7: the price of a b-tree's cached probe is 9 units to the microsecond, and a scan that is priced by its microseconds would take the lookup of 500 keys from it for twice the time */
+#define COL_SCAN_FETCH		0.5		/* the heap row of each tuple an index scan (not a bitmap) hands over, for the probes of a scan repeated for the rows of a join: PostgreSQL's price of the page falls with the loops (the pages stay in the cache) and the tuple stays 1.2 us (124 rows a probe, 200 us measured, priced 94 units) */
 #define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
 
 bool		sift_enable_col_scan = true;
@@ -206,10 +207,12 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	repeat = Max(loop_count, 1.0);
 	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK)) / repeat;
 	costs.indexTotalCost = costs.indexStartupCost
-		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? COL_SCAN_UNIT_RESCAN : COL_SCAN_UNIT) + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? Min(kept_units, 1.0) * COL_SCAN_UNIT_RESCAN + Max(kept_units - 1.0, 0.0) * COL_SCAN_UNIT : kept_units * COL_SCAN_UNIT) +
+											  kept_units * Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
-		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
+		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
+		+ (repeat > 1.0 && path->path.pathtype == T_IndexScan ? idx_rows * COL_SCAN_FETCH * scale : 0.0)
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
