@@ -11,7 +11,7 @@ import time
 import iolib
 from duckdb import busy, wait_quiet
 
-from . import runcfg
+from . import runcfg, recs
 from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
 from .registry import Case, lane_cpus, read_registry, workers_asked
 from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck, psql, server_load
@@ -98,6 +98,8 @@ def run_point(args, cases, rows, engines, results, failed, known):
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()
         times, notes, errors, texts = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
+        if args.records:
+            recs.emit(c, lanes, rows, args.runs)
         TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         settle(c, tag, lanes, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: lane in ('sift', 'native') or e.startswith(('PLAN', 'RESULT')))
         for lane in lanes:
@@ -155,6 +157,8 @@ def cmd_run(args):
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results)
+    if args.records:
+        recs.write(args.records)
     if args.budget:
         from . import budget
         if args.budget_update:

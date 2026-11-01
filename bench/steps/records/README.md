@@ -6,6 +6,19 @@ from the records that pass. No figure of a document, a CHANGELOG line or a hand-
     python3 -I bench/steps/records/check.py FILE...        one line for each problem, exit 1
     python3 -I bench/steps/records/report.py [--tsv] FILE...   the tables of a set that passes
 
+## Who writes records
+
+    bench/bench cases --records FILE     every query case on the arms it can answer with: the default plan, a forced heap scan, the sift access method alone, the b-tree twin of a
+                                         `btree` variant and each other variant as a sift arm named by it; the file is checked on the way out. The cluster of the cases is a test cluster
+                                         (no autovacuum, no automatic merge), so its records say `maintenance` = `disabled`. Load cases and `-- fresh: yes` cases have none yet.
+    steps/records/collect.py             the library any other harness calls (`measure_statement`) with its subject, arms and environment.
+
+## The figures of the CHANGELOG
+
+`bench/claims.tsv` lists the figures a CHANGELOG line states (a phrase of the line, the statement, size, arm, metric and value, a tolerance in percent). `bench records claims RECORDS...`
+(and `bench cases --check --records FILE`) fails a figure that the median of the records misses by more than its tolerance and prints both: the line and the run. A phrase that matches no
+line is stale and fails as well. The value is the one the line states, typed once there; the records are never typed.
+
 ## What one row is
 
 One statement, on one arm, warm or cold, one repetition. The **arm** is the structure that answered: `heap` (a sequential scan), `btree`, `gin` or `sift`, with its option (`default`,

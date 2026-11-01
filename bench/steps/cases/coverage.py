@@ -4,11 +4,12 @@
 import os
 import re
 import subprocess
+import sys
 
 import extras
 
 from .registry import read_registry
-from .runcfg import REPO
+from .runcfg import HERE, REPO
 
 ALLOW = os.path.join('scripts', 'bench-cases.allow')
 RESULTS = os.path.join('bench', 'results')
@@ -179,4 +180,19 @@ def cmd_coverage(args):
         print(('coverage: ' if args.strict else 'coverage: warning: ') + m)
     gaps = sum(1 for c in read_registry(root) if c.gap)
     print('coverage: %d claims unmet, %d known gaps%s' % (len(errors), gaps, '' if args.strict else ' (a warning: --strict is the release gate)'))
-    return 1 if errors and args.strict else 0
+    figures = claim_figures(root, args.records) if args.records else []
+    return 1 if (errors and args.strict) or figures else 0
+
+
+def claim_figures(root, records):
+    """with --records FILE: the figures the CHANGELOG states (bench/claims.tsv) against the records of FILE (steps/records/claims.py); a figure off by more than its tolerance fails, not warns"""
+    sys.path.insert(0, os.path.join(HERE, 'records'))
+    import claims
+    import schema
+    path = os.path.join(root, 'bench', 'claims.tsv')
+    with open(os.path.join(root, 'CHANGELOG.md')) as f:
+        problems = claims.verify(claims.read_claims(path), schema.read(records), f.read(), claims_file=path)
+    for p in problems:
+        print('claims: ' + p)
+    print('claims: %d figures checked against %s, %d off' % (len(claims.read_claims(path)), records, len(problems)))
+    return problems

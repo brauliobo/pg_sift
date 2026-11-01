@@ -38,6 +38,7 @@ def main(doc):
     ap.add_argument('--host-plan', action='store_true', help='coverage: print the commands that measure what is missing (the host window)')
     ap.add_argument('--since', help='coverage: the commits since this tag are the landed claims (default: the last tag behind HEAD)')
     ap.add_argument('--root', help='coverage: the checkout to read (default: this one)')
+    ap.add_argument('--records', metavar='FILE', help='also write the measurement records (steps/records/README.md) of the query cases: each case on the arms it can answer with, warm and cold, checked on the way out')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--cpus', type=int, default=1, help='cpus: the quota asked for (the answer is the quota the cases need, at least this)')
     ap.add_argument('--selftest', action='store_true', help='cpus: check the rule on made-up variants')

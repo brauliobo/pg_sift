@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""The claims of the CHANGELOG checked against records.
+
+    python3 -I claims.py [--claims bench/claims.tsv] [--changelog CHANGELOG.md] [--tolerance 25] RECORDS...
+
+A claim is a row of bench/claims.tsv: a phrase of the CHANGELOG line that states the figure, the statement and size it was measured on, the arm, the metric and the value the line gives,
+with a tolerance in percent (the default is --tolerance). The check finds the line by its phrase, the statement in the records, and fails when the median of the records is farther from the
+claimed value than the tolerance, naming both: the line and the run that measured. A phrase that matches no line is stale and fails as well.
+
+    phrase  statement  rows  arm  option  metric  value  tolerance(optional)  note(optional)
+
+arm is heap, btree, gin, sift or picked (the plan the planner chose); metric is exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks (warm hit + read of every kind) or cold_blocks
+(blocks read after the eviction).
+"""
+import os
+import statistics
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check  # noqa: E402
+import schema  # noqa: E402
+
+KINDS = ('heap', 'btree', 'gin', 'sift', 'other')
+METRICS = ('exec_ms', 'plan_ms', 'wall_ms', 'instr_m', 'est_cost', 'blocks', 'cold_blocks')
+
+
+def metric(r, name):
+    if name == 'blocks':
+        return sum(r.get('%s_%s' % (k, p)) or 0 for k in KINDS for p in ('hit', 'read'))
+    if name == 'cold_blocks':
+        return sum(r.get('%s_read' % k) or 0 for k in KINDS)
+    return r.get(name)
+
+
+def measured(records, statement, rows, arm, option, name):
+    """(median, the rows it comes from) of a metric for the arm of the statement at ROWS; arm `picked` is the default plan"""
+    temp = 'cold' if name == 'cold_blocks' else 'warm'
+    rs = [r for r in records if r['statement'] == statement and r['rows'] == rows and r['temp'] == temp and
+          ((arm == 'picked' and r['mode'] == 'default') or (arm != 'picked' and r['mode'] == 'forced' and r['arm'] == arm and r['arm_option'] == option))]
+    vals = [metric(r, name) for r in rs if metric(r, name) is not None]
+    return (statistics.median(vals) if vals else None), rs
+
+
+def read_claims(path):
+    out = []
+    with open(path) as f:
+        lines = f.readlines()
+    for n, line in enumerate(lines, 1):
+        if line.startswith('#') or not line.strip():
+            continue
+        f = line.rstrip('\n').split('\t')
+        if f[0] == 'phrase':
+            continue
+        if len(f) < 7:
+            raise ValueError('%s:%d: %d fields, 7 are required' % (path, n, len(f)))
+        out.append(dict(line=n, phrase=f[0], statement=f[1], rows=int(f[2].replace(',', '')), arm=f[3], option=f[4] or 'default', metric=f[5], value=float(f[6]),
+                        tol=float(f[7]) if len(f) > 7 and f[7] else None))
+    return out
+
+
+def verify(claims, records, changelog, tolerance=25.0, claims_file='claims.tsv'):
+    """the problems of the claims: a stale phrase, a claim with no record, a value off by more than its tolerance"""
+    problems = check.check(records)
+    if problems:
+        return ['the records are refused (check.py): ' + problems[0]] + problems[1:5]
+    lines = [l for l in changelog.split('\n') if l.startswith('- ')]
+    out = []
+    for c in claims:
+        where = '%s:%d' % (os.path.basename(claims_file), c['line'])
+        if c['metric'] not in METRICS:
+            out.append('%s: metric %s is none of %s' % (where, c['metric'], '/'.join(METRICS)))
+            continue
+        line = next((l for l in lines if c['phrase'] in l), None)
+        if line is None:
+            out.append('%s: STALE CLAIM: no CHANGELOG line holds "%s"' % (where, c['phrase']))
+            continue
+        got, rs = measured(records, c['statement'], c['rows'], c['arm'], c['option'], c['metric'])
+        if got is None:
+            out.append('%s: NO RECORD for %s at %s rows, arm %s %s, %s: the line "%s" cannot be checked' % (where, c['statement'], format(c['rows'], ','), c['arm'], c['option'], c['metric'], line[:90]))
+            continue
+        tol = c['tol'] if c['tol'] is not None else tolerance
+        off = 100 * abs(got - c['value']) / abs(c['value']) if c['value'] else (0 if got == 0 else float('inf'))
+        if off > tol:
+            out.append('%s: CLAIM NOT MET: the CHANGELOG says %s %s = %g ("%s"), run %s measured %g (%.0f%% off, tolerance %g%%)' % (
+                where, c['statement'], c['metric'], c['value'], line[:110], rs[0]['run_id'], got, off, tol))
+    return out
+
+
+def main(argv):
+    claims_file, changelog, tol, files, i = 'bench/claims.tsv', 'CHANGELOG.md', 25.0, [], 0
+    while i < len(argv):
+        if argv[i] == '--claims':
+            claims_file, i = argv[i + 1], i + 2
+        elif argv[i] == '--changelog':
+            changelog, i = argv[i + 1], i + 2
+        elif argv[i] == '--tolerance':
+            tol, i = float(argv[i + 1]), i + 2
+        else:
+            files.append(argv[i])
+            i += 1
+    if not files:
+        sys.exit(__doc__)
+    records = []
+    for f in files:
+        records += schema.read(f)
+    claims = read_claims(claims_file)
+    problems = verify(claims, records, open(changelog).read(), tol, claims_file)
+    for p in problems:
+        print(p)
+    print('claims: %d checked, %d problems' % (len(claims), len(problems)), file=sys.stderr)
+    return 1 if problems else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

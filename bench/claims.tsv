@@ -1,0 +1,3 @@
+# The figures the CHANGELOG states, checked against records (bench/steps/records/claims.py; `bench records claims RECORDS...`): phrase of the line, statement, rows, arm (heap, btree, gin,
+# sift, picked), option, metric (exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks, cold_blocks), the value the line gives, a tolerance in percent (default 25).
+phrase	statement	rows	arm	option	metric	value	tolerance	note
