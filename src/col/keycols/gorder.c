@@ -114,9 +114,9 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	 * A text column is an array of its own: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling. A date, timestamp
 	 * or integer column keeps the ends of its order only (column format minor 40): 8,192 entries and the first NULL rows a segment, 0.07 bytes a row of 1,000,000, where the
 	 * units hold the order the zones cannot prune: nothing to weigh. Whether a segment keeps the whole order is sift_cgord_pay's (cold blocks of the units against the bytes of the
-	 * order). The formula gives the same answer for every size and segment count measured (100,000 to 5,000,000 rows, 1 to 20 segments: whole, the benefit far outweighs the cost on a wide
-	 * index), so it is not wired in. Its G <= 25% ceiling is waived for these b-tree-replacement classes (range, OFFSET, point; a narrow index has G about 60% for the whole order): the binding
-	 * constraint is that none of them may read more than twice the cold blocks or instructions of the whole order.
+	 * order). Every size and segment count measured keeps the whole order, so the
+	 * 25% growth limit of a single structure is not applied to it, even where it is about 60% of a narrow index: without it a range across keys, an OFFSET or a point lookup reads more
+	 * than twice the cold blocks or instructions.
 	 */
 	for (int i = 0; i < ncand; i++)
 	{
