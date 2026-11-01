@@ -2,7 +2,6 @@
 -- label: `WHERE deleted_at IS NULL ORDER BY k, id LIMIT 20` over 120,000 rows whose key k is unrelated to the heap order, no row deleted
 -- ordered: yes
 -- vacuum: no
--- gap: sift lab 0013 (filtered ordered page), top-N
 --@ setup
 CREATE TABLE tp_soft (id int PRIMARY KEY, k int NOT NULL, g int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO tp_soft SELECT i, ((i::bigint * 7919) % 120000)::int + 1, i % 1000, NULL FROM generate_series(1, 120000) i;
