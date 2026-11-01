@@ -58,22 +58,34 @@ typedef struct SortRow
 	bool		nl[2];
 } SortRow;
 
+/* a NULL sorts last, as PostgreSQL's default: after every value (a row with INT64_MAX and a NULL are in the order of their rows) */
+#define SORT_ROW_KEY(x) ((x)->nl[0] ? INT64_MAX : (x)->v[0])
+#define SORT_ROW_KEY2(x) ((x)->nl[1] ? INT64_MAX : (x)->v[1])
+#define SORT_ROW_TIE(x) ((x)->row)
+
 static inline int
 sort_row_cmp(const SortRow *x, const SortRow *y)
 {
-	for (int i = 0; i < 2; i++)
-	{
-		if (x->nl[i] != y->nl[i])
-			return x->nl[i] ? 1 : -1;
-		if (!x->nl[i] && x->v[i] != y->v[i])
-			return x->v[i] < y->v[i] ? -1 : 1;
-	}
+	if (SORT_ROW_KEY(x) != SORT_ROW_KEY(y))
+		return SORT_ROW_KEY(x) < SORT_ROW_KEY(y) ? -1 : 1;
+	if (SORT_ROW_KEY2(x) != SORT_ROW_KEY2(y))
+		return SORT_ROW_KEY2(x) < SORT_ROW_KEY2(y) ? -1 : 1;
 	return SIFT_CMP3(x->row, y->row);
 }
 
 #define SORT_ROW_LESS(x, y) (sort_row_cmp(x, y) < 0)
 
-SIFT_DEFINE_SORT(sort_rows, SortRow, SORT_ROW_LESS)
+SIFT_DEFINE_SORT(sort_rows_cmp, SortRow, SORT_ROW_LESS)
+
+/* a copy of the rows for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+sort_row_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+}
+
+/* the sampled rows are added in the order of their rows, so the radix sort applies */
+SIFT_DEFINE_RADIX_SORT(sort_rows, SortRow, SORT_ROW_KEY, SORT_ROW_KEY2, SORT_ROW_TIE, sort_row_copy, pfree, sort_rows_cmp)
 
 /*
  * What a row takes in a leaf the sample does not read: its values dictionary-coded, the distinct ones (of the width the statistics of the column give, a share of it when they do not repeat)
@@ -199,6 +211,8 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 	int64	   *tmp = palloc_array(int64, s->n + 1);
 	uint32	   *rows = palloc_array(uint32, s->n + 1);
 	uint32	   *sel = palloc_array(uint32, s->n + 1);
+	uint32	   *tidrows = key >= 0 ? palloc_array(uint32, s->n + 1) : NULL;
+	uint32	   *asc = key >= 0 ? palloc_array(uint32, s->n + 1) : NULL;	/* the sampled rows in the order of their rows */
 	SiftKey    *tid = palloc_array(SiftKey, s->n + 1);	/* by sampled row: its address with the taken superblocks side by side */
 	SiftKey    *keys = palloc_array(SiftKey, s->n + 1);
 	uint32	   *cuts = palloc_array(uint32, s->n + 2);
@@ -241,11 +255,28 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 				by[i].v[k] = order[k]->v[sel[i]];
 			}
 		}
+		memcpy(asc, sel, nsel * sizeof(uint32));
 		sort_rows(by, nsel);
 		for (uint32 i = 0; i < nsel; i++)
 			sel[i] = by[i].row;
 		pfree(by);
 		ncut = cut_units(order[0], sel, nsel, unit, small, cuts);
+		/* the rows of each unit in the order of their rows (their addresses), whatever the leaf: a pass over the rows in that order, each to the next place of its unit */
+		{
+			uint32	   *unit_of = palloc_array(uint32, s->n + 1);
+			uint32	   *next = palloc_array(uint32, ncut + 1);
+
+			for (uint32 u = 0; u < ncut; u++)
+			{
+				next[u] = cuts[u];
+				for (uint32 k = cuts[u]; k < cuts[u + 1]; k++)
+					unit_of[sel[k]] = u;
+			}
+			for (uint32 i = 0; i < nsel; i++)
+				tidrows[next[unit_of[asc[i]]]++] = asc[i];
+			pfree(unit_of);
+			pfree(next);
+		}
 		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / unit)));
 		for (uint32 u = 0; u < ncut; u++)
 		{
@@ -253,8 +284,7 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 						n = cuts[u + 1] - from;
 
 			for (uint32 i = 0; i < n; i++)
-				keys[i] = tid[sel[from + i]];
-			sift_sort_u64(keys, n);
+				keys[i] = tid[tidrows[from + i]];	/* the rows of a unit in the order of their rows are in the order of their addresses */
 			bytes += sift_cunit_directory_bytes(keys, n, true, 0, &pages) + wider * pages / 8;
 		}
 	}
@@ -274,9 +304,7 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 							n = cuts[u + 1] - from;
 				double		b;
 
-				memcpy(rows, sel + from, n * sizeof(uint32));
-				sift_sort_u32(rows, n);	/* the rows of a unit are in TID order */
-				b = encoded_bytes(&tr[t], rows, n, &buf, tmp);
+				b = encoded_bytes(&tr[t], tidrows + from, n, &buf, tmp);
 				if (&tr[t] == order[0] && tr[t].shape != NULL)
 					b = Max(n / 8.0, b - n * narrower / 8);
 				bytes += (1 + tr[t].image) * b;
@@ -306,6 +334,11 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 	pfree(tmp);
 	pfree(rows);
 	pfree(sel);
+	if (tidrows != NULL)
+	{
+		pfree(tidrows);
+		pfree(asc);
+	}
 	pfree(tid);
 	pfree(keys);
 	pfree(cuts);
