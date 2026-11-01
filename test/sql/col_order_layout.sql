@@ -27,6 +27,27 @@ CREATE INDEX w_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts,
 SELECT format FROM sift.col_segments('w_ix') WHERE kind = 'immutable';
 SELECT sift.col_verify('t_ix'), sift.col_verify('u_ix'), sift.col_verify('w_ix');
 
+-- keys that tie much (a date) cost less addressed as runs: the layout that is compact where it is smaller never costs more than either (the testing setting stands for the rule of 'auto' that may choose it)
+CREATE TABLE d AS SELECT i AS id, DATE '2026-01-01' + (i * 31 % 40) AS day FROM generate_series(1, 20000) i;
+CREATE INDEX d_whole ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day', order_layout = 'whole');
+CREATE INDEX d_compact ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day', order_layout = 'compact');
+SET sift.test_col_gorder_layout = 2;
+CREATE INDEX d_smaller ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day');
+RESET sift.test_col_gorder_layout;
+SELECT pg_relation_size('d_smaller') <= LEAST(pg_relation_size('d_whole'), pg_relation_size('d_compact')) AS smaller_is_least,
+	   pg_relation_size('d_compact') > pg_relation_size('d_whole') AS compact_costs_more_on_ties;
+SELECT sift.col_verify('d_smaller');
+DROP TABLE d;
+-- and compact where the keys are many and spread (a timestamp to the microsecond)
+SELECT setseed(0.42);
+CREATE TABLE e AS SELECT i AS id, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day' AS ts FROM generate_series(1, 20000) i;
+SET sift.test_col_gorder_layout = 2;
+CREATE INDEX e_smaller ON e USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
+RESET sift.test_col_gorder_layout;
+SELECT format FROM sift.col_segments('e_smaller') WHERE kind = 'immutable';
+SELECT sift.col_verify('e_smaller');
+DROP TABLE e;
+
 -- ordered results are the table's, with a write buffer
 INSERT INTO t SELECT 20000 + i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 minute', DATE '2026-06-01', 'm' || i FROM generate_series(1, 300) i;
 INSERT INTO o SELECT 20000 + i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 minute', DATE '2026-06-01', 'm' || i FROM generate_series(1, 300) i;

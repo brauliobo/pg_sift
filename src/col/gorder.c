@@ -209,9 +209,70 @@ addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, u
 	pfree(gv);
 }
 
+/* The chunk of m entries as a compact one: the quantized buckets of the keys and the plain addresses */
 static void
-build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 head, uint32 vtotal, bool compact)
+compact_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, const SiftCcPolicy *pol)
 {
+	uint32		k0 = body->len;
+
+	sift_gq_encode(kv, m, SIFT_GQ_Q, body);
+	d->klen = body->len - k0;
+	pad8(body);
+	addr_chunk(body, d, kv, av, m, false, pol);
+	d->pad |= SIFT_CGORD_COMPACT;
+	pad8(body);
+}
+
+/* ... and as a whole one: the keys, and the addresses (as runs of equal keys where dense) */
+static void
+whole_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, bool dense, const SiftCcPolicy *pol)
+{
+	uint32		k0 = body->len;
+
+	sift_cc_encode(body, SIFT_CC_INT, (int64 *) kv, m, NULL, pol, NULL);
+	d->klen = body->len - k0;
+	pad8(body);
+	k0 = body->len;
+	if (dense)
+		addr_chunk(body, d, kv, av, m, true, pol);
+	else
+	{
+		sift_cc_encode(body, SIFT_CC_INT, (int64 *) av, m, NULL, pol, NULL);
+		d->alen = body->len - k0;
+	}
+	pad8(body);
+}
+
+/*
+ * Writes the chunk compact when that is smaller than the whole one (keys that tie are cheap to address as a run, a compact chunk has no such form), the whole one otherwise; true
+ * when it is the compact one. d has the first key and the offset of the chunk.
+ */
+static bool
+compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, bool dense, const SiftCcPolicy *pol)
+{
+	StringInfoData cb,
+				wb;
+	SiftCGOrdDir cd = *d,
+				wd = *d;
+	bool		smaller;
+
+	initStringInfo(&cb);
+	initStringInfo(&wb);
+	compact_chunk(&cb, &cd, kv, av, m, pol);
+	whole_chunk(&wb, &wd, kv, av, m, dense, pol);
+	smaller = cb.len < wb.len;
+	*d = smaller ? cd : wd;
+	appendBinaryStringInfo(body, smaller ? cb.data : wb.data, smaller ? cb.len : wb.len);
+	pfree(cb.data);
+	pfree(wb.data);
+	return smaller;
+}
+
+static void
+build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 head, uint32 vtotal, int layout)
+{
+	bool		compact = layout != SIFT_CGORD_L_WHOLE,
+				anycompact = false;
 	uint64		n = (uint64) nvals + nnull;
 	uint32		crows = sift_cgord_rows();
 	uint32		nchunks = (uint32) ((n + crows - 1) / crows);
@@ -293,7 +354,6 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	{
 		uint32		m = (uint32) Min((uint64) crows, n - (uint64) c * crows);
 		uint64		at = (uint64) c * crows;
-		uint32		k0;
 
 		for (uint32 i = 0; i < m; i++)
 		{
@@ -302,29 +362,25 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		}
 		dir[c].first = kv[0];
 		dir[c].off = (uint32) body.len;		/* made absolute below */
-		k0 = body.len;
 		if (compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
 		{
-			sift_gq_encode(kv, m, SIFT_GQ_Q, &body);
-			dir[c].klen = body.len - k0;
-			pad8(&body);
-			addr_chunk(&body, &dir[c], kv, av, m, false, &pol);
-			dir[c].pad |= SIFT_CGORD_COMPACT;
-			pad8(&body);
+			if (layout == SIFT_CGORD_L_COMPACT)
+			{
+				compact_chunk(&body, &dir[c], kv, av, m, &pol);
+				anycompact = true;
+			}
+			else
+				anycompact = compact_smaller(&body, &dir[c], kv, av, m, dense, &pol) || anycompact;
 			continue;
 		}
-		sift_cc_encode(&body, SIFT_CC_INT, kv, m, NULL, &pol, NULL);
-		dir[c].klen = body.len - k0;
-		pad8(&body);
-		k0 = body.len;
-		if (dense)
-			addr_chunk(&body, &dir[c], kv, av, m, true, &pol);
-		else
-		{
-			sift_cc_encode(&body, SIFT_CC_INT, av, m, NULL, &pol, NULL);
-			dir[c].alen = body.len - k0;
-		}
-		pad8(&body);
+		whole_chunk(&body, &dir[c], kv, av, m, dense, &pol);
+	}
+	if (compact && !anycompact)
+	{
+		/* no chunk is smaller compact: the block is the whole order, of the version a library before the compact blocks reads */
+		hdr[1] = SIFT_CGORD_VERSION;
+		hdr[6] = head;
+		hdr[7] = vtotal;
 	}
 	appendBinaryStringInfo(out, (const char *) hdr, sizeof(hdr));
 	for (uint32 c = 0; c < nchunks; c++)
@@ -500,7 +556,7 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 		ord_sort(ent + nvals, nnull);
 		ends_reduce(ent, &nvals, &nnull, &head, &vtotal);
 	}
-	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, head, vtotal, layout == SIFT_CGORD_L_COMPACT && dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE);
+	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, head, vtotal, dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }
 
@@ -513,7 +569,7 @@ sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, ui
 		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, false);
+	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }
 
@@ -621,7 +677,7 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 		ent[i] = (OrdEnt) {0, rank[key[i]], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, 0, 0, false);
+	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, 0, 0, SIFT_CGORD_L_WHOLE);
 	pfree(order);
 	pfree(rank);
 	pfree(boff);

@@ -20,6 +20,8 @@ sift_cgord_layout_pick(uint8 want, uint32 nvals)
 #ifdef SIFT_TESTING
 	if (sift_test_col_gorder_layout == 1)
 		return SIFT_CGORD_L_COMPACT;
+	if (sift_test_col_gorder_layout == 2)
+		return SIFT_CGORD_L_SMALLER;
 #endif
 	return AUTO_LAYOUT(nvals);
 }

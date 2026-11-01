@@ -47,6 +47,7 @@
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
 #define SIFT_CGORD_L_COMPACT	1
+#define SIFT_CGORD_L_SMALLER	2		/* compact for the chunks where it is smaller than the whole one */
 #define SIFT_CGORD_OL_AUTO	0		/* what the option order_layout asks of a column (SiftCPAgg.glayout) */
 #define SIFT_CGORD_OL_WHOLE	1
 #define SIFT_CGORD_OL_COMPACT	2
@@ -143,7 +144,8 @@ typedef struct SiftCGOrdDir
  * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
  * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  * ends: a segment of more than 2 * SIFT_CGORD_ENDS values keeps the ends only.
- * layout: SIFT_CGORD_L_COMPACT writes a block of version 4 when the segment has more than 8 * SIFT_CGORD_ENDS (32,768) values and dense is set, else the whole order.
+ * layout: SIFT_CGORD_L_COMPACT writes a block of version 4 when the segment has more than 8 * SIFT_CGORD_ENDS (32,768) values and dense is set, else the whole order;
+ * SIFT_CGORD_L_SMALLER the same with a compact chunk only where it is smaller than the whole one (a block with none is the whole order).
  */
 extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
