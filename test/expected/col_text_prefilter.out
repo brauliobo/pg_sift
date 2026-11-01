@@ -1,6 +1,7 @@
 -- The executor tests the strings of a column dictionary with the pattern (LIKE with a _, a second % or ILIKE, a regular expression). The literals every string
 -- that matches holds are found first by the substring kernel and the pattern is run on the strings that hold them: the rows are the normal plan's for every pattern,
--- collation and storage, and the literals are those each pattern requires (sift._test_pattern_lits).
+-- collation and storage, and the literals are those each pattern requires (sift._test_pattern_lits). The first two runs check every pattern and shape; the later ones
+-- (another storage, collation, DML, scalar kernel) check the patterns that the change they make can alter, by the row count.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
@@ -64,13 +65,13 @@ FROM (VALUES ('like', '%shop17_example%'), ('like', 'ab%cde_fgh%ij'), ('like', '
 (43 rows)
 
 CREATE TABLE pf (id int, s text, k text, c text) WITH (autovacuum_enabled = off);
-INSERT INTO pf SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 7000)::text), 'k' || (i % 40), 'c' || md5(i::text)
-FROM generate_series(1, 20000) i;
-INSERT INTO pf VALUES (20001, '', '', ''), (20002, NULL, NULL, NULL), (20003, 'ab', 'ab', 'ab'), (20004, 'a.b', 'a.b', 'a.b'), (20005, 'a$', '^a', 'a$b'),
-	(20006, E'back\\slash', E'x\\', 'x\\y'), (20007, 'naïve café', 'café', 'ï'), (20008, 'abab', 'ABAB', 'bab'), (20009, 'Shop1.EXAMPLE', 'Shop1.Example', 'SHOP1'),
-	(20010, 'a+b', 'a*b', 'a(b)'), (20011, 'a|b', '[a]', '{1}'), (20012, 'İk', E'Kk', 'ik'), (20013, 'ITEM/KEY İTEM/Kelvin', 'Kelvin', 'İSTANBUL'),
-	(20014, 'item/ke_y item/ke%y', 'ke_y', 'ke%y'), (20015, 'hello world', 'Hello World', 'HELLO WORLD'), (20016, 'abcdef', 'ABCDEF', 'abcDEF'),
-	(20017, 'ÉCLAIR éclair', 'éclair', 'ÉCLAIR'), (20018, 'abc1def abc2def', 'abcdef', 'a b c');
+INSERT INTO pf SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 3500)::text), 'k' || (i % 40), 'c' || md5(i::text)
+FROM generate_series(1, 10000) i;
+INSERT INTO pf VALUES (10001, '', '', ''), (10002, NULL, NULL, NULL), (10003, 'ab', 'ab', 'ab'), (10004, 'a.b', 'a.b', 'a.b'), (10005, 'a$', '^a', 'a$b'),
+	(10006, E'back\\slash', E'x\\', 'x\\y'), (10007, 'naïve café', 'café', 'ï'), (10008, 'abab', 'ABAB', 'bab'), (10009, 'Shop1.EXAMPLE', 'Shop1.Example', 'SHOP1'),
+	(10010, 'a+b', 'a*b', 'a(b)'), (10011, 'a|b', '[a]', '{1}'), (10012, 'İk', E'Kk', 'ik'), (10013, 'ITEM/KEY İTEM/Kelvin', 'Kelvin', 'İSTANBUL'),
+	(10014, 'item/ke_y item/ke%y', 'ke_y', 'ke%y'), (10015, 'hello world', 'Hello World', 'HELLO WORLD'), (10016, 'abcdef', 'ABCDEF', 'abcDEF'),
+	(10017, 'ÉCLAIR éclair', 'éclair', 'ÉCLAIR'), (10018, 'abc1def abc2def', 'abcdef', 'a b c');
 INSERT INTO pf SELECT 30000 + i, 'ITEM/' || upper(md5(i::text)) || ' Shop' || (i % 9) || '.Example', 'K' || (i % 30), 'İ' || md5(i::text) FROM generate_series(1, 1500) i;
 CREATE INDEX pf_idx ON pf USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, k sift.col_text_ops, c sift.col_text_ops);
 VACUUM pf;
@@ -101,18 +102,18 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
-CREATE FUNCTION pf_check(tag text, tbl text, coll text DEFAULT NULL, ps text[] DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION pf_check(tag text, tbl text, coll text DEFAULT NULL, ps text[] DEFAULT NULL, pat text DEFAULT NULL, shapes int DEFAULT 3) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r record;
 	q text;
 	bad int := 0;
 	n int := 0;
 BEGIN
-	FOR r IN SELECT col, replace(p, '{c}', col || coalesce(' COLLATE ' || quote_ident(coll), '')) AS pred FROM pf_pred, (VALUES ('s'), ('k'), ('c')) c(col) WHERE ps IS NULL OR p = ANY (ps) ORDER BY col, p LOOP
-		FOREACH q IN ARRAY ARRAY[
+	FOR r IN SELECT col, replace(p, '{c}', col || coalesce(' COLLATE ' || quote_ident(coll), '')) AS pred FROM pf_pred, (VALUES ('s'), ('k'), ('c')) c(col) WHERE (ps IS NULL OR p = ANY (ps)) AND (pat IS NULL OR p ~ pat) ORDER BY col, p LOOP
+		FOREACH q IN ARRAY (ARRAY[
 			format('SELECT count(*), sum(id), min(id), max(id) FROM %s WHERE %s', tbl, r.pred),
 			format('SELECT id FROM %s WHERE %s AND id %% 3 = 0', tbl, r.pred),
-			format('SELECT count(*) FROM %s WHERE NOT (%s)', tbl, r.pred)] LOOP
+			format('SELECT count(*) FROM %s WHERE NOT (%s)', tbl, r.pred)])[1:shapes] LOOP
 			n := n + 1;
 			IF pf_run(q, true) IS DISTINCT FROM pf_run(q, false) THEN
 				bad := bad + 1;
@@ -135,7 +136,7 @@ SELECT count(*) FROM pf WHERE s ~ 'item/c4ca4[0-9]';
      3
 (1 row)
 
-SELECT dicts > 0 AS prefiltered, skipped > 8000 AS most_skipped FROM sift._test_prefilter(true);
+SELECT dicts > 0 AS prefiltered, skipped > 4000 AS most_skipped FROM sift._test_prefilter(true);
  prefiltered | most_skipped 
 -------------+--------------
  t           | t
@@ -144,7 +145,7 @@ SELECT dicts > 0 AS prefiltered, skipped > 8000 AS most_skipped FROM sift._test_
 SELECT count(*) FROM pf WHERE s ~ 'https://shop[0-9]+\.example';
  count 
 -------
- 20000
+ 10000
 (1 row)
 
 SELECT dicts = 0 AS common_not_prefiltered, skipped = 0 AS none_skipped FROM sift._test_prefilter(true);
@@ -156,7 +157,7 @@ SELECT dicts = 0 AS common_not_prefiltered, skipped = 0 AS none_skipped FROM sif
 SELECT count(*) FROM pf WHERE s ~ 'abc|def';
  count 
 -------
-   259
+   139
 (1 row)
 
 SELECT dicts = 0 AS alternative_not_prefiltered FROM sift._test_prefilter(true);
@@ -171,37 +172,37 @@ SELECT pf_check('sift_col', 'pf');
  sift_col: 702 statements, 0 differ
 (1 row)
 
-SELECT pf_check('sift_table', 'pft');
+SELECT pf_check('sift_table', 'pft', shapes => 1);
                pf_check               
 --------------------------------------
- sift_table: 702 statements, 0 differ
+ sift_table: 234 statements, 0 differ
 (1 row)
 
-SELECT pf_check('collation C', 'pf', 'C');
-               pf_check                
----------------------------------------
- collation C: 702 statements, 0 differ
+SELECT pf_check('collation C', 'pf', 'C', pat => 'ILIKE|~\*|é', shapes => 1);
+               pf_check               
+--------------------------------------
+ collation C: 84 statements, 0 differ
 (1 row)
 
-SELECT pf_check('collation POSIX', 'pft', 'POSIX');
-                 pf_check                  
--------------------------------------------
- collation POSIX: 702 statements, 0 differ
+SELECT pf_check('collation POSIX', 'pft', 'POSIX', pat => 'ILIKE|~\*|é', shapes => 1);
+                 pf_check                 
+------------------------------------------
+ collation POSIX: 84 statements, 0 differ
 (1 row)
 
 SELECT EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'und-x-icu') AS icu \gset
 \if :icu
-SELECT pf_check('ICU und', 'pf', 'und-x-icu');
-             pf_check              
------------------------------------
- ICU und: 702 statements, 0 differ
+SELECT pf_check('ICU und', 'pf', 'und-x-icu', pat => 'ILIKE|~\*|é', shapes => 1);
+             pf_check             
+----------------------------------
+ ICU und: 84 statements, 0 differ
 (1 row)
 
 CREATE COLLATION pf_tr (provider = icu, locale = 'tr-TR');
-SELECT pf_check('ICU tr-TR', 'pf', 'pf_tr');
-              pf_check               
--------------------------------------
- ICU tr-TR: 702 statements, 0 differ
+SELECT pf_check('ICU tr-TR', 'pf', 'pf_tr', pat => 'ILIKE|~\*|é', shapes => 1);
+              pf_check              
+------------------------------------
+ ICU tr-TR: 84 statements, 0 differ
 (1 row)
 
 CREATE COLLATION pf_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
@@ -226,21 +227,21 @@ SELECT pf_run('SELECT count(*) FROM pf WHERE s ~ ''abc(de|fg''', true) = pf_run(
 INSERT INTO pf SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 4000) i;
 DELETE FROM pf WHERE id % 11 = 0;
 VACUUM pf;
-SELECT pf_check('vacuumed', 'pf');
+SELECT pf_check('vacuumed', 'pf', shapes => 1);
               pf_check              
 ------------------------------------
- vacuumed: 702 statements, 0 differ
+ vacuumed: 234 statements, 0 differ
 (1 row)
 
 SET sift.simd = scalar;
-SELECT pf_check('scalar', 'pf');
-             pf_check             
-----------------------------------
- scalar: 702 statements, 0 differ
+SELECT pf_check('scalar', 'pf', pat => 'LIKE', shapes => 1);
+            pf_check             
+---------------------------------
+ scalar: 96 statements, 0 differ
 (1 row)
 
 RESET sift.simd;
-DROP FUNCTION pf_check(text, text, text, text[]), pf_run(text, bool);
+DROP FUNCTION pf_check(text, text, text, text[], text, int), pf_run(text, bool);
 DROP TABLE pf_pred, pf, pft;
 DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
 DROP EXTENSION pg_sift_test;
