@@ -517,8 +517,8 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_maint_unlock(index);
-	if (n > 0)
-		cut_free_end(ops, index, false);
+	/* also when no merge was due: the end a merge left is cut by the first call that finds the lock free, however many calls the busy ones were */
+	cut_free_end(ops, index, false);
 	return n;
 }
 
