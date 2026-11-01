@@ -18,8 +18,8 @@ DELETE FROM np WHERE id % 50 = 7;
 VACUUM np;
 SELECT rewrite_due FROM sift.col_maintenance_status('np_ix');
 
--- the budget holds it back
-SET sift.col_auto_merge_wal_pct = 5;
+-- the budget holds it back: it counts the WAL of the whole server since the segments were written, so a budget of a thousandth of a percent is out of reach of the tests that run beside this one
+SET sift.col_auto_merge_wal_pct = 0.001;
 SELECT rewrite_due, 'the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last' = ANY (blocked_by) AS wal_gate FROM sift.col_maintenance_status('np_ix');
 
 -- and the buffer rows, 3% of the rows, are promoted nevertheless
