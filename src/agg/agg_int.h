@@ -60,6 +60,7 @@ typedef struct AggExec
 {
 	CustomScanState css;
 	SiftAggSpec *spec;
+	SiftAggSpec *unpacked;		/* the spec as the pack gives it, in a context of its own that a scan starting over (agg_restart) keeps; spec may be a copy with the join filters */
 	Relation	heap;
 	bool		heap_opened;
 	Relation	index;

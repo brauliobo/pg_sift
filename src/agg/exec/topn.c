@@ -376,8 +376,6 @@ topn_run(AggExec *ex)
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
 	agg_test_wait();
-	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
-		topn_buffers(ex, &bufs);
 	table_init(ex);
 	t = ex->topn;
 	if (sift_topn_empty(t))
@@ -395,6 +393,9 @@ topn_run(AggExec *ex)
 		if ((ex->spec->npred == 0 || cond != NULL) && sift_topn_gorder(t, ex->src, cond))
 			return;
 	}
+	/* a lookup by the order array (above) reads no vector, which a LATERAL probe saves at every call */
+	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
+		topn_buffers(ex, &bufs);
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
 	{

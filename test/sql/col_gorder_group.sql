@@ -132,6 +132,21 @@ SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (S
 SELECT gg_chk('SELECT v.g, x.id, x.t FROM generate_series(0, 9) v(g), LATERAL (SELECT id, t FROM gg WHERE g = v.g AND t > TIMESTAMP ''2000-01-01'' + v.g * interval ''2 hours'' ORDER BY t, id LIMIT 3) x ORDER BY v.g, x.t, x.id') AS lateral_group_and_bound;
 SELECT gg_chk('SELECT v.g, (SELECT k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_group;
 SELECT gg_chk('SELECT v.g, (SELECT max(k) FROM gg WHERE g = v.g) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_max;
+-- the scan starts over at each probe and keeps what the plan fixes: the same operand twice, NULL, a group with no array entry, a bound that is no pin (the units), a rewind
+SELECT gg_chk('SELECT v.i, v.g, x.id, x.k FROM (VALUES (1, 3), (2, 3), (3, NULL), (4, 100), (5, 101), (6, 7), (7, 3), (8, 55)) v(i, g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 2) x ORDER BY v.i, x.k DESC, x.id') AS lateral_repeats;
+SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 4) v(g), LATERAL (SELECT id, k FROM gg WHERE k > v.g * 90 ORDER BY k, id LIMIT 2) x ORDER BY v.g, x.k, x.id') AS lateral_bound_only;
+DO $$
+DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; want text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	OPEN c SCROLL FOR SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x;
+	LOOP FETCH NEXT FROM c INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r::text; END LOOP;
+	LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; bwd := r::text || bwd; END LOOP;
+	CLOSE c;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	SELECT string_agg(x::text, '' ORDER BY g) INTO want FROM (SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x) x;
+	RAISE NOTICE 'cursor: % %', CASE WHEN fwd = want THEN 'forward is the heap''s' ELSE 'DIFFERS forward' END, CASE WHEN bwd = want THEN 'backward is the same' ELSE 'DIFFERS backward' END;
+END $$;
 
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
 DROP INDEX gg_i;

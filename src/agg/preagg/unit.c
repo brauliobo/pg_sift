@@ -265,7 +265,8 @@ preagg_init(AggExec *ex)
 	ex->pa_on = ex->pa_dead = ex->pa_dead_sub = ex->whole_on = false;
 	ex->pa_dead_miss = 0;
 	ex->pa_why = SPW_OFF;
-	if (!sift_agg_preagg)
+	/* a top-N of rows has no aggregate for a cell, a rollup or a sum to answer */
+	if (!sift_agg_preagg || (ex->spec->topn && ex->spec->naggs == 0 && ex->spec->nkeys == 0))
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->spec->nparts > 0 ? sift_aggpart_heap(ex->src, 0) : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);

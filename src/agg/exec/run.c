@@ -626,16 +626,20 @@ engine_close(AggExec *ex)
 		table_close(ex->heap, NoLock);
 }
 
-/* the scan's memory, and the spec in it: a scan that starts over (agg_rescan) drops both */
+/* the scan's memory, and the spec in a context of its own: a scan that starts over (agg_restart) drops the first and keeps the second */
 static void
 scan_spec(AggExec *ex, MemoryContext parent)
 {
-	MemoryContext old;
-
 	engine_contexts(ex, parent);
-	old = MemoryContextSwitchTo(ex->cxt);
-	ex->spec = sift_aggspec_unpack(ex->pack);
-	MemoryContextSwitchTo(old);
+	if (ex->unpacked == NULL)
+	{
+		MemoryContext cx = AllocSetContextCreate(parent, "sift agg spec", ALLOCSET_DEFAULT_SIZES),
+					old = MemoryContextSwitchTo(cx);
+
+		ex->unpacked = sift_aggspec_unpack(ex->pack);
+		MemoryContextSwitchTo(old);
+	}
+	ex->spec = ex->unpacked;
 }
 
 static void
@@ -751,6 +755,8 @@ agg_end(CustomScanState *node)
 	}
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
+	if (ex->unpacked)
+		MemoryContextDelete(GetMemoryChunkContext(ex->unpacked));
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
 }
@@ -763,12 +769,14 @@ static void
 agg_restart(AggExec *ex)
 {
 	bool		rescannable = ex->rescannable;
+	SiftAggSpec *unpacked = ex->unpacked;
 
 	if (ex->started)
 		stats_run(ex);
 	engine_close(ex);
 	MemoryContextDelete(ex->cxt);
 	memset((char *) ex + sizeof(CustomScanState), 0, sizeof(AggExec) - sizeof(CustomScanState));
+	ex->unpacked = unpacked;
 	ex->pack = ((CustomScan *) ex->css.ss.ps.plan)->custom_private;
 	ex->params = ex->css.ss.ps.state->es_param_list_info;
 	ex->snap = ex->css.ss.ps.state->es_snapshot;
