@@ -706,21 +706,22 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 #define MERGE_SLICES_MIN 3
 
 /*
- * The merge of the segments with key_cut by the participants of a parallel context: of a parallel build, when its output is cut into partitions (the rewrite of an
- * index of the size of one is a single segment, which a single process writes), a slice of the key range for each partition the serial merge would write, so the
- * next step finds the partitions it leaves alone; of a merge or rewrite outside a build, when the output is one segment, a slice for each participant. The
- * participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the build's. false: the merge is
- * made by one process.
+ * The merge of the segments with key_cut by the participants of a parallel context, when its output is cut into partitions (the rewrite of an index of the
+ * size of one is a single segment, which a single process writes): a slice of the key range for each partition the serial merge would write, so the next step
+ * finds the partitions it leaves alone, of a parallel build (from MERGE_SLICES_MIN partitions) and of a merge or rewrite outside one (from 2: the rows are read by
+ * the backend and one worker each, 1.7 -> 1.1 s at 64 MB of maintenance_work_mem); when the output is one segment, outside a build, a slice for each participant
+ * from MERGE_PAR_BYTES. The participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the
+ * build's. false: the merge is made by one process.
  */
 static bool
 merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int room)
 {
 	uint64		bytes = 0;
 	uint64		share = (uint64) maint_part_kb * 1024 / 4 * 3;
-	int			workers = maint_after_build ? maint_merge_workers : Min(max_parallel_maintenance_workers, MERGE_WORKERS_MAX);
+	int			workers = maint_after_build ? maint_merge_workers : max_parallel_maintenance_workers;
 	int			nslices;
 
-	if (workers == 0 || cut != maint_after_build || n < 2 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+	if (workers == 0 || n < 2 || (!cut && maint_after_build) || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	for (int i = 0; i < n; i++)
 	{
@@ -728,16 +729,19 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 			return false;
 		bytes += sel[i].bytes;
 	}
-	if (maint_after_build)
+	if (cut)
 	{
 		nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
-		if (nslices < MERGE_SLICES_MIN)
+		if (nslices < (maint_after_build ? MERGE_SLICES_MIN : 2))
 			return false;
+		if (!maint_after_build)
+			workers = Min(workers, nslices - 1);
 	}
 	else
 	{
 		if (bytes < merge_par_bytes() || room < 2)
 			return false;
+		workers = Min(workers, MERGE_WORKERS_MAX);
 		nslices = Min(workers + 1, room);
 	}
 	maint_merge_workers = 0;
