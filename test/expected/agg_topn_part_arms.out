@@ -1,0 +1,69 @@
+-- The newest row of each tenant (LATERAL .. ORDER BY ts DESC LIMIT 1) over a table partitioned by month: PostgreSQL read every partition and sorted for each tenant, 154,301 buffers
+-- for 100 tenants of 100,000 rows in 12 partitions (0.36 s). The query is planned as one top-N for each partition, the partitions in the order of the sort when the first
+-- ORDER BY column is the key of a range partitioning (the later ones are never executed once the first answers), merged by a Merge Append for another order, and chosen by cost.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE ev (id bigint NOT NULL, tenant_id int NOT NULL, ts timestamp NOT NULL, v int, pad text) PARTITION BY RANGE (ts);
+CREATE TABLE ev_1 PARTITION OF ev FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+CREATE TABLE ev_2 PARTITION OF ev FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
+CREATE TABLE ev_3 PARTITION OF ev FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
+INSERT INTO ev SELECT i, 1 + i % 20, timestamp '2025-01-01' + (i * 7919 % 7776000) * interval '1 second', i % 50, repeat('x', 60) FROM generate_series(1, 20000) i;
+CREATE INDEX ev_c ON ev USING sift_col (id, tenant_id, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant_id');
+CREATE TABLE evh (LIKE ev) PARTITION BY HASH (tenant_id);
+CREATE TABLE evh_0 PARTITION OF evh FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE evh_1 PARTITION OF evh FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+INSERT INTO evh SELECT * FROM ev;
+CREATE INDEX evh_c ON evh USING sift_col (id, tenant_id, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant_id');
+CREATE TABLE tn AS SELECT n AS id FROM generate_series(1, 20) n;
+VACUUM (FREEZE, ANALYZE) ev, evh, tn;
+-- the partitions' top-N nodes the plan has and the ones it ran, and the nodes that merge or sort them
+CREATE FUNCTION arms(q text, OUT scans int, OUT ran int, OUT merge text) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	scans := 0; ran := 0; merge := 'none';
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN
+			scans := scans + 1;
+			IF l !~ 'never executed' THEN ran := ran + 1; END IF;
+		ELSIF l ~ 'Merge Append' THEN merge := 'merge append';
+		ELSIF l ~ 'Sort Key' AND merge = 'none' THEN merge := 'sort';
+		END IF;
+	END LOOP;
+END $$;
+CREATE FUNCTION same_rows(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (%s) t', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (%s) t', q) INTO b;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN a = b;
+END $$;
+CREATE TABLE q (n int, q text);
+INSERT INTO q VALUES
+	(1, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true'),
+	(2, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM ev e WHERE e.tenant_id = d.id ORDER BY ts LIMIT 3) x ON true'),
+	(3, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 2 OFFSET 1) x ON true'),
+	(4, 'SELECT d.id, x.id FROM tn d LEFT JOIN LATERAL (SELECT id FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true'),
+	(5, 'SELECT d.id, (SELECT ts FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) FROM tn d'),
+	(6, 'SELECT d.id, x.v, x.id FROM tn d LEFT JOIN LATERAL (SELECT v, id FROM ev e WHERE e.tenant_id = d.id ORDER BY v DESC, id LIMIT 1) x ON true'),
+	(7, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM evh e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true');
+SELECT n, (arms(q)).*, same_rows(q) AS same FROM q ORDER BY n;
+ n | scans | ran |    merge     | same 
+---+-------+-----+--------------+------
+ 1 |     3 |   1 | none         | t
+ 2 |     3 |   1 | none         | t
+ 3 |     3 |   1 | none         | t
+ 4 |     3 |   1 | none         | t
+ 5 |     3 |   1 | none         | t
+ 6 |     3 |   3 | merge append | t
+ 7 |     0 |   0 | sort         | t
+(7 rows)
+
+DROP FUNCTION arms(text), same_rows(text);
+DROP TABLE q, tn, ev, evh;
+DROP EXTENSION pg_sift;

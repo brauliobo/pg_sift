@@ -257,7 +257,7 @@ static bool
 reads_column_index(Query *q)
 {
 	foreach_node(RangeTblEntry, rte, q->rtable)
-		if ((rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid)) ||
+		if ((rte->rtekind == RTE_RELATION && (rte->relkind == RELKIND_RELATION || rte->relkind == RELKIND_PARTITIONED_TABLE) && has_column_source(rte->relid)) ||
 			(rte->rtekind == RTE_SUBQUERY && reads_column_index(rte->subquery)))
 			return true;
 	foreach_node(CommonTableExpr, cte, q->cteList)

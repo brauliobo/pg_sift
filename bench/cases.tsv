@@ -349,3 +349,4 @@ topn_offset_presorted	reads the 10,020 rows from the end of the one unit its key
 point_tid_auto_60	by default also for an integer key of nearly unique values that	events	-	Index Scan using pa_col|Bitmap Heap Scan on pa|from point directory	native	btree:search_path = c_point_tid_auto_60__btree	ms	faster33	no	-
 key_order_offset	`key_order = 'ts'` (or `'entity, ts'`) on a `sift_col` index	events	-	Global Order: true	native	default:search_path = c_key_order_offset__default,btree:search_path = c_key_order_offset__btree	ms	faster33	no	-
 key_order_latest	the latest row of each of 100 tenants	events	-	Global Order: true	native	default:search_path = c_key_order_latest__default,btree:search_path = c_key_order_latest__btree	ms	faster33	no	-
+lateral_top1_partitions	reads the top-N of each partition and merges them	orders	default	Top-N	native	btree:search_path = c_lateral_top1_partitions__btree	ms	faster33	no	-

@@ -88,6 +88,7 @@ extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
+extern bool sift_agg_partition_arms(Query *q, bool apply);
 extern bool sift_agg_push_partial_aggs(Query *q, bool apply);
 extern int	sift_agg_push_arms;			/* the arms the last partial aggregation grouped (0: none) */
 extern Bitmapset *sift_agg_push_raw;	/* the arms (by position) the next one leaves ungrouped */
