@@ -186,6 +186,35 @@ range_meets(int64 lo, int64 hi, const int64 *set, int nset, int64 zlo, int64 zhi
 }
 
 /*
+ * An equality with a parameter or a column of the outer side (the probe of a nested loop) names a key the plan does not know: a key of the column's range lies in the
+ * zone of a unit with the probability of the share of the range the zone covers, so the units the probe finds are the sum of their widths over the range (one of a
+ * column the heap is sorted by, all of one the heap scatters). 1 for a clause that is not that.
+ */
+static double
+param_zones_kept(const SiftColZones *z, int leaf, Oid opfamily, Node *clause)
+{
+	OpExpr	   *op = IsA(clause, OpExpr) ? (OpExpr *) clause : NULL;
+	double		width = 0.0;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	if (op == NULL || list_length(op->args) != 2 || get_op_opfamily_strategy(op->opno, opfamily) != BTEqualStrategyNumber ||
+		IsA(linitial(op->args), Const) || IsA(lsecond(op->args), Const))
+		return 1.0;
+	for (uint32 k = 0; k < z->n; k++)
+	{
+		if (z->lo[leaf][k] > z->hi[leaf][k])
+			continue;
+		lo = Min(lo, z->lo[leaf][k]);
+		hi = Max(hi, z->hi[leaf][k]);
+		width += (double) z->hi[leaf][k] - (double) z->lo[leaf][k] + 1.0;
+	}
+	if (lo > hi)
+		return 1.0;
+	return Min(width / ((double) hi - (double) lo + 1.0) / z->n, 1.0);
+}
+
+/*
  * The share of the units the constants of the index quals leave, by the real zones of a sample of the units; 1 when the zones cannot tell (text, a parameter,
  * a column the sample does not describe). The quals are ANDed: a unit stays when every one of them may hold in it.
  */
@@ -197,6 +226,7 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	bool	   *alive;
 	bool		tested = false;
 	int			left = 0;
+	double		mean = 1.0;
 
 	if (z == NULL || z->n == 0)
 		return 1.0;
@@ -214,18 +244,23 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 			int64	   *set;
 			int			nset;
 
-			if (leaf >= z->ncols || z->lo[leaf] == NULL || !clause_range(root, index->opfamily[ic->indexcol], (Node *) ri->clause, &lo, &hi, &set, &nset))
+			if (leaf >= z->ncols || z->lo[leaf] == NULL)
 				continue;
+			if (!clause_range(root, index->opfamily[ic->indexcol], (Node *) ri->clause, &lo, &hi, &set, &nset))
+			{
+				mean *= param_zones_kept(z, leaf, index->opfamily[ic->indexcol], (Node *) ri->clause);
+				continue;
+			}
 			tested = true;
 			for (uint32 k = 0; k < z->n; k++)
 				alive[k] = alive[k] && range_meets(lo, hi, set, nset, z->lo[leaf][k], z->hi[leaf][k]);
 		}
 	}
 	if (!tested)
-		return 1.0;
+		return mean;
 	for (uint32 k = 0; k < z->n; k++)
 		left += alive[k];
-	return (double) left / z->n;
+	return (double) left / z->n * mean;
 }
 
 /*

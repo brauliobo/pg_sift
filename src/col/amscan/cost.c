@@ -41,6 +41,7 @@
 
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 
+#define COL_SCAN_UNIT_RESCAN	5.0		/* ... for each probe of a scan repeated for the rows of a join after the first: the unit is looked up by the key, not walked (8.5 us a probe of 1,000 in a nested loop over 1,000,000 rows with the heap row and the join) */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
 
 #define COL_SCAN_ROW		0.0005	/* the filter of one value of a column of a kept unit by a comparison: 0.4 to 0.5 ns measured over 3,000,000 rows of a date, an integer, a text and a numeric column (the bounds of a range are one pass over the lanes) */
@@ -163,6 +164,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				kept_units,
 				idx_rows,
 				rescan,
+				repeat,
 				row_cost,
 				scale = cpu_operator_cost / 0.0025;
 	Bitmapset  *cols = NULL,
@@ -198,12 +200,14 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one: the lists of a leaf that has an equality, or another list, are one test of the fewest keys (narrow_lists) */
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans / redundant, 1);
-	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
+	/* a scan repeated for the rows of a join (loop_count) opens the index once and walks its pages once: a probe is the unit it looks up (82 units priced against 8.5 us measured) */
+	repeat = Max(loop_count, 1.0);
+	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK)) / repeat;
 	costs.indexTotalCost = costs.indexStartupCost
-		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? COL_SCAN_UNIT_RESCAN : COL_SCAN_UNIT) + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
 		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
-		+ index->pages * cpu_tuple_cost
+		+ index->pages * cpu_tuple_cost / repeat
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
