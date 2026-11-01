@@ -21,13 +21,14 @@
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 
-/* one place for each index of a partitioned table of a thousand partitions to keep its record; a lookup is a scan of the places under the spinlock, a few microseconds */
-#define LSHM_DIR		1024
+/* a place for each index of a partitioned table of a few thousand partitions to keep its record, in buckets of LSHM_WAYS: a lookup scans the bucket of the index under the spinlock */
+#define LSHM_DIR		4096
+#define LSHM_WAYS		8
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
-#define LSHM_NAME		"sift_col_leaf_stats_2"
+#define LSHM_NAME		"sift_col_leaf_stats_3"
 
-int			sift_col_leaf_cache_kb = 4096;
+int			sift_col_leaf_cache_kb = 16384;
 
 typedef struct LshmEnt
 {
@@ -64,6 +65,13 @@ typedef struct LshmHdr
 }			LshmHdr;
 
 static Lshm *lshm;
+
+static int
+lshm_bucket(RelFileNumber rel)
+{
+	return (int) ((rel * UINT32_C(2654435761)) % (LSHM_DIR / LSHM_WAYS)) * LSHM_WAYS;
+}
+
 static bool lshm_failed;
 
 static void
@@ -119,7 +127,7 @@ sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafSta
 	if (s == NULL)
 		return false;
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LSHM_DIR; i++)
+	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
 		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].stamp == stamp)
 		{
 			off = s->dir[i].off;
@@ -178,7 +186,7 @@ sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftCol
 	char	   *rec,
 			   *p;
 	LshmHdr		h = {.magic = LSHM_MAGIC, .ncols = ncols, .zn = zs->n, .zunits = zs->units, .zstride = zs->stride};
-	int			slot = -1;
+	int			slot;
 
 	if (s == NULL)
 		return;
@@ -216,19 +224,15 @@ sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftCol
 	{
 		LshmEnt    *e = &s->dir[i];
 
-		/* the record of the same index (an older stamp), and those the new one covers, go; the oldest goes if all places are taken */
+		/* the record of the same index (an older stamp), and those the new one covers, go */
 		if (e->used && ((e->rel == rel && e->db == MyDatabaseId) || (e->off < off + len && off < e->off + e->len)))
 			e->used = false;
-		if (slot < 0 && !e->used)
+	}
+	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
+	slot = lshm_bucket(rel);
+	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
 			slot = i;
-	}
-	if (slot < 0)
-	{
-		slot = 0;
-		for (int i = 1; i < LSHM_DIR; i++)
-			if (s->dir[i].tick < s->dir[slot].tick)
-				slot = i;
-	}
 	SpinLockRelease(&s->mutex);
 	memcpy(s->data + off, rec, len);
 	SpinLockAcquire(&s->mutex);

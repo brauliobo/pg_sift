@@ -52,8 +52,8 @@ check "and the next takes those, to the same plan" test "$(stat "$E")|$(plan_of 
 # the partitions of a table are indexes of their own: more of them than one backend plans over in a statement keep their statistics here too
 sql primary <<'SQL' >/dev/null || bail "setup of the partitions failed"
 CREATE TABLE spread (id int, set_id int NOT NULL, amount float8) PARTITION BY RANGE (id);
-SELECT format('CREATE TABLE spread_%s PARTITION OF spread FOR VALUES FROM (%s) TO (%s)', g, g * 100, g * 100 + 100) FROM generate_series(0, 39) g \gexec
-INSERT INTO spread SELECT g, 1 + g % 7, g % 50 FROM generate_series(0, 3999) g;
+SELECT format('CREATE TABLE spread_%s PARTITION OF spread FOR VALUES FROM (%s) TO (%s)', g, g * 100, g * 100 + 100) FROM generate_series(0, 1099) g \gexec
+INSERT INTO spread SELECT g, 1 + g % 7, g % 50 FROM generate_series(0, 109999) g;
 CREATE INDEX spread_col ON spread USING sift_col (id, set_id, amount);
 VACUUM (FREEZE, ANALYZE) spread;
 SQL
@@ -64,8 +64,8 @@ parts() {
 		"EXPLAIN SELECT set_id, count(*), sum(amount) FROM spread GROUP BY set_id" \
 		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tail -1
 }
-check "the first backend folds the statistics of 40 partitions" test "$(parts)" == "40,0"
-check "and the next takes all of them, not the last few" test "$(parts)" == "0,40"
+check "the first backend folds the statistics of 1,100 partitions" test "$(parts)" == "1100,0"
+check "and the next takes all of them, as many as the 1,024 places the table once had and more" test "$(parts)" == "0,1100"
 
 # the table is in the registry of the server: the crash restart of a backend that is killed (every backend goes down, the shared memory is made again) discards it
 node_conf primary "restart_after_crash = on"
