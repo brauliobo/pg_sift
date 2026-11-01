@@ -19,7 +19,7 @@ typedef struct SegBest
 
 #define MONO_WIN	1024			/* the rows a delta chunk decodes in one block */
 
-#define MONO_WINS	4				/* blocks the walk is expected to read at most, else the unit is read whole */
+#define MONO_WINS	4				/* blocks a unit has at least for the walk: a shorter one is decoded whole */
 
 static int
 trunc_cmp(const void *a, const void *b)
@@ -303,7 +303,7 @@ unit_reset(SiftTopN *t)
  * A unit whose first key never decreases (or increases) in row order, as a delta chunk says, has its best rows at one end: they are the first (last) rows that pass, so a
  * block of 1024 rows at a time is read from that end and the unit is not decoded whole. When the NULL rows sort first the best rows are the first NULL rows that pass, in
  * any chunk that reads a run of rows cheaply. One key and no condition on it (a bound of it is tested later, not in rmask). The walk is chosen before it reads, from
- * the rows that pass and the rows that can win (it expects them within MONO_WINS blocks), because it cannot give the unit back: its reads reuse the buffer of the leaf
+ * the rows that pass and the rows that can win (it expects a quarter more than the limit, so the limit is reached before the unit ends), because it cannot give the unit back: its reads reuse the buffer of the leaf
  * that the executor's vector of the leaf stands on, which a filter on the same column may have filled. Once started it goes on to the limit, the bar or the end of
  * the unit. Rows tied with the limit-th win nothing on one key.
  */
@@ -342,7 +342,7 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 		npass += pg_popcount64(rmask[i]);
 	/* the rows that can win, among the rows that pass, if the two do not go together */
 	cands = (nulls ? z.nnull : (double) (nrow - z.nnull)) / nrow * ((double) npass / nrow) * nrow;
-	if (cands < 2 * t->limit || (double) t->limit * nrow / cands > (double) MONO_WINS * MONO_WIN / 2)
+	if (cands < t->limit + t->limit / 4)
 		return false;
 	front = nulls || (dir > 0) != k0->desc;
 	barred = bar_rank(t, &bar);

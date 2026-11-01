@@ -74,7 +74,7 @@ read_outputs(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit)
 			sift_colsrc_read_rows(src, unit, t->oleaf[c], t->rows, t->ln, &v);
 			for (int i = 0; i < t->ln; i++)
 			{
-				uint32		x = row_at(t->rows, t->ln, t->lh[i].row);
+				uint32		x = row_at(t->rows, t->ln, t->lh[i].row, i);
 				Size		at = (Size) i * t->nov + c;
 
 				t->uvn[at] = v.isnull && v.isnull[x];
@@ -103,20 +103,24 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
 	uint16		part;
 	bool		vals;
+	TopEnt	   *lh = t->lh;
 
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
 	if (nc <= t->limit)
 	{
-		/* the unit has no more rows than the heap holds: all of them go on */
-		memcpy(t->lh, t->ce, nc * sizeof(TopEnt));
+		/* the unit has no more rows than the heap holds: all of them go on, in the entries they were made in (a copy of a heap's worth of them is a megabyte of new pages) */
+		t->lh = t->ce;
 		t->ln = nc;
 	}
 	else
 		for (int x = 0; x < nc; x++)
 			heap_push(t, t->lh, &t->ln, &t->ce[x]);
 	if (t->ln == 0)
+	{
+		t->lh = lh;
 		return;
+	}
 	for (int i = 0; i < t->ln; i++)
 		t->rows[i] = t->lh[i].row;
 	sort_rows(t->rows, t->ln);
@@ -126,15 +130,17 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 	{
 		TopEnt	   *e = &t->lh[i];
 
-		e->tid = t->tids[row_at(t->rows, t->ln, e->row)];
+		e->tid = t->tids[row_at(t->rows, t->ln, e->row, i)];
 		e->part = part;
 		e->tie = tie_key(&e->tid, part);
 	}
 	vals = t->nov > 0 && (t->nread == 0 || out_rows(t) >= Max(TOPN_OUT_ROWS, t->limit / 2));
 	if (vals)
 		read_outputs(t, src, unit);
-	for (int i = 0; i < t->ln; i++)
-		res_push(t, &t->lh[i], vals ? &t->uv[(Size) i * t->nov] : NULL, vals ? &t->uvn[(Size) i * t->nov] : NULL);
+	if (vals || t->lh != t->ce || !res_take(t, t->ln))
+		for (int i = 0; i < t->ln; i++)
+			res_push(t, &t->lh[i], vals ? &t->uv[(Size) i * t->nov] : NULL, vals ? &t->uvn[(Size) i * t->nov] : NULL);
+	t->lh = lh;
 	share_bar(t);
 }
 

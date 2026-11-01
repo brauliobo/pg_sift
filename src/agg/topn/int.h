@@ -208,6 +208,9 @@ struct SiftTopN
 	int64		emitted;
 	TopEnt	   *heap;			/* the best rows so far, the worst at heap[0] */
 	int			n;
+	bool		brk_up,			/* the entries pushed while the heap filled were not in rank order, from the best (a unit that follows the key gives them so) */
+				brk_down,		/* ... or not from the worst */
+				desc_run;		/* the heap is full and its array is the worst-first run it was filled with: no entry has replaced one */
 	TopEnt	   *lh;				/* the best rows of the unit */
 	int			ln;
 	uint32	   *crow;			/* the rows of the unit that pass, their first sort key and whether it is NULL */
@@ -393,6 +396,7 @@ extern int64 gord_skip(SiftTopN *t);
 extern int gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
 extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull);
 extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);
+extern bool res_take(SiftTopN *t, int n);
 
 extern void fetch_begin(SiftTopN *t, int part);
 
@@ -517,13 +521,15 @@ key_entry(SiftTopN *t, int j, const SiftSrcDict *d, uint32 code, const char **p,
 	}
 }
 
-/* the place of row in the ascending rows[0, n), which holds it */
+/* the place of row in the ascending rows[0, n), which holds it; the entries of a unit that follows the key come in the order of the rows, so the place is mostly `guess` */
 static inline uint32
-row_at(const uint32 *rows, int n, uint32 row)
+row_at(const uint32 *rows, int n, uint32 row, int guess)
 {
 	int			lo = 0,
 				hi = n;
 
+	if (guess < n && rows[guess] == row)
+		return guess;
 	SIFT_BISECT(int, mid, lo, hi, rows[mid] < row);
 	return lo;
 }
