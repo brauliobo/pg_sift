@@ -1,0 +1,22 @@
+# name	class	statement  (feed; qNN is 1 for NN% of the rows, deleted_at is set for 2%, active is true for 95%; the pass rate of a filtered page is the share of the entries in the order of ts that pass)
+page_ts	order	SELECT id, ts, kind FROM feed ORDER BY ts DESC LIMIT 20
+page_ts_asc	order	SELECT id, ts, kind FROM feed ORDER BY ts LIMIT 20
+page_id	order	SELECT id, ts, kind FROM feed ORDER BY id DESC LIMIT 20
+page_kind	order	SELECT id, ts FROM feed WHERE kind = 3 ORDER BY ts DESC LIMIT 20
+page_range	order	SELECT id, ts FROM feed WHERE ts >= TIMESTAMPTZ '2025-06-01' AND ts < TIMESTAMPTZ '2025-07-01' ORDER BY ts LIMIT 20
+page_offset	order	SELECT id, ts FROM feed ORDER BY ts DESC LIMIT 20 OFFSET 200
+page_soft_delete	filtered	SELECT id, ts FROM feed WHERE deleted_at IS NULL ORDER BY ts DESC LIMIT 20
+page_flag	filtered	SELECT id, ts FROM feed WHERE active ORDER BY ts DESC LIMIT 20
+page_not_flag	filtered	SELECT id, ts FROM feed WHERE NOT active ORDER BY ts DESC LIMIT 20
+page_pass99	filtered	SELECT id, ts FROM feed WHERE q99 = 1 ORDER BY ts DESC LIMIT 20
+page_pass50	filtered	SELECT id, ts FROM feed WHERE q50 = 1 ORDER BY ts DESC LIMIT 20
+page_pass10	filtered	SELECT id, ts FROM feed WHERE q10 = 1 ORDER BY ts DESC LIMIT 20
+page_pass1	filtered	SELECT id, ts FROM feed WHERE q1 = 1 ORDER BY ts DESC LIMIT 20
+page_pass001	filtered	SELECT id, ts FROM feed WHERE q001 = 1 ORDER BY ts DESC LIMIT 20
+page_pass10_offset	filtered	SELECT id, ts FROM feed WHERE q10 = 1 ORDER BY ts DESC LIMIT 20 OFFSET 100
+page_soft_delete_range	filtered	SELECT id, ts FROM feed WHERE deleted_at IS NULL AND ts >= TIMESTAMPTZ '2025-01-01' ORDER BY ts LIMIT 20
+page_pass1_kind	filtered	SELECT id, ts FROM feed WHERE kind = 3 AND q1 = 1 ORDER BY ts DESC LIMIT 20
+page_big	filtered	SELECT id, ts FROM feed WHERE q10 = 1 ORDER BY ts DESC LIMIT 5000
+max_ts	order	SELECT max(ts) FROM feed
+count_active	count	SELECT count(*) FROM feed WHERE deleted_at IS NULL AND active
+group_kind	group	SELECT kind, count(*) FROM feed WHERE ts >= TIMESTAMPTZ '2025-01-01' GROUP BY 1

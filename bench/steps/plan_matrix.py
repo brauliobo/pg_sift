@@ -2,7 +2,7 @@
 """The planning matrix: every shape of bench/sql/plan_matrix/shapes.tsv on the tables of schema.sql, at several sizes and work_mem settings.
 
     python3 -I plan_matrix.py [--rows 100000,300000,1000000] [--work-mem 4MB,4GB] [--shapes REGEX] [--out FILE] [--no-planning] [--strict]
-                              [--workers N] [--setup-cost C]
+                              [--workers N] [--setup-cost C] [--dirty 0,5,20] [--schema events|feed] [--wbuf 0,5000]
 
 Needs a server (PGHOST / PGPORT, `scripts/pgtest.sh env`) with pg_sift installed; one database plan_matrix_<rows> per size, built once. For each
 shape, size and work_mem, one backend, no workers (--workers N allows N per Gather, --setup-cost sets parallel_setup_cost), no JIT, the planner's own choice with the extension on against sift.enable_agg = off:
@@ -17,13 +17,18 @@ shape, size and work_mem, one backend, no workers (--workers N allows N per Gath
                  has no scan to force: the two times of one plan differ by noise alone)
     slower       the plan the planner chose runs over 5% longer than the other (the plan without the extension when the scan is chosen, the scan forced when it is not)
 
+--dirty P,..   the share of the heap pages of the events that are not all-visible (an update of the first row of that share of the pages, then ANALYZE: the rows on them are
+               checked in the heap, as after a burst of updates before the next VACUUM): one copy of the database for each, 0 is the table as built
+--schema feed  the order-array tables of schema_feed.sql and the shapes of shapes_feed.tsv instead (a feed with a global order of ts and id, soft-delete, flag and status pages
+               at pass rates from 99 to 0.01%); --wbuf N,..  the rows inserted after the index is built, which stay in its write buffer (0: none), one database for each
+
 A violation is printed after the table; --strict makes any of them exit 1. Rows go to --out as TSV.
 """
 import argparse, json, os, re, signal, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SQL = os.path.join(HERE, '..', 'sql', 'plan_matrix')
-WORKERS, SETUP_COST = 0, None
+WORKERS, SETUP_COST, SCHEMA = 0, None, 'events'
 SLOWER_BAND = 1.05
 
 
@@ -42,20 +47,33 @@ def psql(db, sql, *flags):
     return r.stdout
 
 
-def build(rows):
-    db = 'plan_matrix_%d' % rows
-    if psql('postgres', "SELECT 1 FROM pg_database WHERE datname = '%s'" % db).strip():
-        return db
-    psql('postgres', 'CREATE DATABASE ' + db)
-    r = subprocess.run(['psql', '-X', '-q', '-d', db, '-v', 'n=%d' % rows, '-f', os.path.join(SQL, 'schema.sql')], capture_output=True, text=True)
-    if r.returncode:
-        psql('postgres', 'DROP DATABASE ' + db)
-        sys.exit('plan_matrix: schema.sql at %d rows\n%s' % (rows, r.stderr.strip()))
+def exists(db):
+    return bool(psql('postgres', "SELECT 1 FROM pg_database WHERE datname = '%s'" % db).strip())
+
+
+def build(rows, dirty=0, wbuf=0):
+    """The database of a size, built once; dirty > 0 is a copy of it with that share of the pages of the table not all-visible."""
+    feed = SCHEMA == 'feed'
+    base = 'plan_matrix_%s%d%s' % ('feed_' if feed else '', rows, '_w%d' % wbuf if feed else '')
+    if not exists(base):
+        psql('postgres', 'CREATE DATABASE ' + base)
+        r = subprocess.run(['psql', '-X', '-q', '-d', base, '-v', 'n=%d' % rows, '-v', 'wbuf=%d' % wbuf, '-f', os.path.join(SQL, 'schema_feed.sql' if feed else 'schema.sql')],
+                           capture_output=True, text=True)
+        if r.returncode:
+            psql('postgres', 'DROP DATABASE ' + base)
+            sys.exit('plan_matrix: the schema at %d rows\n%s' % (rows, r.stderr.strip()))
+    if not dirty:
+        return base
+    db = '%s_d%d' % (base, dirty)
+    if not exists(db):
+        table = 'feed' if feed else 'events'
+        psql('postgres', 'CREATE DATABASE %s TEMPLATE %s' % (db, base))
+        psql(db, "UPDATE %s SET id = id WHERE (ctid::text::point)[0]::int %% 100 < %d AND (ctid::text::point)[1]::int = 1; ANALYZE %s" % (table, dirty, table))
     return db
 
 
 def shapes(only):
-    for line in open(os.path.join(SQL, 'shapes.tsv')):
+    for line in open(os.path.join(SQL, 'shapes_feed.tsv' if SCHEMA == 'feed' else 'shapes.tsv')):
         if line.startswith('#') or not line.strip():
             continue
         name, cls, stmt = line.rstrip('\n').split('\t')
@@ -70,7 +88,8 @@ def explain(db, wm, mode, stmt, analyze=False):
 
 
 def est_factor(plan):
-    while plan['Node Type'] == 'Limit' and plan.get('Plans'):
+    # a scan under a Limit stops early: its planned rows are the table's, its actual rows the n it gave
+    while plan['Node Type'] == 'Limit' and plan.get('Plans') and plan['Plans'][0]['Node Type'] not in ('Index Scan', 'Index Only Scan', 'Custom Scan'):
         plan = plan['Plans'][0]
     est, got = max(plan['Plan Rows'], 1), max(plan['Actual Rows'] * plan.get('Actual Loops', 1), 1)
     return max(est / got, got / est)
@@ -108,10 +127,10 @@ def instructions(db, wm, mode, stmt):
     return int(m.group(1)) / PLAN_RUNS if m else None
 
 
-def cell(db, wm, name, cls, stmt, planning):
+def cell(db, rows, dirty, wbuf, wm, name, cls, stmt, planning):
     plan_on, plan_off = explain(db, wm, 'on', stmt), explain(db, wm, 'off', stmt)
     sift = 'SiftAgg' in plan_on
-    row = {'shape': name, 'class': cls, 'rows': db.rsplit('_', 1)[1], 'work_mem': wm, 'sift': sift, 'same_as_off': '-' if sift else plan_on == plan_off,
+    row = {'shape': name, 'class': cls, 'rows': rows, 'dirty': dirty, 'wbuf': wbuf, 'work_mem': wm, 'sift': sift, 'same_as_off': '-' if sift else plan_on == plan_off,
            'est_x': round(est_factor(explain(db, wm, 'on', stmt, True)), 1), 'on_ms': median_ms(db, wm, 'on', stmt), 'off_ms': median_ms(db, wm, 'off', stmt)}
     forced = not sift and explain(db, wm, 'force', stmt) != plan_on
     row['scan_ms'] = median_ms(db, wm, 'force', stmt) if forced else '-'
@@ -143,19 +162,24 @@ def main():
     ap.add_argument('--strict', action='store_true')
     ap.add_argument('--workers', type=int, default=0)
     ap.add_argument('--setup-cost', default=None)
+    ap.add_argument('--dirty', default='0')
+    ap.add_argument('--schema', default='events', choices=['events', 'feed'])
+    ap.add_argument('--wbuf', default='0')
     a = ap.parse_args()
-    global WORKERS, SETUP_COST
-    WORKERS, SETUP_COST = a.workers, a.setup_cost
-    cols = ['shape', 'class', 'rows', 'work_mem', 'sift', 'same_as_off', 'est_x', 'plan_on_k', 'plan_off_k', 'on_ms', 'off_ms', 'scan_ms', 'slower']
+    global WORKERS, SETUP_COST, SCHEMA
+    WORKERS, SETUP_COST, SCHEMA = a.workers, a.setup_cost, a.schema
+    cols = ['shape', 'class', 'rows', 'dirty', 'wbuf', 'work_mem', 'sift', 'same_as_off', 'est_x', 'plan_on_k', 'plan_off_k', 'on_ms', 'off_ms', 'scan_ms', 'slower']
     rows, bad = [], []
     for n in map(int, a.rows.split(',')):
-        db = build(n)
-        for wm in a.work_mem.split(','):
-            for name, cls, stmt in shapes(a.shapes):
-                r = cell(db, wm, name, cls, stmt, not a.no_planning)
-                rows.append(r)
-                bad += [(r, v) for v in violations(r)]
-                print('\t'.join(str(r[c]) if not isinstance(r[c], float) else '%.2f' % r[c] for c in cols), flush=True)
+        for w in map(int, a.wbuf.split(',')) if a.schema == 'feed' else [0]:
+            for d in map(int, a.dirty.split(',')):
+                db = build(n, d, w)
+                for wm in a.work_mem.split(','):
+                    for name, cls, stmt in shapes(a.shapes):
+                        r = cell(db, n, d, w, wm, name, cls, stmt, not a.no_planning)
+                        rows.append(r)
+                        bad += [(r, v) for v in violations(r)]
+                        print('\t'.join(str(r[c]) if not isinstance(r[c], float) else '%.2f' % r[c] for c in cols), flush=True)
     if a.out:
         with open(a.out, 'w') as f:
             f.write('\t'.join(cols) + '\n')
@@ -163,7 +187,7 @@ def main():
     print('\n%d cells, %d on the scan, %d chosen slower (over %d%% longer than the other plan), %d violations' % (
         len(rows), sum(r['sift'] for r in rows), sum(r['slower'] for r in rows), round((SLOWER_BAND - 1) * 100), len(bad)))
     for r, v in bad:
-        print('  %s %s rows %s work_mem %s: %s' % (r['shape'], r['class'], r['rows'], r['work_mem'], v))
+        print('  %s %s rows %s dirty %s wbuf %s work_mem %s: %s' % (r['shape'], r['class'], r['rows'], r['dirty'], r['wbuf'], r['work_mem'], v))
     sys.exit(1 if bad and a.strict else 0)
 
 
