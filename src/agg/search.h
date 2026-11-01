@@ -43,6 +43,7 @@ extern bool sift_operand_ok(Node *e);
 extern char *sift_search_describe(Node *spec);
 
 /* Is the plan that reads the rows the other conditions keep by an index, and checks the text on the heap, cheaper than the scan's walk of the postings (`rest`: the conditions that stay) */
+extern bool sift_path_enabled(Path *p);
 extern bool sift_search_key_first(PlannerInfo *root, RelOptInfo *rel, const SiftSearchPlan *sp, List *rest, double *scan_ops, double *key_ops);
 
 /* The scan reads `*rows` of the table's `rows` values per leaf in `*units` of `units` units, and the match set costs the returned operator costs */

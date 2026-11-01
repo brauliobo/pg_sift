@@ -453,6 +453,7 @@ extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);
 extern Cost agg_group_open_cost(void);
+extern bool agg_unique_keys_first(AggCtx *c, const Path *scan);
 extern Cost agg_floor_cost(void);
 extern double hash_agg_extra(const AggPath *a);
 extern Node *topn_window_aggs(Node *n, void *context);

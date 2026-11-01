@@ -41,6 +41,8 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.pathkeys = nordered < list_length(root->sort_pathkeys) ? list_copy_head(root->sort_pathkeys, nordered) : root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
+	if (agg_unique_keys_first(c, &cp->path))
+		return;
 	extra = matches * c->topn_xcost;
 	if (c->topn_array && nworkers == 0)
 		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * rows;	/* the walk of the order array: a merge step for each entry, no heap of rows */

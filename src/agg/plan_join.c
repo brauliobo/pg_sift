@@ -888,6 +888,8 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	cp->path.parallel_safe = false;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
+	if (agg_unique_keys_first(c, &cp->path))
+		return;
 	cp->path.pathkeys = pathkeys;
 	ap->parent_pathkeys = c->parent_pathkeys;
 	ap->parent_rti = c->parent_rti;

@@ -216,8 +216,8 @@ sift_search_cost(const SiftSearchPlan *sp, double nrows, double nunits, double *
 }
 
 /* a path that enable_* = off did not disable: PostgreSQL 18 counts the disabled nodes of a path, 17 adds disable_cost to its cost */
-static bool
-path_enabled(Path *p)
+bool
+sift_path_enabled(Path *p)
 {
 #if PG_VERSION_NUM >= 180000
 	return p->disabled_nodes == 0;
@@ -248,7 +248,7 @@ sift_search_key_first(PlannerInfo *root, RelOptInfo *rel, const SiftSearchPlan *
 	if (own == NIL)
 		return false;
 	foreach_ptr(Path, p, rel->pathlist)
-		if (path_enabled(p) &&
+		if (sift_path_enabled(p) &&
 			((IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam != sift_catalog()->am && ((IndexPath *) p)->indexclauses != NIL) || IsA(p, BitmapHeapPath)))
 			indexed = true;
 	if (!indexed)
