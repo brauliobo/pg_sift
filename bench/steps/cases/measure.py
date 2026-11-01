@@ -232,7 +232,7 @@ def record_stop(proc, path, perf='perf', top=30):
 
 
 def measure_load(case, csv, rounds, rows, instr=False, profile=None):
-    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the backend's user instructions of the whole load (minstr)"""
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the user instructions of the whole load in a second, serial run of it (minstr: the backend alone, `max_parallel_maintenance_workers = 0` on every lane, the settings of workers of a variant overridden: the workers of a VACUUM, a build or a merge are children of the postmaster and perf does not follow them)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
@@ -241,54 +241,59 @@ def measure_load(case, csv, rounds, rows, instr=False, profile=None):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
             am, sets = lanes[lane]
-            s = server_session(600)
-            for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
-                s.run(st)
-            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
-                err = s.run(stmt)[2]
-                if err:
-                    die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
-            pid = s.run('SELECT pg_backend_pid()')[1][0]
-            s.run('CHECKPOINT')
-            io0 = iolib.snapshot(s)
-            lsn, cpu = wal_lsn(s), cpu_ns(pid)
-            counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if instr else None
-            recorded = os.path.join(profile, '%s.%s.data' % (case.id, lane)) if profile else None
-            recorder = record_start(pid, recorded) if profile else None
-            if counter or recorder:
-                time.sleep(1)
-            ms = 0
-            stop = wait_sampler(pid)
-            for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
-                took, _, err, _ = s.run(stmt.replace('{csv}', csv).replace('{rows}', str(rows)))
-                if err:
-                    die('%s: the load failed on %s: %s' % (case.id, lane, err))
-                ms += took
-            waits = stop()
-            if recorder:
-                record_stop(recorder, recorded)
-            cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
-            if ms - cpu / 1e6 > max(20, ms / 5):
-                log('%s %s: %.0f of %.0f ms off the CPU, 2 ms samples of the kernel wait: %s' % (case.id, lane, ms - cpu / 1e6, ms, ', '.join('%s %d' % kv for kv in waits.most_common(4))))
-            if counter:
-                counter.send_signal(signal.SIGTERM)
-                fields = counter.communicate()[0].split()
-                if len(fields) == 3 and fields[1].isdigit():
-                    out[lane]['minstr'].append(int(fields[1]) / 1e6)
-            for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
-                out[lane][metric].append(mb)
-            checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
-            plans[lane] = checked.replace('\n', ', ')
-            if lane == 'sift' and not re.search(case.plan, checked, re.M):
-                errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
-            size = s.run("SELECT sum(pg_relation_size(i.indexrelid)) / 1048576.0 FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'c_%s' AND NOT i.indisprimary" % case.id)[1][0]
-            if size:   # a case with no index besides its primary key has no figure
-                out[lane]['index_mb'].append(float(size))
-            out[lane]['wal_bytes'].append(lsn / rows)
-            out[lane]['ms'].append(ms)
-            out[lane]['cpu_ms'].append(cpu / 1e6)
-            s.close()
-            build(case, rows)   # an empty schema again
+            for serial in ((False, True) if instr else (False,)):   # the instructions in a pass of their own with no parallel workers: perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster
+                s = server_session(600)
+                for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % os.environ.get('CASES_WORKERS', '2')] + sets + (['SET max_parallel_maintenance_workers = 0'] if serial else []):
+                    s.run(st)
+                for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
+                    err = s.run(stmt)[2]
+                    if err:
+                        die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
+                pid = s.run('SELECT pg_backend_pid()')[1][0]
+                s.run('CHECKPOINT')
+                io0 = iolib.snapshot(s)
+                lsn, cpu = wal_lsn(s), cpu_ns(pid)
+                counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if serial else None
+                recorded = os.path.join(profile, '%s.%s.data' % (case.id, lane)) if profile and not serial else None
+                recorder = record_start(pid, recorded) if profile and not serial else None
+                if counter or recorder:
+                    time.sleep(1)
+                ms = 0
+                stop = wait_sampler(pid)
+                for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
+                    took, _, err, _ = s.run(stmt.replace('{csv}', csv).replace('{rows}', str(rows)))
+                    if err:
+                        die('%s: the load failed on %s: %s' % (case.id, lane, err))
+                    ms += took
+                waits = stop()
+                if recorder:
+                    record_stop(recorder, recorded)
+                cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
+                if ms - cpu / 1e6 > max(20, ms / 5):
+                    log('%s %s: %.0f of %.0f ms off the CPU, 2 ms samples of the kernel wait: %s' % (case.id, lane, ms - cpu / 1e6, ms, ', '.join('%s %d' % kv for kv in waits.most_common(4))))
+                if counter:
+                    counter.send_signal(signal.SIGTERM)
+                    fields = counter.communicate()[0].split()
+                    if len(fields) == 3 and fields[1].isdigit():
+                        out[lane]['minstr'].append(int(fields[1]) / 1e6)
+                if serial:
+                    s.close()
+                    build(case, rows)
+                    continue
+                for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
+                    out[lane][metric].append(mb)
+                checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
+                plans[lane] = checked.replace('\n', ', ')
+                if lane == 'sift' and not re.search(case.plan, checked, re.M):
+                    errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
+                size = s.run("SELECT sum(pg_relation_size(i.indexrelid)) / 1048576.0 FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'c_%s' AND NOT i.indisprimary" % case.id)[1][0]
+                if size:   # a case with no index besides its primary key has no figure
+                    out[lane]['index_mb'].append(float(size))
+                out[lane]['wal_bytes'].append(lsn / rows)
+                out[lane]['ms'].append(ms)
+                out[lane]['cpu_ms'].append(cpu / 1e6)
+                s.close()
+                build(case, rows)   # an empty schema again
     return out, plans, errors
 
 
