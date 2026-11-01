@@ -11,26 +11,44 @@
  * The range of keys that the comparisons of an integer leaf (sift_col_count_cmp) select, all on that leaf: false when a test is of another leaf or is not a range
  */
 static bool
-count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, int64 *lo, int64 *hi)
+count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, int64 *lo, int64 *hi, int *gcol, int64 *gval)
 {
 	const SiftColDef *def = &seg->schema->cols[src->pcnt - 1];
+	int64		glo = PG_INT64_MIN,
+				ghi = PG_INT64_MAX;
 
 	*lo = PG_INT64_MIN;
 	*hi = PG_INT64_MAX;
+	*gcol = -1;
 	if (npreds == 0 || def->store == SIFT_COLS_STR || sift_colw_is_wide_int(def))
 		return false;
 	for (int i = 0; i < npreds; i++)
 	{
 		SiftCTest	t;
+		const SiftColDef *d = &seg->schema->cols[preds[i].col];
 
+		/* the tests of another integer leaf are its group: bounds that meet in one value */
 		if (preds[i].col != src->pcnt - 1)
-			return false;
+		{
+			if (d->store == SIFT_COLS_STR || sift_colw_is_wide_int(d) || (*gcol >= 0 && *gcol != preds[i].col))
+				return false;
+			make_test(src, d, NULL, &preds[i], &t);
+			if (t.kind != SIFT_CT_RANGE)
+				return false;
+			*gcol = preds[i].col;
+			glo = Max(glo, t.lo);
+			ghi = Min(ghi, t.hi);
+			continue;
+		}
 		make_test(src, def, NULL, &preds[i], &t);
 		if (t.kind != SIFT_CT_RANGE)
 			return false;
 		*lo = Max(*lo, t.lo);
 		*hi = Min(*hi, t.hi);
 	}
+	if (*gcol >= 0 && glo != ghi)
+		return false;
+	*gval = glo;
 	return true;
 }
 
@@ -49,6 +67,28 @@ count_str_keys(SiftColSource *src, SiftColSegment *seg, int64 *lo, int64 *hi)
 	}
 	return sift_cseg_gorder_strkeys(seg, src->pcnt - 1, collid, src->pcnt_box.lo, src->pcnt_box.lolen, src->pcnt_box.lo_excl, src->pcnt_box.hi, src->pcnt_box.hilen,
 									src->pcnt_box.hi_excl, lo, hi);
+}
+
+/*
+ * What a count is of, in the global order of leaf col: the keys [lo, hi]; or, with group, every entry of group lo of the second order in slot col; or, with gcol >= 0, the keys [lo, hi] of the rows of
+ * group gval of leaf gcol (the second order of leaf col grouped by it)
+ */
+typedef struct CountSpan
+{
+	int			col;
+	bool		str;
+	bool		group;
+	int			gcol;
+	int64		gval;
+	int64		lo;
+	int64		hi;
+} CountSpan;
+
+static bool
+span_each(SiftColSegment *seg, const CountSpan *sp, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg)
+{
+	return sp->gcol >= 0 ? sift_cseg_gorder_each_group(seg, sp->col, sp->gcol, sp->gval, sp->lo, sp->hi, limit, fn, arg) :
+		sift_cseg_gorder_each(seg, sp->col, sp->str, sp->group, sp->lo, sp->hi, limit, fn, arg);
 }
 
 /* Unit u is exact on its own: every page its rows are on is all-visible (the summary's page mask against the snapshot) and it has no dead row or exception */
@@ -97,7 +137,7 @@ outside_entry(void *arg, SiftKey tid)
 }
 
 static bool
-count_dirty_units(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi)
+count_dirty_units(SiftColSource *src, ColCursor *c, const CountSpan *sp)
 {
 	SiftColSegment *seg = c->seg;
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb),
@@ -120,7 +160,7 @@ count_dirty_units(SiftColSource *src, ColCursor *c, int col, bool str, bool grou
 				break;
 		}
 	o = (OutsideCount) {seg, dirty, 0, PG_UINT32_MAX, 0};
-	if (nd == 0 || nd > most || !sift_cseg_gorder_each(seg, col, str, group, lo, hi, PG_UINT32_MAX, outside_entry, &o))
+	if (nd == 0 || nd > most || !span_each(seg, sp, PG_UINT32_MAX, outside_entry, &o))
 	{
 		pfree(dirty);
 		return false;
@@ -177,14 +217,14 @@ count_entry(void *arg, SiftKey tid)
  * read a chunk at a time, so the memory is that of the addresses on pages that are not all-visible (up to SIFT_CORDER_MAX_ROWS of them). Not when the range holds more than limit entries or a unit cannot say.
  */
 static bool
-count_by_entries(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi, uint32 limit)
+count_by_entries(SiftColSource *src, ColCursor *c, const CountSpan *sp, uint32 limit)
 {
 	SiftColSegment *seg = c->seg;
 	EntryCount	e = {src, c - src->seg, 0, NULL, 0, 0, false};
 	uint32		rows = 0;
 
 	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src) ||
-		!sift_cseg_gorder_each(seg, col, str, group, lo, hi, limit, count_entry, &e) || e.fail)
+		!span_each(seg, sp, limit, count_entry, &e) || e.fail)
 	{
 		if (e.chk)
 			pfree(e.chk);
@@ -217,7 +257,7 @@ count_by_entries(SiftColSource *src, ColCursor *c, int col, bool str, bool group
  * else the units are read after the exact ones are counted (count_dirty_units), else the entries.
  */
 static bool
-count_inexact(SiftColSource *src, ColCursor *c, int col, bool str, bool group, int64 lo, int64 hi)
+count_inexact(SiftColSource *src, ColCursor *c, const CountSpan *sp)
 {
 	SiftColSegment *seg = c->seg;
 	uint64		drows = 0;
@@ -227,8 +267,8 @@ count_inexact(SiftColSource *src, ColCursor *c, int col, bool str, bool group, i
 	for (uint32 u = 0; u < seg->nsb; u++)
 		if (!unit_exact(src, seg, u))
 			drows += seg->sbdir[u].nrows;
-	return (drows / 8 >= 256 && count_by_entries(src, c, col, str, group, lo, hi, (uint32) (drows / 8))) || (str && count_by_entries(src, c, col, str, group, lo, hi, PG_UINT32_MAX)) ||
-		count_dirty_units(src, c, col, str, group, lo, hi) || (!str && count_by_entries(src, c, col, str, group, lo, hi, PG_UINT32_MAX));
+	return (drows / 8 >= 256 && count_by_entries(src, c, sp, (uint32) (drows / 8))) || (sp->str && count_by_entries(src, c, sp, PG_UINT32_MAX)) ||
+		count_dirty_units(src, c, sp) || (!sp->str && count_by_entries(src, c, sp, PG_UINT32_MAX));
 }
 
 /*
@@ -247,12 +287,9 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 				entries,
 				values;
 	uint64		n;
-	int64		lo = 0,
-				hi = 0;
-	bool		order = src->pcnt_int,
-				str = src->pcnt_str;
-	int			col = src->pcnt - 1;
-	bool		group = false;
+	int64		gval = 0;
+	bool		order = src->pcnt_int;
+	CountSpan	sp = {src->pcnt - 1, src->pcnt_str, false, -1, 0, 0, 0};
 
 	if (fan == 0 || seg->nsb == 0)
 		return false;
@@ -263,35 +300,42 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 	}
 	else if (src->pcnt_int)
 	{
-		if (!(src->pcnt_str ? count_str_keys(src, seg, &lo, &hi) : count_keys(src, seg, preds, npreds, &lo, &hi)))
+		if (!(src->pcnt_str ? count_str_keys(src, seg, &sp.lo, &sp.hi) : count_keys(src, seg, preds, npreds, &sp.lo, &sp.hi, &sp.gcol, &gval)))
 			return false;
-		if (!sift_cseg_gorder(seg, col, &entries, &values) || sift_cseg_gorder_group(seg, col) >= 0)
+		sp.gval = gval;
+			if (sp.gcol >= 0)
+		{
+			/* the rows of one group between two keys: the second order of the leaf, by that group */
+			if (!sift_cseg_gorder_grouped_by(seg, sp.col, sp.gcol))
+				return false;
+		}
+		else if (!sift_cseg_gorder(seg, sp.col, &entries, &values) || sift_cseg_gorder_group(seg, sp.col) >= 0)
 		{
 			/* the leaf has no array of its own but is the group of the second order of another: an equality counts the entries of its group */
-			col = src->pcnt_str || lo != hi ? -1 : sift_cseg_gorder_group_slot(seg, col);
-			if (col < 0)
+			sp.col = src->pcnt_str || sp.lo != sp.hi ? -1 : sift_cseg_gorder_group_slot(seg, sp.col);
+			if (sp.col < 0)
 				return false;
-			group = true;
+			sp.group = true;
 		}
 	}
 	else if (!sift_cseg_dict_counted(seg, src->pcnt - 1))
 	{
 		/* no row counts in the dictionary: a prefix is counted by the ranks of the order of the leaf, as the strings between two bounds are */
-		if (!src->pcnt_alt || !sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_str_keys(src, seg, &lo, &hi))
+		if (!src->pcnt_alt || !sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_str_keys(src, seg, &sp.lo, &sp.hi))
 			return false;
-		order = str = true;
+		order = sp.str = true;
 	}
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
-			return order && count_inexact(src, c, col, str, group, lo, hi);
+			return order && count_inexact(src, c, &sp);
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
-		return order && count_inexact(src, c, col, str, group, lo, hi);
+		return order && count_inexact(src, c, &sp);
 	if (order)
 	{
-		uint32		m = sift_cseg_gorder_count(seg, col, str, group, lo, hi);
+		uint32		m = sp.gcol >= 0 ? sift_cseg_gorder_count_group(seg, sp.col, sp.gcol, sp.gval, sp.lo, sp.hi) : sift_cseg_gorder_count(seg, sp.col, sp.str, sp.group, sp.lo, sp.hi);
 
 		if (m == UINT32_MAX)
 			return false;

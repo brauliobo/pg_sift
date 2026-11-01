@@ -41,8 +41,8 @@ $$ SELECT gc_chk(format('SELECT count(*) FROM gc WHERE %s', w)), 1::bigint
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
  result  | count 
 ---------+-------
- counted |    10
- units   |     2
+ counted |    11
+ units   |     1
 (2 rows)
 
 -- a write buffer next to the segment, then a promotion
@@ -50,8 +50,8 @@ INSERT INTO gc SELECT 300000 + i, i % 400, timestamp '2024-06-01' + i * interval
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
  result  | count 
 ---------+-------
- counted |     5
- units   |     7
+ counted |     6
+ units   |     6
 (2 rows)
 
 SELECT sift.col_promote('gc_i') >= 0 AS promoted;
@@ -64,8 +64,8 @@ VACUUM gc;
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
  result  | count 
 ---------+-------
- counted |    10
- units   |     2
+ counted |    11
+ units   |     1
 (2 rows)
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
@@ -85,8 +85,8 @@ VACUUM gc;
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
  result  | count 
 ---------+-------
- counted |     6
- units   |     6
+ counted |     7
+ units   |     5
 (2 rows)
 
 SELECT sift.col_verify('gc_i');

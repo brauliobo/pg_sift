@@ -523,6 +523,10 @@ extern const RunsLeaf *	seg_run_leaf(SiftColSegment *seg, int col);
 extern bool	seg_within(uint64 room, uint64 off, uint64 a, uint64 b);
 extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len);
 extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
+extern bool		seg_gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern uint32	seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo);
+extern uint32	seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo);
+extern void		seg_gord_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n);
 
 /* The heap addresses a table of addresses lists (column format minor 16): the payload of a slot is one address, or a list at a word offset */
 typedef struct TidAcc

@@ -320,11 +320,12 @@ gorder_tids_adopt(SiftColSource *src, ColCursor *c, int i, uint64 *keep, SiftKey
 	return c->ptids ? intersect_tids(src, c, keep, tids, n) : emit_tids(src, c, i, keep, tids, n);
 }
 
-/* Whether the order array may hand the heap the addresses of predicate i (the range and the keys alike) */
+/* Whether the order array may hand the heap the addresses of predicate i (the range and the keys alike); the entries of a group also narrow the units of a source that narrows them (SIFT_COLO_POINT_ROWS) */
 static bool
-gorder_tids_ok(SiftColSource *src, ColCursor *c, uint32 *limit)
+gorder_tids_ok(SiftColSource *src, ColCursor *c, uint32 *limit, bool group)
 {
-	if (c->prow != NULL || c->ps != NULL || !(src->flags & SIFT_COLO_POINT_TIDS) || (src->flags & SIFT_COLO_POINT_ROWS) || sift_cseg_keyed(&c->seg->entry))
+	if (c->prow != NULL || c->ps != NULL || sift_cseg_keyed(&c->seg->entry) ||
+		!(group ? (src->flags & (SIFT_COLO_POINT_TIDS | SIFT_COLO_POINT_ROWS)) != 0 : (src->flags & (SIFT_COLO_POINT_TIDS | SIFT_COLO_POINT_ROWS)) == SIFT_COLO_POINT_TIDS))
 		return false;
 	*limit = SIFT_CORDER_MAX_ROWS;
 	if (c->ptids)
@@ -339,7 +340,20 @@ scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo
 	uint32		n,
 				limit;
 
-	if (!gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n))
+	if (!gorder_tids_ok(src, c, &limit, false) || !sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n))
+		return false;
+	return gorder_tids_adopt(src, c, i, keep, tids, n);
+}
+
+/* The rows of one group (an equality on leaf gcol) whose key (leaf col) lies in a range: the second order of col grouped by gcol lists them, so a group that is in every unit costs the heap the rows of the range, not every row of the group */
+bool
+scan_prune_group_tids(SiftColSource *src, ColCursor *c, int i, int col, int gcol, int64 group, int64 lo, int64 hi, uint64 *keep)
+{
+	SiftKey    *tids;
+	uint32		n,
+				limit;
+
+	if (!gorder_tids_ok(src, c, &limit, true) || !sift_cseg_gorder_tids_group(c->seg, col, gcol, group, lo, hi, limit, &tids, &n))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }
@@ -352,7 +366,7 @@ scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int6
 	uint32		n,
 				limit;
 
-	if (nset > SIFT_CORDER_MAX_KEYS || !gorder_tids_ok(src, c, &limit) || !sift_cseg_gorder_tids_keys(c->seg, col, set, nset, limit, &tids, &n))
+	if (nset > SIFT_CORDER_MAX_KEYS || !gorder_tids_ok(src, c, &limit, false) || !sift_cseg_gorder_tids_keys(c->seg, col, set, nset, limit, &tids, &n))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }

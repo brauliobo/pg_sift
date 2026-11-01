@@ -10,8 +10,6 @@
 
 /* ---- the global order of a leaf (col/gorder.h) ---- */
 
-static bool gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
-
 /* The block of leaf col with its header read (the directory entries are read and checked when they are used, the whole directory by verify), NULL when the segment has none */
 GOrdLeaf *
 seg_gord_leaf(SiftColSegment *seg, int col)
@@ -219,7 +217,7 @@ sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 	if (g != NULL)
 		return seg->schema->ncols + col;
 	g = seg_gord_leaf(seg, col);
-	return g != NULL && (g->hdr.gcol >= 0) == grouped && gord_probe_ok(seg, g, col) ? col : -1;
+	return g != NULL && (g->hdr.gcol >= 0) == grouped && seg_gord_probe_ok(seg, g, col) ? col : -1;
 }
 
 /* The host's reader of the heap rows the compact blocks take their exact keys from (col/seg/probe.c); unset on a host with no heap: such a block is not used and its scans read the units */
@@ -229,8 +227,8 @@ void		(*sift_gprobe_close) (void *probe) = NULL;
 bool		(*sift_gprobe_key) (void *probe, uint64 addr, int64 *key) = NULL;
 
 /* Whether the keys a compact block does not store can be read from the heap (asked once for a block); a block that cannot is not used */
-static bool
-gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
+bool
+seg_gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 {
 	if (g->hdr.quant == 0)
 		return true;
@@ -248,7 +246,7 @@ typedef struct GOrdProbe
 static void
 probe_open(SiftColSegment *seg, GOrdLeaf *g, int col, GOrdProbe *pr)
 {
-	pr->h = g->hdr.quant != 0 && gord_probe_ok(seg, g, col) ? sift_gprobe_open(seg, g, col) : NULL;
+	pr->h = g->hdr.quant != 0 && seg_gord_probe_ok(seg, g, col) ? sift_gprobe_open(seg, g, col) : NULL;
 }
 
 static void
@@ -365,7 +363,7 @@ sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
-	if (g == NULL || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
+	if (g == NULL || g->hdr.vtotal != 0 || !seg_gord_probe_ok(seg, g, col))
 		return false;
 	*entries = g->hdr.entries;
 	*values = g->hdr.values;
@@ -540,8 +538,8 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	*vs = *ve = *ns = *ne = 0;
 }
 
-static uint32
-gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
+uint32
+seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 {
 	uint32		at = c * seg_gord_leaf(seg, col)->hdr.crows;
 
@@ -608,8 +606,8 @@ compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, u
  * The first entry of [vs, ve) (value entries ascending by key there) whose key is not before key (after: is after it), found in the directory by the first keys of the
  * chunks that start inside the range and in one chunk; ve when there is none.
  */
-static uint32
-gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo)
+uint32
+seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 	uint32		c0,
@@ -634,7 +632,7 @@ gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool 
 	lo--;
 	if (seg_gord_dirent(seg, g, col, lo).pad & SIFT_CGORD_COMPACT)
 		return compact_seek(seg, g, col, lo, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
-	m = gorder_chunk_memo(seg, col, lo, memo);
+	m = seg_gord_chunk_memo(seg, col, lo, memo);
 	from = Max(vs, lo * crows);
 	to = Min(ve, lo * crows + m);
 	for (uint32 i = from; i < to; i++)
@@ -649,7 +647,7 @@ sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 
 	SiftCGOrdBuf memo;
 
 	memo.at = UINT32_MAX;
-	return gorder_seek(seg, col, vs, ve, key, after, keep != NULL ? keep : &memo);
+	return seg_gord_seek(seg, col, vs, ve, key, after, keep != NULL ? keep : &memo);
 }
 
 /*
@@ -672,10 +670,10 @@ gorder_span(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 
 		sift_cseg_gorder_range(seg, col, lo, a, b, &ns, &ne);
 		return ns == ne;
 	}
-	if (g == NULL || g->hdr.gcol >= 0 || (g->hdr.strbytes != 0) != str || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
+	if (g == NULL || g->hdr.gcol >= 0 || (g->hdr.strbytes != 0) != str || g->hdr.vtotal != 0 || !seg_gord_probe_ok(seg, g, col))
 		return false;
-	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
-	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);
+	*a = lo > hi ? 0 : seg_gord_seek(seg, col, 0, g->hdr.values, lo, false, memo);
+	*b = lo > hi ? 0 : seg_gord_seek(seg, col, *a, g->hdr.values, hi, true, memo);
 	return true;
 }
 
@@ -722,8 +720,8 @@ sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64
 }
 
 /* The addresses of the entries [a, b) of leaf col, appended to t at *n */
-static void
-gorder_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n)
+void
+seg_gord_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n)
 {
 	uint32		crows = seg_gord_leaf(seg, col)->hdr.crows;
 
@@ -732,7 +730,7 @@ gorder_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *mem
 		uint32		from = Max(a, c * crows),
 					to = Min(b, (c + 1) * crows);
 
-		(void) gorder_chunk_memo(seg, col, c, memo);
+		(void) seg_gord_chunk_memo(seg, col, c, memo);
 		for (uint32 i = from; i < to; i++)
 			t[(*n)++] = memo->addr[i - c * crows];
 	}
@@ -755,7 +753,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi
 	if (!gorder_span(seg, col, str, false, lo, hi, &a, &b, &memo) || b - a > limit)
 		return false;
 	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
-	gorder_addrs(seg, col, a, b, &memo, t, &n);
+	seg_gord_addrs(seg, col, a, b, &memo, t, &n);
 	if (n > 1)
 		sift_sort_u64(t, n);
 	*tids = t;
@@ -788,7 +786,7 @@ sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint
 			cap = Min(limit, Max(2 * cap, n + (b - a)));
 			t = repalloc(t, cap * sizeof(SiftKey));
 		}
-		gorder_addrs(seg, col, a, b, &memo, t, &n);
+		seg_gord_addrs(seg, col, a, b, &memo, t, &n);
 	}
 	if (n > 1)
 		sift_sort_u64(t, n);
@@ -818,7 +816,7 @@ sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, bool group, int64 
 		uint32		from = Max(a, c * crows),
 					to = Min(b, (c + 1) * crows);
 
-		(void) gorder_chunk_memo(seg, col, c, &memo);
+		(void) seg_gord_chunk_memo(seg, col, c, &memo);
 		for (uint32 i = from; i < to; i++)
 			fn(arg, memo.addr[i - c * crows]);
 	}
@@ -859,7 +857,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 				pc,
 				pp;
 
-	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col) || ve > g->hdr.values)
+	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0 || !seg_gord_probe_ok(seg, g, col) || ve > g->hdr.values)
 		return false;
 	*clo = *chi = 0;
 	if (vs >= ve)

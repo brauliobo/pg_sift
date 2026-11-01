@@ -361,3 +361,4 @@ group_count_entity	counts the group from the entries of its second order	orders	
 group_latest_entity	the latest row of each of 200 groups	orders	default	Custom Scan \(SiftAgg\)	native	btree:search_path = c_group_latest_entity__btree	ms	faster33	no	-
 tenant_latest_20	reads the units a filter leaves when the walk of the order array would fetch more rows	orders	default	Top-N: event_date	native	btree:search_path = c_tenant_latest_20__btree	ms	faster33	no	-
 topn_offset_dict_blocks	keep the last 32 blocks read	orders	default	Top-N: t	native	btree:search_path = c_topn_offset_dict_blocks__btree	ms	faster33	no	-
+group_range_count	counts the entries of the group between the two keys	orders	default	from pre-aggregates	native	btree:search_path = c_group_range_count__btree	ms	faster33	no	-

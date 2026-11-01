@@ -368,6 +368,7 @@ extern bool	segments_current(SiftColSource *src);
 extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
 extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
+extern bool	scan_prune_group_tids(SiftColSource *src, ColCursor *c, int i, int col, int gcol, int64 group, int64 lo, int64 hi, uint64 *keep);
 extern bool	scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep);
 extern bool	scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *set, uint32 nset, uint64 *keep);
 extern bool	scan_prune_places(SiftColSource *src, ColCursor *c, int i, int col, const SiftColPred *p, uint64 *keep);
