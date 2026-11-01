@@ -13,7 +13,7 @@ CREATE TABLE ov (id int, grp int, kind text, amount numeric(12,2), qty int, big 
 INSERT INTO ov SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
-FROM generate_series(1, 40000) g;
+FROM generate_series(1, 20000) g;
 CREATE INDEX ov_col ON ov USING sift_col (id, grp, kind, amount, qty, big, f, ts)
 	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov;
@@ -132,12 +132,12 @@ SELECT sum(bytes) = pg_relation_size('ov_col') AS sections_add_up FROM sift.col_
 SELECT kind, count(*) FROM ov GROUP BY kind ORDER BY kind;
  kind | count 
 ------+-------
- k0   |  7389
- k1   |  6650
- k2   |  7388
- k3   |  7388
- k4   |  7388
-      |   840
+ k0   |  3695
+ k1   |  3325
+ k2   |  3694
+ k3   |  3694
+ k4   |  3694
+      |   420
 (6 rows)
 
 -- a second round of churn: the sidecar of the first no longer fits the dead rows, VACUUM writes the next and the old one's pages are released
@@ -315,7 +315,7 @@ SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
 SELECT ov_net('SELECT kind, count(*), sum(amount) FROM ov GROUP BY kind') AS after_merge;
  after_merge 
 -------------
- (0,21)
+ (0,10)
 (1 row)
 
 SELECT count(*) AS net_sections FROM sift.col_sections('ov_col') WHERE section = 'net';

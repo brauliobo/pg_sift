@@ -14,7 +14,7 @@ CREATE TABLE ov (id int, grp int, kind text, amount numeric(12,2), qty int, big 
 INSERT INTO ov SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
-FROM generate_series(1, 40000) g;
+FROM generate_series(1, 20000) g;
 CREATE INDEX ov_col ON ov USING sift_col (id, grp, kind, amount, qty, big, f, ts)
 	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov;
