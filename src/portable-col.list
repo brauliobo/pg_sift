@@ -58,6 +58,7 @@ col/preagg_read/rollup.c
 col/preagg_super.c
 col/ktab.c
 col/gorder.c
+col/gquant.c
 col/point.c
 col/runs.c
 col/hll.c
@@ -97,6 +98,7 @@ col/seg.h
 col/seg_int.h
 col/seg_write/seg_write_int.h
 col/gorder.h
+col/gquant.h
 col/point.h
 col/runs.h
 col/hll.h

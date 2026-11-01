@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "col/codec.h"
+#include "col/gquant.h"
 #include "col/gorder.h"
 #include "col/point.h"
 #include "col/runs.h"
@@ -230,7 +231,7 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	if (compact)
 	{
 		hdr[1] = SIFT_CGORD_VERSION_COMPACT;
-		hdr[6] = SIFT_CGORD_BRACKET;
+		hdr[6] = SIFT_GQ_Q;
 		hdr[7] = 0;
 	}
 
@@ -304,12 +305,7 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		k0 = body.len;
 		if (compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
 		{
-			int64		anchor[SIFT_CGORD_CAP];
-			uint32		nb = (m + SIFT_CGORD_BRACKET - 1) / SIFT_CGORD_BRACKET;
-
-			for (uint32 j = 0; j < nb; j++)
-				anchor[j] = kv[j * SIFT_CGORD_BRACKET];
-			sift_cc_encode(&body, SIFT_CC_INT, anchor, nb, NULL, &pol, NULL);
+			sift_gq_encode(kv, m, SIFT_GQ_Q, &body);
 			dir[c].klen = body.len - k0;
 			pad8(&body);
 			addr_chunk(&body, &dir[c], kv, av, m, false, &pol);
@@ -712,7 +708,7 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 	text = w[1] == SIFT_CGORD_VERSION_TEXT;
 	if (w[1] == SIFT_CGORD_VERSION_COMPACT)
 	{
-		if (w[0] != SIFT_CGORD_MAGIC || w[3] > w[2] || w[5] != SIFT_CGORD_ROWS_FINE || w[6] < 8 || w[6] > 64 || (w[6] & (w[6] - 1)) != 0 || w[7] != 0 ||
+		if (w[0] != SIFT_CGORD_MAGIC || w[3] > w[2] || w[5] != SIFT_CGORD_ROWS_FINE || w[6] < 1 || w[6] > 16 || w[7] != 0 ||
 			w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) || SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT > len)
 			return false;
 		*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], 0, -1, 0, 0, 0, 0, w[6]};
@@ -753,7 +749,7 @@ sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 	if (c >= h->chunks)
 		return false;
 	memcpy(d, ent, sizeof(*d));
-	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->bracket == 0)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
+	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
 		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
 }
 
@@ -817,24 +813,19 @@ sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 
 	return true;
 }
 
-void
-sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 bracket, uint32 w, int64 *key, uint64 *addr)
+bool
+sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr)
 {
-	uint32		nb = (m + bracket - 1) / bracket,
-				ob = pad >> 8 & 0xF;
-	int64	   *anchor = palloc(SIFT_CGORD_CAP * sizeof(int64));
-	SiftCc	   *k = sift_cc_open_rows(mcxt, kb, klen, false, nb),
-			   *a;
+	uint32		ob = pad >> 8 & 0xF;
+	SiftCc	   *a;
 
-	sift_cc_decode_head(k, nb, anchor);
-	sift_cc_close(k);
-	for (uint32 j = 0; j < nb; j++)
-		key[j * bracket] = anchor[j];
-	pfree(anchor);
+	if (kmin != NULL && !sift_gq_decode(kb, klen, m, first, kmin, sh))
+		return false;
 	w = Min(w, m);
 	a = sift_cc_open_rows(mcxt, ab, alen, false, m);
 	sift_cc_decode_head(a, w, (int64 *) addr);
 	for (uint32 i = 0; i < w; i++)
 		addr[i] = (addr[i] >> ob) << 16 | (addr[i] & (((uint64) 1 << ob) - 1));
 	sift_cc_close(a);
+	return true;
 }

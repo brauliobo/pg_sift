@@ -20,10 +20,11 @@
  * on (group, key) would; a scan that does not pin it cannot use the block.
  *
  * Version 4, a block of the layout compact (column format minor 41, option order_layout): the chunks of the first and last 2 * SIFT_CGORD_ENDS (8,192) entries of the segment and the chunks that
- * hold NULL rows are as in version 1; every other chunk (SIFT_CGORD_COMPACT in the directory's pad word) has the key of every bracket-th entry only (header word 6 is the bracket,
- * word 7 is 0): its first blob codes those keys, its second the addresses of all its entries as block << ob | offset, the offset bits of the whole chunk. The key of another entry
- * is the one of the row at its address (sift_cseg_gorder_fill reads it from the heap and keeps it between the keys of the entries next to it). A block with a compact chunk is usable only while
- * the segment has no dead row: a row that bulkdelete cleared may have a new tenant at its address.
+ * hold NULL rows are as in version 1; every other chunk (SIFT_CGORD_COMPACT in the directory's pad word) has the bucket of every key instead of the key (col/gquant.h: about 0.6 bytes an entry
+ * where the key takes 4), the exact key of its first entry in the directory, and the addresses of all its entries as block << ob | offset, the offset bits of the whole chunk. Header word 6 is
+ * the buckets per mean gap the writer chose (SIFT_GQ_Q; the reader does not need it), word 7 is 0. The key of an entry is in its bucket; where a search or a scan needs it exact it is the one of
+ * the row at the entry's address (sift_cseg_gorder_fill reads it from the heap). A block with a compact chunk is usable only while the segment has no dead row: a row that bulkdelete cleared may
+ * have a new tenant at its address.
  *
  * Version 3, a block of a text leaf: the key of an entry is the rank of its string among the distinct strings of the segment in the order of the leaf's collation (then
  * the bytes), so equal keys are equal strings and a scan merges the segments by comparing their strings, not their keys. Header words 6 and 7 are the collation (an OID) and
@@ -43,8 +44,7 @@
 #define SIFT_CGORD_VERSION_GROUP	2
 #define SIFT_CGORD_VERSION_TEXT	3
 #define SIFT_CGORD_VERSION_COMPACT	4
-#define SIFT_CGORD_BRACKET	32		/* the entries between two stored keys of a compact chunk */
-#define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the key of every bracket-th entry only */
+#define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
 #define SIFT_CGORD_L_COMPACT	1
 #define SIFT_CGORD_STR_BLK	16
@@ -69,11 +69,15 @@ typedef struct SiftCGOrdBuf
 	uint32		at;				/* the position of the chunk's first entry */
 	uint32		cm;				/* the entries of the chunk decoded: the first cm */
 	uint32		rows;			/* the entries of the chunk */
-	uint32		bracket;		/* a compact chunk: key[] holds the keys of every bracket-th entry, and those of the window below; else 0 */
-	uint32		kfrom;			/* the keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (the first cm of a chunk that is not compact) */
+	uint32		kfrom;			/* the exact keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (a chunk that is not compact: the first cm) */
 	uint32		kn;
+	bool		compact;		/* the chunk is compact: kmin[] holds the first key of the bucket of each entry (if kmin_ok), sh the bucket's bits, key[] the keys read from the heap so far (the bits of exact) */
+	bool		kmin_ok;
+	uint32		sh;
 	int64		key[SIFT_CGORD_CAP];
 	uint64		addr[SIFT_CGORD_CAP];
+	int64		kmin[SIFT_CGORD_CAP];
+	uint64		exact[SIFT_CGORD_ROWS / 64];
 } SiftCGOrdBuf;
 
 typedef struct SiftCGOrdHdr
@@ -88,7 +92,7 @@ typedef struct SiftCGOrdHdr
 	uint32		strbytes;
 	uint32		head;			/* a block of the ends only: the entries of the first end (the others of the values are the last end); else 0 */
 	uint32		vtotal;			/* ... and the values the segment has in all; 0: the block is complete */
-	uint32		bracket;		/* version 4: the entries between two stored keys of a compact chunk; else 0 */
+	uint32		quant;			/* version 4: the buckets per mean gap the writer chose; else 0 */
 } SiftCGOrdHdr;
 
 /* What a scan wants of the blocks (sift_col_gorder_open): a block of the ends only answers a scan of few rows that starts at an end of it */
@@ -232,7 +236,7 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
  * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
 extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
-/* A compact chunk of m entries: its ceil(m / bracket) stored keys into key[0], key[bracket], ... and the addresses of its first w entries into addr (SIFT_CGORD_CAP slots each) */
-extern void sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 bracket, uint32 w, int64 *key, uint64 *addr);
+/* A compact chunk of m entries whose first key is first: the first key of the bucket of each entry into kmin (SIFT_CGORD_CAP slots; NULL: not wanted) with its shift, and the addresses of the first w entries into addr (SIFT_CGORD_CAP slots); false when malformed */
+extern bool sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr);
 
 #endif

@@ -71,7 +71,8 @@ gbuf_get(void)
 		b = MemoryContextAlloc(gbuf_cx, sizeof(SiftCGOrdBuf));
 	}
 	b->at = UINT32_MAX;
-	b->cm = b->rows = b->bracket = b->kfrom = b->kn = 0;
+	b->cm = b->rows = b->kfrom = b->kn = 0;
+	b->compact = false;
 	return b;
 }
 

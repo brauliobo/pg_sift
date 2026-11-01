@@ -6,6 +6,7 @@
 #include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
+#include "col/gquant.h"
 #include "access/heapam.h"
 #include "access/tableam.h"
 #include "catalog/pg_am_d.h"
@@ -201,7 +202,7 @@ gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 	Relation	heap;
 	Oid			ty = InvalidOid;
 
-	if (g->hdr.bracket == 0)
+	if (g->hdr.quant == 0)
 		return true;
 	if (g->probe != 0)
 		return g->probe > 0;
@@ -260,7 +261,7 @@ static void
 probe_open(SiftColSegment *seg, GOrdLeaf *g, int col, GOrdProbe *pr)
 {
 	pr->rel = NULL;
-	if (g->hdr.bracket == 0 || !gord_probe_ok(seg, g, col))
+	if (g->hdr.quant == 0 || !gord_probe_ok(seg, g, col))
 		return;
 	pr->rel = RelationIdGetRelation(g->hrel);
 	if (!RelationIsValid(pr->rel))
@@ -335,61 +336,68 @@ probe_key(const GOrdProbe *pr, uint64 addr, int64 *key)
 	return ok;
 }
 
-/* The key of the non-anchor entry i of a compact chunk in buf: the heap row's, between the keys of its bracket's anchors; an entry the heap cannot answer for gets the anchor's */
+/* The exact key of entry i of the compact chunk in buf, from the heap row; an entry whose bucket is one key, or that the heap cannot answer for, gets the bucket's first key, and a key outside the bucket is clamped to it */
 static int64
-compact_key(const GOrdProbe *pr, const SiftCGOrdBuf *buf, uint32 i)
+compact_key(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i)
 {
-	uint32		b = i / buf->bracket * buf->bracket,
-				nx = b + buf->bracket;
-	int64		lo = buf->key[b],
-				hi = nx < buf->rows ? buf->key[nx] : buf->key[buf->rows],
+	int64		lo = buf->kmin[i],
+				hi = i == 0 ? lo : sift_gq_kmax(lo, buf->sh),
 				k;
 
-	if (!probe_key(pr, buf->addr[i], &k))
+	if (lo == hi || !probe_key(pr, buf->addr[i], &k))
 		return lo;
 	return Max(lo, Min(hi, k));
 }
 
-/* The chunk c of a compact block into buf: its addresses, its anchors at key[j * bracket] and the first key of the next chunk after the last entry; no window of keys yet */
+/* The chunk c of a compact block into buf: its addresses and, with keys, the buckets of its entries; no exact key yet */
 static void
-compact_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf)
+compact_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, bool keys, SiftCGOrdBuf *buf)
 {
 	uint32		m = sift_cgord_chunk_rows(&g->hdr, c);
 	uint8	   *raw = palloc(ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen) + SIFT_COL_PAD);
 
 	seg_read(seg, g->at + d->off, ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen), raw);
-	sift_cgord_decode_compact(seg->mcxt, raw, d->klen, raw + ALIGN8((Size) d->klen), d->alen, d->pad, m, g->hdr.bracket, m, buf->key, buf->addr);
+	if (!sift_cgord_decode_compact(seg->mcxt, raw, d->klen, raw + ALIGN8((Size) d->klen), d->alen, d->pad, m, d->first, m, keys ? buf->kmin : NULL, &buf->sh, buf->addr))
+		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
 	pfree(raw);
 	buf->at = c * g->hdr.crows;
 	buf->rows = buf->cm = m;
-	buf->bracket = g->hdr.bracket;
+	buf->compact = true;
+	buf->kmin_ok = keys;
 	buf->kfrom = buf->kn = 0;
-	buf->key[m] = c + 1 < g->hdr.chunks ? seg_gord_dirent(seg, g, col, c + 1).first : PG_INT64_MAX;
+	memset(buf->exact, 0, sizeof(buf->exact));
 }
 
-/* The keys of the bracket j of the compact chunk in buf, into its window */
+/* The exact key of entry i of the compact chunk in buf into key[i] (the entry alone becomes the window of keys) */
 static void
-compact_window(SiftColSegment *seg, GOrdLeaf *g, int col, SiftCGOrdBuf *buf, uint32 j)
+compact_resolve(SiftColSegment *seg, GOrdLeaf *g, int col, SiftCGOrdBuf *buf, uint32 i)
 {
-	GOrdProbe	pr;
-	uint32		from = j * buf->bracket,
-				to = Min(from + buf->bracket, buf->rows);
+	if (!(buf->exact[i / 64] >> (i % 64) & 1))
+	{
+		GOrdProbe	pr;
 
-	probe_open(seg, g, col, &pr);
-	for (uint32 i = from + 1; i < to; i++)
-		buf->key[i] = Max(buf->key[i - 1], compact_key(&pr, buf, i));
-	probe_close(&pr);
-	buf->kfrom = from;
-	buf->kn = to - from;
+		probe_open(seg, g, col, &pr);
+		buf->key[i] = compact_key(&pr, buf, i);
+		probe_close(&pr);
+		buf->exact[i / 64] |= UINT64CONST(1) << (i % 64);
+	}
+	buf->kfrom = i;
+	buf->kn = 1;
 }
 
 /* Every key of the compact chunk c: verify and the listing of a block read them */
 static void
 compact_all(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf)
 {
-	compact_load(seg, g, col, c, d, buf);
-	for (uint32 j = 0; j * buf->bracket < buf->rows; j++)
-		compact_window(seg, g, col, buf, j);
+	GOrdProbe	pr;
+
+	compact_load(seg, g, col, c, d, true, buf);
+	probe_open(seg, g, col, &pr);
+	for (uint32 i = 0; i < buf->rows; i++)
+		buf->key[i] = i == 0 ? buf->kmin[0] : Max(buf->key[i - 1], compact_key(&pr, buf, i));
+	probe_close(&pr);
+	buf->kfrom = 0;
+	buf->kn = buf->rows;
 }
 
 /* A complete block: the entries and values it holds. False for a segment without one and for one that keeps the ends only (sift_cseg_gorder_ends): nothing counts or lists a range from those */
@@ -454,7 +462,7 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 
 /*
  * The first max(w, up to p) entries of the chunk that holds the entry p, into buf (SiftCGOrdBuf: its first entry, the entries of the chunk, the count decoded). A compact chunk is
- * decoded once (every address) and gives the keys of the bracket of p, which a cursor asks for again when it leaves the bracket; keys false: the addresses only.
+ * decoded once (every address and the buckets) and gives the exact key of p alone; keys false: the addresses only.
  */
 static void
 gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrdBuf *buf)
@@ -469,16 +477,17 @@ gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrd
 	d = seg_gord_dirent(seg, g, col, c);
 	if (d.pad & SIFT_CGORD_COMPACT)
 	{
-		if (buf->at != c * g->hdr.crows || buf->bracket == 0)
-			compact_load(seg, g, col, c, &d, buf);
+		if (buf->at != c * g->hdr.crows || !buf->compact || (keys && !buf->kmin_ok))
+			compact_load(seg, g, col, c, &d, keys, buf);
 		if (keys && p - buf->at - buf->kfrom >= buf->kn)
-			compact_window(seg, g, col, buf, (p - buf->at) / buf->bracket);
+			compact_resolve(seg, g, col, buf, p - buf->at);
 		return;
 	}
 	buf->at = c * g->hdr.crows;
 	buf->rows = sift_cgord_chunk_rows(&g->hdr, c);
 	buf->cm = sift_cseg_gorder_head(seg, col, c, Max(w, p - buf->at + 1), buf->key, buf->addr);
-	buf->bracket = buf->kfrom = 0;
+	buf->compact = false;
+	buf->kfrom = 0;
 	buf->kn = buf->cm;
 }
 
@@ -566,36 +575,37 @@ gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 }
 
 /*
- * The first entry of [from, to) in the compact chunk c whose key is not before key (after: is after it): the bracket of two anchors that holds it, then a bisection of the
- * entries between them by the keys of their heap rows (about log2(bracket) of them); to when there is none. The chunk is left in memo with its addresses.
+ * The first entry of [from, to) in the compact chunk c whose key is not before key (after: is after it); to when there is none. The buckets say which entries are certainly before
+ * key (their last key is) and which certainly are not (their first is): the entries between, in the bucket that holds key, are searched by the keys of their heap rows (0.7 of them a seek
+ * for keys 4 buckets to a mean gap). The chunk is left in memo with its addresses.
  */
 static uint32
 compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, uint32 to, int64 key, bool after, SiftCGOrdBuf *memo)
 {
 	GOrdProbe	pr;
 	uint32		at = c * g->hdr.crows,
-				nb,
-				jlo = 0,
-				jhi,
-				lo,
-				hi;
+				lo = 0,
+				hi,
+				i0,
+				i1;
 	SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
 
-	if (memo->at != at || memo->bracket == 0)
-		compact_load(seg, g, col, c, &d, memo);
-	nb = (memo->rows + memo->bracket - 1) / memo->bracket;
-	jhi = nb;
-	SIFT_BISECT(uint32, mid, jlo, jhi, after ? memo->key[mid * memo->bracket] <= key : memo->key[mid * memo->bracket] < key);
-	/* the anchor jlo is the first that satisfies, the one before it does not: the answer is in (that one, jlo * bracket], whose entries but the last are not anchors */
-	lo = jlo == 0 ? 0 : (jlo - 1) * memo->bracket + 1;
-	hi = jlo < nb ? jlo * memo->bracket : memo->rows;
-	lo = Max(lo, from - at);
-	hi = Min(hi, to - at);
+	if (memo->at != at || !memo->compact || !memo->kmin_ok)
+		compact_load(seg, g, col, c, &d, true, memo);
+	hi = memo->rows;
+	SIFT_BISECT(uint32, mid, lo, hi, after ? (mid == 0 ? memo->kmin[0] : sift_gq_kmax(memo->kmin[mid], memo->sh)) <= key : (mid == 0 ? memo->kmin[0] : sift_gq_kmax(memo->kmin[mid], memo->sh)) < key);
+	i0 = lo;					/* the entries before it are certainly before key */
+	lo = i0;
+	hi = memo->rows;
+	SIFT_BISECT(uint32, mid, lo, hi, after ? memo->kmin[mid] <= key : memo->kmin[mid] < key);
+	i1 = lo;					/* from it on they are certainly not */
+	lo = Max(i0, from - at);
+	hi = Min(i1, to - at);
 	probe_open(seg, g, col, &pr);
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;
-		int64		k = mid % memo->bracket == 0 ? memo->key[mid] : compact_key(&pr, memo, mid);
+		int64		k = compact_key(&pr, memo, mid);
 
 		if (after ? k <= key : k < key)
 			lo = mid + 1;
@@ -603,7 +613,7 @@ compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, u
 			hi = mid;
 	}
 	probe_close(&pr);
-	return Min(at + lo, to);
+	return Min(Max(at + lo, from), to);
 }
 
 /*

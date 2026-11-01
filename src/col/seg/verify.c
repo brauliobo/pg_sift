@@ -84,7 +84,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 				have = p / g->hdr.crows;
 				(void) sift_cseg_gorder_chunk(seg, col, have, key, addr);
 			}
-			if (p != from && (isnull ? addr[p % g->hdr.crows] <= pa : key[p % g->hdr.crows] < pk || (key[p % g->hdr.crows] == pk && g->hdr.bracket == 0 && addr[p % g->hdr.crows] <= pa)))
+			if (p != from && (isnull ? addr[p % g->hdr.crows] <= pa : key[p % g->hdr.crows] < pk || (key[p % g->hdr.crows] == pk && g->hdr.quant == 0 && addr[p % g->hdr.crows] <= pa)))
 				corrupt(seg, "The global order of leaf %d is out of order at entry %u.", col, p);
 			if (!isnull && g->hdr.vtotal != 0 && p == g->hdr.head && p != from && key[p % g->hdr.crows] == pk)
 				corrupt(seg, "The ends of the global order of leaf %d split the run of the key %lld.", col, (long long) pk);

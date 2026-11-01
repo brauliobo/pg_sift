@@ -7,6 +7,7 @@ SET client_min_messages = warning;
 SET sift.test_col_gorder_ends = 64;
 SET sift.test_col_gorder_layout = 1;
 SET max_parallel_workers_per_gather = 0;
+SELECT setseed(0.42);
 
 CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigint, dup int, pad int);
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
@@ -122,3 +123,7 @@ REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
 SELECT sift.col_verify('t_ix');
+
+DROP FUNCTION global_order(text), same(text), quant(text, text, float8), shape_sql(shapes);
+DROP TABLE shapes, p, t;
+DROP EXTENSION pg_sift;

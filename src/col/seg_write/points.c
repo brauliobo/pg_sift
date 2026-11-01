@@ -137,7 +137,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 				ob->nent = h.entries;
 				ob->nvals = h.values;
 				w->anyends = h.vtotal != 0 || w->anyends;
-				w->anycompact = h.bracket != 0 || w->anycompact;
+				w->anycompact = h.quant != 0 || w->anycompact;
 			}
 		}
 	}
