@@ -337,3 +337,13 @@ lateral_top1_text_filter	is tested on the heap row of each entry of the order-ar
 lateral_top1_kept_source	keeps its source of the index open from one outer row to the next	orders	default	Top-N	native	btree:search_path = c_lateral_top1_kept_source__btree	ms	faster33	no	-
 distinct_on_latest_per_entity	keep the first row of a tie in the scan	orders	default	Custom Scan \(SiftAgg	native	btree:search_path = c_distinct_on_latest_per_entity__btree	ms	faster33	no	-
 join_filter_no_key	not for the tuples the scan keeps	orders	default	fallback:Hash	native	-	ms	faster33	no	-
+topn_offset_churn_int	are kept by the backend for its next scan	orders	default	Top-N: k	native	btree:search_path = c_topn_offset_churn_int__btree	ms	faster33	no	-
+topn_offset_churn_text	continues through the entries whose heap page is not all-visible	orders	default	Top-N: t	native	btree:search_path = c_topn_offset_churn_text__btree	ms	faster33	no	-
+topn_offset_churn_date	-	orders	default	Top-N: d	native	btree:search_path = c_topn_offset_churn_date__btree	ms	faster33	no	-
+topn_offset_dates_auto	weighs a date or timestamp column of fewer than 1,000 distinct values by the default formula	orders	default	(?s)\A(?=.*Global Order)(?=.*Top-N: d)(?!.*[^0-9](?:10[1-9]|1[1-9][0-9]|[2-9][0-9]{2}|[0-9]{4,}) heap fetches)	native	btree:search_path = c_topn_offset_dates_auto__btree	ms	faster33	no	-
+wbuf_copy_13cols	is encoded and queued without a call of the StringInfo functions for each value	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+col_merge_forced_key_cut	reads the range of an integer column from the zone map instead of scanning its rows again	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+search_vacuum_dead_postings	by reading the postings of a LIST term one by one against a flat table of the dead rows of each superblock	docs	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+point_in_ordered_60	keeps the index and bitmap scans of the `sift_col` index beside the aggregate scan	events	-	Index Scan using pi_col|Bitmap Heap Scan on pi|from point directory	native	btree:search_path = c_point_in_ordered_60__btree	ms	faster33	no	-
+topn_offset_presorted	reads the 10,020 rows from the end of the one unit its key follows	orders	default	Top-N: k	native	btree:search_path = c_topn_offset_presorted__btree	ms	faster33	no	-
+point_tid_auto_60	by default also for an integer key of nearly unique values that	events	-	Index Scan using pa_col|Bitmap Heap Scan on pa|from point directory	native	btree:search_path = c_point_tid_auto_60__btree	ms	faster33	no	-
