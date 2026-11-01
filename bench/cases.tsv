@@ -333,3 +333,7 @@ sum_dead_units	reads its liveness bits 64 at a time	orders	default	Custom Scan \
 count_distinct_sparse_sets	give way to hash sets when they pass 1 MB	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 dict_shared_order_array	the hash table and the sorted order of a dictionary that the backends share	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 topn_walk_condition_offset	the walk of the global order with a condition on another column	orders	default	Top-N: k, id	native	btree:search_path = c_topn_walk_condition_offset__btree	ms	faster33	no	-
+lateral_top1_text_filter	is tested on the heap row of each entry of the order-array walk	orders	default	Top-N	native	btree:search_path = c_lateral_top1_text_filter__btree	ms	faster33	no	-
+lateral_top1_kept_source	keeps its source of the index open from one outer row to the next	orders	default	Top-N	native	btree:search_path = c_lateral_top1_kept_source__btree	ms	faster33	no	-
+distinct_on_latest_per_entity	keep the first row of a tie in the scan	orders	default	Custom Scan \(SiftAgg	native	btree:search_path = c_distinct_on_latest_per_entity__btree	ms	faster33	no	-
+join_filter_no_key	not for the tuples the scan keeps	orders	default	fallback:Hash	native	-	ms	faster33	no	-
