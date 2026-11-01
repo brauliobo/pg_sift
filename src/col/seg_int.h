@@ -351,9 +351,15 @@ typedef struct GOrdLeaf
 	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
 	SiftCStrPos spos;			/* the decode of the block, which goes on from the string decoded last */
 	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
-	AttrNumber	hatt;			/* ... and the heap attribute of the leaf */
-	Oid			hrel;			/* ... the heap */
+	int16		hatt;			/* ... and the heap attribute of the leaf */
+	uint32		hrel;			/* ... the heap (its Oid) */
 } GOrdLeaf;
+
+/* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */
+extern bool (*sift_gprobe_ok) (SiftColSegment *seg, GOrdLeaf *g, int col);
+extern void *(*sift_gprobe_open) (SiftColSegment *seg, GOrdLeaf *g, int col);
+extern void (*sift_gprobe_close) (void *probe);
+extern bool (*sift_gprobe_key) (void *probe, uint64 addr, int64 *key);
 
 typedef struct SegPriv
 {

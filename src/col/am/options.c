@@ -12,6 +12,7 @@
 #include "col/hll.h"
 #include "col/gorder.h"
 #include "col/setsum.h"
+#include "col/seg.h"
 #include "col/am/am_int.h"
 #include "core/ops.h"
 
@@ -181,6 +182,7 @@ sift_col_init(void)
 							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
 	sift_cgord_strcmp = gord_strcmp;
+	sift_cseg_probe_init();
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
 							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",

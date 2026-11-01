@@ -7,13 +7,6 @@
 #include "core/cmp.h"
 #include "col/seg_int.h"
 #include "col/gquant.h"
-#include "access/heapam.h"
-#include "access/tableam.h"
-#include "catalog/pg_am_d.h"
-#include "catalog/pg_type_d.h"
-#include "storage/bufpage.h"
-#include "utils/rel.h"
-#include "utils/relcache.h"
 
 /* ---- the global order of a leaf (col/gorder.h) ---- */
 
@@ -190,153 +183,58 @@ sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 	return g != NULL && (g->hdr.gcol >= 0) == grouped && gord_probe_ok(seg, g, col) ? col : -1;
 }
 
-/*
- * Whether the keys a compact block does not store can be read from the heap: the segment has no row that bulkdelete cleared (the address of such a row may have a new tenant),
- * and the leaf is a column of a heap table of the type its key is made of. A block that cannot is not used: its scans read the units.
- */
+/* The host's reader of the heap rows the compact blocks take their exact keys from (col/seg/probe.c); unset on a host with no heap: such a block is not used and its scans read the units */
+bool		(*sift_gprobe_ok) (SiftColSegment *seg, GOrdLeaf *g, int col) = NULL;
+void	   *(*sift_gprobe_open) (SiftColSegment *seg, GOrdLeaf *g, int col) = NULL;
+void		(*sift_gprobe_close) (void *probe) = NULL;
+bool		(*sift_gprobe_key) (void *probe, uint64 addr, int64 *key) = NULL;
+
+/* Whether the keys a compact block does not store can be read from the heap (asked once for a block); a block that cannot is not used */
 static bool
 gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 {
-	const SiftColDef *d;
-	Form_pg_index ix = seg->index->rd_index;
-	Relation	heap;
-	Oid			ty = InvalidOid;
-
 	if (g->hdr.quant == 0)
 		return true;
-	if (g->probe != 0)
-		return g->probe > 0;
-	g->probe = -1;
-	if ((seg->entry.flags & SIFT_SEG_DIRTY) || col >= seg->schema->ncols)
-		return false;
-	d = &seg->schema->cols[col];
-	if (d->attno < 1 || d->attno > ix->indnatts || ix->indkey.values[d->attno - 1] <= 0 || !sift_cgord_leaf_ok(seg->schema, d))
-		return false;
-	switch (d->type)
-	{
-		case SIFT_COLT_INT2:
-			ty = INT2OID;
-			break;
-		case SIFT_COLT_INT4:
-			ty = INT4OID;
-			break;
-		case SIFT_COLT_INT8:
-			ty = INT8OID;
-			break;
-		case SIFT_COLT_DATE:
-			ty = DATEOID;
-			break;
-		case SIFT_COLT_TIMESTAMP:
-			ty = TIMESTAMPOID;
-			break;
-		case SIFT_COLT_TIMESTAMPTZ:
-			ty = TIMESTAMPTZOID;
-			break;
-		default:
-			return false;
-	}
-	g->hatt = ix->indkey.values[d->attno - 1];
-	g->hrel = ix->indrelid;
-	heap = RelationIdGetRelation(g->hrel);
-	if (!RelationIsValid(heap))
-		return false;
-	if (heap->rd_rel->relkind == RELKIND_RELATION && heap->rd_rel->relam == HEAP_TABLE_AM_OID && g->hatt <= RelationGetDescr(heap)->natts &&
-		!TupleDescAttr(RelationGetDescr(heap), g->hatt - 1)->attisdropped && TupleDescAttr(RelationGetDescr(heap), g->hatt - 1)->atttypid == ty)
-		g->probe = 1;
-	RelationClose(heap);
+	if (g->probe == 0)
+		g->probe = sift_gprobe_ok != NULL && sift_gprobe_ok(seg, g, col) ? 1 : -1;
 	return g->probe > 0;
 }
 
-/* The heap rows a window of keys is read from (the relation is opened for the window and closed with it) */
+/* The heap rows a window of keys is read from (opened for the window and closed with it) */
 typedef struct GOrdProbe
 {
-	Relation	rel;
-	BlockNumber nblocks;
-	AttrNumber	att;
-	bool		wide;			/* the key is the 8 bytes of the datum, else 4 or 2 */
-	bool		two;
+	void	   *h;
 } GOrdProbe;
 
 static void
 probe_open(SiftColSegment *seg, GOrdLeaf *g, int col, GOrdProbe *pr)
 {
-	pr->rel = NULL;
-	if (g->hdr.quant == 0 || !gord_probe_ok(seg, g, col))
-		return;
-	pr->rel = RelationIdGetRelation(g->hrel);
-	if (!RelationIsValid(pr->rel))
-	{
-		pr->rel = NULL;
-		return;
-	}
-	pr->nblocks = RelationGetNumberOfBlocks(pr->rel);
-	pr->att = g->hatt;
-	pr->two = seg->schema->cols[col].type == SIFT_COLT_INT2;
-	pr->wide = !pr->two && seg->schema->cols[col].type != SIFT_COLT_INT4 && seg->schema->cols[col].type != SIFT_COLT_DATE;
+	pr->h = g->hdr.quant != 0 && gord_probe_ok(seg, g, col) ? sift_gprobe_open(seg, g, col) : NULL;
 }
 
 static void
 probe_close(GOrdProbe *pr)
 {
-	if (pr->rel != NULL)
-		RelationClose(pr->rel);
-	pr->rel = NULL;
+	if (pr->h != NULL)
+		sift_gprobe_close(pr->h);
+	pr->h = NULL;
 }
 
-/*
- * The key of the row at addr, read from its heap tuple: a redirect is followed (the versions of a chain keep the indexed columns), a dead or missing tuple or an
- * attribute with no value gives false.
- */
+/* The key of the row at addr, from its heap tuple; false when the heap has none (a dead row) */
 static bool
 probe_key(const GOrdProbe *pr, uint64 addr, int64 *key)
 {
-	BlockNumber blk = (BlockNumber) (addr >> 16);
-	Buffer		b;
-	Page		page;
-	bool		ok = false;
-
-	if (pr->rel == NULL || blk >= pr->nblocks)
-		return false;
-	b = ReadBuffer(pr->rel, blk);
-	LockBuffer(b, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(b);
-	if (!PageIsNew(page) && !PageIsEmpty(page))
-	{
-		OffsetNumber off = (OffsetNumber) (addr & 0xFFFF),
-					maxoff = PageGetMaxOffsetNumber(page);
-
-		for (int hop = 0; hop < 2 && off >= FirstOffsetNumber && off <= maxoff; hop++)
-		{
-			ItemId		lp = PageGetItemId(page, off);
-
-			if (ItemIdIsRedirected(lp))
-			{
-				off = ItemIdGetRedirect(lp);
-				continue;
-			}
-			if (ItemIdIsNormal(lp) && ItemIdGetLength(lp) >= SizeofHeapTupleHeader)
-			{
-				HeapTupleData tup;
-				bool		isnull;
-				Datum		v;
-
-				tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
-				tup.t_len = ItemIdGetLength(lp);
-				v = heap_getattr(&tup, pr->att, RelationGetDescr(pr->rel), &isnull);
-				if (!isnull)
-				{
-					*key = pr->wide ? DatumGetInt64(v) : pr->two ? (int64) DatumGetInt16(v) : (int64) DatumGetInt32(v);
-					ok = true;
-				}
-			}
-			break;
-		}
-	}
-	UnlockReleaseBuffer(b);
-	return ok;
+	return pr->h != NULL && sift_gprobe_key(pr->h, addr, key);
 }
 
-/* The exact key of entry i of the compact chunk in buf, from the heap row, clamped to its bucket (the bucket of one key, entry 0 and a heap row with no key are answered by the bucket's first key); false when the heap cannot answer */
+/*
+ * The exact key of entry i of the compact chunk in buf, from the heap row, clamped to its bucket (entry 0 and a bucket of one key are answered by the bucket's first key); false when
+ * the heap cannot answer, which is a dead row: the slot is pruned or vacuumed, or has no value. The executor drops a dead row wherever it stands, so what its entry is given only
+ * has to leave the live entries around it in order, and any reader of the keys of a compact chunk (the seek, the cursors, a decoder that fills them) keeps this rule:
+ * - a seek passes over it to the next entry that can be read and lets that one decide (the first key of its bucket is below the key the row had, and would put the live entries of
+ *   the same key before the bound);
+ * - a cursor gives it the key of the entry before it: not below any live entry before it and not above any after it, whichever way the cursor reads.
+ */
 static bool
 compact_probe(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i, int64 *key)
 {
