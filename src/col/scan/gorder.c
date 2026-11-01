@@ -197,13 +197,13 @@ gmem_ranges(ColGOrdMem *g, MemoryContext mcxt, GOrdPair *pv, uint32 nv)
 /*
  * The rows of the write buffers of a text leaf sorted like the entries of a text block: by string (the collation, then the bytes) and address; false as gord_mem, or a string longer than
  * a dictionary entry. Under a collation that orders by bytes the rows are cut into ranges by their first 8 bytes and a range is sorted when it is read, as for a number; under another
- * the whole is one range, sorted at the first read, and a buffer of more than maxrows rows is not sorted (the compare of a locale costs about as much as reading the units).
+ * the whole is one range, sorted at the first read.
  */
 bool
-gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v, MemoryContext mc)
+gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext mc)
 {
 	bool		bytes = sift_collate_is_c(collid);
-	uint64		n = 0;
+	uint64		n = gord_mem_rows(src);
 	GOrdText   *ent;
 	GOrdPair   *pv;
 	uint64	   *pn;
@@ -212,10 +212,6 @@ gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v
 				plen = 0;
 	ColGOrdMem *g;
 
-	for (int i = 0; i < src->nmem; i++)
-		n += src->mem[i].b->nrows;
-	if (n > (bytes ? SIFT_CGORD_MEM_MAX : maxrows))
-		return false;
 	ent = MemoryContextAlloc(mc, (n + 1) * sizeof(GOrdText));
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(uint64));

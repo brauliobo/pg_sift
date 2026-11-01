@@ -52,7 +52,9 @@ extern void gord_pairs_sort(GOrdPair *a, uint32 n);
 /* The entries with a value cut into ranges of the key of the same width; pv is freed (gorder.c) */
 extern void gmem_ranges(ColGOrdMem *g, MemoryContext mcxt, GOrdPair *pv, uint32 nv);
 /* The rows of the write buffers of a text leaf sorted by string, in mc (gorder.c); false as gord_mem */
-extern bool gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v, MemoryContext mc);
+extern bool gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext mc);
+/* The rows of the write buffers' batches */
+extern uint64 gord_mem_rows(const SiftColSource *src);
 /* Makes the sorted rows of the write buffers for value v of the scan, or finds them kept by the backend (gmem.c) */
 extern bool gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, int v, uint32 collid);
 

@@ -46,21 +46,27 @@ gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, const uint32 *
 	return true;
 }
 
-/* The rows of the write buffers sorted like a segment's entries, in mc; false when a numeric key has more than SIFT_CGORD_MEM_MAX rows, or collect refuses a row */
+uint64
+gord_mem_rows(const SiftColSource *src)
+{
+	uint64		n = 0;
+
+	for (int i = 0; i < src->nmem; i++)
+		n += src->mem[i].b->nrows;
+	return n;
+}
+
+/* The rows of the write buffers sorted like a segment's entries, in mc; false when collect refuses a row */
 static bool
 gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryContext mc)
 {
 	ColGOrdMem *g;
-	uint64		n = 0;
+	uint64		n = gord_mem_rows(src);
 	GOrdPair   *pv,
 			   *pn;
 	uint32		nv,
 				nn;
 
-	for (int i = 0; i < src->nmem; i++)
-		n += src->mem[i].b->nrows;
-	if (n > SIFT_CGORD_MEM_MAX)
-		return false;
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(GOrdPair));
 	if (!gord_collect(src, leaf, gleaf, gval, NULL, pv, &nv, pn, &nn))
@@ -406,7 +412,7 @@ gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gva
 	gkept_use(src, k, v);
 }
 
-/* The rows of the write buffers sorted like a segment's entries; false when a text key has more than maxrows rows, a numeric one more than SIFT_CGORD_MEM_MAX, or one holds an overflow value of the leaf or an address a block of the global order cannot name */
+/* The rows of the write buffers sorted like a segment's entries; false when a text key under a locale has more than maxrows rows, another key more than SIFT_CGORD_MEM_MAX, or one holds an overflow value of the leaf or an address a block of the global order cannot name */
 bool
 gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, int v, uint32 collid)
 {
@@ -415,6 +421,12 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 	MemoryContext cx;
 	bool		ok;
 
+	/* the limit holds for an order that is kept as for one that is made: the buffer may have grown, or the read may allow fewer rows than the one that made it */
+	if (gord_mem_rows(src) > (collid != 0 && !sift_collate_is_c(collid) ? maxrows : SIFT_CGORD_MEM_MAX))
+	{
+		src->gmem[v] = NULL;
+		return false;
+	}
 	if (g != NULL && g->leaf == leaf && g->gleaf == gleaf && (gleaf < 0 || g->gval == gval) && (g->str != NULL) == (collid != 0))
 		return true;
 	if ((k = gkept_current(src, leaf, gleaf, gval, collid)) != NULL)
@@ -423,7 +435,7 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		return true;
 	}
 	cx = AllocSetContextCreate(src->mcxt, "sift cache write buffer order", ALLOCSET_DEFAULT_SIZES);
-	ok = collid != 0 ? gord_mem_text(src, leaf, maxrows, collid, v, cx) : gord_mem_num(src, leaf, gleaf, gval, v, cx);
+	ok = collid != 0 ? gord_mem_text(src, leaf, collid, v, cx) : gord_mem_num(src, leaf, gleaf, gval, v, cx);
 	if (!ok)
 	{
 		src->gmem[v] = NULL;
