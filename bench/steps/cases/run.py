@@ -14,7 +14,7 @@ from duckdb import busy, wait_quiet
 from . import runcfg
 from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
 from .registry import read_registry
-from .server import Fresh, build, dataset, lane_sessions, load_duck, psql, server_load
+from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck, psql, server_load
 from .measure import expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
 
 
@@ -30,6 +30,8 @@ def release(c, left, rows, scaled):
         if left[c.schema()] == 0:
             psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
             BUILT.discard((c.dataset, rows))
+        else:
+            drop_added(c.schema())
     elif c.share is None and scaled or c.share and left[c.schema()] == 0:
         psql('DROP SCHEMA IF EXISTS %s CASCADE; DROP SCHEMA IF EXISTS %s_base CASCADE' % (c.schema(), c.schema()))
         BUILT.discard((c.schema(), rows))

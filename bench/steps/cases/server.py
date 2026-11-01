@@ -9,7 +9,7 @@ from collections import Counter
 from duckdb import Session, key as row_key, same
 
 from . import runcfg
-from .runcfg import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, REPO, TYPES, die, log
+from .runcfg import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, KEPT, REPO, TYPES, die, log
 
 
 # --- the server
@@ -63,6 +63,12 @@ def settle_visibility(schema):
             die('the visibility map is partial after VACUUM FULL (all-visible pages of the pages): %s. The native plans would be priced on it: load with synchronous_commit = on or wait for the flush' % bad)
 
 
+def drop_added(schema):
+    """drop the tables and indexes a case added to the dataset SCHEMA (its copies of a table and their indexes: a text case at 300,000 documents holds 400 MB of each) and keep those of the generator"""
+    psql("SELECT format('DROP %%s IF EXISTS %%s', CASE relkind WHEN 'i' THEN 'INDEX' WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END, oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relname NOT IN (%s) "
+         "AND relkind IN ('r', 'p', 'm', 'i') AND NOT relispartition ORDER BY relkind = 'i' \\gexec" % (schema, KEPT[schema]))
+
+
 def generate(case, rows):
     """the schema of a shared dataset (`events`, `keys`, `tpch`, `hits`, `tseries`, `docs`) with ROWS rows, made once per size from its generator (-v n=ROWS)"""
     schema, path = DATASETS[case.dataset]
@@ -77,6 +83,7 @@ def generate(case, rows):
             die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
         if 'VACUUM' in gen:
             settle_visibility(schema)
+        KEPT[schema] = psql("SELECT string_agg(quote_literal(relname), ',') FROM pg_class WHERE relnamespace = '%s'::regnamespace" % schema)
         BUILT.add((case.dataset, rows))
 
 

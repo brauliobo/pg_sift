@@ -217,7 +217,7 @@ class Release(unittest.TestCase):
         from cases import run
         cases = [mock.Mock(id=i, dataset='docs', share=None, load=kw.get('load', False), **{'schema.return_value': 'c_docs'}) for i in ids]
         left, out = {'c_docs': len(cases)}, []
-        with mock.patch.object(run, 'psql', side_effect=out.append):
+        with mock.patch.object(run, 'psql', side_effect=out.append), mock.patch.object(run, 'drop_added', side_effect=lambda schema: out.append('added to ' + schema + ' dropped')):
             for c in cases:
                 n = len(out)
                 run.release(c, left, 300000, False)
@@ -225,7 +225,7 @@ class Release(unittest.TestCase):
         return out
 
     def test_a_dataset_schema_is_dropped_after_its_last_case(self):
-        self.assertEqual(self.dropped(['a', 'b']), ['', 'DROP SCHEMA IF EXISTS c_docs CASCADE'])
+        self.assertEqual(self.dropped(['a', 'b']), ['added to c_docs dropped', 'DROP SCHEMA IF EXISTS c_docs CASCADE'])
 
     def test_a_load_case_drops_its_own_schema_too(self):
         self.assertEqual(self.dropped(['a'], load=True), ['DROP SCHEMA IF EXISTS c_a CASCADE DROP SCHEMA IF EXISTS c_docs CASCADE'])
