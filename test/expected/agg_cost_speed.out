@@ -4,6 +4,7 @@
 -- the btree plan reads them in a fraction of a millisecond; the index is not cut by a key (key_cut = 'off'), which is the layout that statement is about: cut by
 -- parent_id (the default) the scan reads 1 of 40 units and takes 0.095 ms against the btree plan's 0.305. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array of the index gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE cs_dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL);
 INSERT INTO cs_dims SELECT p, CASE WHEN p <= 20 THEN 'tier_a' WHEN p <= 45 THEN 'tier_b' ELSE 'tier_c' END, p % 7 <> 0 FROM generate_series(1, 60) p;
@@ -17,12 +18,6 @@ INSERT INTO cs_facts SELECT i, 1 + (i * 7919) % 60, date '2025-01-01' + (hashint
 		'metrics', jsonb_build_object('m_a', 1 + (i * 13) % 10, 'catg_a', 1 + (i * 3) % 10, 'catg_b', 1 + (i * 5) % 10)) FROM generate_series(1, 200000) i;
 CREATE INDEX cs_facts_parent ON cs_facts (parent_id, ts, deleted_at);
 CREATE INDEX cs_facts_col ON cs_facts USING sift_col (id, parent_id, ts, kind, deleted_at, doc) WITH (key_cut = 'off', paths = 'doc.metrics.* float8, doc.parts[]{kind astext, sub astext, dir_a astext, score float8}');
-NOTICE:  sift_col index "cs_facts_col": order_array_columns = 'auto' chose the column "ts" of few values: benefit 40 against cost 18
-DETAIL:  ORDER BY ts, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about 3 bytes a row (45% of the index) and CREATE INDEX about 13% longer.
-HINT:  ALTER INDEX cs_facts_col SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = 'ts' keeps it by name.
-NOTICE:  sift_col index "cs_facts_col": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
-DETAIL:  2.5 bytes a row for each column, 0.5 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: ts: the whole order (a bound in the middle of its values reads many units)
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 VACUUM (FREEZE, ANALYZE) cs_facts, cs_dims;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
