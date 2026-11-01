@@ -45,13 +45,20 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `heap_corr` | number |  | the correlation of the key with the heap, measured (pg_stats), not the order the generator meant |
 | `table_state` | text | yes | fresh_vacuumed, fresh_unvacuumed, churned_vacuumed or churned_unvacuumed |
 | `allvisible_pct` | number |  | pages marked all-visible, in percent |
+| `churn_history` | text |  | what was done to the table before the arms: upd=, ins=, del= (percent of the rows a round) and rounds= when the harness churned it with apply_churn, else the tuples inserted, updated and deleted since its statistics began (ins=, upd=, del=); empty for a fresh table |
+| `vacuums` | integer |  | VACUUMs run on the table (pg_stat_user_tables vacuum_count) when the arms started |
+| `autovacuums` | integer |  | autovacuums run on the table (autovacuum_count) when the arms started |
+| `settled` | 0 or 1 |  | 1 when the harness waited for the maintenance (VACUUM, the worker pass) to settle before the arms; needs a VACUUM or a pass on record |
+| `settled_s` | number |  | seconds from the last VACUUM, autovacuum or sift maintenance pass of the table to the start of the arms |
+| `dead_pct` | number |  | dead tuples in percent of live and dead (pg_stat_user_tables) at the start |
+| `tombstone_pct` | number |  | dead rows in percent of the rows of the segments of the sift index (sift.col_segments) at the start, when the table has one |
 | `structures` | text | yes | the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used |
 | `statement` | text | yes | the name of the statement |
 | `sql_hash` | text | yes | hash of the statement text without its white space: one name is one text |
 | `variant` | text | yes | the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant |
 | `kind` | text | yes | read, maintenance (VACUUM, CREATE INDEX, merge) or load |
 | `protocol` | text | yes | what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve |
-| `mode` | text | yes | forced (the arm was selected with settings) or default (the planner chose) |
+| `mode` | text | yes | forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were) |
 | `arm` | text | yes | heap, btree, gin or sift; `default` rows carry the structure the plan named |
 | `arm_option` | text | yes | the option of the structure: default, key_order=ts, key_cut, ... |
 | `picked` | 0 or 1 | yes | 1 when this structure and option are the plan the planner chooses by default |
@@ -78,6 +85,8 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `other_hit` | integer |  | blocks of other relations (toast, other index kinds) found in shared buffers |
 | `other_read` | integer |  | blocks of other relations read |
 | `os_cache_dropped` | 0 or 1 |  | cold rows: 1 when the OS page cache was emptied too, 0 when only the shared buffers were |
+| `table_bytes` | integer |  | pg_table_size of the table after the run (heap, TOAST and free space map; a load names the schema, the sum of its tables) |
+| `index_bytes` | integer |  | pg_relation_size of the indexes of the arm's structure after the run (sift, b-tree or GIN; none for the heap arm): what a CREATE INDEX or a rewrite built |
 | `wal_bytes` | integer |  | WAL written by the run |
 | `fpw` | 0 or 1 | yes | full_page_writes of the server |
 | `cpus` | number | yes | the CPU quota the server ran with (cpus) |
@@ -100,13 +109,14 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | refusal | rule |
 |---|---|
 | MIXED RUNS | one `run_id`: the arms were measured together, on one build, under one load |
-| MIXED STATE | one table state, protocol and key distribution within a comparison; one heap order within a `variant` (a variant is one table, so a heap in arrival order and one sorted by the key are two variants, each with its own default plan and picked flag) |
+| MIXED STATE | one table state, churn history (updates, inserts, deletes, rounds, VACUUMs and autovacuums on record, settled), protocol and key distribution within a comparison, dead tuples and tombstones within 5 points; one heap order within a `variant` (a variant is one table, so a heap in arrival order and one sorted by the key are two variants, each with its own default plan and picked flag) |
 | MIXED SETTINGS | one `settings_hash` (every setting that is not the default, the cluster and the session before an arm forces anything), `shared_buffers`, `work_mem`, version, cpu quota, `full_page_writes` and harness; the report header shows the hash and the list |
 | TEST SETTINGS NOT LABELLED / LABELLED DISABLED WITHOUT A SWITCH | a setting that turns the maintenance off (`autovacuum`, `sift.col_auto_merge`, `sift.async_maintenance`, any `sift.test_*`, as a test cluster's configuration sets them) is refused unless the set says `maintenance` = `disabled`, which the report prints in capitals; the label without such a setting is refused too |
 | TWO STATEMENTS | one `sql_hash` for a statement name |
 | HEAP ORDER NOT AS DECLARED | `sorted` needs a measured correlation above 0.9, `hash` under 0.1 |
 | WRONG ARM | a forced arm is the structure its EXPLAIN names (a mixed plan is no arm) |
 | NO PICKED / PICKED FLAG | the default plan is in the set and each arm says whether it is that plan; a default plan that mixes structures is a row of its own (arm `mixed`) that no forced arm equals; a maintenance or a load has no plan to pick: forced, picked 0 |
+| CHURN HISTORY MISSING / SETTLED WITHOUT A VACUUM | a churned read says what was applied (`collect.apply_churn` returns it: percent of rows updated, inserted and deleted a round, rounds; else the tuples the statistics counted); `settled` needs a VACUUM, an autovacuum or a sift pass on record |
 | INSTRUCTIONS MISSING | a warm row has a count (perf failed or was not run: refused, not left empty) |
 | INSTRUCTIONS WITHOUT SCOPE / WITHOUT WORKERS | a count of the backend alone is refused when workers ran |
 | WORKERS SHORT / QUOTA UNDER THE PROCESSES | the workers the plan asked for ran, and the cpu quota holds them and the backend |

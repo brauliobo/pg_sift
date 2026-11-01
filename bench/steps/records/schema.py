@@ -21,7 +21,7 @@ IDENTITY = ('data_directory', 'config_file', 'hba_file', 'ident_file', 'external
             'application_name', 'cluster_name', 'client_encoding', 'DateStyle', 'TimeZone', 'log_timezone', 'default_text_search_config', 'lc_messages', 'lc_monetary', 'lc_numeric', 'lc_time',
             'lc_collate', 'lc_ctype', 'log_directory', 'log_filename', 'logging_collector', 'log_line_prefix', 'log_destination', 'shared_preload_libraries', 'dynamic_library_path',
             'max_connections', 'IntervalStyle', 'extra_float_digits', 'server_encoding', 'bytea_output', 'client_min_messages', 'log_min_messages', 'statement_timeout', 'search_path')   # names, not behaviour
-MODES = ('forced', 'default')
+MODES = ('forced', 'default', 'unavailable')
 TEMPS = ('warm', 'cold')
 SCOPES = ('backend', 'cluster')
 
@@ -38,13 +38,20 @@ FIELDS = [
     ('heap_corr', 'f', False, 'the correlation of the key with the heap, measured (pg_stats), not the order the generator meant'),
     ('table_state', 's', True, 'fresh_vacuumed, fresh_unvacuumed, churned_vacuumed or churned_unvacuumed'),
     ('allvisible_pct', 'f', False, 'pages marked all-visible, in percent'),
+    ('churn_history', 's', False, 'what was done to the table before the arms: upd=, ins=, del= (percent of the rows a round) and rounds= when the harness churned it with apply_churn, else the tuples inserted, updated and deleted since its statistics began (ins=, upd=, del=); empty for a fresh table'),
+    ('vacuums', 'i', False, 'VACUUMs run on the table (pg_stat_user_tables vacuum_count) when the arms started'),
+    ('autovacuums', 'i', False, 'autovacuums run on the table (autovacuum_count) when the arms started'),
+    ('settled', 'b', False, '1 when the harness waited for the maintenance (VACUUM, the worker pass) to settle before the arms; needs a VACUUM or a pass on record'),
+    ('settled_s', 'f', False, 'seconds from the last VACUUM, autovacuum or sift maintenance pass of the table to the start of the arms'),
+    ('dead_pct', 'f', False, 'dead tuples in percent of live and dead (pg_stat_user_tables) at the start'),
+    ('tombstone_pct', 'f', False, 'dead rows in percent of the rows of the segments of the sift index (sift.col_segments) at the start, when the table has one'),
     ('structures', 's', True, 'the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used'),
     ('statement', 's', True, 'the name of the statement'),
     ('sql_hash', 's', True, 'hash of the statement text without its white space: one name is one text'),
     ('variant', 's', True, 'the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant'),
     ('kind', 's', True, 'read, maintenance (VACUUM, CREATE INDEX, merge) or load'),
     ('protocol', 's', True, 'what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve'),
-    ('mode', 's', True, 'forced (the arm was selected with settings) or default (the planner chose)'),
+    ('mode', 's', True, 'forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were)'),
     ('arm', 's', True, 'heap, btree, gin or sift; `default` rows carry the structure the plan named'),
     ('arm_option', 's', True, 'the option of the structure: default, key_order=ts, key_cut, ...'),
     ('picked', 'b', True, '1 when this structure and option are the plan the planner chooses by default'),
@@ -71,6 +78,8 @@ FIELDS = [
     ('other_hit', 'i', False, 'blocks of other relations (toast, other index kinds) found in shared buffers'),
     ('other_read', 'i', False, 'blocks of other relations read'),
     ('os_cache_dropped', 'b', False, 'cold rows: 1 when the OS page cache was emptied too, 0 when only the shared buffers were'),
+    ('table_bytes', 'i', False, 'pg_table_size of the table after the run (heap, TOAST and free space map; a load names the schema, the sum of its tables)'),
+    ('index_bytes', 'i', False, 'pg_relation_size of the indexes of the arm\'s structure after the run (sift, b-tree or GIN; none for the heap arm): what a CREATE INDEX or a rewrite built'),
     ('wal_bytes', 'i', False, 'WAL written by the run'),
     ('fpw', 'b', True, 'full_page_writes of the server'),
     ('cpus', 'f', True, 'the CPU quota the server ran with (cpus)'),

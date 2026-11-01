@@ -43,10 +43,11 @@ TRIES = {'sift': [[], FORCING['sift'], FORCING['sift'] + ['SET enable_indexscan 
 
 
 class Subject:
-    """the data of the measurement: dataset name, rows, keys, how the heap holds the key (arrival, sorted, hash, other), the variant (the table of a comparison that has several), the table state (schema.STATES) and the protocol of a repetition"""
+    """the data of the measurement: dataset name, rows, keys, how the heap holds the key (arrival, sorted, hash, other), the variant (the table of a comparison that has several), the churn history, the table state (schema.STATES) and the protocol of a repetition"""
 
-    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default', variant='main'):
+    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default', variant='main', churn=None, settled=None):
         self.default_option, self.variant = default_option, variant
+        self.churn, self.settled = churn, settled   # CHURN: what apply_churn returned; SETTLED: the harness waited for the maintenance to settle after the churn (True), or did not (False)
         self.dataset, self.rows, self.heap_order, self.table_state = dataset, rows, heap_order, table_state
         self.table, self.key, self.keys, self.protocol, self.structures, self.kind = table, key, keys, protocol, structures, kind
 
@@ -77,29 +78,39 @@ def plan_nodes(plan):
         yield from plan_nodes(p)
 
 
-def plan_structure(plan, index_am):
+def plan_structure(plan, index_am, table=None, index_table=None):
     """heap, btree, gin, sift or mixed for the plan of EXPLAIN (FORMAT JSON): INDEX_AM maps an index name to its access method (btree, gin, sift...). The scan nodes name the
-    structure; a plan with no scan of a table (a Result) is mixed, which no arm is"""
-    found = set()
-    for n in plan_nodes(plan):
-        t = n.get('Node Type', '')
-        if t == 'Seq Scan' or t == 'Tid Scan':
-            found.add('heap')
-        elif t in ('Index Scan', 'Index Only Scan', 'Bitmap Index Scan'):
-            am = index_am.get(n.get('Index Name'), '?')
-            found.add('sift' if am.startswith('sift') else am if am in ('btree', 'gin') else 'other:' + am)
-        elif t == 'Custom Scan' and 'sift' in (n.get('Custom Plan Provider', '') or '').lower():
-            found.add('sift')
-        elif t == 'Custom Scan':
-            found.add('other:custom')
+    structure; a plan with no scan of a table (a Result) is mixed, which no arm is. With TABLE (the subject of the statement, `name` or `schema.name`) only the scans of that table count,
+    the heap of a probe table beside the index of the probed one is not a mix: INDEX_TABLE maps an index name to its table for the index scans that name no relation"""
+    index_table = index_table or {}
+    schema_name, _, bare = (table or '').rpartition('.')
+
+    def scans(only):
+        found = set()
+        for n in plan_nodes(plan):
+            t = n.get('Node Type', '')
+            rel = n.get('Relation Name') or index_table.get(n.get('Index Name'))
+            if only and rel and (rel != bare or (schema_name and n.get('Schema') not in (None, schema_name))):
+                continue
+            if t == 'Seq Scan' or t == 'Tid Scan':
+                found.add('heap')
+            elif t in ('Index Scan', 'Index Only Scan', 'Bitmap Index Scan'):
+                am = index_am.get(n.get('Index Name'), '?')
+                found.add('sift' if am.startswith('sift') else am if am in ('btree', 'gin') else 'other:' + am)
+            elif t == 'Custom Scan' and 'sift' in (n.get('Custom Plan Provider', '') or '').lower():
+                found.add('sift')
+            elif t == 'Custom Scan':
+                found.add('other:custom')
+        return found
+    found = scans(bool(table)) or scans(False)   # no scan of the table itself (its partitions, a view): every scan of the plan
     return found.pop() if len(found) == 1 and not next(iter(found)).startswith('other:') else 'mixed'
 
 
-def plan_facts(doc, index_am):
+def plan_facts(doc, index_am, table=None, index_table=None):
     """(plan_ms, exec_ms, cost, structure, workers_requested, workers_launched) of the JSON document of EXPLAIN (ANALYZE, SUMMARY)"""
     plan = doc['Plan']
     gathers = [n for n in plan_nodes(plan) if n.get('Node Type') in ('Gather', 'Gather Merge')]
-    return (doc.get('Planning Time'), doc.get('Execution Time'), plan.get('Total Cost'), plan_structure(plan, index_am),
+    return (doc.get('Planning Time'), doc.get('Execution Time'), plan.get('Total Cost'), plan_structure(plan, index_am, table, index_table),
             sum(n.get('Workers Planned', 0) for n in gathers), sum(n.get('Workers Launched', 0) for n in gathers))
 
 
@@ -188,6 +199,11 @@ def session_base(s):
     return ["SELECT set_config('%s', '%s', false)" % (n.replace("'", "''"), v.replace("'", "''")) for n, v in (r.split('|', 1) for r in s.run("SELECT name || '|' || setting FROM pg_settings WHERE source = 'session'")[1] if '|' in r)]
 
 
+def index_tables(s):
+    """{index name: the name of its table} of the database"""
+    return dict(r.split('|') for r in s.run("SELECT i.relname || '|' || t.relname FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class t ON t.oid = x.indrelid")[1] if r)
+
+
 def index_methods(s):
     """{index name: access method} of the database"""
     return dict(r.split('|') for r in s.run("SELECT c.relname || '|' || am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i'")[1] if r)
@@ -219,6 +235,57 @@ def statio(s):
         out[(k, 'hit')] = out.get((k, 'hit'), 0) + int(hit or 0)
         out[(k, 'read')] = out.get((k, 'read'), 0) + int(read or 0)
     return out
+
+
+def apply_churn(s, table, column, upd=0.0, ins=0.0, dele=0.0, rounds=1, insert_sql=None):
+    """churn TABLE for ROUNDS rounds, each: UPD percent of the rows rewritten (UPDATE of COLUMN to itself, a new tuple version), DELE percent deleted, INS percent inserted by INSERT_SQL ({pct}
+    is the percent; a table with a key needs the statement that makes new keys). Returns the churn history for Subject(churn=...); the harness VACUUMs or waits as its lane says and declares it
+    with Subject(settled=...). Every harness churns with this, so a history means the same thing in each"""
+    if ins and not insert_sql:
+        raise ValueError('inserts need the statement that makes the new rows (insert_sql with {pct})')
+    for _ in range(rounds):
+        for sql in ([ 'UPDATE %s SET %s = %s WHERE random() < %s' % (table, column, column, upd / 100.0)] if upd else []) + (['DELETE FROM %s WHERE random() < %s' % (table, dele / 100.0)] if dele else []) + \
+                   ([insert_sql.format(pct=ins)] if ins else []):
+            run_all(s, sql)
+    return 'upd=%g;ins=%g;del=%g;rounds=%d' % (upd, ins, dele, rounds)
+
+
+def churn_facts(s, table, declared=None):
+    """the state of TABLE the arms start from, measured: {churn_history, vacuums, autovacuums, settled_s, dead_pct, tombstone_pct} from pg_stat_all_tables, the maintenance status of its sift
+    index and the dead rows of that index's segments. The history is DECLARED (apply_churn) or, for a table churned by a script, the tuples its statistics counted"""
+    s.run('SELECT pg_stat_clear_snapshot()')
+    row = one(s, "SELECT n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, vacuum_count, autovacuum_count, "
+                                                          "extract(epoch FROM now() - greatest(last_vacuum, last_autovacuum)) FROM pg_stat_all_tables WHERE relid = '%s'::regclass" % table)
+    if not row:
+        return {}   # a partitioned table or a view has no statistics of its own
+    ins, upd, dele, live, dead, vac, auto, since = row
+    out = dict(churn_history=declared or 'ins=%s;upd=%s;del=%s' % (ins, upd, dele), vacuums=int(vac), autovacuums=int(auto), settled_s=float(since) if since else None,
+               dead_pct=100.0 * int(dead) / max(1, int(live) + int(dead)), tombstone_pct=None)
+    try:
+        index = one(s, "SELECT i.indexrelid::regclass FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '%s'::regclass AND am.amname = 'sift_col' LIMIT 1" % table)
+        if index:
+            dead_rows, rows = one(s, 'SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.col_segments(%s)' % ("'%s'" % index[0]))
+            out['tombstone_pct'] = 100.0 * int(dead_rows) / int(rows) if int(rows) else None
+            passed = one(s, "SELECT extract(epoch FROM now() - last_vacuum) FROM sift.col_maintenance_status('%s')" % index[0])
+            if passed and passed[0]:
+                out['settled_s'] = min(float(passed[0]), out['settled_s'] if out['settled_s'] is not None else float(passed[0]))
+    except RuntimeError:
+        pass   # the sift functions are not in this database: no tombstones to count
+    return out
+
+
+def structure_bytes(s, table, arm):
+    """(table_bytes, index_bytes) after a run: pg_table_size of TABLE (a load names the schema that holds its tables: their sum) and the pg_relation_size of the indexes of ARM's structure,
+    None for the heap arm"""
+    tables = ("SELECT c.oid FROM pg_class c WHERE c.oid = to_regclass('%s') UNION ALL SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+              "WHERE n.nspname = '%s' AND c.relkind IN ('r', 'p', 'm')" % (table, table))
+    size = int(one(s, 'SELECT coalesce(sum(pg_table_size(oid)), 0) FROM (%s) t' % tables)[0])
+    if arm == 'heap':
+        return size, None
+    match = "am.amname LIKE 'sift%'" if arm == 'sift' else "am.amname = '%s'" % arm
+    index = one(s, 'SELECT coalesce(sum(pg_relation_size(i.indexrelid)), 0) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam '
+                   'WHERE i.indrelid IN (%s) AND %s' % (tables, match))
+    return size, int(index[0])
 
 
 def wal_lsn(s):
@@ -287,34 +354,42 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     otherwise) and MONITOR as in the module docstring; an Arm may have its own prepare. A harness with several statements calls it once for each. HASH_TEXT is the text whose hash names
     the statement when a harness runs one question on tables of other names (the text with a placeholder for the table): the variants of a comparison then share one sql_hash.
     FRESH, a function of an arm that opens a new session with the settings of the lane and of the arm, makes every repetition run in a backend of its own (`-- fresh: yes`: the first statement of a backend):
-    the timed run, the EXPLAIN and the instruction count each in a new one, while S holds the facts of the server. An arm with several ways to force it (Arm.tries) that none of them
-    makes the structure of its name is not measured: UNAVAILABLE, a list, gets (arm, option, the structures the plans named)."""
+    the timed run, the EXPLAIN and the instruction count each in a new one, while S holds the facts of the server. An arm for which none of the ways to force it (Arm.tries)
+    gives the structure of its name is not measured: one row of mode unavailable says so in the file (its `structure` is what the plans named: the b-tree twin that cannot serve a statement is an
+    answer, not a refusal), and UNAVAILABLE, a list, gets (arm, option, the structures the plans named)."""
     pid = backend_pid(s)
     post = postmaster_pid(pid)
-    index_am = index_methods(s)
+    catalog = (index_methods(s), subject.table, index_tables(s))
     srv = server_env(s)
     pairs = settings_of(s)
     restore = session_base(s)
     read = subject.kind == 'read'
     vis, corr, structures = table_facts(s, subject.table, subject.key) if read else (None, None, ','.join(sorted({'heap'} | {a.arm for a in arms})))
+    churn = churn_facts(s, subject.table, subject.churn) if read else {}
+    if churn and not subject.table_state.startswith('churned'):
+        churn['churn_history'] = None   # the tuples a fresh table's statistics counted are its load
     base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, variant=subject.variant, rows=subject.rows, keys=subject.keys,
                 rows_per_key=(subject.rows / subject.keys) if subject.keys else None, heap_order=subject.heap_order, heap_corr=corr, table_state=subject.table_state,
                 allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(hash_text or (sql if isinstance(sql, str) else ';\n'.join(sql))),
                 kind=subject.kind, protocol=subject.protocol, cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),
-                maintenance=env.maintenance, **srv)
+                maintenance=env.maintenance, settled=None if subject.settled is None else int(subject.settled), **churn, **srv)
     out, default = [], None
     for mode, arm in ([('default', Arm('sift', settings=[]))] if read else []) + [('forced', a) for a in arms]:
         text = arm.sql or sql
-        if read and mode == 'forced' and len(arm.tries) > 1:
-            arm, named = forceable(s, arm, text, index_am, restore)
-            if arm is None:
+        if read and mode == 'forced':
+            forced, named = forceable(s, arm, text, catalog, restore)
+            if forced is None:
+                got = named[2].split(', ')
+                out.append(dict(base, mode='unavailable', arm=arm.arm, arm_option=arm.option, picked=0, structure=got[0] if len(got) == 1 else 'mixed', temp='warm', rep=1,
+                                workers_requested=0, workers_launched=0))
                 if unavailable is not None:
                     unavailable.append(named)
                 continue
+            arm = forced
         for st in arm.settings:
             s.run(st)
         try:
-            rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, index_am, arm.prepare or prepare, monitor, temps, fresh)
+            rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, catalog, arm.prepare or prepare, monitor, temps, fresh)
         finally:
             s.run('RESET ALL')
             for st in restore:
@@ -330,7 +405,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     return out
 
 
-def forceable(s, arm, sql, index_am, restore):
+def forceable(s, arm, sql, catalog, restore):
     """(ARM with the first of its settings under which the plan of SQL is the structure of its name, None) or (None, (arm, option, the structures the plans named))"""
     named = []
     for sets in arm.tries:
@@ -340,7 +415,7 @@ def forceable(s, arm, sql, index_am, restore):
             _, rows, err, *_ = s.run('EXPLAIN (FORMAT JSON) ' + sql.rstrip().rstrip(';'))
             if err:
                 raise RuntimeError('EXPLAIN: %s' % err)
-            got = plan_structure(json.loads('\n'.join(rows))[0]['Plan'], index_am)
+            got = plan_structure(json.loads('\n'.join(rows))[0]['Plan'], *catalog)
         finally:
             s.run('RESET ALL')
             for st in restore:
@@ -352,7 +427,7 @@ def forceable(s, arm, sql, index_am, restore):
     return None, (arm.arm, arm.option, ', '.join(sorted(set(named))))
 
 
-def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare, monitor, temps, fresh=None):
+def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare, monitor, temps, fresh=None):
     read = subject.kind == 'read'
     structure, cost, requested = arm.arm, None, 0
     explain = lambda: EXPLAIN + (sql if isinstance(sql, str) else sql[-1]).rstrip().rstrip(';')   # noqa: E731
@@ -361,7 +436,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare
         _, rows, err, *_ = s.run(explain())
         if err:
             raise RuntimeError('EXPLAIN: %s' % err)
-        _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], index_am)
+        _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
     out = []
 
     @contextlib.contextmanager
@@ -395,6 +470,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare
                 else:
                     ms = run_all(t, sql)
             b1, lsn1 = statio(s), wal_lsn(s)
+            table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
             p1 = pressure()
             plan_ms = exec_ms = None
             if read:
@@ -402,7 +478,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare
                     _, rows, err, *_ = t.run(explain())
                 if err:
                     raise RuntimeError('EXPLAIN: %s' % err)
-                plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], index_am)
+                plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
                 cost = cost2 if cost2 is not None else cost
             instr = cycles = None
             if temp == 'warm':
@@ -416,7 +492,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
             r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
                      instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, workers_requested=requested, workers_launched=launched,
-                     os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
+                     os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes, psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
             r.update(block_deltas(b0, b1))
             if arm.structures:
                 r['structures'] = arm.structures

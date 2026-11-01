@@ -23,6 +23,8 @@ BASE = dict(run_id='abc123456789-20261101T000000Z-0001', tip='abc123456789', har
             other_hit=0, other_read=0, os_cache_dropped=None, wal_bytes=0, fpw=1, cpus=4.0, psi_cpu_start=1.0, psi_cpu_end=2.0, psi_io_start=0.0, psi_io_end=0.0, shared_buffers_mb=256.0,
             work_mem_mb=64.0, pg_version='18.1', settings='', settings_hash='da39a3ee5e', maintenance='default')
 
+CHURN = 'upd=5;ins=0;del=0;rounds=1'
+
 
 def clean():
     rs = []
@@ -77,6 +79,22 @@ AM = {'ix': 'btree', 'gx': 'gin', 'sx': 'sift_col'}
 
 
 class Collect(unittest.TestCase):
+    def test_churn_is_applied_the_same_way_and_returns_its_history(self):
+        seen = []
+
+        class Recorder:
+            def run(self, sql):
+                seen.append(sql)
+                return (1.0, [], '')
+        history = collect.apply_churn(Recorder(), 't', 'v', upd=5, dele=2, ins=1, rounds=2, insert_sql='INSERT INTO t SELECT * FROM src WHERE random() < {pct} / 100.0')
+        self.assertEqual(history, 'upd=5;ins=1;del=2;rounds=2')
+        self.assertEqual(len(seen), 6)
+        self.assertEqual(seen[0], 'UPDATE t SET v = v WHERE random() < 0.05')
+        self.assertEqual(seen[1], 'DELETE FROM t WHERE random() < 0.02')
+        self.assertIn('< 1 / 100.0', seen[2])
+        with self.assertRaisesRegex(ValueError, 'insert_sql'):
+            collect.apply_churn(Recorder(), 't', 'v', ins=1)
+
     def test_an_arm_is_forced_by_the_first_settings_whose_plan_is_its_structure_else_it_is_unavailable(self):
         class Planner:
             def __init__(self, plans):
@@ -95,16 +113,27 @@ class Collect(unittest.TestCase):
         seq = {'Node Type': 'Seq Scan'}
         # the sift plan is lost once the sequential scan is off: the arm is the first try, no settings
         s = Planner(lambda on: index if 'SET enable_seqscan = off' in on else sift)
-        arm, named = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', AM, [])
+        arm, named = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', (AM, None, {}), [])
         self.assertEqual((arm.settings, named), ([], None))
         # only with the sequential scan off does the plan name sift
         s = Planner(lambda on: sift if 'SET enable_seqscan = off' in on else seq)
-        arm, _ = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', AM, [])
+        arm, _ = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', (AM, None, {}), [])
         self.assertEqual(arm.settings, collect.FORCING['sift'])
         # no way: unavailable, with what the plans named
         s = Planner(lambda on: index)
-        arm, named = collect.forceable(s, collect.Arm('sift', option='o'), 'SELECT 1', AM, [])
+        arm, named = collect.forceable(s, collect.Arm('sift', option='o'), 'SELECT 1', (AM, None, {}), [])
         self.assertEqual((arm, named), (None, ('sift', 'o', 'btree')))
+
+    def test_only_the_scans_of_the_subject_table_name_the_structure(self):
+        lateral = {'Node Type': 'Nested Loop', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'probe'},
+                                                         {'Node Type': 'Index Scan', 'Index Name': 'ix', 'Relation Name': 'events'}]}
+        self.assertEqual(collect.plan_structure(lateral, AM), 'mixed')
+        self.assertEqual(collect.plan_structure(lateral, AM, table='public.events'), 'btree')
+        self.assertEqual(collect.plan_structure(lateral, AM, table='probe'), 'heap')
+        bitmap = {'Node Type': 'Nested Loop', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'probe'}, {'Node Type': 'Bitmap Index Scan', 'Index Name': 'gx'}]}
+        self.assertEqual(collect.plan_structure(bitmap, AM, table='events', index_table={'gx': 'events'}), 'gin')
+        parts = {'Node Type': 'Append', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'p1'}, {'Node Type': 'Seq Scan', 'Relation Name': 'p2'}]}
+        self.assertEqual(collect.plan_structure(parts, AM, table='parent'), 'heap')   # no scan of the table itself: the plan as a whole
 
     def test_a_list_of_statements_adds_its_times_and_a_failed_one_is_no_measurement(self):
         class Fake:
@@ -198,7 +227,7 @@ class Claims(unittest.TestCase):
         self.assertIn('NO RECORD', claims.verify(c, clean(), LINE)[0])
 
     def test_records_the_checker_refuses_check_no_claim(self):
-        out = claims.verify(self.claim(), mutate(table_state='churned_unvacuumed'), LINE)
+        out = claims.verify(self.claim(), mutate(table_state='churned_unvacuumed', churn_history=CHURN), LINE)
         self.assertIn('the records are refused', out[0])
 
     def test_the_file_of_claims_is_read(self):
@@ -234,8 +263,13 @@ class Checker(unittest.TestCase):
             return rs
 
         cases = [
-            ('MIXED STATE', first(table_state='churned_unvacuumed')),
+            ('MIXED STATE', first(table_state='churned_unvacuumed', churn_history=CHURN)),
             ('MIXED STATE', first(heap_order='sorted')),
+            ('CHURN HISTORY MISSING', every(table_state='churned_vacuumed')),
+            ('MIXED STATE', [dict(r, table_state='churned_vacuumed', churn_history=CHURN) for r in clean()[:-1]] + [dict(clean()[-1], table_state='churned_vacuumed', churn_history='upd=50;ins=0;del=0;rounds=1')]),
+            ('MIXED STATE', first(vacuums=3)),
+            ('MIXED STATE', [dict(r, dead_pct=0.5) for r in clean()[1:]] + [dict(clean()[0], dead_pct=30.0)]),
+            ('SETTLED WITHOUT A VACUUM', first(settled=1, vacuums=0, autovacuums=0)),
             ('INSTRUCTIONS MISSING', first(instr_m=None, instr_scope=None, temp='warm')),
             ('PICKED FLAG', every(kind='load', structures='heap,sift', plan_ms=None, exec_ms=None)),
             ('MIXED SETTINGS', first(shared_buffers_mb=128.0)),
@@ -276,6 +310,15 @@ class Checker(unittest.TestCase):
         self.assertEqual(problems(rs), [])
         rs.append(dict(rs[0], arm='mixed', structure='mixed', rep=9))
         self.assertTrue(any('is none of' in p for p in problems(rs)))
+
+    def test_an_arm_without_a_plan_is_one_row_that_says_so_and_does_not_refuse_the_set(self):
+        gone = dict(clean()[1], mode='unavailable', arm='gin', structure='btree', picked=0, rep=1, wall_ms=None, plan_ms=None, exec_ms=None, instr_m=None, instr_scope=None, temp='warm', _line=99)
+        rs = clean() + [gone]
+        self.assertEqual(problems(rs), [])
+        text = report.report(rs)
+        self.assertIn('no plan for gin: the plans name btree', text)
+        self.assertEqual(len([l for l in text.split('\n') if l.startswith('| gin')]), 0)
+        self.assertTrue(any('also measured' in p for p in problems(clean() + [dict(gone, arm='btree', structure='heap')])))
 
     def test_a_new_backend_is_compared_with_a_kept_one_but_not_with_rounds(self):
         rs = [dict(r, protocol='fresh backend') if r['arm'] == 'heap' else r for r in clean()]
@@ -321,7 +364,7 @@ class Checker(unittest.TestCase):
         self.assertEqual(problems(rs), [])
 
     def test_a_refusal_names_the_lines_and_the_values(self):
-        p = [x for x in problems(mutate(table_state='churned_unvacuumed')) if 'MIXED STATE' in x][0]
+        p = [x for x in problems(mutate(table_state='churned_unvacuumed', churn_history=CHURN)) if 'MIXED STATE' in x][0]
         self.assertIn('fresh_vacuumed', p)
         self.assertIn('churned_unvacuumed', p)
         self.assertIn('t.tsv:', p)
@@ -337,6 +380,11 @@ class Report(unittest.TestCase):
         row = [l for l in text.split('\n') if l.startswith('| heap ')][0]
         self.assertIn('| 52 |', row)
 
+    def test_a_churned_table_that_was_not_vacuumed_says_so_in_the_header(self):
+        rs = [dict(r, table_state='churned_unvacuumed', churn_history=CHURN, allvisible_pct=12.0) for r in clean()]
+        self.assertIn('NOT VACUUMED AFTER THE CHURN', report.report(rs).split('\n')[0])
+        self.assertNotIn('NOT VACUUMED', report.report(clean()).split('\n')[0])
+
     def test_variants_are_rows_of_their_own_not_one_average(self):
         rs = clean() + [dict(r, variant='B', heap_order='sorted', heap_corr=0.99, exec_ms=9.0) for r in clean()]
         text = report.report(rs)
@@ -345,7 +393,7 @@ class Report(unittest.TestCase):
 
     def test_a_refused_set_has_no_table(self):
         with self.assertRaisesRegex(ValueError, 'MIXED STATE'):
-            report.report(mutate(table_state='churned_unvacuumed'))
+            report.report(mutate(table_state='churned_unvacuumed', churn_history=CHURN))
 
     def test_the_tsv_form_has_one_line_for_each_arm_and_temperature(self):
         lines = [l for l in report.report(clean(), tsv=True).split('\n') if l]

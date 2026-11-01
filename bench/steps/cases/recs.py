@@ -40,11 +40,13 @@ def table_state(case, sections=('setup', 'prepare')):
 
 
 def first_table(session, sql):
-    """the first relation of a FROM clause of SQL that the session can resolve"""
-    for name in re.findall(r'\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_.]*)', sql, re.I):
-        if collect.one(session, "SELECT coalesce(to_regclass('%s')::text, '')" % name)[0] != '':
-            return name
-    return None
+    """the subject of SQL: the largest relation of its FROM and JOIN clauses that the session can resolve (the probe table of a lateral join is not what the arms compare)"""
+    best, size = None, -1
+    for name in dict.fromkeys(re.findall(r'\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_.]*)', sql, re.I)):
+        got = collect.one(session, "SELECT coalesce(pg_total_relation_size(to_regclass('%s')), -1)" % name)
+        if got and int(got[0]) > size:
+            best, size = name, int(got[0])
+    return best if size >= 0 else None
 
 
 def arms(case):

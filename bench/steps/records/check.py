@@ -5,7 +5,7 @@
 
 One comparison is the rows of one statement on one dataset and size (`statement`, `dataset`, `rows`). Within it the checker requires:
   one run         a single run_id: the arms were measured together, under one load, on one build, one table and one set of settings
-  one state       the same table state, heap order, keys, visibility and the same server settings (shared_buffers, work_mem, version, cpus, full_page_writes)
+  one state       the same table state and churn history (updates, inserts, deletes, rounds, VACUUMs and autovacuums on record, settled), heap order, keys, visibility, dead tuples within DEAD_SPREAD points and the same server settings (shared_buffers, work_mem, version, cpus, full_page_writes)
   one text        one sql_hash for the statement name, one protocol (a round is not an average of rounds)
   a true heap     a declared heap order is the one measured (sorted: correlation above 0.9, hash: under 0.1); one table (variant) has one heap order
   same settings   one settings_hash (every setting that is not the default) and one maintenance label; a switch that turns the maintenance off (autovacuum, sift.col_auto_merge,
@@ -13,6 +13,7 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
   a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option); a maintenance or a load has no plan to pick: forced, picked 0
   instructions    every warm row has a count
+  a true churn    a churned read says what was applied; 'settled' needs a VACUUM or a pass on record
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
   a calm host     the host pressure of the arms within `PSI_SPREAD` points of each other; a run above `NOISY_PSI` or with a CV above `NOISY_CV` is marked noisy by the report
   enough runs     MIN_REPS repetitions of every arm and temperature
@@ -31,8 +32,9 @@ MIN_REPS = 3
 PSI_SPREAD = 10.0
 NOISY_PSI = 10.0
 NOISY_CV = 10.0
-SAME = ('table_state', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
+SAME = ('table_state', 'churn_history', 'vacuums', 'autovacuums', 'settled', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
 ALLVISIBLE_SPREAD = 5.0
+DEAD_SPREAD = 5.0   # points of dead tuples between the tables of one comparison
 SAME_VARIANT = ('heap_order',)   # a variant is a table: two tables of a comparison may hold the heap in different orders, one table does not
 
 
@@ -43,7 +45,7 @@ def where(r):
 def one_record(r):
     out = []
     for c in schema.REQUIRED:
-        if r.get(c) in (None, ''):
+        if r.get(c) in (None, '') and not (c == 'wall_ms' and r.get('mode') == 'unavailable'):
             out.append('%s: %s is empty' % (where(r), c))
     for c, allowed in (('table_state', schema.STATES), ('heap_order', schema.ORDERS), ('kind', schema.KINDS), ('mode', schema.MODES), ('temp', schema.TEMPS), ('structure', schema.STRUCTURES + ('mixed',)), ('instr_scope', schema.SCOPES)):
         if r.get(c) not in (None,) + allowed:
@@ -58,6 +60,11 @@ def one_record(r):
         out.append('%s: LABELLED DISABLED WITHOUT A SWITCH: no setting turns the maintenance off' % where(r))
     if r.get('arm') not in schema.STRUCTURES + (('mixed',) if r.get('mode') == 'default' else ()):
         out.append('%s: arm "%s" is none of %s' % (where(r), r.get('arm'), '/'.join(schema.STRUCTURES)))
+    churned = (r.get('table_state') or '').startswith('churned')
+    if churned and r.get('kind') == 'read' and not r.get('churn_history'):
+        out.append('%s: CHURN HISTORY MISSING: table state %s with no churn_history (what was applied, or the tuples the statistics counted)' % (where(r), r.get('table_state')))
+    if r.get('settled') == 1 and not ((r.get('vacuums') or 0) + (r.get('autovacuums') or 0) or r.get('settled_s') is not None):
+        out.append('%s: SETTLED WITHOUT A VACUUM: the harness waited for the maintenance to settle but no VACUUM, autovacuum or pass is on record' % where(r))
     if (r.get('rep') or 0) < 1:
         out.append('%s: rep %s is below 1' % (where(r), r.get('rep')))
     return out
@@ -78,8 +85,15 @@ def comparison_problems(key, rs, min_reps, psi_spread):
         if len(vals) > 1:
             a = rs[0]
             b = next(r for r in rs if r.get(c) != a.get(c))
-            what = 'MIXED STATE' if c in ('table_state', 'protocol', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'kind') else 'MIXED SETTINGS'
+            what = 'MIXED STATE' if c in ('table_state', 'churn_history', 'vacuums', 'autovacuums', 'settled', 'protocol', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'kind') else 'MIXED SETTINGS'
             out.append('%s: %s: %s is %s at %s and %s at %s' % (name, what, c, a.get(c), where(a), b.get(c), where(b)))
+    gone = [r for r in rs if r['mode'] == 'unavailable']
+    rs = [r for r in rs if r['mode'] != 'unavailable']
+    if not rs:
+        return out + ['%s: NO ARM MEASURED: every row is unavailable' % name]
+    for r in gone:
+        if any(r['arm'] == x['arm'] and r['arm_option'] == x['arm_option'] and r['variant'] == x['variant'] and x['mode'] == 'forced' for x in rs):
+            out.append('%s: UNAVAILABLE ARM %s %s at %s is also measured' % (name, r['arm'], r['arm_option'], where(r)))
     protocols = {r['protocol'] for r in rs}
     if len(protocols - {'single', 'fresh backend'}) > 1 or (protocols - {'single', 'fresh backend'} and protocols & {'single', 'fresh backend'}):   # a new backend and the second statement of a kept one are compared on purpose; rounds are not
         a = rs[0]
@@ -88,6 +102,10 @@ def comparison_problems(key, rs, min_reps, psi_spread):
     vis = [r['allvisible_pct'] for r in rs if r.get('allvisible_pct') is not None]
     if vis and max(vis) - min(vis) > ALLVISIBLE_SPREAD:
         out.append('%s: MIXED STATE: all-visible pages from %.1f%% to %.1f%%' % (name, min(vis), max(vis)))
+    for col, label in (('dead_pct', 'dead tuples'), ('tombstone_pct', 'tombstones')):
+        vals = [r[col] for r in rs if r.get(col) is not None]
+        if vals and max(vals) - min(vals) > DEAD_SPREAD:
+            out.append('%s: MIXED STATE: %s from %.1f%% to %.1f%% of the rows' % (name, label, min(vals), max(vals)))
     for variant in sorted({r['variant'] for r in rs}):
         vs = [r for r in rs if r['variant'] == variant]
         label = name + (' (variant %s)' % variant if variant != 'main' or len({r['variant'] for r in rs}) > 1 else '')
