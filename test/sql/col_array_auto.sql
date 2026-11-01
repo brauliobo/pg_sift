@@ -30,5 +30,12 @@ SELECT reltuples FROM pg_class WHERE relname = 'ac';
 CREATE INDEX ac_col ON ac USING sift_col (id, uniq, rep);
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
 SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
+-- the HINT of the NOTICE: paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again)
+ALTER INDEX aa_col SET (paths = 'auto:');
+REINDEX INDEX aa_col;
+SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
+ALTER INDEX aa_col SET (paths = '');
+REINDEX INDEX aa_col;
+SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
 DROP TABLE aa, ab, ac;
 DROP EXTENSION pg_sift;

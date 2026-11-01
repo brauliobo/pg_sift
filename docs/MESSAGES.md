@@ -128,7 +128,7 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
 - **key-lists** (NOTICE)
   - HINT: To turn it off, run ALTER INDEX %s SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
 - **array-elements** (NOTICE)
-  - HINT: To leave the elements out, run ALTER INDEX %s SET (paths = '') and REINDEX.
+  - HINT: To keep the arrays and leave the elements out, run ALTER INDEX %s SET (paths = 'auto:') and REINDEX.
 - **cube-ranking** (NOTICE)
   - DETAIL: The cube holds at most %d dimensions, the calendar cells of the dates among them. A column with more than %d distinct values in a unit has no histogram there, so a dimension given to it holds nothing. Stretches of about a unit (%d of them, spread over the table) were read, and the columns that fit most of them come first.
   - HINT: To give them in the order of the columns, run ALTER INDEX %s SET (preagg = 'default') and REINDEX; preagg = 'cube(...)' names them.

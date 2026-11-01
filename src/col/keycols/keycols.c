@@ -617,7 +617,7 @@ sift_col_auto_paths(Relation heap, Relation index)
 				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' keeps the elements of the arrays %s", RelationGetRelationName(index), only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
 							 errdetail_internal("%s", detail.data),
-							 errhint("To leave the elements out, run ALTER INDEX %s SET (paths = '') and REINDEX.", name)));
+							 errhint("To keep the arrays and leave the elements out, run ALTER INDEX %s SET (paths = 'auto:') and REINDEX.", name)));
 		}
 	}
 	if (spec.len == 0)

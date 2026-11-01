@@ -12,7 +12,7 @@ DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from tw
 HINT:  To drop them, run ALTER INDEX aa_col SET (array_lengths = 'off') and REINDEX.
 NOTICE:  sift_col index "aa_col": paths = 'auto' keeps the elements of the arrays uniq, ids, mid
 DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
-HINT:  To leave the elements out, run ALTER INDEX aa_col SET (paths = '') and REINDEX.
+HINT:  To keep the arrays and leave the elements out, run ALTER INDEX aa_col SET (paths = 'auto:') and REINDEX.
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'aa_col';
                             options                            
 ---------------------------------------------------------------
@@ -113,7 +113,7 @@ DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from tw
 HINT:  To drop them, run ALTER INDEX ac_col SET (array_lengths = 'off') and REINDEX.
 NOTICE:  sift_col index "ac_col": paths = 'auto' keeps the elements of the arrays uniq
 DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.
-HINT:  To leave the elements out, run ALTER INDEX ac_col SET (paths = '') and REINDEX.
+HINT:  To keep the arrays and leave the elements out, run ALTER INDEX ac_col SET (paths = 'auto:') and REINDEX.
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
                options               
 -------------------------------------
@@ -133,6 +133,56 @@ SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
     7 | rep#1  | integer (lane 1)
     8 | rep#2  | integer (lane 2)
 (9 rows)
+
+-- the HINT of the NOTICE: paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again)
+ALTER INDEX aa_col SET (paths = 'auto:');
+REINDEX INDEX aa_col;
+SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
+ leaf |  path  
+------+--------
+    0 | id
+    1 | uniq
+    2 | uniq#1
+    3 | uniq#2
+    4 | rep
+    5 | rep#1
+    6 | rep#2
+    7 | mid
+    8 | mid#1
+    9 | mid#2
+   10 | ids
+   11 | ids#1
+   12 | ids#2
+(13 rows)
+
+ALTER INDEX aa_col SET (paths = '');
+REINDEX INDEX aa_col;
+NOTICE:  sift_col index "aa_col": paths = 'auto' keeps the elements of the arrays uniq, ids, mid
+DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
+HINT:  To keep the arrays and leave the elements out, run ALTER INDEX aa_col SET (paths = 'auto:') and REINDEX.
+SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
+ leaf |  path  
+------+--------
+    0 | id
+    1 | uniq
+    2 | uniq#1
+    3 | uniq#2
+    4 | uniq[]
+    5 | uniq[]
+    6 | rep
+    7 | rep#1
+    8 | rep#2
+    9 | mid
+   10 | mid#1
+   11 | mid#2
+   12 | mid[]
+   13 | mid[]
+   14 | ids
+   15 | ids#1
+   16 | ids#2
+   17 | ids[]
+   18 | ids[]
+(19 rows)
 
 DROP TABLE aa, ab, ac;
 DROP EXTENSION pg_sift;
