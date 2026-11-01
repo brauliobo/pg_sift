@@ -32,7 +32,13 @@ SELECT terms('Kater Katze Hunde', 'public.lm'), terms('Kater Katze Hunde', 'publ
 -- two configurations at once, each with its own words
 SELECT terms('Kater', 'public.lm'), terms('Kater', 'public.lm2'), terms('Kater', 'public.lm'), terms('Kater', 'public.lm2');
 
-DROP FUNCTION terms(text, text);
+-- the memo is bounded: 200,000 distinct words in each of four configurations stay within TS_MEMOS x (2 MB of entries + 1 MB of table) and its context is a backend cache
+CREATE FUNCTION many(cfg text) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift.tokenize((SELECT string_agg('qw' || g || 'x', ' ') FROM generate_series(1, 200000) g), NULL, cfg) $$;
+SELECT many('german'), many('french'), many('spanish'), many('russian');
+SELECT many('german'), many('pg_catalog.english');
+SELECT name, total_bytes < 16 * 1024 * 1024 AS within_cap FROM pg_backend_memory_contexts WHERE name LIKE 'sift%stem memos';
+
+DROP FUNCTION many(text), terms(text, text);
 DROP TEXT SEARCH CONFIGURATION lm, lm2;
 DROP TEXT SEARCH DICTIONARY lm_syn;
 DROP EXTENSION pg_sift_test CASCADE;

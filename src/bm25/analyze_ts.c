@@ -62,7 +62,8 @@ memo_init(void)
 {
 	if (memo_cx != NULL)
 		return;
-	memo_cx = AllocSetContextCreate(TopMemoryContext, "sift stem memos", ALLOCSET_DEFAULT_SIZES);
+	/* a backend cache like the others: bounded by TS_MEMOS and MEMO_MAX, kept to the end of the backend (scripts/leakcheck.sh exempts "sift cache" contexts) */
+	memo_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache stem memos", ALLOCSET_DEFAULT_SIZES);
 	CacheRegisterSyscacheCallback(TSCONFIGOID, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(TSCONFIGMAP, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(TSDICTOID, memo_invalidate, (Datum) 0);
