@@ -74,6 +74,24 @@ class Fixture(unittest.TestCase):
         return [m for m, _ in self.t.check(**kw)[0]]
 
 
+class KnownGaps(Fixture):
+    def flag(self):
+        self.t.case('topn_x', '-')
+        self.t.write('bench/cases/topn_x.sql', '-- topn_x\n-- gap: sift lab 0013 (filtered ordered page)\n--@ pg\nSELECT 1;\n')
+
+    def test_a_flagged_case_is_counted_in_the_notes_and_fails_only_the_release_gate(self):
+        self.flag()
+        errors, notes = self.t.check()
+        self.assertEqual(errors, [])
+        self.assertTrue(any('topn_x' in n and 'known gap on the sift lane' in n and 'lab 0013' in n for n in notes))
+        errors, _ = self.t.check(strict=True)
+        self.assertTrue(any('topn_x' in m and 'known gap' in m for m, _ in errors))
+
+    def test_a_case_without_the_flag_adds_none(self):
+        self.t.case('topn_y', '-')
+        self.assertFalse(any('known gap' in n for n in self.t.check()[1]))
+
+
 class Landed(Fixture):
     def test_a_landed_optimization_without_a_case_or_a_waiver_is_listed_with_its_commit(self):
         self.t.land(SPEED)

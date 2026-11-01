@@ -2,6 +2,7 @@
 -- label: `WHERE t >= 't00100000' ORDER BY t, id LIMIT 20` over 200,000 rows of a `text COLLATE "und-x-icu"` key unrelated to the heap order
 -- ordered: yes
 -- vacuum: no
+-- gap: sift the locale collation patch (lab quantifies it)
 --@ setup
 CREATE TABLE tp_tl (id int PRIMARY KEY, g int NOT NULL, t text COLLATE "und-x-icu" NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO tp_tl SELECT i, i % 1000, 't' || lpad(((i::bigint * 104729) % 200000)::text, 8, '0') FROM generate_series(1, 200000) i;

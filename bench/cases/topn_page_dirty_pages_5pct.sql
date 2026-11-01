@@ -2,6 +2,7 @@
 -- label: `WHERE deleted_at IS NULL ORDER BY k, id LIMIT 20` over 120,000 rows whose key k is unrelated to the heap order, after updates that left 5% of the heap pages not all-visible
 -- ordered: yes
 -- vacuum: no
+-- gap: sift lab 0004 / 0013 (rows of dirty pages vetted for the page only)
 --@ setup
 CREATE EXTENSION IF NOT EXISTS pg_visibility SCHEMA public;
 CREATE TABLE tp_d5 (id int PRIMARY KEY, k int NOT NULL, g int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);

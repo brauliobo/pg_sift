@@ -79,6 +79,10 @@ def check(root, strict=False, since=None):
     since = since or last_tag(root)
     cases = read_registry(root)
     pages = {p: read(root, p) for p in PAGES if os.path.exists(os.path.join(root, p))}
+    for c in (c for c in cases if c.gap):   # `-- gap:` cases run and assert their plan; the release has none
+        notes.append(f'{c.id}: a known gap on the {c.gap[0]} lane, closes with {c.gap[1]}')
+        if strict:
+            errors.append((f'{c.id}: a known gap on the {c.gap[0]} lane ({c.gap[1]}); the release gate wants the flag gone', []))
 
     claims = []   # (text, the case that measures it or None)
     for sha, subject, in_changelog in landed(root, since):
@@ -172,5 +176,6 @@ def cmd_coverage(args):
         print('coverage: ' + n)
     for m, _ in errors:
         print(('coverage: ' if args.strict else 'coverage: warning: ') + m)
-    print('coverage: %d claims unmet%s' % (len(errors), '' if args.strict else ' (a warning: --strict is the release gate)'))
+    gaps = sum(1 for c in read_registry(root) if c.gap)
+    print('coverage: %d claims unmet, %d known gaps%s' % (len(errors), gaps, '' if args.strict else ' (a warning: --strict is the release gate)'))
     return 1 if errors and args.strict else 0

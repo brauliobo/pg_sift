@@ -18,8 +18,14 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base|gap): ', m))
         self.load = 'load' in self.sec
+        self.gap = None   # `-- gap: LANE the patch that closes it`: the plan of that lane is a known gap, reported without failing the run; the run fails when the lane passes
+        if 'gap' in self.opt:
+            lane, _, patch = self.opt['gap'].partition(' ')
+            if not patch.strip():
+                die('bench/cases/%s.sql: `-- gap:` names the lane and the patch that closes it (`-- gap: sift lab 0013`)' % self.id)
+            self.gap = (lane, patch.strip())
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
         self.fallback = self.plan.startswith('fallback:')   # the planner is expected to keep PostgreSQL's plan: `plan` is that plan, and a lane with the scan forced is measured beside it

@@ -17,6 +17,8 @@ EXPLAIN (a case that falls back to the normal plan fails), then times the lanes 
     <name>   a variant of the registry: the sift lane with settings (`scan:sift.agg_preagg=off`)
     pg_duckdb  a pg_duckdb server (--duck-port) holding a plain copy of the rows, duckdb.force_execution = on; NA when DuckDB does not run it
 
+A case that is known not to hold its plan yet carries `-- gap: sift <the patch that closes it>`: it still runs and asserts the plan, a lost plan is printed as `KNOWN GAP` (exit 0, counted by
+`coverage`, a failure of `coverage --strict`) and a kept plan fails the run (`gap closed: remove the flag`).
 A wrong answer or a lost plan is a failure (exit 1); a case where sift is slower than native is reported as a loss, not hidden.
 """
 import os

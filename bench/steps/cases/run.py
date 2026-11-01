@@ -38,7 +38,26 @@ def release(c, left, rows, scaled):
         BUILT.discard((c.schema(), rows))
 
 
-def run_point(args, cases, rows, engines, results, failed):
+def gap_verdict(case, lane, error, judged):
+    """'known' where the flagged lane lost its plan (a gap the run reports and does not fail), 'closed' where it kept it (the flag must go); None for any other lane or error, and where no plan is asserted (`judged` false: scale points, --any-plan)"""
+    if not case.gap or case.gap[0] != lane or not judged:
+        return None
+    return 'closed' if error is None else 'known' if error.startswith('PLAN') else None
+
+
+def settle(case, tag, lanes, errors, judged, failed, known, counts):
+    """the failures and the known gaps of one case: an error of a lane is a failure when `counts(lane, error)`, a flagged lane is a known gap while it loses its plan and a failure once it keeps it"""
+    for lane in lanes:
+        err, verdict = errors.get(lane), gap_verdict(case, lane, errors.get(lane), judged)
+        if verdict == 'closed':
+            failed.append('%s%s on %s: gap closed: remove the `-- gap:` line of bench/cases/%s.sql (it named %s)' % (case.id, tag, lane, case.id, case.gap[1]))
+        elif verdict == 'known':
+            known.append('%s%s on %s: known gap (%s): closes with %s; %s' % (case.id, tag, lane, lane, case.gap[1], err))
+        elif err and counts(lane, err):
+            failed.append('%s%s on %s: %s' % (case.id, tag, lane, err))
+
+
+def run_point(args, cases, rows, engines, results, failed, known):
     """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
     scaled = bool(args.scales)
     tag = '@%d' % rows if scaled else ''
@@ -68,7 +87,7 @@ def run_point(args, cases, rows, engines, results, failed):
             t1 = time.time()
             out, plans, errors = measure_load(c, csv, args.rounds, rows, args.minstr, args.profile)
             TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
-            failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
+            settle(c, tag, out, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: True)
             for lane, ms in out.items():
                 for metric, xs in ms.items():
                     if not xs or args.io == 'off' and metric.startswith('io_'):   # no pg_stat_io on this server, or --io off
@@ -80,10 +99,9 @@ def run_point(args, cases, rows, engines, results, failed):
         t1 = time.time()
         times, notes, errors, texts = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
         TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
+        settle(c, tag, lanes, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: lane in ('sift', 'native') or e.startswith(('PLAN', 'RESULT')))
         for lane in lanes:
             if lane in errors:
-                if lane in ('sift', 'native') or errors[lane].startswith(('PLAN', 'RESULT')):
-                    failed.append('%s%s on %s: %s' % (c.id, tag, lane, errors[lane]))
                 point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
                 if 'ms' in c.metrics:
@@ -125,11 +143,15 @@ def cmd_run(args):
             c.share = None
     runcfg.TIMEOUT = args.timeout
     engines = args.engines.split(',')
-    results, failed = [], []
+    results, failed, known = [], [], []
     for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
-        run_point(args, cases, args.rows * scale, engines, results, failed)
+        run_point(args, cases, args.rows * scale, engines, results, failed, known)
     log('time: %.0f s of builds (the dataset and the copy in pg_duckdb included), %.0f s of timed runs, %d cases, %d tables built for them' % (
         sum(b for b, _ in TIMES.values()), sum(r for _, r in TIMES.values()), len(cases), len({c.schema() for c in cases if c.dataset not in DATASETS})))
+    for k in known:
+        print('KNOWN GAP ' + k)
+    if known:
+        print('%d known gap%s (exit status unchanged): a flagged case that keeps its plan fails the run until its `-- gap:` line is removed' % (len(known), '' if len(known) == 1 else 's'))
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results)

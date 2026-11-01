@@ -2,6 +2,7 @@
 -- label: `WHERE t >= 't00100000' ORDER BY t LIMIT 20` over 200,000 rows of a `text COLLATE "und-x-icu"` key unrelated to the heap order, then 5,000 rows inserted that stay in the write buffer
 -- ordered: yes
 -- vacuum: no
+-- gap: sift the locale collation patch (lab quantifies it)
 --@ setup
 CREATE TABLE tp_bl (id int PRIMARY KEY, g int NOT NULL, t text COLLATE "und-x-icu" NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO tp_bl SELECT i, i % 1000, 't' || lpad(((i::bigint * 104729) % 200000)::text, 8, '0') FROM generate_series(1, 200000) i;
