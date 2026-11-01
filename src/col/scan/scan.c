@@ -192,8 +192,6 @@ sift_col_rescan(SiftColSource *src)
 		return false;
 	if (src->gcx)
 		MemoryContextReset(src->gcx);
-	for (int i = 0; i < src->nseg; i++)
-		src->seg[i].gexact = NULL;
 	memset(src->gmem, 0, sizeof(src->gmem));
 	src->gpin_leaf = -1;
 	src->gpin_n = src->gper = 0;

@@ -412,7 +412,6 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	*grouped = gleaf;
 	for (int i = 0; i < src->nseg; i++)
 	{
-		src->seg[i].gexact = NULL;
 		if (!gorder_view(&src->seg[i], gorder_slot(src, i, col), want))
 			return -1;
 	}
@@ -606,6 +605,14 @@ gorder_cx(SiftColSource *src)
 	return src->gcx;
 }
 
+static MemoryContext
+gexact_cx(SiftColSource *src)
+{
+	if (src->gxcx == NULL)
+		src->gxcx = AllocSetContextCreate(src->mcxt, "sift col unit exactness", ALLOCSET_DEFAULT_SIZES);
+	return src->gxcx;
+}
+
 /* ---- what is known of an entry of the order: exact, dead, to be confirmed by the heap ---- */
 
 /*
@@ -645,7 +652,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 			return -2;
 	}
 	if (c->gexact == NULL)
-		c->gexact = MemoryContextAllocZero(gorder_cx(src), (keyed ? 1 : seg->nsb) * sizeof(GExact));
+		c->gexact = MemoryContextAllocZero(gexact_cx(src), (keyed ? 1 : seg->nsb) * sizeof(GExact));
 	x = &c->gexact[u];
 	if (x->state == 0)
 	{
@@ -660,7 +667,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 		{
 			SIFT_COL_JITTER();
 			if (!keyed)
-				ok = sift_cseg_unit_dead(seg, u, gorder_cx(src), &x->dead, &x->ndead, &room);
+				ok = sift_cseg_unit_dead(seg, u, gexact_cx(src), &x->dead, &x->ndead, &room);
 			else
 			{
 				uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
@@ -668,7 +675,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 				sift_cseg_dirty_units(seg, dirty);
 				for (uint32 k = 0; ok && k < seg->nsb; k++)
 					if (sift_col_bit_test(dirty, k))
-						ok = sift_cseg_unit_dead(seg, k, gorder_cx(src), &x->dead, &x->ndead, &room);
+						ok = sift_cseg_unit_dead(seg, k, gexact_cx(src), &x->dead, &x->ndead, &room);
 				pfree(dirty);
 				if (x->ndead > 1)
 					qsort(x->dead, x->ndead, sizeof(SiftKey), sift_cmp_u64);

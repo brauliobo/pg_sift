@@ -1,6 +1,6 @@
 -- A scan that an enclosing query starts over for each of its rows (a LATERAL top-1 per entity, a correlated sub-select) finds the entries of its group in the order array by searching the group table
--- of the segment. The first probe searches it where it is; a segment probed again holds the table in memory, so the 200 probes of one statement pin a handful of buffers each, not one for every step of
--- a search over 250 groups. The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
+-- of the segment. The first probe searches it where it is; a segment probed again holds the table in memory, and the dead rows and all-visible pages of its units it checked the entries against, so the 200 probes
+-- of one statement pin two buffers each, not one for every step of a search over 250 groups and the pages of the checks. The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
 -- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -35,19 +35,19 @@ SELECT count(*) FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g O
    200
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
+SELECT p.probes, p.global_order, p.per_probe <= 2.5 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, (SELECT id FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM rk_o v') p;
+SELECT p.probes, p.global_order, p.per_probe <= 3 AS few_buffers FROM probe_buffers('SELECT v.i, (SELECT id FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM rk_o v') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 4 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v, LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
+SELECT p.probes, p.global_order, p.per_probe <= 2.5 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v, LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
@@ -149,6 +149,65 @@ BEGIN
 	RAISE WARNING 'cursor: forward % the heap, backward % forward', CASE WHEN fwd = ref THEN 'is' ELSE 'DIFFERS from' END, CASE WHEN bwd = fwd THEN 'is' ELSE 'DIFFERS from' END;
 END $$;
 WARNING:  cursor: forward is the heap, backward is forward
-DROP FUNCTION probe_buffers(text), rk_rows(bool), rk_check(text), rk_mut(int);
-DROP TABLE rk, rk_o, rk_step;
+-- the same probe over a table partitioned by time, as an ordered Append of one top-1 for each partition, the newest first (what PostgreSQL's own plan does with b-trees): every arm is a probe of its
+-- own, the arms of the older partitions are not executed once the newest answers, and the rows are those of the heap
+CREATE TABLE rkp (id int, g int, ts timestamp, pad text) PARTITION BY RANGE (ts);
+CREATE TABLE rkp_a PARTITION OF rkp FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+CREATE TABLE rkp_b PARTITION OF rkp FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
+CREATE TABLE rkp_c PARTITION OF rkp FOR VALUES FROM ('2024-03-01') TO ('2024-04-01');
+INSERT INTO rkp SELECT i, 1 + i % 50, timestamp '2024-01-01' + i * interval '6 minutes', repeat('x', 100) FROM generate_series(1, 20000) i;
+INSERT INTO rkp SELECT 30000 + n, 100 + n, timestamp '2024-01-02' + n * interval '1 hour', 'x' FROM generate_series(1, 5) n;
+CREATE INDEX rkp_i ON rkp USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+VACUUM (FREEZE, ANALYZE) rkp;
+CREATE TABLE rkp_o AS SELECT n AS i, CASE WHEN n % 13 = 0 THEN NULL WHEN n % 11 = 0 THEN 100 + n % 7 ELSE 1 + n % 50 END AS g FROM generate_series(1, 120) n;
+ANALYZE rkp_o;
+CREATE FUNCTION rkp_q(par bool) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE WHEN par THEN 'SELECT v.i, x.ts FROM rkp_o v LEFT JOIN LATERAL (SELECT ts FROM rkp WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true'
+	ELSE 'SELECT v.i, x.ts FROM rkp_o v LEFT JOIN LATERAL (SELECT ts FROM (' || (SELECT string_agg('(SELECT ts FROM ' || t || ' WHERE g = v.g ORDER BY ts DESC LIMIT 1)', ' UNION ALL ' ORDER BY t DESC) FROM unnest(ARRAY['rkp_a', 'rkp_b', 'rkp_c']) t) || ') u LIMIT 1) x ON true' END $$;
+CREATE FUNCTION rkp_rows(on_ bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', on_::text, true);
+	PERFORM set_config('sift.agg_force', on_::text, true);
+	PERFORM set_config('enable_seqscan', (NOT on_)::text, true);
+	PERFORM set_config('enable_sort', (NOT on_)::text, true);
+	EXECUTE 'SELECT string_agg(z::text, '','' ORDER BY z.i) FROM (' || rkp_q(NOT on_) || ') z' INTO r;
+	RETURN r;
+END $$;
+-- arms: the top-1 scans of the plan; walked: those that read the global order; skipped: those the Append never executed (the outer rows that name a group the partitions have, all in the newest)
+CREATE FUNCTION rkp_plan(OUT arms int, OUT walked int, OUT skipped int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	arms := 0; walked := 0; skipped := 0;
+	PERFORM set_config('sift.agg_force', 'on', true);
+	PERFORM set_config('enable_seqscan', 'off', true);
+	PERFORM set_config('enable_sort', 'off', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || rkp_q(false) || ' WHERE v.g <= 50' LOOP
+		arms := arms + (l ~ 'Custom Scan \(SiftAgg\)')::int;
+		walked := walked + (l ~ 'Global Order: true')::int;
+		skipped := skipped + (l ~ 'Custom Scan \(SiftAgg\) \(never executed\)')::int;
+	END LOOP;
+END $$;
+SELECT * FROM rkp_plan();
+ arms | walked | skipped 
+------+--------+---------
+    3 |      1 |       2
+(1 row)
+
+SELECT rkp_rows(true) = rkp_rows(false) AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+DELETE FROM rkp WHERE id % 7 = 0;
+INSERT INTO rkp SELECT 40000 + n, 1 + n % 50, timestamp '2024-03-20' + n * interval '1 minute', 'x' FROM generate_series(1, 200) n;
+SELECT rkp_rows(true) = rkp_rows(false) AS same_rows_after_writes;
+ same_rows_after_writes 
+------------------------
+ t
+(1 row)
+
+DROP FUNCTION probe_buffers(text), rk_rows(bool), rk_check(text), rk_mut(int), rkp_q(bool), rkp_rows(bool), rkp_plan();
+DROP TABLE rk, rk_o, rk_step, rkp, rkp_o;
 DROP EXTENSION pg_sift;
