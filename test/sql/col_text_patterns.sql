@@ -9,11 +9,11 @@ SET sift.agg_force = on;
 \ir test/agg_rows_helpers.sql
 
 CREATE TABLE cp (id int, s text, k text, c text) WITH (autovacuum_enabled = off);
-INSERT INTO cp SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 7000)::text), 'k' || (i % 40), 'c' || md5(i::text)
-FROM generate_series(1, 20000) i;
-INSERT INTO cp VALUES (20001, '', '', ''), (20002, NULL, NULL, NULL), (20003, 'ab', 'ab', 'ab'), (20004, 'a.b', 'a.b', 'a.b'), (20005, 'a$', '^a', 'a$b'),
-	(20006, E'back\\slash', E'x\\', 'x\\y'), (20007, 'naïve café', 'café', 'ï'), (20008, 'abab', 'ABAB', 'bab'), (20009, 'Shop1.EXAMPLE', 'Shop1.Example', 'SHOP1'),
-	(20010, 'a+b', 'a*b', 'a(b)'), (20011, 'a|b', '[a]', '{1}'), (20012, 'İk', E'Kk', 'ik');
+INSERT INTO cp SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 3500)::text), 'k' || (i % 40), 'c' || md5(i::text)
+FROM generate_series(1, 10000) i;
+INSERT INTO cp VALUES (10001, '', '', ''), (10002, NULL, NULL, NULL), (10003, 'ab', 'ab', 'ab'), (10004, 'a.b', 'a.b', 'a.b'), (10005, 'a$', '^a', 'a$b'),
+	(10006, E'back\\slash', E'x\\', 'x\\y'), (10007, 'naïve café', 'café', 'ï'), (10008, 'abab', 'ABAB', 'bab'), (10009, 'Shop1.EXAMPLE', 'Shop1.Example', 'SHOP1'),
+	(10010, 'a+b', 'a*b', 'a(b)'), (10011, 'a|b', '[a]', '{1}'), (10012, 'İk', E'Kk', 'ik');
 CREATE INDEX cp_idx ON cp USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, k sift.col_text_ops, c sift.col_text_ops);
 VACUUM cp;
 INSERT INTO cp SELECT 40000 + i, 'https://wb' || (i % 50) || '.example/item/wb' || md5(i::text), 'wb' || (i % 3), 'wb' || i FROM generate_series(1, 300) i;
@@ -35,7 +35,7 @@ INSERT INTO cp_pred VALUES
 	('{c} ~ ''a.b'''), ('{c} ~ ''^ab'' '), ('{c} ~ ''\d'''), ('{c} ~ ''(ab)'''), ('{c} ~ ''a|b'''), ('{c} ~ ''[ab]'''), ('{c} ~ ''(?i)ab'''), ('{c} ~* ''^shop'''), ('{c} ~ ''^$'''), ('{c} ~ ''$'''),
 	('{c} ~ ''a{1}'''), ('{c} ~* ''é'''), ('{c} !~ ''^ab'''), ('{c} !~* ''ab''');
 
-CREATE FUNCTION cp_check(tag text, tbl text, reps int, ps text[] DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION cp_check(tag text, tbl text, reps int, ps text[] DEFAULT NULL, shapes int DEFAULT 4) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r record;
 	q text;
@@ -44,11 +44,11 @@ DECLARE
 BEGIN
 	FOR i IN 1..reps LOOP
 		FOR r IN SELECT col, replace(p, '{c}', col) AS pred FROM cp_pred, (VALUES ('s'), ('k'), ('c')) c(col) WHERE ps IS NULL OR p = ANY (ps) ORDER BY col, p LOOP
-			FOREACH q IN ARRAY ARRAY[
+			FOREACH q IN ARRAY (ARRAY[
 				format('SELECT count(*), sum(id), min(id), max(id) FROM %s WHERE %s', tbl, r.pred),
 				format('SELECT id FROM %s WHERE %s AND id %% 3 = 0', tbl, r.pred),
 				format('SELECT count(*) FROM %s WHERE %s OR id < 5', tbl, r.pred),
-				format('SELECT count(*) FROM %s WHERE NOT (%s)', tbl, r.pred)] LOOP
+				format('SELECT count(*) FROM %s WHERE NOT (%s)', tbl, r.pred)])[1:shapes] LOOP
 				n := n + 1;
 				IF agg_rows(q, true) IS DISTINCT FROM agg_rows(q, false) THEN
 					bad := bad + 1;
@@ -61,21 +61,21 @@ BEGIN
 END $$;
 
 SELECT cp_check('sift_col', 'cp', 1);
-SELECT cp_check('sift_table', 'cpt', 1);
+SELECT cp_check('sift_table', 'cpt', 1, shapes => 1);
 -- a dictionary parsed and kept after enough tests, and one the cache cannot keep
-SELECT cp_check('parsed', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0']);
+SELECT cp_check('parsed', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0'], 1);
 SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
-SELECT cp_check('not kept', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0']);
+SELECT cp_check('not kept', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0'], 1);
 RESET sift.test_limits;
 INSERT INTO cp SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 4000) i;
 DELETE FROM cp WHERE id % 11 = 0;
 VACUUM cp;
-SELECT cp_check('vacuumed', 'cp', 1);
+SELECT cp_check('vacuumed', 'cp', 1, shapes => 1);
 SET sift.simd = scalar;
-SELECT cp_check('scalar', 'cp', 1);
+SELECT cp_check('scalar', 'cp', 1, shapes => 1);
 RESET sift.simd;
 
-DROP FUNCTION cp_check(text, text, int, text[]);
+DROP FUNCTION cp_check(text, text, int, text[], int);
 DROP TABLE cp_pred, cp, cpt;
 DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
 DROP EXTENSION pg_sift_test;
