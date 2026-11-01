@@ -42,8 +42,8 @@ step s2size	{ SELECT i.relation_blocks = s.blocks AS unchanged, i.relation_block
 			  FROM sift.index_info('iso_tr_idx') i, iso_tr_size s; }
 step s2check	{ SELECT iso_agree('iso_tr', 'common') AS agree, iso_agree('iso_tr', 'appended') AS agree_appended, iso_verify('iso_tr_idx') AS verified; }
 
-# the merge leaves the end of the file free; a reader holding the index keeps VACUUM from cutting it and VACUUM does not wait for it
-permutation s2v s2x s2m s2rec s3read s2v s2size s3c s2v s2size s2check
+# the merge leaves the end of the file free; a reader holding the index keeps the cut of the merge and the cut of VACUUM, and neither waits for it (the reader is in before the merge, which cuts the end itself otherwise)
+permutation s2v s2x s3read s2m s2rec s2v s2size s3c s2v s2size s2check
 
 # the segments freed by a merge are not reusable while an older snapshot runs, so the appends of s1 extend the file; once it ends,
 # the promotion of the appended segment lands in the space in front, the end of the file is free, VACUUM cuts it and s1 appends again

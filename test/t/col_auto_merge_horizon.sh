@@ -6,6 +6,7 @@
 
 plan 7
 node_init hz 23 "autovacuum = off
+sift.test_col_net = off
 sift.maintenance_naptime = 200"
 node_start hz || bail "start failed"
 sql hz "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \

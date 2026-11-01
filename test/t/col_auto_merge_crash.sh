@@ -6,7 +6,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 10
-node_init cr 21 "autovacuum = off"
+node_init cr 21 "autovacuum = off
+sift.test_col_net = off"
 node_start cr || bail "start failed"
 sql cr "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 60000) g" \

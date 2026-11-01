@@ -25,6 +25,12 @@ setup
 
 setup
 {
+	-- no sidecar: its pre-aggregates answer the units with a dead row, which then are not due for the rewrite this spec runs against its readers
+	LOAD 'pg_sift'; SET sift.test_col_net = off;
+}
+
+setup
+{
 	VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) iso_am;
 }
 

@@ -8,6 +8,7 @@
 
 plan 17
 node_init am 20 "autovacuum = off
+sift.test_col_net = off
 sift.log_min_duration = 0
 sift.maintenance_naptime = 200"
 node_start am || bail "start failed"

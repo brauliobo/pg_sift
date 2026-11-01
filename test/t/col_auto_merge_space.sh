@@ -7,6 +7,7 @@
 
 plan 4
 node_init sp 24 "autovacuum = off
+sift.test_col_net = off
 sift.log_min_duration = 0"
 node_start sp || bail "start failed"
 sql sp "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"

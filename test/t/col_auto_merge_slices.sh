@@ -8,6 +8,7 @@
 
 plan 7
 node_init sl 24 "autovacuum = off
+sift.test_col_net = off
 sift.maintenance_naptime = 200
 sift.vacuum_rewrite_limit = 1"
 node_start sl || bail "start failed"

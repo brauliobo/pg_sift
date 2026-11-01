@@ -1,11 +1,17 @@
 Parsed test spec with 3 sessions
 
-starting permutation: s2v s2x s2m s2rec s3read s2v s2size s3c s2v s2size s2check
+starting permutation: s2v s2x s3read s2m s2rec s2v s2size s3c s2v s2size s2check
 step s2v: VACUUM iso_tr;
 step s2x: SELECT txid_current() > 0 AS xid_used;
 xid_used
 --------
 t       
+(1 row)
+
+step s3read: BEGIN; SELECT count(*) AS hits FROM iso_tr WHERE body @@> 'common';
+hits
+----
+3000
 (1 row)
 
 step s2m: SELECT sift.merge('iso_tr_idx', true) > 0 AS merged;
@@ -15,12 +21,6 @@ t
 (1 row)
 
 step s2rec: CREATE TABLE iso_tr_size AS SELECT relation_blocks AS blocks FROM sift.index_info('iso_tr_idx');
-step s3read: BEGIN; SELECT count(*) AS hits FROM iso_tr WHERE body @@> 'common';
-hits
-----
-3000
-(1 row)
-
 step s2v: VACUUM iso_tr;
 step s2size: SELECT i.relation_blocks = s.blocks AS unchanged, i.relation_blocks < s.blocks AS shrunk, i.relation_blocks = i.high_water AS sized
 			  FROM sift.index_info('iso_tr_idx') i, iso_tr_size s;
