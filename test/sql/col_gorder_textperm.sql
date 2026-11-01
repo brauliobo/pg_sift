@@ -78,6 +78,17 @@ SELECT format, count(*) AS segments FROM sift.col_segments('tm_i') WHERE kind = 
 SELECT result, count(*) FROM tp_all('tm') GROUP BY 1 ORDER BY 1;
 SELECT sift.col_verify('tm_i');
 
+-- the dictionaries of the segments of an index stay in the cache of parsed ones together (dict_cache_kb), and only so long as the codes of the array are looked up in them without
+-- parsing one again: a segment whose dictionary, scaled to the rows of the index, passes three quarters of the cache keeps the strings (column format minor 38)
+CREATE TABLE tz AS SELECT id, a, b, k FROM tp;
+CREATE INDEX tz_i ON tz USING sift_col (id sift.col_int4_ops, a sift.col_text_ops, b sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'a, b', write_buffer_limit = 65536);
+INSERT INTO tz (id, a, b, k) SELECT 20000 + i, tp_str(i * 7), tp_str(i * 11), i % 100 FROM generate_series(1, 3000) i;
+SET sift.test_limits = 'dict_cache_kb=700';
+SELECT sift.col_promote('tz_i') >= 0 AS promoted;
+RESET sift.test_limits;
+SELECT format, count(*) AS segments FROM sift.col_segments('tz_i') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+SELECT sift.col_verify('tz_i');
+
 -- a format minor below the one that has the order array writes none
 SET sift.col_format_minor = 14;
 REINDEX INDEX tp_i;
@@ -85,6 +96,6 @@ RESET sift.col_format_minor;
 SELECT format FROM sift.col_segments('tp_i') WHERE kind = 'immutable';
 
 DROP FUNCTION tp_chk(text), tp_all(text), tp_range(text), tp_str(int);
-DROP TABLE tp, ts, tm, tq;
+DROP TABLE tp, ts, tm, tq, tz;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -462,6 +462,8 @@ extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);
 /* A test the signatures hardly helped (spent: the cost it counts) makes the next search parse the dictionary, as the searches of the stream would have after DICT_PARSE_AFTER */
 /* The bytes of parsed dictionaries a backend keeps (dict_cache_kb), and what a dictionary of n strings of nbytes takes parsed: the strings, an offset and the lookup slots of each */
 extern Size sift_cdict_cache_budget(void);
+/* The share of that cache that the dictionaries of an index (one a segment, parsed) may take for its text order array to name strings by code: past it they are thrown out of the cache and the shared ring as fast as they are read, and each equality parses one again */
+#define CDICT_CODES_PCT		75
 extern Size sift_cdict_parsed_bytes(Size nbytes, uint32 n);
 extern void sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent);
 /* Adds add to what the checks of strings the hash of the dictionary found cost in this backend, and returns the sum: the dictionary is parsed once they cost what the parse does (DICT_PARSE_COST) */

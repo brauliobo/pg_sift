@@ -130,10 +130,10 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 			/*
 			 * The codes replace the strings of the array where that saves a fifth of the bytes: the dictionary then goes in blocks, which can cost more than the compact form
 			 * (strings that share long prefixes compress better whole), and the strings of a sorted array are front-coded, which can cost less than the dictionary they repeat.
-			 * A dictionary that no longer fits the cache of parsed ones keeps the strings: each entry the codes name would unwrap a block again (an OFFSET of 20,000 over a million
+			 * A dictionary that no longer fits the cache of parsed ones (CDICT_CODES_PCT of it) keeps the strings: each entry the codes name would unwrap a block again (an OFFSET of 20,000 over a million
 			 * hashes took 67 ms against 2 ms, an equality 58 ms against 0.09 ms). A small dictionary stays in its compact form either way, and takes the codes.
 			 */
-			if (pa->tperm && segw_dict_uncached(w, c))
+			if (pa->tperm && segw_dict_uncached(w, c, CDICT_CODES_PCT))
 				pa->tperm = false;
 			if (pa->tperm)
 			{

@@ -111,7 +111,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			 */
 			double		distinct = Min(1.0, ndistinct / Max(keycols_heap_rows(heap), 1));
 
-			if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget())
+			if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)
 				cand[ncand].bytes = 4.4 + Min(width, 255) * distinct * 0.9;
 			else
 				cand[ncand].bytes = 4.4 + distinct * (sift_cdict_perm_bits((uint32) Min(ndistinct, (double) UINT32_MAX)) / 8.0 + Min(width, 255) * 0.1);
