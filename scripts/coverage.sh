@@ -3,7 +3,7 @@
 # docs/coverage.tsv, and proven by running its sample queries on a test cluster.
 #
 #   scripts/coverage.sh [--check] [--rows REGEX] [--keep] [-v]                      run the proofs of the rows (--check also proves the proofs)
-#   scripts/coverage.sh --gen                                                       write docs/COVERAGE.md and the coverage block of README.md
+#   scripts/coverage.sh --gen                                                       write docs/COVERAGE.md and the coverage block of README.md when it has one
 #   scripts/coverage.sh --docs                                                      the checks that need no cluster: the table, the results file, the generated docs
 #   scripts/coverage.sh --pct [--tier quick|full] [--baseline REF]                  run the variant matrices (test/matrix/matrix.py) on this build and on the
 #                                                                                   build of REF (default: the newest release tag), write docs/results/coverage-pct.tsv
@@ -448,7 +448,6 @@ docs_agree() {
 validate || { echo "coverage: docs/coverage.tsv is malformed" >&2; exit 1; }
 validate_pct || { echo "coverage: $PCT is malformed" >&2; exit 1; }
 if [[ -n $GEN ]]; then
-	grep -q '^<!-- coverage:start' "$REPO/README.md" || { echo "coverage: README.md has no <!-- coverage:start --> ... <!-- coverage:end --> block" >&2; exit 1; }
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/sift-coverage.XXXXXX")
 	generate "$tmp"
 	cp "$tmp/COVERAGE.md" "$REPO/docs/COVERAGE.md"

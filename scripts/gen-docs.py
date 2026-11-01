@@ -322,7 +322,8 @@ def generate(root):
         if have(root, 'store'):
             run(*py, os.path.join(steps, 'store.py'), 'render', '--readme', 'README.md', '--benchmarks', 'docs/BENCHMARKS.md')
         run(*py, os.path.join(steps, 'extras.py'), 'render')
-        run(*py, os.path.join(steps, 'charts.py'))
+        if have(root, 'slim'):
+            run(*py, os.path.join(steps, 'charts.py'))
         if have(root, 'store'):
             run(*py, os.path.join(steps, 'highlights.py'))
             run(*py, os.path.join(steps, 'aggregates_page.py'))
