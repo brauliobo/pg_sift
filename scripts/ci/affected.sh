@@ -80,7 +80,8 @@ if [[ $MODE == affected ]]; then
 		fi
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
-		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
+		# an untracked path no row of the map covers is another lane's scratch (a worktree or a log in a shared tree), not a change of this branch; a tracked file with no row stays an error
+		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard | while IFS= read -r f; do [[ -z $(areas_unmatched "$f") ]] && echo "$f"; done; } | sort -u)
 		RE=$(areas_regex "${FILES[@]}") || exit $?
 		FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
 		if [[ -n $FOCUS ]]; then
