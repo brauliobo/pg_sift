@@ -34,11 +34,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 117 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 116 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
-| [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
+| [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
 
 ### default
 
@@ -1196,8 +1196,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** update/insert/delete mix, 4 clients, 200,000 rows: 7,536 against 5,092 tx/s, range read p99 16.8 against 34.2 ms
-- **Impact:** index size: file 10.7 against 18.1 MB (200,000 rows); 19.2 to 8.2 MB after 12 cycles of 4% churn; build, merge and writes: WAL +60% on the mix (237 against 142-154 MB, 200,000 rows); append-only table starts no pass, same WAL per transaction; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
-- **When:** A sift_table that deletes, updates or reads past table_auto_defrag_dead_pct tombstones, or holds table_auto_defrag_free_pct free blocks; needs sift.async_maintenance. An append-only table starts no pass.
+- **Impact:** index size: file 10.7 against 18.1 MB (200,000 rows); 19.2 to 8.2 MB after 12 cycles of 4% churn; build, merge and writes: WAL +60% on the mix (237 against 142-154 MB, 200,000 rows); append-only table starts no pass, same WAL per transaction; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
+- **When:** A sift_table that deletes, updates or reads when the reads of the table have cost as much as the pass would, or holds table_auto_defrag_free_pct free blocks; needs sift.async_maintenance. An append-only table starts no pass.
 - **Default:** on — On since 3.3 (off in 3.2 as an opt-in until run on real workloads): 200,000 rows 7,536 against 5,092 tx/s, read p99 16.8 against 34.2 ms, file 10.7 against 18.1 MB, for about 60% more WAL on that mix.
 - **Turn off:** SET sift.table_auto_defrag = off (server or database; postgresql.conf, ALTER DATABASE .. SET) restores the 3.2 VACUUM-only behaviour.
 - **Upgrade from 3.7:** unchanged
@@ -1210,7 +1210,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** as `sift.table_auto_defrag`
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** The background pass of a sift_table asked for by dead rows: a whole table VACUUM with index cleanup. A free-space request runs table_maintain, which clears no index entry.
 - **Default:** on — On: without the index cleanup the tombstone log (which every scan reads and which holds the file above the live rows) cannot shrink; the log stays until a VACUUM when it is off.
 - **Turn off:** SET sift.table_auto_defrag_indexes = off (server or database): the pass is table_maintain - dead rows cleared, space returned, tombstones and index entries wait for a VACUUM.
@@ -1224,26 +1224,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** as `sift.table_auto_defrag`
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** A sift_table with a file whose free blocks are n percent or more and that VACUUM's lock rule accepts (1000 blocks or a 16th of the file); the pass then runs table_maintain. Skipped while the table is being written.
-- **Default:** 25 — 25: a quarter of the file, the 3.2 value; it is the second trigger beside dead_pct, tested only as a part of the pass (test 017_tbl_autodefrag), no other value measured.
+- **Default:** 25 — 25: a quarter of the file, the 3.2 value; it is the second trigger beside the reads that pay for a pass, tested only as a part of the pass (test 017_tbl_autodefrag), no other value measured.
 - **Turn off:** n/a: a threshold (1 to 100). table_auto_defrag = off stops the whole pass; RESET returns 25.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave 25. The pass also starts when this percent of the file is free blocks (and VACUUM's lock rule holds: 1000 blocks or a 16th of the file). Lower returns space sooner.
-- **Sources:** benchmark as `sift.table_auto_defrag`; [COL-TAM 7](COL-TAM.md#7-maintenance)
-
-#### sift.table_auto_defrag_dead_pct
-
-`sift_table` · default · since 3.3 · default 5
-
-- **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
-- **Gain:** read after 16% churn 35.8 ms at 20, 7.6 ms at 5, 6.7 ms at 2 (200,000 rows; 0.5 ms fresh)
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: mix at 20 / 5: 3,206 / 3,452 tx/s, WAL 164 / 157 MB (200,000 rows, 4 clients); churn WAL doubles 11.8 to 24 MB at 5; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
-- **When:** Backends of a sift_table asking for a pass when n percent of its rows are tombstones older than every snapshot (a long transaction makes it wait). The pass rewrites segments above table_dead_rewrite_pct.
-- **Default:** 5 — 5, was 20 in 3.2 (autovacuum's factor): a read after 16% churn took 35.8 ms at 20, 7.6 at 5 and 6.7 at 2 (0.5 fresh); mix 3,206 against 3,452 tx/s and WAL 164 against 157 MB, churn WAL doubled (11.8 to 24 MB).
-- **Turn off:** SET sift.table_auto_defrag_dead_pct = 100 never asks for dead rows (the free-space trigger remains); table_auto_defrag = off stops the pass. RESET returns 5. Server or database level.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave 5. The pass is asked for when this percent of rows are tombstones older than every snapshot; 100 never asks. Lower starts sooner (more WAL); higher leaves reads slow until VACUUM.
 - **Sources:** benchmark as `sift.table_auto_defrag`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 
 #### sift.table_auto_defrag_coalesce
@@ -1252,7 +1238,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** after 6 cycles of churn: 2 groups against 4, aggregate 20-21 against 28-32 ms, range scan 9.5-14 against 14-18 ms; none after 12 cycles (200,000 rows)
-- **Impact:** index size: file 8.7 against 10.1 MB after 6 cycles (200,000 rows); build, merge and writes: WAL 50.3 against 49.3 MB (6 cycles, 200,000 rows); other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: file 8.7 against 10.1 MB after 6 cycles (200,000 rows); build, merge and writes: WAL 50.3 against 49.3 MB (6 cycles, 200,000 rows); other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** The pass of a sift_table: the small column groups next to a rewritten one are merged into one group. The gain fades after about 12 cycles of churn.
 - **Default:** on — On: after 6 cycles of churn 2 groups against 4, aggregate 20-21 against 28-32 ms, file 8.7 against 10.1 MB, for WAL 50.3 against 49.3 MB (200,000 rows).
 - **Turn off:** SET sift.table_auto_defrag_coalesce = off (server or database): the pass rewrites only the segments above the threshold and leaves their neighbours as they are.
@@ -2371,7 +2357,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** as `sift.table_auto_defrag`
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** Every background pass of a sift_table: sleeps n ms (at most four times) when its page accesses add up to vacuum_cost_limit, and after each segment it rewrites. Range 0 to 100 ms.
 - **Default:** 10 ms — 10 ms: a safety throttle on I/O, as an autovacuum worker sleeps; no throughput figure is measured. Bounded to 100, the most vacuum_cost_delay allows.
 - **Turn off:** SET sift.table_auto_defrag_delay = 0: the pass never waits (full speed). RESET returns 10.
@@ -2385,7 +2371,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** no throughput gain beyond the run-to-run spread (10-30%) in 3 rounds (200,000 rows, 4 clients)
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** The pass of a sift_table (also between its merges): waits for a quieter moment when more than n client backends of the database run a statement; looks again after the naptime, 8 times, then a later request asks again.
 - **Default:** 0 — 0 (never waits): 3 rounds (200,000 rows, 4 clients) showed no throughput gain beyond the run-to-run spread (10-30%), so no waiting is imposed; set n where the pass must yield to busy clients.
 - **Turn off:** Already 0 (never waits). SET sift.table_auto_defrag_max_active = n to wait; RESET returns 0.
@@ -2399,7 +2385,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** no throughput gain beyond the run-to-run spread (10-30%) in 3 rounds (200,000 rows, 4 clients)
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: 5.2 MB pass: 368 ms unlimited, 1.6 s at 2 MB/s; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: 5.2 MB pass: 368 ms unlimited, 1.6 s at 2 MB/s; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** The pass of a sift_table: after a step ahead of n kB/s of average WAL the worker sleeps; it also bounds how often readers reload dictionaries after a rewritten segment.
 - **Default:** 0 — 0 (no limit): 3 rounds (200,000 rows, 4 clients) showed no gain beyond the run-to-run spread (10-30%); a 5.2 MB pass took 368 ms unlimited, 1.6 s at 2 MB/s, so a cap is the user's choice.
 - **Turn off:** Already 0 (no limit). SET sift.table_auto_defrag_wal_rate = n kB/s to cap; RESET returns 0.
@@ -2413,7 +2399,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
 - **Gain:** as `sift.table_auto_defrag`
-- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; at dead_pct 5 a read after 16% churn takes 7.6 ms, not 35.8 (0.5 fresh)
+- **Impact:** index size: as `sift.table_auto_defrag`; build, merge and writes: as `sift.table_auto_defrag`; other: background WAL and I/O, bounded by the budget, the cost delay, the WAL rate and the active-backend check below; the reads of a table with dead rows are read from its rows until the pass, which is asked for when they have cost as much as it
 - **When:** Each pass of a sift_table: the merge steps rewrite at most n MB of segments (the most dead first); the worker passes again while the budget stopped the last one. 0 is no limit.
 - **Default:** 128 MB — 128 MB: bounds the WAL and I/O of one pass; the table VACUUM has no such cap. The same value as sift.vacuum_rewrite_limit; no measurement of other values is in a source.
 - **Turn off:** n/a: a bound; 0 removes the cap. The pass itself is off with sift.table_auto_defrag = off. RESET returns 128.
@@ -2449,6 +2435,20 @@ all · deprecated · since 1.0 · default 4096
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width.
 - **Sources:** [AGG](AGG.md#joins-to-plans)
+
+#### sift.table_auto_defrag_dead_pct
+
+`sift_table` · deprecated · since 3.3 · default 5
+
+- **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: -; other: the older form of the trigger of the background pass, a percent of tombstones; the pass is asked for by the reads of the table instead
+- **When:** Nothing: the pass is asked for when the reads of the table since the last pass, each paying for the share of its superblocks that hold a tombstone, add up to 38 reads of a table dirty throughout (the price of a pass, half of 1,500 instructions a row, against 20 a row of a dirty superblock a read).
+- **Default:** 5 — Up to 3.7 the pass was asked for when a percent of the rows (5) were tombstones; a table deleted from by 4.5% and read for ever stayed dirty. The setting is kept so a configuration that sets it keeps loading.
+- **Turn off:** The setting has no effect and cannot be removed; table_auto_defrag = off stops the pass.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave at 5 (it has no effect). The background pass of a sift_table is asked for when the reads of the table since the last one have cost as much as the pass.
+- **Sources:** benchmark as `sift.table_auto_defrag`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 <!-- sift-cases:end -->
 
 ## Upgrading from 3.6

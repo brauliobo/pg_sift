@@ -212,6 +212,7 @@ typedef struct SiftTblRel
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
+	uint64		defrag_scans;	/* the reads of the table then (pgstat numscans) */
 	int64		defrag_free;
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
@@ -671,7 +672,6 @@ extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
-extern PGDLLIMPORT int sift_tbl_auto_defrag_dead_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_max_active;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_wal_rate;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_coalesce;

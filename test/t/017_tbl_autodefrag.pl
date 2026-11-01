@@ -1,5 +1,5 @@
-# sift_table maintenance without VACUUM: the backend that closes a write buffer asks a worker for a pass when the tombstones or the free
-# blocks cross the thresholds and not below them, not with the setting off, and the pass keeps every row; the same pass is crash safe at the
+# sift_table maintenance without VACUUM: the backend that closes a write buffer, reads or deletes asks a worker for a pass when the reads of the
+# table since the last one have cost as much as it, or the free blocks cross the threshold, and not before them, not with the setting off, and the pass keeps every row; the same pass is crash safe at the
 # boundaries of the space step.
 use strict;
 use warnings FATAL => 'all';
@@ -38,6 +38,14 @@ sub churn_writes
 	my ($tbl, $settings, $from) = @_;
 	$node->safe_psql('postgres', "$settings; INSERT INTO $tbl SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series($from, $from + $rows) g");
 }
+# The reads that make a pass pay: 50 aggregate scans of the table (38 of a table dirty throughout cost what a pass does) from one session, whose
+# statistics reach the others when it ends. They ask for nothing themselves (the setting is off in the session), the read after them does
+sub readers
+{
+	my ($tbl) = @_;
+	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; ' . "SELECT count(*) FROM $tbl;" x 50);
+	Time::HiRes::sleep(0.5);
+}
 sub fired
 {
 	my ($offset) = @_;
@@ -56,9 +64,9 @@ subtest 'a table that was never written is read and deleted from without a look 
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM z; SELECT count(*) FROM z WHERE id = 1; DELETE FROM z WHERE id = 1'), "0\n0", 'empty');
 };
 
-subtest 'below the thresholds nothing is asked for' => sub {
+subtest 'writes alone, with no read of the table, ask for nothing' => sub {
 	fill('a');
-	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 50 = 0');	# 2% of the rows, the default threshold is 5
+	$node->safe_psql('postgres', 'DELETE FROM a WHERE id % 50 = 0');	# 2% of the rows, and nobody reads them
 	my $offset = -s $node->logfile;
 	my $before = $node->safe_psql('postgres', sprintf($digest, 'a'));
 	churn_writes('a', 'SET sift.table_auto_defrag = on', $rows + 1);
@@ -83,15 +91,17 @@ subtest 'a table that only appends asks for no pass' => sub {
 subtest 'with the setting off nothing is asked for above them' => sub {
 	fill('b');
 	$node->safe_psql('postgres', 'DELETE FROM b WHERE id % 10 < 4');	# 40%
+	readers('b');
 	my $offset = -s $node->logfile;
 	churn_writes('b', 'SET sift.table_auto_defrag = off', $rows + 1);
 	ok(quiet_for($offset, 3), 'no worker started');
 };
 
-subtest 'above the thresholds a worker rewrites the segments and keeps every row' => sub {
+subtest 'once the reads pay for it a worker rewrites the segments and keeps every row' => sub {
 	fill('c');
 	my $blocks = $node->safe_psql('postgres', "SELECT relation_blocks FROM sift.table_space('c')");
 	$node->safe_psql('postgres', 'DELETE FROM c WHERE id % 10 < 4');
+	readers('c');
 	my $offset = -s $node->logfile;
 	churn_writes('c', 'SET sift.table_auto_defrag = on', $rows + 1);
 	my $after_writes = $node->safe_psql('postgres', sprintf($digest, 'c'));
@@ -111,6 +121,7 @@ subtest 'a read after the deletes asks for the pass' => sub {
 	fill('e');
 	# the session that deletes does not ask (a statement slower than the naptime would ask for rows that are not committed yet): the read does
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM e WHERE id % 10 < 4');
+	readers('e');
 	my $offset = -s $node->logfile;
 	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM e');	# the aggregate source
@@ -122,17 +133,19 @@ subtest 'a read after the deletes asks for the pass' => sub {
 subtest 'a delete after the earlier ones committed asks for the pass' => sub {
 	fill('f');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM f WHERE id % 10 < 4');
+	readers('f');
 	my $offset = -s $node->logfile;
 	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'DELETE FROM f WHERE id = 5');
 	ok(fired($offset), 'a worker started and finished');
 };
 
-subtest 'a read below the thresholds, or with the setting off, asks for nothing' => sub {
+subtest 'a read before the reads pay, or with the setting off, asks for nothing' => sub {
 	fill('g');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM g WHERE id % 50 = 0');
 	fill('h');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM h WHERE id % 10 < 4');
+	readers('h');
 	my $offset = -s $node->logfile;
 	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM g; SELECT * FROM g WHERE id = 7');
@@ -146,6 +159,7 @@ subtest 'a pass that could remove nothing is not asked for until the old transac
 	my $old = $node->background_psql('postgres');
 	$old->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM n');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM n WHERE id % 10 < 4');
+	readers('n');
 	my $offset = -s $node->logfile;
 	Time::HiRes::sleep(0.5);
 	$node->safe_psql('postgres', 'SELECT count(*) FROM n');
@@ -164,6 +178,7 @@ subtest 'a pass that could remove nothing is not asked for until the old transac
 subtest 'the pass waits while the clients are busy' => sub {
 	fill('m');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM m WHERE id % 10 < 4');
+	readers('m');
 	$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.table_auto_defrag_max_active = 1; SELECT pg_reload_conf()');
 	# two sessions run a statement for as long as a third holds an advisory lock: they end by themselves. Cancelling a sleep would stop psql
 	# (ON_ERROR_STOP), and quit then writes to a dead pipe, which IPC::Run turns into an exit of the whole test
@@ -187,6 +202,7 @@ subtest 'the pass keeps to a WAL rate' => sub {
 	$node->safe_psql('postgres', "DROP TABLE IF EXISTS w; CREATE TABLE w (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false)");
 	$node->safe_psql('postgres', "INSERT INTO w SELECT g, g * 3, 'text ' || md5(g::text) FROM generate_series(1, $big) g; VACUUM w");
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM w WHERE id % 10 < 4');
+	readers('w');
 	my $expected = $node->safe_psql('postgres', sprintf($digest, 'w'));
 	$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.table_auto_defrag_wal_rate = 512; SELECT pg_reload_conf()');
 	Time::HiRes::sleep(0.5);
@@ -208,7 +224,7 @@ subtest 'a pass merges the small groups next to the one it rewrites' => sub {
 	for my $coalesce ('on', 'off')
 	{
 		my $t = "co_$coalesce";
-		$node->safe_psql('postgres', "ALTER SYSTEM SET sift.table_auto_defrag_coalesce = $coalesce; ALTER SYSTEM SET sift.table_auto_defrag_dead_pct = 10; SELECT pg_reload_conf()");
+		$node->safe_psql('postgres', "ALTER SYSTEM SET sift.table_auto_defrag_coalesce = $coalesce; SELECT pg_reload_conf()");
 		$node->safe_psql('postgres', "DROP TABLE IF EXISTS $t; CREATE TABLE $t (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false)");
 		for my $i (0 .. 4)
 		{
@@ -218,6 +234,7 @@ subtest 'a pass merges the small groups next to the one it rewrites' => sub {
 		my $groups = "SELECT count(*) FROM sift.table_segments('$t') WHERE kind = 'columns'";
 		is($node->safe_psql('postgres', $groups), '5', "$coalesce: five small groups to start from");
 		$node->safe_psql('postgres', "SET sift.table_auto_defrag = off; DELETE FROM $t WHERE id <= 4000 AND id % 10 < 7; DELETE FROM $t WHERE id > 4000 AND id <= 8000 AND id % 10 < 4");
+		readers($t);
 		my $expected = $node->safe_psql('postgres', sprintf($digest, $t));
 		my $offset = -s $node->logfile;
 		Time::HiRes::sleep(0.5);
@@ -226,7 +243,7 @@ subtest 'a pass merges the small groups next to the one it rewrites' => sub {
 		$after{$coalesce} = $node->safe_psql('postgres', $groups);
 		is($node->safe_psql('postgres', sprintf($digest, $t)), $expected, "$coalesce: the same rows");
 	}
-	$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.table_auto_defrag_coalesce; ALTER SYSTEM RESET sift.table_auto_defrag_dead_pct; SELECT pg_reload_conf()');
+	$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.table_auto_defrag_coalesce; SELECT pg_reload_conf()');
 	is($after{on}, '1', 'with the setting on the five groups became one');
 	cmp_ok($after{off}, '>', 1, 'with it off the groups stay apart');
 };

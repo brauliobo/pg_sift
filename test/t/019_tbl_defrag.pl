@@ -39,7 +39,7 @@ sub digest
 	return $node->safe_psql('postgres', sprintf($digest, $t));
 }
 
-# one write to the table and to its twin; the session never asks for a pass itself (the reads that follow do)
+# one write to the table and to its twin; the session never asks for a pass itself (the reads that follow do, once there are enough of them)
 sub both
 {
 	my ($t, $sql) = @_;
@@ -48,6 +48,14 @@ sub both
 		(my $stmt = $sql) =~ s/\bTBL\b/$name/g;
 		$primary->safe_psql('postgres', "SET sift.table_auto_defrag = off; $stmt");
 	}
+}
+
+# the reads that make a pass pay (50 scans of the table from one session, whose statistics reach the others when it ends); the read after them asks for it
+sub readers
+{
+	my ($t) = @_;
+	$primary->safe_psql('postgres', 'SET sift.table_auto_defrag = off; ' . "SELECT count(*) FROM $t;" x 50);
+	sleep 1;
 }
 
 sub twins
@@ -78,7 +86,7 @@ subtest 'the answers equal a heap twin before, during and after the passes' => s
 		both('a', "DELETE FROM TBL WHERE id % 10 < 4 AND id % 4 = " . ($round - 1));
 		both('a', "UPDATE TBL SET v = v + $round WHERE id BETWEEN " . ($round * 1000) . " AND " . ($round * 1000 + 700));
 		both('a', "INSERT INTO TBL SELECT g, g, 9, 'new' FROM generate_series(" . ($rows + $round * 500) . ", " . ($rows + $round * 500 + 400) . ") g");
-		sleep 1;
+		readers('a');
 		$primary->safe_psql('postgres', 'SELECT count(*) FROM a');
 		same('a', "round $round");
 	}
@@ -107,7 +115,7 @@ subtest 'a worker killed in the middle of a pass' => sub {
 	both('k', 'UPDATE TBL SET v = v + 1 WHERE id % 10 = 7');
 	same('k', 'before the pass');
 	my $before = digest($primary, 'k');
-	sleep 1;
+	readers('k');
 	my $offset = -s $primary->logfile;
 	$primary->safe_psql('postgres', 'SELECT count(*) FROM k');
 	ok($primary->poll_query_until('postgres', "SELECT count(*) > 0 FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND wait_event = 'VacuumDelay'"),
