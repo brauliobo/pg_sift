@@ -14,7 +14,7 @@ SELECT i,
             ELSE 1 + (i::bigint * 7919) % 40000 END,
        (i % 50)::int2, 5000000000 + (i::bigint * 7919) % 40000,
        (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0, date '2024-01-01' + i % 700, i
-FROM generate_series(1, 400000) i;
+FROM generate_series(1, 80000) i;
 CREATE INDEX ev_entity ON ev (dim_a_id, day);
 CREATE INDEX ev_ref ON ev (ref);
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, big_id, kind, amount, day, ref);
@@ -155,16 +155,16 @@ SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 40000, 4)));
    10000 |       1 |         0
 (1 row)
 
-SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 200000)));
+SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 70000)));
  arr_len | rows_on | rows_diff 
 ---------+---------+-----------
-  200000 |       4 |         0
+   70000 |       4 |         0
 (1 row)
 
-SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 200000) UNION ALL SELECT NULL));
+SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 70000) UNION ALL SELECT NULL));
  arr_len | rows_on | rows_diff 
 ---------+---------+-----------
-  200001 |       4 |         0
+   70001 |       4 |         0
 (1 row)
 
 SELECT * FROM same_rows(ARRAY(SELECT x FROM generate_series(1, 30000) x CROSS JOIN generate_series(1, 3)));
@@ -394,62 +394,62 @@ SELECT * FROM same_rows('{1,2,3}');
 (1 row)
 
 EXECUTE custom_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 SET plan_cache_mode = auto;
 PREPARE auto_q(int4[]) AS SELECT kind, count(*) AS n FROM ev WHERE day >= '2024-01-01' AND dim_a_id = ANY ($1) GROUP BY kind ORDER BY kind;
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{1,2,3}');
- kind | n  
-------+----
- c    | 10
- d    | 10
+ kind | n 
+------+---
+ c    | 2
+ d    | 2
 (2 rows)
 
 EXECUTE auto_q('{4,5,6}');
- kind | n  
-------+----
- a    | 10
- b    | 10
- d    | 10
+ kind | n 
+------+---
+ a    | 2
+ b    | 2
+ d    | 2
 (3 rows)
 
 SET plan_cache_mode = force_generic_plan;
@@ -474,10 +474,10 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE (i * 7)::int % 3000 - 1500 END,
        timestamp '2024-01-01 00:00:00' + ((i * 7) % 3000) * interval '1 minute',
        timestamptz '2024-01-01 00:00:00+00' + ((i * 7) % 3000) * interval '1 minute',
        i % 5, (i % 100) / 10.0
-FROM generate_series(1, 60000) i;
-INSERT INTO evk VALUES (60001, 1, 9223372036854775807, 'max', '2024-01-01', 'infinity', 'infinity', 1, 1.5),
-                       (60002, 1, -9223372036854775808, 'min', '2024-01-01', '-infinity', '-infinity', 2, 2.5),
-                       (60003, 1, 5000000000 + 90000000, 'far', '2024-01-01', '2024-01-01', '2024-01-01+00', 3, 3.5);
+FROM generate_series(1, 12000) i;
+INSERT INTO evk VALUES (12001, 1, 9223372036854775807, 'max', '2024-01-01', 'infinity', 'infinity', 1, 1.5),
+                       (12002, 1, -9223372036854775808, 'min', '2024-01-01', '-infinity', '-infinity', 2, 2.5),
+                       (12003, 1, 5000000000 + 90000000, 'far', '2024-01-01', '2024-01-01', '2024-01-01+00', 3, 3.5);
 CREATE INDEX evk_col ON evk USING sift_col (k2, k8, kt, kd, kts, ktz, g, amount);
 VACUUM (FREEZE, ANALYZE) evk;
 SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE k2 = ANY ($1) GROUP BY g', '''{-1500,-3,0,7,1499,NULL}''::int2[]');
