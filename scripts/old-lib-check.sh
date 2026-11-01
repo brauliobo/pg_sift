@@ -280,7 +280,7 @@ keyed() {
 		"CREATE INDEX kk_i ON kk USING sift_col (id, tenant, amount) WITH (key_cut = 'tenant')")
 	CY_FAST=("SET sift.agg_preagg = off" "SET sift.agg_force = on")
 	CY_HEAP=("SET sift.enable_agg = off")
-	CY_INSERT="INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
+	CY_INSERT="ALTER INDEX kk_i SET (point_tid_columns = 'off'); INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
 	CY_REFUSED="SET sift.agg_force = on; SELECT count(*) FROM kk WHERE tenant = 7"
 	cycle
 }
