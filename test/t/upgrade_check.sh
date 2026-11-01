@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 85
+plan 88
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -138,6 +138,14 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
 	q clean "DROP TABLE gord_rows, gord_ties" >/dev/null
 else skip 8 "a release build has no test settings: the threshold of the compact order cannot be lowered"; fi
+# the order array of a text column names its strings by their dictionary codes (column format 42); 3.7 reads the copy of the strings, so the setting 14 and a REINDEX write what it reads
+q clean "CREATE TABLE gord_text AS SELECT i AS id, md5(i::text) AS name FROM generate_series(1, 3000) i" \
+	"CREATE INDEX gord_text_i ON gord_text USING sift_col (id, name) WITH (order_array_columns = 'name')" >/dev/null
+check "an index with the order array of a text column is column format 42" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format 42' <<<"$(uc clean)"
+check "to 3.7: it is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_text_i .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_text_i" <<<"$(uc --to 3.7 clean)"
+q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_text_i" >/dev/null
+check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_text_i)"
+q clean "DROP TABLE gord_text" >/dev/null
 # the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15; fat repeats below 1,024 strings, so no dictionary hash (column format 25) hides the 22
 q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad, md5((i % 500)::text) || md5((i % 500)::text || 'a') AS fat FROM generate_series(1, 20000) i" \
 	"CREATE INDEX facts_ktab ON key_facts USING sift_col (id, k, fat) WITH (cube_minmax = false, superunit = 0, key_columns = 'k')" \

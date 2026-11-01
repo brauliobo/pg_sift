@@ -404,6 +404,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
 	if (w->anytextord)
 		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
+	if (w->anytextperm)
+		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTPERM);
 	if (w->anyends)
 		w->format = Max(w->format, SIFT_COL_FORMAT_ENDORD);
 	if (w->anycompact)
@@ -450,6 +452,10 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 					w->format = Max(w->format, SIFT_COL_FORMAT_COUNT);
 				}
 			}
+		/* the order of a text leaf finds its strings by code: a dictionary of many strings is in blocks, or every first string would parse the whole of it */
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (w->pt != NULL && w->pt[c].tperm && w->dict[c] != NULL && w->dform[c] == 0 && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+				w->dform[c] = DICT_BLOCKS;
 	}
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	segw_write_dicts(w, &h.sections[SIFT_SEC_DICT]);

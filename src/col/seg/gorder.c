@@ -105,11 +105,23 @@ seg_gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col)
 		uint32		nblk;
 
 		seg_read(seg, seg_sec, sizeof(head), head);
-		if (!sift_cgord_str_head(head, &g->hdr, &g->nstr, &nblk))
+		if (g->hdr.strperm ? !sift_cgord_perm_head(head, &g->hdr, &g->nstr, &g->pbits) : !sift_cgord_str_head(head, &g->hdr, &g->nstr, &nblk))
 			corrupt(seg, "The strings of the global order of leaf %d are malformed.", col);
 		g->sbno = UINT32_MAX;
 	}
 	return seg_sec;
+}
+
+/* The dictionary code of the string of rank r in a block of version 5 */
+uint32
+seg_gord_perm(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r)
+{
+	uint64		bit = (uint64) r * g->pbits;
+	uint8		buf[8];
+	Size		nb = (Size) (((bit & 7) + g->pbits + 7) / 8);
+
+	seg_read(seg, seg_gord_strs(seg, g, col) + 16 + bit / 8, nb, buf);
+	return sift_ckeyed_get(buf, nb, bit & 7, g->pbits);
 }
 
 /* The string of rank r of a text block, valid until the next call for the leaf; *len its bytes */
@@ -127,6 +139,24 @@ sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
 	seg_sec = seg_gord_strs(seg, g, col);
 	if (r >= g->nstr)
 		corrupt(seg, "The global order of leaf %d has no string %u.", col, r);
+	if (g->hdr.strperm)
+	{
+		uint32		code = seg_gord_perm(seg, g, col, r);
+
+		if (code >= g->nstr)
+			corrupt(seg, "The global order of leaf %d names the code %u of %u strings.", col, code, g->nstr);
+		/* the strings of a few ranks are read in place; the dictionary is parsed, and kept, once the backend's reads of it have cost about what the parse does */
+		if (g->sdict == NULL)
+			g->sdict = sift_cseg_dict_peek(seg, col);
+		if (g->sdict == NULL && sift_cseg_dict_spent(seg, col, 0) >= (uint64) g->nstr * DICT_PARSE_COST && !sift_cseg_dict_nokeep(seg, col))
+			g->sdict = sift_cseg_dict(seg, col);
+		if (g->sdict != NULL)
+			return sift_cdict_str(g->sdict, code, len);
+		if (g->sblk == NULL)
+			g->sblk = MemoryContextAlloc(seg->mcxt, SIFT_CGORD_STR_MAX);
+		sift_cseg_dict_spent(seg, col, DICT_ZSTD_COST + DICT_READ_COST);
+		return sift_cseg_dict_get(seg, col, code, len, (char *) g->sblk);
+	}
 	if (g->sbno != b)
 	{
 		/* the offsets of the block and of the next, read where they are: a segment of 200,000 strings has 12,000 blocks */

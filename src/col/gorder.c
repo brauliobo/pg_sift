@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "col/codec.h"
+#include "col/enc_int.h"
 #include "col/gquant.h"
 #include "col/gorder.h"
 #include "col/point.h"
@@ -285,7 +286,7 @@ compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *
 }
 
 static void
-build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 head, uint32 vtotal, int layout)
+build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 strver, uint32 head, uint32 vtotal, int layout)
 {
 	bool		compact = layout != SIFT_CGORD_L_WHOLE,
 				anycompact = false;
@@ -302,7 +303,7 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	uint32		ngv = 0,
 				ngn = 0,
 				ng = 0;
-	uint32		hdr[8] = {SIFT_CGORD_MAGIC, strs != NULL ? SIFT_CGORD_VERSION_TEXT : SIFT_CGORD_VERSION, (uint32) n, nvals, nchunks, crows, head, vtotal};
+	uint32		hdr[8] = {SIFT_CGORD_MAGIC, strs != NULL ? strver : SIFT_CGORD_VERSION, (uint32) n, nvals, nchunks, crows, head, vtotal};
 	SiftCcPolicy pol;
 
 	if (compact)
@@ -572,7 +573,7 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 		ord_sort(ent + nvals, nnull);
 		ends_reduce(ent, &nvals, &nnull, &head, &vtotal);
 	}
-	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, head, vtotal, dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, 0, head, vtotal, dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }
 
@@ -585,7 +586,7 @@ sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, ui
 		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }
 
@@ -634,7 +635,7 @@ put_varint(StringInfo out, uint32 v)
 }
 
 void
-sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, StringInfo out)
+sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, bool perm, StringInfo out)
 {
 	uint32		nstr = d->n,
 				nblk = (nstr + SIFT_CGORD_STR_BLK - 1) / SIFT_CGORD_STR_BLK;
@@ -655,50 +656,61 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 	qsort(order, nstr, sizeof(uint32), rank_cmp);
 	for (uint32 r = 0; r < nstr; r++)
 		rank[order[r]] = r;
-	initStringInfo(&body);
-	for (uint32 r = 0; r < nstr; r++)
-	{
-		uint32		len;
-		const char *s = sift_cdict_str(d, order[r], &len);
-		uint32		shared = 0;
-
-		if (r % SIFT_CGORD_STR_BLK == 0)
-			boff[r / SIFT_CGORD_STR_BLK] = (uint32) body.len;
-		else
-			while (shared < Min(len, plen) && s[shared] == prev[shared])
-				shared++;
-		put_varint(&body, shared);
-		put_varint(&body, len - shared);
-		appendBinaryStringInfo(&body, s + shared, len - shared);
-		prev = s;
-		plen = len;
-	}
-	boff[nblk] = (uint32) body.len;
 	initStringInfo(&strs);
-	appendBinaryStringInfo(&strs, (const char *) hdr, sizeof(hdr));
+	if (perm)
 	{
-		/* the offsets are from the start of the section */
-		uint32		base = sizeof(hdr) + (nblk + 1) * sizeof(uint32);
+		uint32		bits = sift_cdict_perm_bits(nstr),
+					ph[4] = {nstr, bits, 0, 0};
 
-		for (uint32 b = 0; b <= nblk; b++)
-		{
-			uint32		o = boff[b] + base;
-
-			appendBinaryStringInfo(&strs, (const char *) &o, sizeof(o));
-		}
+		appendBinaryStringInfo(&strs, (const char *) ph, sizeof(ph));
+		put_packed(&strs, order, nstr, bits);
 	}
-	appendBinaryStringInfo(&strs, body.data, body.len);
+	else
+	{
+		initStringInfo(&body);
+		for (uint32 r = 0; r < nstr; r++)
+		{
+			uint32		len;
+			const char *s = sift_cdict_str(d, order[r], &len);
+			uint32		shared = 0;
+
+			if (r % SIFT_CGORD_STR_BLK == 0)
+				boff[r / SIFT_CGORD_STR_BLK] = (uint32) body.len;
+			else
+				while (shared < Min(len, plen) && s[shared] == prev[shared])
+					shared++;
+			put_varint(&body, shared);
+			put_varint(&body, len - shared);
+			appendBinaryStringInfo(&body, s + shared, len - shared);
+			prev = s;
+			plen = len;
+		}
+		boff[nblk] = (uint32) body.len;
+		appendBinaryStringInfo(&strs, (const char *) hdr, sizeof(hdr));
+		{
+			/* the offsets are from the start of the section */
+			uint32		base = sizeof(hdr) + (nblk + 1) * sizeof(uint32);
+
+			for (uint32 b = 0; b <= nblk; b++)
+			{
+				uint32		o = boff[b] + base;
+
+				appendBinaryStringInfo(&strs, (const char *) &o, sizeof(o));
+			}
+		}
+		appendBinaryStringInfo(&strs, body.data, body.len);
+		pfree(body.data);
+	}
 	pad8(&strs);
 	for (uint32 i = 0; i < nvals; i++)
 		ent[i] = (OrdEnt) {0, rank[key[i]], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, 0, 0, SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, perm ? SIFT_CGORD_VERSION_TEXTPERM : SIFT_CGORD_VERSION_TEXT, 0, 0, SIFT_CGORD_L_WHOLE);
 	pfree(order);
 	pfree(rank);
 	pfree(boff);
 	pfree(ent);
-	pfree(body.data);
 	pfree(strs.data);
 }
 
@@ -714,6 +726,21 @@ sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint3
 		return false;
 	*nstr = w[0];
 	*nblk = w[2];
+	return true;
+}
+
+bool
+sift_cgord_perm_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *bits)
+{
+	uint32		w[4];
+
+	if (h->strbytes < sizeof(w))
+		return false;
+	memcpy(w, sec, sizeof(w));
+	if (w[1] != sift_cdict_perm_bits(w[0]) || w[2] != 0 || w[3] != 0 || (uint64) h->strbytes != (((uint64) sizeof(w) + ((uint64) w[0] * w[1] + 7) / 8) + 7) / 8 * 8)
+		return false;
+	*nstr = w[0];
+	*bits = w[1];
 	return true;
 }
 
@@ -779,7 +806,7 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 		return false;
 	memcpy(w, blk, sizeof(w));
 	grouped = w[1] == SIFT_CGORD_VERSION_GROUP;
-	text = w[1] == SIFT_CGORD_VERSION_TEXT;
+	text = w[1] == SIFT_CGORD_VERSION_TEXT || w[1] == SIFT_CGORD_VERSION_TEXTPERM;
 	if (w[1] == SIFT_CGORD_VERSION_COMPACT)
 	{
 		if (w[0] != SIFT_CGORD_MAGIC || w[3] > w[2] || w[5] != SIFT_CGORD_ROWS_FINE || w[6] < 1 || w[6] > 16 || w[7] != 0 ||
@@ -793,7 +820,7 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 		w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) ||
 		SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT + (uint64) (text ? w[7] : grouped ? (uint64) w[6] * SIFT_CGORD_GRPENT : 0) > len)
 		return false;
-	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, 0};
+	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, 0, w[1] == SIFT_CGORD_VERSION_TEXTPERM};
 	return true;
 }
 

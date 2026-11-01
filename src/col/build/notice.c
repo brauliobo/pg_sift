@@ -119,6 +119,9 @@ static int
 order_minor(const SiftColLeafStats *ls, int ncols)
 {
 	for (int c = 0; c < ncols; c++)
+		if (ls[c].gord_perm > 0)
+			return SIFT_COL_FORMAT_TEXTPERM;
+	for (int c = 0; c < ncols; c++)
 		if (ls[c].gord_compact_chunks > 0)
 			return SIFT_COL_FORMAT_ORDLAYOUT;
 	return SIFT_COL_FORMAT_ADDRPACK;

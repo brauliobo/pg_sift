@@ -348,6 +348,8 @@ typedef struct GOrdLeaf
 	uint32		nstr;			/* a text block: the number of strings (read by the first one; 0 until then), the block of them in sblk (sbno, sblen bytes; UINT32_MAX: none) */
 	uint32		sbno;
 	uint32		sblen;
+	uint32		pbits;			/* version 5: the bits of a code in the section of the strings */
+	SiftCDict  *sdict;			/* ... and the dictionary the strings are read from, once it is parsed */
 	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
 	SiftCStrPos spos;			/* the decode of the block, which goes on from the string decoded last */
 	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
@@ -518,5 +520,6 @@ extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
 extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g);
 extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c);
 extern uint64	seg_gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern uint32	seg_gord_perm(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r);
 
 #endif

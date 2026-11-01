@@ -31,6 +31,10 @@
  * the bytes of the strings, which end the block: {u32 strings, u32 strings in a block, u32 blocks, u32 0}, u32 offset[blocks + 1] from the start of this section, then the
  * blocks of SIFT_CGORD_STR_BLK strings in rank order, each string a front coded {varint bytes shared with the one before, varint bytes of its own, the bytes}. A string is
  * at most SIFT_COL_DICT_MAX_ENTRY bytes (a leaf with a longer one, which a unit stores inline, gets no block).
+ *
+ * Version 5, a text block of column format minor 42: as version 3, but the section that ends the block holds no strings, only where to find them: {u32 strings, u32 bits, u32 0, u32 0},
+ * then the dictionary code of the string of every rank, `bits` wide each, lowest first, padded to 8 bytes. The string of a rank is the one the segment's dictionary of the leaf holds for
+ * that code (a dictionary of CDICT_LOOKUP_MIN strings or more is written in blocks to be read in place), so the block does not keep a second copy of the strings.
  */
 #ifndef SIFT_COL_GORDER_H
 #define SIFT_COL_GORDER_H
@@ -44,6 +48,7 @@
 #define SIFT_CGORD_VERSION_GROUP	2
 #define SIFT_CGORD_VERSION_TEXT	3
 #define SIFT_CGORD_VERSION_COMPACT	4
+#define SIFT_CGORD_VERSION_TEXTPERM	5
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_TIES	4		/* SiftCGOrdDir.pad bit 2, with SIFT_CGORD_COMPACT: the chunk has a run of SIFT_CGORD_TIE_RUN equal keys or more, which the buckets do not tell apart */
 #define SIFT_CGORD_TIE_RUN	8
@@ -100,6 +105,7 @@ typedef struct SiftCGOrdHdr
 	uint32		head;			/* a block of the ends only: the entries of the first end (the others of the values are the last end); else 0 */
 	uint32		vtotal;			/* ... and the values the segment has in all; 0: the block is complete */
 	uint32		quant;			/* version 4: the buckets per mean gap the writer chose; else 0 */
+	bool		strperm;		/* version 5: the section after the chunks holds the dictionary code of each rank, not the strings */
 } SiftCGOrdHdr;
 
 /* What a scan wants of the blocks (sift_col_gorder_open): a block of the ends only answers a scan of few rows that starts at an end of it */
@@ -161,7 +167,8 @@ typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, 
 extern SiftCStrCmp sift_cgord_strcmp;
 /* The order of the strings of a text block: the collation, then the bytes (what the b-tree of the column does) */
 extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
-extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, StringInfo out);
+/* perm: the block names the strings by their dictionary codes (version 5) instead of holding them (version 3) */
+extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, bool perm, StringInfo out);
 /* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
 typedef struct SiftCStrPos
 {
@@ -173,6 +180,8 @@ typedef struct SiftCStrPos
 extern bool sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint32 idx, char *out, uint32 *slen);
 /* The strings section of a block of len bytes whose header was parsed: its number of strings and blocks; false when it is malformed */
 extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
+/* ... and of a version 5 block: its number of strings and the bits of a code; the code of rank r from the bytes at `sec` + 16 */
+extern bool sift_cgord_perm_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *bits);
 
 #ifdef SIFT_TESTING
 extern bool sift_test_col_gorder_noskip;	/* sift.test_col_gorder_noskip: an OFFSET walks the entries it throws away (sift_gord_skip takes none) */

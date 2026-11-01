@@ -245,6 +245,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 33 to 39 (the point directories at `ceil(keys * 4 / 3)` slots, the chunk table before the directory, the rollup lengths, the directory records at the end of the dictionary section, the packed order of a dictionary searched in place) | 3.7; 3.6 and older refuse them |
 | column format 40 | 3.8; 3.7 and older refuse the segments; a list in `order_array_columns` keeps complete arrays |
 | column format 41 (a compact chunk in an order array; `order_layout` auto, the default, writes it for spread keys such as a timestamp) | 3.8; 3.7 and older refuse the segments; `order_layout = 'whole'` and a REINDEX, or `sift.col_format_minor` 14, write what they read |
+| column format 42 (the order array of a text column names its strings by dictionary code) | 3.8; 3.7 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

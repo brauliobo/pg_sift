@@ -117,8 +117,16 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		ob->nvals = a->n;
 		if (sift_cgord_leaf_text(&w->schema->cols[c]))
 		{
+			PointAcc   *pa = &w->pt[c];
+
 			w->anytextord = true;
-			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, &ob->tab);
+			/* the dictionary is read in place by code: the setting allows the blocks form and the leaf's dictionary is not left out of it */
+			pa->tperm = w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->inexact;
+#ifdef SIFT_TESTING
+			pa->tperm = pa->tperm && !sift_test_col_gorder_strings;
+#endif
+			w->anytextperm = pa->tperm || w->anytextperm;
+			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, pa->tperm, &ob->tab);
 		}
 		else
 		{
@@ -147,6 +155,7 @@ bool		sift_test_col_point_unpacked = false;
 bool		sift_test_col_point_unrooted = false;
 
 bool		sift_test_col_gorder_unpacked = false;
+bool		sift_test_col_gorder_strings = false;
 
 bool		sift_test_col_dict_unpacked = false;
 #endif

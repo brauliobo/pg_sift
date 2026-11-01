@@ -103,8 +103,11 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, cr, 0, 0, 0, 0};
 		if (text)
 		{
-			/* the keys and addresses (4.4 bytes) and the strings, which front coding shortens by a tenth; the build adds the sort of the strings, by strcoll under a locale */
-			cand[ncand].bytes = 4.4 + Min(width, 255) * Min(1.0, ndistinct / Max(keycols_heap_rows(heap), 1)) * 0.9;
+			/* the keys and addresses (4.4 bytes), the dictionary code of each distinct string (the bits of a code) and the dictionary written in blocks to be read by code (a tenth of the width of each
+			 * string more than the compact form); the build adds the sort of the strings, by strcoll under a locale */
+			double		distinct = Min(1.0, ndistinct / Max(keycols_heap_rows(heap), 1));
+
+			cand[ncand].bytes = 4.4 + distinct * (sift_cdict_perm_bits((uint32) Min(ndistinct, (double) UINT32_MAX)) / 8.0 + Min(width, 255) * 0.1);
 			cand[ncand].write = (varstr_cmp("a", 1, "B", 1, TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attcollation) < 0 ? GORD_TEXT_WRITE_LOC : GORD_TEXT_WRITE_C) * 4.0 / index->rd_index->indnatts;
 		}
 		ncand++;

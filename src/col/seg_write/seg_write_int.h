@@ -28,6 +28,7 @@ typedef struct PointAcc
 	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
 	bool		ends;			/* ... and keeps the ends of its order only (sift_cgord_pay, column format minor 40) */
+	bool		tperm;			/* the order of the text leaf names its strings by their dictionary codes (version 5), so the dictionary is written to be read in place */
 	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
 	int64	   *gk;				/* ord with a group leaf: the group of each entry of key, and of each one of ntid (a row with no group is left out when the block is built) */
 	uint8	   *gok;
@@ -125,6 +126,7 @@ struct SiftColSegWriter
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anydense;		/* ... and some chunk codes its addresses with the bits of its largest offset (minor 38) */
 	bool		anytextord;		/* ... and some leaf of text (minor 32) */
+	bool		anytextperm;	/* ... whose strings it names by dictionary codes (minor 42) */
 	bool		wantord;		/* some leaf has a global order block to write: its addresses are packed, so the segment is of the rooted layout */
 	bool		wantends;		/* ... some leaf will, so the segment is of the rooted layout whether or not it has a point directory */
 	bool		anyends;		/* ... and some of them keeps the ends of the order only (minor 40) */

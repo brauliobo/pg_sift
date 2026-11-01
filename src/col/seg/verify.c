@@ -100,13 +100,25 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	if (g->hdr.strbytes != 0)
 	{
 		uint32		len;
+		uint8	   *seen = g->hdr.strperm ? palloc0(g->nstr / 8 + 1) : NULL;
 
 		for (uint32 r = 0; r < g->nstr; r++)
 		{
 			(void) sift_cseg_gorder_str(seg, col, r, &len);
+			/* a version 5 block names every string of the dictionary once */
+			if (seen != NULL)
+			{
+				uint32		code = seg_gord_perm(seg, g, col, r);
+
+				if (seen[code / 8] >> (code % 8) & 1)
+					corrupt(seg, "The global order of leaf %d names the string %u twice.", col, code);
+				seen[code / 8] |= 1 << (code % 8);
+			}
 			if (r % 4096 == 0)
 				CHECK_FOR_INTERRUPTS();
 		}
+		if (seen != NULL)
+			pfree(seen);
 	}
 }
 
