@@ -319,6 +319,19 @@ FROM (VALUES ('point', '1:eq:' || :'u1'),
      LATERAL sift._test_col_counters('su_on', q.preds) c, LATERAL sift._test_col_counters('su_off', q.preds) w ORDER BY 1;
 DROP TABLE su, su_b, su_q;
 
+-- many probes in one statement test the summaries of the same segments again and again (the summaries are kept for the backend, and the units that a range cut are remembered for the
+-- next test of it): the counts are the heap's, for a key, two bounds, a bound with an equality and a key no row has
+CREATE TABLE ss_p (n int, shape text, q text);
+INSERT INTO ss_p VALUES
+	(1, 'equality',   'SELECT sum(x.c) FROM generate_series(1, 100) k, LATERAL (SELECT count(*) AS c FROM %s WHERE parent_id = mod(k * 17, 5000)) x'),
+	(2, 'two bounds', 'SELECT sum(x.c) FROM generate_series(1, 100) k, LATERAL (SELECT count(*) AS c FROM %s WHERE parent_id >= mod(k * 17, 5000) AND parent_id <= mod(k * 17, 5000) + 4) x'),
+	(3, 'one bound',  'SELECT sum(x.c) FROM generate_series(1, 100) k, LATERAL (SELECT count(*) AS c FROM %s WHERE kind = mod(k, 60) AND parent_id > 4900 + mod(k, 90)) x'),
+	(4, 'absent',     'SELECT sum(x.c) FROM generate_series(1, 100) k, LATERAL (SELECT count(*) AS c FROM %s WHERE parent_id = 5000 + k) x');
+SELECT n, shape, ss_rows(format(q, 'ss'), true) = ss_rows(format(q, 'ss_b'), true) AND ss_rows(format(q, 'ss'), true) = ss_rows(format(q, 'ss'), false) AND
+       ss_rows(format(q, 'ss'), true) NOT LIKE 'ERROR%' AS same
+FROM ss_p ORDER BY n;
+DROP TABLE ss_p;
+
 DROP TABLE sa, ss, ss_b, ss_q, sr CASCADE;
 DROP FUNCTION ss_rows(text, bool), ss_units(text), ss_check(text, text), ss_cost(text), ss_by_set(text);
 DROP EXTENSION pg_sift_helpers;

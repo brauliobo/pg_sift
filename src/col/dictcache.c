@@ -218,35 +218,64 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 }
 
 /*
- * The zone arrays of a leaf of a segment (min, max, sums, counts, flags, filters of every unit: the bytes a scan tests whatever few units it reads) are
- * the entry of the leaf at unit UINT32_MAX - 1. They are found without the header: a scan has opened the segment, whose head was checked against it.
+ * What a scan keeps of a leaf of a segment whatever few units it reads is the entry of the leaf at a unit number past the last unit: the zone arrays (min, max, sums,
+ * counts, flags, filters of every unit) at UINT32_MAX - 1, the small-set summaries of the units (sets.c) at UINT32_MAX - 3 (UINT32_MAX - 2 is the bisect table's). They are found without the header: a scan has
+ * opened the segment, whose head was checked against it.
  */
 #define ZONES_UNIT	(UINT32_MAX - 1)
+#define SETS_UNIT	(UINT32_MAX - 3)
 
-ZoneArrays *
-sift_cseg_zones_find(SiftColSegment *seg, int col)
+static void *
+leaf_find(SiftColSegment *seg, int col, uint32 unit)
 {
 	DictKey		k;
 	DictEnt    *e;
 
 	if (cache == NULL)
 		return NULL;
-	dict_key(&k, seg, col, ZONES_UNIT);
+	dict_key(&k, seg, col, unit);
 	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
 		return NULL;
-	CDICT_STAT(zone_hits);
 	dict_pin(e, seg->mcxt);
 	return e->obj;
+}
+
+static void
+leaf_keep(SiftColSegment *seg, int col, uint32 unit, MemoryContext cx, void *obj)
+{
+	DictKey		k;
+
+	dict_key(&k, seg, col, unit);
+	obj_keep(&k, cx, obj, seg->mcxt);
+}
+
+ZoneArrays *
+sift_cseg_zones_find(SiftColSegment *seg, int col)
+{
+	ZoneArrays *z = leaf_find(seg, col, ZONES_UNIT);
+
+	if (z != NULL)
+		CDICT_STAT(zone_hits);
+	return z;
 }
 
 void
 sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
 {
-	DictKey		k;
-
 	CDICT_STAT(zone_loads);
-	dict_key(&k, seg, col, ZONES_UNIT);
-	obj_keep(&k, cx, z, seg->mcxt);
+	leaf_keep(seg, col, ZONES_UNIT, cx, z);
+}
+
+void *
+sift_cseg_sets_find(SiftColSegment *seg, int col)
+{
+	return leaf_find(seg, col, SETS_UNIT);
+}
+
+void
+sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets)
+{
+	leaf_keep(seg, col, SETS_UNIT, cx, sets);
 }
 
 /*

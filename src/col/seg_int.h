@@ -402,6 +402,7 @@ typedef struct SegPriv
 	uint64    **setdir;			/* [ncols] its directory, once read */
 	uint8	   *setbuf;
 	Size		setcap;
+	struct SetsOpen **setopen;	/* [ncols] the opened summaries of the units of a leaf whose blobs are small, once found or made */
 	SetsLeaf   *hlls;			/* [ncols] the sketch record of each leaf (dir_off 0: none), read on first use */
 	uint64    **hlldir;			/* [ncols] its directory, once read */
 	uint8	   *hllbuf;
@@ -450,6 +451,9 @@ extern void sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, Memor
 /* The zone arrays of leaf col of seg from the cache (pinned for the segment's context), else NULL; keep takes the ones made in cx, a child of the segment's context */
 extern ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
 extern void sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z);
+/* ... and the opened small-set summaries of the units of leaf col (sets.c), made in cx the same way */
+extern void *sift_cseg_sets_find(SiftColSegment *seg, int col);
+extern void sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets);
 
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
 typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);

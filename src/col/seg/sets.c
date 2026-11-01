@@ -73,6 +73,7 @@ seg_set_leaf(SiftColSegment *seg, int col)
 	{
 		pv->sets = blob_records(seg, "small-set summaries", SETS_MAGIC, PAGG_SETS(h), PAGG_SETS_BYTES(h), SETS_EXACT | SETS_BLOOM | SETS_PRES, sift_cset_leaf_ok);
 		pv->setdir = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(uint64 *));
+		pv->setopen = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(struct SetsOpen *));
 	}
 	return pv->sets[col].dir_off ? &pv->sets[col] : NULL;
 }
@@ -366,12 +367,99 @@ set_may_pass(const SiftCSet *s, const SiftCTest *t, const int64 *codes, int ncod
 	}
 }
 
+/*
+ * The summaries of the units of a leaf whose blobs fit SET_OPEN_MAX bytes, read with one read and checked once, and kept by the backend with the zones of the leaf
+ * (dictcache.c): a lookup that scans for one key (a lateral top-1, a point probe) opens its segments again at every call and tests the summary of every unit each time,
+ * which would read and check each blob again. The memo and the state of the units are the cache's to change: they hold what is true of the immutable segment.
+ */
+#define SET_OPEN_MAX	(1 << 20)
+
+enum {SET_UNSEEN, SET_NONE, SET_OPEN};
+
+#define SET_MEMO_N		4				/* the ranges of one probe: an equality is the key itself and the two sides of it */
+
+typedef struct SetsOpen
+{
+	uint64	   *dir;				/* [nsb + 1] */
+	SiftCSet   *set;				/* [nsb] */
+	uint8	   *state;				/* [nsb] SET_UNSEEN, SET_NONE or SET_OPEN */
+	uint8	   *memo;				/* [SET_MEMO_N][nsb] for the ranges [mlo, mhi] last tested: 0 not tested, 1 the unit may hold a key of it, 2 it holds none */
+	int64		mlo[SET_MEMO_N];
+	int64		mhi[SET_MEMO_N];
+	int			mnext;
+	uint8	   *blobs;
+} SetsOpen;
+
+/* The kept summaries of leaf col of seg (read on the first call), NULL when its blobs are not small */
+static SetsOpen *
+set_open(SiftColSegment *seg, int col, const SetsLeaf *sl)
+{
+	SegPriv    *pv = PRIV(seg);
+	SetsOpen   *o = pv->setopen[col];
+	MemoryContext cx;
+	uint32		len;
+
+	if (o != NULL || sl->bytes > SET_OPEN_MAX)
+		return o;
+	if (HEAD_CACHED())
+		o = sift_cseg_sets_find(seg, col);
+	if (o == NULL)
+	{
+		cx = AllocSetContextCreate(seg->mcxt, "sift cache small-set summaries", ALLOCSET_SMALL_SIZES);
+		o = MemoryContextAllocZero(cx, sizeof(SetsOpen));
+		/* the directory is read with the blob of the first unit */
+		(void) sift_cseg_set(seg, col, 0, &len);
+		o->dir = MemoryContextAlloc(cx, (seg->nsb + 1) * sizeof(uint64));
+		memcpy(o->dir, pv->setdir[col], (seg->nsb + 1) * sizeof(uint64));
+		o->set = MemoryContextAlloc(cx, seg->nsb * sizeof(SiftCSet));
+		o->state = MemoryContextAllocZero(cx, seg->nsb);
+		o->memo = MemoryContextAllocZero(cx, (Size) SET_MEMO_N * seg->nsb);
+		for (int i = 0; i < SET_MEMO_N; i++)
+			o->mlo[i] = 1, o->mhi[i] = 0;
+		o->blobs = MemoryContextAlloc(cx, Max(sl->bytes, 1));
+		if (sl->bytes > 0)
+			seg_read(seg, seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + sl->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64), sl->bytes, o->blobs);
+		if (HEAD_CACHED())
+			sift_cseg_sets_keep(seg, col, cx, o);
+	}
+	pv->setopen[col] = o;
+	return o;
+}
+
+/* The checked summary of unit u of leaf col (NULL: the unit has none); o: set_open's, NULL when the blobs are not kept, then tmp holds it */
+static const SiftCSet *
+set_unit(SiftColSegment *seg, int col, SetsOpen *o, uint32 u, SiftCSet *tmp)
+{
+	const uint8 *blob;
+	uint32		len;
+
+	if (o == NULL)
+	{
+		blob = sift_cseg_set(seg, col, u, &len);
+		if (blob == NULL)
+			return NULL;
+		if (!sift_cset_open(blob, len, tmp))
+			corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
+		return tmp;
+	}
+	if (o->state[u] == SET_UNSEEN)
+	{
+		len = o->dir[u + 1] - o->dir[u];
+		if (len != 0 && !sift_cset_open(o->blobs + o->dir[u], len, &o->set[u]))
+			corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
+		o->state[u] = len == 0 ? SET_NONE : SET_OPEN;
+	}
+	return o->state[u] == SET_OPEN ? &o->set[u] : NULL;
+}
+
 /* Clears the bits of the units [ulo, uhi) whose summary shows that no key can pass t, and sets their bits in setcut (NULL: not told). Units with overflow values or inline strings are left alone */
 void
 sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
 {
 	const ZoneArrays *z;
 	const SetsLeaf *sl;
+	SetsOpen   *o;
+	uint8	   *memo = NULL;
 	int64		codes[SET_PROBE_KEYS];
 	int			ncodes = -1;
 	uint32		todo = 0;
@@ -402,20 +490,45 @@ sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *k
 	if (t->kind == SIFT_CT_SET && (uint64) t->nset * todo > SET_PROBE_WORK)
 		return;
 	z = zone_arrays(seg, col);
+	o = set_open(seg, col, sl);
+	/* a begin of a top-N scan prunes the same units for the same ranges again and again (an equality probe is a range of one key) */
+	if (o != NULL && t->kind == SIFT_CT_RANGE)
+	{
+		for (int i = 0; i < SET_MEMO_N && memo == NULL; i++)
+			if (o->mlo[i] == t->lo && o->mhi[i] == t->hi)
+				memo = o->memo + (Size) i * seg->nsb;
+		if (memo == NULL)
+		{
+			memo = o->memo + (Size) o->mnext * seg->nsb;
+			memset(memo, 0, seg->nsb);
+			o->mlo[o->mnext] = t->lo;
+			o->mhi[o->mnext] = t->hi;
+			o->mnext = (o->mnext + 1) % SET_MEMO_N;
+		}
+	}
 	for (uint32 u = ulo; u < uhi; u++)
 	{
-		const uint8 *blob;
-		uint32		len;
-		SiftCSet	s;
+		SiftCSet	tmp;
+		const SiftCSet *s;
+		bool		pass;
 
 		if (!(keep[u / 64] >> (u % 64) & 1) || (z->flags[u] & (SIFT_COLZ_OVERFLOW | SIFT_COLZ_INLINE)) || z->nnull[u] >= z->nvals[u])
 			continue;
-		blob = sift_cseg_set(seg, col, u, &len);
-		if (blob == NULL)
+		/* the smallest and the largest key of a unit are in its set: one in the range keeps the unit, and the set of a wide range need not be read */
+		if (t->kind == SIFT_CT_RANGE && ((z->min[u] >= t->lo && z->min[u] <= t->hi) || (z->max[u] >= t->lo && z->max[u] <= t->hi)))
 			continue;
-		if (!sift_cset_open(blob, len, &s))
-			corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
-		if (!set_may_pass(&s, t, codes, ncodes))
+		if (memo != NULL && memo[u] != 0)
+			pass = memo[u] == 1;
+		else
+		{
+			s = set_unit(seg, col, o, u, &tmp);
+			if (s == NULL)
+				continue;
+			pass = set_may_pass(s, t, codes, ncodes);
+			if (memo != NULL)
+				memo[u] = pass ? 1 : 2;
+		}
+		if (!pass)
 		{
 			keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 			if (setcut)
