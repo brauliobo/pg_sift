@@ -119,6 +119,7 @@ extern bool sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint3
 #define SIFT_GORD_UNKNOWN	(-2)
 extern int	sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid);
 extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid);
+extern void sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern void sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);

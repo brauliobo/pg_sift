@@ -52,10 +52,9 @@ SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 199, 200, 201, 3000, 11990]);
 SELECT * FROM ot_all(300, ARRAY[100, 3000]);
  result  | n  
 ---------+----
- fetched |  2
  same    | 12
- skipped | 10
-(3 rows)
+ skipped | 12
+(2 rows)
 
 -- a condition on another column that the array cannot decide alone is tested on the heap row of each entry: no group is skipped, the rows are the same
 SELECT result, count(*) FROM (
@@ -84,9 +83,9 @@ VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
  result  | n  
 ---------+----
- fetched | 10
+ fetched |  9
  same    | 36
- skipped |  2
+ skipped |  3
 (3 rows)
 
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key

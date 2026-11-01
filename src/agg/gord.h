@@ -44,6 +44,8 @@ extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerDat
 extern int sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid);
 /* The sift_gord_next just made dropped an entry that repeated the one it gave before */
 extern bool sift_gord_repeated(const SiftGOrd *g);
+extern int	sift_gord_src(const SiftGOrd *g);
+extern void sift_gord_values(const SiftGOrd *g, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 /* An entry sift_gord_skip took off the front that the heap has to confirm: the address, and its key when the block has it exactly (check) */
 typedef struct SiftGPend
 {

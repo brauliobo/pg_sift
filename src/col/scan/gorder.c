@@ -707,3 +707,86 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 	}
 	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
 }
+
+/* The values of leaf col at n heap addresses, sorted by (source, address) in ord for one pass over the units */
+typedef struct ValPair
+{
+	int			seg;
+	SiftKey		tid;
+	uint32		at;
+} ValPair;
+
+static int
+val_pair_cmp(const void *a, const void *b)
+{
+	const ValPair *x = a,
+			   *y = b;
+
+	return x->seg != y->seg ? (x->seg < y->seg ? -1 : 1) : SIFT_CMP3(x->tid, y->tid);
+}
+
+/* The m rows of unit u at keys (ascending): false when the unit cannot say (a key-cut unit, a row not found, a chunk that is not plain integers) */
+static bool
+unit_values(SiftColSegment *seg, uint32 u, int col, const SiftKey *keys, uint32 m, int64 *val, uint8 *st)
+{
+	SiftCUnitView v;
+	SiftCChunk	c;
+	uint32	   *rows = palloc(m * sizeof(uint32));
+
+	if (seg->schema->cols[col].store != SIFT_COLS_INT || !sift_cseg_unit_view(seg, u, &v) || v.keyed ||
+		sift_cunit_find_rows(&v, sift_block_sb(sift_key_block(keys[0])), keys, m, rows) != m)
+		return false;
+	if (v.chunk_len[col] > 0)
+		sift_cseg_unit_fill(seg, u, v.chunk_off[col], v.chunk_len[col]);
+	if (!sift_cunit_chunk(&v, col, &c))
+		memset(st, 2, m);		/* no chunk: every value of the unit is NULL */
+	else
+	{
+		if (c.n != v.nrows)
+			return false;
+		sift_cchunk_decode_sel(&c, rows, m, val);
+		for (uint32 k = 0; k < m; k++)
+			st[k] = c.ovf != NULL && sift_col_bit_test(c.ovf, rows[k]) ? 0 : c.nulls != NULL && sift_col_bit_test(c.nulls, rows[k]) ? 2 : 1;
+	}
+	pfree(rows);
+	return true;
+}
+
+/*
+ * The value of integer leaf col of the rows at the heap addresses tid[k] of the segment seg[k], read from the units (the caller has them from sift_col_gorder_exact: live, on all-visible
+ * pages, so the unit's value is the row's): st[k] 1 with val[k], 2 a NULL, 0 not read (a source that is not a segment, a key-cut unit, a value the leaf cannot hold): the heap has it.
+ */
+void
+sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
+{
+	ValPair    *pr = palloc(n * sizeof(ValPair));
+	int64	   *uv = palloc((n + SIFT_COL_PAD / 8) * sizeof(int64));
+	uint8	   *us = palloc(n);
+	SiftKey	   *keys = palloc(n * sizeof(SiftKey));
+
+	memset(st, 0, n);
+	for (uint32 k = 0; k < n; k++)
+		pr[k] = (ValPair) {.seg = seg[k], .tid = tid[k], .at = k};
+	qsort(pr, n, sizeof(ValPair), val_pair_cmp);
+	for (uint32 a = 0, b; a < n; a = b)
+	{
+		uint32		sb = sift_block_sb(sift_key_block(pr[a].tid)),
+					u;
+
+		for (b = a; b < n && pr[b].seg == pr[a].seg && sift_block_sb(sift_key_block(pr[b].tid)) == sb; b++)
+			keys[b - a] = pr[b].tid;
+		if (pr[a].seg >= src->nseg || (src->flags & COLO_TABLE) || sift_cseg_keyed(&src->seg[pr[a].seg].seg->entry) ||
+			(u = sift_cseg_unit_of_sb(src->seg[pr[a].seg].seg, sb)) >= src->seg[pr[a].seg].seg->nsb ||
+			!unit_values(src->seg[pr[a].seg].seg, u, col, keys, b - a, uv, us))
+			continue;
+		for (uint32 k = a; k < b; k++)
+		{
+			val[pr[k].at] = uv[k - a];
+			st[pr[k].at] = us[k - a];
+		}
+	}
+	pfree(pr);
+	pfree(uv);
+	pfree(us);
+	pfree(keys);
+}

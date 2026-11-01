@@ -372,6 +372,7 @@ typedef struct GGroup
 	ItemPointerData *tid;
 	bool	   *exact;			/* per entry: live and visible, and passes the condition by its key alone */
 	bool	   *dead;			/* per entry: its segment lost the row and no other source repeats it: nothing stands for it, the heap is not asked */
+	int		   *seg;			/* per entry: the source it came from (sift_gord_src) */
 	int			n;
 	int			room;
 	StringInfoData str;			/* the string of the group, for a text key (the key of the array is the rank in a segment) */
@@ -387,6 +388,71 @@ gord_giveup(const SiftTopN *t)
 	return t->gtried + need * t->gtried / (t->gpass + 2.0) > t->gbudget + t->gdirty * (1.0 - exp(-(double) t->gpass / t->gtried * t->grpp));
 }
 
+/* A group of at least this many entries has the keys after the first of its exact entries read from the units, not fetched */
+#define GORD_VALUES_MIN	64
+
+/* The keys after the first are integers the units hold (sift_gord_values) */
+static bool
+gord_int_keys(const SiftTopN *t)
+{
+	for (int j = 1; j < t->nkey; j++)
+		if (t->gscale[j] != 0 || (t->gtyp[j] != INT2OID && t->gtyp[j] != INT4OID && t->gtyp[j] != INT8OID && t->gtyp[j] != DATEOID && t->gtyp[j] != TIMESTAMPOID && t->gtyp[j] != TIMESTAMPTZOID))
+			return false;
+	return t->nkey > 1;
+}
+
+/* The keys after the first of the exact entries of g: val[j * n + i] with st[j * n + i] 1 (value) or 2 (NULL); 0 for an entry whose keys the heap has to give */
+static void
+gord_values(SiftTopN *t, const GGroup *g, int64 *val, uint8 *st)
+{
+	int		   *seg = palloc(g->n * sizeof(int));
+	SiftKey	   *tid = palloc(g->n * sizeof(SiftKey));
+	uint32	   *at = palloc(g->n * sizeof(uint32)),
+				m = 0;
+	int64	   *v = palloc((g->n + SIFT_COL_PAD / 8) * sizeof(int64));
+	uint8	   *s = palloc(g->n);
+
+	memset(st, 0, (size_t) t->nkey * g->n);
+	for (int i = 0; i < g->n; i++)
+		if (g->exact[i] && !g->dead[i])
+		{
+			seg[m] = g->seg[i];
+			tid[m] = sift_key_from_tid(&g->tid[i]);
+			at[m++] = i;
+		}
+	for (int j = 1; j < t->nkey; j++)
+	{
+		sift_gord_values(t->go, t->key[j].leaf, seg, tid, m, v, s);
+		for (uint32 k = 0; k < m; k++)
+		{
+			val[(size_t) j * g->n + at[k]] = v[k];
+			st[(size_t) j * g->n + at[k]] = s[k];
+		}
+	}
+	pfree(seg);
+	pfree(tid);
+	pfree(at);
+	pfree(v);
+	pfree(s);
+}
+
+/* The keys of entry i of a group of n from gord_values, when it has them all */
+static bool
+gord_keys_read(const SiftTopN *t, GRow *r, const int64 *val, const uint8 *st, int n, int i, int64 gkey, bool gnull)
+{
+	for (int j = 1; j < t->nkey; j++)
+		if (st[(size_t) j * n + i] == 0)
+			return false;
+	r->isnull[0] = gnull;
+	r->key[0] = gkey;
+	for (int j = 1; j < t->nkey; j++)
+	{
+		r->isnull[j] = st[(size_t) j * n + i] == 2;
+		r->key[j] = r->isnull[j] ? 0 : val[(size_t) j * n + i];
+	}
+	return true;
+}
+
 /* false: the walk gave up */
 static bool
 gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
@@ -394,6 +460,15 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 	TopFetch   *f = &t->pf[0];
 	int			gstart = t->gqn;
 	bool		thrown = t->gbulk + t->gqn + g->n <= t->skip;
+	int64	   *val = NULL;
+	uint8	   *vst = NULL;
+
+	if (!thrown && g->n >= GORD_VALUES_MIN && gord_int_keys(t))
+	{
+		val = palloc((size_t) t->nkey * g->n * sizeof(int64));
+		vst = palloc((size_t) t->nkey * g->n);
+		gord_values(t, g, val, vst);
+	}
 
 	for (int i = 0; i < g->n; i++)
 	{
@@ -417,7 +492,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 			r->isnull[0] = gnull;
 			r->key[0] = gkey;
 		}
-		if (!thrown || !g->exact[i])
+		if (!(vst != NULL && gord_keys_read(t, r, val, vst, g->n, i, gkey, gnull)) && (!thrown || !g->exact[i]))
 		{
 			bool		call_again = false,
 						all_dead,
@@ -447,6 +522,11 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 	if (!thrown && t->gqn - gstart > 1)
 		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
 	g->n = 0;
+	if (vst != NULL)
+	{
+		pfree(val);
+		pfree(vst);
+	}
 	return true;
 }
 
@@ -460,7 +540,7 @@ gord_prep(SiftTopN *t)
 	bool		isnull,
 				gnull = false,
 				closed = false;
-	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .dead = palloc(64 * sizeof(bool)), .room = 64};
+	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .dead = palloc(64 * sizeof(bool)), .seg = palloc(64 * sizeof(int)), .room = 64};
 	ItemPointerData tid;
 	const char *str = NULL;
 	uint32		slen = 0;
@@ -503,10 +583,12 @@ gord_prep(SiftTopN *t)
 			g.tid = repalloc(g.tid, g.room * sizeof(ItemPointerData));
 			g.exact = repalloc(g.exact, g.room * sizeof(bool));
 			g.dead = repalloc(g.dead, g.room * sizeof(bool));
+			g.seg = repalloc(g.seg, g.room * sizeof(int));
 		}
 		st = gord_entry_state(t, &tid, key, isnull);
 		g.exact[g.n] = st == SIFT_GORD_EXACT;
 		g.dead[g.n] = st == SIFT_GORD_DEAD;
+		g.seg[g.n] = sift_gord_src(t->go);
 		g.tid[g.n++] = tid;
 	}
 	/* the end of the array closes the last group */
@@ -517,6 +599,7 @@ gord_prep(SiftTopN *t)
 	pfree(g.tid);
 	pfree(g.exact);
 	pfree(g.dead);
+	pfree(g.seg);
 	pfree(g.str.data);
 	return closed || !sift_gord_short(t->go) || t->gbulk + t->gqn >= t->limit;
 }

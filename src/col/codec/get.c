@@ -304,6 +304,24 @@ nd_gather(const CcNode *nd, const uint32 *idx, uint32 m, int64 *dst)
 				}
 			}
 			return;
+		case SIFT_CCN_DELTA:
+			/* the rows of one block of 1024 share its prefix sums: one unpack for the rows of the block, not one each */
+			for (uint32 k = 0; k < m;)
+			{
+				uint32		b = idx[k] >> 10,
+							e = k,
+							upto = 0;
+				uint32		tmp[1024 + SIFT_COL_PAD / 4];
+				int64		run[1024 + SIFT_COL_PAD / 8];
+
+				for (; e < m && (idx[e] >> 10) == b; e++)
+					upto = Max(upto, (idx[e] & 1023) + 1);
+				sift_cck->unpack32((const uint32 *) nd->words + (size_t) b * 32 * nd->W, nd->W, rows_for(upto), 0, tmp);
+				sift_cck->prefix64(tmp, upto, run, b ? (int64) get64(nd->chk + 8 * (size_t) (b - 1)) : nd->base, nd->mind);
+				for (; k < e; k++)
+					dst[k] = run[idx[k] & 1023];
+			}
+			return;
 		case SIFT_CCN_WRAP:
 			nd_gather(nd->a, idx, m, dst);
 			return;

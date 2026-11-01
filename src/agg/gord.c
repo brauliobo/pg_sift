@@ -342,6 +342,19 @@ sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid)
 	return g->prev == NULL ? SIFT_GORD_UNKNOWN : sift_colsrc_gorder_state(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
 }
 
+/* The source of the entry sift_gord_next gave last: with its address, what sift_gord_values reads */
+int
+sift_gord_src(const SiftGOrd *g)
+{
+	return g->prev->src;
+}
+
+void
+sift_gord_values(const SiftGOrd *g, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
+{
+	sift_colsrc_gorder_values(g->src, leaf, seg, tid, n, val, st);
+}
+
 bool
 sift_gord_repeated(const SiftGOrd *g)
 {
