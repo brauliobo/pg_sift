@@ -1,6 +1,7 @@
 -- The dead-posting table that VACUUM stores for a segment (the postings of the deleted docs of each term) feeds the document frequency of every query term:
 -- after deletes and updates spread over every superblock, in rounds, the scores are those of the same rows indexed afresh. Terms of every size:
--- some in nearly every doc (posting groups), some in a few (posting lists), one in a single doc.
+-- some in nearly every doc (posting groups), some in a few (posting lists), one in a single doc. Each round clears more than 5% of the segment's docs, which is when
+-- VACUUM counts the table again (below that it stays and the scores are within 1%: dead_stale).
 CREATE EXTENSION pg_sift;
 SELECT sift.version() IS NOT NULL AS library_loaded;
 

@@ -198,7 +198,7 @@ typedef struct SiftLive2HeaderData
 	uint32		ndead;			/* docs vacuumed */
 	uint64		dead_dl;		/* their dl */
 	uint32		nslots;
-	uint32		tbl_ndead;		/* docs the table of dead postings counts: ndead, unless a crash cut a VACUUM short */
+	uint32		tbl_ndead;		/* docs the table of dead postings counts: ndead, unless VACUUM left it short (under 5% cleared since) or a crash cut it short */
 	uint64		reg_off;
 	uint64		rows_off;
 	uint64		tbl_off;

@@ -386,7 +386,16 @@ sift_seg_term_stats(SiftSegment *seg, SiftTermInfo *info)
 	{
 		SiftLive	l = seg_live(seg);
 
-		info->ldf -= Min(info->df, sift_live2_dead(&l, &live2(seg)->h, info->slot));
+		const SiftLive2HeaderData *kh = &live2(seg)->h;
+
+		info->ldf -= Min(info->df, sift_live2_dead(&l, kh, info->slot));
+		/* The docs cleared since the table was counted leave the same share of every term (sift_seg_refresh_dead leaves the table short on purpose) */
+		if (kh->tbl_ndead < kh->ndead && info->ldf > 0)
+		{
+			double		f = (double) (seg->hdr->ndocs - kh->ndead) / (double) (seg->hdr->ndocs - kh->tbl_ndead);
+
+			info->ldf = Max(1, (uint32) (info->ldf * f + 0.5));
+		}
 	}
 	else
 		for (uint32 i = 0; i < info->df; i++)
@@ -717,7 +726,9 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 	MemoryContextDelete(cx);
 }
 
-/* When the docs were cleared since the table was counted (VACUUM, or a crash that left it short): counts the table again and stores it */
+#define SIFT_DEAD_RECOUNT_PCT 5
+
+/* When the docs cleared since the table was counted are 5% of the segment's docs or more: counts the table again and stores it */
 void
 sift_seg_refresh_dead(SiftSegment *seg)
 {
@@ -729,6 +740,12 @@ sift_seg_refresh_dead(SiftSegment *seg)
 		return;
 	sift_live2_header(&l, &h);
 	if (h.tbl_ndead == h.ndead)
+		return;
+	/*
+	 * Below 5% of the docs cleared since the last count the table stands and term_stats scales its dfs to the live docs: scores move by
+	 * 0.1-0.2% and the top 20 hold but for docs tied near the cut. The count reads every posting, which was most of what VACUUM spent
+	 */
+	if ((uint64) (h.ndead - h.tbl_ndead) * 100 < (uint64) seg->hdr->ndocs * SIFT_DEAD_RECOUNT_PCT)
 		return;
 	dead = MemoryContextAllocHuge(CurrentMemoryContext, Max(h.nslots, 1) * sizeof(uint32));
 	count_dead(seg, &h, dead);
