@@ -465,8 +465,25 @@ sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve,
 {
 	int			vv,
 				j = gorder_src(src, i, &vv);
+	const ColGOrdMem *g = src->gmem[vv];
+	uint32		lo = vs,
+				hi = ve;
 
-	return j < src->nseg && sift_cseg_gorder_before(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, v, desc, clo, chi, memo);
+	if (j < src->nseg)
+		return sift_cseg_gorder_before(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, v, desc, clo, chi, memo);
+	/* the write buffer's entries are sorted in memory: the count of those that may come first is exact, and none of them is certainly a row (it is not in the heap's all-visible pages yet), so none is given up */
+	if (!desc)
+	{
+		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] < v);
+		*chi = lo - vs;
+	}
+	else
+	{
+		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] <= v);
+		*chi = ve - lo;
+	}
+	*clo = 0;
+	return true;
 }
 
 void
