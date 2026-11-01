@@ -267,7 +267,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
 	{
-		startup = (AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
+		startup = c->level_params != NIL ? AGG_GORD_RESTART * cpu_operator_cost :
+			(AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}
 	p->startup_cost = startup + k.scan_cost;
