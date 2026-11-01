@@ -195,10 +195,7 @@ worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 	AbortCurrentTransaction();
 	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	ereport(WARNING,
-			(errcode(err->sqlerrcode),
-			 errmsg("sift_col index \"%s\": maintenance failed: %s", name, err->message),
-			 errdetail("It is retried later, after a growing delay.")));
+	sift_maint_warn_failure("sift_col", name, err);
 	sift_maint_record_failure(indexoid, err);
 	FreeErrorData(err);
 }

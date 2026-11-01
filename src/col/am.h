@@ -66,6 +66,8 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
+/* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
+extern void sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail);
 extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
 extern bool sift_col_options_key_cut_auto(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */

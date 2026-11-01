@@ -89,6 +89,11 @@ INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
+-- the setting silences the advice
+SET sift.cluster_advice = off;
+CREATE INDEX kf_quiet ON kf USING sift_col (tenant_id);
+RESET sift.cluster_advice;
+DROP INDEX kf_quiet;
 SET client_min_messages = warning;
 CREATE INDEX ka_seq ON ka USING sift_col (tenant_id, seq, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 CREATE INDEX ka_wide ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);

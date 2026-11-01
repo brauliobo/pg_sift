@@ -95,6 +95,16 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
 }
 
+/* The WARNING of a maintenance step that failed and is retried: kind is "sift" or "sift_col" */
+void
+sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err)
+{
+	ereport(WARNING,
+			(errcode(err->sqlerrcode),
+			 errmsg("%s index \"%s\": maintenance failed: %s", kind, name, err->message),
+			 errdetail("It is retried later, after a growing delay.")));
+}
+
 /* A background worker whose transaction failed (sift_col steps run outside a subtransaction): its own transaction keeps the failure like run_step does */
 void
 sift_maint_record_failure(Oid indexoid, ErrorData *err)
@@ -149,10 +159,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 	sift_wt_abort(wt);
 	if (propagate || ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	ereport(WARNING,
-			(errcode(err->sqlerrcode),
-			 errmsg("sift index \"%s\": maintenance failed: %s", RelationGetRelationName(index), err->message),
-			 errdetail("It is retried later, after a growing delay.")));
+	sift_maint_warn_failure("sift", RelationGetRelationName(index), err);
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);
 	return SIFT_STEP_FAILED;

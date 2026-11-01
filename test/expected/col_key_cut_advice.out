@@ -35,9 +35,9 @@ SET sift.col_format_minor = 14;
 CREATE INDEX kt_arrival_col ON kt_arrival USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
 CREATE INDEX kt_clustered_col ON kt_clustered USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
 CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
-NOTICE:  sift_col index "kt_refilled_col": an equality on "tenant_id" reads 34 of 34 units, and no other leaf of the index follows the order of the table
-DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.
-HINT:  Run CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kt_refilled_col SET (key_cut = 'tenant_id') and REINDEX; SET sift.cluster_advice = off silences this advice.
+NOTICE:  sift_col index "kt_refilled_col": an equality on "tenant_id" reads about 34 of 34 units, where 1 hold its rows; key_cut = 'tenant_id' would cut that
+DETAIL:  No other leaf of the index follows the order of the table. key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.
+HINT:  If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kt_refilled_col SET (key_cut = 'tenant_id') and REINDEX; to silence this advice, SET sift.cluster_advice = off.
 RESET sift.col_format_minor;
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) kt_arrival, kt_clustered, kt_refilled;

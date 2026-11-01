@@ -513,6 +513,19 @@ decide(Relation heap, Relation index, bool dry, CutVerdict *v)
  * Before a build of an index with no key_cut of its own: reads the sample and writes 'auto: col' to the option when the rule above holds (and 'auto' when
  * an earlier build chose a key and this one does not). Returns what it did.
  */
+void
+sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail)
+{
+	if (!sift_cluster_advice || !sift_col_options(index)->cluster_advice)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that",
+					RelationGetRelationName(index), how, leaf, reads, units, ideal, keys),
+			 errdetail_internal("%s", detail),
+			 errhint("If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; to silence this advice, SET sift.cluster_advice = off.",
+					 keys, quote_identifier(RelationGetRelationName(index)), keys)));
+}
+
 SiftAutoCut
 sift_col_auto_cut(Relation heap, Relation index)
 {
@@ -545,13 +558,9 @@ sift_col_auto_cut(Relation heap, Relation index)
 		{
 			const char *keys = v.second[0] ? psprintf("%s, %s", v.leaf, v.second) : v.leaf;
 
-			ereport(NOTICE,
-					(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that, and the index would grow by %.1f%%",
-							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys, v.growth),
-					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5%% in a lookup is one unit of benefit, 3%% of growth and 5%% of build instructions one of cost). No other leaf follows the order of the table.",
-							   v.sampled, v.benefit, v.cost),
-					 errhint("If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX.",
-							 keys, quote_identifier(RelationGetRelationName(index)), keys)));
+			sift_col_key_cut_advice(index, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys,
+									psprintf("The index would grow by %.1f%%. The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5%% in a lookup is one unit of benefit, 3%% of growth and 5%% of build instructions one of cost). No other leaf follows the order of the table.",
+											 v.growth, v.sampled, v.benefit, v.cost));
 		}
 	}
 	return v.res;

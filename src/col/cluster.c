@@ -359,15 +359,12 @@ sift_col_report_key_cut(Relation index)
 	}
 	if (key >= 0 && !competing)
 	{
-		const char *name = quote_identifier(RelationGetRelationName(index));
 		const char *leaf = NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[key].attno - 1)->attname);
+		double		per_value = leaf_rows_per_value(index, &sc->cols[key], rows);
 
 		MemoryContextSwitchTo(old);
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": an equality on \"%s\" reads %.0f of %lld units, and no other leaf of the index follows the order of the table",
-						RelationGetRelationName(index), leaf, kc.point, (long long) units),
-				 errdetail("key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.", leaf),
-				 errhint("Run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; SET sift.cluster_advice = off silences this advice.", leaf, name, leaf)));
+		sift_col_key_cut_advice(index, "an equality on", leaf, kc.point, (double) units, Max(1, ceil(per_value * units / rows)), leaf,
+								psprintf("No other leaf of the index follows the order of the table. key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.", leaf));
 		MemoryContextSwitchTo(cx);
 	}
 close:

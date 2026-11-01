@@ -477,6 +477,44 @@ cap_add(CapKind *k, const char *item, uint32 hits, uint32 units, const char *ext
 	k->n++;
 }
 
+/* The columns the 16 dimensions of the cube leave out: plain columns without a histogram (the default cube) and date columns without calendar cells (calendar_columns = 'all'), one NOTICE */
+static void
+cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft)
+{
+	const SiftCPaggSpec *spec = &rel->pagg;
+	int			missing[SIFT_COL_MAX_COLS];
+	int			ncal = spec->cal_all ? sift_cpagg_cal_missing(rel->schema, spec, missing, lengthof(missing)) : 0;
+	StringInfoData cal,
+				what,
+				detail,
+				hint;
+
+	if (nleft == 0 && ncal == 0)
+		return;
+	initStringInfo(&cal);
+	initStringInfo(&what);
+	initStringInfo(&detail);
+	initStringInfo(&hint);
+	for (int i = 0; i < ncal && i < lengthof(missing); i++)
+		appendStringInfo(&cal, "%s\"%s\"", i ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
+	if (nleft > 0)
+	{
+		appendStringInfo(&what, "the histograms of %d column%s: %s", nleft, nleft == 1 ? "" : "s", left);
+		appendStringInfo(&detail, "The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",
+						 strncmp(sift_col_options_preagg(index), "auto:", 5) == 0 ? "the columns in the order chosen at CREATE INDEX, those whose histograms fit first" : "the columns in their order");
+		appendStringInfoString(&hint, "Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.");
+	}
+	if (ncal > 0)
+	{
+		appendStringInfo(&what, "%sthe calendar cells of %d date or timestamp column%s (calendar_columns = 'all'): %s", nleft > 0 ? " and " : "", ncal, ncal == 1 ? "" : "s", cal.data);
+		appendStringInfo(&detail, "%sThe other columns of the index take the dimensions that the calendar cells of the dates leave; a query that groups by a date left out scans the units.", nleft > 0 ? " " : "");
+		appendStringInfo(&hint, "%sName the columns the queries group by in calendar_columns (the list must fit the %d dimensions), or give preagg = 'cube(...)' only the dims they need.", nleft > 0 ? " " : "", SIFT_PAGG_MAX_DIMS);
+	}
+	ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube holds %d dimensions and leaves out %s", RelationGetRelationName(index), SIFT_PAGG_MAX_DIMS, what.data),
+					 errdetail_internal("%s", detail.data),
+					 errhint("%s", hint.data)));
+}
+
 /*
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
  * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
@@ -618,26 +656,7 @@ sift_col_report_caps(Relation index)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims writes no rollup of %s in %d%% or more of the units, which hold more combinations of them than a unit may keep", name, no_rolls.names.data, CAPS_REPORT_PCT),
 						 errdetail("The share of the %u units: %s. A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", rows_units, no_rolls.shares.data, SIFT_PAGG_ROWS_CELLS),
 						 errhint("Name fewer columns, or columns with fewer values per unit.")));
-	if (nleft > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube holds %d dimensions and leaves out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
-						 errdetail("The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",
-								   strncmp(sift_col_options_preagg(index), "auto:", 5) == 0 ? "the columns in the order chosen at CREATE INDEX, those whose histograms fit first" : "the columns in their order"),
-						 errhint("Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.")));
-	if (spec->cal_all)
-	{
-		int			missing[SIFT_COL_MAX_COLS];
-		int			n = sift_cpagg_cal_missing(rel->schema, spec, missing, lengthof(missing));
-		StringInfoData names;
-
-		initStringInfo(&names);
-		for (int i = 0; i < n && i < lengthof(missing); i++)
-			appendStringInfo(&names, "%s\"%s\"", i ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
-		if (n > 0)
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) leaves out %d column%s: %s",
-									name, n, n == 1 ? "" : "s", names.data),
-							 errdetail("The cube holds at most %d dimensions, and the other columns of the index take the rest; a query that groups by those dates scans the units.", SIFT_PAGG_MAX_DIMS),
-							 errhint("Name the columns the queries group by in calendar_columns (the list must fit the %d dimensions), or give preagg = 'cube(...)' only the dims they need.", SIFT_PAGG_MAX_DIMS)));
-	}
+	cube_left_out(index, rel, left.data, nleft);
 	MemoryContextDelete(cx);
 	pfree(snap);
 }

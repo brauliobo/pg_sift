@@ -69,6 +69,9 @@ extern void sift_maint_replace(Relation index, const uint64 *old, int nold, cons
 extern void sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
 
+/* Tells that a maintenance step of an index failed and is retried; kind: "sift" or "sift_col" */
+extern void sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err);
+
 /* Counts a failed background transaction of the worker of the index (after AbortCurrentTransaction) for the backoff and sift.workers; err: the error it was aborted by */
 extern void sift_maint_record_failure(Oid indexoid, ErrorData *err);
 
