@@ -163,14 +163,20 @@ minor_lib(int minor)
 	return minor >= SIFT_COL_FORMAT_ENDORD ? "3.8" : "3.7";
 }
 
-/* The option keeps a sorted array of every row of a column: its bytes are said once, where they are paid, and the columns the build chose by name */
+/*
+ * The option keeps a sorted array of every row of a column, or only the ends of the order: its bytes are said once, where they are paid, with the columns the build
+ * chose by name. One NOTICE for the index, whatever the choices (the ends, the whole order, a second order by a group, the columns weighed by the default formula).
+ */
 void
 colb_notice_order_array(Relation index)
 {
 	const SiftColLeafStats *ls;
 	const SiftColIndexMeta *d;
 	const char *opt = sift_col_options_order_array_columns(index);
-	StringInfoData names;
+	StringInfoData names,
+				detail,
+				hint,
+				why;
 	bool		autolist,
 				gauto;
 	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &gauto);
@@ -179,10 +185,10 @@ colb_notice_order_array(Relation index)
 	int			n = 0,
 				ne = 0,
 				minor;
-	StringInfoData enames,
-				why;
+	char	   *lines;
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
+	lines = autolist ? sift_col_gorder_lines(index) : NULL;
 	if (opt == NULL || (opt[0] == '\0' && !autolist))
 		return;
 	while (*glist == ' ')
@@ -190,49 +196,60 @@ colb_notice_order_array(Relation index)
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	initStringInfo(&names);
-	initStringInfo(&enames);
 	for (int c = 0; c < d->ncols; c++)
 	{
+		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
+
 		if (ls[c].gord_rows > 0)
 		{
 			rows += ls[c].gord_rows;
 			bytes += ls[c].gord_bytes;
-			appendStringInfo(&names, "%s%s", n ? ", " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname));
 			n++;
 		}
-		if (ls[c].gord_ends_rows > 0)
-		{
-			appendStringInfo(&enames, "%s%s", ne ? ", " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname));
-			ne++;
-		}
+		if (ls[c].gord_rows > 0 || ls[c].gord_ends_rows > 0)
+			appendStringInfo(&names, "%s%s%s", names.len ? ", " : "", name, ls[c].gord_rows > 0 ? "" : " (ends only)");
+		ne += ls[c].gord_ends_rows > 0;
 	}
 	minor = order_minor(ls, d->ncols);
-	initStringInfo(&why);
-	if (autolist && (ne > 0 || n > 0))
-		order_choice_lines(index, ls, &why);
-	if (ne > 0 && autolist)
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' keeps the ends of the order of %s", RelationGetRelationName(index), enames.data),
-				 errdetail("The first and last %u entries of each segment and its first NULL rows, under 0.1 bytes a row of those columns; the segments are column format minor %d, which a library before %s cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most %d of them (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (%d kB of index a block), else the ends: %s.",
-						   sift_cgord_ends(), SIFT_COL_FORMAT_ENDORD, minor_lib(SIFT_COL_FORMAT_ENDORD), SIFT_CGORD_ENDS_LEAVES, SIFT_CGORD_PAY_BLOCK / 1024, why.data),
-				 errhint("ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range in the middle of the column reads the units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops them; order_array_columns = 'column' keeps the whole order of a column.")));
-	if (n == 0)
+	if (ne > 0)
+		minor = Max(minor, SIFT_COL_FORMAT_ENDORD);
+	if (n + ne == 0 && lines == NULL)
 		return;
-	if (autolist && gauto && glist[0] != '\0')
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by %s first", RelationGetRelationName(index), names.data, glist),
-				 errdetail("%.1f bytes a row for each array, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units) (a table with no statistics is analyzed first); the group is the integer column of most values that has 100 or more and at least 3 rows apiece.%s%s", bytes / rows, bytes / (1024.0 * 1024.0), minor, minor_lib(minor), why.len ? " The choice of each column: " : "", why.data),
-				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, ORDER BY column LIMIT n reads n entries, whatever the number of units, and WHERE %s = x ORDER BY column LIMIT n reads n entries of x. ALTER INDEX .. SET (order_array_group = 'off'), then REINDEX, drops the second order; (order_array_columns = 'off') drops both.", glist)));
-	else if (autolist)
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s", RelationGetRelationName(index), names.data),
-				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most %d of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (%d kB of index a block).%s%s", bytes / rows, bytes / (1024.0 * 1024.0), minor, minor_lib(minor), SIFT_CGORD_ENDS_LEAVES, SIFT_CGORD_PAY_BLOCK / 1024, why.len ? " The choice of each column: " : "", why.data),
-				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.")));
-	else
+	if (!autolist)
+	{
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
 				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor %d, which a library before %s cannot read.", bytes / rows, bytes / (1024.0 * 1024.0), minor, minor_lib(minor)),
 				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
+		return;
+	}
+	initStringInfo(&why);
+	if (n + ne > 0)
+		order_choice_lines(index, ls, &why);
+	initStringInfo(&detail);
+	if (n > 0)
+		appendStringInfo(&detail, "%.1f bytes a row for each whole array, %.1f MB together. ", bytes / rows, bytes / (1024.0 * 1024.0));
+	if (ne > 0)
+		appendStringInfo(&detail, "An ends-only array keeps the first and last %u entries of each segment and its first NULL rows, under 0.1 bytes a row of those columns. ", sift_cgord_ends());
+	if (n + ne > 0)
+		appendStringInfo(&detail, "The segments are column format minor %d, which a library before %s cannot read. ", minor, minor_lib(minor));
+	appendStringInfo(&detail, "The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most %d of them, and for a text column or a column of few values that the default formula pays (a table with no statistics is analyzed first).", SIFT_CGORD_ENDS_LEAVES);
+	if (n + ne > 0)
+		appendStringInfo(&detail, " A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (%d kB of index a block), else the ends.%s%s%s", SIFT_CGORD_PAY_BLOCK / 1024, why.len ? " The choice of each column: " : "", why.data, why.len ? "." : "");
+	if (gauto && glist[0] != '\0')
+		appendStringInfo(&detail, " order_array_group = 'auto' adds a second order of each date, timestamp and integer array sorted by %s first (the integer column of most values that has 100 or more and at least 3 rows apiece).", glist);
+	if (n + ne > 0)
+		appendStringInfo(&detail, " ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range of a whole-order column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit; a range in the middle of an ends-only column reads the units.%s", gauto && glist[0] != '\0' ? " WHERE group = x ORDER BY column LIMIT n reads n entries of x." : "");
+	if (lines != NULL)
+		appendStringInfo(&detail, " %s", lines);
+	initStringInfo(&hint);
+	appendStringInfo(&hint, "To drop them, ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none.", quote_identifier(RelationGetRelationName(index)));
+	if (gauto && glist[0] != '\0')
+		appendStringInfoString(&hint, " order_array_group = 'off' drops the second order.");
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": order_array_columns = 'auto' keeps %s%s", RelationGetRelationName(index), n + ne > 0 ? "sorted arrays of " : "no sorted array", n + ne > 0 ? names.data : ""),
+			 errdetail_internal("%s", detail.data),
+			 errhint("%s", hint.data)));
 }
 
 /* The layout of the order array of each column, the share of its chunks that are compact and its bytes a row: said when the option asks for one or the build kept a compact chunk */

@@ -13,7 +13,7 @@ ALTER TABLE nd ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO nd SELECT i, CASE WHEN i % 89 = 0 THEN NULL ELSE timestamp '2020-01-01' + (abs(hashint4(i)) % 100000000) * interval '1 second' END, 'x' FROM generate_series(1, 150000) i;
 ANALYZE nd;
 CREATE INDEX nd_i ON nd USING sift_col (ts);
-NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' keeps sorted arrays of ts
 NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.7% of 293 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            
@@ -91,7 +91,7 @@ SELECT sift.col_verify('nd_i');
 (1 row)
 
 REINDEX INDEX nd_i;
-NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' keeps sorted arrays of ts
 NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.9% of 298 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            

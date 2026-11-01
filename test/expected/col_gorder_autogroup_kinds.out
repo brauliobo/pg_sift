@@ -26,11 +26,9 @@ INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint
 FROM generate_series(1, 120000) i;
 ANALYZE ak;
 CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' chose the column "d" of few values: benefit 30 against cost 3
-NOTICE:  sift_col index "ak_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' keeps the ends of the order of created
-NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of d, created, score, amt, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by ent_id first
-NOTICE:  sift_col index ak_i keeps the keys of ent_id in every unit
+NOTICE:  sift_col index "ak_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' keeps sorted arrays of d, created, score, amt
+NOTICE:  sift_col index "ak_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
                                                                         reloptions                                                                         
 -----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -72,8 +70,7 @@ SELECT sift.col_promote('ak_i'::regclass) >= 0 AS promoted;
 (1 row)
 
 SELECT sift.col_merge('ak_i'::regclass, true) >= 0 AS merged;
-NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' chose the column "d" of few values: benefit 30 against cost 3
-NOTICE:  sift_col index "ak_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ak_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
  merged 
 --------
  t
@@ -97,9 +94,8 @@ CREATE TABLE ak1 (id int, score int, pad text);
 INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generate_series(1, 120000) i;
 ANALYZE ak1;
 CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ak1_i": order_array_columns = 'auto' chose the text column "pad": benefit 117 against cost 25
-NOTICE:  sift_col index "ak1_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +8%, 3 bytes a row, benefit 28 against cost 6)
-NOTICE:  sift_col index "ak1_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of score, pad
+NOTICE:  sift_col index "ak1_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +8%, 3 bytes a row, benefit 28 against cost 6)
+NOTICE:  sift_col index "ak1_i": order_array_columns = 'auto' keeps sorted arrays of score, pad
 SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
                                     reloptions                                     
 -----------------------------------------------------------------------------------
@@ -110,7 +106,7 @@ CREATE TABLE ak2 (ent_id int, d date);
 INSERT INTO ak2 SELECT abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint4(i + 3)) % 365 FROM generate_series(1, 120000) i;
 ANALYZE ak2;
 CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off');
-NOTICE:  sift_col index ak2_i keeps the keys of ent_id in every unit
+NOTICE:  sift_col index "ak2_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
                 reloptions                
 ------------------------------------------
@@ -122,10 +118,9 @@ CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;
 CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ak3_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ak3_i": order_array_columns = 'auto' keeps the ends of the order of created
-NOTICE:  sift_col index "ak3_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of created, score, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by ent_id first
-NOTICE:  sift_col index ak3_i keeps the keys of ent_id in every unit
+NOTICE:  sift_col index "ak3_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ak3_i": order_array_columns = 'auto' keeps sorted arrays of created, score
+NOTICE:  sift_col index "ak3_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
                                                                     reloptions                                                                     
 ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -142,9 +137,8 @@ CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak4;
 CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ak4_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ak4_i": order_array_columns = 'auto' keeps the ends of the order of created
-NOTICE:  sift_col index "ak4_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ent_id, created, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by score first
+NOTICE:  sift_col index "ak4_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ak4_i": order_array_columns = 'auto' keeps sorted arrays of ent_id, created
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
                                                                reloptions                                                                
 -----------------------------------------------------------------------------------------------------------------------------------------
@@ -156,10 +150,9 @@ CREATE TABLE ak5 (id int, ent_id int, created timestamp, pad text);
 INSERT INTO ak5 SELECT i, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak5;
 CREATE INDEX ak5_i ON ak5 USING sift_col (id, ent_id, created, pad) WITH (key_cut = 'created');
-NOTICE:  sift_col index "ak5_i": point_tid_columns includes "id", chosen by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ak5_i": order_array_columns = 'auto' keeps the ends of the order of created
-NOTICE:  sift_col index "ak5_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of created, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by ent_id first
-NOTICE:  sift_col index ak5_i keeps the keys of ent_id in every unit
+NOTICE:  sift_col index "ak5_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
+NOTICE:  sift_col index "ak5_i": order_array_columns = 'auto' keeps sorted arrays of created
+NOTICE:  sift_col index "ak5_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
                                                                    reloptions                                                                   
 ------------------------------------------------------------------------------------------------------------------------------------------------

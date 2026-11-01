@@ -49,6 +49,79 @@ pick_cmp(const void *a, const void *b)
 	return *(const int *) a - *(const int *) b;
 }
 
+/*
+ * What the choice said about the columns that were weighed by the default formula (a text column, a date column of few values): kept for the NOTICE of the
+ * build (col/build/notice.c), which says the order arrays of an index once, and handed over by sift_col_gorder_lines. A static array: the choice and the
+ * notice are one backend's CREATE INDEX, and a choice made by a rewrite that no notice follows is replaced by the next one.
+ */
+#define GORD_NOTES 16
+
+typedef struct GordNote
+{
+	char		kind;			/* 'f' a column of few values chosen, 't' a text column chosen, 'r' a text column rejected */
+	char		name[NAMEDATALEN];
+	double		benefit,
+				cost,
+				bytes,
+				pct,
+				write;
+	bool		collation;		/* the sort of the strings under the collation is the larger part of the build cost */
+} GordNote;
+
+static struct
+{
+	Oid			index;
+	int			n;
+	GordNote	note[GORD_NOTES];
+} gord_notes;
+
+static void
+gord_note(Relation index, char kind, const char *name, const GordCand *c, double index_bytes)
+{
+	GordNote   *n;
+
+	if (gord_notes.n >= GORD_NOTES)
+		return;
+	n = &gord_notes.note[gord_notes.n++];
+	n->kind = kind;
+	strlcpy(n->name, name, sizeof(n->name));
+	n->benefit = c->benefit;
+	n->cost = c->cost;
+	n->bytes = c->bytes;
+	n->pct = c->bytes / index_bytes * 100.0;
+	n->write = c->write;
+	n->collation = c->write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts;
+}
+
+/* The sentences about the columns the default formula weighed in the last choice for the index, one for each, joined by a space; NULL when there are none. Forgets them. */
+char *
+sift_col_gorder_lines(Relation index)
+{
+	StringInfoData out;
+
+	if (gord_notes.index != RelationGetRelid(index) || gord_notes.n == 0)
+		return NULL;
+	initStringInfo(&out);
+	for (int i = 0; i < gord_notes.n; i++)
+	{
+		const GordNote *n = &gord_notes.note[i];
+
+		if (out.len > 0)
+			appendStringInfoChar(&out, ' ');
+		if (n->kind == 'f')
+			appendStringInfo(&out, "\"%s\", a column of few values, is chosen (benefit %.0f against cost %.0f): ORDER BY %s, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions); the array takes about %.0f bytes a row (%.0f%% of the index) and CREATE INDEX about %.0f%% longer.",
+							 n->name, n->benefit, n->cost, n->name, n->bytes, n->pct, n->write);
+		else if (n->kind == 't')
+			appendStringInfo(&out, "\"%s\", a text column, is chosen (benefit %.0f against cost %.0f): ORDER BY %s LIMIT n reads n entries of each segment, where the units compare the strings of every row (100,000 rows: 82.8 M to 0.27 M instructions); the array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX does about %.0f%% more instructions (W)%s: the benefit is log2(%.0f) / log2(1.05), the cost G / 3 + W / 5.",
+							 n->name, n->benefit, n->cost, n->name, n->bytes, n->pct, n->write, n->collation ? ", the sort of the strings under the collation" : "", GORD_TEXT_SPEEDUP);
+		else
+			appendStringInfo(&out, "\"%s\", a text column, is not chosen (benefit %.0f against cost %.0f): ORDER BY %s LIMIT n would read n entries of each segment, where the units compare the strings of every row. The array would take about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX would do about %.0f%% more instructions (W)%s: the cost is G / 3 + W / 5 against the benefit log2(%.0f) / log2(1.05).",
+							 n->name, n->benefit, n->cost, n->name, n->bytes, n->pct, n->write, n->collation ? ", the sort of the strings under the collation, in a share of the build that falls as the index has more columns" : "", GORD_TEXT_SPEEDUP);
+	}
+	gord_notes.n = 0;
+	return out.data;
+}
+
 void
 sift_col_auto_gorder(Relation heap, Relation index)
 {
@@ -71,6 +144,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	double		index_bytes;
 	StringInfoData v;
 
+	gord_notes.index = RelationGetRelid(index);
+	gord_notes.n = 0;
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt != NULL && !autolist)
 		return;
@@ -230,23 +305,9 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			ntext += cand[i].text;
 			nends += !cand[i].text;
 			if (cand[i].ties && fit[i])
-			{
-				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
-
-				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chooses the column \"%s\" of few values: benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
-								 errdetail("ORDER BY %s, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index) and CREATE INDEX about %.0f%% longer.",
-										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write),
-								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
-			}
+				gord_note(index, 'f', keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]), &cand[i], index_bytes);
 			if (cand[i].text)
-			{
-				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
-
-				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chooses the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
-								 errdetail("ORDER BY %s LIMIT n reads n entries of each segment, where the units compare the strings of every row (100,000 rows: 82.8 M to 0.27 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX does about %.0f%% more instructions (W)%s: the benefit is log2(%.0f) / log2(1.05), the cost G / 3 + W / 5.",
-										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write, cand[i].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation" : "", GORD_TEXT_SPEEDUP),
-								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
-			}
+				gord_note(index, 't', keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]), &cand[i], index_bytes);
 		}
 	/* a text column the formula rejected, the cheapest of them: said once, with the setting that builds it anyway (a narrow index under a locale pays the sort of the strings in a large share of its build) */
 	{
@@ -256,14 +317,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			if (cand[i].text && !fit[i] && (rej < 0 || cand[i].cost < cand[rej].cost))
 				rej = i;
 		if (rej >= 0)
-		{
-			const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[rej].leaf]);
-
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' does not choose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[rej].benefit, cand[rej].cost),
-							 errdetail("ORDER BY %s LIMIT n would read n entries of each segment, where the units compare the strings of every row. The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX would do about %.0f%% more instructions (W)%s: the cost is G / 3 + W / 5 against the benefit log2(%.0f) / log2(1.05).",
-									   name, cand[rej].bytes, cand[rej].bytes / index_bytes * 100.0, cand[rej].write, cand[rej].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation, in a share of the build that falls as the index has more columns" : "", GORD_TEXT_SPEEDUP),
-							 errhint("CREATE INDEX .. WITH (order_array_columns = '%s'), or ALTER INDEX %s SET (order_array_columns = '%s') and REINDEX, if ORDER BY %s LIMIT n matters more than the build.", name, quote_identifier(RelationGetRelationName(index)), name, name)));
-		}
+			gord_note(index, 'r', keycols_leaf_name(index, &rel->schema->cols[cand[rej].leaf]), &cand[rej], index_bytes);
 	}
 	if (grp >= 0)
 	{
