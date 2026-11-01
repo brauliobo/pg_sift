@@ -2,7 +2,6 @@
 -- label: `WHERE t >= 't00100000' ORDER BY t, id LIMIT 20` over 200,000 rows of a `text COLLATE "C"` key unrelated to the heap order
 -- ordered: yes
 -- vacuum: no
--- gap: sift lab 0012 (text tie-break keys)
 --@ setup
 CREATE TABLE tp_tc (id int PRIMARY KEY, g int NOT NULL, t text COLLATE "C" NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO tp_tc SELECT i, i % 1000, 't' || lpad(((i::bigint * 104729) % 200000)::text, 8, '0') FROM generate_series(1, 200000) i;
