@@ -24,6 +24,8 @@
 #include "agg/wide.h"
 #include "agg/lookup/int.h"
 
+#define LOOKUP_RESERVE_MAX	(1 << 22)	/* rows a map is sized for before the load: a table the statistics put above is grown as it is read */
+
 /*
  * The arms of one statement (UNION ALL, an inlined CTE read several times) that join the same table with the same columns and own conditions read
  * the same rows in the same snapshot: the first arm loads them into a context of the statement and the others use that table, which no scan changes.
@@ -183,6 +185,9 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			m->kx[k] = ExecInitExpr((Expr *) j->tkey[k], NULL);
 		}
 	MemoryContextSwitchTo(kept.cx);
+	/* a table read whole (no condition of its own, no index) fills the map to about its rows */
+	if (idx == NULL && own == NULL && rel->rd_rel->reltuples > 0)
+		map_reserve(m, (uint32) Min(rel->rd_rel->reltuples, LOOKUP_RESERVE_MAX));
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);

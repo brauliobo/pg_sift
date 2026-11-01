@@ -28,6 +28,18 @@ typedef struct KeptTry
 	LookCols	cols;
 } KeptTry;
 
+/*
+ * The slot of an integer key: a hash of the key without its low four bits, plus those bits. Sixteen consecutive keys (the ids of a table read in order) fill the sixteen
+ * slots of a cache line one after the other, where a hash of the whole key would touch a new line for each of them.
+ */
+static inline uint32
+kd_int_slot(const KeyDict *d, int64 v)
+{
+	uint64		b = (uint64) v >> 4;
+
+	return (murmurhash32((uint32) (b ^ (b >> 32))) + (uint32) (v & 15)) & (d->nslot - 1);
+}
+
 /* the id of the integer key value v among the values of d, 0 when it is not there; *at: the slot it is in or would go to */
 static inline uint32
 kd_int_find(const KeyDict *d, int64 v, uint32 *at)
@@ -39,12 +51,24 @@ kd_int_find(const KeyDict *d, int64 v, uint32 *at)
 		*at = 0;
 		return 0;
 	}
-	h = murmurhash32((uint32) (v ^ (v >> 32))) & (d->nslot - 1);
+	h = kd_int_slot(d, v);
 	for (uint32 id; (id = d->slot[h]) != 0; h = (h + 1) & (d->nslot - 1))
 		if (d->ival[id - 1] == v)
 			return id;
 	*at = h;
 	return 0;
+}
+
+/* the room for n distinct integer key values */
+static inline void
+kd_int_reserve(KeyDict *d, uint32 n, MemoryContext cxt)
+{
+	if (d->nslot != 0)
+		return;
+	d->nslot = pg_nextpower2_32(Max(n, 32) * 2);
+	d->cap = Max(n, 32);
+	d->slot = MemoryContextAllocZero(cxt, (Size) d->nslot * sizeof(uint32));
+	d->ival = MemoryContextAlloc(cxt, (Size) d->cap * sizeof(int64));
 }
 
 /* the id of the integer key value v, which is added to d (in cxt) when new */
@@ -79,7 +103,7 @@ kd_int(KeyDict *d, int64 v, MemoryContext cxt)
 		{
 			int64		x = d->ival[i - 1];
 
-			for (h = murmurhash32((uint32) (x ^ (x >> 32))) & (d->nslot - 1); d->slot[h]; h = (h + 1) & (d->nslot - 1))
+			for (h = kd_int_slot(d, x); d->slot[h]; h = (h + 1) & (d->nslot - 1))
 				;
 			d->slot[h] = i;
 		}
@@ -169,6 +193,7 @@ map_hash_ids(int nkey, const uint32 *kid)
 }
 
 extern void map_grow(MapTab *m);
+extern void map_reserve(MapTab *m, uint32 rows);
 extern void map_col_put(MapTab *m, int c, Datum d, bool cnull);
 extern void first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableSlot *slot);
 extern void map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o);

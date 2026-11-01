@@ -39,7 +39,7 @@
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
 #define ZONE_SET_CAP	(1 << 16)	/* members of an IN list that travel with its zone test, at most: the point directory of the source answers a list of any length up to this */
-#define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
+#define SPARSE_RANGE	(1 << 12)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it (the ids it makes are made again for the hash table that replaces it) */
 #define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
 #define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN slots, and 4 slots for each group expected) hold at most this many slots for each group in use, else the hash table: their size multiplies the capacity of the keys, not the groups */
