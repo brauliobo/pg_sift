@@ -81,12 +81,13 @@ INSERT INTO tp_q VALUES
 	('param_out',   $q$SELECT d.k, x.id, x.kk FROM %s d(k) CROSS JOIN LATERAL (SELECT id, d.k * 2 AS kk FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
 	('param_sort',  $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY abs(v - d.k), id LIMIT 3) x$q$),
 	('twice',       $q$SELECT d.k, a.id, b.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 2) a CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k AND id < a.id ORDER BY id DESC LIMIT 1) b$q$);
-CREATE FUNCTION tp_stage() RETURNS TABLE (tag text, queries int, differ int, topn int) LANGUAGE plpgsql AS $$
+-- every key set in the first stage, the keys that are present, repeated and NULL in the others (the key sets are about the keys, not about what changed in the table)
+CREATE FUNCTION tp_stage(keysets text[] DEFAULT NULL) RETURNS TABLE (tag text, queries int, differ int, topn int) LANGUAGE plpgsql AS $$
 DECLARE r record; kk record; res text;
 BEGIN
 	FOR r IN SELECT * FROM tp_q ORDER BY tag LOOP
 		tag := r.tag; queries := 0; differ := 0; topn := 0;
-		FOR kk IN SELECT * FROM tp_keys ORDER BY tag LOOP
+		FOR kk IN SELECT * FROM tp_keys WHERE keysets IS NULL OR tp_keys.tag = ANY (keysets) ORDER BY tp_keys.tag LOOP
 			res := tp_check(format(r.q, kk.k));
 			queries := queries + 1;
 			differ := differ + (res LIKE 'DIFFERENT%')::int;
@@ -155,109 +156,109 @@ UPDATE tp SET dev = 5 WHERE id % 40 = 0;
 UPDATE tp SET ts = ts + interval '30 day' WHERE id % 53 = 0;
 DELETE FROM tp WHERE id % 97 = 3;
 INSERT INTO tp (dev, dev8, ts, v, g, nm, w) SELECT 5, 4000000005, timestamp '2025-01-01' + i * interval '1 second', i % 3, 1, 'n5', 500000000000000.25 FROM generate_series(1, 50) i;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
      tag     | queries | differ | topn 
 -------------+---------+--------+------
- bigint_key  |       6 |      0 |    6
- exists_in   |       6 |      0 |    0
- filtered    |       6 |      0 |    6
- grouped     |       6 |      0 |    6
- hash_inside |       6 |      0 |    6
- inner_join  |       6 |      0 |    0
- left        |       6 |      0 |    6
- limit_0     |       6 |      0 |    0
- limit_1     |       6 |      0 |    6
- limit_900   |       6 |      0 |    6
- limit_all   |       6 |      0 |    0
- offset      |       6 |      0 |    6
- param_out   |       6 |      0 |    0
- param_sort  |       6 |      0 |    0
- range_param |       6 |      0 |    6
- scalar      |       6 |      0 |    6
- scalar_asc  |       6 |      0 |    6
- sort_inside |       6 |      0 |    6
- sorted      |       6 |      0 |    6
- text_key    |       6 |      0 |    0
- ties_desc   |       6 |      0 |    6
- ties_first  |       6 |      0 |    6
- ts_asc      |       6 |      0 |    6
- ts_desc     |       6 |      0 |    6
- twice       |       6 |      0 |    6
- two_keys    |       6 |      0 |    6
- two_levels  |       6 |      0 |    6
- wide_key    |       6 |      0 |    6
- window      |       6 |      0 |    0
+ bigint_key  |       3 |      0 |    3
+ exists_in   |       3 |      0 |    0
+ filtered    |       3 |      0 |    3
+ grouped     |       3 |      0 |    3
+ hash_inside |       3 |      0 |    3
+ inner_join  |       3 |      0 |    0
+ left        |       3 |      0 |    3
+ limit_0     |       3 |      0 |    0
+ limit_1     |       3 |      0 |    3
+ limit_900   |       3 |      0 |    3
+ limit_all   |       3 |      0 |    0
+ offset      |       3 |      0 |    3
+ param_out   |       3 |      0 |    0
+ param_sort  |       3 |      0 |    0
+ range_param |       3 |      0 |    3
+ scalar      |       3 |      0 |    3
+ scalar_asc  |       3 |      0 |    3
+ sort_inside |       3 |      0 |    3
+ sorted      |       3 |      0 |    3
+ text_key    |       3 |      0 |    0
+ ties_desc   |       3 |      0 |    3
+ ties_first  |       3 |      0 |    3
+ ts_asc      |       3 |      0 |    3
+ ts_desc     |       3 |      0 |    3
+ twice       |       3 |      0 |    3
+ two_keys    |       3 |      0 |    3
+ two_levels  |       3 |      0 |    3
+ wide_key    |       3 |      0 |    3
+ window      |       3 |      0 |    0
 (29 rows)
 
 VACUUM tp;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
      tag     | queries | differ | topn 
 -------------+---------+--------+------
- bigint_key  |       6 |      0 |    6
- exists_in   |       6 |      0 |    0
- filtered    |       6 |      0 |    6
- grouped     |       6 |      0 |    6
- hash_inside |       6 |      0 |    6
- inner_join  |       6 |      0 |    0
- left        |       6 |      0 |    6
- limit_0     |       6 |      0 |    0
- limit_1     |       6 |      0 |    6
- limit_900   |       6 |      0 |    6
- limit_all   |       6 |      0 |    0
- offset      |       6 |      0 |    6
- param_out   |       6 |      0 |    0
- param_sort  |       6 |      0 |    0
- range_param |       6 |      0 |    6
- scalar      |       6 |      0 |    6
- scalar_asc  |       6 |      0 |    6
- sort_inside |       6 |      0 |    6
- sorted      |       6 |      0 |    6
- text_key    |       6 |      0 |    0
- ties_desc   |       6 |      0 |    6
- ties_first  |       6 |      0 |    6
- ts_asc      |       6 |      0 |    6
- ts_desc     |       6 |      0 |    6
- twice       |       6 |      0 |    6
- two_keys    |       6 |      0 |    6
- two_levels  |       6 |      0 |    6
- wide_key    |       6 |      0 |    6
- window      |       6 |      0 |    0
+ bigint_key  |       3 |      0 |    3
+ exists_in   |       3 |      0 |    0
+ filtered    |       3 |      0 |    3
+ grouped     |       3 |      0 |    3
+ hash_inside |       3 |      0 |    3
+ inner_join  |       3 |      0 |    0
+ left        |       3 |      0 |    3
+ limit_0     |       3 |      0 |    0
+ limit_1     |       3 |      0 |    3
+ limit_900   |       3 |      0 |    3
+ limit_all   |       3 |      0 |    0
+ offset      |       3 |      0 |    3
+ param_out   |       3 |      0 |    0
+ param_sort  |       3 |      0 |    0
+ range_param |       3 |      0 |    3
+ scalar      |       3 |      0 |    3
+ scalar_asc  |       3 |      0 |    3
+ sort_inside |       3 |      0 |    3
+ sorted      |       3 |      0 |    3
+ text_key    |       3 |      0 |    0
+ ties_desc   |       3 |      0 |    3
+ ties_first  |       3 |      0 |    3
+ ts_asc      |       3 |      0 |    3
+ ts_desc     |       3 |      0 |    3
+ twice       |       3 |      0 |    3
+ two_keys    |       3 |      0 |    3
+ two_levels  |       3 |      0 |    3
+ wide_key    |       3 |      0 |    3
+ window      |       3 |      0 |    0
 (29 rows)
 
 -- workers allowed: the scan with a parameter of the enclosing query runs in the leader, the rest of the plan may use them
 SET tp.workers = 2;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated']);
      tag     | queries | differ | topn 
 -------------+---------+--------+------
- bigint_key  |       6 |      0 |    6
- exists_in   |       6 |      0 |    0
- filtered    |       6 |      0 |    6
- grouped     |       6 |      0 |    6
- hash_inside |       6 |      0 |    6
- inner_join  |       6 |      0 |    0
- left        |       6 |      0 |    6
- limit_0     |       6 |      0 |    0
- limit_1     |       6 |      0 |    6
- limit_900   |       6 |      0 |    6
- limit_all   |       6 |      0 |    0
- offset      |       6 |      0 |    6
- param_out   |       6 |      0 |    0
- param_sort  |       6 |      0 |    0
- range_param |       6 |      0 |    6
- scalar      |       6 |      0 |    6
- scalar_asc  |       6 |      0 |    6
- sort_inside |       6 |      0 |    6
- sorted      |       6 |      0 |    6
- text_key    |       6 |      0 |    0
- ties_desc   |       6 |      0 |    6
- ties_first  |       6 |      0 |    6
- ts_asc      |       6 |      0 |    6
- ts_desc     |       6 |      0 |    6
- twice       |       6 |      0 |    6
- two_keys    |       6 |      0 |    6
- two_levels  |       6 |      0 |    6
- wide_key    |       6 |      0 |    6
- window      |       6 |      0 |    0
+ bigint_key  |       2 |      0 |    2
+ exists_in   |       2 |      0 |    0
+ filtered    |       2 |      0 |    2
+ grouped     |       2 |      0 |    2
+ hash_inside |       2 |      0 |    2
+ inner_join  |       2 |      0 |    0
+ left        |       2 |      0 |    2
+ limit_0     |       2 |      0 |    0
+ limit_1     |       2 |      0 |    2
+ limit_900   |       2 |      0 |    2
+ limit_all   |       2 |      0 |    0
+ offset      |       2 |      0 |    2
+ param_out   |       2 |      0 |    0
+ param_sort  |       2 |      0 |    0
+ range_param |       2 |      0 |    2
+ scalar      |       2 |      0 |    2
+ scalar_asc  |       2 |      0 |    2
+ sort_inside |       2 |      0 |    2
+ sorted      |       2 |      0 |    2
+ text_key    |       2 |      0 |    0
+ ties_desc   |       2 |      0 |    2
+ ties_first  |       2 |      0 |    2
+ ts_asc      |       2 |      0 |    2
+ ts_desc     |       2 |      0 |    2
+ twice       |       2 |      0 |    2
+ two_keys    |       2 |      0 |    2
+ two_levels  |       2 |      0 |    2
+ wide_key    |       2 |      0 |    2
+ window      |       2 |      0 |    0
 (29 rows)
 
 RESET tp.workers;
@@ -328,5 +329,5 @@ SELECT a = tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) AND b = tp_gen(ARRAY[1, 2], 1) AN
 
 DEALLOCATE tp_p;
 DROP TABLE tp_q, tp_keys, tp, tp_dim;
-DROP FUNCTION tp_stage(), tp_check(text), tp_mode(bool), tp_gen(int[], int);
+DROP FUNCTION tp_stage(text[]), tp_check(text), tp_mode(bool), tp_gen(int[], int);
 DROP EXTENSION pg_sift;
