@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The standalone harnesses (tools/codec, colwide, kernels, aggkern and the coverage-guided targets of test/fuzz) compile src/ files outside the extension: a new
+# The standalone harnesses (tools/codec, colwide, gquant, kernels, aggkern and the coverage-guided targets of test/fuzz) compile src/ files outside the extension: a new
 # #include chain in a file they share breaks them with no test in the way, and only a fuzz run finds it. This builds them, nothing is run (about 10 s;
 # needs the PostgreSQL server headers, pg_config).
 #
@@ -13,6 +13,7 @@ build() { local dir=$1; shift; make -s -j4 -C "$dir" OUT="$out/$(basename "$dir"
 bad=0
 build tools/codec test fuzz || bad=1
 build tools/colwide test || bad=1
+build tools/gquant test || bad=1
 build tools/kernels test || bad=1
 build tools/aggkern test || bad=1
 build test/fuzz colchunk shred bm25 || bad=1
