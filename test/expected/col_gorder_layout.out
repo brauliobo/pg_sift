@@ -89,10 +89,13 @@ CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
 						   CASE WHEN s.hi IS NOT NULL THEN format('%s <= %s', s.col, quant(s.col, s.ty, s.hi)) END, 'true'),
 		s.dir, s.nl, s.lim, s.off)
 $$;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+-- a sweep checks the shapes whose hash with the stage falls in a 1 / per share: each stage another share
+CREATE FUNCTION sweep(stage int, per int) RETURNS TABLE (same bigint, shapes bigint) LANGUAGE sql AS
+$$ SELECT count(*) FILTER (WHERE same(shape_sql(s))), count(*) FROM shapes s WHERE hashtext(s::text || stage) % per = 0 $$;
+SELECT * FROM sweep(1, 4);
  same | shapes 
 ------+--------
- 2016 |   2016
+  516 |    516
 (1 row)
 
 SELECT count(*) FILTER (WHERE same(format('SELECT %1$s AS k FROM @ WHERE %1$s >= %2$s AND %1$s <= %3$s ORDER BY %1$s', s.col, quant(s.col, s.ty, s.lo), quant(s.col, s.ty, s.hi)))) AS ranges_whole, count(*) AS n
@@ -135,10 +138,10 @@ SELECT sift.col_verify('t_ix');
 
 -- the pages are all-visible after a VACUUM: an OFFSET takes the entries it throws away off the front of the order without reading their keys (sift_gord_skip), where the buckets say they come first
 VACUUM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(2, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  209 |    209
 (1 row)
 
 -- an update that changes a key is not a HOT update (the column is in the index): the old version stays in the segment and the new one is in the write buffer
@@ -152,18 +155,18 @@ INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01', TIMESTAMPTZ '2026-01-01'
 ROLLBACK;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(3, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  199 |    199
 (1 row)
 
 -- pruned HOT chains: the root of a chain is a redirect
 VACUUM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(4, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  184 |    184
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -182,10 +185,10 @@ UPDATE t SET ts = ts + INTERVAL '30 days', s = s - 1 WHERE (ctid::text::point)[0
 ROLLBACK;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(5, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  158 |    158
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -207,10 +210,10 @@ SELECT global_order('SELECT ts AS k FROM t ORDER BY ts LIMIT 20 OFFSET 700') AS 
 
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(6, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  209 |    209
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -238,10 +241,10 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
      41 |        1 | 7092
 (1 row)
 
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(7, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  228 |    228
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -259,10 +262,10 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
      38 |        1 | 7092
 (1 row)
 
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(8, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  206 |    206
 (1 row)
 
 ALTER INDEX t_ix SET (order_layout = 'compact');
@@ -273,10 +276,10 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
      41 |        1 | 7092
 (1 row)
 
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(9, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  191 |    191
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -294,10 +297,10 @@ SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t
      41 |        1 | 7092
 (1 row)
 
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(10, 10);
  same | shapes 
 ------+--------
- 2016 |   2016
+  205 |    205
 (1 row)
 
 SELECT sift.col_verify('t_ix');
@@ -306,6 +309,6 @@ SELECT sift.col_verify('t_ix');
  
 (1 row)
 
-DROP FUNCTION global_order(text), same(text), quant(text, text, float8), shape_sql(shapes);
+DROP FUNCTION global_order(text), same(text), quant(text, text, float8), sweep(int, int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
 DROP EXTENSION pg_sift;

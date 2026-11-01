@@ -67,7 +67,10 @@ CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
 						   CASE WHEN s.hi IS NOT NULL THEN format('%s <= %s', s.col, quant(s.col, s.ty, s.hi)) END, 'true'),
 		s.dir, s.nl, s.lim, s.off)
 $$;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+-- a sweep checks the shapes whose hash with the stage falls in a 1 / per share: each stage another share
+CREATE FUNCTION sweep(stage int, per int) RETURNS TABLE (same bigint, shapes bigint) LANGUAGE sql AS
+$$ SELECT count(*) FILTER (WHERE same(shape_sql(s))), count(*) FROM shapes s WHERE hashtext(s::text || stage) % per = 0 $$;
+SELECT * FROM sweep(1, 4);
 SELECT count(*) FILTER (WHERE same(format('SELECT %1$s AS k FROM @ WHERE %1$s >= %2$s AND %1$s <= %3$s ORDER BY %1$s', s.col, quant(s.col, s.ty, s.lo), quant(s.col, s.ty, s.hi)))) AS ranges_whole, count(*) AS n
 FROM shapes s WHERE lo IS NOT NULL AND hi IS NOT NULL AND dir = 'ASC' AND nl = 'NULLS LAST' AND lim = 1 AND off = 0;
 -- a range or count across the middle is answered by the order, and a bound inside a bracket is the same row as the table's
@@ -78,7 +81,7 @@ SELECT same('SELECT dup AS k FROM @ ORDER BY dup LIMIT 700') AS ties_asc, same('
 SELECT sift.col_verify('t_ix');
 -- the pages are all-visible after a VACUUM: an OFFSET takes the entries it throws away off the front of the order without reading their keys (sift_gord_skip), where the buckets say they come first
 VACUUM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(2, 10);
 
 -- an update that changes a key is not a HOT update (the column is in the index): the old version stays in the segment and the new one is in the write buffer
 UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id % 13 = 0;
@@ -91,11 +94,11 @@ INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01', TIMESTAMPTZ '2026-01-01'
 ROLLBACK;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(3, 10);
 
 -- pruned HOT chains: the root of a chain is a redirect
 VACUUM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(4, 10);
 SELECT sift.col_verify('t_ix');
 
 -- the pages are all-visible but a few (a row updated in every tenth page, one deleted in every twentieth; no VACUUM has visited them): the skip of an OFFSET counts the entries of the other pages
@@ -108,7 +111,7 @@ UPDATE t SET ts = ts + INTERVAL '30 days', s = s - 1 WHERE (ctid::text::point)[0
 ROLLBACK;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(5, 10);
 SELECT sift.col_verify('t_ix');
 
 -- dead rows: the segment has a row bulkdelete cleared, whose address is listed so that the heap is not asked for its key, and a new row may take the address of a dead one
@@ -119,34 +122,34 @@ INSERT INTO t SELECT 30000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERV
 SELECT global_order('SELECT ts AS k FROM t ORDER BY ts LIMIT 20 OFFSET 700') AS an_offset_in_a_dirty_segment, global_order('SELECT ts AS k FROM t ORDER BY ts DESC LIMIT 20 OFFSET 3000') AS a_desc_offset_in_a_dirty_segment;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(6, 10);
 SELECT sift.col_verify('t_ix');
 
 -- a merge and a rewrite write the order again, compact again
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;
 SELECT sift.col_merge('t_ix', true) >= 0 AS merged;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(7, 10);
 SELECT sift.col_verify('t_ix');
 
 -- REINDEX writes it as the option says: whole again
 ALTER INDEX t_ix SET (order_layout = 'whole');
 REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(8, 10);
 ALTER INDEX t_ix SET (order_layout = 'compact');
 REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(9, 10);
 SELECT sift.col_verify('t_ix');
 
 -- auto chooses a chunk at a time: the columns of scattered keys are compact, the heavy ties (tie, dup) stay whole, and a column can be both
 ALTER INDEX t_ix RESET (order_layout);
 REINDEX INDEX t_ix;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
-SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+SELECT * FROM sweep(10, 10);
 SELECT sift.col_verify('t_ix');
 
-DROP FUNCTION global_order(text), same(text), quant(text, text, float8), shape_sql(shapes);
+DROP FUNCTION global_order(text), same(text), quant(text, text, float8), sweep(int, int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
 DROP EXTENSION pg_sift;
