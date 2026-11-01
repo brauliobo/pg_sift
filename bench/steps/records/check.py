@@ -7,11 +7,11 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   one run         a single run_id: the arms were measured together, under one load, on one build, one table and one set of settings
   one state       the same table state, heap order, keys, visibility and the same server settings (shared_buffers, work_mem, version, cpus, full_page_writes)
   one text        one sql_hash for the statement name, one protocol (a round is not an average of rounds)
-  a true heap     a declared heap order is the one measured (sorted: correlation above 0.9, hash: under 0.1)
+  a true heap     a declared heap order is the one measured (sorted: correlation above 0.9, hash: under 0.1); one table (variant) has one heap order
   same settings   one settings_hash (every setting that is not the default) and one maintenance label; a switch that turns the maintenance off (autovacuum, sift.col_auto_merge,
                   sift.async_maintenance, sift.test_*) is refused unless the set is labelled `maintenance disabled`, and the label without a switch is refused
   true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
-  a picked flag   the default plan is in the set (mode default), and each forced arm says whether it is that plan (same structure and option)
+  a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option)
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
   a calm host     the host pressure of the arms within `PSI_SPREAD` points of each other; a run above `NOISY_PSI` or with a CV above `NOISY_CV` is marked noisy by the report
   enough runs     MIN_REPS repetitions of every arm and temperature
@@ -30,8 +30,9 @@ MIN_REPS = 3
 PSI_SPREAD = 10.0
 NOISY_PSI = 10.0
 NOISY_CV = 10.0
-SAME = ('table_state', 'protocol', 'settings_hash', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
+SAME = ('table_state', 'protocol', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
 ALLVISIBLE_SPREAD = 5.0
+SAME_VARIANT = ('heap_order',)   # a variant is a table: two tables of a comparison may hold the heap in different orders, one table does not
 
 
 def where(r):
@@ -81,21 +82,30 @@ def comparison_problems(key, rs, min_reps, psi_spread):
     vis = [r['allvisible_pct'] for r in rs if r.get('allvisible_pct') is not None]
     if vis and max(vis) - min(vis) > ALLVISIBLE_SPREAD:
         out.append('%s: MIXED STATE: all-visible pages from %.1f%% to %.1f%%' % (name, min(vis), max(vis)))
-    default = [r for r in rs if r['mode'] == 'default']
-    if not default:
-        out.append('%s: NO PICKED: no row of mode default, so which arm the planner chooses is not recorded' % name)
-    else:
+    for variant in sorted({r['variant'] for r in rs}):
+        vs = [r for r in rs if r['variant'] == variant]
+        label = name + (' (variant %s)' % variant if variant != 'main' or len({r['variant'] for r in rs}) > 1 else '')
+        for c in SAME_VARIANT:
+            vals = {r.get(c) for r in vs}
+            if len(vals) > 1:
+                a = vs[0]
+                b = next(r for r in vs if r.get(c) != a.get(c))
+                out.append('%s: MIXED STATE: %s is %s at %s and %s at %s' % (label, c, a.get(c), where(a), b.get(c), where(b)))
+        default = [r for r in vs if r['mode'] == 'default']
+        if not default:
+            out.append('%s: NO PICKED: no row of mode default, so which arm the planner chooses is not recorded' % label)
+            continue
         d = default[0]
         for r in default:
             if r['arm'] != r['structure']:
-                out.append('%s: DEFAULT ROW %s names arm %s but its plan is %s' % (name, where(r), r['arm'], r['structure']))
+                out.append('%s: DEFAULT ROW %s names arm %s but its plan is %s' % (label, where(r), r['arm'], r['structure']))
             if r.get('picked') != 1:
-                out.append('%s: DEFAULT ROW %s has picked = %s, not 1' % (name, where(r), r.get('picked')))
-        for r in rs:
+                out.append('%s: DEFAULT ROW %s has picked = %s, not 1' % (label, where(r), r.get('picked')))
+        for r in vs:
             if r['mode'] == 'forced':
                 want = 1 if (r['arm'], r['arm_option']) == (d['arm'], d['arm_option']) else 0
                 if r.get('picked') != want:
-                    out.append('%s: PICKED FLAG of %s is %s but the default plan is %s %s' % (name, where(r), r.get('picked'), d['arm'], d['arm_option']))
+                    out.append('%s: PICKED FLAG of %s is %s but the default plan is %s %s' % (label, where(r), r.get('picked'), d['arm'], d['arm_option']))
     for r in rs:
         corr = r.get('heap_corr')
         if corr is not None and ((r['heap_order'] == 'sorted' and abs(corr) < 0.9) or (r['heap_order'] == 'hash' and abs(corr) > 0.1)):
@@ -121,12 +131,12 @@ def comparison_problems(key, rs, min_reps, psi_spread):
                 out.append('%s: OTHER STRUCTURES at %s: a %s figure of a table that also holds %s' % (name, where(r), r['kind'], ','.join(sorted(extra))))
     cells = defaultdict(list)
     for r in rs:
-        cells[(r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
+        cells[(r['variant'], r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
     for k, v in sorted(cells.items()):
         if len(v) < min_reps:
-            out.append('%s: TOO FEW RUNS: %s %s %s %s has %d repetitions, %d are required' % (name, k[0], k[1], k[2], k[3], len(v), min_reps))
+            out.append('%s: TOO FEW RUNS: %s has %d repetitions, %d are required' % (name, ' '.join(k), len(v), min_reps))
         if len({r['rep'] for r in v}) != len(v):
-            out.append('%s: DUPLICATE REPETITIONS in %s %s %s %s' % (name, k[0], k[1], k[2], k[3]))
+            out.append('%s: DUPLICATE REPETITIONS in %s' % (name, ' '.join(k)))
     load = {}
     for k, v in cells.items():
         p = [max(r['psi_cpu_start'] or 0, r['psi_cpu_end'] or 0) for r in v if r.get('psi_cpu_start') is not None or r.get('psi_cpu_end') is not None]

@@ -15,7 +15,7 @@ import collect  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402
 
-BASE = dict(run_id='abc123456789-20261101T000000Z-0001', tip='abc123456789', harness='test records-1', dataset='orders', rows=300000, keys=3000, rows_per_key=100.0, heap_order='arrival',
+BASE = dict(run_id='abc123456789-20261101T000000Z-0001', tip='abc123456789', harness='test records-1', dataset='orders', variant='main', rows=300000, keys=3000, rows_per_key=100.0, heap_order='arrival',
             heap_corr=0.01, table_state='fresh_vacuumed', allvisible_pct=100.0, structures='btree,heap,sift', statement='top20', sql_hash='aaaaaaaaaaaa', kind='read', protocol='single', mode='forced',
             arm='sift', arm_option='default', picked=1, structure='sift', temp='warm', rep=1, est_cost=100.0, plan_ms=0.1, exec_ms=1.0, wall_ms=1.3, instr_m=5.0, cycles_m=4.0,
             instr_scope='cluster', workers_requested=0, workers_launched=0, heap_hit=10, heap_read=0, btree_hit=0, btree_read=0, gin_hit=0, gin_read=0, sift_hit=30, sift_read=0,
@@ -229,6 +229,13 @@ class Checker(unittest.TestCase):
         for reason, rs in cases:
             with self.subTest(reason=reason):
                 self.assertTrue(any(reason in p for p in problems(rs)), '%s was not refused: %s' % (reason, problems(rs)))
+
+    def test_variants_are_tables_with_their_own_heap_order_and_picked_flag(self):
+        rs = clean() + [dict(r, variant='sorted', heap_order='sorted', heap_corr=0.99) for r in clean()]
+        self.assertEqual(problems(rs), [])
+        forced = [r for r in rs if r['variant'] == 'sorted' and r['mode'] == 'forced'][0]
+        forced['picked'] = 1 - forced['picked']
+        self.assertTrue(any('PICKED FLAG' in p and 'variant sorted' in p for p in problems(rs)), problems(rs))
 
     def test_a_set_labelled_maintenance_disabled_is_accepted_and_says_so(self):
         rs = clean()

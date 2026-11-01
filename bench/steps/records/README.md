@@ -45,6 +45,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `structures` | text | yes | the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used |
 | `statement` | text | yes | the name of the statement |
 | `sql_hash` | text | yes | hash of the statement text without its white space: one name is one text |
+| `variant` | text | yes | the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant |
 | `kind` | text | yes | read, maintenance (VACUUM, CREATE INDEX, merge) or load |
 | `protocol` | text | yes | what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve |
 | `mode` | text | yes | forced (the arm was selected with settings) or default (the planner chose) |
@@ -96,7 +97,7 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | refusal | rule |
 |---|---|
 | MIXED RUNS | one `run_id`: the arms were measured together, on one build, under one load |
-| MIXED STATE | one table state, protocol, heap order, key distribution and visibility |
+| MIXED STATE | one table state, protocol and key distribution within a comparison; one heap order within a `variant` (a variant is one table, so a heap in arrival order and one sorted by the key are two variants, each with its own default plan and picked flag) |
 | MIXED SETTINGS | one `settings_hash` (every setting that is not the default, the cluster and the session before an arm forces anything), `shared_buffers`, `work_mem`, version, cpu quota, `full_page_writes` and harness; the report header shows the hash and the list |
 | TEST SETTINGS NOT LABELLED / LABELLED DISABLED WITHOUT A SWITCH | a setting that turns the maintenance off (`autovacuum`, `sift.col_auto_merge`, `sift.async_maintenance`, any `sift.test_*`, as a test cluster's configuration sets them) is refused unless the set says `maintenance` = `disabled`, which the report prints in capitals; the label without such a setting is refused too |
 | TWO STATEMENTS | one `sql_hash` for a statement name |

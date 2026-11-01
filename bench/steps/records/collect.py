@@ -40,10 +40,10 @@ FORCING = {
 
 
 class Subject:
-    """the data of the measurement: dataset name, rows, keys, how the heap holds the key (arrival, sorted, hash, other), the table state (schema.STATES) and the protocol of a repetition"""
+    """the data of the measurement: dataset name, rows, keys, how the heap holds the key (arrival, sorted, hash, other), the variant (the table of a comparison that has several), the table state (schema.STATES) and the protocol of a repetition"""
 
-    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default'):
-        self.default_option = default_option
+    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default', variant='main'):
+        self.default_option, self.variant = default_option, variant
         self.dataset, self.rows, self.heap_order, self.table_state = dataset, rows, heap_order, table_state
         self.table, self.key, self.keys, self.protocol, self.structures, self.kind = table, key, keys, protocol, structures, kind
 
@@ -272,7 +272,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     pairs = settings_of(s)
     restore = session_base(s)
     vis, corr, structures = table_facts(s, subject.table, subject.key)
-    base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, rows=subject.rows, keys=subject.keys,
+    base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, variant=subject.variant, rows=subject.rows, keys=subject.keys,
                 rows_per_key=(subject.rows / subject.keys) if subject.keys else None, heap_order=subject.heap_order, heap_corr=corr, table_state=subject.table_state,
                 allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(sql), kind=subject.kind, protocol=subject.protocol,
                 cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),

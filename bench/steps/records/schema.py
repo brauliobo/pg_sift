@@ -41,6 +41,7 @@ FIELDS = [
     ('structures', 's', True, 'the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used'),
     ('statement', 's', True, 'the name of the statement'),
     ('sql_hash', 's', True, 'hash of the statement text without its white space: one name is one text'),
+    ('variant', 's', True, 'the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant'),
     ('kind', 's', True, 'read, maintenance (VACUUM, CREATE INDEX, merge) or load'),
     ('protocol', 's', True, 'what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve'),
     ('mode', 's', True, 'forced (the arm was selected with settings) or default (the planner chose)'),
