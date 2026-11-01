@@ -108,8 +108,8 @@ SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
  array  | SELECT id, b FROM gt WHERE b < 100 ORDER BY b DESC LIMIT 10
  array  | SELECT id, b FROM gt WHERE b = 100 AND a > 0 ORDER BY b, id LIMIT 10
  walked | SELECT id, b FROM gt WHERE (b < 20 OR b > 480) ORDER BY b LIMIT 10
- walked | SELECT id, b FROM gt WHERE a > 0 ORDER BY b LIMIT 10
- walked | SELECT id, b FROM gt WHERE b > 100 AND a > 0 ORDER BY b LIMIT 10
+ native | SELECT id, b FROM gt WHERE a > 0 ORDER BY b LIMIT 10
+ native | SELECT id, b FROM gt WHERE b > 100 AND a > 0 ORDER BY b LIMIT 10
  array  | SELECT id, b FROM gt WHERE b >= 100 ORDER BY b LIMIT 10 OFFSET 5
  array  | SELECT id, b FROM gt WHERE b IS NOT NULL ORDER BY b LIMIT 10
  walked | SELECT id, b FROM gt WHERE b <> 100 ORDER BY b LIMIT 10

@@ -208,6 +208,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	dst->nrows = src->nrows;
 	dst->nunits = src->nunits;
 	dst->bytes = src->bytes;
+	dst->keyed_frac = src->keyed_frac;
 	dst->allvisible_frac = src->allvisible_frac;
 	dst->exact_frac = src->exact_frac;
 	dst->rows_miss = src->rows_miss;

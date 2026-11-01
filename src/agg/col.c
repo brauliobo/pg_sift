@@ -284,6 +284,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->nrows = meta->stats.nrows;
 	st->nunits = meta->stats.nunits;
 	st->bytes = meta->stats.bytes;
+	st->keyed_frac = meta->stats.keyed_frac;
 	st->allvisible_frac = meta->stats.allvisible_frac;
 	st->exact_frac = st->allvisible_frac;
 	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)

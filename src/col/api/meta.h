@@ -18,6 +18,7 @@ typedef struct SiftColIndexStats
 	uint32		wbuf_jnull;		/* ... and a JSON null of */
 	uint64		bytes;			/* of the immutable segments */
 	uint32		nunits;			/* (segment, sb) units */
+	double		keyed_frac;		/* share of the rows in segments whose units a declared key cuts: each such unit spans the whole heap */
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */
 	BlockNumber heap_pages;
 } SiftColIndexStats;

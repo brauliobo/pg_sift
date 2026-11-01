@@ -33,6 +33,7 @@ sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves)
 	p->nrows = s->nrows;
 	p->nunits = s->nunits;
 	p->bytes = s->bytes;
+	p->keyed_frac = s->keyed_frac;
 	p->allvisible_frac = s->allvisible_frac;
 	p->exact_frac = s->exact_frac;
 	p->rows_miss = s->rows_miss;
@@ -61,6 +62,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 
 	if (w > 0)
 	{
+		tot->keyed_frac = (tot->keyed_frac * tot->nrows + s->keyed_frac * s->nrows) / w;
 		tot->allvisible_frac = (tot->allvisible_frac * tot->nrows + s->allvisible_frac * s->nrows) / w;
 		tot->exact_frac = (tot->exact_frac * tot->nrows + s->exact_frac * s->nrows) / w;
 		tot->rows_miss = (tot->rows_miss * tot->nrows + s->rows_miss * s->nrows) / w;

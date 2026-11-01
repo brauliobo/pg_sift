@@ -223,7 +223,7 @@ heap_visit_ops(double pages)
 
 /*
  * The heap check of the rows on pages that are not all-visible (vis is their share), a page at a time: the pages of the units the zones keep
- * (zone_kept) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
+ * (zone_kept; a unit cut by a declared key spans the whole heap, whatever its zone) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
  * (PostgreSQL's own assumption for it is effective_cache_size), or read from the disk: a sequential read when the scan reaches most of the pages it
  * passes and a random one when it skips them.
  */
@@ -231,7 +231,8 @@ double
 vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 {
 	double		pages = Max(rel_pages(c), 1.0),
-				vet_pages = vis * Min(Max(pages * zone_kept, 1.0), pages),
+				kept = zone_kept + (1.0 - zone_kept) * c->stats.keyed_frac,
+				vet_pages = vis * Min(Max(pages * kept, 1.0), pages),
 				rows = vis * sel_rows,
 				buffered,
 				cached,

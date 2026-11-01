@@ -58,6 +58,7 @@ typedef struct SiftPartStats
 	double		nrows,
 				nunits,
 				bytes,
+				keyed_frac,
 				allvisible_frac,
 				exact_frac,
 				rows_miss;

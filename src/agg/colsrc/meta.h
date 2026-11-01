@@ -98,6 +98,7 @@ typedef struct SiftSrcStats
 	double		nrows;			/* rows in the source (dead included) */
 	double		nunits;			/* units */
 	double		bytes;			/* stored (compressed) bytes of the leaves together, 0 when unknown */
+	double		keyed_frac;		/* share of the rows in units a declared key cuts: they span the whole heap (0 for a table) */
 	double		allvisible_frac;	/* share of the heap pages that are all-visible (1 for a table) */
 	double		exact_frac;		/* share of the units whose pre-aggregates may answer: those on all-visible pages of a heap, the plain superblocks of a table */
 	double		dim_miss[SIFT_COLSRC_MAX_LEAVES];	/* share of the units without the histogram of a leaf, without its min and max, and without the rollup of a list: units written before the options asked for them (0: the source does not tell) */

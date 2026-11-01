@@ -9,6 +9,7 @@ count_by_kind	299
 count_live	267
 count_of_groups	411
 deleted_rows	354
+dirty_pages_set	640
 distinct_by_kind	622
 distinct_by_month	543	1.5
 distinct_global	327

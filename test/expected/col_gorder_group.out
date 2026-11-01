@@ -146,8 +146,8 @@ $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 24
- units  | 12
+ array  | 25
+ units  | 11
 (2 rows)
 
 -- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge

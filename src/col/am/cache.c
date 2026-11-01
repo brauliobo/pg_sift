@@ -244,10 +244,14 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 			m->stats.nrows += e->ndocs;
 			m->stats.bytes += e->bytes;
 			m->stats.nsegments++;
+			if (sift_cseg_keyed(e))
+				m->stats.keyed_frac += e->ndocs;
 		}
 		else
 			m->stats.nwbuf++;
 	}
+	if (m->stats.nrows > 0)
+		m->stats.keyed_frac /= m->stats.nrows;
 	m->stats.nunits = sift_cseg_dir_units(snap);
 	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
 	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);

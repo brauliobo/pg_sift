@@ -79,3 +79,13 @@ VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
 \echo gen.sql: pages not all visible after the second VACUUM: :tables
 DO $$ BEGIN RAISE EXCEPTION 'gen.sql: a table has pages that are not all visible after two VACUUMs (a transaction holding the horizon?)'; END $$;
 \endif
+
+-- a copy of the events whose heap pages are all dirty after its VACUUM (the first row of every page updated: the update clears the page's bit of the visibility map, and ANALYZE
+-- counts the pages again for the index-only scans of the native plan): the rows are checked in the heap, page by page, and the scan is priced for it (vet_cost)
+CREATE TABLE events_dirty (id int PRIMARY KEY, set_id int NOT NULL, kind text NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events_dirty SELECT id, 1 + id % 8, kind, ts, amount FROM events;
+CREATE INDEX events_dirty_set ON events_dirty (set_id, ts) INCLUDE (kind, amount);
+CREATE INDEX events_dirty_col ON events_dirty USING sift_col (set_id, kind, ts, amount);
+VACUUM (FREEZE, ANALYZE) events_dirty;
+UPDATE events_dirty SET amount = amount WHERE (ctid::text::point)[1]::int = 1;
+ANALYZE events_dirty;

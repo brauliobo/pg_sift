@@ -90,8 +90,8 @@
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows of a flagged unit the source reads again from the heap when no sample of the unit's overflow slots says (statistics: ovf_frac) */
 #define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again */
-#define AGG_VET_PAGE		400.0	/* a heap page the check reads from shared buffers: the buffer lookup, its lock and the line pointers (1 to 1.5 us measured on 1,000 to 24,000 pages, 185 rows or 8 to a page), in the operators AGG_SCAN_SPEED scales */
-#define AGG_VET_OS_PAGE		1000.0	/* ... from the cache of the operating system: the read call and the copy of the page (3.5 us measured, a heap of 185 MB under 16 MB of buffers) */
+#define AGG_VET_PAGE		1500.0	/* a heap page the check reads from shared buffers: the buffer lookup, its lock, the line pointers and the update chains of a dirty page (1.2 to 2.8 us measured on 300,000 and 1,000,000 rows with 5 to 100% of the pages dirty, 8 rows to a page), in the operators AGG_SCAN_SPEED scales */
+#define AGG_VET_OS_PAGE		3750.0	/* ... from the cache of the operating system: the read call and the copy of the page (3.5 us measured, a heap of 185 MB under 16 MB of buffers) */
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
