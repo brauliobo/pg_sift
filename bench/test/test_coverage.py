@@ -1,6 +1,7 @@
 """The coverage check of bench/steps/cases/coverage.py: every claim of a release (a CHANGELOG line under Unreleased, a landed commit that gives a measured speed) has a case with rows of
 the current version, rows of its peers, and no `n/a: not measured` is left in the pages. Each test builds a small git repository: no server, no measurement."""
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,26 @@ class HostPlan(Fixture):
     def test_the_footers_become_the_release_command_with_the_cells_of_the_competitors_measured_again(self):
         self.t.write('bench/out/README-blocks.md', '`n/a`: not measured under 3.7 yet.\n')
         self.assertIn('bench/bench release --remeasure-all --budget 160', coverage.host_plan(self.t.root))
+
+
+class ScriptsCallRealSubcommands(unittest.TestCase):
+    """a script or lint entry that calls cases.py with a subcommand that does not exist rots unseen: lint runs no such call"""
+
+    def test_every_call_of_cases_py_names_a_subcommand_of_main(self):
+        repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+        with open(os.path.join(repo, 'bench', 'steps', 'cases', 'main.py')) as f:
+            known = set(re.findall(r"'(\w+)'", re.search(r"add_argument\('cmd', choices=\[([^\]]*)\]", f.read()).group(1)))
+        calls = []
+        for folder, _, names in os.walk(repo):
+            if '.git' in folder.split(os.sep) or os.sep + 'out' in folder:
+                continue
+            for name in names:
+                if name.endswith('.sh') or name == 'bench':
+                    path = os.path.join(folder, name)
+                    with open(path, errors='replace') as f:
+                        calls += [(os.path.relpath(path, repo), sub) for sub in re.findall(r'python3 (?:-\w+ )*(?:\S*cases\.py|"\$CASES")"? (\w+)', f.read())]
+        self.assertTrue(calls)
+        self.assertEqual([c for c in calls if c[1] not in known], [])
 
 
 if __name__ == '__main__':

@@ -79,7 +79,7 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow|since)$	-
-^scripts/(pgdg-repo|apt-install|lint-cache|check-neutral|check-aarch64-baseline|check-testing-regress|check-errors|check-approx|check-memory|check-bench-fresh|check-bench-cases|check-slugs|check-readme-tables|gen-docs|gen-refusals|check-file-size|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|instr-budget|instr-budget-zone|instr-budget-fetch|check-kernels|kernels\.allow|bench-cases\.allow|instr-budget-ungrouped|instr-budget-vet|instr-budget-wbuf|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|genlib|options-released|limits\.allow|refusals\.allow)	-
+^scripts/(pgdg-repo|apt-install|lint-cache|check-neutral|check-aarch64-baseline|check-testing-regress|check-errors|check-approx|check-memory|check-bench-fresh|check-slugs|check-readme-tables|gen-docs|gen-refusals|check-file-size|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|instr-budget|instr-budget-zone|instr-budget-fetch|check-kernels|kernels\.allow|bench-cases\.allow|instr-budget-ungrouped|instr-budget-vet|instr-budget-wbuf|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|genlib|options-released|limits\.allow|refusals\.allow)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/instr-budget-lib\.sh$	^tap-shell-instr_budget_lib$
 ^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
