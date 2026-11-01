@@ -133,6 +133,8 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
  * (col/dictcache.c), would pay them for one use. A dictionary of the write path has its table from the first intern.
  */
 #define DICT_HASH_AFTER		8
+/* ... or once when the table is shared (d->built: col/dictshm.c writes it to the ring when it is made), so that the cost is that of the server and not of each backend */
+#define DICT_HASH_AFTER_SHARED	1
 
 int64
 sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
@@ -141,7 +143,7 @@ sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 		return -1;
 	if (d->look)
 		return d->look->find(d->look, s, len);
-	if (d->slots == NULL && d->finds++ < DICT_HASH_AFTER)
+	if (d->slots == NULL && d->finds++ < (d->built != NULL ? DICT_HASH_AFTER_SHARED : DICT_HASH_AFTER))
 	{
 		for (uint32 c = 0; c < d->n; c++)
 			if (cdict_len(d, c) == len && memcmp(d->bytes + d->off[c], s, len) == 0)

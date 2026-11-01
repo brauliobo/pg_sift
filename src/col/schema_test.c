@@ -69,6 +69,11 @@ check_schema(TCtx *t, const Case *c)
 	CHECK(t, ERRCODE_OF(sift_cschema_create(CurrentMemoryContext, defs, 0)) == ERRCODE_INVALID_PARAMETER_VALUE, "empty schema accepted");
 }
 
+static void
+built_nop(SiftCDict *d, void *arg)
+{
+}
+
 /*
  * The string list form of a dictionary (policies auto, none, lz4, zstd): the same codes come back, and damaged bytes are refused or read
  * as a valid dictionary, never read past their end. Draws from a generator of its own: the rounds that follow keep theirs.
@@ -100,6 +105,20 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes, "dictionary (%s) parse", specs[k]);
 		for (uint32 i = 0; p != NULL && i < n; i += 1 + (uint32) pg_prng_uint64_range(&rng, 0, 4))
 			CHECK(t, sift_cdict_find(p, str[i], len[i]) == sift_cdict_find(d, str[i], len[i]), "dictionary (%s) code", specs[k]);
+		/* the table of a dictionary that is shared is made by the second search, for the server; one that is not, after a few */
+		if (k == 0 && p != NULL)
+		{
+			SiftCDict  *own = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used),
+					   *shared = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
+
+			shared->built = built_nop;
+			for (int i = 0; i < 2; i++)
+			{
+				(void) sift_cdict_find(own, str[0], len[0]);
+				(void) sift_cdict_find(shared, str[0], len[0]);
+			}
+			CHECK(t, own->slots == NULL && shared->slots != NULL, "dictionary table after two searches: own %p, shared %p", (void *) own->slots, (void *) shared->slots);
+		}
 		for (int rounds = 0; rounds < 10; rounds++)
 		{
 			SiftCDict  *q = NULL;

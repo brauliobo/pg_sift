@@ -8,6 +8,7 @@
 #include "col/dict/dict_int.h"
 
 #define DICT_SORT_AFTER		16
+#define DICT_SORT_AFTER_SHARED	1		/* the sorted order of a dictionary that is shared (d->built) is made for the server, not for the backend */
 
 #define DICT_SORT_MIN		1024
 
@@ -302,7 +303,7 @@ sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, int nvals, u
 		sift_cstrs_contains(lut, d->bytes, d->off, d->n, op, c, nvals);
 		return sift_colk->bits_count(lut, (d->n + 63) / 64);
 	}
-	if (op != SIFT_COLOP_SUFFIX && d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
+	if (op != SIFT_COLOP_SUFFIX && d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= (d->built != NULL ? DICT_SORT_AFTER_SHARED : DICT_SORT_AFTER))
 		cdict_sort(d);
 	if (d->sorted == NULL || op == SIFT_COLOP_SUFFIX)
 	{
