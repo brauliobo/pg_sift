@@ -279,9 +279,12 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	if (h->gen == 0)
 		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 	wbuf_flag_overflow(index, h, ovf, jnull);
-	appendBinaryStringInfo(&p->buf, (const char *) &row->tid, sizeof(ItemPointerData));
-	appendBinaryStringInfo(&p->buf, (const char *) &len, sizeof(len));
-	appendBinaryStringInfo(&p->buf, pend_enc.data, len);
+	enlargeStringInfo(&p->buf, sizeof(ItemPointerData) + sizeof(len) + len);
+	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
+	memcpy(p->buf.data + p->buf.len + sizeof(ItemPointerData), &len, sizeof(len));
+	memcpy(p->buf.data + p->buf.len + sizeof(ItemPointerData) + sizeof(len), pend_enc.data, len);
+	p->buf.len += sizeof(ItemPointerData) + sizeof(len) + len;
+	p->buf.data[p->buf.len] = '\0';
 	p->ovf |= ovf;
 	p->jnull |= jnull;
 	if (p->buf.len >= EMPTY_ROOM)

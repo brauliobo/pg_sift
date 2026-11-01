@@ -42,38 +42,60 @@ wbuf_rec_at(PageCursor *c, Size *size)
 	return h;
 }
 
+/* The writes of a row check the room inline: 0.9k of the 26k instructions of a COPY row at 13 columns were the calls of enlargeStringInfo */
+static inline uint8 *
+put_room(StringInfo buf, Size n)
+{
+	if (buf->maxlen - buf->len <= n)
+		enlargeStringInfo(buf, n);
+	return (uint8 *) buf->data + buf->len;
+}
+
+static inline void
+put_bytes(StringInfo buf, const void *src, Size n)
+{
+	memcpy(put_room(buf, n), src, n);
+	buf->len += n;
+}
+
+static inline void
+put_varint(StringInfo buf, uint64 v)
+{
+	buf->len = (char *) sift_put_varint(put_room(buf, 10), v) - buf->data;
+}
+
 static void
 put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 {
 	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW : 0) | v->tag << COLV_TAG_SHIFT;
 
-	appendStringInfoChar(buf, flag);
+	put_bytes(buf, &flag, 1);
 	if (flag & COLV_NULL)
 		return;
 	if (def->kind == SIFT_COLK_GROUP)
 	{
 		Assert(v->v.i >= 0);
-		sift_col_put_varint(buf, v->v.i);
+		put_varint(buf, v->v.i);
 		return;
 	}
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			sift_col_put_varint(buf, sift_zigzag(v->v.i));
+			put_varint(buf, sift_zigzag(v->v.i));
 			break;
 		case SIFT_COLS_F4:
 			{
 				float4		f = (float4) v->v.f;
 
-				appendBinaryStringInfo(buf, (char *) &f, sizeof(f));
+				put_bytes(buf, (char *) &f, sizeof(f));
 				break;
 			}
 		case SIFT_COLS_F8:
-			appendBinaryStringInfo(buf, (char *) &v->v.f, sizeof(double));
+			put_bytes(buf, (char *) &v->v.f, sizeof(double));
 			break;
 		case SIFT_COLS_STR:
-			sift_col_put_varint(buf, v->len);
-			appendBinaryStringInfo(buf, v->v.s, v->len);
+			put_varint(buf, v->len);
+			put_bytes(buf, v->v.s, v->len);
 			break;
 	}
 }
@@ -111,6 +133,7 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 				*jnull |= value_jnull(&row->elem[id][j]) ? SIFT_COL_OVF_BIT(id) : 0;
 			}
 	}
+	buf->data[buf->len] = '\0';
 	return ovf;
 }
 
