@@ -693,9 +693,13 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 				ok = gexact_dead(src, seg, u, x, &room);
 			else
 			{
+				uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+
+				sift_cseg_dirty_units(seg, dirty);
 				for (uint32 k = 0; ok && k < seg->nsb; k++)
-					if (sift_cseg_dirty(seg, k))
+					if (sift_col_bit_test(dirty, k))
 						ok = gexact_dead(src, seg, k, x, &room);
+				pfree(dirty);
 				if (x->ndead > 1)
 					qsort(x->dead, x->ndead, sizeof(SiftKey), siftkey_cmp);
 			}
