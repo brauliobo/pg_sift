@@ -350,6 +350,13 @@ text_is(Datum d, const char *str, uint32 len)
 	return VARSIZE_ANY_EXHDR(v) == len && memcmp(VARDATA_ANY(v), str, len) == 0;
 }
 
+/* The entry passes the condition by its key alone and is exact (live, on an all-visible page): the heap does not confirm it. The condition is asked first: when another column decides it, the entry is never exact and the dead list of its unit is not read */
+bool
+gord_entry_exact(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull)
+{
+	return (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1) && sift_gord_exact(t->go, tid);
+}
+
 /*
  * The entries of one key of the array, in the order of the array. A group wholly before the OFFSET (even if every entry is live) is thrown away by the Limit above and the tie order
  * within it decides nothing: its entries that are exact (live and visible, the condition decided by the key) are counted and not fetched, the others are confirmed by the heap and
@@ -483,7 +490,7 @@ gord_prep(SiftTopN *t)
 			g.tid = repalloc(g.tid, g.room * sizeof(ItemPointerData));
 			g.exact = repalloc(g.exact, g.room * sizeof(bool));
 		}
-		g.exact[g.n] = sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1);
+		g.exact[g.n] = gord_entry_exact(t, &tid, key, isnull);
 		g.tid[g.n++] = tid;
 	}
 	/* the end of the array closes the last group */
@@ -517,7 +524,7 @@ gord_probe(SiftTopN *t)
 					hnull;
 		Datum		d;
 
-		if (n < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
+		if (n < t->skip && gord_entry_exact(t, &tid, key, isnull))
 		{
 			n++;
 			continue;
