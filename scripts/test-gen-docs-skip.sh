@@ -10,6 +10,8 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - 2>/dev/null | tar -xf - -C "$T"
 git -C "$T" init -q
+# the public README has no benchmark block (their results are not in the tree): the copy gets one, so that the renderers have a block to write
+printf '\n<!-- bench:sets:begin -->\n<!-- bench:sets:end -->\n' >>"$T/README.md"
 unset CI SIFT_LINT_NOCACHE
 export SIFT_GEN_DOCS_CACHE=$T/.cache
 # gen NAME [env]: a run of the copy; its log is $T/NAME.log

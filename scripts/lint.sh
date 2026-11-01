@@ -46,6 +46,7 @@ CHECKS=(
 	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'affected-untracked	scripts/test-affected-untracked.sh'
+	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps README.md -- scripts/test-gen-docs-skip.sh'
 	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
 )
