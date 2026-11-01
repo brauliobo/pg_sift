@@ -70,3 +70,5 @@ commit 05d41606e	a planner price of the restart of a top-N probe of the order ar
 commit 11e5e77b6	a planner price of the heap row of a plain index scan (0.1 us a row, measured 146 ns a row of a clustered table) held by test/sql/col_point_dir.sql (failing first: the lookup of an equality on a bool, 16,853 rows, took the index scan at 1.55 ms where the index-only scan takes 1.08)
 commit 6f3edd674	CHANGELOG line written after the commit; cases group_latest_entity and group_count_entity
 a join that looks up a `sift_col` index with one equality for each row of the outer side	case join_eq_nl_probe: the nested loop of 1,000 outer keys against the index, with a b-tree as the native variant; held by test/sql/col_join_is_probe.sql
+commit 0df9bb51c	a test-only setting (sift.test_direct_max) that shortens a regression test from 41.5 s to 0.7 s; no code path of a release build changes
+commit 4c1f89e29	a test-only setting of the table load that lets the tests of the ring and the workers use smaller units; the time is the test run, not a statement
