@@ -69,7 +69,7 @@ SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
 REINDEX INDEX tt_i;
 SELECT sift.col_verify('tt_i');
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
--- a write buffer of more rows than the scan sorts for so few reads the units
+-- a write buffer of 5,000 rows is sorted by the leading bytes of its strings, the ranges a read reaches only: the global order reads it
 INSERT INTO tt (id, a) SELECT 50000 + i, tt_str(i) FROM generate_series(1, 5000) i;
 SELECT tt_chk('SELECT a FROM tt ORDER BY a LIMIT 10') AS big_buffer;
 

@@ -16,6 +16,13 @@ typedef struct GOrdPair
 	uint64		tid;
 } GOrdPair;
 
+typedef struct GOrdText
+{
+	const char *s;
+	uint32		len;
+	uint64		tid;
+} GOrdText;
+
 typedef struct ColGOrdMem
 {
 	int			leaf;
@@ -33,29 +40,15 @@ typedef struct ColGOrdMem
 	int			shift;			/* the range of a key is (key - kmin) >> shift */
 	int64		kmin;
 	uint32		collid;
-	uint32		nstr;			/* a text key: the key of an entry is the rank of its string among the nstr distinct ones, which are str[rank] (len[rank] bytes, in the batches of the buffers) */
+	/* a text key: the key of an entry is the position of the first entry of its string; str[pos] (len[pos] bytes, in the batches of the buffers) is the string of the entry at pos,
+	 * all set once its range is sorted. ent holds the rows by their order in the buffers, which the pairs of raw name */
 	const char **str;
 	uint32	   *len;
+	GOrdText   *ent;
+	bool		bytes;			/* the range of a string is that of its 8 bytes after the first plen, which all the strings share: the collation orders by bytes */
+	uint32		plen;
+	const char *pre;			/* the first plen bytes of every string */
 } ColGOrdMem;
-
-typedef struct GOrdText
-{
-	const char *s;
-	uint32		len;
-	uint64		tid;
-} GOrdText;
-
-static uint32 gord_text_coll;
-
-static int
-gord_text_cmp(const void *a, const void *b)
-{
-	const GOrdText *x = a,
-			   *y = b;
-	int			c = sift_cgord_str_order(x->s, x->len, y->s, y->len, gord_text_coll);
-
-	return c != 0 ? c : SIFT_CMP3(x->tid, y->tid);
-}
 
 #define GORD_PAIR_LESS(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->tid < (y)->tid)
 SIFT_DEFINE_SORT(gord_pair_cmp_sort, GOrdPair, GORD_PAIR_LESS)
@@ -73,6 +66,43 @@ gord_pair_copy(size_t bytes)
 /* the rows of the buffers come in the order of their addresses (the comparison sort takes any other order): by key, then address */
 SIFT_DEFINE_RADIX_SORT(gord_pair_sort, GOrdPair, GORD_PAIR_KEY, GORD_PAIR_NOKEY, GORD_PAIR_TID, gord_pair_copy, pfree, gord_pair_cmp_sort)
 
+/* the first 8 bytes of a string, as the signed key that orders them like the bytes: strings with the same 8 bytes are ordered by the collation within a range */
+static int64
+gord_prefix(const char *s, uint32 len)
+{
+	uint64		p = 0;
+
+	if (len >= 8)
+	{
+		memcpy(&p, s, 8);
+		p = pg_bswap64(p);
+	}
+	else
+		for (uint32 i = 0; i < len; i++)
+			p |= (uint64) (uint8) s[i] << (56 - 8 * i);
+	return (int64) (p ^ UINT64CONST(0x8000000000000000));
+}
+
+static const GOrdText *gord_text_ent;
+static uint32 gord_text_coll;
+
+/* a pair of a text range: the prefix, then the string of the row it names (tid is its place among the rows read), then its address */
+static inline bool
+gord_text_before(const GOrdPair *x, const GOrdPair *y)
+{
+	const GOrdText *a = &gord_text_ent[x->tid],
+			   *b = &gord_text_ent[y->tid];
+	int			c;
+
+	if (x->key != y->key)
+		return x->key < y->key;
+	c = sift_cgord_str_order(a->s, a->len, b->s, b->len, gord_text_coll);
+	return c != 0 ? c < 0 : a->tid < b->tid;
+}
+
+#define GORD_TEXT_LESS(x, y) gord_text_before(x, y)
+SIFT_DEFINE_SORT(gord_text_sort, GOrdPair, GORD_TEXT_LESS)
+
 /* The ranges of the key of the buffer sorted so far: what a scan reads is a few ranges of them, and a seek or a count by key sorts the one the key falls in */
 static void
 gmem_sort(ColGOrdMem *g, uint32 b)
@@ -82,11 +112,34 @@ gmem_sort(ColGOrdMem *g, uint32 b)
 
 	if (g->bdone[b])
 		return;
-	gord_pair_sort(g->raw + from, to - from);
-	for (uint32 i = from; i < to; i++)
+	if (g->ent == NULL)
 	{
-		g->key[i] = g->raw[i].key;
-		g->tid[i] = g->raw[i].tid;
+		gord_pair_sort(g->raw + from, to - from);
+		for (uint32 i = from; i < to; i++)
+		{
+			g->key[i] = g->raw[i].key;
+			g->tid[i] = g->raw[i].tid;
+		}
+	}
+	else
+	{
+		uint32		run = from;
+
+		gord_text_ent = g->ent;
+		gord_text_coll = g->collid;
+		gord_text_sort(g->raw + from, to - from);
+		for (uint32 i = from; i < to; i++)
+		{
+			const GOrdText *e = &g->ent[g->raw[i].tid];
+
+			/* the order of a deterministic collation ends a tie by the bytes: equal strings are the same bytes */
+			if (i > from && (e->len != g->len[i - 1] || memcmp(e->s, g->str[i - 1], e->len) != 0))
+				run = i;
+			g->key[i] = run;
+			g->tid[i] = e->tid;
+			g->str[i] = e->s;
+			g->len[i] = e->len;
+		}
 	}
 	g->bdone[b] = true;
 }
@@ -125,81 +178,6 @@ gmem_rank(ColGOrdMem *g, int64 key, bool after)
 	hi = g->bstart[b + 1];
 	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
 	return lo;
-}
-
-/* The rows of the write buffers of a text leaf sorted like the entries of a text block: by string (the collation, then the bytes) and address, the key the rank of the string; false as gord_mem, or a string longer than a dictionary entry */
-static bool
-gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v)
-{
-	uint64		n = 0;
-	GOrdText   *pv;
-	uint64	   *pn;
-	uint32		nv = 0,
-				nn = 0,
-				nstr = 0;
-	ColGOrdMem *g;
-
-	for (int i = 0; i < src->nmem; i++)
-		n += src->mem[i].b->nrows;
-	if (n > maxrows)
-		return false;
-	pv = palloc((n + 1) * sizeof(GOrdText));
-	pn = palloc((n + 1) * sizeof(uint64));
-	for (int i = 0; i < src->nmem; i++)
-	{
-		const SiftColBatch *b = src->mem[i].b;
-		const SiftCVals *v = &b->col[leaf];
-
-		for (uint32 r = 0; r < b->nrows; r++)
-		{
-			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
-				return false;
-			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
-				pn[nn++] = (uint64) b->keys[r];
-			else
-			{
-				uint32		len;
-				const char *str = sift_cdict_str(b->dict[leaf], (uint32) v->key[r], &len);
-
-				if (len > SIFT_COL_DICT_MAX_ENTRY)
-					return false;
-				pv[nv++] = (GOrdText) {str, len, (uint64) b->keys[r]};
-			}
-		}
-	}
-	gord_text_coll = collid;
-	qsort(pv, nv, sizeof(GOrdText), gord_text_cmp);
-	sift_sort_u64(pn, nn);
-	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
-	g->leaf = leaf;
-	g->gleaf = -1;
-	g->n = nv + nn;
-	g->nvals = nv;
-	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
-	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
-	g->str = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(char *));
-	g->len = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(uint32));
-	for (uint32 i = 0; i < nv; i++)
-	{
-		if (i == 0 || pv[i].len != pv[i - 1].len || memcmp(pv[i].s, pv[i - 1].s, pv[i].len) != 0)
-		{
-			g->str[nstr] = pv[i].s;
-			g->len[nstr++] = pv[i].len;
-		}
-		g->key[i] = nstr - 1;
-		g->tid[i] = pv[i].tid;
-	}
-	g->nstr = nstr;
-	g->collid = collid;
-	for (uint32 i = 0; i < nn; i++)
-	{
-		g->key[nv + i] = 0;
-		g->tid[nv + i] = pn[i];
-	}
-	src->gmem[v] = g;
-	pfree(pv);
-	pfree(pn);
-	return true;
 }
 
 /* The entries with a value cut into ranges of the key of the same width, as many as 1 / 64 of them (4,096 at most): one pass counts them, one puts them in the order of the ranges. pv is freed */
@@ -243,6 +221,92 @@ gmem_ranges(ColGOrdMem *g, MemoryContext mcxt, GOrdPair *pv, uint32 nv)
 		if (g->bstart[b + 1] - g->bstart[b] <= 1)
 			gmem_sort(g, b);
 	pfree(pv);
+}
+
+/*
+ * The rows of the write buffers of a text leaf sorted like the entries of a text block: by string (the collation, then the bytes) and address; false as gord_mem, or a string longer than
+ * a dictionary entry. Under a collation that orders by bytes the rows are cut into ranges by their first 8 bytes and a range is sorted when it is read, as for a number; under another
+ * the whole is one range, sorted at the first read, and a buffer of more than maxrows rows is not sorted (the compare of a locale costs about as much as reading the units).
+ */
+static bool
+gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid, int v)
+{
+	bool		bytes = sift_collate_is_c(collid);
+	uint64		n = 0;
+	GOrdText   *ent;
+	GOrdPair   *pv;
+	uint64	   *pn;
+	uint32		nv = 0,
+				nn = 0,
+				plen = 0;
+	ColGOrdMem *g;
+
+	for (int i = 0; i < src->nmem; i++)
+		n += src->mem[i].b->nrows;
+	if (n > (bytes ? SIFT_CGORD_MEM_MAX : maxrows))
+		return false;
+	ent = MemoryContextAlloc(src->mcxt, (n + 1) * sizeof(GOrdText));
+	pv = palloc((n + 1) * sizeof(GOrdPair));
+	pn = palloc((n + 1) * sizeof(uint64));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf];
+
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+				return false;
+			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+				pn[nn++] = (uint64) b->keys[r];
+			else
+			{
+				uint32		len;
+				const char *str = sift_cdict_str(b->dict[leaf], (uint32) v->key[r], &len);
+
+				if (len > SIFT_COL_DICT_MAX_ENTRY)
+					return false;
+				ent[nv++] = (GOrdText) {str, len, (uint64) b->keys[r]};
+			}
+		}
+	}
+	/* strings that begin alike ('customer-...') are told apart by the 8 bytes after what they share */
+	if (bytes && nv > 0)
+	{
+		plen = ent[0].len;
+		for (uint32 i = 1, k; i < nv && plen > 0; i++)
+		{
+			for (k = 0; k < plen && k < ent[i].len && ent[i].s[k] == ent[0].s[k]; k++)
+				;
+			plen = k;
+		}
+	}
+	for (uint32 i = 0; i < nv; i++)
+		pv[i] = (GOrdPair) {bytes ? gord_prefix(ent[i].s + plen, ent[i].len - plen) : 0, i};
+	sift_sort_u64(pn, nn);
+	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
+	g->leaf = leaf;
+	g->gleaf = -1;
+	g->plen = plen;
+	g->pre = nv > 0 ? ent[0].s : NULL;
+	g->n = nv + nn;
+	g->nvals = nv;
+	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
+	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
+	g->str = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(char *));
+	g->len = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(uint32));
+	g->ent = ent;
+	g->bytes = bytes;
+	g->collid = collid;
+	gmem_ranges(g, src->mcxt, pv, nv);
+	for (uint32 i = 0; i < nn; i++)
+	{
+		g->key[nv + i] = 0;
+		g->tid[nv + i] = pn[i];
+	}
+	src->gmem[v] = g;
+	pfree(pn);
+	return true;
 }
 
 /* The rows of the write buffers sorted like a segment's entries; false when a text key has more than maxrows rows, a numeric one more than SIFT_CGORD_MEM_MAX, or one holds an overflow value of the leaf or an address a block of the global order cannot name */
@@ -481,13 +545,31 @@ sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint3
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	const ColGOrdMem *g = src->gmem[v];
-	uint32		lo = 0,
+	ColGOrdMem *g = src->gmem[v];
+	int64		pk;
+	uint64		d;
+	uint32		lo,
 				hi;
+	int			c;
 
 	if (j < src->nseg)
 		return sift_cseg_gorder_strrank(src->seg[j].seg, gorder_slot(src, j, col), s, len, after);
-	hi = g->nstr;
+	/* a string that does not begin as they all do is before them all or after them all */
+	c = g->plen > 0 ? memcmp(s, g->pre, Min(len, g->plen)) : 0;
+	if (c != 0)
+		return c < 0 ? 0 : g->nvals;
+	if (len < g->plen)
+		return 0;
+	pk = g->bytes ? gord_prefix(s + g->plen, len - g->plen) : 0;
+	/* the entries of the ranges before the one of the string come first, those of the ranges after it last */
+	if (pk < g->kmin)
+		return 0;
+	d = ((uint64) pk - (uint64) g->kmin) >> g->shift;
+	if (g->nb == 0 || d >= g->nb)
+		return g->nvals;
+	gmem_sort(g, (uint32) d);
+	lo = g->bstart[d];
+	hi = g->bstart[d + 1];
 	SIFT_BISECT(uint32, mid, lo, hi, after ? sift_cgord_str_order(g->str[mid], g->len[mid], s, len, g->collid) <= 0 : sift_cgord_str_order(g->str[mid], g->len[mid], s, len, g->collid) < 0);
 	return lo;
 }
@@ -558,6 +640,12 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 
 	if (j < src->nseg)
 		return sift_cseg_gorder_seek(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, key, after, keep);
+	if (g->ent != NULL)
+	{
+		/* the rank of a string (sift_col_gorder_strrank) is the position of its first entry */
+		Assert(!after);
+		return Max(vs, Min(ve, (uint32) Min((uint64) key, (uint64) g->nvals)));
+	}
 	if (g->raw != NULL)
 		return Max(vs, Min(ve, gmem_rank(g, key, after)));
 	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
