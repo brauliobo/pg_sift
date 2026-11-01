@@ -99,3 +99,4 @@ two_distincts	480
 two_keys_month	783
 two_keys_parent_kind	725
 two_level_join_outer	705
+skew_join_rows_read	1790	1.5

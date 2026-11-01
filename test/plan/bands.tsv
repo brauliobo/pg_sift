@@ -71,6 +71,7 @@ table	search_or_by_month	scan	0.058	0.27
 table	select_distinct	scan	0.065	0.21
 table	share_of_total	scan	0.069	0.22
 table	skew_heaviest_parents	scan	0.11	0.44
+table	skew_join_rows_read	either	0.070	0.28
 table	skew_rarest_parents	scan	0.073	0.22
 table	spine_derived_cells	scan	0.076	0.30
 table	spine_dims_cross	normal	0.57	2.3
@@ -171,6 +172,7 @@ tabletuned	search_or_by_month	scan	0.0031	0.014
 tabletuned	select_distinct	scan	0.018	0.058
 tabletuned	share_of_total	scan	0.018	0.057
 tabletuned	skew_heaviest_parents	scan	0.089	0.36
+tabletuned	skew_join_rows_read	either	0.037	0.15
 tabletuned	skew_rarest_parents	scan	0.021	0.16
 tabletuned	spine_derived_cells	scan	0.25	1.0
 tabletuned	spine_dims_cross	scan	0.49	2.0
@@ -271,6 +273,7 @@ tuned	search_or_by_month	scan	0.0033	0.016
 tuned	select_distinct	scan	0.032	0.11
 tuned	share_of_total	scan	0.030	0.097
 tuned	skew_heaviest_parents	scan	0.096	0.38
+tuned	skew_join_rows_read	either	0.039	0.16
 tuned	skew_rarest_parents	scan	0.037	0.17
 tuned	spine_derived_cells	scan	0.046	0.18
 tuned	spine_dims_cross	normal	-	-

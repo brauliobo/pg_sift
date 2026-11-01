@@ -438,6 +438,12 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE skew_id IN (S
 -- expect: scan 0.11 0.34
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE skew_id IN (SELECT id FROM dims WHERE id > 55) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
+-- name: skew_join_rows_read
+-- expect: either 0.11 0.43
+SELECT p.id, p.name, count(*) FILTER (WHERE e.ts >= date '2024-06-01') AS cur, count(*) FILTER (WHERE e.ts < date '2024-06-01') AS prev, avg(e.amount) AS amount
+FROM events e JOIN parents p ON p.id = e.skew_id WHERE e.deleted_at IS NULL AND e.skew_id IN (1, 2, 3, 4, 5, 6) AND e.ts >= date '2024-05-01' AND e.ts < date '2024-07-01'
+GROUP BY p.id, p.name ORDER BY cur DESC, p.id LIMIT 20;
+
 -- name: flat_list
 -- expect: scan 0.09 0.34
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN (SELECT id FROM dims WHERE id <= 5) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;

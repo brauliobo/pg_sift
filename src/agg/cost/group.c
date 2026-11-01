@@ -201,6 +201,26 @@ group_spill_cost(const SiftAggSpec *s, double groups, double ids, double rows, d
 		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost + runs * ids * AGG_ID_SWEEP * cpu_operator_cost;
 }
 
+/* the shares of a table's pages that shared buffers hold, and that those and the cache of the operating system (effective_cache_size) hold */
+static void
+page_residency(double pages, double *buffered, double *cached)
+{
+	*buffered = Min(NBuffers / pages, 1.0);
+	*cached = Max(Min(effective_cache_size / pages, 1.0), *buffered);
+}
+
+/* the operators one visit to a heap page costs a read through an index in the order of its keys: found in the buffers, in the cache of the operating system, or read from the disk */
+double
+heap_visit_ops(double pages)
+{
+	double		buffered,
+				cached;
+
+	pages = Max(pages, 1.0);
+	page_residency(pages, &buffered, &cached);
+	return buffered * AGG_VET_PAGE * AGG_SCAN_SPEED + (cached - buffered) * AGG_VET_OS_PAGE * AGG_SCAN_SPEED + (1.0 - cached) * random_page_cost / cpu_operator_cost;
+}
+
 /*
  * The heap check of the rows on pages that are not all-visible (vis is their share), a page at a time: the pages of the units the zones keep
  * (zone_kept) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
@@ -213,8 +233,8 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 	double		pages = Max(rel_pages(c), 1.0),
 				vet_pages = vis * Min(Max(pages * zone_kept, 1.0), pages),
 				rows = vis * sel_rows,
-				buffered = Min(NBuffers / pages, 1.0),
-				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
+				buffered,
+				cached,
 				touched,
 				seq,
 				disk,
@@ -222,6 +242,7 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 
 	if (vet_pages <= 0)
 		return 0;
+	page_residency(pages, &buffered, &cached);
 	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
 	/* the pages are read in order and skip the all-visible ones: never dearer than the random fetch of the same pages, where a configuration prices a sequential page above a random one */
 	seq = Min(seq_page_cost, random_page_cost);

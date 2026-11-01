@@ -46,6 +46,7 @@ extern double distinct_text_values(AggCtx *c, const SiftAggAgg *a, const CostAcc
 extern void cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup);
 extern double group_spill_cost(const SiftAggSpec *s, double groups, double ids, double rows, double *table);
 extern double vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept);
+extern double heap_visit_ops(double pages);
 extern double in_tables_cost(AggCtx *c, const SiftAggPred *p);
 extern void workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out, double out_cost);
 

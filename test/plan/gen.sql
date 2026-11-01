@@ -22,6 +22,11 @@ CREATE TABLE dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NU
 INSERT INTO dims SELECT p, CASE WHEN p % 3 = 0 THEN 'tier_a' WHEN p % 3 = 1 THEN 'tier_b' ELSE 'tier_c' END, p % 7 <> 0,
 	jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= :np / 2 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, :np) p;
 
+-- the parents of the events by skew_id, read as a lookup through a column index of their own
+CREATE TABLE parents (id int PRIMARY KEY, name text NOT NULL);
+INSERT INTO parents SELECT p, 'parent ' || p FROM generate_series(1, :np) p;
+CREATE INDEX parents_col ON parents USING sift_col (id, name) WITH (key_columns = 'auto: id', order_array_columns = 'auto: id');
+
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, skew_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8 NOT NULL, qty int NOT NULL,
 	deleted_at timestamptz, doc jsonb NOT NULL, memo text NOT NULL) WITH (autovacuum_enabled = false);
 -- parent_id is flat; skew_id is log-uniform (parent 1 owns about one row in six); amount is a multiple of 0.25 (sums are exact), the metric m_a one decimal (sums round)
@@ -63,11 +68,11 @@ SELECT format('CREATE INDEX %1$s_parent ON %1$s (parent_id, ts, deleted_at); CRE
 -- the visible fraction of a table prices the index-only scans of the native plan and so every cost ratio of the gate, and a first pass has been seen to set the all-visible bit of only
 -- part of the pages it freezes (a different part each time): a table left with pages that are not all visible gets a second pass, and one that still has them stops the run
 \set unseen 'SELECT count(*) > 0 AS partial, coalesce(string_agg(relname || '' '' || relallvisible || ''/'' || relpages, '', ''), '''') AS tables FROM pg_class WHERE relnamespace = ''public''::regnamespace AND relkind = ''r'' AND relallvisible < relpages'
-VACUUM (FREEZE, ANALYZE) dims, events, facts, buckets, events_part;
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
 :unseen \gset
 \if :partial
 \echo gen.sql: pages not all visible after the first VACUUM (allvisible/pages): :tables
-VACUUM (FREEZE, ANALYZE) dims, events, facts, buckets, events_part;
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
 :unseen \gset
 \endif
 \if :partial
