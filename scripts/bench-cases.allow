@@ -1,1 +1,10 @@
 commit 21a92741e	a gate and a script for the plan-choice tests; no statement gets faster
+`ORDER BY key LIMIT n OFFSET m` over the sorted array of the key throws away	case order_layout_offset_mid: OFFSET rows/10 (100,000 at 1,000,000 rows) over the auto, whole and compact layouts, against a b-tree
+`CREATE INDEX` of a `sift_col` index with `key_cut` sorts the order arrays by radix	case col_build_cube_13cols: the build of a 13-column index at the rows of the run, with 0, 4 and 8 workers as variants (ms, instructions)
+`CREATE INDEX` of a `sift_col` index with workers no longer chooses	case col_build_cube_13cols: the variants workers_0, workers_4 and workers_8 against the default build
+VACUUM of a `sift_col` index writes, after each segment that has dead rows	case col_vacuum_churn_sidecar: the VACUUM after 4% churn, whose sidecar is the cost; the query after it is topn_offset_after_vacuum and dirty_share_few
+the WAL budget of the automatic rewrite of a `sift_col` index	the stall needs sift.col_auto_merge_wal_pct below the WAL of the churn and 8 rounds of churn with the maintenance worker running, a state the single-session case harness cannot hold still; tests/col_net_policy (dad53e034) asserts that the buffer is promoted under the budget and the numbers of the line came from that run
+while a physical standby streams, `VACUUM` of a `sift_col` index moves the segments	needs a streaming hot standby with feedback; the single-server harness has none: measured by test/t/col_index_replica.sh and the lab run named in the line
+use two new SIMD kernels	case col_vacuum_13cols: VACUUM of a 13-column index after churn, instructions and time
+the sidecar a VACUUM writes for the units with dead rows takes a sixth fewer instructions	case col_vacuum_churn_sidecar: the VACUUM after churn whose sidecar is the cost
+keeps the buffer's order ranges with its batches	case wbuf_layout_topn: a page of the order of a key under a write buffer, scan after scan

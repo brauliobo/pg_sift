@@ -100,7 +100,12 @@ def io_load(session, case, lane, sql, text, mode):
     Returns ([measurements], index names, index bytes)"""
     s = session.persistent() if isinstance(session, Fresh) else session
     try:
-        tables = iolib.schema_tables(s, case.schema() + '_base' if lane == 'base' else case.schema())
+        schema = case.schema() + '_base' if lane == 'base' else case.schema()
+        for name, settings in case.variants:   # a lane that reads the copy in another schema (`btree:search_path = c_ID__btree`) empties that copy, not the case's own tables
+            m = re.search(r'search_path = (\w+)', settings)
+            if name == lane and m:
+                schema = m.group(1)
+        tables = iolib.schema_tables(s, schema)
         ios = [iolib.measure(s, sql, tables if mode == 'cold' else None)]
         if ios[0]['cache'] == 'cold':
             IO_HOW.add(ios[0]['how'])
@@ -239,7 +244,7 @@ def measure_load(case, csv, rounds, rows, instr=False, profile=None):
             s = server_session(600)
             for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % os.environ.get('CASES_WORKERS', '2')] + sets:
                 s.run(st)
-            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv)):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
+            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
                 err = s.run(stmt)[2]
                 if err:
                     die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
@@ -255,7 +260,7 @@ def measure_load(case, csv, rounds, rows, instr=False, profile=None):
             ms = 0
             stop = wait_sampler(pid)
             for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
-                took, _, err, _ = s.run(stmt.replace('{csv}', csv))
+                took, _, err, _ = s.run(stmt.replace('{csv}', csv).replace('{rows}', str(rows)))
                 if err:
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
