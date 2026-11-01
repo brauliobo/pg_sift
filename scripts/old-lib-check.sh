@@ -30,6 +30,8 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# the column format a feature introduced, from the constant of the tree (src/col/api/format.h): no minor is written in this script, so that a feature that raises one cannot leave it behind
+colfmt() { sed -n "s/^#define SIFT_COL_FORMAT_$1[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p" "$REPO/src/col/api/format.h"; }
 PG="$REPO/scripts/pgtest.sh"
 OLD_REF=${SIFT_OLD_REF:-v3.0.1}
 ROWS=${ROWS:-40000}
@@ -231,20 +233,22 @@ cycle() {
 	[[ $(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1) == "$old_md5" ]] && pass "... and with the heap's" || fail "... and with the heap's"
 	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the tables sound" || fail "sift.col_verify finds the tables sound"
 	psql_new -c "$CY_INSERT" -c "SELECT sift.col_promote('$CY_IDX'::regclass)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) < $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
-		pass "a new segment is column format $CY_NEW beside the older one" || fail "a new segment is column format $CY_NEW beside the older one"
+	[[ $(psql_new -c "SELECT min(format) < $CY_NEW AND max(format) >= $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
+		pass "a new segment is column format $CY_NEW or more beside the older one" || fail "a new segment is column format $CY_NEW or more beside the older one"
 	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	old_md5=$(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap (got [$new_md5], want [$old_md5])"
 	psql_new -c "SELECT sift.col_merge('$CY_IDX'::regclass, true)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) = $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW" || fail "a merge writes column format $CY_NEW"
+	[[ $(psql_new -c "SELECT min(format) = max(format) AND max(format) >= $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW or more, one for all its segments" || fail "a merge writes column format $CY_NEW or more, one for all its segments"
+	# the writer stamps the newest minor of what a segment holds, which may be above the one this cycle is about (a merge adds what a promotion does not)
+	NEWF=$(psql_new -c "SELECT max(format) FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'")
 	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
 	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "the merged index answers as the heap" || fail "the merged index answers as the heap"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
-	FORMAT_ERROR="column format 1\\.$CY_NEW"
-	expect_refused "the older library refuses column format $CY_NEW with the format error" "$CY_REFUSED"
+	FORMAT_ERROR="column format 1\\.$NEWF"
+	expect_refused "the older library refuses column format $CY_NEW or more with the format error" "$CY_REFUSED"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
 	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
@@ -256,7 +260,7 @@ cycle() {
 
 # the point directories of the older library (a power of two of slots)
 points() {
-	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=39 CY_WHAT="point directories"
+	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=$(colfmt EXACTSLOT) CY_WHAT="point directories"
 	local w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"	# a key present, absent, a list, two columns, and a text key
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
 	CY_SETUP=("CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g"
@@ -270,7 +274,7 @@ points() {
 
 # the units of a key-cut index of the older library (the chunk table after the directory)
 keyed() {
-	CY_NAME=keyed CY_IDX=kk_i CY_OLDMIN=17 CY_NEW=34 CY_WHAT="key-cut units"
+	CY_NAME=keyed CY_IDX=kk_i CY_OLDMIN=17 CY_NEW=$(colfmt TABFIRST) CY_WHAT="key-cut units"
 	CY_SQL="SELECT md5(string_agg(tenant::text || ':' || n || ':' || s, ',' ORDER BY tenant)) FROM (SELECT tenant, count(*) n, sum(amount) s FROM kk WHERE amount < 700 OR tenant = 7 GROUP BY tenant) x"
 	CY_SETUP=("CREATE TABLE kk AS SELECT g AS id, g % 60 AS tenant, (g * 31) % 1000 AS amount FROM generate_series(1, 90000) g"
 		"CREATE INDEX kk_i ON kk USING sift_col (id, tenant, amount) WITH (key_cut = 'tenant')")
@@ -283,7 +287,7 @@ keyed() {
 
 # the global orders of the older library (u32 addresses of 9 bits) beside the packed addresses of this tree (column format 38; an integer point directory, no dictionary searched in place, which is 39)
 gorder() {
-	CY_NAME=gorder CY_IDX=go_i CY_OLDMIN=30 CY_NEW=38 CY_WHAT="global orders"
+	CY_NAME=gorder CY_IDX=go_i CY_OLDMIN=30 CY_NEW=$(colfmt ADDRPACK) CY_WHAT="global orders"
 	local w="(ts >= timestamp '2025-02-01' AND ts < timestamp '2025-02-03') OR k = 777 OR k IN (1, 2, 99999, 100002)"
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM go WHERE $w"
 	CY_SETUP=("CREATE TABLE go AS SELECT g AS id, (g * 7919) % 100003 AS k, timestamp '2025-01-01' + ((g::bigint * 104729) % 5000000) * interval '1 second' AS ts FROM generate_series(1, 60000) g"
