@@ -191,7 +191,7 @@ range_join_clause(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 void
 agg_range_join_rows(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
-	if (!sift_enable_agg || rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || !has_column_source(rte->relid))
+	if (!sift_enable_agg || rel->joininfo == NIL || rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || !has_column_source(rte->relid))
 		return;
 	foreach_node(RestrictInfo, rinfo, rel->joininfo)
 		range_join_clause(root, rel, rinfo);

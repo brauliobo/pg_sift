@@ -21,10 +21,11 @@
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 
-#define LSHM_DIR		16
+/* one place for each index of a partitioned table of a thousand partitions to keep its record; a lookup is a scan of the places under the spinlock, a few microseconds */
+#define LSHM_DIR		1024
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
-#define LSHM_NAME		"sift_col_leaf_stats_1"
+#define LSHM_NAME		"sift_col_leaf_stats_2"
 
 int			sift_col_leaf_cache_kb = 4096;
 

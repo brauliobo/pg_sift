@@ -5,7 +5,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 
-plan 8
+plan 10
 node_init primary 2
 node_start primary || bail "primary start failed"
 sql primary <<'SQL' >/dev/null || bail "setup failed"
@@ -48,6 +48,24 @@ D=$(backend primary)
 E=$(backend primary)
 check "after the index changed the first backend folds them again" test "$(stat "$D")" == "$BUILT"
 check "and the next takes those, to the same plan" test "$(stat "$E")|$(plan_of "$E")" == "$SHARED|$(plan_of "$D")"
+
+# the partitions of a table are indexes of their own: more of them than one backend plans over in a statement keep their statistics here too
+sql primary <<'SQL' >/dev/null || bail "setup of the partitions failed"
+CREATE TABLE spread (id int, set_id int NOT NULL, amount float8) PARTITION BY RANGE (id);
+SELECT format('CREATE TABLE spread_%s PARTITION OF spread FOR VALUES FROM (%s) TO (%s)', g, g * 100, g * 100 + 100) FROM generate_series(0, 39) g \gexec
+INSERT INTO spread SELECT g, 1 + g % 7, g % 50 FROM generate_series(0, 3999) g;
+CREATE INDEX spread_col ON spread USING sift_col (id, set_id, amount);
+VACUUM (FREEZE, ANALYZE) spread;
+SQL
+node_stop primary
+node_start primary || bail "restart failed"
+parts() {
+	sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" \
+		"EXPLAIN SELECT set_id, count(*), sum(amount) FROM spread GROUP BY set_id" \
+		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tail -1
+}
+check "the first backend folds the statistics of 40 partitions" test "$(parts)" == "40,0"
+check "and the next takes all of them, not the last few" test "$(parts)" == "0,40"
 
 # the table is in the registry of the server: the crash restart of a backend that is killed (every backend goes down, the shared memory is made again) discards it
 node_conf primary "restart_after_crash = on"

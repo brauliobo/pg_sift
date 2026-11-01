@@ -220,6 +220,15 @@ expr_text(AggCtx *c, Node *n)
 		Result	   *plan = makeNode(Result);
 
 		stmt->rtable = c->rtable ? c->rtable : c->root->parse->rtable;
+		/* the partitions' entries come last in the range table and no expression names them: the names of the rest are the same without them */
+		if (c->rtable == NIL && c->root->append_rel_array != NULL)
+		{
+			int			n = list_length(stmt->rtable);
+
+			while (n > 0 && c->root->append_rel_array[n] != NULL)
+				n--;
+			stmt->rtable = list_copy_head(stmt->rtable, n);
+		}
 		c->dpctx = deparse_context_for_plan_tree(stmt, select_rtable_names_for_explain(stmt->rtable, NULL));
 		/* the Params of a sub-plan are looked up in the plan the expression belongs to; the InitPlans of the query give
 		 * their output Params (the deparser asserts on a Param that nothing generates) */
