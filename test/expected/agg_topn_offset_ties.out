@@ -45,17 +45,16 @@ $$ SELECT result, count(*) FROM (SELECT ot_chk(c, d, nl, lim, o, other) AS resul
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 199, 200, 201, 3000, 11990]);
  result  | n  
 ---------+----
- fetched |  6
  same    | 72
- skipped | 18
-(3 rows)
+ skipped | 24
+(2 rows)
 
 SELECT * FROM ot_all(300, ARRAY[100, 3000]);
  result  | n  
 ---------+----
- fetched |  4
+ fetched |  2
  same    | 12
- skipped |  8
+ skipped | 10
 (3 rows)
 
 -- a condition on another column that the array cannot decide alone is tested on the heap row of each entry: no group is skipped, the rows are the same

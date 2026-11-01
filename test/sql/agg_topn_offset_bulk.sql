@@ -8,11 +8,11 @@ SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 \set VERBOSITY terse
 
-CREATE TABLE ob (id int PRIMARY KEY, n int, t text COLLATE "C", pad text DEFAULT repeat('x', 100));
+CREATE TABLE ob (id int PRIMARY KEY, n int, t text, pad text DEFAULT repeat('x', 100));
 ALTER TABLE ob ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ob (id, n, t)
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i % 43 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 1500)::text, 5, '0') END
-FROM generate_series(1, 24000) i;
+FROM generate_series(1, 150000) i;
 CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, t');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
 SET sift.test_topn_heads = off;
@@ -50,19 +50,39 @@ END $$;
 
 CREATE FUNCTION ob_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT ob_chk(format('SELECT id, %s AS k FROM ob ORDER BY %s %s NULLS %s, id %s LIMIT 20 OFFSET %s', c, c, d, nl, d2, o)) AS result, count(*)
-   FROM unnest(ARRAY['n', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY['ASC', 'DESC']) d2, unnest(ARRAY[2100, 9000, 17000]) o GROUP BY 1 ORDER BY 1 $$;
+   FROM unnest(ARRAY['n', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY['ASC', 'DESC']) d2, unnest(ARRAY[2100, 40000, 60000]) o GROUP BY 1 ORDER BY 1 $$;
 
 SELECT * FROM ob_all();
-SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 9000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 9000') AS n_rewind;
+SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 40000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 40000') AS n_rewind;
 -- deleted and updated rows, a VACUUM, new rows in the write buffer
 DELETE FROM ob WHERE id % 53 = 0;
 UPDATE ob SET n = n + 1, t = 'u' || t WHERE id % 97 = 0;
 SELECT * FROM ob_all();
 VACUUM ob;
 SELECT * FROM ob_all();
-INSERT INTO ob (id, n, t) SELECT 30000 + i, (i * 31) % 700, 't' || lpad(((i * 17) % 1500)::text, 5, '0') FROM generate_series(1, 300) i;
+INSERT INTO ob (id, n, t) SELECT 200000 + i, (i * 31) % 700, 't' || lpad(((i * 17) % 1500)::text, 5, '0') FROM generate_series(1, 300) i;
 SELECT * FROM ob_all();
-SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 9000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 9000') AS n_rewind;
+SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 40000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 40000') AS n_rewind;
+
+-- the group of ties that holds the first row to keep is fetched once: the rows of it that the Limit throws away are not fetched again to go out (30 values of g, 5,000 rows each)
+CREATE TABLE og (id int PRIMARY KEY, g int, pad text DEFAULT repeat('x', 100));
+ALTER TABLE og ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO og (id, g) SELECT i, (i * 7919) % 30 FROM generate_series(1, 150000) i;
+CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops) WITH (order_columns = 'id, g', order_array_columns = 'id, g');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) og;
+CREATE FUNCTION og_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE pl text; n int := -1; gord bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		gord := gord OR pl LIKE '%Global Order%';
+		IF pl LIKE '%heap fetches%' THEN n := substring(pl from '([0-9]+) heap fetches')::int; END IF;
+	END LOOP;
+	RETURN CASE WHEN gord THEN n ELSE -1 END;
+END $$;
+SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) BETWEEN 5000 AND 5100 AS one_fetch FROM unnest(ARRAY[12000, 16000, 27000]) o;
+DROP FUNCTION og_fetches(text);
+DROP TABLE og;
 
 DROP FUNCTION ob_all(), ob_twice(text), ob_chk(text);
 DROP TABLE ob;

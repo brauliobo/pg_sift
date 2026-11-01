@@ -103,7 +103,8 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		{
 			const GRow *r = &t->gq[t->gqpos++];
 
-			if (r->exact)
+			/* the Limit above throws away the rows before the OFFSET: the group fetch has confirmed them, they do not go out */
+			if (r->exact || t->emitted < t->skip)
 			{
 				t->emitted++;
 				return skipped_row(t, slot);
