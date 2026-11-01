@@ -49,9 +49,9 @@ mean_of_means	581
 min_max	820	2.1
 not_exists_element	572
 not_exists_in_table	768
-one_day	512
+one_day	512	1.3
 one_key	630
-one_parent_narrow	710
+one_parent_narrow	710	1.3
 parent_key	668
 partition_pruned	435
 partitions_count	415
