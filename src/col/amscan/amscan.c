@@ -14,58 +14,6 @@
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
 
-/*
- * One scan of the index, as a bitmap (amgetbitmap) or tuple by tuple (amgettuple): the source, the predicates of the keys and, for amgettuple, the rows of
- * the unit being returned. Everything but the heap relation lives in cxt, which a rescan resets.
- */
-#define COL_LAZY_FIRST	16
-
-#define COL_LAZY_MAX	512
-
-typedef struct ColScanOpaque
-{
-	MemoryContext cxt;
-	MemoryContext batch;		/* the values of the unit being returned */
-	MemoryContext scx;			/* the source, which a rescan keeps for the next probe while the snapshot and the segments are the same (col_scan_source) */
-	Relation	heap;
-	SiftColSource *src;
-	Snapshot	ssnap;			/* the snapshot the source was opened with, and the flags */
-	uint32		sflags;
-	SiftColPred *preds;
-	int			npreds;
-	bool		started;
-	bool		unsat;			/* a key no row can satisfy */
-	bool		recheck;
-	int		   *first;			/* first[attno]: the leaf of attribute attno */
-	int			natts;
-	SiftColDef *defs;
-	uint32		n,				/* the rows of the unit */
-				pos,
-				cap;
-	ItemPointerData *tids;
-	ItemPointerData *dtids;		/* the rows a point directory of heap addresses lists, returned before the units' (no unit read for them) */
-	uint32		ndtids;
-	ItemPointerData *ltids;		/* the addresses of the lookup handed over as the scan asks (SIFT_COLO_POINT_LAZY), nlazy of them in the last chunk; NULL once all are */
-	uint32		nlazy;
-	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
-	bool	   *nulls;
-	IndexTuple	itup;
-	bool		project;		/* an index-only scan forms its tuples from the columns of want (the attribute numbers of the index the plan reads) only (sift_col_ioss_want) */
-	Bitmapset  *want;
-	IndexFetchTableData *fetch;	/* the heap, for a string the index could not keep (an overflow value) */
-	TupleTableSlot *slot;
-	/*
-	 * The index tuple of every row of an index-only scan whose returned columns are all fixed-size and by value is one tuple, formed once (the other columns NULL),
-	 * whose values are replaced for each row: nothing is allocated or formed for a row. fast: 0 not decided, 1 yes, -1 no.
-	 */
-	int			fast;
-	IndexTuple	ftup;
-	int			nfast;			/* the returned columns: attribute, offset in the tuple, vector of the unit being returned */
-	int			fatt[INDEX_MAX_KEYS];
-	uint16		foff[INDEX_MAX_KEYS];
-	SiftColVec	fvec[INDEX_MAX_KEYS];
-	bool		funit;			/* the unit being returned is in fvec (no NULL-valued overflow in it) */
-} ColScanOpaque;
 
 /*
  * An index-only scan of a sift_col index forms its index tuples from the columns the plan node reads, the others NULL (a column it never reads is not decoded,
@@ -79,6 +27,7 @@ typedef struct IossWant
 	PlanState  *ps;
 	Bitmapset  *want;
 	bool		project;
+	bool		ordered;		/* the plan asked the order of the scan: the name of the first entry of its indextlist is COL_ORDERED_MARK (ordpath.c) */
 	bool		taken;
 } IossWant;
 
@@ -166,6 +115,8 @@ ioss_walk(PlanState *ps, void *context)
 			w = palloc0(sizeof(IossWant));
 			w->ps = ps;
 			w->project = true;
+			w->ordered = plan->indextlist != NIL && ((TargetEntry *) linitial(plan->indextlist))->resname != NULL &&
+				strcmp(((TargetEntry *) linitial(plan->indextlist))->resname, COL_ORDERED_MARK) == 0;
 			pull_varattnos((Node *) plan->scan.plan.targetlist, INDEX_VAR, &attrs);
 			pull_varattnos((Node *) plan->scan.plan.qual, INDEX_VAR, &attrs);
 			pull_varattnos((Node *) plan->recheckqual, INDEX_VAR, &attrs);
@@ -208,6 +159,7 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 	{
 		ioss_cur->taken = true;
 		so->project = ioss_cur->project;
+		so->ordered = ioss_cur->ordered;
 		so->want = bms_copy(ioss_cur->want);
 	}
 	return scan;
@@ -227,6 +179,7 @@ col_fetch_end(ColScanOpaque *so)
 static void
 col_scan_end(ColScanOpaque *so, bool keep)
 {
+	sift_col_ordered_end(so);
 	col_fetch_end(so);
 	if (so->src && !keep)
 	{
@@ -263,6 +216,7 @@ sift_col_amendscan(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 
+	sift_col_ordered_end(so);
 	col_fetch_end(so);
 	if (so->src)
 		sift_col_close(so->src);
@@ -775,6 +729,14 @@ col_fill_batch(IndexScanDesc scan)
 
 bool
 sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	if (((ColScanOpaque *) scan->opaque)->ordered)
+		return sift_col_ordered_next(scan, dir);
+	return sift_col_unordered_next(scan);
+}
+
+bool
+sift_col_unordered_next(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 

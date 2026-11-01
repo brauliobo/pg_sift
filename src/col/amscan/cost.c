@@ -51,6 +51,8 @@
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
 #define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
+#define COL_SCAN_ORDERED	0.06	/* a row of an ordered index-only scan (ordpath.c): the merge of the order of the segments and the tuple, no unit read; 96 ms for 1,000,000 rows of a whole order where Seq Scan and Sort take 146 (about 900 instructions where the Sort above the unordered scan takes 1,100) */
+
 #define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
 #define COL_SCAN_EMIT_IOS_VAR	0.06	/* ... and for each text column the plan reads, which is formed by the path of a variable width (115 ns a row with one, 56 without); the TID of the bitmap node takes 10 ns */
 
@@ -214,6 +216,16 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 			row_cost += COL_SCAN_ROW_VAR;
 
 	genericcostestimate(root, path, loop_count, &costs);
+	if (path->indexscandir != NoMovementScanDirection && path->path.pathkeys != NIL)
+	{
+		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c) */
+		*indexStartupCost = scale * COL_SCAN_FIXED;
+		*indexTotalCost = *indexStartupCost + costs.numIndexTuples * (scale * COL_SCAN_ORDERED + cpu_index_tuple_cost);
+		*indexSelectivity = costs.indexSelectivity;
+		*indexCorrelation = 0.0;
+		*indexPages = Max(1.0, (double) index->pages);
+		return;
+	}
 	irel = index_open(index->indexoid, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
 	pkept = point_kept(root, path, irel, units, &nprobes, &tid, &extra);
@@ -520,7 +532,10 @@ col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (sift_enable_col_scan)
+	{
 		add_address_paths(root, rel);
+		sift_col_add_ordered_paths(root, rel);
+	}
 }
 
 void
@@ -590,6 +605,7 @@ col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 	if (sift_enable_col_scan)
 	{
 		add_address_paths(root, rel);
+		sift_col_add_ordered_paths(root, rel);
 		return;
 	}
 	disable_col_bitmaps(rel->pathlist);
