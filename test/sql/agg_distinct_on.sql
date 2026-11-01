@@ -193,6 +193,22 @@ UPDATE ev SET ts = timestamp '2040-01-01' WHERE id = 7;
 SELECT tenant_id, id, ts FROM (SELECT DISTINCT ON (tenant_id) tenant_id, id, ts FROM ev ORDER BY tenant_id, ts DESC, id) t WHERE id = 7;
 ROLLBACK;
 
+-- one sort key that is a column of a by-value type, in many chunks: the best row of each group is found within a chunk before any value of it is copied. The key ties and holds NULLs, the
+-- rows come in the order of the key and in the opposite one, in both directions and with NULLs first and last
+CREATE TABLE evn (id int PRIMARY KEY, g int, k int, up int, ts timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO evn SELECT i, 1 + (i * 7919) % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE i / 40 % 150 END, i, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
+CREATE INDEX evn_col ON evn USING sift_col (id, g, k, up, ts);
+VACUUM (FREEZE, ANALYZE) evn;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k DESC$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k NULLS FIRST$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k DESC NULLS LAST$$, 'g, k', 'evn');
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, up FROM evn ORDER BY g, up$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, up FROM evn ORDER BY g, up DESC$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, ts FROM evn ORDER BY g, ts DESC$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, ts FROM evn WHERE id % 3 = 0 ORDER BY g, ts$$);
+DROP TABLE evn;
+
 DROP FUNCTION same_tied(text, text, regclass);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);

@@ -159,10 +159,23 @@ static void
 gen_best_set(GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls)
 {
 	int			n = st->g->nargs;
-	MemoryContext old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
-	GenBest    *nb = palloc0(GEN_BEST_SIZE(n)),
+	MemoryContext old;
+	GenBest    *nb,
 			   *ob = (GenBest *) DatumGetPointer(acc->v[g]);
 
+	/* a row of by-value arguments takes the place of the one the group has: nothing to allocate or free */
+	if (ob != NULL && st->inplace)
+	{
+		for (int k = 0; k < n; k++)
+			if (gen_stored(st->g, k))
+			{
+				GEN_BEST_NULL(ob, n, k) = nulls[k];
+				ob[k] = nulls[k] ? (Datum) 0 : args[k];
+			}
+		return;
+	}
+	old = MemoryContextSwitchTo(st->cx->ecxt_per_tuple_memory);
+	nb = palloc0(GEN_BEST_SIZE(n));
 	for (int k = 0; k < n; k++)
 		if (gen_stored(st->g, k))
 		{
@@ -281,6 +294,78 @@ gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at)
 		gen_best_set(st, acc, g, args, nulls);
 }
 
+/* is the one sort key of the call a plain column of a by-value type: its value is read from the chunk with no allocation and kept by a group across the tuples of the chunk */
+static bool
+gen_first_plain(const GenSt *st)
+{
+	const SiftAggGenArg *ar = &st->g->arg[st->fkey[0]];
+
+	return st->nfk == 1 && !ar->mapped && ar->nleaves == 1 && ar->expr == NULL && st->abyval[st->fkey[0]];
+}
+
+/*
+ * The tuples of the chunk, when each group's best row can be told from the key alone: one pass keeps the best tuple of each group (the first of equal keys, as the tuple-by-tuple pass
+ * does), then only those go through gen_first, which reads the other arguments and copies them. A group whose best row changes at every tuple (the chunk in the order of the
+ * key) copies once for a chunk, not once for a tuple.
+ */
+static void
+gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint64 *ok, int nsel)
+{
+	uint32		nt = 0;
+
+	if (st->ntcap < (uint32) nsel)
+	{
+		st->ntcap = nsel;
+		st->ctouch = st->ctouch ? repalloc(st->ctouch, nsel * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, nsel * sizeof(uint32));
+	}
+	memset(ex->fwin, 0, nsel);
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		gid = ex->gid[j];
+		Datum		d;
+		bool		isnull;
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		if (gid >= st->ccap)
+		{
+			uint32		cap = Max(gid + 1, st->ccap * 2);
+
+			if (st->ccap == 0)
+			{
+				st->cwin = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
+				st->ckey = MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
+				st->cnull = MemoryContextAlloc(ex->cxt, cap * sizeof(bool));
+			}
+			else
+			{
+				st->cwin = repalloc(st->cwin, cap * sizeof(uint32));
+				memset(st->cwin + st->ccap, 0, (cap - st->ccap) * sizeof(uint32));
+				st->ckey = repalloc(st->ckey, cap * sizeof(Datum));
+				st->cnull = repalloc(st->cnull, cap * sizeof(bool));
+			}
+			st->ccap = cap;
+		}
+		gen_arg(ex, st, in, j, st->fkey[0], &d, &isnull);
+		if (st->cwin[gid] == 0)
+			st->ctouch[nt++] = gid;
+		else if (ApplySortComparator(d, isnull, st->ckey[gid], st->cnull[gid], &st->fsup[0]) >= 0)
+			continue;
+		st->cwin[gid] = j + 1;
+		st->ckey[gid] = d;
+		st->cnull[gid] = isnull;
+	}
+	for (uint32 t = 0; t < nt; t++)
+	{
+		uint32		gid = st->ctouch[t],
+					j = st->cwin[gid] - 1;
+
+		st->cwin[gid] = 0;
+		ex->fwin[j] = gen_first(ex, st, acc, in, j, gid);
+		ResetExprContext(ex->lutcx);
+	}
+}
+
 /* the tuples of the chunk: DISTINCT collects the pairs, WITHIN GROUP sorts the values by group, the others advance the states */
 void
 gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
@@ -305,6 +390,12 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 			in.vec[k][p] = get_vec(ex, g->arg[k].leaf[p]);
 			gather_idx(ex, g->arg[k].leaf[p], nsel, &in.idx[k][p]);
 		}
+	if (g->first && !st->follower && gen_first_plain(st))
+	{
+		gen_first_chunk(ex, st, acc, &in, ok, nsel);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	for (int j = 0; j < nsel; j++)
 	{
 		uint32		gid = ex->gid[j];

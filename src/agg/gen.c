@@ -187,8 +187,13 @@ gen_first_begin(GenSt *st)
 		st->fkey[st->nfk++] = k;
 		st->iskey[k] = true;
 	}
+	st->inplace = true;
 	for (int k = 0; k < g->nargs; k++)
+	{
 		get_typlenbyval(g->arg[k].typid, &st->alen[k], &st->abyval[k]);
+		if ((g->arg[k].nleaves > 0 || g->arg[k].mapped) && !st->abyval[k])
+			st->inplace = false;
+	}
 }
 
 static GenSt *

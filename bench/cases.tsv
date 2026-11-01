@@ -337,6 +337,7 @@ lateral_top1_text_filter	is tested on the heap row of each entry of the order-ar
 lateral_top1_kept_source	keeps its source of the index open from one outer row to the next	orders	default	Top-N	native	btree:search_path = c_lateral_top1_kept_source__btree	ms	faster33	no	-
 lateral_top1_wbuf_groups	puts the rows of the write buffer in groups once for the statement	orders	default	Top-N	native	btree:search_path = c_lateral_top1_wbuf_groups__btree	ms	faster33	no	-
 distinct_on_latest_per_entity	keep the first row of a tie in the scan	orders	default	Custom Scan \(SiftAgg	native	btree:search_path = c_distinct_on_latest_per_entity__btree	ms	faster33	no	-
+distinct_on_latest_all_entities	is chosen among the rows of a chunk before the values of the row are copied	orders	default	Custom Scan \(SiftAgg	native	btree:search_path = c_distinct_on_latest_all_entities__btree	ms	faster33	no	-
 join_filter_no_key	not for the tuples the scan keeps	orders	default	fallback:Hash	native	-	ms	faster33	no	-
 topn_offset_churn_int	are kept by the backend for its next scan	orders	default	Top-N: k	native	btree:search_path = c_topn_offset_churn_int__btree	ms	faster33	no	-
 topn_offset_churn_text	continues through the entries whose heap page is not all-visible	orders	default	Top-N: t	native	btree:search_path = c_topn_offset_churn_text__btree	ms	faster33	no	-

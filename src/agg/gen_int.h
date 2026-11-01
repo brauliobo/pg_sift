@@ -80,6 +80,14 @@ typedef struct GenSt
 	bool		iskey[SIFT_AGG_MAX_GARGS];
 	int16		alen[SIFT_AGG_MAX_GARGS];	/* the arguments' types, to copy the values of the best row */
 	bool		abyval[SIFT_AGG_MAX_GARGS];
+	bool		inplace;		/* every argument the best row holds is by-value: a better row overwrites it */
+	/* DISTINCT ON by one key of a plain column: the best row of each group within a chunk, found before any value of it is copied (gen_first_chunk) */
+	uint32		ccap;			/* groups the three arrays cover */
+	uint32	   *cwin;			/* per group: the chunk's best tuple + 1, 0 none */
+	Datum	   *ckey;
+	bool	   *cnull;
+	uint32	   *ctouch;			/* the groups that have a best tuple in this chunk, and how many tuples the list holds room for */
+	uint32		ntcap;
 } GenSt;
 
 /* the best row of a group of a DISTINCT ON aggregate (the group's state until the scan ends): the values of the arguments, then their NULL flags */
