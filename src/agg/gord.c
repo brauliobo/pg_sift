@@ -383,6 +383,10 @@ skip_count(SiftGOrd *g, int64 v, uint32 k, uint32 *clo)
 	return total <= k;
 }
 
+/* The cut is taken again while this many rows of the OFFSET are left to take, at most this many times */
+#define GORD_SKIP_LEFT		32
+#define GORD_SKIP_PASSES	3
+
 /* An OFFSET of a text key shorter than this is walked: the cut below costs about as many string fetches as the walk of 2,000 entries */
 #define GORD_TEXT_SKIP_MIN	2048
 
@@ -429,10 +433,10 @@ text_cut(SiftGOrd *g, const char *s, uint32 len, uint32 k, uint32 *clo)
  * The cut of a text key: a string v that at most k entries of the sources come before (clo: how many of each), as late in the scan as a few rounds find. A round takes the string at the
  * fraction f of what is left to take of each source's remaining entries (the sources hold alike strings), tries the latest of those first, and moves the cut there when at most k come
  * before it; the rounds take 90% of what is left, then half, then a fifth, and the walk that follows reads the rest. Every cut is counted over all the sources (text_cut), so a skew in
- * them costs a shorter cut, never a wrong one. false when nothing comes before the first string.
+ * them costs a shorter cut, never a wrong one. At most `rounds` rounds, from the cut clo already holds when `resume` (the entries a dead row left over are cut by one more round). false when nothing comes before the first string.
  */
 static bool
-text_skip(SiftGOrd *g, uint32 k, uint32 *clo)
+text_skip(SiftGOrd *g, uint32 k, uint32 *clo, int rounds, bool resume)
 {
 	static const double frac[] = {0.9, 0.5, 0.2};
 	char	   *cand = palloc(g->ncur * SIFT_CGORD_STR_MAX);
@@ -441,8 +445,11 @@ text_skip(SiftGOrd *g, uint32 k, uint32 *clo)
 	int		   *ord = palloc(g->ncur * sizeof(int));
 	uint32		total = 0;
 
-	memset(clo, 0, g->ncur * sizeof(uint32));
-	for (int round = 0, f = 0; round < 8 && f < lengthof(frac) && k - total > 32; round++)
+	if (!resume)
+		memset(clo, 0, g->ncur * sizeof(uint32));
+	for (int i = 0; i < g->ncur; i++)
+		total += clo[i];
+	for (int round = 0, f = 0; round < rounds && f < lengthof(frac) && k - total > 32; round++)
 	{
 		uint64		rem = 0;
 		int			nc = 0;
@@ -541,8 +548,10 @@ num_skip(SiftGOrd *g, uint32 k, uint32 *clo)
 uint32
 sift_gord_skip(SiftGOrd *g, uint32 k)
 {
-	uint32	   *clo;
+	uint32	   *clo,
+			   *done;
 	uint32		total = 0;
+	bool		stuck = false;
 
 #ifdef SIFT_TESTING
 	if (sift_test_col_gorder_noskip)
@@ -554,54 +563,81 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
 			return 0;
 	clo = palloc(g->ncur * sizeof(uint32));
-	if (!(g->collid != 0 ? text_skip(g, k, clo) : num_skip(g, k, clo)))
+	done = palloc0(g->ncur * sizeof(uint32));
+	/*
+	 * The entries of a cut are at most its budget, so the rows among them are at most k. Entries that are no row to count (a dead row, one the heap must confirm) leave the rest of k to the
+	 * walk that follows, which reads a string for each entry (a block of the dictionary to decompress): the cut of a text key is taken further for the entries it may add (as many as the rows still to take:
+	 * they hold no more rows than that). An integer key walks them for less than the extra cut costs (7.0 M instructions become 8.2 M).
+	 */
+	for (int pass = 0; pass < (g->collid != 0 ? GORD_SKIP_PASSES : 1) && !stuck; pass++)
 	{
-		pfree(clo);
-		return 0;
+		int64		left = (int64) k - total - g->npend;
+		uint32		taken = 0;
+
+		if (pass > 0 && left < GORD_SKIP_LEFT)
+			break;
+		for (int i = 0; i < g->ncur; i++)
+			taken += done[i];
+		memcpy(clo, done, g->ncur * sizeof(uint32));
+		if (!(g->collid != 0 ? text_skip(g, taken + (uint32) left, clo, pass == 0 ? 8 : 1, pass > 0) : num_skip(g, taken + (uint32) left, clo)))
+			break;
+		for (int i = 0; i < g->ncur; i++)
+			if (clo[i] < done[i])
+				stuck = true;
+		if (stuck)
+			break;
+		for (int i = 0; i < g->ncur; i++)
+		{
+			GCur	   *c = g->cur[i];
+			uint32		n = done[i];
+
+			/* the addresses of the entries come with their chunk; one that is not exact goes to the caller to be confirmed in the heap, with its key where the block has it */
+			for (; n < clo[i]; n++)
+			{
+				uint32		p = g->desc ? c->ve - 1 - n : c->vs + n;
+				uint64		a;
+				int			st;
+
+				if (p - c->buf->at >= c->buf->cm)
+					sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
+				a = c->buf->addr[p - c->buf->at];
+				st = sift_colsrc_gorder_state(g->src, c->src, a);
+				if (st == SIFT_GORD_EXACT)
+					total++;
+				else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
+					break;
+				else if (st == SIFT_GORD_CHECK)
+				{
+					if (g->npend == g->cpend)
+					{
+						g->cpend = Max(g->cpend * 2, 1024);
+						g->pend = g->pend == NULL ? MemoryContextAlloc(g->cxt, g->cpend * sizeof(SiftGPend)) : repalloc(g->pend, g->cpend * sizeof(SiftGPend));
+					}
+					g->pend[g->npend].tid = a;
+					g->pend[g->npend].key = c->buf->compact ? 0 : c->buf->key[p - c->buf->at];
+					g->pend[g->npend].cur = i;
+					g->pend[g->npend++].check = !c->buf->compact;
+				}
+			}
+			stuck |= n < clo[i];
+			done[i] = n;
+		}
 	}
 	for (int i = 0; i < g->ncur; i++)
 	{
 		GCur	   *c = g->cur[i];
-		uint32		n = 0;
 
-		/* the addresses of the entries come with their chunk; one that is not exact goes to the caller to be confirmed in the heap, with its key where the block has it */
-		for (; n < clo[i]; n++)
-		{
-			uint32		p = g->desc ? c->ve - 1 - n : c->vs + n;
-			uint64		a;
-			int			st;
-
-			if (p - c->buf->at >= c->buf->cm)
-				sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
-			a = c->buf->addr[p - c->buf->at];
-			st = sift_colsrc_gorder_state(g->src, c->src, a);
-			if (st == SIFT_GORD_EXACT)
-				total++;
-			else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
-				break;
-			else if (st == SIFT_GORD_CHECK)
-			{
-				if (g->npend == g->cpend)
-				{
-					g->cpend = Max(g->cpend * 2, 1024);
-					g->pend = g->pend == NULL ? MemoryContextAlloc(g->cxt, g->cpend * sizeof(SiftGPend)) : repalloc(g->pend, g->cpend * sizeof(SiftGPend));
-				}
-				g->pend[g->npend].tid = a;
-				g->pend[g->npend].key = c->buf->compact ? 0 : c->buf->key[p - c->buf->at];
-				g->pend[g->npend].cur = i;
-				g->pend[g->npend++].check = !c->buf->compact;
-			}
-		}
 		if (g->desc)
-			c->ve -= n;
+			c->ve -= done[i];
 		else
-			c->vs += n;
-		c->sk = n;
+			c->vs += done[i];
+		c->sk = done[i];
 #ifdef SIFT_TESTING
-		sift_col_gdead_stat[2] += n;
+		sift_col_gdead_stat[2] += done[i];
 #endif
 	}
 	pfree(clo);
+	pfree(done);
 	return total;
 }
 

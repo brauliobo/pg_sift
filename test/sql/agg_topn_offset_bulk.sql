@@ -13,7 +13,7 @@ ALTER TABLE ob ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ob (id, n, t, dt, ts)
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i % 43 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 1500)::text, 5, '0') END,
 	   CASE WHEN i % 37 = 0 THEN NULL ELSE DATE '2020-01-01' + (i * 13) % 400 END, CASE WHEN i % 29 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + ((i * 7919) % 100000) * interval '1 second' END
-FROM generate_series(1, 150000) i;
+FROM generate_series(1, 20000) i;
 CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops, dt sift.col_date_ops, ts sift.col_timestamp_ops) WITH (order_columns = 'id, n, dt, ts', order_array_columns = 'id, n, t');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
 SET sift.test_topn_heads = off;
@@ -48,7 +48,7 @@ BEGIN
 	SELECT cut INTO c1 FROM sift._test_col_gdead_stats();
 	RETURN c1 - c0;
 END $$;
-SELECT c, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 40000', c, c)) BETWEEN 30000 AND 40000 AS cut, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 40000', c, c), true) AS walked FROM unnest(ARRAY['n', 't']) c;
+SELECT c, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 7000', c, c)) BETWEEN 5200 AND 7000 AS cut, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 7000', c, c), true) AS walked FROM unnest(ARRAY['n', 't']) c;
 
 -- the same scan read twice by a join (the inner side is rewound, not materialized)
 CREATE FUNCTION ob_twice(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -65,25 +65,27 @@ END $$;
 CREATE FUNCTION ob_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT ob_chk(format('SELECT id, %s AS k FROM ob ORDER BY %s %s NULLS %s, %s, id LIMIT 20 OFFSET %s', c, c, d, nl, k2, o)) AS result, count(*)
    FROM unnest(ARRAY['n', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY['id', 'id DESC', 'dt', 'dt DESC NULLS LAST', 'ts DESC', 'ts NULLS FIRST']) k2,
-	    unnest(ARRAY[2100, 40000]) o GROUP BY 1 ORDER BY 1 $$;
+	    unnest(ARRAY[2100, 7000]) o GROUP BY 1 ORDER BY 1 $$;
 
 SELECT * FROM ob_all();
-SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 40000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 40000') AS n_rewind;
+SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 7000') AS n_rewind;
 -- deleted and updated rows, a VACUUM, new rows in the write buffer
 DELETE FROM ob WHERE id % 53 = 0;
 UPDATE ob SET n = n + 1, t = 'u' || t WHERE id % 97 = 0;
 SELECT * FROM ob_all();
 VACUUM ob;
 SELECT * FROM ob_all();
+-- the dead rows of a text key leave the cut short of the OFFSET in rows: it is taken further, past them (each costs a string of the dictionary to read in the walk)
+SELECT ob_cut('SELECT id, t FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') > 7000 AS text_cut_past_dead_rows;
 INSERT INTO ob (id, n, t) SELECT 200000 + i, (i * 31) % 700, 't' || lpad(((i * 17) % 1500)::text, 5, '0') FROM generate_series(1, 300) i;
 SELECT * FROM ob_all();
-SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 40000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 40000') AS n_rewind;
+SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 7000') AS n_rewind;
 
--- the group of ties that holds the first row to keep has the keys after the first read from the units, not fetched, when its entries are exact (30 values of g, 5,000 rows each); when the heap must confirm them,
+-- the group of ties that holds the first row to keep has the keys after the first read from the units, not fetched, when its entries are exact (10 values of g, 2,000 rows each); when the heap must confirm them,
 -- it is fetched once, and the rows of it that the Limit throws away are not fetched again to go out
 CREATE TABLE og (id int PRIMARY KEY, g int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE og ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO og (id, g) SELECT i, (i * 7919) % 30 FROM generate_series(1, 150000) i;
+INSERT INTO og (id, g) SELECT i, (i * 7919) % 10 FROM generate_series(1, 20000) i;
 CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops) WITH (order_columns = 'id, g', order_array_columns = 'id, g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) og;
 CREATE FUNCTION og_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -96,10 +98,10 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN gord THEN n ELSE -1 END;
 END $$;
-SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) <= 100 AS read_not_fetched FROM unnest(ARRAY[12000, 16000, 27000]) o;
+SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) <= 100 AS read_not_fetched FROM unnest(ARRAY[5000, 9000, 15000]) o;
 -- the pages of a table that a third of the rows were updated in are not all-visible: every entry is confirmed by the heap once (the cut's, the group's) and the 20 rows go out
 UPDATE og SET pad = repeat('y', 100) WHERE id % 3 = 0;
-SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) = (o / 5000) * 5000 + 5000 + 20 AS one_fetch FROM unnest(ARRAY[12000, 16000, 27000]) o;
+SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) = (o / 2000) * 2000 + 2000 + 20 AS one_fetch FROM unnest(ARRAY[5000, 9000, 15000]) o;
 DROP FUNCTION og_fetches(text);
 DROP TABLE og;
 
