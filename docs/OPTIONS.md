@@ -428,6 +428,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at auto: a column of 1,000 or more distinct values whose correlation with the heap order is under 0.99, on a table of 100,000 rows or more, gets the array: a date or timestamp column (whatever the width of the index, even a one-column timestamp index of 3.7 bytes a row), an integer column (at most two columns, a date or timestamp before an integer one). The choice is made at CREATE INDEX and REINDEX from the statistics the table has then, and a table of 100,000 rows or more that has none is analyzed first (a NOTICE says so; an ANALYZE afterwards changes nothing until the next REINDEX). Name the columns of order_columns for ORDER BY .. LIMIT on a smaller table or a column the rule leaves out; off removes it. REINDEX to apply.
 
+#### sift_col(order_layout)
+
+`sift_col` · opt-in · since 3.8 · default ''
+
+- **What it does:** The sorted array of a column (order_array_columns) is kept in one of two layouts. whole keeps the key of every row. compact keeps the heap address of every row and the key of each entry to within a bucket of a few bits, and reads the exact key from the table row where a scan or a seek needs it: ORDER BY col LIMIT n OFFSET m, a range and a count read the same entries, with 3.6 bytes a row for a microsecond timestamp where whole takes 6.5. The layout is chosen for each segment that a promotion, merge, rewrite or REINDEX writes, and segments of both layouts live in one index
+- **Gain:** OFFSET 100,000 of a timestamp, 1,000,000 rows in one segment, warm: whole 3.08 ms (37.0M instructions), compact 3.27 ms (36.3M), a b-tree 4.10 ms (48.0M); cold: 142 blocks whole, 108 compact, 277 b-tree; the same at 300,000 rows and in 7 segments (1,000,000 rows: whole 3.72 ms, compact 3.79 ms, b-tree 4.10 ms)
+- **Gain and cost:** 1.02x fewer instructions (700k saved a query), index -19.3%, build -0.8%, opt-in (fails: gain)
+- **Impact:** index size: 15.02 MB whole against 12.12 MB compact (1,000,000 rows, id, timestamp and a small integer; a b-tree on the timestamp alone is 22.49 MB): -19.3%; 300,000 rows 4.54 against 3.62 MB; 100,000 rows 1.53 against 1.25 MB; build, merge and writes: CREATE INDEX of 1,000,000 rows, one process: 3.69G instructions whole, 3.66G compact; other: format minor 41; compact: 3.6 bytes a row for a microsecond timestamp (1,000,000 rows) against 6.5 for whole; keys that tie much (a date of 40 values over 20,000 rows) cost more compact than whole; the first and last 8,192 entries of a segment and its NULL rows stay whole, and so does a segment of fewer than 32,768 values; segments with a compact order are column format minor 41, which 3.7 and older cannot read
+- **When:** Where a column has an order array (order_array_columns) in a segment of 32,768 values or more, written by a promotion, merge, rewrite or REINDEX; ORDER BY col [DESC] LIMIT n OFFSET m, ranges and counts read the compact order as the whole one. A text column, the ends of an order (order_array_columns = 'auto' for a column a bound in the middle would read few units for) and a segment of fewer values are always whole.
+- **Default:** '' — Opt-in: compact reads as fast as whole (OFFSET 100,000 of 1,000,000 rows: 3.27 against 3.08 ms, 36.3M against 37.0M instructions) and is 19.3% smaller, a speedup under the 1.05 the rule asks for; the exact keys it does not store are read from the table rows, and a column whose keys tie much is smaller whole.
+- **Why not the default:** the speedup is under 1.05, or saves under 100k instructions a query
+- **Turn off:** ALTER INDEX .. SET (order_layout = 'whole') then REINDEX (or the next merge); RESET returns to auto. A segment keeps its layout until it is rewritten.
+- **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its whole orders and is read as before. An index with a compact order is column format 41, which 3.7 and older refuse; SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read.
+- **Advice:** Leave at auto, which writes the whole order, unless the size of the index matters: compact is a fifth smaller and reads as fast. Name the columns of a large timestamp or integer key, then REINDEX or let the next merge write it. The build NOTICE names the layout and the bytes a row of each column.
+
 #### sift_col(order_array_group)
 
 `sift_col` · default · since 3.4 · default ''
@@ -2260,11 +2275,12 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.7; new: none.
+No default changed since 3.7; new: `order_layout`.
 
 | Option | 3.7 | 3.8 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
+| `order_layout` | (new) | auto | 41 | unchanged: an index of 3.7 keeps its whole orders and is read as before. An index with a compact order is column format 41, which 3.7 and older refuse; SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
@@ -2291,6 +2307,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first | `src/col/build/build.c` | `order_array_columns`, `order_array_group` |
 | NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s | `src/col/build/build.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build/build.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": order_layout: %s | `src/col/build/build.c` | `order_layout` |
 | NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build/build.c` |  |
 | NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build/build.c` |  |
 | NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build/build.c` |  |
