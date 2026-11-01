@@ -127,6 +127,11 @@ WHERE e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-0
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT id FROM dims WHERE active) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
+-- name: in_expr_key
+-- expect: scan 0.12 0.48
+SELECT kind, count(*) AS n, sum(amount) AS total FROM events
+WHERE parent_id IN (SELECT id + 1 FROM dims WHERE active) AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
+
 -- name: join_two_lookups
 -- expect: either 0.79 3.2
 SELECT d.tier, count(*) AS n, max(f.mv) AS best FROM events e JOIN dims d ON d.id = e.parent_id

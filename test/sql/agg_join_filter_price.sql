@@ -12,6 +12,14 @@ VACUUM (FREEZE, ANALYZE) facts;
 CREATE TABLE keys (n int) WITH (autovacuum_enabled = false);
 INSERT INTO keys SELECT i * 37 FROM generate_series(1, 200) i;
 VACUUM (FREEZE, ANALYZE) keys;
+-- 40,000 rows of which a filter keeps 20, and a fact table of 100 values
+CREATE TABLE wide_keys (n int, g int) WITH (autovacuum_enabled = false);
+INSERT INTO wide_keys SELECT i % 100, i % 2000 FROM generate_series(1, 40000) i;
+VACUUM (FREEZE, ANALYZE) wide_keys;
+CREATE TABLE few (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO few SELECT i, i % 100, i % 10 FROM generate_series(1, 20000) i;
+CREATE INDEX few_col ON few USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) few;
 
 \ir test/agg_helpers.sql
 
@@ -19,6 +27,10 @@ SELECT sub, pushed(q) AS scan, runq(q, false) = runq(q, true) AS same_rows
 FROM (SELECT sub, format('SELECT count(*), sum(v) FROM facts WHERE k IN (SELECT %s FROM keys)', sub) AS q
 	  FROM unnest(ARRAY['n', 'n + 1', 'n::bigint']) sub) t;
 
+-- the tests are for the rows of the joined table that its own filter keeps (20 of 40,000), not for all of them
+SELECT pushed(q) AS scan, runq(q, false) = runq(q, true) AS same_rows
+FROM (SELECT 'SELECT count(*), sum(v) FROM few WHERE k IN (SELECT n + 1 FROM wide_keys WHERE g = 7)' AS q) t;
+
 DROP FUNCTION outcome, runq, runs_in_scan, pushed;
-DROP TABLE facts, keys;
+DROP TABLE facts, keys, wide_keys, few;
 DROP EXTENSION pg_sift;

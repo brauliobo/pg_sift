@@ -28,6 +28,7 @@ join_tenants	join	SELECT t.name, count(*) FROM events e JOIN tenants t ON t.id =
 left_join_dim	join	SELECT d.kind, count(e.id) FROM dim_a d LEFT JOIN events e ON e.dim_a_id = d.id AND e.status = 4 GROUP BY 1
 lateral_top1	join	SELECT d.id, x.event_date FROM dim_a d LEFT JOIN LATERAL (SELECT event_date FROM events e WHERE e.dim_a_id = d.id ORDER BY event_date DESC LIMIT 1) x ON true WHERE d.id <= 200
 semi_in_links	semi	SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM links_a WHERE group_key = 7) GROUP BY 1
+semi_expr_key	semi	SELECT count(*), sum(counter_a) FROM events WHERE dim_a_id IN (SELECT dim_a_id + 1 FROM links_a WHERE group_key = 7)
 semi_exists	semi	SELECT count(*) FROM events e WHERE EXISTS (SELECT 1 FROM links_a l WHERE l.dim_a_id = e.dim_a_id AND l.group_key = 3) AND e.status = 0
 anti_not_exists	semi	SELECT count(*) FROM events e WHERE NOT EXISTS (SELECT 1 FROM links_a l WHERE l.dim_a_id = e.dim_a_id AND l.group_key = 3) AND e.tenant_id = 8
 scalar_sub	semi	SELECT d.id, (SELECT count(*) FROM events e WHERE e.dim_a_id = d.id) AS n FROM dim_a d WHERE d.id <= 100

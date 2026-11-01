@@ -236,7 +236,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			/* Without equality keys, every cached input tests every child row, and the inputs are the tuples the scan keeps: the join that follows narrows them to scan_rows only after the test */
 			if (j->nkey == 0 && j->params == NIL)
 			{
-				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples,
+				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows,
 							built = 0;
 
 				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
