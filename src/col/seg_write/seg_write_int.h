@@ -165,6 +165,7 @@ extern void	segw_build_points(SiftColSegWriter *w);
 extern void	segw_write_points(SiftColSegWriter *w, SiftSectionRef *sec);
 
 extern void	segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec);
+extern bool	segw_dict_uncached(const SiftColSegWriter *w, int c);
 
 extern SetsLeaf *	segw_layout_blobs(SiftColSegWriter *w, const SetAcc *acc, Size at, Size *start, Size *bytes, int *nleaves);
 

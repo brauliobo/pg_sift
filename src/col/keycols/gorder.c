@@ -9,6 +9,7 @@
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
 #include "col/gorder.h"
+#include "col/seg_int.h"
 
 typedef struct GordCand
 {
@@ -103,11 +104,17 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, cr, 0, 0, 0, 0};
 		if (text)
 		{
-			/* the keys and addresses (4.4 bytes), the dictionary code of each distinct string (the bits of a code) and the dictionary written in blocks to be read by code (a tenth of the width of each
-			 * string more than the compact form); the build adds the sort of the strings, by strcoll under a locale */
+			/*
+			 * the keys and addresses (4.4 bytes) and, as the writer chooses (seg_write/points.c), either the dictionary code of each distinct string (the bits of a code) and the dictionary
+			 * written in blocks to be read by code (a tenth of the width of each string more than the compact form), or the strings, which front coding shortens by a tenth, when the
+			 * dictionary does not fit the cache of parsed ones; the build adds the sort of the strings, by strcoll under a locale
+			 */
 			double		distinct = Min(1.0, ndistinct / Max(keycols_heap_rows(heap), 1));
 
-			cand[ncand].bytes = 4.4 + distinct * (sift_cdict_perm_bits((uint32) Min(ndistinct, (double) UINT32_MAX)) / 8.0 + Min(width, 255) * 0.1);
+			if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget())
+				cand[ncand].bytes = 4.4 + Min(width, 255) * distinct * 0.9;
+			else
+				cand[ncand].bytes = 4.4 + distinct * (sift_cdict_perm_bits((uint32) Min(ndistinct, (double) UINT32_MAX)) / 8.0 + Min(width, 255) * 0.1);
 			cand[ncand].write = (varstr_cmp("a", 1, "B", 1, TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attcollation) < 0 ? GORD_TEXT_WRITE_LOC : GORD_TEXT_WRITE_C) * 4.0 / index->rd_index->indnatts;
 		}
 		ncand++;

@@ -23,6 +23,12 @@ RESET sift.test_col_gorder_strings;
 CREATE INDEX tp_i ON tp USING sift_col (id sift.col_int4_ops, a sift.col_text_ops, b sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'a, b');
 SELECT 'strings' AS block, format FROM sift.col_segments('ts_i') WHERE kind = 'immutable' UNION ALL SELECT 'codes', format FROM sift.col_segments('tp_i') WHERE kind = 'immutable' ORDER BY 1, 2;
 SELECT pg_relation_size('tp_i') < pg_relation_size('ts_i') AS codes_are_smaller;
+
+-- strings that share long prefixes compress as well in the sorted array as in the dictionary: the codes would cost more than the strings, which the array keeps (column format minor 38)
+CREATE TABLE tq AS SELECT i AS id, 'customer-0000' || lpad((i::bigint * 7919 % 20011)::text, 6, '0') AS a FROM generate_series(1, 20000) i;
+CREATE INDEX tq_i ON tq USING sift_col (id sift.col_int4_ops, a sift.col_text_ops) WITH (order_array_columns = 'a');
+SELECT format FROM sift.col_segments('tq_i') WHERE kind = 'immutable';
+SELECT sift.col_verify('tq_i');
 SELECT sift.col_verify('ts_i');
 SELECT sift.col_verify('tp_i');
 ANALYZE tp;
@@ -79,6 +85,6 @@ RESET sift.col_format_minor;
 SELECT format FROM sift.col_segments('tp_i') WHERE kind = 'immutable';
 
 DROP FUNCTION tp_chk(text), tp_all(text), tp_range(text), tp_str(int);
-DROP TABLE tp, ts, tm;
+DROP TABLE tp, ts, tm, tq;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
