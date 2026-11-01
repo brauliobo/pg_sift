@@ -286,7 +286,8 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->bytes = meta->stats.bytes;
 	st->keyed_frac = meta->stats.keyed_frac;
 	st->allvisible_frac = meta->stats.allvisible_frac;
-	st->exact_frac = st->allvisible_frac;
+	/* a unit answers from its pre-aggregates when every page it has rows on is all-visible: the superblocks that are, a keyed unit (it spans the heap) only when all are */
+	st->exact_frac = (1.0 - st->keyed_frac) * meta->stats.clean_frac + (meta->stats.clean_frac >= 1.0 ? st->keyed_frac : 0.0);
 	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
 		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;

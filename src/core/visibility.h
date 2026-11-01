@@ -39,6 +39,8 @@ typedef struct SiftVis
 extern BlockNumber sift_vis_nblocks(Relation heap);
 /* The all-visible pages among the first nblocks of a heap, as visibilitymap_count counts them, reading only the map bytes they use */
 extern BlockNumber sift_vis_count_allvisible(Relation heap, BlockNumber nblocks);
+/* The superblocks among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer */
+extern BlockNumber sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks);
 /*
  * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
  * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0, and so does a column

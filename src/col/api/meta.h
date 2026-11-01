@@ -20,6 +20,7 @@ typedef struct SiftColIndexStats
 	uint32		nunits;			/* (segment, sb) units */
 	double		keyed_frac;		/* share of the rows in segments whose units a declared key cuts: each such unit spans the whole heap */
 	double		allvisible_frac;	/* share of the heap's pages the visibility map says all-visible (0..1) */
+	double		clean_frac;		/* share of the heap's superblocks whose pages are all all-visible: the units whose pre-aggregates may answer (a keyed unit spans the heap: the heap as one) */
 	BlockNumber heap_pages;
 } SiftColIndexStats;
 

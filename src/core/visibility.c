@@ -120,6 +120,47 @@ sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
 	return count;
 }
 
+/*
+ * The superblocks (SIFT_SB_PAGES pages: a unit's rows are in one) among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer.
+ * The map bytes of all the pages are read in order into one array (a map page holds VM_MAPSIZE bytes of bits), then a superblock is clean when its 64 bytes have every
+ * all-visible bit; the last, partial one counts the pages it has.
+ */
+BlockNumber
+sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks)
+{
+	SMgrRelation smgr = RelationGetSmgr(heap);
+	uint64		nbytes = ((uint64) nblocks + 3) / 4;
+	uint8	   *bits = palloc0(nbytes + VM_BYTES_PER_SB);
+	BlockNumber vm_nblocks,
+				clean = 0;
+
+	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
+		return 0;
+	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
+	for (BlockNumber mapblk = 0; (uint64) mapblk * VM_MAPSIZE < nbytes && mapblk < vm_nblocks; mapblk++)
+	{
+		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+
+		memcpy(bits + (uint64) mapblk * VM_MAPSIZE, PageGetContents(BufferGetPage(buf)), Min(VM_MAPSIZE, nbytes - (uint64) mapblk * VM_MAPSIZE));
+		ReleaseBuffer(buf);
+	}
+	for (BlockNumber sb = 0; (uint64) sb * SIFT_SB_PAGES < nblocks; sb++)
+	{
+		BlockNumber pages = Min(SIFT_SB_PAGES, nblocks - sb * SIFT_SB_PAGES);
+		bool		all = true;
+
+		for (BlockNumber p = 0; all && p < pages; p++)
+		{
+			uint64		blk = (uint64) sb * SIFT_SB_PAGES + p;
+
+			all = (bits[blk / 4] >> ((blk % 4) * 2) & 1) != 0;
+		}
+		clean += all;
+	}
+	pfree(bits);
+	return clean;
+}
+
 void
 sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uint32 dir_version)
 {
