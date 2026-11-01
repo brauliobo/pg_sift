@@ -26,6 +26,9 @@ typedef struct Scratch
 	bool		minmax;
 } Scratch;
 
+/* A group of this many rows is summed by the gather kernel: below it the horizontal reduction costs more than the lanes save */
+#define GATHER_ROWS	24
+
 /*
  * The count of values, the sum (128 bits), the minimum and the maximum of an integer measure by group. The rows are visited group by group (perm: the rows of a group
  * one after the other, gstart[g] where it starts), so that the four accumulators of a group stay in registers and are written once: the loop over the rows in their own order
@@ -38,12 +41,22 @@ measure_int_pass(const int64 *restrict key, const uint64 *restrict nulls, const 
 	for (uint32 g = 0; g < ng; g++)
 	{
 		SiftCI128	sum = 0;
+		uint32		first = gstart[g],
+					rows = gstart[g + 1] - first;
 		int64		nsum = 0,
 					lo = INT64_MAX,
 					hi = INT64_MIN;
 		uint32		cnt = 0;
 
-		for (uint32 j = gstart[g]; j < gstart[g + 1]; j++)
+		if (narrow && !has_nulls && rows >= GATHER_ROWS)
+		{
+			sift_colk->gather_stats(key, perm + first, rows, &nsum, &lo, &hi);
+			si[g] = nsum;
+			mn[g] = lo;
+			mx[g] = hi;
+			continue;
+		}
+		for (uint32 j = first; j < first + rows; j++)
 		{
 			uint32		i = perm[j];
 			int64		v;

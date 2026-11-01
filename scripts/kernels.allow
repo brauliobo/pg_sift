@@ -30,3 +30,5 @@ col	avx512	for_i64_sel[]	x86 gathers were slower than the scalar loads they repl
 col	neon	for_i64_sel[]	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
 col	neon	lut[]	NEON has no gather instruction: a 16 or 32 bit value indexes a bit of the table, which is a scalar load per row
 bm25	neon	attr_mask	NEON has no gather instruction: the codes of a slot start at a byte offset that depends on the width, so a vector form is a scalar load per lane with lane inserts; the scalar function takes 0.5-0.85 ns a slot with a table and 0.75-1.35 ns with a range on an arm64 core (widths 1-16, random codes, clang -O2)
+col	neon	gather_stats	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+col	neon	int_stats	NEON has no 64-bit integer multiply, minimum or maximum: a vector form is compare-and-select pairs and widening multiplies that take as many instructions as the scalar loop

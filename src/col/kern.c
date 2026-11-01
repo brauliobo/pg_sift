@@ -157,6 +157,53 @@ sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32
 }
 
 void
+sift_colk_int_stats_scalar(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *sum, uint64 *sq)
+{
+	int64		s = 0,
+				lo = INT64_MAX,
+				hi = INT64_MIN;
+	uint64		q0 = 0,
+				q1 = 0;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		int64		v = a[i];
+		uint64		sqr = (uint64) (v * v);
+
+		s += v;
+		lo = Min(lo, v);
+		hi = Max(hi, v);
+		q0 += sqr & 0xFFFFFFFF;
+		q1 += sqr >> 32;
+	}
+	*mn = lo;
+	*mx = hi;
+	*sum = s;
+	sq[0] = q0;
+	sq[1] = q1;
+}
+
+void
+sift_colk_gather_stats_scalar(const int64 *a, const uint32 *idx, uint32 n, int64 *sum, int64 *mn, int64 *mx)
+{
+	int64		s = 0,
+				lo = INT64_MAX,
+				hi = INT64_MIN;
+
+	for (uint32 k = 0; k < n; k++)
+	{
+		int64		v = a[idx[k]];
+
+		s += v;
+		lo = Min(lo, v);
+		hi = Max(hi, v);
+	}
+	*sum = s;
+	*mn = lo;
+	*mx = hi;
+}
+
+void
 sift_colk_f8_from_keys_scalar(int64 *a, uint32 n)
 {
 	for (uint32 i = 0; i < n; i++)
@@ -254,6 +301,8 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.for_i64 = {sift_colk_for_i64_u8_scalar, sift_colk_for_i64_u16_scalar, sift_colk_for_i64_u32_scalar, sift_colk_for_i64_u64_scalar},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_scalar,
+	.int_stats = sift_colk_int_stats_scalar,
+	.gather_stats = sift_colk_gather_stats_scalar,
 	.f8_from_keys = sift_colk_f8_from_keys_scalar,
 	.bits_to_flags = sift_colk_bits_to_flags_scalar,
 	.expand_parents = expand_parents_scalar,
@@ -281,6 +330,8 @@ const SiftColKernels sift_col_kernels_neon = {
 	.for_i64 = {sift_colk_for_i64_u8_neon, sift_colk_for_i64_u16_neon, sift_colk_for_i64_u32_neon, sift_colk_for_i64_u64_neon},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = sift_colk_gather_u32_neon,
+	.int_stats = sift_colk_int_stats_scalar,
+	.gather_stats = sift_colk_gather_stats_scalar,
 	.f8_from_keys = sift_colk_f8_from_keys_neon,
 	.bits_to_flags = sift_colk_bits_to_flags_neon,
 	.expand_parents = sift_colk_expand_parents_neon,

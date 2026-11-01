@@ -47,19 +47,26 @@ sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, 
 
 	memset(z, 0, sizeof(*z));
 	z->nvals = n;
-	if (nulls == NULL && (store == SIFT_COLS_INT || store == SIFT_COLS_VAR))
+	if (nulls == NULL && n > 0 && (store == SIFT_COLS_INT || store == SIFT_COLS_VAR))
 	{
-		/* the common unit: integers without a NULL, one loop with no tests but the sum's carry */
-		for (uint32 i = 0; i < n; i++)
-		{
-			int64		k = key[i];
-			uint64		before = sum;
+		/* the common unit: integers without a NULL; the kernel's sum is exact within 2^31 of zero, a wider unit adds with the carry */
+		int64		ksum;
+		uint64		sq[2];
 
-			mn = Min(mn, k);
-			mx = Max(mx, k);
-			sum += (uint64) k;
-			carry += (sum < before) - (k < 0);
+		sift_colk->int_stats(key, n, &mn, &mx, &ksum, sq);
+		if (mn >= -((int64) 1 << 31) && mx < ((int64) 1 << 31))
+		{
+			sum = (uint64) ksum;
+			carry = ksum < 0 ? -1 : 0;
 		}
+		else
+			for (uint32 i = 0; i < n; i++)
+			{
+				uint64		before = sum;
+
+				sum += (uint64) key[i];
+				carry += (sum < before) - (key[i] < 0);
+			}
 		from = n;
 	}
 	for (uint32 i = from; i < n; i++)

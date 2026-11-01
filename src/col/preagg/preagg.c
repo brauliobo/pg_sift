@@ -47,6 +47,18 @@ sift_cpagg_leaf_in(const SiftCPaggCol *c, int64 lo, int64 hi, SiftCLeafAgg *a)
 		SiftCI128	sum = 0,
 					sumsq = 0;
 
+		if (nulls == NULL && c->n > 0)
+		{
+			int64		mn,
+						mx,
+						ksum;
+			uint64		sq[2];
+
+			sift_colk->int_stats(key, c->n, &mn, &mx, &ksum, sq);
+			a->sum = ksum;
+			a->sumsq = (SiftCI128) sq[0] + ((SiftCI128) sq[1] << 32);
+			return;
+		}
 		for (uint32 i = 0; i < c->n; i++)
 		{
 			int64		k = key[i];

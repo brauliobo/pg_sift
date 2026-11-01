@@ -46,6 +46,120 @@ gather_u32_avx2(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst)
 		dst[i] = a[idx[i]];
 }
 
+SIFT_TARGET_AVX2 void
+sift_colk_int_stats_avx2(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *sum, uint64 *sq)
+{
+	uint32		i = 0;
+	int64		s = 0,
+				lo = INT64_MAX,
+				hi = INT64_MIN;
+	uint64		q0 = 0,
+				q1 = 0;
+
+	if (n >= 4)
+	{
+		const __m256i m32 = _mm256_set1_epi64x(0xFFFFFFFF);
+		__m256i		vs = _mm256_setzero_si256(),
+					vq0 = _mm256_setzero_si256(),
+					vq1 = _mm256_setzero_si256(),
+					vlo = _mm256_set1_epi64x(INT64_MAX),
+					vhi = _mm256_set1_epi64x(INT64_MIN);
+		int64		l[4],
+					h[4];
+		uint64		a0[4],
+					a1[4],
+					as[4];
+
+		for (; i + 4 <= n; i += 4)
+		{
+			__m256i		v = ld(a + i),
+						sqr = _mm256_mul_epi32(v, v);	/* the low halves, signed: the square of a value within 2^31 of zero */
+
+			vs = _mm256_add_epi64(vs, v);
+			vq0 = _mm256_add_epi64(vq0, _mm256_and_si256(sqr, m32));
+			vq1 = _mm256_add_epi64(vq1, _mm256_srli_epi64(sqr, 32));
+			vlo = _mm256_blendv_epi8(vlo, v, _mm256_cmpgt_epi64(vlo, v));
+			vhi = _mm256_blendv_epi8(vhi, v, _mm256_cmpgt_epi64(v, vhi));
+		}
+		st(l, vlo);
+		st(h, vhi);
+		st(as, vs);
+		st(a0, vq0);
+		st(a1, vq1);
+		for (int j = 0; j < 4; j++)
+		{
+			lo = Min(lo, l[j]);
+			hi = Max(hi, h[j]);
+			s += as[j];
+			q0 += a0[j];
+			q1 += a1[j];
+		}
+	}
+	for (; i < n; i++)
+	{
+		int64		v = a[i];
+		uint64		sqr = (uint64) (v * v);
+
+		s += v;
+		lo = Min(lo, v);
+		hi = Max(hi, v);
+		q0 += sqr & 0xFFFFFFFF;
+		q1 += sqr >> 32;
+	}
+	*mn = lo;
+	*mx = hi;
+	*sum = s;
+	sq[0] = q0;
+	sq[1] = q1;
+}
+
+SIFT_TARGET_AVX2 void
+sift_colk_gather_stats_avx2(const int64 *a, const uint32 *idx, uint32 n, int64 *sum, int64 *mn, int64 *mx)
+{
+	uint32		i = 0;
+	int64		s = 0,
+				lo = INT64_MAX,
+				hi = INT64_MIN;
+
+	if (n >= 4)
+	{
+		__m256i		vs = _mm256_setzero_si256(),
+					vlo = _mm256_set1_epi64x(INT64_MAX),
+					vhi = _mm256_set1_epi64x(INT64_MIN);
+		int64		l[4],
+					h[4];
+
+		for (; i + 4 <= n; i += 4)
+		{
+			__m256i		v = _mm256_i32gather_epi64((const long long *) a, _mm_loadu_si128((const __m128i *) (idx + i)), 8);
+
+			vs = _mm256_add_epi64(vs, v);
+			vlo = _mm256_blendv_epi8(vlo, v, _mm256_cmpgt_epi64(vlo, v));
+			vhi = _mm256_blendv_epi8(vhi, v, _mm256_cmpgt_epi64(v, vhi));
+		}
+		_mm256_storeu_si256((__m256i *) l, vlo);
+		_mm256_storeu_si256((__m256i *) h, vhi);
+		for (int j = 0; j < 4; j++)
+		{
+			lo = Min(lo, l[j]);
+			hi = Max(hi, h[j]);
+		}
+		vs = _mm256_add_epi64(vs, _mm256_permute4x64_epi64(vs, 0x4E));
+		s = _mm256_extract_epi64(vs, 0) + _mm256_extract_epi64(vs, 1);
+	}
+	for (; i < n; i++)
+	{
+		int64		v = a[idx[i]];
+
+		s += v;
+		lo = Min(lo, v);
+		hi = Max(hi, v);
+	}
+	*sum = s;
+	*mn = lo;
+	*mx = hi;
+}
+
 /* The 64 results of the elements at p, bit k for element k; lo and span are the biased constants */
 K2 uint64
 range8w(const uint8 *p, __m256i lo, __m256i span)
@@ -493,6 +607,8 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.for_i64 = {for_i64_u8_avx2, for_i64_u16_avx2, for_i64_u32_avx2, for_i64_u64_avx2},
 	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
 	.gather_u32 = gather_u32_avx2,
+	.int_stats = sift_colk_int_stats_avx2,
+	.gather_stats = sift_colk_gather_stats_avx2,
 	.f8_from_keys = f8_from_keys_avx2,
 	.bits_to_flags = bits_to_flags_avx2,
 	.expand_parents = expand_parents_avx2,
