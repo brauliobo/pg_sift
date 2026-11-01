@@ -4,6 +4,7 @@
  * the reads of its strings, ranges and heads
  */
 #include "postgres.h"
+#include "port/pg_bitutils.h"
 #include "col/point.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
@@ -697,4 +698,141 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 	memcpy(buf->key, g->key + buf->at, buf->cm * sizeof(int64));
 	for (uint32 k = 0; k < buf->cm; k++)
 		buf->addr[k] = g->tid[buf->at + k];
+}
+
+/* ---- what is known of an entry of the order: exact, dead, to be confirmed by the heap ---- */
+
+/* The addresses of the dead rows of unit u, appended to the list of x (grown in the source's context) */
+static bool
+gexact_dead(SiftColSource *src, SiftColSegment *seg, uint32 u, GExact *x, uint32 *room)
+{
+	SiftCUnitView v;
+	uint32		n = seg->sbdir[u].nrows,
+				nd = 0,
+			   *dead;
+	uint64	   *live;
+
+	if (!sift_cseg_unit_view(seg, u, &v))
+		return false;
+	dead = palloc(n * sizeof(uint32));
+	live = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
+	SIFT_COL_JITTER();
+	sift_cseg_live(seg, u, live);
+	for (uint32 w = 0; w < (n + 63) / 64; w++)
+		for (uint64 b = ~live[w] & (w == n / 64 ? (UINT64CONST(1) << (n % 64)) - 1 : ~UINT64CONST(0)); b; b &= b - 1)
+			dead[nd++] = w * 64 + pg_rightmost_one_pos64(b);
+	if (x->ndead + nd > *room)
+	{
+		*room = Max(*room * 2, x->ndead + nd);
+		x->dead = x->dead ? repalloc(x->dead, *room * sizeof(SiftKey)) : MemoryContextAlloc(src->mcxt, *room * sizeof(SiftKey));
+	}
+	sift_cunit_row_keys(&v, v.keyed ? 0 : sift_cseg_unit_sb(seg, u), dead, nd, x->dead + x->ndead);
+	x->ndead += nd;
+	pfree(dead);
+	pfree(live);
+	return true;
+}
+
+static int
+siftkey_cmp(const void *a, const void *b)
+{
+	SiftKey		x = *(const SiftKey *) a,
+				y = *(const SiftKey *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/*
+ * What is known of the entry of the global order of stored segment i at heap address tid: 1 if it is of a row that is live and visible to every snapshot, so that nothing needs
+ * the heap to confirm it (an OFFSET throws it away unread): its page is all-visible and its row not among the dead rows of its unit; -1 if the row is among them; 0 if the unit holds it
+ * live on a page that is not all-visible, which the heap confirms for the snapshot; -2 if the unit cannot say. The dead rows of a unit are listed once for the unit, in the
+ * order of col_super_take: the map, the directory, the liveness. A segment cut by key has no unit of the superblock of the page: the page is looked up in the map by block
+ * and the dead rows of the segment (those of its units that have any) are one list. The scan asks the heap about a dead row: a vacuumed address may hold a row of another
+ * source with the same key, which the merge of the sources has already dropped as the repeat of this entry; the skip of an OFFSET counts it for none, as that row is another source's.
+ */
+int
+sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
+{
+	ColCursor  *c;
+	SiftColSegment *seg;
+	GExact	   *x;
+	bool		keyed;
+	uint32		sb = sift_block_sb(sift_key_block(tid)),
+				u = 0,
+				lo = 0,
+				hi,
+				pg;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	if (i >= src->nseg || (src->flags & COLO_TABLE))
+		return -2;
+	c = &src->seg[i];
+	seg = c->seg;
+	keyed = sift_cseg_keyed(&seg->entry);
+	if (!keyed)
+	{
+		/* the superblocks of a segment are mostly all of them in a row: the unit at the offset from the first is the one, else the gallop finds it */
+		u = seg->nsb > 0 ? sb - sift_cseg_unit_sb(seg, 0) : 0;
+		if (u >= seg->nsb || sift_cseg_unit_sb(seg, u) != sb)
+			u = sift_cseg_unit_of_sb(seg, sb);
+		if (u >= seg->nsb)
+			return -2;
+	}
+	if (c->gexact == NULL)
+		c->gexact = MemoryContextAllocZero(src->mcxt, (keyed ? 1 : seg->nsb) * sizeof(GExact));
+	x = &c->gexact[u];
+	if (x->state == 0)
+	{
+		uint32		room = 0;
+
+		bool		ok = true;
+
+		x->state = 2;
+		if (!keyed)
+			src->visibility.sb_mask(src->visibility.arg, sb, x->av);
+		if (segments_current(src))
+		{
+			if (!keyed)
+				ok = gexact_dead(src, seg, u, x, &room);
+			else
+			{
+				for (uint32 k = 0; ok && k < seg->nsb; k++)
+					if (sift_cseg_dirty(seg, k))
+						ok = gexact_dead(src, seg, k, x, &room);
+				if (x->ndead > 1)
+					qsort(x->dead, x->ndead, sizeof(SiftKey), siftkey_cmp);
+			}
+			if (ok)
+				x->state = 1;
+		}
+	}
+	if (x->state != 1)
+		return -2;
+	hi = x->ndead;
+	while (lo < hi)
+	{
+		uint32		mid = (lo + hi) / 2;
+
+		if (x->dead[mid] < tid)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo < x->ndead && x->dead[lo] == tid)
+		return -1;
+	if (keyed)
+	{
+		BlockNumber blk = sift_key_block(tid);
+
+		if (src->vis.heap == NULL)
+			return -2;
+		sift_vis_blocks_allvisible(&src->vis, &blk, 1, av);
+		pg = 0;
+	}
+	else
+	{
+		memcpy(av, x->av, sizeof(av));
+		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES;
+	}
+	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
 }
