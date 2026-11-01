@@ -19,6 +19,7 @@ VERSION = re.compile(r'\b\d+\.\d+\.\d+\b')   # a release number (`3.4.0 to 3.7.1
 CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 FOOTER = re.compile(r'`n/a`: (?:a measure )?not measured under')   # steps/triple.py NOT_MEASURED, whatever the version it names
 LANES = ('sift', 'native')
+FIGURE = 'figure '   # a waiver of ALLOW: `figure PHRASE<TAB>reason`, a CHANGELOG line that states a figure with no row in bench/claims.tsv yet
 ROWS = 1000000   # the size of the published cases (bench/results/cases.tsv)
 
 
@@ -101,7 +102,7 @@ def check(root, strict=False, since=None):
             claims.append((line, case))
         else:
             errors.append((f'CHANGELOG.md: no case measures "{line[2:90]}" (add bench/cases/ID.sql and a row of bench/cases.tsv, or a reasoned line in {ALLOW})', []))
-    errors += [(f'{ALLOW}: "{k}" matches no claim', []) for k in allow if k not in used]
+    errors += [(f'{ALLOW}: "{k}" matches no claim', []) for k in allow if k not in used and not k.startswith(FIGURE)]
 
     cur = results(root, 'cases')
     if cur is None:
@@ -180,19 +181,45 @@ def cmd_coverage(args):
         print(('coverage: ' if args.strict else 'coverage: warning: ') + m)
     gaps = sum(1 for c in read_registry(root) if c.gap)
     print('coverage: %d claims unmet, %d known gaps%s' % (len(errors), gaps, '' if args.strict else ' (a warning: --strict is the release gate)'))
-    figures = claim_figures(root, args.records) if args.records else []
+    figures = claim_figures(root, [args.records] if args.records else None, args.strict)
     return 1 if (errors and args.strict) or figures else 0
 
 
-def claim_figures(root, records):
-    """with --records FILE: the figures the CHANGELOG states (bench/claims.tsv) against the records of FILE (steps/records/claims.py); a figure off by more than its tolerance fails, not warns"""
+def figure_lines(root):
+    return [l for l in unreleased(root) if CLAIM.search(VERSION.sub('', l))]
+
+
+def claim_figures(root, records=None, strict=False):
+    """the problems of the figures the CHANGELOG states. Every `## Unreleased` line that states a figure has a row in bench/claims.tsv (its phrase, statement, size, arm, metric and the
+    value it gives) or a `figure PHRASE<TAB>reason` line in ALLOW, and a waiver of a line that has a row, or of no line, fails. With RECORDS (files of steps/records) the rows whose statement and
+    size are in them are checked against the median of the records (a figure off by more than its tolerance fails, naming the line and the run); the rows of other sizes wait for their run,
+    and STRICT (the release gate) fails them"""
     sys.path.insert(0, os.path.join(HERE, 'records'))
     import claims
     import schema
     path = os.path.join(root, 'bench', 'claims.tsv')
-    with open(os.path.join(root, 'CHANGELOG.md')) as f:
-        problems = claims.verify(claims.read_claims(path), schema.read(records), f.read(), claims_file=path)
+    rows = claims.read_claims(path) if os.path.exists(path) else []
+    waived = {k[len(FIGURE):]: why for k, why in allow_list(root).items() if k.startswith(FIGURE)}
+    problems, used = [], set()
+    for line in figure_lines(root):
+        covered = any(c['phrase'] in line for c in rows)
+        waiver = next((k for k in waived if k in line), None)
+        if waiver and covered:
+            problems.append(f'{ALLOW}: "{FIGURE}{waiver}" waives a line that has a row in bench/claims.tsv: remove the waiver')
+        elif waiver:
+            used.add(waiver)
+        elif not covered:
+            problems.append(f'CHANGELOG.md: "{line[2:90]}" states a figure and bench/claims.tsv has no row for it (a row: phrase, statement, size, arm, metric, value; or a reasoned `{FIGURE}PHRASE` line in {ALLOW})')
+    problems += [f'{ALLOW}: "{FIGURE}{k}" matches no line that states a figure' for k in waived if k not in used and not any(k in l for l in figure_lines(root))]
+    waiting = 0
+    if records:
+        recs = [r for f in records for r in schema.read(f)]
+        have = {(r['statement'], r['rows']) for r in recs}
+        here = [c for c in rows if (c['statement'], c['rows']) in have or strict]
+        waiting = len(rows) - len(here)
+        with open(os.path.join(root, 'CHANGELOG.md')) as f:
+            problems += claims.verify(here, recs, f.read(), claims_file=path)
     for p in problems:
         print('claims: ' + p)
-    print('claims: %d figures checked against %s, %d off' % (len(claims.read_claims(path)), records, len(problems)))
+    print('claims: %d figure lines, %d rows in bench/claims.tsv, %d waived%s, %d problems' % (len(figure_lines(root)), len(rows), len(used), (', %d rows wait for a run at their size' % waiting) if records else '', len(problems)))
     return problems

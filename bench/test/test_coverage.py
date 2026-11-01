@@ -210,6 +210,51 @@ class Rows(Fixture):
         self.assertIn('before the last change of src/ or sql/', ' '.join(self.messages(strict=True)))
 
 
+class Figures(Fixture):
+    """the figures of the CHANGELOG against bench/claims.tsv: each line that states one has a row or a reasoned waiver; with records the rows of their size are checked"""
+    ROW = 'a top-N over a text key\tcase_a\t300000\tsift\tdefault\texec_ms\t1\t\n'
+
+    def figures(self, **kw):
+        registry._REGISTRY.clear()
+        return coverage.claim_figures(self.t.root, **kw)
+
+    def line(self):
+        self.t.append('CHANGELOG.md', '')
+        self.t.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n' + CLAIM_LINE + '\n\n## 3.7.0\n')
+
+    def test_a_line_that_states_a_figure_needs_a_row_or_a_waiver(self):
+        self.line()
+        self.assertEqual(len(self.figures()), 1)
+        self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW)
+        self.assertEqual(self.figures(), [])
+
+    def test_a_waiver_covers_a_line_and_is_refused_once_the_line_has_a_row_or_matches_no_line(self):
+        self.line()
+        self.t.write('scripts/bench-cases.allow', 'figure a top-N over a text key\tthe row waits for a run\n')
+        self.assertEqual(self.figures(), [])
+        self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW)
+        self.assertIn('remove the waiver', self.figures()[0])
+        self.t.write('scripts/bench-cases.allow', 'figure a sentence nobody wrote\treason\n')
+        self.assertIn('matches no line', self.figures()[0])
+
+    def test_a_row_is_checked_when_the_records_have_its_statement_and_size_and_waits_otherwise(self):
+        self.line()
+        self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW)
+        recs = os.path.join(self.t.root, 'recs.tsv')
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import schema
+        import test_records
+        rs = [{k: v for k, v in r.items() if not k.startswith('_')} | dict(statement='case_a', rows=300000) for r in test_records.clean()]
+        schema.write(recs, rs)
+        self.assertEqual(self.figures(records=[recs]), [])
+        self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW.replace('\t1\t', '\t9\t'))
+        self.assertIn('CLAIM NOT MET', self.figures(records=[recs])[0])
+        schema.write(recs, [dict(r, rows=1000) for r in rs])
+        self.assertEqual(self.figures(records=[recs]), [])   # the run was at another size: the row waits
+        self.assertIn('NO RECORD', self.figures(records=[recs], strict=True)[0])
+
+
 class Pages(Fixture):
     def test_strict_fails_on_every_not_measured_footer_and_warn_mode_only_counts_them(self):
         self.t.write('bench/out/BENCHMARKS.md', 'a\n`n/a`: not measured under 3.7 yet.\nb\n`n/a`: not measured under 3.7 yet.\n')
