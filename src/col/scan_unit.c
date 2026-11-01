@@ -356,7 +356,7 @@ gexact_dead(SiftColSource *src, SiftColSegment *seg, uint32 u, GExact *x, uint32
 		*room = Max(*room * 2, x->ndead + nd);
 		x->dead = x->dead ? repalloc(x->dead, *room * sizeof(SiftKey)) : MemoryContextAlloc(src->mcxt, *room * sizeof(SiftKey));
 	}
-	sift_cunit_row_keys(&v, sift_cseg_unit_sb(seg, u), dead, nd, x->dead + x->ndead);
+	sift_cunit_row_keys(&v, v.keyed ? 0 : sift_cseg_unit_sb(seg, u), dead, nd, x->dead + x->ndead);
 	x->ndead += nd;
 	pfree(dead);
 	pfree(live);
