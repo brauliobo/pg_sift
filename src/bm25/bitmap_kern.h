@@ -21,6 +21,8 @@ typedef struct {
 	uint32_t (*ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *rank);
 	void (*vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t nwords, int op);
 	void (*bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w);
+	/* the bit of the high bits (the bytes up to end) where the h-th zero is, and the ones before it (h >= 1; no h-th zero: the bit after the last byte and all the ones) */
+	uint64_t (*ef_rank)(const uint8_t *highs, const uint8_t *end, uint64_t h, uint64_t *pos);
 } sift_kernels;
 
 enum { SIFT_VOP_AND, SIFT_VOP_OR, SIFT_VOP_ANDNOT };
@@ -36,6 +38,14 @@ extern const sift_kernels *sift_k;
 #endif
 
 SIFT_INLINE uint64_t sift_ld8(const uint8_t *p) { uint64_t x; memcpy(&x, p, 8); return x; }
+/* up to 8 bytes below end, the rest zero */
+SIFT_INLINE uint64_t ld_upto8(const uint8_t *p, const uint8_t *end)
+{
+	uint64_t x = 0;
+	if (end - p >= 8) return sift_ld8(p);
+	memcpy(&x, p, (size_t)(end - p));
+	return x;
+}
 SIFT_INLINE void sift_st8(uint8_t *p, uint64_t x) { memcpy(p, &x, 8); }
 
 /* load/store a narrow (1, 2, 4, 8 byte) offset bitmap */
@@ -123,6 +133,25 @@ static uint64_t KFN(popcount)(const uint8_t *p, size_t n)
 	for (; i + 8 <= n; i += 8) c += KFN(pc)(sift_ld8(p + i));
 	for (; i < n; i++) c += KFN(pc)(p[i]);
 	return c;
+}
+
+static uint64_t KFN(ef_rank)(const uint8_t *highs, const uint8_t *end, uint64_t h, uint64_t *pos)
+{
+	size_t nw = (size_t)(end - highs + 7) / 8;
+	uint64_t zeros = 0, ones = 0;
+	for (size_t wi = 0; wi < nw; wi++) {
+		uint64_t w = ld_upto8(highs + 8 * wi, end), z = ~w;
+		uint32_t nz = KFN(pc)(z);
+		if (zeros + nz >= h) {
+			for (uint64_t r = h - zeros; r > 1; r--) z &= z - 1;
+			uint32_t bit = (uint32_t)__builtin_ctzll(z);
+			*pos = 64 * wi + bit;
+			return ones + KFN(pc)(w & ((1ull << bit) - 1));
+		}
+		zeros += nz, ones += 64 - nz;
+	}
+	*pos = 64 * nw;
+	return ones;
 }
 
 SIFT_INLINE uint64_t KFN(pcw)(const uint8_t *p, uint32_t w)
@@ -322,6 +351,6 @@ static __attribute__((unused)) void KFN(bm25)(float *score, const float *kn, con
 
 #define SIFT_KERN_TABLE                                                                                       \
 	{ KFN(popcount), KFN(and2), KFN(or2), KFN(andnot), KFN(and_count), KFN(count_mask), KFN(tids), KFN(ranks), \
-	  KFN(vop), KFN(bm25) }
+	  KFN(vop), KFN(bm25), KFN(ef_rank) }
 
 #endif

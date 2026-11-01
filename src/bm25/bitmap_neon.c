@@ -39,5 +39,5 @@ static uint64_t popcount_neon_cnt(const uint8_t *p, size_t n)
 static uint64_t popcount_neon_dispatch(const uint8_t *p, size_t n) { return n >= 64 ? popcount_neon_cnt(p, n) : popcount_neon(p, n); }
 
 const sift_kernels sift_kern_neon = { popcount_neon_dispatch, and2_neon, or2_neon, andnot_neon, and_count_neon,
-				      count_mask_neon, tids_neon, ranks_neon, vop_neon, bm25_neon };
+				      count_mask_neon, tids_neon, ranks_neon, vop_neon, bm25_neon, ef_rank_neon };
 #endif

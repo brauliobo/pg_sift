@@ -56,6 +56,29 @@ SELECT * FROM compare();
    100 |      100 |        100 |        100 |       4
 (1 row)
 
+-- the rank of a target group in a block (sift_k->ef_rank) is a kernel of each SIMD level: the ids are the same with the arithmetic popcount of the baseline
+CREATE FUNCTION same_at_scalar() RETURNS TABLE (cases bigint, same bigint) LANGUAGE plpgsql AS $f$
+DECLARE
+	c cases;
+	a text; b text; n bigint = 0; i bigint = 0;
+BEGIN
+	FOR c IN SELECT * FROM cases LOOP
+		n = n + 1;
+		PERFORM set_config('sift.simd', 'auto', true);
+		EXECUTE format('SELECT md5(string_agg(id::text, '','' ORDER BY id)) FROM src WHERE body @@> %L', c.q) INTO a;
+		PERFORM set_config('sift.simd', 'scalar', true);
+		EXECUTE format('SELECT md5(string_agg(id::text, '','' ORDER BY id)) FROM src WHERE body @@> %L', c.q) INTO b;
+		IF a IS NOT DISTINCT FROM b THEN i = i + 1; END IF;
+	END LOOP;
+	RETURN QUERY SELECT n, i;
+END $f$;
+SELECT * FROM same_at_scalar();
+ cases | same 
+-------+------
+   100 |  100
+(1 row)
+
+DROP FUNCTION same_at_scalar();
 DROP FUNCTION compare();
 DROP TABLE cases;
 DROP TABLE words;

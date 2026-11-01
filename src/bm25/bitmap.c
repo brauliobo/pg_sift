@@ -261,13 +261,6 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	return found(c, key >> 8, w, b.pages, c->buf, base, n);
 }
 
-static inline uint64_t ld_upto8(const uint8_t *p, const uint8_t *end)
-{
-	uint64_t x = 0;
-	if (end - p >= 8) return sift_ld8(p);
-	memcpy(&x, p, (size_t)(end - p));
-	return x;
-}
 
 /*
  * The header of the block of cnt postings at p, whose keys are below lim (a power of two: a key's group number then fits 24 bits, and
@@ -315,23 +308,9 @@ static void ef_decode(const ef_blk *b, uint32_t ob, sift_tid *out)
 /* the postings of the block whose high part is below h (h >= 1: those before its h-th zero bit) and the bit where the h-th zero is */
 static void ef_rank(const ef_blk *b, uint64_t h, uint32_t *k, uint64_t *pos)
 {
-	size_t nw = (size_t)(b->end - b->highs + 7) / 8;
-	uint64_t zeros = 0;
-	uint32_t ones = 0;
-	for (size_t wi = 0; wi < nw; wi++) {
-		uint64_t w = ld_upto8(b->highs + 8 * wi, b->end), z = ~w;
-		uint32_t nz = (uint32_t)__builtin_popcountll(z);
-		if (zeros + nz >= h) {
-			for (uint64_t r = h - zeros; r > 1; r--) z &= z - 1;
-			uint32_t bit = (uint32_t)__builtin_ctzll(z);
-			*k = ones + (uint32_t)__builtin_popcountll(w & ((1ull << bit) - 1));
-			if (*k > b->cnt) *k = b->cnt;
-			*pos = 64 * wi + bit;
-			return;
-		}
-		zeros += nz, ones += 64 - nz;
-	}
-	*k = b->cnt, *pos = 64 * nw;
+	uint64_t ones = sift_k->ef_rank(b->highs, b->end, h, pos);
+	/* no h-th zero in the bytes of the block: it is damaged, or h is past its last group */
+	*k = *pos == 64 * ((uint64_t)(b->end - b->highs + 7) / 8) || ones > b->cnt ? b->cnt : (uint32_t)ones;
 }
 
 /* the postings of a LIST block are decoded as far as the cursor reads them: a slice from the first one that can be at or after the target group, the slice growing with each read of the block */
