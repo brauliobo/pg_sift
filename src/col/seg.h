@@ -400,6 +400,7 @@ extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPres
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);
 extern void sift_cseg_dirty_units(SiftColSegment *seg, uint64 *bits);	/* all the units: nsb bits */
+extern bool sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n);	/* any of the units [first, first + n) */
 
 /*
  * The pre-aggregates of a dirty unit net of its dead rows (col/seg/net.c): sift_cseg_net_has says the unit has them for exactly ndead dead rows (its cube, rollups and sums

@@ -543,12 +543,10 @@ sbs_plain(SiftColSource *src, SiftColSegment *seg)
 bool
 units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows)
 {
+	if (sift_cseg_dirty_any(seg, first, n))
+		return false;
 	for (uint32 i = 0; i < n; i++)
-	{
-		if (sift_cseg_dirty(seg, first + i))
-			return false;
 		*rows += seg->sbdir[first + i].nrows;
-	}
 	return true;
 }
 
