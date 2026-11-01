@@ -46,7 +46,6 @@ VACUUM counts the dead postings of each term of a segment again only when	case s
 the dead rows of a unit are turned into heap addresses without decoding	case topn_offset_churn_int: the OFFSET of 10,000 after churn and VACUUM, with the text and date keys of topn_offset_churn_text and topn_offset_churn_date
 the sorted array of a key written in the compact layout (`order_layout`, 41) is read after deletes and updates	case topn_offset_after_vacuum: the OFFSET of a tenth of the rows after a DELETE of 3%, an UPDATE of 3% and a VACUUM
 a `count(*)` over a range of a column with an order array (`order_array_columns`), on a table with rows inserted	case wbuf_layout_text_count: count(*) over a range of a text key with 5,000 rows inserted after the VACUUM
-`CREATE INDEX` and `REINDEX` of a `sift_col` index with `key_cut`	case col_build_cube_13cols: the build of a 13-column index with 0, 4 and 8 workers, wall time (the instructions of the build are counted in a second serial run, as the workers are not followed)
 `ORDER BY sift.score(ctid) DESC, key LIMIT k`	case search_top_20_ties: the ranked search with a key after the score, instructions against a GIN index
 the merge of the segments of a `sift_col` index with `key_cut` outside a build	case col_merge_forced_key_cut: sift.col_merge(index, true) with 0, 2 and 4 parallel maintenance workers against the rebuild of a b-tree
 commit eda053aae	CHANGELOG line written after the commit; case topn_offset_churn_text
