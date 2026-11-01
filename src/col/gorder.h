@@ -69,6 +69,7 @@
 #define SIFT_CGORD_GAPS		1		/* SiftCGOrdDir.pad bit 0: the addresses of the chunk are the first of each run of equal keys and the gaps; bits 8..11 are the bits of the offset in the address code (0: 9, the code of the point directory) */
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
+#define SIFT_CGORD_DIR_EAGER	262144	/* bytes of a directory read with the header (about 5.4 million rows in a segment), not entry by entry */
 #define SIFT_GORD_PIN_MAX	16		/* the values of a group a scan reads at once: the elements of an IN list, or the equalities of a conjunction (a scan with more reads the plain order or the units) */
 #define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan/scan.c, prune_range_tids) */
 #define SIFT_CORDER_MAX_KEYS 512		/* an IN list of more keys is read from the units: each key seeks a chunk of its own, which past this many costs more than the key columns of the units (col/scan/prune_point.c, scan_prune_set_tids) */

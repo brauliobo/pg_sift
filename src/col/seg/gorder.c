@@ -40,7 +40,16 @@ seg_gord_leaf(SiftColSegment *seg, int col)
 	{
 		SiftCGOrdDir last;
 
-		seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
+		/* a directory of a few pages follows the header on the page the header was read from: it is read whole here, once, in place of its last entry and then again by the first seek (a page read twice is two blocks) */
+		if (g->ents == NULL && (Size) h.chunks * SIFT_CGORD_DIRENT <= SIFT_CGORD_DIR_EAGER)
+		{
+			g->ents = MemoryContextAlloc(seg->mcxt, (Size) h.chunks * SIFT_CGORD_DIRENT);
+			seg_read(seg, g->at + SIFT_CGORD_HDR, (Size) h.chunks * SIFT_CGORD_DIRENT, g->ents);
+		}
+		if (g->ents != NULL)
+			memcpy(raw + SIFT_CGORD_HDR, g->ents + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT);
+		else
+			seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
 		if (!sift_cgord_dirent(raw + SIFT_CGORD_HDR, &h, g->bytes, h.chunks - 1, &last))
 			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, h.chunks - 1);
 		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen);
