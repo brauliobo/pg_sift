@@ -1,4 +1,4 @@
--- `count(id)` of a NOT NULL primary key that the column index does not hold, in a grouped series: the same answer as `count(*)`, a normal plan today
+-- `count(id)` of a NOT NULL primary key that the column index does not hold, in a grouped series: the same answer as `count(*)`, 58,000 groups of four keys that most rows open
 -- label: `GROUP BY parent_id, variant_id, to_char(day, 'YYYY-MM'), created_at::date` with `avg(price), count(id)` over a 100,000-row snapshot table whose primary key is not a column of the sift_col index, a membership sub-select
 -- ordered: yes
 --@ setup

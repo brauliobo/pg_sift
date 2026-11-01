@@ -359,6 +359,21 @@ join_none(AggExec *ex)
 	return false;
 }
 
+/*
+ * Most rows open a group of their own and the keys are many: the direct arrays would grow by doubling a key at a time, copying all of
+ * them each time, to hold a product of the key ranges that is mostly empty. The hash table starts with room for the groups the planner expects. Past four keys the
+ * hash of each row's ids costs more than the doublings it saves (six keys, 15,000 groups of 80,000 rows: 5% slower).
+ */
+#define HASH_FIRST_KEYS	4
+
+static bool
+table_hash_first(const AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+
+	return s->nkeys > 1 && s->nkeys <= HASH_FIRST_KEYS && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max && s->est_rows < 2 * s->est_groups;
+}
+
 /* An empty group table, all in tcxt: key ids, group arrays, count(DISTINCT) sets */
 void
 table_init(AggExec *ex)
@@ -366,6 +381,7 @@ table_init(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 	uint64		total = 1;
+	bool		hash_first;
 
 	ex->hash = false;
 	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : s->nkeys == 1 ? SINGLE_DIRECT_MAX : DIRECT_MAX;
@@ -410,9 +426,12 @@ table_init(AggExec *ex)
 	}
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
-	if (total > ex->direct_max || direct_oversized(ex, total))
+	hash_first = table_hash_first(ex);
+	if (total > ex->direct_max || direct_oversized(ex, total) || hash_first)
 	{
 		total = Max(1024, spill_keep(ex));
+		if (hash_first)
+			total = Max(total, (uint64) Min(s->est_groups, s->est_rows));
 		hash_init(ex, (uint32) total);
 	}
 	else

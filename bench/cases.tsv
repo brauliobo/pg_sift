@@ -241,7 +241,7 @@ live_counts_by_dim	live_counts_by_dim	events	-	fallback:Seq Scan	native	-	ms	fas
 upsert_returning_conflict	upsert_returning_conflict	events	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no	-
 series_snapshot_windows	series_snapshot_windows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 ledger_rollup_grain	ledger_rollup_grain	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
-count_key_outside_index	count_key_outside_index	events	-	fallback:Seq Scan on ck_snaps	native	-	ms	faster33	no	-
+count_key_outside_index	count_key_outside_index	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 topn_list_page_ordered_walk	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-
 topn_equality_filter_page	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 topn_soft_delete_global_order	a page of a list (`ORDER BY .. LIMIT n [OFFSET m]` over a table with a col	orders	default	Global Order: true	native	-	ms	faster33	no	-
