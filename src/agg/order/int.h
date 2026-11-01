@@ -90,7 +90,7 @@ extern void topn_out_leaves(AggCtx *c, List *scan_tlist, int nkey, const int *le
 extern bool window_whole_set(WindowClause *wc);
 extern bool topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tlist);
 extern bool topn_joins_ok(AggCtx *c, SiftAggSpec *s);
-extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid);
+extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked);
 extern bool topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf);
 extern bool topn_heads_win(const AggCtx *c, const SiftAggSpec *s, int leaf, double rows);
 

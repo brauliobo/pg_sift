@@ -269,9 +269,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	}
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
-	/* the rows of a top-N are fetched from the heap, one page each */
+	/* the rows of a top-N are fetched from the heap, one page each; the entries a walk tests are visited in the order of the key, as the pages of a vet */
 	if (s->topn)
-		p->total_cost += c->topn_fetch * random_page_cost * 0.5;
+		p->total_cost += c->topn_array && c->topn_walk > 0 ? c->topn_walk * heap_visit_ops(rel_pages(c)) * cpu_operator_cost : c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 	if (c->having_sel > 0 && !s->topn)

@@ -45,7 +45,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		return;
 	extra = matches * c->topn_xcost;
 	if (c->topn_array && nworkers == 0)
-		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * rows;	/* the walk of the order array: a merge step for each entry, no heap of rows */
+		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * Max(rows, c->topn_walk);	/* the walk of the order array: a merge step for each entry, no heap of rows */
 	else
 		extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
 			topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
@@ -259,7 +259,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	List	   *exprs;
 	double		count = 0,
 				offset = 0,
-				rows;
+				rows,
+				walked;
 	int			nkey = list_length(parse->sortClause),
 				nlead = nkey,
 				slack = 0;
@@ -314,6 +315,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
 	c->topn_array = false;
+	c->topn_walk = 0;
 	c->topn_runs = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
@@ -398,12 +400,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		(nlead < nkey ? TOPN_TIES | slack << TOPN_SLACK_SHIFT : 0);
 	rows += slack;
 	/* the order array gives the rows without a heap of them: only the LIMIT is held, an OFFSET past the cap is walked entry by entry (sift_topn_gorder) */
-	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
+	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
 	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) &&
 		((rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0) || deep))
 	{
 		c->topn_sorted = false;
-		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
+		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
+		c->topn_walk = walked;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),

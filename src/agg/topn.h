@@ -146,6 +146,8 @@ extern bool sift_topn_gordered(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 /* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
 extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
+/* the bytes of a row a walk of the order array queues before the first goes out (gord_prep): a page longer than work_mem holds reads the units */
+#define SIFT_TOPN_GROW_BYTES	56
 /* ... and of a text or varchar one, which the global order of a text key orders */
 extern int	sift_topn_text_attno(const SiftSrcLayout *lay, int leaf);
 extern int	sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf);

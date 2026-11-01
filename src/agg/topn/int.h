@@ -352,6 +352,7 @@ typedef struct GRow
 	int64		key[TOP_GKEYS];
 	bool		exact;			/* an entry of an exact unit thrown away by the OFFSET: not fetched, a row of NULLs (gord_group) */
 } GRow;
+StaticAssertDecl(sizeof(GRow) == SIFT_TOPN_GROW_BYTES, "the planner prices the queue of a walk by the size of a GRow");
 extern KeyBlob * xform_blob(SiftTopN *t, const TopKey *k, const char *p, uint32 len);
 
 extern bool row_val(SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out);

@@ -8,6 +8,7 @@
 #include "catalog/pg_aggregate.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 #include "catalog/pg_type.h"
 
@@ -181,9 +182,13 @@ topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, in
 	return true;
 }
 
-/* a condition the array of the key answers as sift_topn_gorder tests it (topn_gpred, gcond_loose): comparisons of integer or time columns with constants, the columns other than the key only where the key or (at the top of the conjunction) the group is pinned by an equality */
+/*
+ * A condition the array of the key answers as sift_topn_gorder tests it (topn_gpred, gcond_loose): comparisons of integer or time columns with constants, the columns
+ * other than the key only where the key or (at the top of the conjunction) the group is pinned by an equality. Any other comparison, IS [NOT] NULL or boolean column
+ * is tested on the heap row of each entry the walk takes (*loose): the walk is worth its fetches only while the rows pass (topn_walk_fetches).
+ */
 static bool
-topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top, Oid collid)
+topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top, Oid collid, bool *loose)
 {
 	/* the walk tests integer and time columns (topn_gpred): a numeric one is left to the units */
 	if (p->kind != SAP_AND && p->kind != SAP_OR && p->leaf >= 0 && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->typid == NUMERICOID)
@@ -193,12 +198,20 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 		for (int i = 0; p->kind == SAP_AND && i < p->nchild && !pinned; i++)
 			pinned = p->child[i]->kind == SAP_CMP && p->child[i]->leaf == key && p->child[i]->op == SCMP_EQ;
 		for (int i = 0; i < p->nchild; i++)
-			if (!topn_array_pred(c, p->child[i], key, group, pinned, top && p->kind == SAP_AND, collid))
+			if (!topn_array_pred(c, p->child[i], key, group, pinned, top && p->kind == SAP_AND, collid, loose))
 				return false;
 		return true;
 	}
-	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0)
-		return p->leaf == key || pinned;
+	if (p->kind == SAP_NULL && p->op <= 1 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0 && sift_topn_leaf_attno(c->lay, p->leaf) > 0)
+	{
+		*loose |= !(p->op == 1 && (p->leaf == key || pinned));
+		return true;
+	}
+	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf != key && p->leaf < c->lay->nleaves && sift_topn_bool_attno(c->lay, p->leaf) > 0)
+	{
+		*loose = true;
+		return true;
+	}
 	/* a text key: its strings against a constant, under the collation the array ranks by (a string bound is found in the strings of each segment: sift_gord_open) */
 	if (p->kind == SAP_LUT)
 	{
@@ -211,9 +224,38 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 		sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
 		return (top && p->leaf == group) || p->leaf == key || pinned;
 	if (p->kind != SAP_CMP || p->level != 0 || p->late || p->leaf >= c->lay->nleaves || leaf_of(c, p->leaf)->parent >= 0 ||
-		!sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
+		!sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid) || sift_topn_leaf_attno(c->lay, p->leaf) <= 0)
 		return false;
-	return p->leaf == key || pinned || (top && p->op == SCMP_EQ && p->leaf == group);
+	*loose |= !(p->leaf == key || pinned || (top && p->op == SCMP_EQ && p->leaf == group));
+	return true;
+}
+
+/*
+ * The heap rows a walk of the order array fetches for the n wanted when the heap row of each entry tests a condition on another column: n over the share of the
+ * entries in the bounds of the key (and of the group the array is read by) that pass, which the statistics of the columns give as the rows of the table's
+ * restrictions over the rows of those that name no other column.
+ */
+static double
+topn_walk_fetches(AggCtx *c, int key, int group, double rows)
+{
+	RelOptInfo *rel = c->rel;
+	Bitmapset  *want = NULL;
+	List	   *bound = NIL;
+	double		pass;
+
+	want = bms_add_member(want, sift_topn_leaf_attno(c->lay, key) - FirstLowInvalidHeapAttributeNumber);
+	if (group >= 0)
+		want = bms_add_member(want, sift_topn_leaf_attno(c->lay, group) - FirstLowInvalidHeapAttributeNumber);
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	{
+		Bitmapset  *used = NULL;
+
+		pull_varattnos((Node *) ri->clause, rel->relid, &used);
+		if (bms_is_subset(used, want))
+			bound = lappend(bound, ri);
+	}
+	pass = clauselist_selectivity(c->root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) / Max(clauselist_selectivity(c->root, bound, rel->relid, JOIN_INNER, NULL), 1e-9);
+	return rows / Min(Max(pass, 1e-9), 1.0);
 }
 
 /* does the condition leave the key a lower or an upper bound (an AND does when a conjunct does, an OR when every arm does) */
@@ -236,15 +278,21 @@ topn_array_bounded(const SiftAggPred *p, int key)
  * Does the scan read the order array of the first key, not the units (sift_topn_gorder opens it for the shapes below and falls back to the units for any
  * other)? A key with an array in every segment, integer or time keys, and conditions the array answers: bounds on the key on a plain array, or an equality of the
  * column a grouped array is grouped by (the unpinned group of a grouped array is refused, the plain array of the leaf, if any, answers instead).
+ * A condition on another column is tested on the heap row of each entry the walk takes (the walk gives the rows back to the units when it needs more fetches than
+ * they cost: gord_giveup): the walk is priced when the fetches for the `rows` wanted, from the pass rate of the statistics, are at most four times the rows or a
+ * quarter of the heap's pages, as the executor's budget is, and only for the rows of the page that the heap queues within work_mem (*walked: those fetches, 0 for an
+ * array that answers alone).
  */
 bool
-topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid)
+topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked)
 {
 	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
 	bool		bounded = false,
 				key_pinned = false,
-				group_pinned = false;
+				group_pinned = false,
+				loose = false;
 
+	*walked = 0;
 	if (leaf[0] < 0 || (c->stats.gord_cover[leaf[0]] < 0.9 && gl < 0) || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
 		nkey > 4 || c->level_params != NIL)
 		return false;
@@ -266,12 +314,19 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 	{
 		const SiftAggPred *p = s->pred[i];
 
-		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true, collid))
+		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true, collid, &loose))
 			return false;
 		bounded |= topn_array_bounded(p, leaf[0]);
 		group_pinned |= (p->kind == SAP_CMP && p->op == SCMP_EQ && p->leaf == gl) || (p->kind == SAP_IN && p->op == 0 && p->leaf == gl);
 	}
-	return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded));
+	if (!loose)
+		return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded));
+	/* the walk queues the rows of the page before the first goes out (gord_prep), in work_mem, for one key and a page under the cap of the heap */
+	if (nkey != 1 || rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) || rows * SIFT_TOPN_GROW_BYTES > work_mem * 1024.0 ||
+		!((gl >= 0 && group_pinned) || c->stats.gord_cover[leaf[0]] >= 0.9))
+		return false;
+	*walked = topn_walk_fetches(c, leaf[0], group_pinned ? gl : -1, rows);
+	return *walked <= Max(4.0 * rows, rel_pages(c) / 4.0);
 }
 
 /*

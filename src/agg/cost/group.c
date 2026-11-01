@@ -218,7 +218,7 @@ heap_visit_ops(double pages)
 
 	pages = Max(pages, 1.0);
 	page_residency(pages, &buffered, &cached);
-	return buffered * AGG_VET_PAGE * AGG_SCAN_SPEED + (cached - buffered) * AGG_VET_OS_PAGE * AGG_SCAN_SPEED + (1.0 - cached) * random_page_cost / cpu_operator_cost;
+	return buffered * AGG_VISIT_PAGE * AGG_SCAN_SPEED + (cached - buffered) * AGG_VISIT_OS_PAGE * AGG_SCAN_SPEED + (1.0 - cached) * random_page_cost / cpu_operator_cost;
 }
 
 /*

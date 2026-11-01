@@ -108,8 +108,8 @@ SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
  array  | SELECT id, b FROM gt WHERE b < 100 ORDER BY b DESC LIMIT 10
  array  | SELECT id, b FROM gt WHERE b = 100 AND a > 0 ORDER BY b, id LIMIT 10
  walked | SELECT id, b FROM gt WHERE (b < 20 OR b > 480) ORDER BY b LIMIT 10
- native | SELECT id, b FROM gt WHERE a > 0 ORDER BY b LIMIT 10
- native | SELECT id, b FROM gt WHERE b > 100 AND a > 0 ORDER BY b LIMIT 10
+ array  | SELECT id, b FROM gt WHERE a > 0 ORDER BY b LIMIT 10
+ array  | SELECT id, b FROM gt WHERE b > 100 AND a > 0 ORDER BY b LIMIT 10
  array  | SELECT id, b FROM gt WHERE b >= 100 ORDER BY b LIMIT 10 OFFSET 5
  array  | SELECT id, b FROM gt WHERE b IS NOT NULL ORDER BY b LIMIT 10
  walked | SELECT id, b FROM gt WHERE b <> 100 ORDER BY b LIMIT 10
@@ -136,8 +136,8 @@ $$ SELECT gt_mm(format('SELECT %s(%s) FROM gt WHERE %s', f, c, w)), count(*)
 SELECT * FROM gt_mm_all();
  result | n  
 --------+----
- array  | 30
- units  | 68
+ array  | 68
+ units  | 30
 (2 rows)
 
 -- rows after the index: the write buffer joins the merge, deleted rows and rows of other versions are skipped
@@ -154,8 +154,8 @@ VACUUM gt;
 SELECT * FROM gt_mm_all();
  result | n  
 --------+----
- array  | 14
- units  | 84
+ array  | 47
+ units  | 51
 (2 rows)
 
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;

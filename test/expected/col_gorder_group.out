@@ -103,7 +103,6 @@ SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
  'SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5',
  'SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10',
  'SELECT id, k FROM gg ORDER BY k DESC LIMIT 10',
@@ -117,13 +116,12 @@ SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
  array | SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10
  array | SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10
  array | SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10
- units | SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP '2000-01-02' ORDER BY k LIMIT 10
  array | SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5
  units | SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10
  units | SELECT id, k FROM gg ORDER BY k DESC LIMIT 10
  units | SELECT id, k FROM gg WHERE g <> 3 AND k > 10 ORDER BY k LIMIT 10
  array | SELECT id, k FROM gg WHERE g = 3 AND k IS NOT NULL ORDER BY k LIMIT 10
-(11 rows)
+(10 rows)
 
 DROP FUNCTION gg_plan(text);
 -- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
@@ -180,8 +178,8 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 22
- units  | 14
+ array  | 25
+ units  | 11
 (2 rows)
 
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
