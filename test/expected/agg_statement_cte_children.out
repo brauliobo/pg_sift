@@ -1,17 +1,12 @@
 -- A sub-select that reads a statement-level common table expression is a plan read once, not a plan per row.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, day date, amount float8, payload text);
 INSERT INTO facts
 SELECT i, i % 50, date '2026-01-01' + (i % 120), CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, repeat('payload', 50)
 FROM generate_series(1, 100000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, amount);
-NOTICE:  sift_col index "facts_col": order_array_columns = 'auto' chose the column "day" of few values: benefit 25 against cost 22
-DETAIL:  ORDER BY day, key LIMIT n OFFSET m reads the rows of the group of equal values the offset ends in, where the units read every row (300,000 rows of 365 values, OFFSET 10,000: 113 M to 11 M instructions). The array takes about 3 bytes a row (55% of the index) and CREATE INDEX about 19% longer.
-HINT:  ALTER INDEX facts_col SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = 'day' keeps it by name.
-NOTICE:  sift_col index "facts_col": order_array_columns = 'auto' adds the sorted keys and heap addresses of day
-DETAIL:  1.0 bytes a row for each column, 0.1 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block). The choice of each column: day: the whole order (a bound in the middle of its values reads many units)
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/agg_check_query.sql
 \set ECHO none
