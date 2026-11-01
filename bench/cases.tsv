@@ -353,6 +353,7 @@ point_tid_auto_60	by default also for an integer key of nearly unique values tha
 key_order_offset	`key_order = 'ts'` (or `'entity, ts'`) on a `sift_col` index	events	-	Global Order: true	native	default:search_path = c_key_order_offset__default,btree:search_path = c_key_order_offset__btree	ms	faster33	no	-
 key_order_latest	the latest row of each of 100 tenants	events	-	Global Order: true	native	default:search_path = c_key_order_latest__default,btree:search_path = c_key_order_latest__btree	ms	faster33	no	-
 lateral_top1_partitions	reads the top-N of each partition and merges them	orders	default	Top-N	native	btree:search_path = c_lateral_top1_partitions__btree	ms	faster33	no	-
+lateral_top1_hash_partitions	picks the one partition of a hash partitioning that holds the key	orders	default	Top-N	native	btree:search_path = c_lateral_top1_hash_partitions__btree	ms	faster33	no	-
 join_eq_nl_probe	starts over for each row of an outer query	orders	default	Nested Loop	native	btree:search_path = c_join_eq_nl_probe__btree	ms	faster33	no	-
 topn_offset_filter_int	a page under a condition on another column	orders	default	(?s)\A(?=.*Global Order)(?=.*Top-N: k)(?!.*[^0-9](?:10[1-9]|1[1-9][0-9]|[2-9][0-9]{2}|[0-9]{4,}) heap fetches)	native	btree:search_path = c_topn_offset_filter_int__btree	ms	faster33	no	-
 topn_offset_filter_date	-	orders	default	(?s)\A(?=.*Global Order)(?=.*Top-N: d)(?!.*[^0-9](?:10[1-9]|1[1-9][0-9]|[2-9][0-9]{2}|[0-9]{4,}) heap fetches)	native	btree:search_path = c_topn_offset_filter_date__btree	ms	faster33	no	-

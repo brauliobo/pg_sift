@@ -4,11 +4,14 @@
  * the plan reads each partition's top-N: the scan keeps its state of one table from one row of d to the next, not of the partitions as one source. The same
  * query as `SELECT .. FROM (partition 1 ORDER BY .. LIMIT n UNION ALL partition 2 ORDER BY .. LIMIT n ..) ORDER BY .. LIMIT n` is n rows of each partition, merged
  * by a Merge Append, and when the first ORDER BY column is the key of a range partitioning, the partitions in the order of the sort with no sort at all: the
- * first partitions answer and the others are never executed. The planner hook plans the query both ways and keeps this one only if it costs less.
+ * first partitions answer and the others are never executed. A hash partitioning is read where the query pins its key to a value (`tenant = d.id`): each arm tests that the value
+ * is in its partition and only that one runs. The planner hook plans the query both ways and keeps this one only if it costs less.
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/stratnum.h"
 #include "catalog/partition.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_inherits.h"
@@ -23,9 +26,11 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "utils/acl.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "agg/agg.h"
 #include "agg/part.h"
@@ -78,9 +83,54 @@ remap_mutator(Node *n, ArmCols *cols)
 	return expression_tree_mutator(n, remap_mutator, cols);
 }
 
-/* the leaves of the table, or NIL where a partition is not a heap table of the same columns as the table's */
+/* the value a condition of the query pins the column of a hash partitioning to (`tenant = d.id`), which the arms test to read only the partition that holds it */
+static Node *
+hash_pin(Query *q, PartitionKey key)
+{
+	Node	   *quals = q->jointree->quals;
+	List	   *conj = IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == AND_EXPR ? ((BoolExpr *) quals)->args : list_make1(quals);
+
+	if (key->partnatts != 1 || key->partattrs[0] == 0)
+		return NULL;
+	foreach_ptr(Node, c, conj)
+	{
+		OpExpr	   *op = (OpExpr *) c;
+
+		if (!IsA(c, OpExpr) || list_length(op->args) != 2 || get_op_opfamily_strategy(op->opno, key->partopfamily[0]) != HTEqualStrategyNumber)
+			continue;
+		for (int i = 0; i < 2; i++)
+		{
+			Node	   *v = list_nth(op->args, i),
+					   *other = list_nth(op->args, 1 - i);
+
+			if (IsA(v, Var) && ((Var *) v)->varno == 1 && ((Var *) v)->varlevelsup == 0 && ((Var *) v)->varattno == key->partattrs[0] && !contain_vars_of_level(other, 0) &&
+				exprType(other) == key->parttypid[0] && exprCollation(other) == key->partcollation[0])
+				return other;
+		}
+	}
+	return NULL;
+}
+
+/* whether the value pinned is in the partition: the arm is a gating Result of a one-time filter, and the others of the table are not executed for the row */
+static Node *
+hash_arm_qual(Oid parent, Oid leaf, Node *pin)
+{
+	HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(leaf));
+	PartitionBoundSpec *bs;
+
+	SIFT_INVARIANT(HeapTupleIsValid(tp), "cache lookup failed for relation %u", leaf);
+	bs = castNode(PartitionBoundSpec, stringToNode(TextDatumGetCString(SysCacheGetAttrNotNull(RELOID, tp, Anum_pg_class_relpartbound))));
+	ReleaseSysCache(tp);
+	return (Node *) makeFuncExpr(F_SATISFIES_HASH_PARTITION, BOOLOID,
+								 list_make4(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(parent), false, true),
+											makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(bs->modulus), false, true),
+											makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(bs->remainder), false, true), copyObject(pin)),
+								 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+}
+
+/* the leaves of the table, or NIL where a partition is not a heap table of the same columns as the table's (*pin: the value of a hash partitioning the query pins) */
 static List *
-leaf_oids(Oid relid, ArmCols *cols, bool *ordered, bool *asc, Query *q)
+leaf_oids(Oid relid, ArmCols *cols, bool *ordered, bool *asc, Query *q, Node **pin)
 {
 	List	   *leaves = NIL;
 	Relation	rel = relation_open(relid, NoLock);
@@ -91,9 +141,10 @@ leaf_oids(Oid relid, ArmCols *cols, bool *ordered, bool *asc, Query *q)
 	Oid			opfamily,
 				opcintype;
 	SiftCmpStrategy strategy;
-	bool		ok = key->strategy != PARTITION_STRATEGY_HASH;
+	bool		ok = true;
 
 	*ordered = false;
+	*pin = NULL;
 	foreach_oid(leaf, find_all_inheritors(relid, AccessShareLock, NULL))
 	{
 		char		kind = get_rel_relkind(leaf);
@@ -120,13 +171,19 @@ leaf_oids(Oid relid, ArmCols *cols, bool *ordered, bool *asc, Query *q)
 				leaves = *asc ? lappend_oid(leaves, desc->oids[i]) : lcons_oid(desc->oids[i], leaves);
 		}
 	}
+	if (key->strategy == PARTITION_STRATEGY_HASH)
+	{
+		/* no other order than the sort, and a partition to read only where the query names the value of the key */
+		*pin = hash_pin(q, key);
+		ok &= *pin != NULL && list_length(leaves) == desc->nparts;
+	}
 	relation_close(rel, NoLock);
 	return ok ? leaves : NIL;
 }
 
 /* the n rows of one partition that the sorted query asks for */
 static Query *
-arm_query(Query *q, RangeTblEntry *parent, Oid leaf, ArmCols *cols, int64 rows)
+arm_query(Query *q, RangeTblEntry *parent, Oid leaf, ArmCols *cols, int64 rows, int up)
 {
 	Query	   *arm = makeNode(Query);
 	RangeTblEntry *lr = copyObject(parent);
@@ -147,9 +204,9 @@ arm_query(Query *q, RangeTblEntry *parent, Oid leaf, ArmCols *cols, int64 rows)
 	arm->commandType = CMD_SELECT;
 	arm->canSetTag = true;
 	arm->rtable = list_make1(lr);
-	/* the conditions are those of the query, whose outer references are now two levels (the union and the query that reads it) farther */
+	/* the conditions are those of the query, whose outer references are now farther by the union and the query that reads it (and the gate of the arm) */
 	arm->jointree = makeFromExpr(list_make1(rtr), copyObject(q->jointree->quals));
-	IncrementVarSublevelsUp(arm->jointree->quals, 2, 1);
+	IncrementVarSublevelsUp(arm->jointree->quals, up, 1);
 	foreach_int(a, cols->attnos)
 	{
 		Oid			t,
@@ -173,6 +230,41 @@ arm_query(Query *q, RangeTblEntry *parent, Oid leaf, ArmCols *cols, int64 rows)
 	return arm;
 }
 
+/*
+ * The arm of a hash partition under a test that its value of the key is in the partition: a condition that no column of the arm names is a one-time filter of the
+ * Result above it, which the executor tests once for each row of the query around and does not run the arm for when it fails. In the arm itself the scan would take it
+ * for a condition of its rows, after opening the index. The LIMIT keeps the test out of the arm.
+ */
+static Query *
+gated_arm(Query *inner, Oid parent, Oid leaf, Node *pin, ArmCols *cols, List *names)
+{
+	Query	   *arm = makeNode(Query);
+	RangeTblEntry *ir = makeNode(RangeTblEntry);
+	RangeTblRef *rtr = makeNode(RangeTblRef);
+	Node	   *gate = hash_arm_qual(parent, leaf, pin);
+
+	IncrementVarSublevelsUp(gate, 2, 1);
+	ir->rtekind = RTE_SUBQUERY;
+	ir->subquery = inner;
+	ir->inFromCl = true;
+	ir->eref = makeAlias("arm", names);
+	rtr->rtindex = 1;
+	arm->commandType = CMD_SELECT;
+	arm->canSetTag = true;
+	arm->rtable = list_make1(ir);
+	arm->jointree = makeFromExpr(list_make1(rtr), gate);
+	foreach_int(a, cols->attnos)
+	{
+		Oid			t,
+					c;
+		int32		m;
+
+		get_atttypetypmodcoll(parent, a, &t, &m, &c);
+		arm->targetList = lappend(arm->targetList, makeTargetEntry((Expr *) makeVar(1, foreach_current_index(a) + 1, t, m, c, 0), foreach_current_index(a) + 1, get_attname(parent, a, false), false));
+	}
+	return arm;
+}
+
 bool
 sift_agg_partition_arms(Query *q, bool apply)
 {
@@ -184,7 +276,8 @@ sift_agg_partition_arms(Query *q, bool apply)
 			   *names = NIL;
 	Node	   *tree = NULL,
 			   *limit,
-			   *skip;
+			   *skip,
+			   *pin;
 	bool		ordered,
 				asc = true;
 	int64		count,
@@ -221,7 +314,7 @@ sift_agg_partition_arms(Query *q, bool apply)
 	arm_cols(q, &cols);
 	if (cols.attnos == NIL || linitial_int(cols.attnos) <= 0)
 		return false;
-	leaves = leaf_oids(parent->relid, &cols, &ordered, &asc, q);
+	leaves = leaf_oids(parent->relid, &cols, &ordered, &asc, q, &pin);
 	if (list_length(leaves) < 2 || list_length(leaves) > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
 		return false;
 	if (!apply)
@@ -239,7 +332,9 @@ sift_agg_partition_arms(Query *q, bool apply)
 		RangeTblRef *rtr = makeNode(RangeTblRef);
 
 		ar->rtekind = RTE_SUBQUERY;
-		ar->subquery = arm_query(q, parent, leaf, &cols, count + offset);
+		ar->subquery = arm_query(q, parent, leaf, &cols, count + offset, pin == NULL ? 2 : 3);
+		if (pin != NULL)
+			ar->subquery = gated_arm(ar->subquery, parent->relid, leaf, pin, &cols, names);
 		ar->eref = makeAlias(psprintf("*SELECT* %d", foreach_current_index(leaf) + 1), names);
 		u->rtable = lappend(u->rtable, ar);
 		rtr->rtindex = list_length(u->rtable);

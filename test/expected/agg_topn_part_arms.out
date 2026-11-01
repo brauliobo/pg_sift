@@ -1,6 +1,8 @@
 -- The newest row of each tenant (LATERAL .. ORDER BY ts DESC LIMIT 1) over a table partitioned by month: PostgreSQL read every partition and sorted for each tenant, 154,301 buffers
 -- for 100 tenants of 100,000 rows in 12 partitions (0.36 s). The query is planned as one top-N for each partition, the partitions in the order of the sort when the first
 -- ORDER BY column is the key of a range partitioning (the later ones are never executed once the first answers), merged by a Merge Append for another order, and chosen by cost.
+-- Over a hash partitioning that the query pins to the value of the outer row (e.tenant_id = d.id) each partition's top-N sits under a one-time filter that tests the value is in the
+-- partition, so one runs for a row; a b-tree on the partitions keeps PostgreSQL's pruned Merge Append.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -51,7 +53,8 @@ INSERT INTO q VALUES
 	(4, 'SELECT d.id, x.id FROM tn d LEFT JOIN LATERAL (SELECT id FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true'),
 	(5, 'SELECT d.id, (SELECT ts FROM ev e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) FROM tn d'),
 	(6, 'SELECT d.id, x.v, x.id FROM tn d LEFT JOIN LATERAL (SELECT v, id FROM ev e WHERE e.tenant_id = d.id ORDER BY v DESC, id LIMIT 1) x ON true'),
-	(7, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM evh e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true');
+	(7, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM evh e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true'),
+	(8, 'SELECT d.id, x.ts FROM tn d LEFT JOIN LATERAL (SELECT ts FROM evh e WHERE e.tenant_id = d.id ORDER BY ts DESC LIMIT 1) x ON true WHERE d.id = 3');
 SELECT n, (arms(q)).*, same_rows(q) AS same FROM q ORDER BY n;
  n | scans | ran |    merge     | same 
 ---+-------+-----+--------------+------
@@ -61,8 +64,18 @@ SELECT n, (arms(q)).*, same_rows(q) AS same FROM q ORDER BY n;
  4 |     3 |   1 | none         | t
  5 |     3 |   1 | none         | t
  6 |     3 |   3 | merge append | t
- 7 |     0 |   0 | sort         | t
-(7 rows)
+ 7 |     2 |   2 | sort         | t
+ 8 |     2 |   1 | sort         | t
+(8 rows)
+
+CREATE INDEX evh_b ON evh (tenant_id, ts);
+ANALYZE evh;
+SELECT n, (arms(q)).*, same_rows(q) AS same FROM q WHERE n IN (7, 8) ORDER BY n;
+ n | scans | ran |    merge     | same 
+---+-------+-----+--------------+------
+ 7 |     0 |   0 | merge append | t
+ 8 |     0 |   0 | merge append | t
+(2 rows)
 
 DROP FUNCTION arms(text), same_rows(text);
 DROP TABLE q, tn, ev, evh;
