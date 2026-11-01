@@ -28,7 +28,9 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
+#include "agg/part.h"
 #include "agg/plan_int.h"
+#include "agg/topn.h"
 
 /* the columns of the partitioned table the query reads, in the order of the columns of the union */
 typedef struct ArmCols
