@@ -453,7 +453,7 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events_dirty WHERE set_id 
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id IN (SELECT id FROM dims WHERE id <= 5) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: any_array_subselect
--- expect: scan 0.096 0.35
+-- expect: scan 0.043 0.17
 SELECT kind, count(*) AS n FROM events WHERE parent_id = ANY (ARRAY (SELECT id FROM dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: in_constants

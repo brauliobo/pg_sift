@@ -1,4 +1,4 @@
-table	any_array_subselect	scan	0.053	0.21
+table	any_array_subselect	scan	0.025	0.10
 table	arms_filter	scan	0.072	0.21
 table	arms_per_parent_metrics	scan	0.083	0.33
 table	arms_scalar_subselects	scan	0.025	0.10
