@@ -9,12 +9,15 @@
 #include "storage/bufpage.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
+#include "core/cmp.h"
 #include "col/seg_int.h"
 
 /* The heap rows a window of keys is read from (the relation is opened for the window and closed with it) */
 typedef struct HeapProbe
 {
 	Relation	rel;
+	const SiftKey *dead;		/* the rows of the segment that bulkdelete cleared, ascending: a vacuumed address may hold the tuple of another row */
+	uint32		ndead;
 	BlockNumber nblocks;
 	AttrNumber	att;
 	bool		wide;			/* the key is the 8 bytes of the datum, else 4 or 2 */
@@ -22,8 +25,8 @@ typedef struct HeapProbe
 } HeapProbe;
 
 /*
- * Whether the keys a compact block does not store can be read from the heap: the segment has no row that bulkdelete cleared (the address of such a row may have a new tenant),
- * and the leaf is a column of a heap table of the type its key is made of. A block that cannot is not used: its scans read the units.
+ * Whether the keys a compact block does not store can be read from the heap: the leaf is a column of a heap table of the type its key is made of (the address of a row that
+ * bulkdelete cleared may have a new tenant, so such a row is answered as dead without the heap, see probe_dead). A block that cannot is not used: its scans read the units.
  */
 static bool
 probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
@@ -34,7 +37,7 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 	Oid			ty = InvalidOid;
 	bool		ok = false;
 
-	if ((seg->entry.flags & SIFT_SEG_DIRTY) || col >= seg->schema->ncols)
+	if (col >= seg->schema->ncols)
 		return false;
 	d = &seg->schema->cols[col];
 	if (d->attno < 1 || d->attno > ix->indnatts || ix->indkey.values[d->attno - 1] <= 0 || !sift_cgord_leaf_ok(seg->schema, d))
@@ -75,6 +78,23 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 }
 
 
+/* The addresses of the rows of the segment that bulkdelete cleared, listed on first use and kept with the leaf */
+static void
+probe_dead(SiftColSegment *seg, GOrdLeaf *g)
+{
+	uint32		room = 0;
+	uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+
+	sift_cseg_dirty_units(seg, dirty);
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (sift_col_bit_test(dirty, u) && !sift_cseg_unit_dead(seg, u, seg->mcxt, &g->dead, &g->ndead, &room))
+			corrupt(seg, "The head of unit %u cannot be read.", u);
+	pfree(dirty);
+	if (g->ndead > 1)
+		qsort(g->dead, g->ndead, sizeof(SiftKey), sift_cmp_u64);
+	g->deadset = true;
+}
+
 static void *
 probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 {
@@ -86,6 +106,10 @@ probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 		pfree(pr);
 		return NULL;
 	}
+	if ((seg->entry.flags & SIFT_SEG_DIRTY) && !g->deadset)
+		probe_dead(seg, g);
+	pr->dead = g->dead;
+	pr->ndead = g->ndead;
 	pr->nblocks = RelationGetNumberOfBlocks(pr->rel);
 	pr->att = g->hatt;
 	pr->two = seg->schema->cols[col].type == SIFT_COLT_INT2;
@@ -115,7 +139,7 @@ probe_key(void *h, uint64 addr, int64 *key)
 	Page		page;
 	bool		ok = false;
 
-	if (blk >= pr->nblocks)
+	if (blk >= pr->nblocks || (pr->ndead > 0 && bsearch(&addr, pr->dead, pr->ndead, sizeof(SiftKey), sift_cmp_u64) != NULL))
 		return false;
 	b = ReadBuffer(pr->rel, blk);
 	LockBuffer(b, BUFFER_LOCK_SHARE);

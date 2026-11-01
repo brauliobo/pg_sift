@@ -355,6 +355,9 @@ typedef struct GOrdLeaf
 	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
 	int16		hatt;			/* ... and the heap attribute of the leaf */
 	uint32		hrel;			/* ... the heap (its Oid) */
+	bool		deadset;		/* ... and, in a segment with rows bulkdelete cleared, whether their addresses are listed in dead (ascending), which the heap no longer says anything of */
+	uint32		ndead;
+	SiftKey    *dead;
 } GOrdLeaf;
 
 /* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */

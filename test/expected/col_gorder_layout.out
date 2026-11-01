@@ -1,6 +1,6 @@
 -- order_layout = compact: the order of a leaf of many rows keeps the heap address of each row and its key rounded to a bucket; the exact keys are read from the
 -- rows of the heap. Every ordered read answers what the table does (a copy without an index is the oracle): each column type, ASC and DESC, NULLs, LIMIT and OFFSET, bounds at the ends, in the middle and
--- in a bracket, a write buffer, dead rows (a segment that has one reads its units), updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
+-- in a bracket, a write buffer, dead rows, updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
 -- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -194,11 +194,17 @@ SELECT sift.col_verify('t_ix');
  
 (1 row)
 
--- dead rows: the segment has a row bulkdelete cleared, so its order is not read from the heap (the units answer), and a new row may take the address of a dead one
+-- dead rows: the segment has a row bulkdelete cleared, whose address is listed so that the heap is not asked for its key, and a new row may take the address of a dead one
 DELETE FROM t WHERE ts < TIMESTAMP '2026-02-01' OR id % 17 = 0;
 VACUUM t;
 INSERT INTO t SELECT 30000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 700) i;
+SELECT global_order('SELECT ts AS k FROM t ORDER BY ts LIMIT 20 OFFSET 700') AS an_offset_in_a_dirty_segment, global_order('SELECT ts AS k FROM t ORDER BY ts DESC LIMIT 20 OFFSET 3000') AS a_desc_offset_in_a_dirty_segment;
+ an_offset_in_a_dirty_segment | a_desc_offset_in_a_dirty_segment 
+------------------------------+----------------------------------
+ t                            | t
+(1 row)
+
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;

@@ -611,6 +611,39 @@ sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits)
 		bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
 }
 
+/*
+ * Appends the heap addresses of the dead rows of unit u to *dead (grown in mcxt, *room entries, *ndead used), in the order of the unit's rows; false when the unit cannot be
+ * viewed.
+ */
+bool
+sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room)
+{
+	SiftCUnitView v;
+	uint32		n = seg->sbdir[u].nrows,
+				nd = 0,
+			   *ords;
+	uint64	   *live;
+
+	if (!sift_cseg_unit_view(seg, u, &v))
+		return false;
+	ords = palloc(n * sizeof(uint32));
+	live = palloc(SIFT_COL_NWORDS(n) * sizeof(uint64));
+	sift_cseg_live(seg, u, live);
+	for (uint32 w = 0; w < (n + 63) / 64; w++)
+		for (uint64 b = ~live[w] & (w == n / 64 ? (UINT64CONST(1) << (n % 64)) - 1 : ~UINT64CONST(0)); b; b &= b - 1)
+			ords[nd++] = w * 64 + pg_rightmost_one_pos64(b);
+	if (*ndead + nd > *room)
+	{
+		*room = Max(*room * 2, *ndead + nd);
+		*dead = *dead ? repalloc(*dead, *room * sizeof(SiftKey)) : MemoryContextAlloc(mcxt, *room * sizeof(SiftKey));
+	}
+	sift_cunit_row_keys(&v, v.keyed ? 0 : sift_cseg_unit_sb(seg, u), ords, nd, *dead + *ndead);
+	*ndead += nd;
+	pfree(ords);
+	pfree(live);
+	return true;
+}
+
 uint64
 sift_cseg_live_rows(SiftColSegment *seg)
 {

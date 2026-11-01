@@ -23,8 +23,8 @@
  * hold NULL rows are as in version 1; every other chunk (SIFT_CGORD_COMPACT in the directory's pad word) has the bucket of every key instead of the key (col/gquant.h: about 0.6 bytes an entry
  * where the key takes 4), the exact key of its first entry in the directory, and the addresses of all its entries as block << ob | offset, the offset bits of the whole chunk. Header word 6 is
  * the buckets per mean gap the writer chose (SIFT_GQ_Q; the reader does not need it), word 7 is 0. The key of an entry is in its bucket; where a search or a scan needs it exact it is the one of
- * the row at the entry's address (sift_cseg_gorder_fill reads it from the heap). A block with a compact chunk is usable only while the segment has no dead row: a row that bulkdelete cleared may
- * have a new tenant at its address.
+ * the row at the entry's address (sift_cseg_gorder_fill reads it from the heap). A row that bulkdelete cleared may have a new tenant at its address: the addresses of such rows
+ * are listed once for the segment (col/seg/probe.c) and an entry at one is answered as a dead row, without the heap.
  *
  * Version 3, a block of a text leaf: the key of an entry is the rank of its string among the distinct strings of the segment in the order of the leaf's collation (then
  * the bytes), so equal keys are equal strings and a scan merges the segments by comparing their strings, not their keys. Header words 6 and 7 are the collation (an OID) and

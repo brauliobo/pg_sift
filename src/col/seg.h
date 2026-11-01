@@ -418,6 +418,7 @@ extern void sift_cseg_net_finish(StringInfo net, uint64 at);
 extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
 extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
+extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
 
 /* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema); the rows keep their versions */
