@@ -48,7 +48,7 @@ scratch_up() {
 			unix_socket_directories = '$SIFT_TMP/sock'
 			$("$PG" conf)
 			fsync = off
-			synchronous_commit = off
+			synchronous_commit = on
 			shared_buffers = ${SCRATCH_SHARED_BUFFERS:-2GB}
 			max_wal_size = 16GB
 			checkpoint_timeout = 30min

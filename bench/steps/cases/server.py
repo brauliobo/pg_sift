@@ -19,7 +19,7 @@ ENV = {**os.environ, 'LC_ALL': 'C'}
 
 def psql(sql, db=DB, port=None, *args):
     cmd = ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', db] + (['-h', '127.0.0.1', '-p', str(port)] if port else []) + list(args)
-    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning' % runcfg.TIMEOUT})
+    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning -c synchronous_commit=on' % runcfg.TIMEOUT})
     if r.returncode:
         die('psql: %s' % r.stderr.strip()[:500])
     return r.stdout.strip()
@@ -41,6 +41,17 @@ def dataset(rows):
     return csv
 
 
+def settle_visibility(schema):
+    """VACUUM the tables of SCHEMA once more and fail unless every page of each is all-visible (relallvisible = relpages): a partial map makes the index-only and visibility-map plans of the
+    native lane read the heap and moves the planner's choice, and with `synchronous_commit = off` a VACUUM right after a load leaves the pages of tuples whose commit was not flushed (hint bits
+    wait for the WAL writer, ~200 ms). The first VACUUM of a bulk load also leaves the empty pages the file was extended by (relpages counts them, the map does not): the second removes them"""
+    psql("SELECT format('VACUUM (FREEZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
+    bad = psql("SELECT string_agg(format('%%s %%s of %%s pages', oid::regclass, relallvisible, relpages), ', ') FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') "
+               "AND relpages > 0 AND relallvisible < relpages" % schema)
+    if bad:
+        die('the visibility map is partial after VACUUM (all-visible pages of the pages): %s. The native plans would read the heap that a full map spares: load with synchronous_commit = on or wait for the flush' % bad)
+
+
 def generate(case, rows):
     """the schema of a shared dataset (`events`, `keys`, `tpch`, `hits`, `tseries`, `docs`) with ROWS rows, made once per size from its generator (-v n=ROWS)"""
     schema, path = DATASETS[case.dataset]
@@ -53,6 +64,8 @@ def generate(case, rows):
                            env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
         if r.returncode:
             die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
+        if 'VACUUM' in gen:
+            settle_visibility(schema)
         BUILT.add((case.dataset, rows))
 
 
@@ -80,6 +93,8 @@ def build(case, rows):
             # every table of the case, not only orders: without the visibility map the scan checks the heap of each page for its rows (many_groups: 17,668 blocks read against 1,500 of the index)
             sql += "SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec\n" % schema
         psql(sql)
+        if case.opt.get('vacuum', 'yes') == 'yes':
+            settle_visibility(schema)
     psql('CHECKPOINT')
     BUILT.add((case.schema(), rows))
 

@@ -214,10 +214,20 @@ rse_cells() {
           if ((between > rse || within > rse) && sqrt(rel2[k] / n[k] / maxr) <= rse) print k } }' "$1"
 }
 
+# vm_settle TABLE: VACUUM (FREEZE) TABLE once more and die unless every page of it is all-visible. A partial map makes index-only scans read the heap and moves the plan choice of the native lane; the
+# first VACUUM of a bulk load leaves the empty pages the file was extended by (relpages counts them, the map does not) and, under `synchronous_commit = off`, the pages whose commit was not flushed yet
+vm_settle() {
+  local bad
+  q -c "VACUUM (FREEZE) $1"
+  bad=$(q -c "SELECT format('%s of %s pages all-visible', relallvisible, relpages) FROM pg_class WHERE oid = '$1'::regclass AND relpages > 0 AND relallvisible < relpages")
+  [[ -z $bad ]] || die "the visibility map of $1 is partial after VACUUM ($bad): the native plans read the heap that a full map spares; load with synchronous_commit = on or wait for the flush"
+}
+
 # --- cold cache: empty the relations of a table from shared buffers and the OS page cache, then time one statement
 # cold_table TABLE: the table the cold statements read; its heap, TOAST table and indexes are evicted before each one. A data
 # directory in memory (tmpfs) has no page cache apart from the shared buffers (a file there is the page cache): nothing else to evict.
 cold_table() {
+  vm_settle "$1"
   COLD_RELS="SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
              UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
   COLD_FILES=''

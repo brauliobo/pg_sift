@@ -172,3 +172,32 @@ class Sizes(unittest.TestCase):
             with open(os.path.join(root, name)) as f:
                 fixed += [name for m in re.finditer(r'generate_series\s*\(\s*1\s*,\s*([0-9_]+)\s*\)', f.read()) if int(m.group(1).replace('_', '')) > 1000000]
         self.assertEqual(fixed, [])
+
+
+class Visibility(unittest.TestCase):
+    def settle(self, partial):
+        """settle_visibility against a psql that answers the VACUUM with nothing and the check with PARTIAL"""
+        from unittest import mock
+        from cases import server
+        with mock.patch.object(server, 'psql', side_effect=lambda sql, *a: partial if 'string_agg' in sql else '') as psql:
+            server.settle_visibility('c_x')
+        return psql
+
+    def test_a_full_map_passes_after_a_second_vacuum(self):
+        self.assertIn('VACUUM (FREEZE)', self.settle('').call_args_list[0].args[0])
+
+    def test_a_partial_map_fails_loudly(self):
+        from unittest import mock
+        from cases import server
+        with mock.patch.object(server, 'die', side_effect=SystemExit('partial')) as die:
+            with self.assertRaises(SystemExit):
+                self.settle('c_x.orders 3 of 250 pages')
+        self.assertIn('c_x.orders 3 of 250 pages', die.call_args.args[0])
+
+    def test_the_harness_sessions_commit_synchronously(self):
+        from unittest import mock
+        from cases import server
+        with mock.patch.object(server.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='')) as run:
+            server.psql('SELECT 1')
+        self.assertIn('synchronous_commit=on', run.call_args.kwargs['env']['PGOPTIONS'])
+
