@@ -8,13 +8,13 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 14
-# The least time between two VACUUMs of a table is five naptimes before PostgreSQL 18 (from 18, ten times the average one): a scan that checked many
-# rows in the heap after a change of ten rows asks for one, and must find the last within that time, so the naptime is not shorter
+# The least time between two VACUUMs of a table is five naptimes before PostgreSQL 18 (from 18, ten times the average one): the sleeps before a rebuild
+# are longer than that (1.5 s) and the naptime is not shorter
 node_init av 22 "autovacuum = off
-sift.maintenance_naptime = 1000"
+sift.maintenance_naptime = 300"
 node_start av || bail "start failed"
 sql av "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \
-	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 150000) g" \
+	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 30000) g" \
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
 
 # when the table was last vacuumed (the statistics are written when the VACUUM ends)
@@ -24,7 +24,7 @@ SCAN="SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind"
 vetted() { sql av "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.* \([0-9][0-9]*\) vetted by heap.*/\1/p' | grep . || echo 0; }
 # until a scan checks few rows: a VACUUM leaves a page not all-visible when it could not take its cleanup lock or the commit of its rows was not flushed yet
 # (the hint bits wait for it), and the scan that finds them asks for the next, a few naptimes later
-cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 10000 ]] && return 0; sleep 0.2; done; return 1; }
+cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 2000 ]] && return 0; sleep 0.2; done; return 1; }
 groups() { sql av "SET sift.enable_agg = $1" "SET max_parallel_workers_per_gather = 0" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM ($SCAN) x" | tail -1; }
 # until the table is vacuumed after $1 (what vacuumed printed then), asking with a scan every so often
 await_vacuum() {
@@ -35,9 +35,9 @@ await_vacuum() {
 	done
 	return 1
 }
-# stays as it was for 2 s although scans ask
+# stays as it was for 0.75 s (two and a half naptimes) although scans ask
 stays() {
-	for _ in $(seq 8); do vetted >/dev/null; sleep 0.25; done
+	for _ in $(seq 3); do vetted >/dev/null; sleep 0.25; done
 	[[ $(vacuumed) == "$1" ]]
 }
 churn() { sql av "UPDATE facts SET amount = amount + 1 WHERE id % 20 = $1" >/dev/null; }
@@ -45,7 +45,7 @@ churn() { sql av "UPDATE facts SET amount = amount + 1 WHERE id % 20 = $1" >/dev
 # 1. off (the default)
 T0=$(vacuumed)
 churn 1
-check "off: the scan checks the rows in the heap (the churn is spread over every page)" test "$(vetted)" -gt 100000
+check "off: the scan checks the rows in the heap (the churn is spread over every page)" test "$(vetted)" -gt 20000
 check "off: and the table is not vacuumed" stays "$T0"
 
 # 2. on
@@ -55,9 +55,9 @@ check "on: the next scan checks few rows" cheap
 check "on: and answers as the heap does" test "$(groups on)" == "$(groups off)"
 
 # 3. a few rows changed: fewer than the 50 under which a table is clean
-sleep 1.5
+sleep 0.5
 T1=$(vacuumed)
-sql av "UPDATE facts SET amount = amount + 1 WHERE id % 15000 = 1" >/dev/null
+sql av "UPDATE facts SET amount = amount + 1 WHERE id % 3000 = 1" >/dev/null
 check "a change of ten rows (under 50): not vacuumed" stays "$T1"
 
 # 4. autovacuum_enabled = false is left alone, and vacuumed once it is not
@@ -73,9 +73,9 @@ check "CREATE INDEX on a table with autovacuum_enabled = false: a notice" test "
 repaired() { cheap && [[ $(groups on) == "$(groups off)" ]]; }
 sql av "CREATE INDEX facts_key ON facts (key)" >/dev/null
 for rebuild in "CLUSTER facts USING facts_key" "VACUUM FULL facts"; do
-	sleep 5.5
+	sleep 2
 	sql av "$rebuild" >/dev/null
-	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted)" -gt 100000
+	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted)" -gt 20000
 	check "$rebuild: the worker vacuums the table, the next scan checks few rows and answers as the heap does" repaired
 done
 check "the index verifies" test "$(sql av "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
