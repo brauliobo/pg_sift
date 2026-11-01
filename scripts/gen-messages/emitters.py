@@ -47,7 +47,7 @@ def c_emitters():
                 msg = part(body, 'errmsg')
                 detail = part(body, 'errdetail') or part(body, 'errdetail_internal')
                 hint = part(body, 'errhint')
-            out.append(dict(kind='c', file=path, line=line, level='INFO' if level in VARIABLE_LEVELS else level, msg=msg, detail=detail, hint=hint))
+            out.append(dict(kind='c', file=path, line=line, level=VARIABLE_LEVELS.get(level, level), msg=msg, detail=detail, hint=hint))
     return out
 
 

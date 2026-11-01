@@ -1,8 +1,8 @@
 -- sift.gpu = on against the CPU: every aggregate the Vulkan path may take (docs/GPU.md) must give the rows the CPU gives, and so must the shapes it
 -- leaves to the CPU. The test prints only whether the two agree, so it has the same output on a build without the backend, on one without a device, and
--- on one with a device. NOTICEs (no backend, no device, a device that failed) are not shown.
+-- on one with a device. The WARNINGs of sift.gpu = on (no backend, no device, a device that failed) are not shown.
 CREATE EXTENSION pg_sift;
-SET client_min_messages = warning;
+SET client_min_messages = error;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

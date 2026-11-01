@@ -53,6 +53,9 @@ static int	sift_gpu_min_rows = GPU_MIN_ROWS_DEFAULT;
 static char *sift_gpu_device = NULL;
 static int	sift_gpu_cache_mb = GPU_CACHE_MB_DEFAULT;
 
+/* A fallback to the CPU is a WARNING when sift.gpu = on asked for the device, and a NOTICE when auto only tried it */
+#define GPU_LEVEL (sift_gpu_mode == GPU_ON ? WARNING : NOTICE)
+
 static void
 gpu_init(void)
 {
@@ -176,7 +179,7 @@ gpu_cache_want(const SiftSrcStats *st)
 	return Min(cap, want);
 }
 
-/* The device, opened for the first query that wants it; NULL (and a NOTICE once) when it cannot be */
+/* The device, opened for the first query that wants it; NULL (and a message once) when it cannot be */
 static SiftVk *
 gpu_device(const SiftSrcStats *st)
 {
@@ -195,7 +198,7 @@ gpu_device(const SiftSrcStats *st)
 		if (gpu.vk == NULL)
 		{
 			if (!gpu.told_open)
-				ereport(NOTICE, (errmsg("sift.gpu: no usable Vulkan device (%s); the aggregate runs on the CPU", err)));
+				ereport(GPU_LEVEL, (errmsg("sift.gpu: no usable Vulkan device (%s); the aggregate runs on the CPU", err)));
 			gpu.told_open = true;
 			return NULL;
 		}
@@ -417,7 +420,7 @@ static void
 gpu_fail(GpuScan *g, const char *what)
 {
 	if (!gpu.told_dead)
-		ereport(NOTICE, (errmsg("sift.gpu: %s; the aggregate runs on the CPU and the device is not used again in this session", what)));
+		ereport(GPU_LEVEL, (errmsg("sift.gpu: %s; the aggregate runs on the CPU and the device is not used again in this session", what)));
 	gpu.told_dead = true;
 	gpu.dead = true;
 	g->failed = true;
@@ -899,7 +902,7 @@ gpu_begin(const SiftAggScan *sc, bool *exclusive)
 	static bool told = false;
 
 	if (sift_gpu_mode != GPU_OFF && !told)
-		ereport(NOTICE, (errmsg("sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU",
+		ereport(GPU_LEVEL, (errmsg("sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU",
 								sift_gpu_mode == GPU_ON ? "on" : "auto")));
 	told = told || sift_gpu_mode != GPU_OFF;
 	return NULL;
