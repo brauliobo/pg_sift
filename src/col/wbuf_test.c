@@ -35,6 +35,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_torn);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_long);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
+PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
@@ -493,6 +494,7 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	uint64		seed = PG_GETARG_INT64(1);
 	bool		shared = PG_GETARG_BOOL(2);
+	int64		dirver = PG_GETARG_INT64(3);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -505,7 +507,7 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 
 		if (!is_wbuf(&snap->segs[i]))
 			continue;
-		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb) :
+		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb) :
 			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
 		for (int k = 0; k < nb; k++)
 		{
@@ -526,6 +528,17 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* (index regclass): the directory version a scan that opens now reads */
+Datum
+sift_test_col_dir_version(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	int64		version = read_dir(index)->version;
+
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT64(version);
 }
 
 typedef struct DeleteState
@@ -554,6 +567,9 @@ sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (is_wbuf(&snap->segs[i]))
 			removed += sift_cwbuf_bulkdelete(index, &snap->segs[i], test_schema(), dead_every, &state, &stats);
+	/* as sift_mops_bulkdelete: the readers that keep batches find out by the version */
+	if (removed > 0)
+		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(removed);

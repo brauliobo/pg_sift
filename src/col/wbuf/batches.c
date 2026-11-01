@@ -40,6 +40,7 @@ typedef struct StampList
 	PageStamp  *p;
 	int			n,
 				cap;
+	bool		stale;			/* a page the last read resumed had records flagged dead since its stamp */
 } StampList;
 
 /* The batches of one write buffer and where the records they hold end in its lanes; the batches and the set are in cx */
@@ -51,6 +52,7 @@ typedef struct BatchSet
 	Oid			db;
 	RelFileNumber rel;
 	uint64		gen;
+	uint32		dirver;			/* the version of the directory when the stamps were last checked: a VACUUM that flagged records moves it (sift_mops_bulkdelete) */
 	WbufLane	lane[SIFT_LANES];
 	StampList	stamp[SIFT_LANES];	/* the pages of each lane, in the order read */
 	int			n,
@@ -93,6 +95,13 @@ fresh_add(void *arg, const RawRec *rec)
 	appendBinaryStringInfo(&f->arena, (const char *) rec->payload, rec->len);
 }
 
+/* Whether no record of the page, up to what the stamp read, was flagged dead since: its LSN is the stamp's (the pages of an index that is not WAL-logged keep theirs), or the dead are as many */
+static bool
+stamp_same(Relation index, Page page, const PageStamp *st)
+{
+	return (PageGetLSN(page) == st->lsn && RelationNeedsWAL(index)) || wbuf_page_dead(index, page, 0, st->used) == st->dead;
+}
+
 /* A page the reader is about to read: the dead records are counted before the records are read, so one that dies in between is found by the next check */
 static void
 stamp_page(void *arg, BlockNumber blk, Page page, Size used)
@@ -102,7 +111,9 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 
 	if (last && last->blk == blk)
 	{
-		/* the page the last read ended in, with more records now: the records before it were checked */
+		/* the page the last read ended in, with more records now. A read that skipped the check of the stamps (the version had not moved for its scan) has not looked at the ones before it */
+		if (!stamp_same(sl->index, page, last))
+			sl->stale = true;
 		last->dead += wbuf_page_dead(sl->index, page, last->used, used);
 		last->lsn = PageGetLSN(page);
 		last->used = used;
@@ -130,7 +141,10 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 			r->pagefn = stamp ? stamp_page : NULL;
 			r->pagearg = stamp ? &stamp[l] : NULL;
 			if (stamp)
+			{
 				stamp[l].index = r->cur.index;
+				stamp[l].stale = false;
+			}
 			wbuf_read_lane(r, r->it.head[l], &lane[l], fresh_add, f);
 		}
 	r->pagefn = NULL;
@@ -259,7 +273,7 @@ set_drop(BatchSet *s)
 }
 
 static BatchSet *
-set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema)
+set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver)
 {
 	MemoryContext cx;
 	BatchSet   *s;
@@ -274,6 +288,7 @@ set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema)
 	s->db = index->rd_locator.dbOid;
 	s->rel = index->rd_locator.relNumber;
 	s->gen = entry->gen;
+	s->dirver = dirver;
 	lanes_unread(s->lane);
 	for (int l = 0; l < SIFT_LANES; l++)
 		s->stamp[l].cx = cx;
@@ -298,8 +313,8 @@ set_unchanged(BatchSet *s, Relation index)
 
 			sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, s->gen);
 			page = BufferGetPage(buf);
+			same = stamp_same(index, page, st);
 			lsn = PageGetLSN(page);
-			same = (lsn == st->lsn && RelationNeedsWAL(index)) || wbuf_page_dead(index, page, 0, st->used) == st->dead;
 
 			UnlockReleaseBuffer(buf);
 			if (!same)
@@ -311,7 +326,7 @@ set_unchanged(BatchSet *s, Relation index)
 
 /* The batches of the write buffer at its end now. Built with the rows read since the last scan of this backend when nothing else holds them, else built again. */
 static BatchSet *
-set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext tmp)
+set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext tmp)
 {
 	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
 	BatchSet   *s = NULL;
@@ -335,10 +350,18 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 				s->b[i]->schema = schema;
 			s->schema = schema;
 		}
-		if (!set_unchanged(s, index))
-			goto rebuild;
+		/* the version was read before any page of this read: a flag set after it moves the version, and one set before it is in the pages */
+		if (s->dirver != dirver)
+		{
+			if (!set_unchanged(s, index))
+				goto rebuild;
+			s->dirver = Max(s->dirver, dirver);
+		}
 		memcpy(lane, s->lane, sizeof(lane));
 		fresh_read(r, lane, s->stamp, &f);
+		for (int l = 0; l < SIFT_LANES; l++)
+			if (s->stamp[l].stale)
+				goto rebuild;
 		if (f.nheld == 0)
 			return s;
 		if (s->refs == 0 && set_fill(s, r, &f))
@@ -349,7 +372,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 rebuild:
 		set_drop(s);
 	}
-	s = set_new(index, entry, schema);
+	s = set_new(index, entry, schema, dirver);
 	fresh_read(r, s->lane, s->stamp, &f);
 	if (!set_fill(s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
@@ -363,11 +386,11 @@ rebuild:
  * address of the dead tuple may be reused); a scan that holds a set keeps its copy, which it checks against the heap.
  */
 SiftColBatch **
-sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n)
+sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
-	BatchSet   *s = set_current(index, entry, schema, tmp);
+	BatchSet   *s = set_current(index, entry, schema, dirver, tmp);
 	SiftColBatch **out;
 	MemoryContextCallback *cb;
 

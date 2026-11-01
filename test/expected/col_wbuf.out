@@ -339,6 +339,101 @@ SELECT sift._test_check('t4_idx') AS orphans;
        0
 (1 row)
 
+-- a scan keeps the version it read at open: a VACUUM between two of its reads leaves the second on the batches of the first (the rows VACUUM flagged are
+-- dead to its snapshot, which held VACUUM back from anything it sees), and a scan that opens afterwards reads the flags. Only id 0 is flagged here, on the
+-- first page of its lane
+CREATE TABLE t5 (doc int);
+CREATE INDEX t5_idx ON t5 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t5_idx') IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t5_idx', 7, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT (SELECT max(npages) FROM sift._test_col_wbuf_segments('t5_idx')) > 8 AS many_pages;
+ many_pages 
+------------
+ t
+(1 row)
+
+CREATE TABLE opened AS SELECT sift._test_col_dir_version('t5_idx') AS v;
+SELECT count(*) AS first_read FROM sift._test_col_wbuf_batches('t5_idx', 7, true, (SELECT v FROM opened));
+ first_read 
+------------
+       3000
+(1 row)
+
+SELECT sift._test_col_wbuf_delete('t5_idx', 100000) AS flagged;
+ flagged 
+---------
+       1
+(1 row)
+
+SELECT sift._test_col_dir_version('t5_idx') > (SELECT v FROM opened) AS bumped;
+ bumped 
+--------
+ t
+(1 row)
+
+SELECT count(*) AS second_read, count(*) FILTER (WHERE id = 0) AS flagged_kept FROM sift._test_col_wbuf_batches('t5_idx', 7, true, (SELECT v FROM opened));
+ second_read | flagged_kept 
+-------------+--------------
+        3000 |            1
+(1 row)
+
+SELECT count(*) AS later_scan, count(*) FILTER (WHERE id = 0) AS flagged_kept FROM sift._test_col_wbuf_batches('t5_idx', 7, true);
+ later_scan | flagged_kept 
+------------+--------------
+       2999 |            0
+(1 row)
+
+-- ... except in the page it goes on reading (the last of each lane): flags set there since the last read are found whatever version it holds, or the next scan
+-- would take the stamp of that read for a check
+CREATE TABLE t6 (doc int);
+CREATE INDEX t6_idx ON t6 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t6_idx') IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t6_idx', 7, 0, 600) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+CREATE TABLE opened6 AS SELECT sift._test_col_dir_version('t6_idx') AS v;
+SELECT count(*) AS first_read FROM sift._test_col_wbuf_batches('t6_idx', 7, true, (SELECT v FROM opened6));
+ first_read 
+------------
+        600
+(1 row)
+
+SELECT sift._test_col_wbuf_delete('t6_idx', 5) AS flagged;
+ flagged 
+---------
+     120
+(1 row)
+
+SELECT count(*) AS resumed_read, count(*) FILTER (WHERE id % 5 = 0 AND id < 600) AS flagged_kept FROM sift._test_col_wbuf_batches('t6_idx', 7, true, (SELECT v FROM opened6));
+ resumed_read | flagged_kept 
+--------------+--------------
+          480 |            0
+(1 row)
+
+SELECT count(*) AS later_scan, count(*) FILTER (WHERE id % 5 = 0 AND id < 600) AS flagged_kept FROM sift._test_col_wbuf_batches('t6_idx', 7, true);
+ later_scan | flagged_kept 
+------------+--------------
+        480 |            0
+(1 row)
+
 -- a string of any length is held: a record of 300 000 bytes spans pages
 SELECT sift._test_col_wbuf_long('t_idx');
  _test_col_wbuf_long 
@@ -512,7 +607,7 @@ SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
  XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page.
 (1 row)
 
-DROP TABLE t, t2, t3, t4, r, b, p, pages, counts;
+DROP TABLE t, t2, t3, t4, t5, t6, opened, opened6, r, b, p, pages, counts;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

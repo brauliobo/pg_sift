@@ -140,6 +140,29 @@ DROP TABLE tw;
 DROP FUNCTION tw_check(text);
 DROP EXTENSION pg_sift_helpers;
 
+-- a read of a kept set does not read the pages of the buffer when no VACUUM flagged a record since (the version of the directory is the same): the blocks of a scan stay
+-- those of the scan, not one more for each of the ~70 pages of the buffer
+CREATE TABLE wn (id int PRIMARY KEY, g int NOT NULL, kind int NOT NULL, ts timestamp NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(1, 60000) i;
+CREATE INDEX wn_col ON wn USING sift_col (id, g, kind, ts, amount) WITH (key_cut = 'g');
+VACUUM (FREEZE, ANALYZE) wn;
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(60001, 75000) i;
+ANALYZE wn;
+CREATE FUNCTION wn_blocks() RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	PERFORM set_config('enable_seqscan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) SELECT id, amount FROM wn WHERE g = 77 AND ts >= ''2024-06-01'' ORDER BY id' INTO j;
+	RETURN (j -> 0 -> 'Plan' ->> 'Shared Hit Blocks')::bigint + (j -> 0 -> 'Plan' ->> 'Shared Read Blocks')::bigint;
+END $$;
+SELECT wn_blocks() > 0 AS first_read;
+SELECT wn_blocks() < 60 AS repeated_read_blocks;
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(75001, 75100) i;
+SELECT wn_blocks() < 60 AS appended_read_blocks;
+DROP TABLE wn;
+DROP FUNCTION wn_blocks();
+
 DROP TABLE wc CASCADE;
 DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
 DROP EXTENSION pg_sift;

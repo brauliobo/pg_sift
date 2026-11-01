@@ -285,6 +285,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open_gate",
+							"Testing: a column scan waits, right after it read the directory, for the advisory lock of this number (0 = no gate).",
+							NULL, &sift_test_col_open_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_dict_shared",
 							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = every dictionary shared, 2 = the table cannot be had.",
 							NULL, &sift_test_col_dict_shared, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

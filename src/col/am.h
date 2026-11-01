@@ -307,8 +307,12 @@ extern Size sift_cdict_cache_bytes(void);
 extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
 extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	sift_col_jitter()
+extern PGDLLIMPORT int sift_test_col_open_gate;	/* sift.test_col_open_gate: a scan waits for the advisory lock of this number right after it read the directory */
+extern void sift_col_open_gate(void);
+#define SIFT_COL_OPEN_GATE()	sift_col_open_gate()
 #else
 #define SIFT_COL_JITTER()	((void) 0)
+#define SIFT_COL_OPEN_GATE()	((void) 0)
 #endif
 
 /* the planner hook opens a planning, within which the statistics of an index are validated once (col/am/am.c leaf_cache_entry); true when this call opened it */

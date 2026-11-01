@@ -10,7 +10,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 19
+plan 21
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -112,6 +112,9 @@ for T in kept_a kept_b kept_c; do
 		"DELETE FROM $T WHERE id % 19 = 0" >/dev/null
 done
 catchup primary standby
+# the version of the directory is what tells a reader that keeps batches that the VACUUM flagged records: it must replay with the flags, before the addresses are reused
+VERS="SELECT string_agg(sift._test_col_dir_version(i::regclass)::text, ' ' ORDER BY i) FROM unnest(ARRAY['kept_a_col', 'kept_b_col', 'kept_c_col']) i"
+VBEFORE=$(sql standby "$VERS")
 rm -f "$P/kept.go"
 cat >"$P/kept.sql" <<EOF
 SET max_parallel_workers_per_gather = 0;
@@ -122,10 +125,15 @@ EOF
 psql -X -At -q -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -d postgres -f "$P/kept.sql" >"$P/kept.log" 2>&1 &
 KEPT=$!
 for _ in $(seq 100); do [[ -s $P/kept.log ]] && break; sleep 0.1; done
+sleep 2   # the standby's feedback holds the horizon below the deletes until it reports its session done, and a VACUUM below it removes nothing
 sql primary "SET sift.async_maintenance = off" "VACUUM kept_a, kept_b, kept_c" >/dev/null
 catchup primary standby
+VAFTER=$(sql standby "$VERS")
 touch "$P/kept.go"
 wait "$KEPT"
+check "the VACUUM of the primary moved the version of the directory of each index on the standby" \
+	test "$(paste -d' ' <(tr ' ' '\n' <<<"$VBEFORE") <(tr ' ' '\n' <<<"$VAFTER") | awk '$1 >= $2' | wc -l)" == 0
+check "... and the standby has the version of each index as the primary has it" test "$VAFTER" == "$(sql primary "$VERS")"
 check "a session of the standby that read the write buffer reads the heap as it is after the VACUUM" test "$(tr '\n' ' ' <"$P/kept.log")" == "t t "
 
 # deletes alone (no row for the write buffer, so no rewrite) and a VACUUM leave dead rows in the units of a table of its own, and the pre-aggregates net of them; their pages replay on the standby like any others net of them, whose pages replay on the standby like any others

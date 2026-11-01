@@ -9,6 +9,8 @@
 #include "utils/acl.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
+#include "fmgr.h"
+#include "utils/fmgrprotos.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -18,6 +20,7 @@
  */
 
 int			sift_test_col_jitter_us = 0;
+int			sift_test_col_open_gate = 0;
 
 bool		sift_test_col_paranoid = false;
 
@@ -26,6 +29,19 @@ sift_col_jitter(void)
 {
 	if (sift_test_col_jitter_us > 0)
 		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_col_jitter_us));
+}
+
+/* Holds a scan, with the directory version it read, until the test releases the lock: what runs meanwhile (VACUUM, DML) is after the open for the scan */
+void
+sift_col_open_gate(void)
+{
+	if (sift_test_col_open_gate > 0)
+	{
+		Datum		key = Int64GetDatum(sift_test_col_open_gate);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
 }
 #endif
 
@@ -123,6 +139,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	sift_dir_read(index, &src->dir);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
+	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -232,7 +249,14 @@ scan_load_wbuf(SiftColSource *src)
 
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			continue;
-		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
+		/*
+		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their
+		 * addresses; batches kept at another version have their pages checked, and the flags the version shows are found. A flag it does not show (set after
+		 * the open, or before a bump the open preceded) leaves the batches as they were: its record belongs to a row dead to every snapshot, since the snapshot
+		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
+		 * after that snapshot, which the heap check does not return.
+		 */
+		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n);
 		for (int j = 0; j < n; j++)
 			add_mem(src, bs[j], true);
 	}
