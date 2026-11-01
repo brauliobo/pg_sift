@@ -77,7 +77,14 @@ SET ROLE sp_user;
 SELECT sift.suggest_paths('sp', 'doc');
 RESET ROLE;
 
-DROP TABLE sp, sp_arr;
+-- a sift_table has no heap blocks to take stretches of: its documents are read by a scan of the table, and the same documents give the same answer as the heap's
+CREATE TABLE sp_heap (id int, doc jsonb);
+INSERT INTO sp_heap SELECT id, doc FROM sp WHERE id <= 300;
+CREATE TABLE sp_tbl (id int, doc jsonb) USING sift_table;
+INSERT INTO sp_tbl SELECT id, doc FROM sp_heap;
+SELECT sift.suggest_paths('sp_tbl', 'doc') = sift.suggest_paths('sp_heap', 'doc') AS table_as_heap, sift.suggest_paths('sp_tbl', 'doc') IS NOT NULL AS suggested;
+
+DROP TABLE sp, sp_arr, sp_heap, sp_tbl;
 DROP FUNCTION sp_rows(text, bool), sp_pushed(text);
 DROP ROLE sp_user;
 DROP EXTENSION pg_sift_helpers;

@@ -362,6 +362,7 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 	MemoryContext doc_cx = AllocSetContextCreate(CurrentMemoryContext, "sift suggest document", ALLOCSET_SMALL_SIZES);
 	SNode	   *root;
 	BlockNumber nblocks;
+	bool		heap;
 	int			nchunks;
 	Snapshot	snap;
 	TupleTableSlot *slot;
@@ -370,7 +371,9 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 
 	root = node_new(&cx, NULL);
 	nblocks = RelationGetNumberOfBlocks(rel);
-	nchunks = (int) Min(SAMPLE_CHUNKS, nblocks);
+	/* stretches of blocks are a heap's: another table access method is read by one scan from its start, up to the sample */
+	heap = rel->rd_tableam == GetHeapamTableAmRoutine();
+	nchunks = heap ? (int) Min(SAMPLE_CHUNKS, nblocks) : 1;
 	snap = GetActiveSnapshot();
 	slot = table_slot_create(rel, NULL);
 	for (int c = 0; c < nchunks && cx.docs < (uint32) sample; c++)
@@ -381,7 +384,8 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 					got = 0;
 		TableScanDesc scan = table_beginscan_strat(rel, snap, 0, NULL, true, false);
 
-		heap_setscanlimits(scan, start, len);
+		if (heap)
+			heap_setscanlimits(scan, start, len);
 		while (got < quota && table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		{
 			bool		isnull;
