@@ -23,6 +23,7 @@ sys.path.insert(0, HERE)
 import cases as cases_mod  # noqa: E402
 import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 import benchlib  # noqa: E402  (steps/benchlib.py)
+import engine_io  # noqa: E402  (steps/engine_io.py: the IO of each timed call)
 from suite_engine import REPO, Unsupported, canon, first_diff, log, same, timed  # noqa: E402
 
 VERSION = next(l.split("'")[1] for l in open(os.path.join(REPO, 'pg_sift.control')) if l.startswith('default_version'))   # the rows carry the version they were measured at
@@ -86,7 +87,7 @@ def main():
         print('inputs %s, host %s; the file has inputs %s, host %s, measured %s' % (key, host, have.get('inputs'), have.get('host'), have.get('date')))
         sys.exit(0 if have.get('inputs') == key and have.get('host') == host else 1)
     runs = 0 if a.check_only else a.runs
-    results, failures, reference, skipped = [], [], {}, {}   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
+    results, failures, reference, skipped, io_rows = [], [], {}, {}, []   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
 
     def run_suite(eng, suite_cases_):
         for c in suite_cases_:
@@ -96,7 +97,9 @@ def main():
                     sql = eng.statement(c, arm)
                     note = eng.precheck(arm, sql) or ''
                     if not note:
-                        med, lo, hi, got = timed(eng.runner(arm, sql), runs)
+                        sink = []
+                        med, lo, hi, got = timed(engine_io.metered(eng, eng.runner(arm, sql), sink) if runs else eng.runner(arm, sql), runs)
+                        io_rows += [(c.id, arm, 'io_warm_' + k, v) for k, v in engine_io.medians(sink, runs).items()]
                         got = canon(got)
                         if arm == 'pg':
                             reference[c.id] = got
@@ -148,6 +151,12 @@ def main():
             f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
             for case, arm, med, lo, hi, load, note in results:
                 f.write('\t'.join([str(x) for x in (VERSION, case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')
+    if a.out and runs and io_rows:   # beside the times, not in them: the readers of generic.tsv count every row of an arm
+        with open(a.out.replace('.tsv', '-io.tsv'), 'w') as f:
+            f.write('# The IO of the same runs (steps/engine_io.py, steps/hostio.py): the host counters over the engine\'s processes and the device of its data, and the engine\'s own counters. A figure that the host cannot tell (no device on tmpfs or overlay storage) has no row.\n')
+            f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
+            for case, arm, metric, value in io_rows:
+                f.write('\t'.join([str(x) for x in (VERSION, case, arm, metric, '%.2f' % value, '', '', runs, '', '')]) + '\n')
     sys.exit(1 if failures else 0)
 
 

@@ -67,6 +67,14 @@ class Pure(unittest.TestCase):
         timed = dict(warm, exec_ms=0.4567, cpu_ms=0.5)
         self.assertEqual(iolib.metrics(timed), {'io_warm_read_blocks': '0', 'io_warm_hit_pct': '100.00', 'io_warm_ms': '0.457', 'io_warm_cpu_ms': '0.500'})   # the time and the CPU of the run
 
+    def test_metrics_carry_the_operations_of_pg_stat_io_and_of_the_host(self):
+        io = dict(cache='cold', read=277, hit_pct=0.0, read_bytes=2 * iolib.MB, proc_read_bytes=None, read_ms=1.5, stat_reads=100, stat_read_bytes=800 * 1024, stat_writes=3, stat_fsyncs=1,
+                  stat_wal_writes=None, host=dict(dev_read_iops=90, dev_read_mb=1.5, proc_read_ops=120, avg_kb_per_read=17.07, dev_write_iops=None))
+        got = iolib.metrics(io)
+        self.assertEqual({k: v for k, v in got.items() if k.startswith(('io_cold_read_ops', 'io_cold_read_avg', 'io_cold_write', 'io_cold_fsyncs', 'io_cold_dev', 'io_cold_proc', 'io_cold_avg', 'io_cold_wal_w'))},
+                         {'io_cold_read_ops': '100', 'io_cold_read_avg_kb': '8.00', 'io_cold_write_ops': '3', 'io_cold_fsyncs': '1', 'io_cold_dev_read_iops': '90', 'io_cold_dev_read_mb': '1.50',
+                          'io_cold_proc_read_ops': '120', 'io_cold_avg_kb_per_read': '17.07'})   # a figure the host or the server cannot tell has no row
+
     def test_load_metrics(self):
         self.assertEqual(iolib.load_metrics(dict(stat_extend_bytes=3 * iolib.MB, stat_write_bytes=None)), {'io_extend_mb': 3.0})
 

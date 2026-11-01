@@ -78,6 +78,18 @@ class Server:
         env = [x for e in env for x in ('-e', e)]
         sh('docker', 'run', '-d', '--name', self.name, *flags, *run_args, '-p', '127.0.0.1:%d:%d' % (self.ctx.port, port_map), *env, *args)
 
+    def pids(self):
+        """the engine's main process on the host (a container's init: docker inspect), whose descendants steps/hostio.py meters"""
+        return [int(sh('docker', 'inspect', '-f', '{{.State.Pid}}', self.name))]
+
+    def datadir(self):
+        """a path on the file system of the engine's data: a container's is under docker's root (volumes and layers), an in-process engine's is its work directory"""
+        return sh('docker', 'info', '-f', '{{.DockerRootDir}}')
+
+    def native_io(self):
+        """the engine's own cumulative IO counters ({name: number}), extra columns beside the host's; none by default"""
+        return {}
+
     def unload(self, suite, work):
         """drops the tables of the suite, so that the next suite may name one alike"""
 

@@ -223,7 +223,15 @@ cold_table() {
   COLD_FILES=''
   [[ $(stat -f -c %T "$PGDATA") == tmpfs ]] || COLD_FILES=$(q -c "SELECT pg_relation_filepath(c) FROM ($COLD_RELS) x(c)")
 }
-cold_ms() { # STATEMENT [psql args]: execution time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
+cold_ms() { # STATEMENT [psql args]: cold_ms of one statement; with HOSTIO_OUT=FILE also the host's IO of it (steps/hostio.py: device iops, process and cgroup counters of the postmaster's tree), appended to FILE as `# STATEMENT` and name<TAB>value lines
+  [[ -n ${HOSTIO_OUT:-} ]] || { _cold_ms "$@"; return; }
+  local before; before=$(mktemp)
+  python3 -I "$STEPS/hostio.py" snap --pgdata "$PGDATA" >"$before"
+  _cold_ms "$@"
+  { printf '# %s\n' "$1"; python3 -I "$STEPS/hostio.py" delta "$before" --pgdata "$PGDATA"; } >>"$HOSTIO_OUT"
+  rm -f "$before"
+}
+_cold_ms() { # the time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
   local explain="EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" evict="SELECT pg_buffercache_evict_relation(c) FROM ($COLD_RELS) x(c)"
   if [[ -z $COLD_FILES ]]; then
     printf '%s;\n%s;\n' "$evict" "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'   # on stdin: psql variables are not interpolated in -c
