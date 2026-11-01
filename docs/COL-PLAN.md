@@ -423,7 +423,7 @@ Every refusal has a slug, `sift.explain_refusals` and `sift.explain_why` name it
 | `error_parity` | semantic |  | the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read) |
 | `output_expr` | semantic |  | the select list or HAVING reads something besides group keys and the aggregates the scan computes |
 | `aggregate` | semantic |  | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes |
-| `distinct_on` | semantic | yes | DISTINCT ON has no total order for the row it keeps |
+| `distinct_on` | semantic | yes | DISTINCT ON keeps a row the scan cannot pick: more than four sort columns after the ON columns, a sort or select-list column of a joined table, or a volatile select list |
 | `grouping_sets` | semantic |  | the arm does not group by grouping sets |
 | `dirty_units` | semantic |  | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
 | `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too |

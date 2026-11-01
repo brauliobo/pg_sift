@@ -5,74 +5,15 @@
  */
 #include "postgres.h"
 
-#include "access/table.h"
 #include "catalog/pg_aggregate.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/syscache.h"
-#include "access/htup_details.h"
 
 #include "agg/topn.h"
 #include "agg/order/int.h"
-
-/*
- * Do the sort columns hold the columns of a unique index of the table (plain columns, NOT NULL or with NULLs not distinct), so that no two
- * rows tie? The first row of a group by the ORDER BY is then the same in every plan: a tie would be PostgreSQL's sort's choice. A column that
- * can be NULL counts as NOT NULL when a strict condition of the table's WHERE clause (`col > 0`, `col IS NOT NULL`) leaves no row with a NULL
- * there; a row of the nullable side of an outer join is NULL extended, so there the table's conditions say nothing.
- */
-static bool
-sort_is_total(AggCtx *c, List *sortexprs)
-{
-	Bitmapset  *atts = NULL,
-			   *strict = NULL;
-	Relation	rel;
-	bool		total = false;
-
-	foreach_ptr(Node, e, sortexprs)
-	{
-		Var		   *v = (Var *) strip_relabel(e);
-
-		if (IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0)
-		{
-			atts = bms_add_member(atts, v->varattno);
-			if (!preserved_join(c))
-			{
-				NullTest   *nt = makeNode(NullTest);
-				List	   *quals = NIL;
-
-				nt->arg = (Expr *) v;
-				nt->nulltesttype = IS_NOT_NULL;
-				foreach_node(RestrictInfo, ri, c->root->simple_rel_array[c->relid]->baserestrictinfo)
-					quals = lappend(quals, ri->clause);
-				if (quals != NIL && predicate_implied_by(list_make1(nt), quals, false))
-					strict = bms_add_member(strict, v->varattno);
-			}
-		}
-	}
-	rel = table_open(c->heapoid, NoLock);
-	foreach_oid(ioid, RelationGetIndexList(rel))
-	{
-		HeapTuple	it = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(ioid));
-		Form_pg_index ix = (Form_pg_index) GETSTRUCT(it);
-		bool		all = ix->indisunique && ix->indimmediate && ix->indisvalid && ix->indnkeyatts > 0 &&
-			heap_attisnull(it, Anum_pg_index_indpred, NULL) && heap_attisnull(it, Anum_pg_index_indexprs, NULL);
-
-		for (int i = 0; all && i < ix->indnkeyatts; i++)
-		{
-			int			att = ix->indkey.values[i];
-
-			all = bms_is_member(att, atts) && (ix->indnullsnotdistinct || bms_is_member(att, strict) || agg_att_not_null(c->heapoid, att));
-		}
-		ReleaseSysCache(it);
-		total |= all;
-	}
-	table_close(rel, NoLock);
-	return total;
-}
 
 /*
  * The value of e in the first row of a group by the sort columns `more`: an aggregate that only carries the argument and the sort keys of
@@ -173,19 +114,19 @@ first_fits(SiftAggSpec *s)
 	return bytes == 0 || s->est_groups * bytes <= (double) get_hash_memory_limit();
 }
 
-/* the sort columns after the DISTINCT ON columns, when the ORDER BY is a total order of the rows */
+/*
+ * The sort columns after the DISTINCT ON columns. The rows of a group that tie in them have no order: SQL leaves the row DISTINCT ON keeps
+ * unspecified, and the scan keeps the first one it meets, the same row for all the columns of the select list.
+ */
 bool
 distinct_on_more(AggCtx *c, Query *parse, List **more)
 {
-	List	   *sortexprs = NIL;
-
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
-		sortexprs = lappend(sortexprs, get_sortgroupclause_expr(sgc, c->root->processed_tlist));
-		if (arg_joined(c, llast(sortexprs)))
+		if (arg_joined(c, get_sortgroupclause_expr(sgc, c->root->processed_tlist)))
 			return agg_refuse_on(DISTINCT_ON, "a sort expression of the DISTINCT ON reads a joined table");
 		if (get_sortgroupref_clause_noerr(sgc->tleSortGroupRef, parse->distinctClause) == NULL)
 			*more = lappend(*more, sgc);
 	}
-	return list_length(*more) <= FIRST_MAX_KEYS && sort_is_total(c, sortexprs);
+	return list_length(*more) <= FIRST_MAX_KEYS;
 }

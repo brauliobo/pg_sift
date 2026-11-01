@@ -94,7 +94,7 @@ SELECT * FROM check_query('order key is a partition key', $q$ SELECT * FROM (SEL
 SELECT * FROM check_query('order by an expression', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY amount * 1000 - id DESC) rn FROM events) t WHERE rn = 1 $q$);
          label          | in_scan | same | rows 
 ------------------------+---------+------+------
- order by an expression | f       | t    |   37
+ order by an expression | t       | t    |   37
 (1 row)
 
 SELECT * FROM check_query('a frame', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) rn FROM events) t WHERE rn = 1 $q$);
@@ -261,7 +261,7 @@ SELECT * FROM check_query('a left join', $q$
  a left join | f       | t    |   37
 (1 row)
 
--- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps DISTINCT ON for an ORDER BY that is a total order)
+-- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps the first one it meets)
 CREATE FUNCTION first_of_tie(q text) RETURNS TABLE (groups bigint, not_first bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
@@ -279,7 +279,7 @@ SELECT * FROM first_of_tie($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, ro
 SELECT runs_in_scan($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn = 1 $q$);
  runs_in_scan 
 --------------
- f
+ t
 (1 row)
 
 SELECT * FROM first_of_tie($q$ SELECT DISTINCT ON (grp) grp, id, tie FROM events ORDER BY grp, tie $q$);

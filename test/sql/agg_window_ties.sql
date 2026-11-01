@@ -39,7 +39,7 @@ SELECT count(*) AS twins_in_partition FROM periods WHERE dim_a_id = 1 AND period
 -- a LIMIT over the tied key keeps a row of the unlimited answer, with the scan on and off
 SELECT bool_and(position(l IN u) > 0) AS limited_row_is_a_row
 FROM (SELECT rows_of(:'lagged' || ' ORDER BY v DESC, dim_a_id LIMIT 1', s) AS l, rows_of(:'lagged', s) AS u FROM (VALUES (true), (false)) t(s)) x;
--- the first row of each group (row_number() = 1) over a tied order: the scan does not choose a row of the tie (distinct_on: no total order for the row it keeps), PostgreSQL's plan answers
+-- the first row of each group (row_number() = 1) over a tied order: the scan keeps the first row of the tie it meets, PostgreSQL's plan one of them
 SELECT slug, used, (SELECT count(*) = count(DISTINCT dim_a_id) FROM (SELECT dim_a_id FROM (SELECT dim_a_id, row_number() OVER (PARTITION BY dim_a_id ORDER BY value_num DESC) AS rn FROM events) t WHERE rn = 1) o) AS one_row_per_group
 FROM sift.explain_why($q$SELECT dim_a_id, event_date FROM (SELECT dim_a_id, event_date, row_number() OVER (PARTITION BY dim_a_id ORDER BY value_num DESC) AS rn FROM events) t WHERE rn = 1$q$);
 

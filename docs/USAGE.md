@@ -521,6 +521,10 @@ An aggregate scan uses the workers PostgreSQL plans (`max_parallel_workers_per_g
 
 To keep the serial sums of such a statement: `SET max_parallel_workers_per_gather = 0` for it (or `ALTER TABLE t SET (parallel_workers = 0)` for every statement on the table), or `SET sift.enable_agg = off` for the normal plan. There is no separate setting for the float sums: the workers are where the scan gains (2 to 3x on the wide requests of [docs/COL-PLAN.md](COL-PLAN.md), "Parallel scan").
 
+### DISTINCT ON and the first row of a group when the ORDER BY ties
+
+`SELECT DISTINCT ON (k) ... ORDER BY k, ts DESC` and `row_number() OVER (PARTITION BY k ORDER BY ts DESC) = 1` keep one row for each `k`. When several rows of a group tie in the ORDER BY (the same `ts`), SQL leaves the row unspecified: PostgreSQL's own plans pick a different one from run to run, and so may the aggregate scan. The scan keeps the first row of the tie it meets, one row whole (every column of the select list comes from the same row), and with workers the leader's choice among the workers' best rows may differ between runs. Add a unique column (`id`) to the ORDER BY when the row must be the same in every plan. The ON and sort columns of the result are the same in every plan.
+
 ### Memory of a backend
 
 A backend that plans and runs statements of many aggregate arms keeps far more memory than its memory contexts hold: the planner and scan free blocks of tens of megabytes, and glibc keeps them in the process heap because its threshold for mapping a block by itself grows to the largest block freed. This matters for a server with hundreds of pooled backends. Two clients replaying 258 statement shapes of an analytics mix (40 to 60 aggregate arms for the largest, 195,000 rows, 75 seconds, same seed, run twice) hold per backend on average:
@@ -577,7 +581,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `error_parity` | semantic |  | the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read) |
 | `output_expr` | semantic |  | the select list or HAVING reads something besides group keys and the aggregates the scan computes |
 | `aggregate` | semantic |  | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes |
-| `distinct_on` | semantic | yes | DISTINCT ON has no total order for the row it keeps |
+| `distinct_on` | semantic | yes | DISTINCT ON keeps a row the scan cannot pick: more than four sort columns after the ON columns, a sort or select-list column of a joined table, or a volatile select list |
 | `grouping_sets` | semantic |  | the arm does not group by grouping sets |
 | `dirty_units` | semantic |  | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
 | `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too |
