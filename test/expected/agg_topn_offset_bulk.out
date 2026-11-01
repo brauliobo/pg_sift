@@ -35,6 +35,24 @@ BEGIN
 	EXECUTE format(rows, q) INTO kb;
 	RETURN CASE WHEN ka IS DISTINCT FROM kb OR kc IS DISTINCT FROM kb THEN 'DIFFERS ' || q WHEN NOT used THEN 'units' ELSE 'bulk' END;
 END $$;
+-- the cut is taken: the entries it took off the sources (sift._test_col_gdead_stats) are most of the OFFSET, and none with the walk of every entry
+CREATE FUNCTION ob_cut(q text, noskip bool DEFAULT false) RETURNS int8 LANGUAGE plpgsql AS $$
+DECLARE c0 int8; c1 int8; r int8;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	EXECUTE format('SET LOCAL sift.test_col_gorder_noskip = %s', noskip);
+	SELECT cut INTO c0 FROM sift._test_col_gdead_stats();
+	EXECUTE format('SELECT count(*) FROM (%s) x', q) INTO r;
+	SELECT cut INTO c1 FROM sift._test_col_gdead_stats();
+	RETURN c1 - c0;
+END $$;
+SELECT c, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 40000', c, c)) BETWEEN 30000 AND 40000 AS cut, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 40000', c, c), true) AS walked FROM unnest(ARRAY['n', 't']) c;
+ c | cut | walked 
+---+-----+--------
+ n | t   |      0
+ t | t   |      0
+(2 rows)
+
 -- the same scan read twice by a join (the inner side is rewound, not materialized)
 CREATE FUNCTION ob_twice(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
@@ -117,7 +135,7 @@ SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET
 
 DROP FUNCTION og_fetches(text);
 DROP TABLE og;
-DROP FUNCTION ob_all(), ob_twice(text), ob_chk(text);
+DROP FUNCTION ob_all(), ob_twice(text), ob_chk(text), ob_cut(text, bool);
 DROP TABLE ob;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

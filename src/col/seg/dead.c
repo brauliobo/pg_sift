@@ -21,7 +21,7 @@
 #define DEAD_BYTES		((Size) 16 << 20)
 
 #ifdef SIFT_TESTING
-uint64		sift_col_gdead_stat[2];
+uint64		sift_col_gdead_stat[3];
 #define DEAD_STAT(i)	(sift_col_gdead_stat[i]++)
 #else
 #define DEAD_STAT(i)	((void) 0)

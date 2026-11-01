@@ -564,12 +564,12 @@ Datum
 sift_test_col_gdead_stats(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		values[2];
-	bool		nulls[2] = {false};
+	Datum		values[3];
+	bool		nulls[3] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
-	for (int i = 0; i < 2; i++)
+	for (int i = 0; i < 3; i++)
 		values[i] = Int64GetDatum((int64) sift_col_gdead_stat[i]);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }

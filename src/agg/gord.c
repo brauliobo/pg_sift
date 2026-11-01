@@ -4,6 +4,7 @@
 
 #include "postgres.h"
 
+#include "col/am.h"
 #include "col/gorder.h"
 #include "agg/gord.h"
 #include "core/cmp.h"
@@ -583,6 +584,9 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 		else
 			c->vs += n;
 		c->sk = n;
+#ifdef SIFT_TESTING
+		sift_col_gdead_stat[2] += n;
+#endif
 	}
 	pfree(clo);
 	return total;
