@@ -11,6 +11,9 @@ ROOT = os.path.join(HERE, '..', '..')
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import readme  # noqa: E402
 
+# The scripts that render or check the pages of a RELEASE name docs/BENCHMARKS.md, docs/perf and docs/img on purpose: the release commit ships the scrubbed pages generated into bench/out
+# (docs/BENCHMARKS.md, docs/img and the curated results). The bench generators (bench/ and every other script) must not name them: they write bench/out.
+RELEASE_PAGE_SCRIPTS = ('scripts/gen-docs.py', 'scripts/check-bench-fresh.sh', 'scripts/check-readme-tables.py')
 MOVED = re.compile(r'docs/(BENCHMARKS|BENCH-GAP|BASELINE|perf/|img)|\'docs\', \'(BENCHMARKS|BENCH-GAP|BASELINE|perf|img)')
 
 
@@ -32,7 +35,7 @@ class Pages(unittest.TestCase):
         hits = []
         for path in tracked:
             full = os.path.join(ROOT, path)
-            if path == os.path.join('bench', 'test', 'test_pages.py') or not os.path.isfile(full) or path.startswith('bench/results/'):
+            if path == os.path.join('bench', 'test', 'test_pages.py') or path in RELEASE_PAGE_SCRIPTS or not os.path.isfile(full) or path.startswith('bench/results/'):
                 continue
             with open(full, errors='ignore') as f:
                 hits += [path for line in f if MOVED.search(line)]
