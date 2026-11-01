@@ -1,0 +1,163 @@
+-- An index-only scan of a sift_col index whose returned columns are all fixed-size (integers, boolean, date, timestamps, floats) writes the values into one index tuple it keeps; the rows
+-- must be the heap's for every width and for the rows with a NULL in a returned column, with the column subsets a plan reads, a rescan, deleted rows and a write buffer.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET timezone = 'UTC';
+SET datestyle = 'ISO, YMD';
+CREATE TABLE fx (id int, a int2, b int8, f bool, d date, t timestamp, z timestamptz, r float4, x float8, pad text DEFAULT repeat('x', 300));
+ALTER TABLE fx ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO fx (id, a, b, f, d, t, z, r, x)
+SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 20000 - 10000 END, CASE WHEN i % 17 = 0 THEN NULL ELSE i * 1000003::int8 - 5000000000 END,
+	   CASE WHEN i % 11 = 0 THEN NULL ELSE i % 3 = 0 END, CASE WHEN i % 19 = 0 THEN NULL ELSE date '2020-01-01' + i % 900 END,
+	   CASE WHEN i % 23 = 0 THEN NULL ELSE timestamp '2021-03-04 05:06:07.123456' + i * interval '37 seconds' END,
+	   CASE WHEN i % 29 = 0 THEN NULL ELSE timestamptz '2021-03-04 05:06:07+00' + i * interval '91 seconds' END,
+	   CASE WHEN i % 7 = 0 THEN NULL ELSE (i % 1000) / 8.0 - 60 END, CASE WHEN i % 5 = 0 THEN NULL ELSE i / 7.0 - 1000 END
+FROM generate_series(1, 9000) i;
+CREATE INDEX fx_i ON fx USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int8_ops, f sift.col_bool_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
+	z sift.col_timestamptz_ops, r sift.col_float4_ops, x sift.col_float8_ops) WITH (count_columns = 'off', write_buffer_limit = 256);
+VACUUM (ANALYZE) fx;
+CREATE FUNCTION fx_mode(ios bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_col_scan', ios::text, true);
+	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
+	PERFORM set_config('enable_indexscan', 'false', true);
+	PERFORM set_config('enable_indexonlyscan', ios::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+END $$;
+CREATE FUNCTION fx_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM fx_mode(ios);
+	scans := 0;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'Index Only Scan using fx_i' THEN scans := scans + 1; END IF;
+	END LOOP;
+	EXECUTE 'SELECT count(*), md5(string_agg(r, ''|'' ORDER BY r)) FROM (SELECT row_to_json(w)::text AS r FROM (' || q || ') w) y' INTO n, md5;
+END $$;
+CREATE FUNCTION fx_check(q text, OUT rows bigint, OUT agree bool, OUT index_only_scans int) LANGUAGE plpgsql AS $$
+DECLARE a record; h record;
+BEGIN
+	SELECT * INTO a FROM fx_run(q, true);
+	SELECT * INTO h FROM fx_run(q, false);
+	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; index_only_scans := a.scans;
+END $$;
+CREATE TABLE fx_q (n int, q text);
+INSERT INTO fx_q VALUES
+ (1, 'SELECT id FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (2, 'SELECT a FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (3, 'SELECT b FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (4, 'SELECT f FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (5, 'SELECT d FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (6, 'SELECT t FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (7, 'SELECT z FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (8, 'SELECT r FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (9, 'SELECT x FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (10, 'SELECT id, a, b, f, d, t, z, r, x FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (11, 'SELECT a, f, x FROM fx WHERE id BETWEEN 100 AND 8000'),
+ (12, 'SELECT d, r FROM fx WHERE a BETWEEN -500 AND 500'),
+ (13, 'SELECT id FROM fx WHERE a BETWEEN -500 AND 500 AND x IS NULL'),
+ (14, 'SELECT count(*) FROM (SELECT id FROM fx OFFSET 0) s'),
+ (15, 'SELECT a.id, b.x FROM fx a JOIN fx b ON b.id = a.id + 1 WHERE a.id BETWEEN 100 AND 300'),
+ (16, 'SELECT id FROM fx WHERE f AND t > timestamp ''2021-03-05''');
+SELECT n, left(q, 70) AS q, (fx_check(q)).* FROM fx_q ORDER BY n;
+ n  |                                   q                                    | rows | agree | index_only_scans 
+----+------------------------------------------------------------------------+------+-------+------------------
+  1 | SELECT id FROM fx WHERE id BETWEEN 100 AND 8000                        | 7901 | t     |                1
+  2 | SELECT a FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  3 | SELECT b FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  4 | SELECT f FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  5 | SELECT d FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  6 | SELECT t FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  7 | SELECT z FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  8 | SELECT r FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+  9 | SELECT x FROM fx WHERE id BETWEEN 100 AND 8000                         | 7901 | t     |                1
+ 10 | SELECT id, a, b, f, d, t, z, r, x FROM fx WHERE id BETWEEN 100 AND 800 | 7901 | t     |                1
+ 11 | SELECT a, f, x FROM fx WHERE id BETWEEN 100 AND 8000                   | 7901 | t     |                1
+ 12 | SELECT d, r FROM fx WHERE a BETWEEN -500 AND 500                       |  417 | t     |                1
+ 13 | SELECT id FROM fx WHERE a BETWEEN -500 AND 500 AND x IS NULL           |   83 | t     |                1
+ 14 | SELECT count(*) FROM (SELECT id FROM fx OFFSET 0) s                    |    1 | t     |                1
+ 15 | SELECT a.id, b.x FROM fx a JOIN fx b ON b.id = a.id + 1 WHERE a.id BET |  201 | t     |                2
+ 16 | SELECT id FROM fx WHERE f AND t > timestamp '2021-03-05'               | 2076 | t     |                1
+(16 rows)
+
+-- rows deleted and updated after the build, and rows still in the write buffer
+DELETE FROM fx WHERE id % 10 = 3;
+UPDATE fx SET a = a + 1, x = x * 2 WHERE id % 10 = 4;
+INSERT INTO fx (id, a, b, f, d, t, z, r, x) SELECT 9000 + i, i, i, i % 2 = 0, NULL, NULL, NULL, NULL, i / 3.0 FROM generate_series(1, 300) i;
+SELECT n, left(q, 70) AS q, (fx_check(q)).* FROM fx_q ORDER BY n;
+ n  |                                   q                                    | rows | agree | index_only_scans 
+----+------------------------------------------------------------------------+------+-------+------------------
+  1 | SELECT id FROM fx WHERE id BETWEEN 100 AND 8000                        | 7111 | t     |                1
+  2 | SELECT a FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  3 | SELECT b FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  4 | SELECT f FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  5 | SELECT d FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  6 | SELECT t FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  7 | SELECT z FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  8 | SELECT r FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+  9 | SELECT x FROM fx WHERE id BETWEEN 100 AND 8000                         | 7111 | t     |                1
+ 10 | SELECT id, a, b, f, d, t, z, r, x FROM fx WHERE id BETWEEN 100 AND 800 | 7111 | t     |                1
+ 11 | SELECT a, f, x FROM fx WHERE id BETWEEN 100 AND 8000                   | 7111 | t     |                1
+ 12 | SELECT d, r FROM fx WHERE a BETWEEN -500 AND 500                       |  677 | t     |                1
+ 13 | SELECT id FROM fx WHERE a BETWEEN -500 AND 500 AND x IS NULL           |   83 | t     |                1
+ 14 | SELECT count(*) FROM (SELECT id FROM fx OFFSET 0) s                    |    1 | t     |                1
+ 15 | SELECT a.id, b.x FROM fx a JOIN fx b ON b.id = a.id + 1 WHERE a.id BET |  161 | t     |                2
+ 16 | SELECT id FROM fx WHERE f AND t > timestamp '2021-03-05'               | 1870 | t     |                1
+(16 rows)
+
+-- the values of a few rows, so that a wrong width or offset shows
+SELECT fx_mode(true) IS NOT NULL AS mode;
+ mode 
+------
+ t
+(1 row)
+
+SELECT id, a, b, f, d, t, z, r, x FROM fx WHERE (id BETWEEN 1 AND 3 OR id BETWEEN 17 AND 20 OR id BETWEEN 29 AND 35 OR id IN (9001, 9300)) ORDER BY id;
+  id  |   a   |      b      | f |     d      |             t              |           z            |    r    |          x          
+------+-------+-------------+---+------------+----------------------------+------------------------+---------+---------------------
+    1 | -9969 | -4998999997 | f | 2020-01-02 | 2021-03-04 05:06:44.123456 | 2021-03-04 05:07:38+00 | -59.875 |  -999.8571428571429
+    2 | -9938 | -4997999994 | f | 2020-01-03 | 2021-03-04 05:07:21.123456 | 2021-03-04 05:09:09+00 |  -59.75 |  -999.7142857142857
+   17 | -9473 |             | f | 2020-01-18 | 2021-03-04 05:16:36.123456 | 2021-03-04 05:31:54+00 | -57.875 |  -997.5714285714286
+   18 | -9442 | -4981999946 | t | 2020-01-19 | 2021-03-04 05:17:13.123456 | 2021-03-04 05:33:25+00 |  -57.75 |  -997.4285714285714
+   19 | -9411 | -4980999943 | f |            | 2021-03-04 05:17:50.123456 | 2021-03-04 05:34:56+00 | -57.625 |  -997.2857142857143
+   20 | -9380 | -4979999940 | f | 2020-01-21 | 2021-03-04 05:18:27.123456 | 2021-03-04 05:36:27+00 |   -57.5 |                    
+   29 | -9101 | -4970999913 | f | 2020-01-30 | 2021-03-04 05:24:00.123456 |                        | -56.375 |  -995.8571428571429
+   30 | -9070 | -4969999910 | t | 2020-01-31 | 2021-03-04 05:24:37.123456 | 2021-03-04 05:51:37+00 |  -56.25 |                    
+   31 | -9039 | -4968999907 | f | 2020-02-01 | 2021-03-04 05:25:14.123456 | 2021-03-04 05:53:08+00 | -56.125 |  -995.5714285714286
+   32 | -9008 | -4967999904 | f | 2020-02-02 | 2021-03-04 05:25:51.123456 | 2021-03-04 05:54:39+00 |     -56 |  -995.4285714285714
+   34 | -8945 |             | f | 2020-02-04 | 2021-03-04 05:27:05.123456 | 2021-03-04 05:57:41+00 |  -55.75 | -1990.2857142857142
+   35 | -8915 | -4964999895 | f | 2020-02-05 | 2021-03-04 05:27:42.123456 | 2021-03-04 05:59:12+00 |         |                    
+ 9001 |     1 |           1 | f |            |                            |                        |         |  0.3333333333333333
+ 9300 |   300 |         300 | t |            |                            |                        |         |                 100
+(14 rows)
+
+SELECT fx_mode(false) IS NOT NULL AS mode;
+ mode 
+------
+ t
+(1 row)
+
+SELECT id, a, b, f, d, t, z, r, x FROM fx WHERE (id BETWEEN 1 AND 3 OR id BETWEEN 17 AND 20 OR id BETWEEN 29 AND 35 OR id IN (9001, 9300)) ORDER BY id;
+  id  |   a   |      b      | f |     d      |             t              |           z            |    r    |          x          
+------+-------+-------------+---+------------+----------------------------+------------------------+---------+---------------------
+    1 | -9969 | -4998999997 | f | 2020-01-02 | 2021-03-04 05:06:44.123456 | 2021-03-04 05:07:38+00 | -59.875 |  -999.8571428571429
+    2 | -9938 | -4997999994 | f | 2020-01-03 | 2021-03-04 05:07:21.123456 | 2021-03-04 05:09:09+00 |  -59.75 |  -999.7142857142857
+   17 | -9473 |             | f | 2020-01-18 | 2021-03-04 05:16:36.123456 | 2021-03-04 05:31:54+00 | -57.875 |  -997.5714285714286
+   18 | -9442 | -4981999946 | t | 2020-01-19 | 2021-03-04 05:17:13.123456 | 2021-03-04 05:33:25+00 |  -57.75 |  -997.4285714285714
+   19 | -9411 | -4980999943 | f |            | 2021-03-04 05:17:50.123456 | 2021-03-04 05:34:56+00 | -57.625 |  -997.2857142857143
+   20 | -9380 | -4979999940 | f | 2020-01-21 | 2021-03-04 05:18:27.123456 | 2021-03-04 05:36:27+00 |   -57.5 |                    
+   29 | -9101 | -4970999913 | f | 2020-01-30 | 2021-03-04 05:24:00.123456 |                        | -56.375 |  -995.8571428571429
+   30 | -9070 | -4969999910 | t | 2020-01-31 | 2021-03-04 05:24:37.123456 | 2021-03-04 05:51:37+00 |  -56.25 |                    
+   31 | -9039 | -4968999907 | f | 2020-02-01 | 2021-03-04 05:25:14.123456 | 2021-03-04 05:53:08+00 | -56.125 |  -995.5714285714286
+   32 | -9008 | -4967999904 | f | 2020-02-02 | 2021-03-04 05:25:51.123456 | 2021-03-04 05:54:39+00 |     -56 |  -995.4285714285714
+   34 | -8945 |             | f | 2020-02-04 | 2021-03-04 05:27:05.123456 | 2021-03-04 05:57:41+00 |  -55.75 | -1990.2857142857142
+   35 | -8915 | -4964999895 | f | 2020-02-05 | 2021-03-04 05:27:42.123456 | 2021-03-04 05:59:12+00 |         |                    
+ 9001 |     1 |           1 | f |            |                            |                        |         |  0.3333333333333333
+ 9300 |   300 |         300 | t |            |                            |                        |         |                 100
+(14 rows)
+
+DROP FUNCTION fx_check(text), fx_run(text, bool), fx_mode(bool);
+DROP TABLE fx_q, fx;
+DROP EXTENSION pg_sift CASCADE;

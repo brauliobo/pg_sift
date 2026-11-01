@@ -51,6 +51,17 @@ typedef struct ColScanOpaque
 	Bitmapset  *want;
 	IndexFetchTableData *fetch;	/* the heap, for a string the index could not keep (an overflow value) */
 	TupleTableSlot *slot;
+	/*
+	 * The index tuple of every row of an index-only scan whose returned columns are all fixed-size and by value is one tuple, formed once (the other columns NULL),
+	 * whose values are replaced for each row: nothing is allocated or formed for a row. fast: 0 not decided, 1 yes, -1 no.
+	 */
+	int			fast;
+	IndexTuple	ftup;
+	int			nfast;			/* the returned columns: attribute, offset in the tuple, vector of the unit being returned */
+	int			fatt[INDEX_MAX_KEYS];
+	uint16		foff[INDEX_MAX_KEYS];
+	SiftColVec	fvec[INDEX_MAX_KEYS];
+	bool		funit;			/* the unit being returned is in fvec (no NULL-valued overflow in it) */
 } ColScanOpaque;
 
 /*
@@ -227,6 +238,9 @@ col_scan_end(ColScanOpaque *so)
 	so->vals = NULL;
 	so->nulls = NULL;
 	so->itup = NULL;
+	so->fast = 0;
+	so->ftup = NULL;
+	so->funit = false;
 }
 
 void
@@ -505,6 +519,154 @@ heap_str(IndexScanDesc scan, ColScanOpaque *so, int attno, ItemPointer tid, bool
 	return v;
 }
 
+/* A value of a column the fast tuple holds, as its bytes (the width of the type) */
+static void
+fast_put(char *dst, const SiftColDef *d, const SiftColVec *v, uint32 k)
+{
+	switch (d->type)
+	{
+		case SIFT_COLT_INT2:
+			{
+				int16		x = (int16) v->i[k];
+
+				memcpy(dst, &x, sizeof(x));
+				break;
+			}
+		case SIFT_COLT_INT4:
+		case SIFT_COLT_DATE:
+			{
+				int32		x = (int32) v->i[k];
+
+				memcpy(dst, &x, sizeof(x));
+				break;
+			}
+		case SIFT_COLT_BOOL:
+			*dst = v->i[k] != 0;
+			break;
+		case SIFT_COLT_FLOAT4:
+			{
+				float4		x = (float4) v->f[k];
+
+				memcpy(dst, &x, sizeof(x));
+				break;
+			}
+		case SIFT_COLT_FLOAT8:
+			memcpy(dst, &v->f[k], sizeof(double));
+			break;
+		default:					/* int8, timestamp, timestamptz */
+			memcpy(dst, &v->i[k], sizeof(int64));
+	}
+}
+
+/*
+ * Can the index tuples of this scan be one template? Every column the scan returns must be a fixed-size integer, date, timestamp, boolean or float; the layout
+ * is the one index_form_tuple makes for those columns and NULL for the others, which a tuple formed with all of them is compared with once.
+ */
+static void
+col_fast_init(IndexScanDesc scan)
+{
+	ColScanOpaque *so = scan->opaque;
+	TupleDesc	desc = scan->xs_itupdesc;
+	Datum		vals[INDEX_MAX_KEYS] = {0},
+				chk[INDEX_MAX_KEYS] = {0};
+	bool		nulls[INDEX_MAX_KEYS];
+	Size		off;
+	MemoryContext old = MemoryContextSwitchTo(so->cxt);
+	IndexTuple	probe,
+				tmp;
+
+	memset(nulls, true, sizeof(nulls));
+	so->nfast = 0;
+	so->fast = -1;
+	for (int a = 1; a <= so->natts; a++)
+	{
+		const SiftColDef *d = &so->defs[so->first[a]];
+
+		if (!sift_col_amcanreturn(scan->indexRelation, a) || (so->project && !bms_is_member(a, so->want)))
+			continue;
+		switch (d->type)
+		{
+			case SIFT_COLT_INT2:
+			case SIFT_COLT_INT4:
+			case SIFT_COLT_INT8:
+			case SIFT_COLT_BOOL:
+			case SIFT_COLT_DATE:
+			case SIFT_COLT_TIMESTAMP:
+			case SIFT_COLT_TIMESTAMPTZ:
+			case SIFT_COLT_FLOAT4:
+			case SIFT_COLT_FLOAT8:
+				break;
+			default:
+				MemoryContextSwitchTo(old);
+				return;
+		}
+		if (!TupleDescAttr(desc, a - 1)->attbyval)
+		{
+			MemoryContextSwitchTo(old);
+			return;
+		}
+		so->fatt[so->nfast++] = a;
+		nulls[a - 1] = false;
+	}
+	so->ftup = index_form_tuple(desc, vals, nulls);
+	off = IndexInfoFindDataOffset(so->ftup->t_info);
+	tmp = palloc(IndexTupleSize(so->ftup));
+	memcpy(tmp, so->ftup, IndexTupleSize(so->ftup));
+	for (int j = 0; j < so->nfast; j++)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, so->fatt[j] - 1);
+
+		off = att_align_nominal(off, att->attalign);
+		so->foff[j] = off;
+		memset((char *) tmp + off, j + 1, att->attlen);
+		memset(&chk[so->fatt[j] - 1], j + 1, sizeof(Datum));
+		off += att->attlen;
+	}
+	/* the layout is checked once: a tuple formed with the values j + 1 in every byte of column j is the template with those bytes written at the offsets */
+	probe = index_form_tuple(desc, chk, nulls);
+	if (IndexTupleSize(probe) == IndexTupleSize(so->ftup) && memcmp(tmp, probe, IndexTupleSize(probe)) == 0)
+		so->fast = 1;
+	pfree(probe);
+	pfree(tmp);
+	MemoryContextSwitchTo(old);
+}
+
+/* The index tuple of row k of the unit in fvec: the template with the values written in, or a tuple formed on its own when one of them is NULL */
+static void
+col_fast_tuple(IndexScanDesc scan, uint32 k)
+{
+	ColScanOpaque *so = scan->opaque;
+	bool		anynull = false;
+
+	for (int j = 0; j < so->nfast; j++)
+		anynull |= so->fvec[j].nulls && (so->fvec[j].nulls[k >> 6] >> (k & 63) & 1);
+	if (anynull)
+	{
+		Datum		vals[INDEX_MAX_KEYS] = {0};
+		bool		nulls[INDEX_MAX_KEYS];
+
+		memset(nulls, true, sizeof(nulls));
+		for (int j = 0; j < so->nfast; j++)
+		{
+			const SiftColVec *v = &so->fvec[j];
+
+			nulls[so->fatt[j] - 1] = v->nulls && (v->nulls[k >> 6] >> (k & 63) & 1);
+			if (!nulls[so->fatt[j] - 1])
+				vals[so->fatt[j] - 1] = vec_datum(&so->defs[so->first[so->fatt[j]]], v, k);
+		}
+		if (so->itup)
+			pfree(so->itup);
+		so->itup = index_form_tuple(scan->xs_itupdesc, vals, nulls);
+		so->itup->t_tid = scan->xs_heaptid;
+		scan->xs_itup = so->itup;
+		return;
+	}
+	for (int j = 0; j < so->nfast; j++)
+		fast_put((char *) so->ftup + so->foff[j], &so->defs[so->first[so->fatt[j]]], &so->fvec[j], k);
+	so->ftup->t_tid = scan->xs_heaptid;
+	scan->xs_itup = so->ftup;
+}
+
 /* The rows of the next unit that passes the predicates, with the values of the returnable columns when the executor wants index tuples */
 static bool
 col_fill_batch(IndexScanDesc scan)
@@ -520,9 +682,23 @@ col_fill_batch(IndexScanDesc scan)
 	old = MemoryContextSwitchTo(so->batch);
 	so->n = sel.count;
 	so->pos = 0;
+	so->funit = false;
 	so->tids = palloc(so->n * sizeof(ItemPointerData));
 	sift_col_tids(&unit, &sel, so->tids);
-	if (scan->xs_want_itup)
+	if (scan->xs_want_itup && so->fast == 0)
+		col_fast_init(scan);
+	if (scan->xs_want_itup && so->fast > 0)
+	{
+		bool		ovf = false;
+
+		for (int j = 0; j < so->nfast; j++)
+		{
+			sift_col_read(&unit, so->first[so->fatt[j]], &sel, &so->fvec[j]);
+			ovf |= so->fvec[j].ovf != NULL;
+		}
+		so->funit = !ovf;
+	}
+	if (scan->xs_want_itup && !so->funit)
 	{
 		so->vals = palloc0(so->n * so->natts * sizeof(Datum));
 		so->nulls = palloc(so->n * so->natts * sizeof(bool));
@@ -605,11 +781,18 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_recheck = so->recheck;
 	if (scan->xs_want_itup)
 	{
-		if (so->itup)
-			pfree(so->itup);
-		so->itup = index_form_tuple(scan->xs_itupdesc, so->vals + so->pos * so->natts, so->nulls + so->pos * so->natts);
-		so->itup->t_tid = scan->xs_heaptid;
-		scan->xs_itup = so->itup;
+		if (so->funit)
+		{
+			col_fast_tuple(scan, so->pos);
+		}
+		else
+		{
+			if (so->itup)
+				pfree(so->itup);
+			so->itup = index_form_tuple(scan->xs_itupdesc, so->vals + so->pos * so->natts, so->nulls + so->pos * so->natts);
+			so->itup->t_tid = scan->xs_heaptid;
+			scan->xs_itup = so->itup;
+		}
 	}
 	so->pos++;
 	return true;
