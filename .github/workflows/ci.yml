@@ -173,8 +173,18 @@ jobs:
         if: ${{ !matrix.git && !matrix.cassert }}
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
+          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm): the newest cache of the branch, saved under this commit
+      - name: Cache the compiler
+        if: ${{ !matrix.git && !matrix.cassert }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
       - name: Get PostgreSQL 19

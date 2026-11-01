@@ -11,6 +11,9 @@ SHIFT=3
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 (( PG_MAJOR >= 18 )) || { echo "SKIP the 8-page flavour needs PostgreSQL 18 (extension_control_path)" >&2; exit 77; }
 
+# a compiler cache, when the host has one in the usual place: the flavour is the whole library again (58 s cold, 3 s when the sources were compiled before with these flags)
+for d in /usr/lib/ccache /usr/lib64/ccache /opt/homebrew/opt/ccache/libexec; do [[ -d $d ]] && { PATH=$d:$PATH; break; }; done
+
 paths=(Makefile 'pg_sift*.control' sql src tools scripts/harden.mk)
 key=$({ git -C "$REPO" ls-files -s -- "${paths[@]}"; git -C "$REPO" diff HEAD -- "${paths[@]}"; echo "shift=$SHIFT $(pg_config --version)"; } | "$REPO/scripts/sha256.sh" | cut -c1-16)
 DIR=${SIFT_SB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/sb-flavour/$key}
