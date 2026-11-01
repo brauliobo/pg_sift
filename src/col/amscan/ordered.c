@@ -135,7 +135,8 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 	}
 	/* a descending scan has the NULL rows first, as the b-tree's default does */
 	o->g = sift_gord_open(o->src, so->first[1], ORD_ROWS, o->desc, o->desc, 0, NULL, o->cxt);
-	if (o->g != NULL && sift_gord_ends(o->g))
+	/* the order of a segment that keeps its ends only, or its keys rounded, is not read whole: the units give the rows faster than the heap the keys */
+	if (o->g != NULL && (sift_gord_ends(o->g) || sift_gord_compact(o->g)))
 		o->g = NULL;
 	MemoryContextSwitchTo(old);
 	so->ord = o;

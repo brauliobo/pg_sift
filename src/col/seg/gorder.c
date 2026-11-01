@@ -370,6 +370,15 @@ sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 	return true;
 }
 
+/* The block has compact chunks: the exact key of their entries is in the heap, a row apiece */
+bool
+sift_cseg_gorder_compact(SiftColSegment *seg, int col)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+
+	return g != NULL && g->hdr.quant != 0;
+}
+
 /* A block of the ends only: its entries, the values it holds ([0, head) the first end, the rest the last), the values the segment has and its rows with no value; false when the block is complete or not there */
 bool
 sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *values, uint32 *head, uint32 *vtotal)

@@ -484,6 +484,15 @@ sift_col_gorder_cuts(SiftColSource *src, int i, int col, SiftCGOrdCuts *cuts)
 }
 
 bool
+sift_col_gorder_compact(SiftColSource *src, int i, int col)
+{
+	int			v,
+				j = gorder_src(src, i, &v);
+
+	return j < src->nseg && sift_cseg_gorder_compact(src->seg[j].seg, gorder_slot(src, j, col));
+}
+
+bool
 sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values)
 {
 	int			v,

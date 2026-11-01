@@ -153,6 +153,7 @@ typedef struct SiftSrcProvider
 	 */
 	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want);	/* collid: the collation of a text key (0: an integer or time key; a block of another collation or kind cannot answer); grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
+	bool		(*gorder_compact) (void *impl, int i, int leaf);	/* optional: source i has compact chunks in its order block of the leaf (the exact keys of their entries are in the heap) */
 	bool		(*gorder_cuts) (void *impl, int i, int leaf, struct SiftCGOrdCuts *cuts);	/* source i is the ends of a segment's order (want says which): true, and where its entries stop being the segment's; false for a complete source */
 	uint32		(*gorder_strrank) (void *impl, int i, int leaf, const char *s, uint32 len, bool after);	/* a text key: the ranks below s in source i (after: below or equal), which is the rank of the first string that is not */
 	const char *(*gorder_str) (void *impl, int i, int leaf, int64 key, uint32 *len);	/* a text key: the string of the entries with that key in source i, valid until the next call */

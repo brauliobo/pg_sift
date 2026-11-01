@@ -26,6 +26,18 @@
 #define EXPR_PATHKEY(root, expr, opno, rel) build_expression_pathkey(root, expr, opno, rel, false)
 #endif
 
+/* The order array of the index's first column is written whole (option order_layout): the scan merges it as it is, else the units give the rows and they are sorted here (ordered.c) */
+bool
+sift_col_ordered_whole(Oid indexoid)
+{
+	Relation	irel = index_open(indexoid, NoLock);
+	int			leaf = sift_col_rel(irel)->first[1];
+	bool		whole = leaf >= 0 && sift_col_rel(irel)->pagg.glayout[leaf] == SIFT_CGORD_OL_WHOLE;
+
+	index_close(irel, NoLock);
+	return whole;
+}
+
 void
 sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 {
@@ -52,16 +64,6 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 			pull_varattnos((Node *) ri->clause, rel->relid, &used);
 		if (!bms_is_empty(bms_del_member(used, ii->indexkeys[0] - FirstLowInvalidHeapAttributeNumber)))
 			continue;
-		/* a compact order has the bucket of a key, not the key: every entry would cost a heap read, as a Sort above the scan does not */
-		{
-			Relation	irel = index_open(ii->indexoid, NoLock);
-			int			leaf = sift_col_rel(irel)->first[1];
-			bool		whole = leaf >= 0 && sift_col_rel(irel)->pagg.glayout[leaf] == SIFT_CGORD_OL_WHOLE;
-
-			index_close(irel, NoLock);
-			if (!whole)
-				continue;
-		}
 		opclass = GetDefaultOpClass(type, BTREE_AM_OID);
 		if (!OidIsValid(opclass))
 			continue;

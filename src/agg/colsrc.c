@@ -360,6 +360,12 @@ sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const 
 }
 
 bool
+sift_colsrc_gorder_compact(SiftSrcSource *src, int i, int leaf)
+{
+	return src->prov->gorder_compact && src->prov->gorder_compact(src->impl, i, leaf);
+}
+
+bool
 sift_colsrc_gorder_cuts(SiftSrcSource *src, int i, int leaf, struct SiftCGOrdCuts *cuts)
 {
 	return src->prov->gorder_cuts && src->prov->gorder_cuts(src->impl, i, leaf, cuts);

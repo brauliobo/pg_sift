@@ -14,10 +14,14 @@ CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
 CREATE INDEX ot_i ON ot USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_layout = 'whole');
+CREATE TABLE oc (id int, k int4);
+INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
+CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) os;
 VACUUM (ANALYZE) ot;
 
--- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
+-- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10, 11) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
 -- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off)
 CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -55,8 +59,17 @@ INSERT INTO os_q VALUES
  (6, 'SELECT k FROM ot ORDER BY k'),
  (7, 'SELECT k FROM ot ORDER BY k DESC'),
  (8, 'SELECT k FROM ot WHERE k < 0 ORDER BY k DESC'),
- (9, 'SELECT k, d FROM os ORDER BY k');
+ (9, 'SELECT k, d FROM os ORDER BY k'),
+ (10, 'SELECT k FROM oc ORDER BY k'),
+ (11, 'SELECT k FROM oc ORDER BY k DESC');
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
+
+-- an order with compact chunks has the bucket of each key, the heap the key: the scan sorts the rows of the units instead, and reads no heap block
+BEGIN;
+CREATE TEMP TABLE oc_fetched ON COMMIT DROP AS SELECT pg_stat_get_xact_blocks_fetched('oc'::regclass) AS n;
+SELECT os_run('SELECT k FROM oc ORDER BY k', true) IS NOT NULL AS ran;
+SELECT pg_stat_get_xact_blocks_fetched('oc'::regclass) - n < 100 AS heap_not_read FROM oc_fetched;
+ROLLBACK;
 
 -- rows deleted and updated after the build, and rows in the write buffer
 DELETE FROM os WHERE id % 10 = 3;
@@ -64,6 +77,8 @@ UPDATE os SET k = k + 5000 WHERE id % 10 = 4;
 UPDATE os SET k = NULL WHERE id % 10 = 5;
 INSERT INTO os (id, k) SELECT 9000 + i, (i * 37) % 4000 - 2000 FROM generate_series(1, 300) i;
 DELETE FROM ot WHERE id % 9 = 2;
+DELETE FROM oc WHERE id % 10 = 3;
+INSERT INTO oc SELECT 36000 + i, (i * 31) % 5000 FROM generate_series(1, 200) i;
 UPDATE ot SET k = -k WHERE id % 9 = 4;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
 
@@ -91,5 +106,5 @@ INSERT INTO ot (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 104729::i
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
 
 DROP FUNCTION os_check(text), os_run(text, bool);
-DROP TABLE os_q, os, ot;
+DROP TABLE os_q, os, ot, oc;
 DROP EXTENSION pg_sift CASCADE;

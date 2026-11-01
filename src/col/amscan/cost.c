@@ -51,7 +51,8 @@
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
 #define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
-#define COL_SCAN_ORDERED	0.06	/* a row of an ordered index-only scan (ordpath.c): the merge of the order of the segments and the tuple, no unit read; 96 ms for 1,000,000 rows of a whole order where Seq Scan and Sort take 146 (about 900 instructions where the Sort above the unordered scan takes 1,100) */
+#define COL_SCAN_ORDERED	0.04	/* a row of an ordered index-only scan (ordpath.c) of a whole order array: the merge of the segments and the write buffers, no unit read. 1,000,000 rows of a random key, summed: 109 ms and 1,010 Minstr where Seq Scan and Sort take 212 and 1,266 (run 144ceee9fda0-20261101T230829Z-3e23); the price of the heap plan is 1.75 us a cost unit, so 62,000 units less the 15,000 of the sum */
+#define COL_SCAN_ORDERED_SORT	0.06	/* ... of an order with compact chunks or the ends only (the default build): the units are read in the order of the heap and the rows sorted by key and address, 135 ms and 1,085 Minstr in the same run */
 
 #define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
 #define COL_SCAN_EMIT_IOS_VAR	0.06	/* ... and for each text column the plan reads, which is formed by the path of a variable width (115 ns a row with one, 56 without); the TID of the bitmap node takes 10 ns */
@@ -218,9 +219,12 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	genericcostestimate(root, path, loop_count, &costs);
 	if (path->indexscandir != NoMovementScanDirection && path->path.pathkeys != NIL)
 	{
-		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c) */
-		*indexStartupCost = scale * COL_SCAN_FIXED;
-		*indexTotalCost = *indexStartupCost + costs.numIndexTuples * (scale * COL_SCAN_ORDERED + cpu_index_tuple_cost);
+		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c); a compact order is sorted by the first row, so its work is the startup */
+		bool		whole = sift_col_ordered_whole(index->indexoid);
+		double		walk = costs.numIndexTuples * scale;
+
+		*indexStartupCost = scale * COL_SCAN_FIXED + (whole ? 0.0 : walk * COL_SCAN_ORDERED_SORT);
+		*indexTotalCost = scale * COL_SCAN_FIXED + (whole ? walk * COL_SCAN_ORDERED : walk * COL_SCAN_ORDERED_SORT) + costs.numIndexTuples * cpu_index_tuple_cost;
 		*indexSelectivity = costs.indexSelectivity;
 		*indexCorrelation = 0.0;
 		*indexPages = Max(1.0, (double) index->pages);

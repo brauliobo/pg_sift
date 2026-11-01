@@ -307,6 +307,7 @@ extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin,
 extern bool sift_col_gorder_cuts(SiftColSource *src, int i, int col, struct SiftCGOrdCuts *cuts);
 extern const char *sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len);
 extern uint32 sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint32 len, bool after);
+extern bool sift_col_gorder_compact(SiftColSource *src, int i, int col);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
 /* What is known of the entry of stored segment i at heap address tid: 1 the row is live and visible to every snapshot, 0 the unit holds it live and the heap says whether this snapshot sees it, -1 the unit has cleared it, -2 not known */
 extern int	sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid);

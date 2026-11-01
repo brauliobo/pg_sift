@@ -140,5 +140,6 @@ extern void col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const u
 extern void col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool col_vet_needed(void *impl, const SiftSrcUnit *unit);
+extern bool col_gorder_compact(void *impl, int i, int leaf);
 
 #endif							/* SIFT_AGG_COL_INT_H */

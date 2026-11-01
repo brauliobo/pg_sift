@@ -19,9 +19,19 @@ CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
 CREATE INDEX ot_i ON ot USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_layout = 'whole');
+CREATE TABLE oc (id int, k int4);
+INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
+CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+NOTICE:  sift_col index "oc_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+DETAIL:  2.8 bytes a row for each column, 0.1 MB together; the segments are column format minor 41, which a library before 3.8 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
+HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+NOTICE:  sift_col index "oc_i": order_layout: k: rounded keys in 49.3% of 71 chunks, exact in the rest, 2.8 bytes a row
+DETAIL:  A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of 8 equal keys or more. The segments with a compact chunk are column format minor 41, which a library before 3.8 cannot read.
+HINT:  To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.
+VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) os;
 VACUUM (ANALYZE) ot;
--- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
+-- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10, 11) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
 -- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off)
 CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -57,41 +67,65 @@ INSERT INTO os_q VALUES
  (6, 'SELECT k FROM ot ORDER BY k'),
  (7, 'SELECT k FROM ot ORDER BY k DESC'),
  (8, 'SELECT k FROM ot WHERE k < 0 ORDER BY k DESC'),
- (9, 'SELECT k, d FROM os ORDER BY k');
+ (9, 'SELECT k, d FROM os ORDER BY k'),
+ (10, 'SELECT k FROM oc ORDER BY k'),
+ (11, 'SELECT k FROM oc ORDER BY k DESC');
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
- n |                            q                             | rows | agree | ordered_scans | sorts 
----+----------------------------------------------------------+------+-------+---------------+-------
- 1 | SELECT k FROM os ORDER BY k                              | 9000 | t     |             1 |     0
- 2 | SELECT k FROM os ORDER BY k DESC                         | 9000 | t     |             1 |     0
- 3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k | 2769 | t     |             1 |     0
- 4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     | 8308 | t     |             1 |     0
- 5 | SELECT k FROM os ORDER BY k NULLS FIRST                  | 9000 | t     |             1 |     1
- 6 | SELECT k FROM ot ORDER BY k                              | 6000 | t     |             1 |     0
- 7 | SELECT k FROM ot ORDER BY k DESC                         | 6000 | t     |             1 |     0
- 8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             | 2715 | t     |             1 |     0
- 9 | SELECT k, d FROM os ORDER BY k                           | 9000 | t     |             0 |     1
-(9 rows)
+ n  |                            q                             | rows  | agree | ordered_scans | sorts 
+----+----------------------------------------------------------+-------+-------+---------------+-------
+  1 | SELECT k FROM os ORDER BY k                              |  9000 | t     |             1 |     0
+  2 | SELECT k FROM os ORDER BY k DESC                         |  9000 | t     |             1 |     0
+  3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k |  2769 | t     |             1 |     0
+  4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     |  8308 | t     |             1 |     0
+  5 | SELECT k FROM os ORDER BY k NULLS FIRST                  |  9000 | t     |             1 |     1
+  6 | SELECT k FROM ot ORDER BY k                              |  6000 | t     |             1 |     0
+  7 | SELECT k FROM ot ORDER BY k DESC                         |  6000 | t     |             1 |     0
+  8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             |  2715 | t     |             1 |     0
+  9 | SELECT k, d FROM os ORDER BY k                           |  9000 | t     |             0 |     1
+ 10 | SELECT k FROM oc ORDER BY k                              | 36000 | t     |             1 |     0
+ 11 | SELECT k FROM oc ORDER BY k DESC                         | 36000 | t     |             1 |     0
+(11 rows)
 
+-- an order with compact chunks has the bucket of each key, the heap the key: the scan sorts the rows of the units instead, and reads no heap block
+BEGIN;
+CREATE TEMP TABLE oc_fetched ON COMMIT DROP AS SELECT pg_stat_get_xact_blocks_fetched('oc'::regclass) AS n;
+SELECT os_run('SELECT k FROM oc ORDER BY k', true) IS NOT NULL AS ran;
+ ran 
+-----
+ t
+(1 row)
+
+SELECT pg_stat_get_xact_blocks_fetched('oc'::regclass) - n < 100 AS heap_not_read FROM oc_fetched;
+ heap_not_read 
+---------------
+ t
+(1 row)
+
+ROLLBACK;
 -- rows deleted and updated after the build, and rows in the write buffer
 DELETE FROM os WHERE id % 10 = 3;
 UPDATE os SET k = k + 5000 WHERE id % 10 = 4;
 UPDATE os SET k = NULL WHERE id % 10 = 5;
 INSERT INTO os (id, k) SELECT 9000 + i, (i * 37) % 4000 - 2000 FROM generate_series(1, 300) i;
 DELETE FROM ot WHERE id % 9 = 2;
+DELETE FROM oc WHERE id % 10 = 3;
+INSERT INTO oc SELECT 36000 + i, (i * 31) % 5000 FROM generate_series(1, 200) i;
 UPDATE ot SET k = -k WHERE id % 9 = 4;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
- n |                            q                             | rows | agree | ordered_scans | sorts 
----+----------------------------------------------------------+------+-------+---------------+-------
- 1 | SELECT k FROM os ORDER BY k                              | 8400 | t     |             1 |     0
- 2 | SELECT k FROM os ORDER BY k DESC                         | 8400 | t     |             1 |     0
- 3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k | 2017 | t     |             1 |     0
- 4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     | 6947 | t     |             1 |     0
- 5 | SELECT k FROM os ORDER BY k NULLS FIRST                  | 8400 | t     |             1 |     1
- 6 | SELECT k FROM ot ORDER BY k                              | 5333 | t     |             1 |     0
- 7 | SELECT k FROM ot ORDER BY k DESC                         | 5333 | t     |             1 |     0
- 8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             | 2405 | t     |             1 |     0
- 9 | SELECT k, d FROM os ORDER BY k                           | 8400 | t     |             0 |     1
-(9 rows)
+ n  |                            q                             | rows  | agree | ordered_scans | sorts 
+----+----------------------------------------------------------+-------+-------+---------------+-------
+  1 | SELECT k FROM os ORDER BY k                              |  8400 | t     |             1 |     0
+  2 | SELECT k FROM os ORDER BY k DESC                         |  8400 | t     |             1 |     0
+  3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k |  2017 | t     |             1 |     0
+  4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     |  6947 | t     |             1 |     0
+  5 | SELECT k FROM os ORDER BY k NULLS FIRST                  |  8400 | t     |             1 |     1
+  6 | SELECT k FROM ot ORDER BY k                              |  5333 | t     |             1 |     0
+  7 | SELECT k FROM ot ORDER BY k DESC                         |  5333 | t     |             1 |     0
+  8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             |  2405 | t     |             1 |     0
+  9 | SELECT k, d FROM os ORDER BY k                           |  8400 | t     |             0 |     1
+ 10 | SELECT k FROM oc ORDER BY k                              | 32600 | t     |             1 |     0
+ 11 | SELECT k FROM oc ORDER BY k DESC                         | 32600 | t     |             1 |     0
+(11 rows)
 
 -- a transaction's own changes (the pages are not all-visible, the snapshot sees them), rolled back after
 BEGIN;
@@ -123,18 +157,20 @@ SELECT n, q, (os_check(q)).* FROM os_q WHERE n <= 5 ORDER BY n;
 VACUUM os;
 VACUUM ot;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
- n |                            q                             | rows | agree | ordered_scans | sorts 
----+----------------------------------------------------------+------+-------+---------------+-------
- 1 | SELECT k FROM os ORDER BY k                              | 8400 | t     |             1 |     0
- 2 | SELECT k FROM os ORDER BY k DESC                         | 8400 | t     |             1 |     0
- 3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k | 2017 | t     |             1 |     0
- 4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     | 6947 | t     |             1 |     0
- 5 | SELECT k FROM os ORDER BY k NULLS FIRST                  | 8400 | t     |             1 |     1
- 6 | SELECT k FROM ot ORDER BY k                              | 5333 | t     |             1 |     0
- 7 | SELECT k FROM ot ORDER BY k DESC                         | 5333 | t     |             1 |     0
- 8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             | 2405 | t     |             1 |     0
- 9 | SELECT k, d FROM os ORDER BY k                           | 8400 | t     |             0 |     1
-(9 rows)
+ n  |                            q                             | rows  | agree | ordered_scans | sorts 
+----+----------------------------------------------------------+-------+-------+---------------+-------
+  1 | SELECT k FROM os ORDER BY k                              |  8400 | t     |             1 |     0
+  2 | SELECT k FROM os ORDER BY k DESC                         |  8400 | t     |             1 |     0
+  3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k |  2017 | t     |             1 |     0
+  4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     |  6947 | t     |             1 |     0
+  5 | SELECT k FROM os ORDER BY k NULLS FIRST                  |  8400 | t     |             1 |     1
+  6 | SELECT k FROM ot ORDER BY k                              |  5333 | t     |             1 |     0
+  7 | SELECT k FROM ot ORDER BY k DESC                         |  5333 | t     |             1 |     0
+  8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             |  2405 | t     |             1 |     0
+  9 | SELECT k, d FROM os ORDER BY k                           |  8400 | t     |             0 |     1
+ 10 | SELECT k FROM oc ORDER BY k                              | 32600 | t     |             1 |     0
+ 11 | SELECT k FROM oc ORDER BY k DESC                         | 32600 | t     |             1 |     0
+(11 rows)
 
 -- a few rows deleted and vacuumed (the units clear them in place), their addresses taken by new rows with other keys, or the same
 DELETE FROM os WHERE id % 500 = 0;
@@ -144,19 +180,21 @@ VACUUM ot;
 INSERT INTO os (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 7919) % 3001 - 1500 ELSE 8000 + i END FROM generate_series(1, 1500) i;
 INSERT INTO ot (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 104729::int8) % 5003 - 2500 ELSE 9000 + i END FROM generate_series(1, 1000) i;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
- n |                            q                             | rows | agree | ordered_scans | sorts 
----+----------------------------------------------------------+------+-------+---------------+-------
- 1 | SELECT k FROM os ORDER BY k                              | 9882 | t     |             1 |     0
- 2 | SELECT k FROM os ORDER BY k DESC                         | 9882 | t     |             1 |     0
- 3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k | 2261 | t     |             1 |     0
- 4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     | 8430 | t     |             1 |     0
- 5 | SELECT k FROM os ORDER BY k NULLS FIRST                  | 9882 | t     |             1 |     1
- 6 | SELECT k FROM ot ORDER BY k                              | 6322 | t     |             1 |     0
- 7 | SELECT k FROM ot ORDER BY k DESC                         | 6322 | t     |             1 |     0
- 8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             | 2644 | t     |             1 |     0
- 9 | SELECT k, d FROM os ORDER BY k                           | 9882 | t     |             0 |     1
-(9 rows)
+ n  |                            q                             | rows  | agree | ordered_scans | sorts 
+----+----------------------------------------------------------+-------+-------+---------------+-------
+  1 | SELECT k FROM os ORDER BY k                              |  9882 | t     |             1 |     0
+  2 | SELECT k FROM os ORDER BY k DESC                         |  9882 | t     |             1 |     0
+  3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k |  2261 | t     |             1 |     0
+  4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     |  8430 | t     |             1 |     0
+  5 | SELECT k FROM os ORDER BY k NULLS FIRST                  |  9882 | t     |             1 |     1
+  6 | SELECT k FROM ot ORDER BY k                              |  6322 | t     |             1 |     0
+  7 | SELECT k FROM ot ORDER BY k DESC                         |  6322 | t     |             1 |     0
+  8 | SELECT k FROM ot WHERE k < 0 ORDER BY k DESC             |  2644 | t     |             1 |     0
+  9 | SELECT k, d FROM os ORDER BY k                           |  9882 | t     |             0 |     1
+ 10 | SELECT k FROM oc ORDER BY k                              | 32600 | t     |             1 |     0
+ 11 | SELECT k FROM oc ORDER BY k DESC                         | 32600 | t     |             1 |     0
+(11 rows)
 
 DROP FUNCTION os_check(text), os_run(text, bool);
-DROP TABLE os_q, os, ot;
+DROP TABLE os_q, os, ot, oc;
 DROP EXTENSION pg_sift CASCADE;

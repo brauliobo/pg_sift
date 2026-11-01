@@ -262,4 +262,10 @@ col_vet_needed(void *impl, const SiftSrcUnit *unit)
 	return sift_aggsel_vet_needed(&src->unit);
 }
 
+bool
+col_gorder_compact(void *impl, int i, int leaf)
+{
+	return sift_col_gorder_compact(((ColSource *) impl)->cs, i, leaf);
+}
+
 #endif							/* __has_include("col/col.h") */

@@ -84,6 +84,7 @@ typedef struct ColKeys
 /* ordered.c: the scan in the order of the first column, told by the direction of the scan; ordpath.c offers it to the planner */
 /* the name of the first entry of the indextlist of an ordered index-only scan's plan node: the path's copy of the index says so, the node says it to the scan (sift_col_ioss_want); a plain scan has the name of the column */
 #define COL_ORDERED_MARK "sift_ordered_scan"
+extern bool sift_col_ordered_whole(Oid indexoid);
 extern bool sift_col_ordered_type(Oid type);
 extern bool sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir);
 extern void sift_col_ordered_end(ColScanOpaque *so);

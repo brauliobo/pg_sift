@@ -65,6 +65,8 @@ extern void sift_gord_rewind(SiftGOrd *g);
 extern bool sift_gord_ends(const SiftGOrd *g);
 /* A source of the ends went through its last entry while the segment has more after it: the entries given so far are the order's, those it would give next are not known */
 extern bool sift_gord_short(const SiftGOrd *g);
+/* Some source has compact chunks: the exact key of their entries costs a heap row apiece, and a scan that reads every entry does better sorting the rows of the units */
+extern bool sift_gord_compact(const SiftGOrd *g);
 /* The leaf the arrays are grouped by, whose pinned value the scan reads the entries of; -1 when they are not grouped */
 extern int	sift_gord_group(const SiftGOrd *g);
 

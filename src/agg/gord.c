@@ -336,6 +336,15 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	return g;
 }
 
+bool
+sift_gord_compact(const SiftGOrd *g)
+{
+	for (int i = 0; i < g->ncur; i++)
+		if (sift_colsrc_gorder_compact(g->src, g->cur[i]->src, g->leaf))
+			return true;
+	return false;
+}
+
 int
 sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid)
 {
