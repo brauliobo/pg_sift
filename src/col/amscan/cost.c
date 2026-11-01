@@ -50,7 +50,8 @@
 
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
-#define COL_SCAN_EMIT_IOS	0.003	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: a third of COL_SCAN_EMIT, so that it never costs more than the tuple scan of the same rows */
+#define COL_SCAN_EMIT_IOS	0.07	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 0.1 us a row for an index of 3 columns, 0.16 for 12 and 0.22 for 28 (100,000 rows: 3 to 22 ms where the heap of 80 columns takes 6.7 ms), so 0.07 and */
+#define COL_SCAN_EMIT_IOS_COL	0.005	/* ... for each column of the index; the TID of the bitmap node takes 10 ns */
 
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 
@@ -213,7 +214,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
 		+ (repeat > 1.0 && path->path.pathtype == T_IndexScan ? idx_rows * COL_SCAN_FETCH * scale : 0.0)
-		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
+		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = Max(costs.indexTotalCost, rescan);
