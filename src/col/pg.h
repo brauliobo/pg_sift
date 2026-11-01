@@ -137,10 +137,10 @@ typedef struct SiftColOptions
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	int			key_order;		/* offset of the "key_order" string, 0 = none */
-	int			ko_cut;			/* offsets of the strings key_order stands for (am_col_amoptions): all its columns 'a, b' (key_cut), ... */
-	int			ko_lead;		/* ... its first column (point_tid_columns; the group of the order arrays of 'group, key') ... */
-	int			ko_last;		/* ... its last column (order_columns, order_array_columns) and, of 'group, key', the group of the order arrays (ko_group = ko_lead); all 0: key_order is not set */
-	int			ko_group;
+	int			ko_lead;		/* what key_order stands for (am_col_amoptions), offsets of its columns: the first ... */
+	int			ko_last;		/* ... the last (order_columns, order_array_columns) ... */
+	int			ko_group;		/* ... the first of 'group, key' (order_array_group; a cut by the group and its point directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) ... */
+	int			ko_key;			/* ... the column of a key_order of one column (key_cut and point_tid_columns); all 0 while key_order is not set */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */

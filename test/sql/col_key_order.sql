@@ -1,6 +1,6 @@
--- key_order stands for key_cut, order_columns, order_array_columns and point_tid_columns (and order_array_group for 'group, key') while those are not
--- set: the index is the one the options written out build, an option the user wrote wins, ALTER INDEX SET and RESET change it for the segments written from
--- now on, REINDEX keeps the effective values, and the answers are the heap's.
+-- key_order stands for key_cut, order_columns, order_array_columns and point_tid_columns on one column, for 'group, key' for order_columns and order_array_columns
+-- on the key and order_array_group on the group, while those are not set: the index is the one the options written out build, an option the user wrote wins,
+-- ALTER INDEX SET and RESET change it for the segments written from now on, REINDEX keeps the effective values, and the answers are the heap's.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -21,7 +21,7 @@ CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts'
 CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent , ts');
 SET client_min_messages = warning;
 CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'ts');
-CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ent, ts', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent', point_tid_columns = 'ent');
+CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent');
 -- an option the user wrote wins over what key_order stands for
 CREATE INDEX ko_win ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', key_cut = 'off', point_tid_columns = 'id');
 CREATE INDEX ko_win_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'id');

@@ -438,7 +438,7 @@ sift_col_init(void)
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_order",
-						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: it stands for key_cut = 'group, key', order_columns = 'key', order_array_columns = 'key', point_tid_columns = 'group' (the key of a single column), and order_array_group = 'group', each while the option itself is not set; for a heap that is stored in that order (default none)",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_columns, order_array_columns and point_tid_columns on it, for 'group, key' for order_columns and order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
 						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
 						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
@@ -502,8 +502,9 @@ static const relopt_parse_elt col_relopt_tab[] = {
 };
 
 /*
- * The strings key_order stands for ("a, b", "a", "b", all of "key" for one column) are appended to the options, where the accessors of the options it fills
- * read them while those are not set. The columns are trimmed here: 'a,b' and 'a , b' are the same option.
+ * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
+ * group and a key (the group of the order arrays; key_cut and the point directory are left to the build, which cuts by the group only where its rule says), 'a' is
+ * a key (key_cut, order_columns, order_array_columns and point_tid_columns). The columns are trimmed: 'a,b' and 'a , b' are the same option.
  */
 static void
 key_order_expand(SiftColOptions **op)
@@ -522,15 +523,19 @@ key_order_expand(SiftColOptions **op)
 		while (comma > first && comma[-1] == ' ')
 			*--comma = '\0';
 	}
-	o = repalloc(o, base + 2 * (strlen(first) + strlen(last)) + 8);
+	o = repalloc(o, base + strlen(first) + strlen(last) + 4);
 	dst = (char *) o + base;
-	o->ko_cut = base;
-	dst += sprintf(dst, comma ? "%s, %s" : "%s", first, last) + 1;
-	o->ko_lead = dst - (char *) o;
+	o->ko_lead = base;
 	dst += sprintf(dst, "%s", first) + 1;
-	o->ko_last = dst - (char *) o;
-	dst += sprintf(dst, "%s", last) + 1;
+	if (comma)
+	{
+		o->ko_last = dst - (char *) o;
+		dst += sprintf(dst, "%s", last) + 1;
+	}
+	else
+		o->ko_last = base;
 	o->ko_group = comma ? o->ko_lead : 0;
+	o->ko_key = comma ? 0 : o->ko_lead;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
 }
@@ -625,7 +630,7 @@ COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_lead)
+COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
 
 COL_OPT_STR(sift_col_options_key_order, key_order, "")
 
@@ -634,7 +639,7 @@ const char *
 sift_col_options_key_cut(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
-	const char *v = o->key_cut ? (const char *) o + o->key_cut : o->ko_cut ? (const char *) o + o->ko_cut : "";
+	const char *v = o->key_cut ? (const char *) o + o->key_cut : o->ko_key ? (const char *) o + o->ko_key : "";
 
 	if (strncmp(v, "auto:", 5) == 0)
 		return v + 5;
@@ -647,5 +652,5 @@ sift_col_options_key_cut_auto(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return (o->key_cut == 0 && o->ko_cut == 0) || (o->key_cut != 0 && strncmp((const char *) o + o->key_cut, "auto", 4) == 0);
+	return (o->key_cut == 0 && o->ko_key == 0) || (o->key_cut != 0 && strncmp((const char *) o + o->key_cut, "auto", 4) == 0);
 }
