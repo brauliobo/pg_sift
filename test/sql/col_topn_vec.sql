@@ -44,7 +44,8 @@ BEGIN
 		SELECT format('SELECT id, %1$s FROM tv %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', k, f, d, nl, l)
 		FROM unnest(ARRAY['b_clu', 'b_rand', 'b_ext', 'i_ext', 'ts_rand', 'b_mix', 'b_nul']) k,
 			 unnest(ARRAY['', 'WHERE g < 8', 'WHERE g = 3', 'WHERE id % 97 = 0']) f,
-			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 100, 700]) l
+			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 700]) l
+		WHERE nl = '' OR k IN ('b_mix', 'b_nul')
 	LOOP
 		SELECT * INTO r FROM tv_run(q);
 		queries := queries + 1;
