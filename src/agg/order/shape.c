@@ -294,7 +294,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 
 	*walked = 0;
 	if (leaf[0] < 0 || (c->stats.gord_cover[leaf[0]] < 0.9 && gl < 0) || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
-		nkey > 4 || c->level_params != NIL)
+		nkey > 4)
 		return false;
 	for (int j = 0; j < nkey; j++)
 	{

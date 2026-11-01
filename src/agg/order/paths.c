@@ -406,12 +406,15 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	{
 		c->topn_sorted = false;
 		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
-		c->topn_walk = walked;
+		c->topn_walk = c->topn_array ? walked : 0.0;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
 		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf, &c->topn_resid);
+		/* a walk the statistics price past its budget (topn_array_ok left its fetches in *walked) would only burn that budget before the units are read */
+		if (!c->topn_array && walked > 0)
+			flags |= TOPN_NOGORD;
 		if (c->topn_array && topn_heads_win(c, s, leaf[0], rows))
 		{
 			c->topn_array = false;
