@@ -9,8 +9,11 @@ from the records that pass. No figure of a document, a CHANGELOG line or a hand-
 ## Who writes records
 
     bench/bench cases --records FILE     every query case on the arms it can answer with: the default plan, a forced heap scan, the sift access method alone, the b-tree twin of a
-                                         `btree` variant and each other variant as a sift arm named by it; the file is checked on the way out. The cluster of the cases is a test cluster
-                                         (no autovacuum, no automatic merge), so its records say `maintenance` = `disabled`. Load cases and `-- fresh: yes` cases have none yet.
+                                         `btree` variant and each other variant as a sift arm named by it (an arm that no setting makes the plan of its name is listed as not forceable and
+                                         left out); a `-- fresh: yes` case runs every repetition in a new backend. A load case has no plan to pick: its lanes (the sift table with its index,
+                                         the heap with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares its table again, the statements are timed and added, a
+                                         second session counts the parallel workers. The file is checked on the way out and a case without records fails the run. The cluster of the cases is
+                                         a test cluster (no autovacuum, no automatic merge), so its records say `maintenance` = `disabled`.
     steps/records/collect.py             the library any other harness calls (`measure_statement`) with its subject, arms and environment.
 
 ## The figures of the CHANGELOG
@@ -62,7 +65,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `instr_m` | number |  | millions of user instructions of the statement |
 | `cycles_m` | number |  | millions of user cycles |
 | `instr_scope` | text |  | cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched) |
-| `workers_requested` | integer | yes | parallel workers the plan asked for |
+| `workers_requested` | integer | yes | parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started) |
 | `workers_launched` | integer | yes | parallel workers that ran |
 | `heap_hit` | integer |  | blocks of heap relations found in shared buffers |
 | `heap_read` | integer |  | blocks of heap relations read |
@@ -103,7 +106,8 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | TWO STATEMENTS | one `sql_hash` for a statement name |
 | HEAP ORDER NOT AS DECLARED | `sorted` needs a measured correlation above 0.9, `hash` under 0.1 |
 | WRONG ARM | a forced arm is the structure its EXPLAIN names (a mixed plan is no arm) |
-| NO PICKED / PICKED FLAG | the default plan is in the set and each arm says whether it is that plan |
+| NO PICKED / PICKED FLAG | the default plan is in the set and each arm says whether it is that plan; a default plan that mixes structures is a row of its own (arm `mixed`) that no forced arm equals; a maintenance or a load has no plan to pick: forced, picked 0 |
+| INSTRUCTIONS MISSING | a warm row has a count (perf failed or was not run: refused, not left empty) |
 | INSTRUCTIONS WITHOUT SCOPE / WITHOUT WORKERS | a count of the backend alone is refused when workers ran |
 | WORKERS SHORT / QUOTA UNDER THE PROCESSES | the workers the plan asked for ran, and the cpu quota holds them and the backend |
 | PLANNING NOT SEPARATE | a read has planning and execution apart |

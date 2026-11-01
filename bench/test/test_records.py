@@ -1,6 +1,7 @@
 """The records library (bench/steps/records): the schema round-trips, the checker accepts a clean set and refuses each way of mixing what must not be mixed, the report is generated
 from records. A mutant is the clean set with one field changed; each must be refused with its reason."""
 import copy
+import json
 import os
 import sys
 import tempfile
@@ -76,6 +77,44 @@ AM = {'ix': 'btree', 'gx': 'gin', 'sx': 'sift_col'}
 
 
 class Collect(unittest.TestCase):
+    def test_an_arm_is_forced_by_the_first_settings_whose_plan_is_its_structure_else_it_is_unavailable(self):
+        class Planner:
+            def __init__(self, plans):
+                self.on, self.plans = set(), plans
+
+            def run(self, sql):
+                if sql.startswith('SET'):
+                    self.on.add(sql)
+                elif sql == 'RESET ALL':
+                    self.on.clear()
+                elif sql.startswith('EXPLAIN'):
+                    return (1, [json.dumps([{'Plan': self.plans(self.on)}])], '')
+                return (1, [], '')
+        sift = {'Node Type': 'Custom Scan', 'Custom Plan Provider': 'SiftAgg'}
+        index = {'Node Type': 'Index Scan', 'Index Name': 'ix'}
+        seq = {'Node Type': 'Seq Scan'}
+        # the sift plan is lost once the sequential scan is off: the arm is the first try, no settings
+        s = Planner(lambda on: index if 'SET enable_seqscan = off' in on else sift)
+        arm, named = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', AM, [])
+        self.assertEqual((arm.settings, named), ([], None))
+        # only with the sequential scan off does the plan name sift
+        s = Planner(lambda on: sift if 'SET enable_seqscan = off' in on else seq)
+        arm, _ = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', AM, [])
+        self.assertEqual(arm.settings, collect.FORCING['sift'])
+        # no way: unavailable, with what the plans named
+        s = Planner(lambda on: index)
+        arm, named = collect.forceable(s, collect.Arm('sift', option='o'), 'SELECT 1', AM, [])
+        self.assertEqual((arm, named), (None, ('sift', 'o', 'btree')))
+
+    def test_a_list_of_statements_adds_its_times_and_a_failed_one_is_no_measurement(self):
+        class Fake:
+            def run(self, sql):
+                return (2.5, [], 'ERROR: boom' if 'bad' in sql else '')
+        self.assertEqual(collect.run_all(Fake(), ['a', 'b', 'c']), 7.5)
+        self.assertEqual(collect.run_all(Fake(), 'a'), 2.5)
+        with self.assertRaisesRegex(RuntimeError, 'boom'):
+            collect.run_all(Fake(), ['a', 'bad'])
+
     def test_the_structure_is_the_access_method_of_the_index_the_plan_names(self):
         def plan(*nodes):
             return {'Node Type': 'Aggregate', 'Plans': list(nodes)}
@@ -197,6 +236,8 @@ class Checker(unittest.TestCase):
         cases = [
             ('MIXED STATE', first(table_state='churned_unvacuumed')),
             ('MIXED STATE', first(heap_order='sorted')),
+            ('INSTRUCTIONS MISSING', first(instr_m=None, instr_scope=None, temp='warm')),
+            ('PICKED FLAG', every(kind='load', structures='heap,sift', plan_ms=None, exec_ms=None)),
             ('MIXED SETTINGS', first(shared_buffers_mb=128.0)),
             ('MIXED SETTINGS', first(fpw=0)),
             ('MIXED SETTINGS', first(cpus=1.0)),
@@ -229,6 +270,23 @@ class Checker(unittest.TestCase):
         for reason, rs in cases:
             with self.subTest(reason=reason):
                 self.assertTrue(any(reason in p for p in problems(rs)), '%s was not refused: %s' % (reason, problems(rs)))
+
+    def test_a_default_plan_that_mixes_structures_is_a_row_of_its_own_and_no_arm(self):
+        rs = [dict(r, picked=0) if r['mode'] == 'forced' else dict(r, arm='mixed', structure='mixed') for r in clean()]
+        self.assertEqual(problems(rs), [])
+        rs.append(dict(rs[0], arm='mixed', structure='mixed', rep=9))
+        self.assertTrue(any('is none of' in p for p in problems(rs)))
+
+    def test_a_new_backend_is_compared_with_a_kept_one_but_not_with_rounds(self):
+        rs = [dict(r, protocol='fresh backend') if r['arm'] == 'heap' else r for r in clean()]
+        self.assertEqual(problems(rs), [])
+        self.assertTrue(any('protocol' in p for p in problems(mutate(protocol='rounds=12'))))
+
+    def test_a_load_has_forced_arms_and_no_picked_plan(self):
+        rs = [dict(r, kind='load', picked=0, plan_ms=None, exec_ms=None, structures='heap,' + r['arm'] if r['arm'] != 'heap' else 'heap') for r in clean() if r['mode'] == 'forced']
+        self.assertEqual(problems(rs), [])
+        rs[0]['picked'] = 1
+        self.assertTrue(any('PICKED FLAG' in p and 'no plan the planner chooses' in p for p in problems(rs)), problems(rs))
 
     def test_variants_are_tables_with_their_own_heap_order_and_picked_flag(self):
         rs = clean() + [dict(r, variant='sorted', heap_order='sorted', heap_corr=0.99) for r in clean()]

@@ -1,8 +1,10 @@
 # The records of a cases run (steps/records): each query case measured again on the arms the case can answer with, by the shared collector, for `bench cases --records FILE`.
 #
 # The arms of a case are forced on its own table: heap (a sequential scan), sift (the access method alone), a b-tree twin when the case has a `btree` variant (its schema in the
-# search path), and every other variant as a sift arm with its name as the option. The plan the planner chooses with nothing forced is the default row. Load cases and the cases
-# whose backend is fresh for every run (-- fresh: yes) have no records yet: their lanes are not a session the collector can keep.
+# search path), and every other variant as a sift arm with its name as the option. The plan the planner chooses with nothing forced is the default row. A case whose backend is
+# fresh for every run (-- fresh: yes) runs each repetition in a new backend (collect's `fresh`). A load case has no plan to pick: its lanes (the sift table with its index, the heap
+# with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares the table again and the statements are timed and added. A case that gives no records is
+# listed with its reason (SKIPPED) and fails the run.
 
 import os
 import re
@@ -13,21 +15,24 @@ import iolib
 from . import runcfg
 from .measure import expand
 from .runcfg import REPO
+from .server import Fresh, server_session
 
 import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 
 ROWS = []
 RUN = {}
+SKIPPED = []
+UNAVAILABLE = []
 
 
 def tip():
     return subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
-def table_state(case):
+def table_state(case, sections=('setup', 'prepare')):
     """fresh or churned (an UPDATE or DELETE in the setup), vacuumed or not (a VACUUM after the last of them, and not `-- vacuum: no`)"""
-    text = '\n'.join(case.sec.get(k, '') for k in ('setup', 'prepare'))
+    text = '\n'.join(case.sec.get(k, '') for k in sections)
     dml = [m.end() for m in re.finditer(r'\b(UPDATE|DELETE)\b', text)]
     vac = [m.end() for m in re.finditer(r'\bVACUUM\b', text)]
     vacuumed = bool(vac) and case.opt.get('vacuum') != 'no' and (not dml or max(vac) > max(dml))
@@ -47,37 +52,108 @@ def arms(case):
     for name, sets in case.variants:
         sets = ['SET %s' % s for s in sets.split(';')]
         if name == 'btree':
-            out.append(collect.Arm('btree', settings=sets + collect.FORCING['btree']))
+            out.append(collect.Arm('btree', base=sets))
         elif name != runcfg.FORCED[0]:
-            out.append(collect.Arm('sift', option=name, settings=sets + collect.FORCING['sift']))
+            out.append(collect.Arm('sift', option=name, base=sets, keep=name.startswith('warm')))
     return out
 
 
-def emit(case, lanes, rows, runs):
-    """append the records of CASE to ROWS: its sift lane's session measures the default plan and each arm"""
-    session = lanes['sift']
-    if not hasattr(session, 'run'):
-        return
-    sql = expand(case.statement('sift'), case)
-    table = first_table(session, sql)
-    if table is None:
-        return
+def run_env(session, runs):
     if not RUN:
         pid = collect.backend_pid(session)
         RUN.update(tip=tip(), run=schema.run_id(tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
     # the cluster of the cases is a test cluster (scripts/pgtest.sh: no autovacuum, no automatic merge, so a state is the one the setup made): the records say so, and the report shows it
     off = 'disabled' if schema.maintenance_switches(collect.settings_of(session)) else 'default'
-    env = collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off)
-    subject = collect.Subject(case.dataset, rows, 'other', table_state(case), table, protocol='single')
-    ROWS.extend(collect.measure_statement(session, case.id, sql, subject, arms(case), env))
+    return collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off)
+
+
+def emit(case, lanes, rows, runs):
+    """append the records of CASE to ROWS: its sift lane's session measures the default plan and each arm; a fresh lane measures each repetition in a new backend"""
+    lane = lanes['sift']
+    fresh = None
+    if isinstance(lane, Fresh):
+        session = lane.persistent()
+        fresh = lambda arm: with_settings(lane.persistent(), arm)   # noqa: E731
+    else:
+        session = lane
+    try:
+        sql = expand(case.statement('sift'), case)
+        table = first_table(session, sql)
+        if table is None:
+            SKIPPED.append((case.id, 'its statement reads no table of the schema, so there is no structure to compare'))
+            return
+        env = run_env(session, runs)
+        subject = collect.Subject(case.dataset, rows, 'other', table_state(case), table, protocol='fresh backend' if fresh else 'single')
+        missed = []
+        ROWS.extend(collect.measure_statement(session, case.id, sql, subject, arms(case), env, fresh=fresh, unavailable=missed))
+        UNAVAILABLE.extend((case.id,) + m for m in missed)
+    finally:
+        if fresh:
+            session.close()
+
+
+def with_settings(session, arm):
+    for st in arm.settings:
+        session.run(st)
+    return session
+
+
+def split(text):
+    return [x for x in re.split(r';[ \t]*\n', text) if x.strip()]
+
+
+def native_structure(case):
+    """the structure the native lane of a load builds: GIN for a text index, a b-tree for any other index, else the heap alone"""
+    text = '\n'.join(case.sec.get(k, '') for k in ('prepare', 'load'))
+    return 'gin' if re.search(r'USING gin\b', text, re.I) else 'btree' if re.search(r'\bCREATE\s+(UNIQUE\s+)?INDEX\b|PRIMARY KEY', text, re.I) else 'heap'
+
+
+def emit_load(case, csv, rows, runs, build, workers):
+    """append the records of a load CASE: a session keeps the schema of the case, each repetition of an arm builds it empty again (`build`), prepares the table (untimed) and times the
+    statements of the load; a second session counts the parallel workers. The lanes are the sift table (or the sift index) and the heap with its twin, and each variant."""
+    session, monitor = server_session(600), server_session(60)
+    try:
+        for st in ('SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % workers):
+            session.run(st)
+        env = run_env(session, runs)
+
+        def preparer(am):
+            def prepare():
+                build(case, rows)
+                for stmt in split(case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):
+                    err = session.run(stmt)[2]
+                    if err:
+                        raise RuntimeError('%s: the preparation failed: %s' % (case.id, err))
+                session.run('CHECKPOINT')
+            return prepare
+
+        def text(am):
+            return split(case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load'])
+
+        def fill(statements):
+            return [x.replace('{csv}', csv).replace('{rows}', str(rows)) for x in statements]
+        twin = native_structure(case)
+        lanes = [(twin, 'default', 'heap', []), ('sift', 'default', 'sift_table', [])] + [('sift', name, 'sift_table', ['SET %s' % x for x in sets.split(';')]) for name, sets in case.variants]
+        arms = [collect.Arm(arm, option=option, settings=sets, sql=fill(text(am)), prepare=preparer(am), structures=','.join(sorted({'heap', arm}))) for arm, option, am, sets in lanes]
+        state = table_state(case, ('prepare', 'load'))
+        subject = collect.Subject(case.dataset, rows, 'other', state, case.schema(), kind='load', protocol='single')
+        hash_text = '\n'.join(case.sec[k] for k in ('prepare', 'load', 'load_sift') if k in case.sec)
+        ROWS.extend(collect.measure_statement(session, case.id, fill(text('heap')), subject, arms, env, monitor=monitor, temps=('warm',), hash_text=hash_text))
+    finally:
+        session.close()
+        monitor.close()
 
 
 def write(path):
-    """the records file, then the checker's verdict on it (printed; the cases' own results are unaffected)"""
+    """the records file, then the checker's verdict on it (printed; the cases' own results are unaffected); a case that gave no records is a problem as well"""
     from records import check
     schema.write(path, ROWS)
     problems = check.check(schema.read(path)) if ROWS else []
     for p in problems:
         print('RECORDS ' + p)
-    print('records: %d rows written to %s, %d problems' % (len(ROWS), path, len(problems)))
-    return not problems
+    for case, why in SKIPPED:
+        print('RECORDS NO RECORDS FOR CASE %s: %s' % (case, why))
+    for case, arm, option, named in UNAVAILABLE:
+        print('RECORDS ARM NOT FORCEABLE %s: %s %s is not a plan of its statement (the plans name %s); the default row and the other arms stand' % (case, arm, option, named))
+    print('records: %d rows written to %s, %d problems, %d cases without records' % (len(ROWS), path, len(problems), len(SKIPPED)))
+    return not problems and not SKIPPED

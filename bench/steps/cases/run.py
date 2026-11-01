@@ -87,6 +87,8 @@ def run_point(args, cases, rows, engines, results, failed, known):
             t1 = time.time()
             out, plans, errors = measure_load(c, csv, args.rounds, rows, args.minstr, args.profile)
             TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
+            if args.records:
+                recs.emit_load(c, csv, rows, args.runs, build, os.environ.get('CASES_WORKERS', '2'))
             settle(c, tag, out, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: True)
             for lane, ms in out.items():
                 for metric, xs in ms.items():
@@ -154,11 +156,11 @@ def cmd_run(args):
         print('KNOWN GAP ' + k)
     if known:
         print('%d known gap%s (exit status unchanged): a flagged case that keeps its plan fails the run until its `-- gap:` line is removed' % (len(known), '' if len(known) == 1 else 's'))
+    if args.records and not recs.write(args.records):
+        failed.append('the records are not comparable or a case gave none (RECORDS lines above)')
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results)
-    if args.records:
-        recs.write(args.records)
     if args.budget:
         from . import budget
         if args.budget_update:

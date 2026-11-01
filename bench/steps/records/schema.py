@@ -58,7 +58,7 @@ FIELDS = [
     ('instr_m', 'f', False, 'millions of user instructions of the statement'),
     ('cycles_m', 'f', False, 'millions of user cycles'),
     ('instr_scope', 's', False, 'cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched)'),
-    ('workers_requested', 'i', True, 'parallel workers the plan asked for'),
+    ('workers_requested', 'i', True, 'parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started)'),
     ('workers_launched', 'i', True, 'parallel workers that ran'),
     ('heap_hit', 'i', False, 'blocks of heap relations found in shared buffers'),
     ('heap_read', 'i', False, 'blocks of heap relations read'),

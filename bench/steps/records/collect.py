@@ -16,6 +16,7 @@ rest the same way for everyone: the default plan first, then each arm with its s
 Reads are repeated in place; a maintenance statement or a load (kind != read) changes the table, so the harness gives `prepare`, run before each repetition and not timed, and
 `monitor`, a second session that counts the parallel workers while the statement runs.
 """
+import contextlib
 import json
 import os
 import re
@@ -37,6 +38,8 @@ FORCING = {
     'gin': ['SET enable_seqscan = off', 'SET sift.enable_agg = off', 'SET sift.enable_col_scan = off'],
     'sift': ['SET enable_seqscan = off'],
 }   # the settings that make the planner use a structure when the table holds more than one; a harness with a table for each structure gives its own (Arm.settings) and a search_path
+TRIES = {'sift': [[], FORCING['sift'], FORCING['sift'] + ['SET enable_indexscan = off', 'SET enable_indexonlyscan = off', 'SET enable_bitmapscan = off']]}   # the sift scans are not
+# one plan node (an index scan, a custom scan that counts as a sequential scan), so the first of these whose plan is sift's is the arm; none: the arm cannot be forced on this statement
 
 
 class Subject:
@@ -49,19 +52,21 @@ class Subject:
 
 
 class Arm:
-    """a structure forced on the data: arm (heap, btree, gin, sift), option (default, key_order=ts, ...), the settings that force it (FORCING[arm]), an optional SQL of its own"""
+    """a structure forced on the data: arm (heap, btree, gin, sift), option (default, key_order=ts, ...), the settings that force it (FORCING[arm]), an optional SQL of its own, an optional prepare of its own, the structures its table holds when they differ from the subject's (a load of a heap with a b-tree beside one of a sift_table)"""
 
-    def __init__(self, arm, option='default', settings=None, sql=None):
-        self.arm, self.option, self.sql = arm, option, sql
-        self.settings = FORCING[arm] if settings is None else settings
+    def __init__(self, arm, option='default', settings=None, sql=None, prepare=None, structures=None, base=None, keep=False):
+        self.arm, self.option, self.sql, self.prepare, self.structures = arm, option, sql, prepare, structures   # PREPARE: the arm's own, run before each repetition of a maintenance or a load (else the measure's)
+        self.keep = keep   # a fresh case's arm that keeps its backend: the statement as the second of a backend (protocol single)
+        self.tries = [settings] if settings is not None else [list(base or []) + t for t in TRIES.get(arm) or [FORCING[arm]]]   # BASE: the settings of a variant, in front of each; ways to force the arm: the first whose plan is the structure of its name is used
+        self.settings = self.tries[0]
 
 
 class Env:
     """the build and the harness: the commit (12 hex digits), the harness name, the run id, the cpu quota, the repetitions and whether the server runs with the maintenance disabled"""
 
-    def __init__(self, tip, harness, run, cpus, reps=3, perf=True, cool=None, maintenance='default'):
+    def __init__(self, tip, harness, run, cpus, reps=3, cool=None, maintenance='default'):
         self.maintenance = maintenance   # 'disabled' declares that the server runs with the maintenance off (a test cluster's configuration): check.py refuses the set otherwise
-        self.tip, self.harness, self.run_id, self.cpus, self.reps, self.perf, self.cool = tip, '%s %s' % (harness, schema.LIBRARY), run, cpus, reps, perf, cool
+        self.tip, self.harness, self.run_id, self.cpus, self.reps, self.cool = tip, '%s %s' % (harness, schema.LIBRARY), run, cpus, reps, cool
 
 
 # --- pure parts
@@ -224,13 +229,24 @@ def pressure():
     return psi(read_text('/proc/pressure/cpu')), psi(read_text('/proc/pressure/io'))
 
 
+def run_all(s, sql):
+    """milliseconds of SQL on S: a list of statements one after the other with their times added; an error raises, a statement that failed is no measurement"""
+    ms = 0.0
+    for st in [sql] if isinstance(sql, str) else sql:
+        took, _, err, *_ = s.run(st)
+        if err:
+            raise RuntimeError('%s: %s' % (st[:80], err))
+        ms += took
+    return ms
+
+
 def count_instructions(s, sql, pid, post, tries=3):
     """(millions of instructions, millions of cycles) of one run of SQL on the backend PID and the postmaster POST (the workers are its children, forked after perf attached), or
     (None, None) when perf cannot count after TRIES attempts (a busy host signals perf before it attached): the record then has no instructions, never a count of the backend alone"""
     for _ in range(tries):
         p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         time.sleep(1)
-        s.run(sql)
+        run_all(s, sql)
         p.send_signal(signal.SIGTERM)
         try:
             out, _ = p.communicate(timeout=60)
@@ -265,29 +281,40 @@ class WorkerMonitor:
 
 # --- the measurement
 
-def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monitor=None, temps=('warm', 'cold'), hash_text=None):
-    """the records of SQL on the default plan and on each of ARMS: a list of dicts for schema.write. PREPARE (before each repetition of a maintenance or a load) and MONITOR as in the
-    module docstring. A harness with several statements calls it once for each. HASH_TEXT is the text whose hash names the statement when a harness runs one question on
-    tables of other names (the text with a placeholder for the table): the variants of a comparison then share one sql_hash."""
+def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monitor=None, temps=('warm', 'cold'), hash_text=None, fresh=None, unavailable=None):
+    """the records of SQL on the default plan (a read) and on each of ARMS: a list of dicts for schema.write. SQL is a statement or, for a maintenance or a load, a list of them, timed
+    one after the other and added. PREPARE (before each repetition of a maintenance or a load, and before the run that counts its instructions: the table is as the repetition left it
+    otherwise) and MONITOR as in the module docstring; an Arm may have its own prepare. A harness with several statements calls it once for each. HASH_TEXT is the text whose hash names
+    the statement when a harness runs one question on tables of other names (the text with a placeholder for the table): the variants of a comparison then share one sql_hash.
+    FRESH, a function of an arm that opens a new session with the settings of the lane and of the arm, makes every repetition run in a backend of its own (`-- fresh: yes`: the first statement of a backend):
+    the timed run, the EXPLAIN and the instruction count each in a new one, while S holds the facts of the server. An arm with several ways to force it (Arm.tries) that none of them
+    makes the structure of its name is not measured: UNAVAILABLE, a list, gets (arm, option, the structures the plans named)."""
     pid = backend_pid(s)
     post = postmaster_pid(pid)
     index_am = index_methods(s)
     srv = server_env(s)
     pairs = settings_of(s)
     restore = session_base(s)
-    vis, corr, structures = table_facts(s, subject.table, subject.key)
+    read = subject.kind == 'read'
+    vis, corr, structures = table_facts(s, subject.table, subject.key) if read else (None, None, ','.join(sorted({'heap'} | {a.arm for a in arms})))
     base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, variant=subject.variant, rows=subject.rows, keys=subject.keys,
                 rows_per_key=(subject.rows / subject.keys) if subject.keys else None, heap_order=subject.heap_order, heap_corr=corr, table_state=subject.table_state,
-                allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(hash_text or sql), kind=subject.kind, protocol=subject.protocol,
-                cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),
+                allvisible_pct=vis, structures=subject.structures or structures, statement=statement, sql_hash=schema.sql_hash(hash_text or (sql if isinstance(sql, str) else ';\n'.join(sql))),
+                kind=subject.kind, protocol=subject.protocol, cpus=env.cpus, settings=schema.settings_text(pairs), settings_hash=schema.settings_hash(pairs),
                 maintenance=env.maintenance, **srv)
     out, default = [], None
-    for mode, arm in [('default', Arm('sift', settings=[]))] + [('forced', a) for a in arms]:
+    for mode, arm in ([('default', Arm('sift', settings=[]))] if read else []) + [('forced', a) for a in arms]:
         text = arm.sql or sql
+        if read and mode == 'forced' and len(arm.tries) > 1:
+            arm, named = forceable(s, arm, text, index_am, restore)
+            if arm is None:
+                if unavailable is not None:
+                    unavailable.append(named)
+                continue
         for st in arm.settings:
             s.run(st)
         try:
-            rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, index_am, prepare, monitor, temps)
+            rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, index_am, arm.prepare or prepare, monitor, temps, fresh)
         finally:
             s.run('RESET ALL')
             for st in restore:
@@ -303,18 +330,49 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     return out
 
 
-def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare, monitor, temps):
+def forceable(s, arm, sql, index_am, restore):
+    """(ARM with the first of its settings under which the plan of SQL is the structure of its name, None) or (None, (arm, option, the structures the plans named))"""
+    named = []
+    for sets in arm.tries:
+        for st in sets:
+            s.run(st)
+        try:
+            _, rows, err, *_ = s.run('EXPLAIN (FORMAT JSON) ' + sql.rstrip().rstrip(';'))
+            if err:
+                raise RuntimeError('EXPLAIN: %s' % err)
+            got = plan_structure(json.loads('\n'.join(rows))[0]['Plan'], index_am)
+        finally:
+            s.run('RESET ALL')
+            for st in restore:
+                s.run(st)
+        if got == arm.arm:
+            arm.settings = sets
+            return arm, None
+        named.append(got)
+    return None, (arm.arm, arm.option, ', '.join(sorted(set(named))))
+
+
+def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare, monitor, temps, fresh=None):
     read = subject.kind == 'read'
     structure, cost, requested = arm.arm, None, 0
+    explain = lambda: EXPLAIN + (sql if isinstance(sql, str) else sql[-1]).rstrip().rstrip(';')   # noqa: E731
     if read:
-        s.run(sql)
-        _, rows, err, *_ = s.run(EXPLAIN + sql.rstrip().rstrip(';'))
+        run_all(s, sql)
+        _, rows, err, *_ = s.run(explain())
         if err:
             raise RuntimeError('EXPLAIN: %s' % err)
         _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], index_am)
-    else:
-        requested = int(one(s, "SELECT current_setting('max_parallel_maintenance_workers')")[0])
     out = []
+
+    @contextlib.contextmanager
+    def on_session():   # the session of a repetition: S, or a backend of its own for a fresh lane
+        t = fresh(arm) if fresh and not arm.keep else None
+        try:
+            yield t or s
+        finally:
+            if t:
+                t.close()
+
     for temp in temps:
         for rep in range(1, env.reps + 1):
             if prepare:
@@ -325,30 +383,44 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, index_am, prepare
                 if cache_dropped(how) is None:
                     raise RuntimeError('the relations of %s could not be evicted: %s' % (subject.table, how))
             elif read:
-                s.run(sql)
+                run_all(s, sql)
             p0 = pressure()
             b0, lsn0 = statio(s), wal_lsn(s)
             launched = 0
-            if monitor:
-                with WorkerMonitor(monitor) as w:
-                    ms = s.run(sql)[0]
-                launched = w.most
-            else:
-                ms = s.run(sql)[0]
+            with on_session() as t:
+                if monitor:
+                    with WorkerMonitor(monitor) as w:
+                        ms = run_all(t, sql)
+                    launched = w.most
+                else:
+                    ms = run_all(t, sql)
             b1, lsn1 = statio(s), wal_lsn(s)
             p1 = pressure()
-            plan_ms = exec_ms = instr = cycles = None
+            plan_ms = exec_ms = None
             if read:
-                _, rows, err, *_ = s.run(EXPLAIN + sql.rstrip().rstrip(';'))
+                with on_session() as t:
+                    _, rows, err, *_ = t.run(explain())
+                if err:
+                    raise RuntimeError('EXPLAIN: %s' % err)
                 plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], index_am)
                 cost = cost2 if cost2 is not None else cost
-            if temp == 'warm' and env.perf:
-                instr, cycles = count_instructions(s, sql, pid, post)
+            instr = cycles = None
+            if temp == 'warm':
+                if prepare and not read:
+                    prepare()
+                with on_session() as t:
+                    instr, cycles = count_instructions(t, sql, backend_pid(t) if fresh else pid, post)
+            if not read:
+                requested = launched   # a maintenance statement has no plan that asks for workers: the cap is the setting, the workers it started are what the record can say
             if temp == 'cold':
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
             r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
                      instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, workers_requested=requested, workers_launched=launched,
                      os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
             r.update(block_deltas(b0, b1))
+            if arm.structures:
+                r['structures'] = arm.structures
+            if arm.keep and fresh:
+                r['protocol'] = 'single'
             out.append(r)
     return out

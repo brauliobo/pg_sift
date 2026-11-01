@@ -11,7 +11,8 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   same settings   one settings_hash (every setting that is not the default) and one maintenance label; a switch that turns the maintenance off (autovacuum, sift.col_auto_merge,
                   sift.async_maintenance, sift.test_*) is refused unless the set is labelled `maintenance disabled`, and the label without a switch is refused
   true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
-  a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option)
+  a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option); a maintenance or a load has no plan to pick: forced, picked 0
+  instructions    every warm row has a count
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
   a calm host     the host pressure of the arms within `PSI_SPREAD` points of each other; a run above `NOISY_PSI` or with a CV above `NOISY_CV` is marked noisy by the report
   enough runs     MIN_REPS repetitions of every arm and temperature
@@ -30,7 +31,7 @@ MIN_REPS = 3
 PSI_SPREAD = 10.0
 NOISY_PSI = 10.0
 NOISY_CV = 10.0
-SAME = ('table_state', 'protocol', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
+SAME = ('table_state', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
 ALLVISIBLE_SPREAD = 5.0
 SAME_VARIANT = ('heap_order',)   # a variant is a table: two tables of a comparison may hold the heap in different orders, one table does not
 
@@ -55,7 +56,7 @@ def one_record(r):
         out.append('%s: TEST SETTINGS NOT LABELLED: %s turns the maintenance off, so the state measured may not exist with the defaults; label the set maintenance disabled' % (where(r), ', '.join(switches)))
     if not switches and r.get('maintenance') == 'disabled':
         out.append('%s: LABELLED DISABLED WITHOUT A SWITCH: no setting turns the maintenance off' % where(r))
-    if r.get('arm') not in schema.STRUCTURES:
+    if r.get('arm') not in schema.STRUCTURES + (('mixed',) if r.get('mode') == 'default' else ()):
         out.append('%s: arm "%s" is none of %s' % (where(r), r.get('arm'), '/'.join(schema.STRUCTURES)))
     if (r.get('rep') or 0) < 1:
         out.append('%s: rep %s is below 1' % (where(r), r.get('rep')))
@@ -79,6 +80,11 @@ def comparison_problems(key, rs, min_reps, psi_spread):
             b = next(r for r in rs if r.get(c) != a.get(c))
             what = 'MIXED STATE' if c in ('table_state', 'protocol', 'maintenance', 'heap_order', 'keys', 'rows_per_key', 'kind') else 'MIXED SETTINGS'
             out.append('%s: %s: %s is %s at %s and %s at %s' % (name, what, c, a.get(c), where(a), b.get(c), where(b)))
+    protocols = {r['protocol'] for r in rs}
+    if len(protocols - {'single', 'fresh backend'}) > 1 or (protocols - {'single', 'fresh backend'} and protocols & {'single', 'fresh backend'}):   # a new backend and the second statement of a kept one are compared on purpose; rounds are not
+        a = rs[0]
+        b = next(r for r in rs if r['protocol'] != a['protocol'])
+        out.append('%s: MIXED STATE: protocol is %s at %s and %s at %s' % (name, a['protocol'], where(a), b['protocol'], where(b)))
     vis = [r['allvisible_pct'] for r in rs if r.get('allvisible_pct') is not None]
     if vis and max(vis) - min(vis) > ALLVISIBLE_SPREAD:
         out.append('%s: MIXED STATE: all-visible pages from %.1f%% to %.1f%%' % (name, min(vis), max(vis)))
@@ -91,6 +97,11 @@ def comparison_problems(key, rs, min_reps, psi_spread):
                 a = vs[0]
                 b = next(r for r in vs if r.get(c) != a.get(c))
                 out.append('%s: MIXED STATE: %s is %s at %s and %s at %s' % (label, c, a.get(c), where(a), b.get(c), where(b)))
+        if vs[0]['kind'] != 'read':
+            for r in vs:
+                if r['mode'] != 'forced' or r.get('picked') != 0:
+                    out.append('%s: PICKED FLAG of %s: a %s has no plan the planner chooses, so its rows are mode forced and picked 0' % (label, where(r), r['kind']))
+            continue
         default = [r for r in vs if r['mode'] == 'default']
         if not default:
             out.append('%s: NO PICKED: no row of mode default, so which arm the planner chooses is not recorded' % label)
@@ -112,6 +123,8 @@ def comparison_problems(key, rs, min_reps, psi_spread):
             out.append('%s: HEAP ORDER NOT AS DECLARED at %s: %s, measured correlation %.2f' % (name, where(r), r['heap_order'], corr))
         if r['mode'] == 'forced' and r['arm'] != r['structure']:
             out.append('%s: WRONG ARM at %s: arm %s but the EXPLAIN names %s' % (name, where(r), r['arm'], r['structure']))
+        if r['temp'] == 'warm' and r.get('instr_m') is None:
+            out.append('%s: INSTRUCTIONS MISSING at %s: a warm row has no instruction count (perf failed or was not run)' % (name, where(r)))
         if r.get('instr_m') is not None:
             if not r.get('instr_scope'):
                 out.append('%s: INSTRUCTIONS WITHOUT SCOPE at %s' % (name, where(r)))
