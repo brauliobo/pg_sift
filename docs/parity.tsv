@@ -1,0 +1,49 @@
+# Feature parity of the two column engines of pg_sift: the index (sift_col) and the table access method (sift_table). One row per feature. Read by scripts/gen-docs.py, which writes
+# the table of docs/COL-TAM.md section 13 and fails (--check) when a row disagrees with the source: the seam column names the callbacks of the SiftSrcProvider (src/agg/colsrc.h) the
+# feature needs, and a status of works needs every one of them in that engine's provider (src/agg/col.c, src/table/src.c), missing needs none, partial some.
+# status: works | partial (not checked against the code) | missing | n/a (the engine has no such thing; the note says why). seam: callbacks joined by +, or - for a feature that is not a callback.
+feature	sift_col	sift_table	seam	note
+Aggregate pushdown (SiftAgg): filters, grouping, aggregates, top-N	works	works	open+begin+next+read+counters	the same executor over either source
+Per-unit sums, counts, minimum and maximum	works	works	unit_agg+unit_exact	exact while the unit has no dead row and its pages are visible (a table: no write buffer row or tombstone in the superblock)
+Group histograms (the cube) and calendar cells	works	works	unit_hist	a table writes the default cube and the cells of every date and timestamp column; an index takes `preagg` and `calendar_columns`
+Minimum and maximum per group of the cube (`cube_minmax`)	works	works	-	a table writes them for the integer measures of its dims (not for calendar cells), as an index does by default; the setting `sift.col_format_minor = 6` writes none
+Superunit summaries (`superunit`)	works	partial	super+split+super_span	whole-table aggregates read one summary for 16 units on an index; a table has no summaries (it takes the split and span of the key table, not `super`)
+Key table of a segment (`key_table`)	works	works	whole	a segment answers `WHERE key = x` from one record per key; a table writes it for its foreign key and `*_id` columns, within 3% of a segment, under `sift.table_key_table` (on); only a segment whose superblocks are all plain (no tombstone, write buffer row or uncommitted row) is answered whole
+Row counts of a text dictionary (`count_columns`)	works	missing	count_range+unit_count	`count(*)` of a prefix, a range or an equality of a text column of an index is read from two places of each segment's dictionary; a table writes no counts
+Key lists and bitmaps of a leaf (`key_columns`)	works	works	unit_presence	a table writes them for its int2, int4 and date foreign key and `*_id` columns that are not unique (the default of an index), within 3% of a unit; `count(DISTINCT)` of a unit that has one reads no row
+HyperLogLog sketch (`hll_columns`, `approx_count_distinct`)	works	missing	unit_hll	`sift.approx_count_distinct` is pushed down and reads the rows; no sketch of the units
+Exceptions of a leaf that is NULL in nearly every row (soft-delete stamp)	works	missing	unit_except	`IS NULL` / `IS NOT NULL` read the unit's NULL count either way
+Rollups of the elements of a list (`rollup`, paths)	works	works	unit_rollup+unit_rollup_tuples+unit_rollup_miss	a table keeps the rollups of the lists of its declared paths (`sift.table_set_paths`), written with the units and read by the source of the index; rollups of the rows (`rollup_dims`) are an option of the index
+Zone pruning of units by the filters of the statement	works	works	-	range, equality, `IN`, `IS NULL`, `OR` of those
+Skip map for parallel morsels	works	missing	kept	a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map
+Parallel scan workers	works	works	-	partitions of a partitioned table too
+Partitioned table pushdown	works	works	open_part	the partitions of one kind (all `sift_table`, or all with a `sift_col` index) are one source; partitions with their columns in another order keep the normal plan
+Partition facts kept across statements, pages released between partitions	works	missing	stamp+unpin	the facts of a `sift_table` partition are read at each plan, and its source has no release between partitions
+Text tests on the encoded form (prefix zones, dictionary codes)	works	works	prune_str+filter_str	prefix zones skip groups, dictionary codes and encoded strings answer `=`, `<>`, ranges, `IN`, `NOT IN`, `LIKE 'p%'` (a column a group lacks stays with the executor)
+Integer comparisons on encoded chunks	works	works	set_filters+filter	the table takes a filter when every segment layout holds the column as an integer leaf (agg/chunkfilter.c)
+Decoding only the rows a filter keeps	works	works	read_sel+narrow	a unit with few kept rows decodes them, and one the integer filters left few rows is narrowed to them
+Decoding straight into the executor's vector	works	partial	read_into+leaf_n	a leaf that is not wide decodes into the executor's buffer in its own type (the read shared with `sift_col`); wide leaves (numeric over 18 digits, interval, enum) decode, then copy
+Point directory and heap addresses of a key (`point_columns`, `point_tid_columns`)	works	n/a	-	a table has no index scan of its own: a btree serves point lookups
+Rows of the values of a list (`paths` of a list of strings or numbers)	works	missing	point_exact	the point directory of a list's values lists the rows that own each value, exactly; a table has no directory of the elements of a list
+Units cut by a key (`key_cut`)	works	n/a	sb_heap	a table has no option surface; a lookup of a key reads the units of its superblocks
+Sorted runs and run heads (`order_columns`)	works	works	run_info+run_read+run_heads	a table writes the run of its timestamp columns where the run takes at most 3% of a unit (a column loaded in order: its rows are the run, and a unit keeps the first and last keys); `ORDER BY .. LIMIT 32` of such a column reads no unit
+Run heads of a superblock, read without opening its unit	works	missing	sb_heads	a superblock of a table may hold write buffer rows and tombstones that its page masks do not show, so the unit is opened
+Global order of a leaf (`order_array_columns`)	works	missing	gorder_open+gorder_info+gorder_head+gorder_range+gorder_seek+gorder_str+gorder_strrank+gorder_exact	the sorted `(key, heap address)` entries of every row of a segment; the top-N walks the zones of the units instead
+Units read from their end (a key that follows the row order)	works	missing	key_order	ORDER BY key [DESC] LIMIT n over a delta key chunk reads 1,024 rows at a time from the end the sort wants (docs/COL.md 2.14); a sift_table has no chunk that says the order of its keys
+Aggregates of a unit net of its dead rows	works	missing	unit_dead	a unit with a dead row is read as its rows; the counts and integer sums of the unit stay unused
+Top-N from the zones of the units	works	works	zone+zone_range+tids+read_rows	
+Cache of the top-N walk	works	missing	walk_stamp+zone_range_segs	the walk is made again by every statement
+Top-N on raw uuid and bytea keys	works	works	set_raw	a uuid column is a dictionary of its values; the top-N of uuid and bytea reads the stored codes
+Sum and average of a numeric image read from the lanes of each row	works	missing	set_numsum	the sum adds an integer and a scale made from the lanes of a row, with no dictionary of numerics; a table reads the dictionary
+Stored dictionary order (`dict_lookup`)	works	works	-	written for a dictionary of 1,024 strings or more under `sift.table_dict_lookup` (off by default); the top-N of the table reads its byte order
+jsonb paths as leaves	works	works	set_wide+filter_wide+read_types+read_jnull	`paths` on an index, `sift.table_set_paths` on a table
+Shapes that read the heap row again (`set_recheck`)	works	missing	set_recheck+recheck_rows+overflow_raise	a table keeps the normal plan for them
+Wide types (numeric over 18 digits, interval, enum)	works	works	filter_types+tolerate_ovf+overflow	
+LATERAL, EXISTS and shared CTE rewrites	works	works	-	the planner rewrites apply to a statement over a table
+Statistics for the planner (zones, sizes, point and set cover)	works	partial	-	a table reports its rows, units and distinct counts, not the zones of its units
+Automatic merge and defragmentation	works	works	-	`sift.col_auto_merge`, `sift.table_auto_defrag`
+VACUUM, crash recovery, physical replication, upgrade	works	works	-	test/t col_* and tbl_* scripts
+Differential tests against the normal plan	works	works	-	coldiff (`--table`), diff_fuzz
+GPU kernels (`sift.gpu`)	works	missing	gpu_unit+gpu_dense+gpu_chunk+gpu_dict	build option, off by default
+Row counts of a range of an integer leaf (`order_array_columns`)	works	missing	count_cmp+unit_count	`count(*)` of comparisons of one integer, date or timestamp column of an index is read from the entries between the bounds in the global order of each segment whose units are all exact; a table writes no global order
+Row counts of one element of a list (point directory of a segment)	works	missing	count_elem+unit_count	`count(*)` of an equality on an element of a text or integer array of an index is the length of the list of the value in the point directory of each segment whose units are all clean and all-visible; a table writes no point directory of elements
