@@ -141,14 +141,14 @@ SELECT count(*) > 0 AS buffered FROM sift.col_segments('rs_i'::regclass) WHERE k
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
  n  | rows  | agree |    scan    
 ----+-------+-------+------------
-  1 |     1 | t     | index-only
-  2 |     1 | t     | index-only
+  1 |     1 | t     | index
+  2 |     1 | t     | index
   3 |    10 | t     | index-only
   4 |    31 | t     | index-only
   5 |   198 | t     | index-only
   6 |   400 | t     | index-only
   7 | 12276 | t     | index-only
-  8 |     1 | t     | index-only
+  8 |     1 | t     | index
   9 |     0 | t     | index-only
  10 |   214 | t     | index-only
  11 |   627 | t     | index-only
@@ -334,7 +334,7 @@ INSERT INTO rs_q2 (q) VALUES
 SELECT n, (rs_check(q)).* FROM rs_q2 ORDER BY n;
  n | rows | agree |    scan    
 ---+------+-------+------------
- 1 |    1 | t     | index-only
+ 1 |    1 | t     | index
  2 | 3000 | t     | index-only
  3 |  101 | t     | index-only
  4 |   10 | t     | index-only

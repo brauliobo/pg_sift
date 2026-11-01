@@ -58,6 +58,7 @@
 
 #define COL_SCAN_KEY		20.0	/* a key of an IN list past the first that is not looked up in a directory of addresses (the units that may hold it are read, or the sorted keys are sought for it): the units that may hold it are searched for it, 2.5 us measured a key (60 to 500 keys of 300,000 and 1,000,000 rows, 0.16 to 1.15 ms) where the b-tree's probe takes 0.8 us and is priced 7: the price of a b-tree's cached probe is 9 units to the microsecond, and a scan that is priced by its microseconds would take the lookup of 500 keys from it for twice the time */
 #define COL_SCAN_FETCH		0.5		/* the heap row of each tuple an index scan (not a bitmap) hands over, for the probes of a scan repeated for the rows of a join: PostgreSQL's price of the page falls with the loops (the pages stay in the cache) and the tuple stays 1.2 us (124 rows a probe, 200 us measured, priced 94 units) */
+#define COL_SCAN_FETCH_ROW	0.1		/* ... and for the rows of a scan that is not repeated, the heap row beside the index tuple: PostgreSQL prices the pages (sequential or cached) and 10 ns the tuple */
 #define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
 
 bool		sift_enable_col_scan = true;
@@ -229,7 +230,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
 		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
-		+ (repeat > 1.0 && path->path.pathtype == T_IndexScan ? idx_rows * COL_SCAN_FETCH * scale : 0.0)
+		+ (path->path.pathtype == T_IndexScan ? idx_rows * (repeat > 1.0 ? COL_SCAN_FETCH : COL_SCAN_FETCH_ROW) * scale : 0.0)
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns + COL_SCAN_EMIT_IOS_VAR * ios_var_columns(index) : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
