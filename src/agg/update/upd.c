@@ -100,6 +100,60 @@ upd_minmax_num(const AggUpd *u)
 	}
 }
 
+/*
+ * The extreme of the chunk when there is one group: the kernel reads the values, not a loop through the group ids. False for a float whose extreme is a zero: the kernel
+ * gives +0 for either sign, where the loop keeps the first one it saw.
+ */
+static bool
+upd_minmax_one(const AggUpd *u)
+{
+	AggExec    *ex = u->ex;
+	AggAcc	   *acc = u->acc;
+	bool		ismin = u->a->kind == SAA_MIN,
+				any;
+	int			nsel = u->nsel;
+
+	if (u->lf->vtype == SCV_I32)
+	{
+		int32		mn,
+					mx;
+
+		if ((any = sift_aggk->minmax_i32(&mn, &mx, (const int32 *) ex->cu32, u->ok, nsel)))
+		{
+			int64		x = ismin ? mn : mx;
+
+			if (acc->n[0] == 0 || (ismin ? x < acc->i[0] : x > acc->i[0]))
+				acc->i[0] = x;
+		}
+	}
+	else if (u->lf->vtype == SCV_F64)
+	{
+		double		mn,
+					mx,
+					x;
+
+		if ((any = sift_aggk->minmax_f64(&mn, &mx, (const double *) ex->c64, u->ok, nsel)) && (x = ismin ? mn : mx) == 0.0)
+			return false;
+		if (any && (acc->n[0] == 0 || (ismin ? float8_cmp_internal(x, acc->d[0]) < 0 : float8_cmp_internal(x, acc->d[0]) > 0)))
+			acc->d[0] = x;
+	}
+	else
+	{
+		int64		mn,
+					mx;
+
+		if ((any = sift_aggk->minmax_i64(&mn, &mx, (const int64 *) ex->c64, u->ok, nsel)))
+		{
+			int64		x = ismin ? mn : mx;
+
+			if (acc->n[0] == 0 || (ismin ? x < acc->i[0] : x > acc->i[0]))
+				acc->i[0] = x;
+		}
+	}
+	upd_count(u);
+	return true;
+}
+
 /* min and max of a column of integers, dates, timestamps or floats */
 static void
 upd_minmax(const AggUpd *u)
@@ -120,6 +174,8 @@ upd_minmax(const AggUpd *u)
 		sift_colk->gather_u32((const uint32 *) u->v->data, u->idx, nsel, ex->cu32);
 	else
 		sift_colk->for_i64_sel[SIFT_COLW_64](u->v->data, u->idx, nsel, 0, (int64 *) ex->c64);
+	if (ex->spec->nkeys == 0 && upd_minmax_one(u))
+		return;
 	for (int j = 0; j < nsel; j++)
 	{
 		uint32		g = ex->gid[j];

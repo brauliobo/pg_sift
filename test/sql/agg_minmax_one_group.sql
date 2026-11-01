@@ -1,0 +1,45 @@
+-- min() and max() of a column with no GROUP BY take the extreme of a chunk of rows from a vector kernel, where a loop went through the group ids: the integer, date,
+-- timestamp and float columns, NULLs, NaN and a zero of either sign, filters that keep none, some or all of the rows, and a FILTER on the aggregate. Every query
+-- runs as the scan and as the normal plan (outcome), and the rows (a row as text, so the sign of a zero shows) must be the same; `scan` says the plan is the scan's.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+
+-- z holds only +0 and zn only -0 (a column of both signs gives the last of the zeros in PostgreSQL, the first in the scan: no shape depends on it); f has NULLs and NaN; k is a small key
+CREATE TABLE mo (id int, a int, b bigint, d date, ts timestamp, f float8, z float8, zn float8, n int, k int) WITH (autovacuum_enabled = false);
+INSERT INTO mo
+SELECT i, (i::bigint * 7919 % 20011)::int - 10000, ((i::bigint * 7919 % 20011) - 10000) * 3000000000, date '2020-01-01' + i % 3000,
+       timestamp '2020-01-01' + i * interval '7 minutes',
+       CASE WHEN i % 97 = 0 THEN NULL WHEN i % 101 = 0 THEN 'NaN'::float8 ELSE ((i * 7919) % 20011 - 10000) / 7.0 END,
+       0.0::float8, -0.0::float8, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 1000 END, i % 3
+FROM generate_series(1, 20000) i;
+CREATE INDEX mo_col ON mo USING sift_col (id, a, b, d, ts, f, z, zn, n, k);
+VACUUM (FREEZE, ANALYZE) mo;
+
+\ir test/agg_helpers.sql
+
+SELECT w, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same
+FROM (SELECT w, format('SELECT row(min(a), max(a), min(b), max(b), min(d), max(d), min(ts), max(ts), min(f), max(f), min(z), max(z), min(zn), max(zn), min(n), max(n), count(*))::text FROM mo WHERE %s', w) AS q
+	  FROM unnest(ARRAY['id > 10', 'id % 7 = 0', 'id < 0', 'k = 1', 'a > 9900', 'n IS NULL', 'f IS NULL', 'f > 1000', 'z = 0 AND id % 11 = 0', 'a % 2 = 0 AND id > 4090 AND id < 4100',
+					   'id > 4000 AND id < 12000']) w) t;
+
+-- the scalar table of the kernels (the specification) gives the same rows
+SET sift.simd = scalar;
+SELECT w, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same
+FROM (SELECT w, format('SELECT row(min(a), max(a), min(b), max(b), min(d), max(d), min(ts), max(ts), min(f), max(f), min(z), max(z), min(zn), max(zn), min(n), max(n), count(*))::text FROM mo WHERE %s', w) AS q
+	  FROM unnest(ARRAY['id > 10', 'id % 7 = 0', 'id < 0', 'k = 1', 'a > 9900', 'n IS NULL', 'f IS NULL', 'f > 1000', 'z = 0 AND id % 11 = 0', 'a % 2 = 0 AND id > 4090 AND id < 4100',
+					   'id > 4000 AND id < 12000']) w) t;
+
+RESET sift.simd;
+
+-- a FILTER on the aggregate, and the aggregates of one group beside others
+SELECT w, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same
+FROM (SELECT w, q FROM unnest(ARRAY[
+	'SELECT row(min(a) FILTER (WHERE k = 0), max(a) FILTER (WHERE k = 1), min(f) FILTER (WHERE id % 13 = 0), max(z) FILTER (WHERE id % 2 = 1))::text FROM mo WHERE id > 5',
+	'SELECT row(min(a), max(f), sum(a), count(n), avg(b))::text FROM mo WHERE id > 5',
+	'SELECT row(min(f), max(f))::text FROM mo WHERE id % 97 <> 0 AND id % 101 <> 0 AND id > 5'
+]) WITH ORDINALITY AS t(q, w)) t;
+
+DROP FUNCTION outcome, runq, runs_in_scan, pushed;
+DROP TABLE mo;
+DROP EXTENSION pg_sift;
