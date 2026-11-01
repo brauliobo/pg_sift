@@ -394,7 +394,34 @@ extern bool next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part);
 extern bool gcond_test(const SiftTopGPred *p, TupleTableSlot *slot);
 extern int64 gord_skip(SiftTopN *t);
 extern int gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
-extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull);
+/* The columns of a condition other than the key, as the units hold them for an entry (st: 1 a value, 2 NULL, 0 not read) */
+#define GORD_COND_LEAVES	4
+typedef struct GEntVals
+{
+	int			n;
+	int			leaf[GORD_COND_LEAVES];
+	int64		val[GORD_COND_LEAVES];
+	uint8		st[GORD_COND_LEAVES];
+} GEntVals;
+/*
+ * More keys than the first: the array gives the rows in the order of the first key only, so the scan takes the whole groups of rows that share a value of it
+ * (the heap row says what the others hold, and whether it passes the condition) until the groups make the n rows, and puts each group in order. A scan that
+ * reads more entries than GORD_SCAN_MIN, or 64 for each row wanted, before the n are in has a first key that many rows share: the units read it better.
+ */
+#define GORD_SCAN_MIN	4096
+
+/*
+ * A condition on a column other than the key is tested on the heap row of every entry, which may be most of the array for a condition that few rows pass. The walk gives up, for the
+ * units, when the pass rate of the rows it has fetched says that the n will take more fetches than the units cost: a quarter of the heap's blocks, and the blocks the units would vet
+ * (those not all-visible that hold a row that passes), and never less than four for each row wanted (a filter that passes a quarter or more does what a b-tree's scan does). The
+ * walk is judged with two passes more than it saw, so that a few rows give no verdict: one that passes none is given up after about twice the budget over the rows wanted.
+ */
+#define GORD_BUDGET_DIV	4
+#define GORD_TRY_MIN	32
+
+extern bool gord_prep(SiftTopN *t);
+extern bool gord_probe(SiftTopN *t);
+extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull, const GEntVals *ev);
 extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);
 extern bool res_take(SiftTopN *t, int n);
 

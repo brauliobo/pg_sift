@@ -67,7 +67,15 @@ $$ SELECT ob_chk(format('SELECT id, %s AS k FROM ob ORDER BY %s %s NULLS %s, %s,
    FROM unnest(ARRAY['n', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY['id', 'id DESC', 'dt', 'dt DESC NULLS LAST', 'ts DESC', 'ts NULLS FIRST']) k2,
 	    unnest(ARRAY[2100, 7000]) o GROUP BY 1 ORDER BY 1 $$;
 
+-- a condition on a column other than the key (IS NULL, IS NOT NULL, integer and date comparisons, AND and OR) is decided from the units for the entries that are exact, the heap says for the others
+CREATE FUNCTION ob_filt() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT ob_chk(format('SELECT id, %s AS k FROM ob WHERE %s ORDER BY %s %s, id LIMIT 20 OFFSET %s', c, w, c, d, o)) AS result, count(*)
+   FROM unnest(ARRAY['n']) c, unnest(ARRAY['ASC', 'DESC']) d,
+	    unnest(ARRAY['ts IS NOT NULL', 'ts IS NULL OR dt > DATE ''2020-02-01''', 'dt < DATE ''2020-11-01''', 'n >= 100 AND ts IS NOT NULL', 'n < 400 OR ts > TIMESTAMP ''2020-01-01 10:00''', 'dt >= DATE ''2020-03-01'' AND ts IS NOT NULL']) w,
+	    unnest(ARRAY[2100, 4000]) o GROUP BY 1 ORDER BY 1 $$;
+
 SELECT * FROM ob_all();
+SELECT * FROM ob_filt();
 SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 7000') AS n_rewind;
 -- deleted and updated rows, a VACUUM, new rows in the write buffer
 DELETE FROM ob WHERE id % 53 = 0;
@@ -75,18 +83,20 @@ UPDATE ob SET n = n + 1, t = 'u' || t WHERE id % 97 = 0;
 SELECT * FROM ob_all();
 VACUUM ob;
 SELECT * FROM ob_all();
+SELECT * FROM ob_filt();
 -- the dead rows of a text key leave the cut short of the OFFSET in rows: it is taken further, past them (each costs a string of the dictionary to read in the walk)
 SELECT ob_cut('SELECT id, t FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') > 7000 AS text_cut_past_dead_rows;
 INSERT INTO ob (id, n, t) SELECT 200000 + i, (i * 31) % 700, 't' || lpad(((i * 17) % 1500)::text, 5, '0') FROM generate_series(1, 300) i;
 SELECT * FROM ob_all();
+SELECT * FROM ob_filt();
 SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000') AS t_rewind, ob_twice('SELECT id, n AS k FROM ob ORDER BY n, id LIMIT 20 OFFSET 7000') AS n_rewind;
 
 -- the group of ties that holds the first row to keep has the keys after the first read from the units, not fetched, when its entries are exact (10 values of g, 2,000 rows each); when the heap must confirm them,
 -- it is fetched once, and the rows of it that the Limit throws away are not fetched again to go out
-CREATE TABLE og (id int PRIMARY KEY, g int, pad text DEFAULT repeat('x', 100));
+CREATE TABLE og (id int PRIMARY KEY, g int, w int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE og ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO og (id, g) SELECT i, (i * 7919) % 10 FROM generate_series(1, 20000) i;
-CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops) WITH (order_columns = 'id, g', order_array_columns = 'id, g');
+INSERT INTO og (id, g, w) SELECT i, (i * 7919) % 10, CASE WHEN i % 50 = 0 THEN NULL ELSE i % 1000 END FROM generate_series(1, 20000) i;
+CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, w sift.col_int4_ops) WITH (order_columns = 'id, g, w', order_array_columns = 'id, g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) og;
 CREATE FUNCTION og_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE pl text; n int := -1; gord bool := false;
@@ -98,7 +108,9 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN gord THEN n ELSE -1 END;
 END $$;
-SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) <= 100 AS read_not_fetched FROM unnest(ARRAY[5000, 9000, 15000]) o;
+SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) BETWEEN 0 AND 100 AS read_not_fetched FROM unnest(ARRAY[5000, 9000, 15000]) o;
+-- the same under a condition on another column: decided from the units, not by the heap rows of the entries before the OFFSET
+SELECT o, og_fetches(format('SELECT id, g FROM og WHERE %s ORDER BY g, id LIMIT 20 OFFSET %s', w, o)) BETWEEN 0 AND 100 AS cond_read FROM unnest(ARRAY['w IS NOT NULL', 'w < 900', 'w >= 0 AND w IS NOT NULL']) w, unnest(ARRAY[3000, 5000]) o;
 -- the pages of a table that a third of the rows were updated in are not all-visible: every entry is confirmed by the heap once (the cut's, the group's) and the 20 rows go out
 UPDATE og SET pad = repeat('y', 100) WHERE id % 3 = 0;
 SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) = (o / 2000) * 2000 + 2000 + 20 AS one_fetch FROM unnest(ARRAY[5000, 9000, 15000]) o;
@@ -129,7 +141,7 @@ SELECT ob_chk(format('SELECT id, r AS k FROM orr ORDER BY r %s, id LIMIT 20 OFFS
 DROP FUNCTION orr_blocks(text);
 DROP TABLE orr;
 
-DROP FUNCTION ob_all(), ob_twice(text), ob_chk(text), ob_cut(text, bool);
+DROP FUNCTION ob_all(), ob_filt(), ob_twice(text), ob_chk(text), ob_cut(text, bool);
 DROP TABLE ob;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

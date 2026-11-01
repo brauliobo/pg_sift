@@ -30,22 +30,6 @@ typedef struct SBox
 	uint32		hilen;
 } SBox;
 
-/*
- * More keys than the first: the array gives the rows in the order of the first key only, so the scan takes the whole groups of rows that share a value of it
- * (the heap row says what the others hold, and whether it passes the condition) until the groups make the n rows, and puts each group in order. A scan that
- * reads more entries than GORD_SCAN_MIN, or 64 for each row wanted, before the n are in has a first key that many rows share: the units read it better.
- */
-#define GORD_SCAN_MIN	4096
-
-/*
- * A condition on a column other than the key is tested on the heap row of every entry, which may be most of the array for a condition that few rows pass. The walk gives up, for the
- * units, when the pass rate of the rows it has fetched says that the n will take more fetches than the units cost: a quarter of the heap's blocks, and the blocks the units would vet
- * (those not all-visible that hold a row that passes), and never less than four for each row wanted (a filter that passes a quarter or more does what a b-tree's scan does). The
- * walk is judged with two passes more than it saw, so that a few rows give no verdict: one that passes none is given up after about twice the budget over the rows wanted.
- */
-#define GORD_BUDGET_DIV	4
-#define GORD_TRY_MIN	32
-
 static GBox
 gcond_box(const SiftTopGPred *p)
 {
@@ -296,10 +280,15 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
  * block are all of the group gl that the top of the conjunction pins.
  */
 int
-gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
+gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull, const GEntVals *ev)
 {
 	int			r = p->kind == STG_AND ? 1 : 0;
+	int			c = -1;
 
+	/* a column other than the key, when the units gave its value */
+	for (int i = 0; ev != NULL && !p->lead && i < ev->n; i++)
+		if (ev->leaf[i] == p->leaf && ev->st[i] != 0 && (p->kind == STG_NOTNULL || p->kind == STG_ISNULL || p->kind == STG_CMP))
+			return p->kind == STG_NOTNULL ? ev->st[i] == 1 : p->kind == STG_ISNULL ? ev->st[i] == 2 : ev->st[i] == 1 && gcond_cmp(p->op, ev->val[i], p->val);
 	if (p->kind == STG_NOTNULL)
 		return p->lead ? !isnull : -1;
 	if (p->kind == STG_ISNULL)
@@ -314,8 +303,7 @@ gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
 	}
 	for (int i = 0; i < p->nchild; i++)
 	{
-		int			c = gcond_entry(p->child[i], gl, top && p->kind == STG_AND, key, isnull);
-
+		c = gcond_entry(p->child[i], gl, top && p->kind == STG_AND, key, isnull, ev);
 		if (c == (p->kind == STG_OR))
 			return c;
 		if (c < 0)
@@ -324,326 +312,6 @@ gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
 	return r;
 }
 
-/* the keys after the first, then the address */
-static int
-grow_cmp(const void *a, const void *b, void *arg)
-{
-	const SiftTopN *t = arg;
-	const GRow *x = a,
-			   *y = b;
-
-	for (int j = 1; j < t->nkey; j++)
-	{
-		const TopKey *k = &t->key[j];
-
-		if (x->isnull[j] != y->isnull[j])
-			return x->isnull[j] == k->nulls_first ? -1 : 1;
-		if (!x->isnull[j] && x->key[j] != y->key[j])
-			return (x->key[j] < y->key[j]) != k->desc ? -1 : 1;
-	}
-	return ItemPointerCompare(unconstify(ItemPointerData *, &x->tid), unconstify(ItemPointerData *, &y->tid));
-}
-
-/* the heap row's string is the entry's: a row an UPDATE or a vacuumed address replaced holds another */
-static bool
-text_is(Datum d, const char *str, uint32 len)
-{
-	struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
-
-	return VARSIZE_ANY_EXHDR(v) == len && memcmp(VARDATA_ANY(v), str, len) == 0;
-}
-
-/* What is known of the entry (sift_gord_state), the condition counting: SIFT_GORD_EXACT when it passes the condition by its key alone and is live on an all-visible page (the heap does not confirm it). The condition is asked first: when another column decides it, the entry is never exact and the dead list of its unit is not read */
-int
-gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull)
-{
-	if (t->gcond != NULL && gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) != 1)
-		return SIFT_GORD_CHECK;
-	return sift_gord_state(t->go, tid);
-}
-
-/*
- * The entries of one key of the array, in the order of the array. A group wholly before the OFFSET (even if every entry is live) is thrown away by the Limit above and the tie order
- * within it decides nothing: its entries that are exact (live and visible, the condition decided by the key) are counted and not fetched, the others are confirmed by the heap and
- * counted if it finds them. The group that holds the first row to keep is fetched whole and sorted by the keys after the first.
- */
-typedef struct GGroup
-{
-	ItemPointerData *tid;
-	bool	   *exact;			/* per entry: live and visible, and passes the condition by its key alone */
-	bool	   *dead;			/* per entry: its segment lost the row and no other source repeats it: nothing stands for it, the heap is not asked */
-	int		   *seg;			/* per entry: the source it came from (sift_gord_src) */
-	int			n;
-	int			room;
-	StringInfoData str;			/* the string of the group, for a text key (the key of the array is the rank in a segment) */
-} GGroup;
-
-static bool
-gord_giveup(const SiftTopN *t)
-{
-	double		need = (double) t->limit - t->gbulk - t->gqn;
-
-	if (t->gtried < GORD_TRY_MIN || need <= 0)
-		return false;
-	return t->gtried + need * t->gtried / (t->gpass + 2.0) > t->gbudget + t->gdirty * (1.0 - exp(-(double) t->gpass / t->gtried * t->grpp));
-}
-
-/* A group of at least this many entries has the keys after the first of its exact entries read from the units, not fetched */
-#define GORD_VALUES_MIN	64
-
-/* The keys after the first are integers the units hold (sift_gord_values) */
-static bool
-gord_int_keys(const SiftTopN *t)
-{
-	for (int j = 1; j < t->nkey; j++)
-		if (t->gscale[j] != 0 || (t->gtyp[j] != INT2OID && t->gtyp[j] != INT4OID && t->gtyp[j] != INT8OID && t->gtyp[j] != DATEOID && t->gtyp[j] != TIMESTAMPOID && t->gtyp[j] != TIMESTAMPTZOID))
-			return false;
-	return t->nkey > 1;
-}
-
-/* The keys after the first of the exact entries of g: val[j * n + i] with st[j * n + i] 1 (value) or 2 (NULL); 0 for an entry whose keys the heap has to give */
-static void
-gord_values(SiftTopN *t, const GGroup *g, int64 *val, uint8 *st)
-{
-	int		   *seg = palloc(g->n * sizeof(int));
-	SiftKey	   *tid = palloc(g->n * sizeof(SiftKey));
-	uint32	   *at = palloc(g->n * sizeof(uint32)),
-				m = 0;
-	int64	   *v = palloc((g->n + SIFT_COL_PAD / 8) * sizeof(int64));
-	uint8	   *s = palloc(g->n);
-
-	memset(st, 0, (size_t) t->nkey * g->n);
-	for (int i = 0; i < g->n; i++)
-		if (g->exact[i] && !g->dead[i])
-		{
-			seg[m] = g->seg[i];
-			tid[m] = sift_key_from_tid(&g->tid[i]);
-			at[m++] = i;
-		}
-	for (int j = 1; j < t->nkey; j++)
-	{
-		sift_gord_values(t->go, t->key[j].leaf, seg, tid, m, v, s);
-		for (uint32 k = 0; k < m; k++)
-		{
-			val[(size_t) j * g->n + at[k]] = v[k];
-			st[(size_t) j * g->n + at[k]] = s[k];
-		}
-	}
-	pfree(seg);
-	pfree(tid);
-	pfree(at);
-	pfree(v);
-	pfree(s);
-}
-
-/* The keys of entry i of a group of n from gord_values, when it has them all */
-static bool
-gord_keys_read(const SiftTopN *t, GRow *r, const int64 *val, const uint8 *st, int n, int i, int64 gkey, bool gnull)
-{
-	for (int j = 1; j < t->nkey; j++)
-		if (st[(size_t) j * n + i] == 0)
-			return false;
-	r->isnull[0] = gnull;
-	r->key[0] = gkey;
-	for (int j = 1; j < t->nkey; j++)
-	{
-		r->isnull[j] = st[(size_t) j * n + i] == 2;
-		r->key[j] = r->isnull[j] ? 0 : val[(size_t) j * n + i];
-	}
-	return true;
-}
-
-/* false: the walk gave up */
-static bool
-gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
-{
-	TopFetch   *f = &t->pf[0];
-	int			gstart = t->gqn;
-	bool		thrown = t->gbulk + t->gqn + g->n <= t->skip;
-	int64	   *val = NULL;
-	uint8	   *vst = NULL;
-
-	if (!thrown && g->n >= GORD_VALUES_MIN && gord_int_keys(t))
-	{
-		val = palloc((size_t) t->nkey * g->n * sizeof(int64));
-		vst = palloc((size_t) t->nkey * g->n);
-		gord_values(t, g, val, vst);
-	}
-
-	for (int i = 0; i < g->n; i++)
-	{
-		GRow	   *r;
-		ItemPointerData tid = g->tid[i],
-					entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
-
-		if (t->gqn == t->gqroom)
-		{
-			t->gqroom *= 2;
-			t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
-		}
-		r = &t->gq[t->gqn];
-		if (g->dead[i])
-			continue;
-		memset(r, 0, sizeof(GRow));
-		r->tid = entry;
-		if (thrown)
-		{
-			r->exact = true;
-			r->isnull[0] = gnull;
-			r->key[0] = gkey;
-		}
-		if (!(vst != NULL && gord_keys_read(t, r, val, vst, g->n, i, gkey, gnull)) && (!thrown || !g->exact[i]))
-		{
-			bool		call_again = false,
-						all_dead,
-						hnull;
-			Datum		d;
-
-			if (t->gbudget > 0 && gord_giveup(t))
-				return false;
-			t->gtried++;
-			if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
-				continue;
-			t->fetched++;
-			d = slot_getattr(f->slot, t->gatt[0], &hnull);
-			if (hnull != gnull || (!hnull && (t->gtext ? !text_is(d, g->str.data, g->str.len) : gkey_of(t, 0, d) != gkey)))
-				continue;
-			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
-				continue;
-			t->gpass++;
-			for (int j = 0; !thrown && j < t->nkey; j++)
-			{
-				d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
-				r->key[j] = r->isnull[j] ? 0 : gkey_of(t, j, d);
-			}
-		}
-		t->gqn++;
-	}
-	if (!thrown && t->gqn - gstart > 1)
-		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
-	g->n = 0;
-	if (vst != NULL)
-	{
-		pfree(val);
-		pfree(vst);
-	}
-	return true;
-}
-
-static bool
-gord_prep(SiftTopN *t)
-{
-	int64		cap = Max(GORD_SCAN_MIN, 64 * (int64) t->limit),
-				scanned = 0,
-				gkey = 0,
-				key;
-	bool		isnull,
-				gnull = false,
-				closed = false;
-	GGroup		g = {.tid = palloc(64 * sizeof(ItemPointerData)), .exact = palloc(64 * sizeof(bool)), .dead = palloc(64 * sizeof(bool)), .seg = palloc(64 * sizeof(int)), .room = 64};
-	ItemPointerData tid;
-	const char *str = NULL;
-	uint32		slen = 0;
-	int			st;
-
-	initStringInfo(&g.str);
-
-	t->gbulk = gord_skip(t);
-	t->bulk = t->gbulk;
-	t->gqroom = 64;
-	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), t->gqroom * sizeof(GRow));
-	while (sift_gord_next(t->go, &key, &isnull, &tid))
-	{
-		if (g.n > 0 && sift_gord_repeated(t->go))
-			g.dead[g.n - 1] = false;
-		if (++scanned > cap)
-			return false;
-		if (t->gtext && !isnull)
-			str = sift_gord_str(t->go, &slen);
-		if (g.n > 0 && (isnull != gnull || (t->gtext ? !isnull && (slen != g.str.len || memcmp(str, g.str.data, slen) != 0) : key != gkey)))
-		{
-			if (!gord_group(t, &g, gkey, gnull))
-				return false;
-			if (t->gbulk + t->gqn >= t->limit)
-			{
-				closed = true;
-				break;
-			}
-		}
-		if (g.n == 0 && t->gtext && !isnull)
-		{
-			resetStringInfo(&g.str);
-			appendBinaryStringInfo(&g.str, str, slen);
-		}
-		gkey = key;
-		gnull = isnull;
-		if (g.n == g.room)
-		{
-			g.room *= 2;
-			g.tid = repalloc(g.tid, g.room * sizeof(ItemPointerData));
-			g.exact = repalloc(g.exact, g.room * sizeof(bool));
-			g.dead = repalloc(g.dead, g.room * sizeof(bool));
-			g.seg = repalloc(g.seg, g.room * sizeof(int));
-		}
-		st = gord_entry_state(t, &tid, key, isnull);
-		g.exact[g.n] = st == SIFT_GORD_EXACT;
-		g.dead[g.n] = st == SIFT_GORD_DEAD;
-		g.seg[g.n] = sift_gord_src(t->go);
-		g.tid[g.n++] = tid;
-	}
-	/* the end of the array closes the last group */
-	if (g.n > 0 && sift_gord_repeated(t->go))
-		g.dead[g.n - 1] = false;
-	if (!closed && !gord_group(t, &g, gkey, gnull))
-		return false;
-	pfree(g.tid);
-	pfree(g.exact);
-	pfree(g.dead);
-	pfree(g.seg);
-	pfree(g.str.data);
-	return closed || !sift_gord_short(t->go) || t->gbulk + t->gqn >= t->limit;
-}
-
-/*
- * The scan of a segment that keeps the ends of its order only (column format minor 40) can run out of entries that are not its own: the rows of an end that the heap
- * finds dead, an end that is a few rows. That must be known before the first row goes out, so the scan reads the n it will give once, with the confirmation of the heap
- * (the pages stay in the buffers for the scan), and gives the rows to the units when the ends do not hold them.
- */
-static bool
-gord_probe(SiftTopN *t)
-{
-	TopFetch   *f = &t->pf[0];
-	uint32		n = 0;
-	bool		cut;
-	int64		key;
-	bool		isnull;
-	ItemPointerData tid;
-
-	while (n < t->limit && sift_gord_next(t->go, &key, &isnull, &tid))
-	{
-		bool		call_again = false,
-					all_dead,
-					hnull;
-		Datum		d;
-
-		if (n < t->skip && gord_entry_state(t, &tid, key, isnull) == SIFT_GORD_EXACT)
-		{
-			n++;
-			continue;
-		}
-		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
-			continue;
-		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull != isnull || (!hnull && gkey_of(t, 0, d) != key))
-			continue;
-		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
-			continue;
-		n++;
-	}
-	cut = sift_gord_short(t->go);
-	sift_gord_rewind(t->go);
-	return n >= t->limit || !cut;
-}
 
 /* an OR of equalities of the group leaf gl with constants (its IN list): a global order grouped by gl reads the entries of each of the groups */
 static bool

@@ -723,14 +723,8 @@ typedef struct ValPair
 	uint32		at;
 } ValPair;
 
-static int
-val_pair_cmp(const void *a, const void *b)
-{
-	const ValPair *x = a,
-			   *y = b;
-
-	return x->seg != y->seg ? (x->seg < y->seg ? -1 : 1) : SIFT_CMP3(x->tid, y->tid);
-}
+#define VAL_PAIR_LESS(x, y) ((x)->seg != (y)->seg ? (x)->seg < (y)->seg : (x)->tid < (y)->tid)
+SIFT_DEFINE_SORT(val_pairs, ValPair, VAL_PAIR_LESS)
 
 /* The m rows of unit u at keys (ascending): false when the unit cannot say (a key-cut unit, a row not found, a chunk that is not plain integers) */
 static bool
@@ -774,7 +768,7 @@ sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKe
 	memset(st, 0, n);
 	for (uint32 k = 0; k < n; k++)
 		pr[k] = (ValPair) {.seg = seg[k], .tid = tid[k], .at = k};
-	qsort(pr, n, sizeof(ValPair), val_pair_cmp);
+	val_pairs(pr, n);
 	for (uint32 a = 0, b; a < n; a = b)
 	{
 		uint32		sb = sift_block_sb(sift_key_block(pr[a].tid)),
