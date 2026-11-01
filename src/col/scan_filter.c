@@ -716,7 +716,8 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		BlockNumber blk;
 		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
 		uint16		offs[MaxHeapTuplesPerPage];		/* the offsets of the rows of the page: only a page that is not all-visible and holds a selected row has them decoded */
-		bool		allvis;
+		bool		allvis,
+					dense;
 
 		/* the page of the row: the same or the next one where the selection is dense */
 		if (r >= cu->v.rowstart[p + 1])
@@ -732,29 +733,36 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 #endif
 		if (allvis)
 			continue;
-		sift_cunit_page_offsets(&cu->v, p, offs);
-		sift_col_vet_offsets += hi - lo;
-		for (uint32 q = lo; q < hi; q++)
-			if (sift_col_bit_test(sel->bits, q))
-			{
-				sift_col_bit_set(offmask, offs[q - lo] - 1);
-				n++;
-			}
+		/* a dense page (no row gone when the unit was built) has the offsets 1 .. n in the order of the rows: only the others decode them */
+		dense = !cu->v.keyed && sift_cunit_page_sparse_len(&cu->v, p) == 0;
+		if (!dense)
+		{
+			sift_cunit_page_offsets(&cu->v, p, offs);
+			sift_col_vet_offsets += hi - lo;
+		}
+		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
+		{
+			sift_col_bit_set(offmask, (dense ? q - lo + 1 : offs[q - lo]) - 1);
+			n++;
+		}
 		src->cnt.rows_vetted += n;
 		vis->filter_page(vis->arg, blk, offmask);
-		for (uint32 q = lo; q < hi; q++)
-			if (sift_col_bit_test(sel->bits, q) && !sift_col_bit_test(offmask, offs[q - lo] - 1))
-			{
+		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
+		{
+			OffsetNumber off = dense ? q - lo + 1 : offs[q - lo];
+
+			if (sift_col_bit_test(offmask, off - 1))
+				continue;
 #ifdef SIFT_TESTING
-				if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
-				{
-					/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
-					paranoid_report(src, cu, blk, (OffsetNumber) offs[q - lo]);
-					continue;
-				}
-#endif
-				sift_col_bit_clear(sel->bits, q);
+			if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
+			{
+				/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
+				paranoid_report(src, cu, blk, off);
+				continue;
 			}
+#endif
+			sift_col_bit_clear(sel->bits, q);
+		}
 	}
 	if (vis->counters)
 	{
