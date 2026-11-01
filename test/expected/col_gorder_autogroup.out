@@ -17,7 +17,7 @@ INSERT INTO ag VALUES (200000, 100000, 1, timestamp '2024-02-02', 'one');
 ANALYZE ag;
 -- no key_cut: the default formula (key_cut 'auto') now cuts this table by ts, which this test is not about (col_key_cut_auto and col_key_cut_narrow are)
 CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by g first
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 41.5% of 467 chunks, exact in the rest, 4.5 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                 reloptions                                
@@ -120,7 +120,7 @@ SELECT sift.col_verify('ag_i');
 (1 row)
 
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by g first
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                 reloptions                                
@@ -170,7 +170,7 @@ ALTER INDEX ag_i RESET (order_array_group);
 ALTER INDEX ag_i RESET (order_array_columns);
 ALTER INDEX ag_i RESET (order_columns);
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date, timestamp and integer array sorted by g first
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                 reloptions                                

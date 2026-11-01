@@ -69,6 +69,7 @@ TESTING_REGRESS += col_ioss_columns col_dict_shared
 TESTING_REGRESS += col_text_scanwrap
 TESTING_REGRESS += col_dict_shared_stale
 TESTING_REGRESS += col_point_auto
+TESTING_REGRESS += col_gorder_autogroup_kinds
 TESTING_REGRESS += agg_explain_why_scan
 TESTING_REGRESS += col_topn_offset agg_child_warm agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_bulk agg_topn_offset_keyed agg_topn_key_only
 TESTING_REGRESS += col_unit_of_block

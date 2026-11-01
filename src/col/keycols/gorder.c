@@ -17,6 +17,8 @@ typedef struct GordCand
 	bool		time;			/* a date or a timestamp: a range or an ORDER BY .. LIMIT is what it is read by */
 	bool		text;			/* a text or varchar column: ORDER BY .. LIMIT is what it is read by */
 	bool		ties;			/* fewer than GORD_AUTO_DISTINCT values: weighed like a text column, by the OFFSET that ends in a group of equal keys */
+	bool		nofit;			/* a date or timestamp in heap order (correlation over GORD_AUTO_CORR) or one the units are cut by: no array of its own, but one for the group */
+	bool		grouped;		/* an integer, date or timestamp: the second order sorted by the entity column can be written for it (a numeric or text array has none) */
 	double		corr;
 	double		bytes;			/* a text column: the bytes a row of its array, the share of the build it adds, and its collation */
 	double		write;
@@ -57,7 +59,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 				gauto,
 				timepick = false;
 	int			grp = -1;
-	double		gdist = 0;
+	double		gdist = 0,
+				gdepth = 0;
 	GordCand   *cand;
 	bool	   *fit;
 	int			ncand = 0,
@@ -65,8 +68,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 				ntext = 0,
 				nends = 0,
 				pick[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
-	double		room,
-				index_bytes;
+	double		index_bytes;
 	StringInfoData v;
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
@@ -79,7 +81,6 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;
 	index_bytes = keycols_est_index_bytes(heap, index) + GORD_ROW_OVERHEAD;
-	room = index_bytes * GORD_AUTO_GROWTH_PCT / 100;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	cand = palloc(rel->schema->ncols * sizeof(GordCand));
 	fit = palloc(rel->schema->ncols * sizeof(bool));
@@ -93,20 +94,21 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		bool		cut = false;
 
 		bool		text = sift_cgord_leaf_text(d);
-		bool		ties;
+		bool		ties,
+					nofit;
 
 		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_numeric(rel->schema, d)))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
-		if (cut && sift_col_key_cut(rel))
+		cut = cut && sift_col_key_cut(rel);
+		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || (text && width > GORD_TEXT_WIDTH))
 			continue;
-		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || (text && width > GORD_TEXT_WIDTH))
+		nofit = cut || cr >= GORD_AUTO_CORR;
+		ties = !nofit && ndistinct < GORD_AUTO_DISTINCT;
+		if (((ties || nofit) && (text || !sift_cgord_leaf_time(d) || ndistinct < 2)) || (nofit && !sift_cgord_leaf_ok(rel->schema, d)))
 			continue;
-		ties = ndistinct < GORD_AUTO_DISTINCT;
-		if (ties && (text || !sift_cgord_leaf_time(d) || ndistinct < 2))
-			continue;
-		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, cr, 0, 0, 0, 0};
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d), cr, 0, 0, 0, 0};
 		if (ties)
 		{
 			double		rows = keycols_heap_rows(heap),
@@ -145,7 +147,9 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	 */
 	for (int i = 0; i < ncand; i++)
 	{
-		if (cand[i].text)
+		if (cand[i].nofit)
+			fit[i] = false;
+		else if (cand[i].text)
 		{
 			double		b = log2(GORD_TEXT_SPEEDUP) / log2(1.05),
 						cost = cand[i].bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
@@ -165,10 +169,14 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		}
 		else
 			fit[i] = true;
-		timepick |= fit[i] && cand[i].time;
+		timepick |= cand[i].grouped && (fit[i] || cand[i].time);
 	}
-	/* the arrays of a time column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then */
-	for (int c = 0; timepick && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE && strcmp(gopt, "off") != 0 && GORD_GROUP_BYTES <= room && c < rel->schema->ncols; c++)
+	/*
+	 * the arrays of a date, timestamp or integer column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
+	 * order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then. A date or timestamp that
+	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group
+	 */
+	for (int c = 0; timepick && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE && strcmp(gopt, "off") != 0 && c < rel->schema->ncols; c++)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
 		AttrNumber	hatt = keycols_heap_attno(index, d);
@@ -176,6 +184,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 					cr;
 		int32		width;
 		bool		cut = false;
+		double		depth;
 
 		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d))
 			continue;
@@ -183,22 +192,44 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			cut |= rel->cut[k] == c;
 		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
+		depth = keycols_heap_rows(heap) / ndistinct;
 		/* a foreign key or a column named *_id is the entity the rows belong to; among those, or among the rest, the one of most values */
 		if (keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d)))
 			ndistinct += keycols_heap_rows(heap);
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;
+			gdepth = depth;
 			grp = c;
 		}
 	}
+	/*
+	 * the second order against the build and the size it adds, as for a text array: B = log2(S) / log2(1.05), C = G / 3 + W / 5. G is what it writes: GORD_GROUP_BYTES an entry of each grouped array and the
+	 * directory of the groups (SIFT_CGORD_GRPENT bytes for each of them, so a few rows an entity cost it), less the array the entity does not get any more
+	 */
+	if (grp >= 0)
+	{
+		double		bytes = 0;
+		int			ngrouped = 0;
+
+		for (int i = 0; i < ncand; i++)
+			if (cand[i].leaf == grp && fit[i])
+				bytes -= GORD_ENDS_BYTES;
+			else if (cand[i].grouped && (fit[i] || cand[i].time) && ngrouped < SIFT_CGORD_ENDS_LEAVES)
+			{
+				ngrouped++;
+				bytes += GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+			}
+		if (ngrouped == 0 || log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
+			grp = -1;
+	}
 	for (int i = 0; i < ncand; i++)
-		if (fit[i] && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
+		if ((fit[i] || (grp >= 0 && cand[i].time && cand[i].grouped)) && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
 		{
 			pick[npick++] = cand[i].leaf;
 			ntext += cand[i].text;
 			nends += !cand[i].text;
-			if (cand[i].ties)
+			if (cand[i].ties && fit[i])
 			{
 				const char *name = keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]);
 

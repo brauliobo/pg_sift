@@ -253,11 +253,11 @@ segw_elem_point(const SiftColSegWriter *w, int c)
 		s->cols[d->parent].kind == SIFT_COLK_GROUP && strstr(s->cols[d->parent].path, ".*") == NULL && strstr(d->path, "#key") == NULL;
 }
 
-/* The leaf c of the segment gets a global order block sorted by (group, key) as well (the group of order_array_group: the build's own choice groups a time column only, and keeps the plain order beside it in the second slot; a group of the user's groups every block and replaces the plain order) */
+/* The leaf c of the segment gets a global order block sorted by (group, key) as well (the group of order_array_group: the build's own choice groups every date, timestamp and integer array, and keeps the plain order beside it in the second slot; a group of the user's groups every block and replaces the plain order) */
 bool
 segw_gorder_grouped(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group > 0 && !sift_cgord_leaf_text(&w->schema->cols[c]) && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_time(&w->schema->cols[c])));
+	return w->pagg.gorder_group > 0 && !sift_cgord_leaf_text(&w->schema->cols[c]) && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_ok(w->schema, &w->schema->cols[c])));
 }
 
 /* ... and the plain order too */
