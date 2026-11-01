@@ -339,6 +339,7 @@ extern uint32 sift_cseg_gorder_count_group(SiftColSegment *seg, int col, int gco
 extern bool sift_cseg_gorder_each_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg);
 extern bool sift_cseg_gorder_grouped_by(SiftColSegment *seg, int col, int gcol);
 extern bool sift_cseg_gorder_tids_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
+extern bool sift_cseg_gorder_tids_groups(SiftColSegment *seg, int gcol, const int64 *set, uint32 nset, uint32 limit, SiftKey **tids, uint32 *ntids);	/* every row of the groups of set, from the second order of any leaf grouped by gcol */
 extern bool sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint32 nkeys, uint32 limit, SiftKey **tids, uint32 *ntids);
 extern bool sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);	/* of the entries [vs, ve), how many come before v in a scan from the front (desc: the back): clo certainly, chi at most; a compact block answers from its buckets */
 /* The reader of the heap rows that the compact blocks of the global order take their exact keys from (col/seg/probe.c) */

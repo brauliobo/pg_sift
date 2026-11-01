@@ -87,6 +87,55 @@ sift_cseg_gorder_tids_group(SiftColSegment *seg, int col, int gcol, int64 group,
 	return true;
 }
 
+/*
+ * The heap addresses of every row of the groups of set (all keys, NULL keys too) from the second order of any leaf grouped by gcol, ascending: a group is its run in the table of groups,
+ * so the leaf that is the group needs no order of its own to be looked up. False when no leaf has such a block or the groups hold more than limit entries.
+ */
+bool
+sift_cseg_gorder_tids_groups(SiftColSegment *seg, int gcol, const int64 *set, uint32 nset, uint32 limit, SiftKey **tids, uint32 *ntids)
+{
+	SiftCGOrdBuf memo;
+	uint32		total = 0,
+				n = 0;
+	int			slot = -1;
+	SiftKey    *t;
+
+	for (int col = 0; col < seg->schema->ncols && slot < 0; col++)
+		slot = gorder_group_view(seg, col, gcol);
+	if (slot < 0)
+		return false;
+	for (uint32 k = 0; k < nset; k++)
+	{
+		uint32		vs,
+					ve,
+					ns,
+					ne;
+
+		sift_cseg_gorder_range(seg, slot, set[k], &vs, &ve, &ns, &ne);
+		total += (ve - vs) + (ne - ns);
+		if (total > limit)
+			return false;
+	}
+	memo.at = UINT32_MAX;
+	t = palloc(Max(total, 1) * sizeof(SiftKey));
+	for (uint32 k = 0; k < nset; k++)
+	{
+		uint32		vs,
+					ve,
+					ns,
+					ne;
+
+		sift_cseg_gorder_range(seg, slot, set[k], &vs, &ve, &ns, &ne);
+		seg_gord_addrs(seg, slot, vs, ve, &memo, t, &n);
+		seg_gord_addrs(seg, slot, ns, ne, &memo, t, &n);
+	}
+	if (n > 1)
+		sift_sort_u64(t, n);
+	*tids = t;
+	*ntids = n;
+	return true;
+}
+
 /* fn(arg, address) for each row of the group in the order of the keys, a chunk at a time (sift_cseg_gorder_each of a group); false when there is no such block or more than limit entries */
 bool
 sift_cseg_gorder_each_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg)

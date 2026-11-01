@@ -72,6 +72,7 @@ TESTING_REGRESS += col_point_auto
 TESTING_REGRESS += col_gorder_autogroup_kinds
 TESTING_REGRESS += col_gorder_group_count
 TESTING_REGRESS += col_gorder_group_range
+TESTING_REGRESS += col_gorder_group_points
 TESTING_REGRESS += agg_explain_why_scan
 TESTING_REGRESS += col_topn_offset agg_child_warm agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_bulk agg_topn_offset_keyed agg_topn_key_only
 TESTING_REGRESS += col_unit_of_block

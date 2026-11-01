@@ -340,7 +340,10 @@ scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo
 	uint32		n,
 				limit;
 
-	if (!gorder_tids_ok(src, c, &limit, false) || !sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n))
+	if (!gorder_tids_ok(src, c, &limit, false))
+		return false;
+	/* an equality on the leaf that is the group of a second order has no order of its own: the group table lists its rows */
+	if (!sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n) && !(lo == hi && sift_cseg_gorder_tids_groups(c->seg, col, &lo, 1, limit, &tids, &n)))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }
@@ -358,7 +361,7 @@ scan_prune_group_tids(SiftColSource *src, ColCursor *c, int i, int col, int gcol
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }
 
-/* An IN list on a leaf with a global order and no point directory: a seek for each key (as many as SIFT_CORDER_MAX_KEYS) */
+/* An IN list on a leaf with a global order (or the group of a second order) and no point directory: a seek for each key (as many as SIFT_CORDER_MAX_KEYS) */
 bool
 scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *set, uint32 nset, uint64 *keep)
 {
@@ -366,7 +369,10 @@ scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int6
 	uint32		n,
 				limit;
 
-	if (nset > SIFT_CORDER_MAX_KEYS || !gorder_tids_ok(src, c, &limit, false) || !sift_cseg_gorder_tids_keys(c->seg, col, set, nset, limit, &tids, &n))
+	if (nset > SIFT_CORDER_MAX_KEYS || !gorder_tids_ok(src, c, &limit, false))
+		return false;
+	/* the leaf that has no order of its own but is the group of a second order: the group table lists the rows of its keys */
+	if (!sift_cseg_gorder_tids_keys(c->seg, col, set, nset, limit, &tids, &n) && !sift_cseg_gorder_tids_groups(c->seg, col, set, nset, limit, &tids, &n))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }
