@@ -11,6 +11,8 @@ typedef struct Scratch
 {
 	uint32		hsize;
 	uint32	   *gid;				/* [nrows] */
+	uint32	   *perm;				/* [nrows] the rows grouped by gid, in the order of the rows within a group */
+	uint32	   *gstart;				/* [maxg + 2] where a group starts in perm */
 	int64	   *hk;					/* [hsize] */
 	int32	   *hg;					/* [hsize] */
 	int64	   *gkey;				/* [maxg + 1] */
@@ -23,6 +25,68 @@ typedef struct Scratch
 	int64	   *mx;
 	bool		minmax;
 } Scratch;
+
+/*
+ * The count of values, the sum (128 bits), the minimum and the maximum of an integer measure by group. The rows are visited group by group (perm: the rows of a group
+ * one after the other, gstart[g] where it starts), so that the four accumulators of a group stay in registers and are written once: the loop over the rows in their own order
+ * loaded and stored them for each row. A measure without a NULL has no bit test and its count is the group's own (false is returned and nn is not written).
+ */
+static inline __attribute__((always_inline)) void
+measure_int_pass(const int64 *restrict key, const uint64 *restrict nulls, const uint32 *restrict perm, const uint32 *restrict gstart, uint32 ng,
+				 SiftCI128 *restrict si, uint32 *restrict nn, int64 *restrict mn, int64 *restrict mx, const bool has_nulls, const bool minmax)
+{
+	for (uint32 g = 0; g < ng; g++)
+	{
+		SiftCI128	sum = 0;
+		int64		lo = INT64_MAX,
+					hi = INT64_MIN;
+		uint32		cnt = 0;
+
+		for (uint32 j = gstart[g]; j < gstart[g + 1]; j++)
+		{
+			uint32		i = perm[j];
+			int64		v;
+
+			if (has_nulls && (nulls[i >> 6] >> (i & 63) & 1))
+				continue;
+			v = key[i];
+			sum += v;
+			cnt++;
+			if (minmax)
+			{
+				lo = Min(lo, v);
+				hi = Max(hi, v);
+			}
+		}
+		si[g] = sum;
+		if (has_nulls)
+			nn[g] = cnt;
+		mn[g] = lo;
+		mx[g] = hi;
+	}
+}
+
+static bool
+measure_int(const SiftCPaggCol *mc, const uint32 *perm, const uint32 *gstart, uint32 ng, uint32 nrows, SiftCI128 *si, uint32 *nn, int64 *mn, int64 *mx, bool minmax)
+{
+	const uint64 *nulls = mc->nulls;
+	bool		has_nulls = false;
+
+	for (uint32 w = 0; nulls != NULL && !has_nulls && w < (nrows + 63) / 64; w++)
+		has_nulls = nulls[w] != 0;
+	if (has_nulls)
+	{
+		if (minmax)
+			measure_int_pass(mc->key, nulls, perm, gstart, ng, si, nn, mn, mx, true, true);
+		else
+			measure_int_pass(mc->key, nulls, perm, gstart, ng, si, nn, mn, mx, true, false);
+	}
+	else if (minmax)
+		measure_int_pass(mc->key, nulls, perm, gstart, ng, si, nn, mn, mx, false, true);
+	else
+		measure_int_pass(mc->key, nulls, perm, gstart, ng, si, nn, mn, mx, false, false);
+	return has_nulls;
+}
 
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
@@ -112,6 +176,18 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 	}
 	for (uint32 i = 0; i < ng; i++)
 		sift_col_put_varint(out, cnt[ord[i].g]);
+	{
+		/* the rows of each group together, in row order: the integer measures are summed group by group */
+		uint32	   *gs = sc->gstart,
+				   *pos = sc->nn;
+
+		gs[0] = 0;
+		for (uint32 g = 0; g < ng; g++)
+			gs[g + 1] = gs[g] + cnt[g];
+		memcpy(pos, gs, ng * sizeof(uint32));
+		for (uint32 i = 0; i < nrows; i++)
+			sc->perm[pos[gid[i]]++] = i;
+	}
 	for (int m = 0; m < nm; m++)
 	{
 		const SiftCPaggCol *mc = &cols[mm[m]];
@@ -145,24 +221,8 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 		}
 		else
 		{
-			memset(si, 0, ng * sizeof(SiftCI128));
-			/* a group without a value keeps these, and is not written (nn is 0): no first-value branch in the loop */
-			for (uint32 i = 0; i < ng; i++)
-			{
-				mn[i] = INT64_MAX;
-				mx[i] = INT64_MIN;
-			}
-			for (uint32 i = 0; i < nrows; i++)
-				if (!is_null(mc->nulls, i))
-				{
-					uint32		g = gid[i];
-					int64		v = mc->key[i];
-
-					si[g] += v;
-					nn[g]++;
-					mn[g] = Min(mn[g], v);
-					mx[g] = Max(mx[g], v);
-				}
+			if (!measure_int(mc, sc->perm, sc->gstart, ng, nrows, si, nn, mn, mx, sc->minmax))
+				memcpy(nn, cnt, ng * sizeof(uint32));
 			for (uint32 i = 0; i < ng; i++)
 				sift_col_put_varint(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
@@ -252,6 +312,8 @@ cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCP
 		hsize *= 2;
 	sc.hsize = hsize;
 	sc.gid = palloc(nrows * sizeof(uint32));
+	sc.perm = palloc(Max(nrows, 1) * sizeof(uint32));
+	sc.gstart = palloc((maxg + 2) * sizeof(uint32));
 	sc.hk = palloc(hsize * sizeof(int64));
 	sc.hg = palloc(hsize * sizeof(int32));
 	sc.gkey = palloc((maxg + 1) * sizeof(int64));
@@ -275,6 +337,8 @@ cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCP
 		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]);
 	}
 	pfree(sc.gid);
+	pfree(sc.perm);
+	pfree(sc.gstart);
 	pfree(sc.hk);
 	pfree(sc.hg);
 	pfree(sc.gkey);
