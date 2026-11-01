@@ -1,0 +1,82 @@
+-- key_order stands for key_cut, order_columns, order_array_columns and point_tid_columns (and order_array_group for 'group, key') while those are not
+-- set: the index is the one the options written out build, an option the user wrote wins, ALTER INDEX SET and RESET change it for the segments written from
+-- now on, REINDEX keeps the effective values, and the answers are the heap's.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE TABLE ko (id int, ent int, ts timestamp, v int) WITH (autovacuum_enabled = off);
+INSERT INTO ko SELECT i, i % 40, timestamp '2024-01-01' + i * interval '1 minute', i % 97 FROM generate_series(1, 30000) i;
+
+-- one column, or 'group, key', nothing else; the columns are checked as the options they stand for are
+CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent, ts, v');
+CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent,');
+CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = ' ts');
+CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'nope');
+
+SET client_min_messages = notice;
+CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts');
+CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent , ts');
+SET client_min_messages = warning;
+CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'ts');
+CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ent, ts', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent', point_tid_columns = 'ent');
+-- an option the user wrote wins over what key_order stands for
+CREATE INDEX ko_win ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', key_cut = 'off', point_tid_columns = 'id');
+CREATE INDEX ko_win_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'id');
+
+-- the bytes and the segment format are those of the options written out
+CREATE FUNCTION ko_shape(i regclass) RETURNS text LANGUAGE sql AS
+$$ SELECT format('%s bytes, format %s, %s units', (SELECT bytes FROM sift.col_index_info(i)), (SELECT string_agg(DISTINCT format::text, ',') FROM sift.col_segments(i)),
+				 (SELECT units FROM sift.col_index_info(i))) $$;
+SELECT ko_shape('ko_one') = ko_shape('ko_hand') AS one_is_hand, ko_shape('ko_two') = ko_shape('ko_hand2') AS two_is_hand,
+	   ko_shape('ko_win') = ko_shape('ko_win_hand') AS the_option_written_wins, ko_shape('ko_win') <> ko_shape('ko_one') AS and_differs_from_key_order;
+
+-- an answer is right when the rows are the heap's, in order; 'array' says the scan read an order array
+CREATE FUNCTION ko_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'array' ELSE 'units' END;
+END $$;
+
+CREATE FUNCTION ko_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT ko_chk(format(q, w, d, l)), 1::bigint
+   FROM unnest(ARRAY['SELECT id, ts FROM ko WHERE %1$s ORDER BY ts %2$s, id LIMIT %3$s',
+					 'SELECT id, ts FROM ko WHERE %1$s ORDER BY ts %2$s, id OFFSET 500 LIMIT %3$s']) q,
+		unnest(ARRAY['ent = 7', 'ent = 7 AND ts > ''2024-01-10''', 'ent IN (3, 4, 5)', 'ts > ''2024-01-15''', 'ts < ''2024-01-03''', 'id > 29000', 'ent = 99']) w,
+		unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20, 300]) l $$;
+SELECT 'the heap''s answers' AS what, bool_and(result IN ('array', 'units')) AS ok, count(*) FROM ko_all();
+
+DROP INDEX ko_hand, ko_hand2, ko_win_hand, ko_win, ko_one;
+ANALYZE ko;
+SELECT result, count(*) FROM ko_all() GROUP BY 1 ORDER BY 1;
+-- latest-N of an entity reads the entries of the entity, not the units
+SELECT ko_chk('SELECT id, ts FROM ko WHERE ent = 7 ORDER BY ts DESC LIMIT 20') AS latest_of_an_entity;
+
+-- ALTER INDEX SET and RESET change the segments written from now on; REINDEX writes them all with the options in force
+INSERT INTO ko SELECT 30000 + i, i % 40, timestamp '2024-02-01' + i * interval '1 minute', i % 97 FROM generate_series(1, 3000) i;
+SELECT sift.col_promote('ko_two') > 0 AS promoted;
+SELECT ko_chk('SELECT id, ts FROM ko WHERE ent = 7 ORDER BY ts DESC LIMIT 20') AS after_the_insert;
+ALTER INDEX ko_two SET (key_order = 'ts');
+SELECT reloptions FROM pg_class WHERE relname = 'ko_two';
+REINDEX INDEX ko_two;
+SELECT ko_chk('SELECT id, ts FROM ko WHERE ts > ''2024-01-20'' ORDER BY ts, id LIMIT 50') AS key_alone;
+ALTER INDEX ko_two RESET (key_order);
+SELECT reloptions FROM pg_class WHERE relname = 'ko_two';
+REINDEX INDEX ko_two;
+SELECT ko_chk('SELECT id, ts FROM ko WHERE ent = 7 ORDER BY ts DESC LIMIT 20') AS after_the_reset;
+ALTER INDEX ko_two SET (key_order = 'ent, ts');
+REINDEX INDEX ko_two;
+SELECT ko_chk('SELECT id, ts FROM ko WHERE ent = 7 ORDER BY ts DESC LIMIT 20') AS back_to_the_group;
+SELECT sift.col_verify('ko_two');
+
+DROP FUNCTION ko_all(), ko_chk(text), ko_shape(regclass);
+DROP TABLE ko;
+DROP EXTENSION pg_sift;

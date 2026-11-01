@@ -133,6 +133,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
+	colb_notice_key_order(index);
 	colb_notice_key_overflow(index);
 	colb_notice_point_tid(index);
 	colb_notice_order_array(index);

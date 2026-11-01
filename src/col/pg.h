@@ -136,6 +136,11 @@ typedef struct SiftColOptions
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
+	int			key_order;		/* offset of the "key_order" string, 0 = none */
+	int			ko_cut;			/* offsets of the strings key_order stands for (am_col_amoptions): all its columns 'a, b' (key_cut), ... */
+	int			ko_lead;		/* ... its first column (point_tid_columns; the group of the order arrays of 'group, key') ... */
+	int			ko_last;		/* ... its last column (order_columns, order_array_columns) and, of 'group, key', the group of the order arrays (ko_group = ko_lead); all 0: key_order is not set */
+	int			ko_group;
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
@@ -170,6 +175,7 @@ extern const char *sift_col_options_order_columns(Relation index);	/* "" when no
 extern const char *sift_col_options_order_array_columns(Relation index);	/* NULL when not set: the build chooses */
 extern const char *sift_col_options_order_layout(Relation index);	/* "" when not set (auto) */
 extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_order(Relation index);	/* "" when none */
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 

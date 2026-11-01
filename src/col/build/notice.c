@@ -44,6 +44,36 @@ colb_notice_key_overflow(Relation index)
 	}
 }
 
+/* key_order fills the options the user did not write: said once, with the values it gave them */
+void
+colb_notice_key_order(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+	StringInfoData what;
+
+	if (o->ko_cut == 0)
+		return;
+	initStringInfo(&what);
+	if (o->key_cut == 0)
+		appendStringInfo(&what, "key_cut = '%s', ", (const char *) o + o->ko_cut);
+	if (!o->order_columns || *((const char *) o + o->order_columns) == '\0')
+		appendStringInfo(&what, "order_columns = '%s', ", (const char *) o + o->ko_last);
+	if (o->order_array_columns == 0)
+		appendStringInfo(&what, "order_array_columns = '%s', ", (const char *) o + o->ko_last);
+	if (o->ko_group && (!o->order_array_group || *((const char *) o + o->order_array_group) == '\0'))
+		appendStringInfo(&what, "order_array_group = '%s', ", (const char *) o + o->ko_group);
+	if (!o->point_tid_columns || *((const char *) o + o->point_tid_columns) == '\0')
+		appendStringInfo(&what, "point_tid_columns = '%s', ", (const char *) o + o->ko_lead);
+	if (what.len == 0)
+		return;
+	what.data[what.len - 2] = '\0';
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": key_order = '%s' sets %s", RelationGetRelationName(index), sift_col_options_key_order(index), what.data),
+			 errdetail("The options you wrote stay. The units are cut by the key and the rows of each kept in its order, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. "
+					   "On a table in arrival order an ordered LIMIT costs what it does without the option, and the index grows and merges as with key_cut."),
+			 errhint("ALTER INDEX %s RESET (key_order), then REINDEX, builds the index without it.", quote_identifier(RelationGetRelationName(index)))));
+}
+
 /* The option writes column format minor 16, which a library before 3.3 refuses, and takes a longer build for the heap addresses it lists: said once, where it is used */
 void
 colb_notice_point_tid(Relation index)

@@ -13,11 +13,18 @@
 #include "core/limits.h"
 #include "col/am/am_int.h"
 
-COL_OPT_STR(sift_col_options_order_columns, order_columns, "")
+COL_OPT_STR_KO(sift_col_options_order_columns, order_columns, ko_last)
 
-COL_OPT_STR(sift_col_options_order_array_group, order_array_group, "")
+COL_OPT_STR_KO(sift_col_options_order_array_group, order_array_group, ko_group)
 
-COL_OPT_STR(sift_col_options_order_array_columns, order_array_columns, NULL)
+/* NULL while it is not set (the build chooses); '' is the user's none */
+const char *
+sift_col_options_order_array_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_columns ? (const char *) o + o->order_array_columns : o->ko_last ? (const char *) o + o->ko_last : NULL;
+}
 
 COL_OPT_STR(sift_col_options_order_layout, order_layout, "")
 
@@ -135,6 +142,17 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
 		r->pagg.super = sift_col_options(index)->superunit;
+		for (int k = 0; k < 2 && sift_col_options(index)->ko_lead; k++)
+		{
+			const SiftColOptions *ko = sift_col_options(index);
+			const char *c = (const char *) ko + (k ? ko->ko_last : ko->ko_lead);
+			int			i = 0;
+
+			while (i < n && strcmp(names[i], c) != 0)
+				i++;
+			if (i == n)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option: column \"%s\" is not a column of the index", c)));
+		}
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,

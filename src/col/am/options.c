@@ -145,6 +145,23 @@ SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 
+/* one column, or 'group, key': the names themselves are checked where the options they stand for are */
+static const char *
+key_order_syntax(const char *value)
+{
+	const char *comma = strchr(value, ',');
+
+	if (value[0] == '\0')
+		return NULL;
+	if (value[0] == ' ' || value[0] == ',')
+		return "a column name, or 'group, key'";
+	if (comma && (strchr(comma + 1, ',') != NULL || comma[1 + strspn(comma + 1, " ")] == '\0'))
+		return "at most two columns, 'group, key'";
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(key_order, key_order_syntax(value))
+
 static relopt_enum_elt_def array_lengths_names[] = {
 	{"auto", SIFT_COL_ARRLEN_AUTO},
 	{"on", SIFT_COL_ARRLEN_ON},
@@ -420,6 +437,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_order",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: it stands for key_cut = 'group, key', order_columns = 'key', order_array_columns = 'key', point_tid_columns = 'group' (the key of a single column), and order_array_group = 'group', each while the option itself is not set; for a heap that is stored in that order (default none)",
+						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
 						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
 						 "", sift_col_validate_order_layout, ShareUpdateExclusiveLock);
@@ -469,6 +489,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
+	{"key_order", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_order)},
 	{"order_layout", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_layout)},
 	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
@@ -480,6 +501,40 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 };
 
+/*
+ * The strings key_order stands for ("a, b", "a", "b", all of "key" for one column) are appended to the options, where the accessors of the options it fills
+ * read them while those are not set. The columns are trimmed here: 'a,b' and 'a , b' are the same option.
+ */
+static void
+key_order_expand(SiftColOptions **op)
+{
+	SiftColOptions *o = *op;
+	char	   *first = pstrdup((const char *) o + o->key_order),
+			   *last = first,
+			   *comma = strchr(first, ',');
+	size_t		base = VARSIZE(o);
+	char	   *dst;
+
+	if (comma)
+	{
+		*comma = '\0';
+		last = comma + 1 + strspn(comma + 1, " ");
+		while (comma > first && comma[-1] == ' ')
+			*--comma = '\0';
+	}
+	o = repalloc(o, base + 2 * (strlen(first) + strlen(last)) + 8);
+	dst = (char *) o + base;
+	o->ko_cut = base;
+	dst += sprintf(dst, comma ? "%s, %s" : "%s", first, last) + 1;
+	o->ko_lead = dst - (char *) o;
+	dst += sprintf(dst, "%s", first) + 1;
+	o->ko_last = dst - (char *) o;
+	dst += sprintf(dst, "%s", last) + 1;
+	o->ko_group = comma ? o->ko_lead : 0;
+	SET_VARSIZE(o, dst - (char *) o);
+	*op = o;
+}
+
 bytea *
 am_col_amoptions(Datum reloptions, bool validate)
 {
@@ -487,6 +542,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 
 	if (validate && o && o->superunit == 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
+	if (o && o->key_order && *((const char *) o + o->key_order))
+		key_order_expand(&o);
 	return (bytea *) o;
 }
 #ifdef SIFT_TESTING
@@ -568,14 +625,16 @@ COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-COL_OPT_STR(sift_col_options_point_tid_columns, point_tid_columns, "")
+COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_lead)
+
+COL_OPT_STR(sift_col_options_key_order, key_order, "")
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *
 sift_col_options_key_cut(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
-	const char *v = o->key_cut ? (const char *) o + o->key_cut : "";
+	const char *v = o->key_cut ? (const char *) o + o->key_cut : o->ko_cut ? (const char *) o + o->ko_cut : "";
 
 	if (strncmp(v, "auto:", 5) == 0)
 		return v + 5;
@@ -588,5 +647,5 @@ sift_col_options_key_cut_auto(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return o->key_cut == 0 || strncmp((const char *) o + o->key_cut, "auto", 4) == 0;
+	return (o->key_cut == 0 && o->ko_cut == 0) || (o->key_cut != 0 && strncmp((const char *) o + o->key_cut, "auto", 4) == 0);
 }

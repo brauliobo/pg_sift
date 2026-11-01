@@ -47,6 +47,7 @@ extern uint64	colb_next_gen(ColBuild *b);
 extern void	colb_notice_key_overflow(Relation index);
 
 extern void	colb_notice_point_tid(Relation index);
+extern void	colb_notice_key_order(Relation index);
 
 extern void	colb_notice_order_array(Relation index);
 extern void	colb_notice_order_layout(Relation index);
