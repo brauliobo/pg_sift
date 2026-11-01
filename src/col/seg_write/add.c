@@ -306,7 +306,14 @@ segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 			cols[c].key = tk[c];
 		}
 		if (def->store == SIFT_COLS_INT)
-			sift_cpagg_leaf(&cols[c], &la[c]);
+		{
+			const SiftCZone *z = w->zones + (Size) w->nsb * ncols + c;
+
+			cols[c].ranged = z->nvals > z->nnull;
+			cols[c].lo = z->min;
+			cols[c].hi = z->max;
+			sift_cpagg_leaf_in(&cols[c], z->min, z->max, &la[c]);
+		}
 	}
 	w->cubeoff[w->nsb] = cubeat = w->cube.len;
 	w->ecubeoff[w->nsb] = ecubeat = w->ecube.len;

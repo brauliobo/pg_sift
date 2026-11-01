@@ -158,10 +158,12 @@ typedef void (*RowDone) (void *state, const RowRef *refs, uint64 n);
  */
 typedef struct SortEnt
 {
-	int64		k;
+	int64		k,
+				k2;				/* the second leaf, when there is one */
 	SiftKey		tid;
 	RowRef		ref;
-	bool		null;
+	bool		null,
+				null2;
 } SortEnt;
 
 static inline int
@@ -173,8 +175,13 @@ ent_cmp(const OrderCtx *c, const SortEnt *x, const SortEnt *y)
 		return x->k < y->k ? -1 : 1;
 	if (c->nleaf > 1)
 	{
-		int			r = key_cmp_from(&x->ref, &y->ref, c, 1, c->nleaf);
+		int			r;
 
+		if (x->null2 != y->null2)
+			return x->null2 ? 1 : -1;
+		if (!x->null2 && x->k2 != y->k2)
+			return x->k2 < y->k2 ? -1 : 1;
+		r = c->nleaf > 2 ? key_cmp_from(&x->ref, &y->ref, c, 2, c->nleaf) : 0;
 		if (r != 0)
 			return r;
 	}
@@ -203,6 +210,8 @@ sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 		e[i].tid = x->b->keys[x->r];
 		e[i].null = ctx->nleaf > 0 && ref_null(x, ctx->leaf[0]);
 		e[i].k = ctx->nleaf == 0 || e[i].null ? 0 : sift_crun_key(&ctx->schema->cols[ctx->leaf[0]], x->b->col[ctx->leaf[0]].key[x->r]);
+		e[i].null2 = ctx->nleaf > 1 && ref_null(x, ctx->leaf[1]);
+		e[i].k2 = ctx->nleaf < 2 || e[i].null2 ? 0 : sift_crun_key(&ctx->schema->cols[ctx->leaf[1]], x->b->col[ctx->leaf[1]].key[x->r]);
 	}
 	sort_ents(e, n, (OrderCtx *) ctx);
 	for (uint64 i = 0; i < n; i++)
@@ -210,13 +219,32 @@ sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 	pfree(e);
 }
 
-#define ST_SORT sort_by_tid
-#define ST_ELEMENT_TYPE RowRef
-#define ST_COMPARE(p, q) SIFT_CMP3((p)->b->keys[(p)->r], (q)->b->keys[(q)->r])
+/* A row's TID next to its place, so that the sort by TID compares dense pairs and not the batch of each row (a cache miss a comparison) */
+typedef struct TidPos
+{
+	SiftKey		tid;
+	uint32		pos;
+} TidPos;
+
+#define ST_SORT sort_tid_pos
+#define ST_ELEMENT_TYPE TidPos
+#define ST_COMPARE(p, q) SIFT_CMP3((p)->tid, (q)->tid)
 #define ST_SCOPE static
 #define ST_DECLARE
 #define ST_DEFINE
 #include "lib/sort_template.h"
+
+/* refs[0, n) in TID order; tp and tmp: room for n entries */
+static void
+sort_by_tid(RowRef *refs, uint64 n, TidPos *tp, RowRef *tmp)
+{
+	for (uint64 i = 0; i < n; i++)
+		tp[i] = (TidPos) {refs[i].b->keys[refs[i].r], (uint32) i};
+	sort_tid_pos(tp, n);
+	for (uint64 i = 0; i < n; i++)
+		tmp[i] = refs[tp[i].pos];
+	memcpy(refs, tmp, n * sizeof(RowRef));
+}
 
 /* the rows of refs[0, avail) that have the first leaf of refs[0] (the rows are in the order of the key) */
 static uint64
@@ -318,6 +346,8 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 	uint64		want = unit_rows + slack + 1;
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
 	RowRef	   *win = refs ? NULL : palloc_array(RowRef, want);
+	TidPos	   *tidpos = palloc_array(TidPos, want);
+	RowRef	   *tidtmp = palloc_array(RowRef, want);
 	uint64		n = 0,
 				pos = 0;
 	uint32		seq = seq0,
@@ -349,7 +379,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		if (avail == 0)
 			break;
 		end = cut_at(ctx, u, avail, unit_rows, slack, &split);
-		sort_by_tid(u, end);
+		sort_by_tid(u, end, tidpos, tidtmp);
 		/*
 		 * The number of a unit is the sequence of the cut by a key. Without a key the units are in the order of the TIDs and take the superblock of their first
 		 * row (or the one after the unit before it), so that a walk of the superblocks meets an overlay next to the units of the heap it overlays
@@ -379,6 +409,8 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
+	pfree(tidpos);
+	pfree(tidtmp);
 	return seq - seq0;
 }
 
