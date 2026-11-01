@@ -700,21 +700,10 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 
 /*
  * Fewer slices than this are merged by one process. The slices hold the same count of rows (slice_bounds), but every one reads all the inputs, so the merge costs more
- * instructions than one process (+80% in a build of 1,000,000 rows) and 2 slices take about what the scan the workers shared saved; from 3 the build is faster than one
- * process (1,000,000 rows, 3 slices, 2 / 4 / 8 workers: 2,310 / 2,150 / 1,780 ms against 2,830 alone; 4,000,000 rows, 10 slices: 10.1 / 6.3 / 5.7 s against 13.0 s),
- * and with 2 it is not (800,000 rows, 2 slices, 2 workers: 3.4 to 4.4 s against 2.3 to 3.4 s).
+ * instructions than one process (+80% in a build of 1,000,000 rows): 2 slices take about what the scan the workers shared saved. A key_cut build is made by workers only
+ * for the tests (build_pays), so the participants' merge is what they exercise.
  */
 #define MERGE_SLICES_MIN 3
-
-/* Is a merge of this many bytes made in slices by the participants of a build? (the same count of slices as merge_by_workers) */
-bool
-sift_col_merge_sliced(uint64 bytes)
-{
-	int			kb = maint_part_kb_for(bytes);
-	uint64		share = (uint64) kb * 1024 / 4 * 3;
-
-	return kb > 0 && (bytes + share - 1) / share >= MERGE_SLICES_MIN;
-}
 
 /*
  * The merge of the segments with key_cut by the participants of a parallel context: of a parallel build, when its output is cut into partitions (the rewrite of an

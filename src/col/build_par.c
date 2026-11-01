@@ -155,13 +155,15 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 
 /*
  * Does a parallel build pay? Without key_cut the participants take disjoint superblocks and their segments stay as they are: the scan is shared and nothing follows
- * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8), as it does in a build that is not merged (CONCURRENTLY). With key_cut every participant holds all the keys, and the merge that follows
- * rewrites every row: 0.7 (300,000 rows) to 0.9 (1,000,000) of the time of the scan alone, which the workers cannot take unless the merge is cut into partitions and
- * made in 3 slices or more; one process merging costs more than the scan saves (300,000 rows, 2 workers: 1,270 ms against 1,200 alone, CPU +50%; 1,000,000 rows, 2 workers: 3,800
- * against 2,930). The index is that of the statistics (build_gap), 1.7 times what the build writes of this table (1.7 at 300,000 and 1,000,000 rows; 1.7 to 2.0 in SIZING.md).
+ * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8), as it does in a build that is not merged (CONCURRENTLY). With key_cut every
+ * participant holds all the keys, and the merge that follows rewrites every row; the workers can only take it in slices of the key range, which read every input
+ * again (instructions +77%, WAL twice, the file longer by the segments of the participants). On the tip (the rewrite of one process is 2.2 times faster than when the
+ * slices were measured, and the grouped order arrays are built by default) it does not pay at any size measured: 13 columns, 1,000,000 rows, 64 MB of
+ * `maintenance_work_mem`: 3,223 ms alone, 3,769 with 4 workers and 3,998 with 8 (CPU 3,201 / 3,736 / 3,962 ms of the backend alone); 4,000,000 rows: 13.7 s alone, 28.5 s with 4 and 29.1 s
+ * with 8 on one core, so a key_cut index is built by one process (the test option sift.test_col_parallel_always keeps the participants' build for the tests of their merge).
  */
 static bool
-build_pays(Relation heap, Relation index, IndexInfo *info)
+build_pays(Relation index, IndexInfo *info)
 {
 	if (info->ii_Concurrent || !sift_col_key_cut(sift_col_rel(index)))
 		return true;
@@ -169,7 +171,7 @@ build_pays(Relation heap, Relation index, IndexInfo *info)
 	if (sift_test_col_parallel_always)
 		return true;
 #endif
-	return sift_col_merge_sliced((uint64) sift_col_build_gap(heap, index) * BLCKSZ * 10 / 17);
+	return false;
 }
 
 /* NULL when no worker could be launched: nothing is written and the caller builds alone */
@@ -286,7 +288,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	uint32		gapn;
 	int			nmerge;
 
-	if (!build_pays(heap, index, info))
+	if (!build_pays(index, info))
 		return NULL;
 	ldr = begin_parallel(heap, index, info);
 	if (ldr == NULL)

@@ -269,7 +269,6 @@ extern PGDLLIMPORT int sift_col_unit_floor;
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
-extern bool sift_col_merge_sliced(uint64 bytes);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
 extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */
