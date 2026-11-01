@@ -3,6 +3,7 @@
 # deletes, updates, inserts, VACUUM and merges of a second session: they are equal. The column index of the table is created before the
 # BM25 index, so a VACUUM cleans it first and a scan that begins between the two passes reads the match set of the second before it
 # is cleaned. Runs on the release build too (no test functions), with less reach.
+# A soak, not a proof: no single-guard mutation is known that it catches (vacuum_agg_snapshot is the deterministic test of this race); it looks for races nobody wrote a test for, in 8 s.
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 8 6)
