@@ -406,6 +406,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
 	if (w->anyends)
 		w->format = Max(w->format, SIFT_COL_FORMAT_ENDORD);
+	if (w->anycompact)
+		w->format = Max(w->format, SIFT_COL_FORMAT_ORDLAYOUT);
 	if (w->keyed)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)

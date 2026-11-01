@@ -125,12 +125,19 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 			SiftCGOrdHdr h;
 
 			/* the build's own choice of leaves keeps the ends of the order of a segment of many rows; a list of the user's keeps all of it */
-			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, a->ends, &ob->tab);
+			int			layout = SIFT_CGORD_L_WHOLE;
+
+#ifdef SIFT_TESTING
+			if (sift_test_col_gorder_layout == 1 && !a->ends)
+				layout = SIFT_CGORD_L_COMPACT;
+#endif
+			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, dense, a->ends, layout, &ob->tab);
 			if (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h))
 			{
 				ob->nent = h.entries;
 				ob->nvals = h.values;
 				w->anyends = h.vtotal != 0 || w->anyends;
+				w->anycompact = h.bracket != 0 || w->anycompact;
 			}
 		}
 	}

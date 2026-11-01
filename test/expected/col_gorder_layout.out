@@ -1,0 +1,246 @@
+-- order_layout = compact (here forced by the testing setting sift.test_col_gorder_layout): the order of a leaf of many rows keeps the key of every 32nd entry; the others are read from the
+-- rows of the heap. Every ordered read answers what the table does (a copy without an index is the oracle): each column type, ASC and DESC, NULLs, LIMIT and OFFSET, bounds at the ends, in the middle and
+-- in a bracket, a write buffer, dead rows (a segment that has one reads its units), updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
+-- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_col_gorder_ends = 64;
+SET sift.test_col_gorder_layout = 1;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigint, dup int, pad int);
+INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30000)::int - 15000 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (random() * 1000000000000)::bigint - 500000000000 END, (random() * 20)::int, 0
+FROM generate_series(1, 6000) i;
+CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad) WITH (order_columns = 'ts, tz, d, s, b, dup', order_array_columns = 'ts, tz, d, s, b, dup', write_buffer_limit = 64);
+INSERT INTO t SELECT 6000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 1500) i;
+SELECT sift.col_promote('t_ix') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+ format | segments | rows 
+--------+----------+------
+     38 |        1 |  179
+     41 |        2 | 7321
+(2 rows)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- rows that stay in the write buffer: the order reads them from memory
+INSERT INTO t SELECT 8000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 100) i;
+CREATE TABLE p AS SELECT * FROM t;
+ANALYZE t;
+ANALYZE p;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 't')) INTO a;
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'p')) INTO b;
+	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+-- the quantiles of each column, as literals of its type: the bounds of the shapes
+CREATE FUNCTION quant(col text, ty text, f float8) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT quote_literal(percentile_disc(%s) WITHIN GROUP (ORDER BY %I))||''::%s'' FROM p', f, col, ty) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE shapes AS
+SELECT col, ty, dir, nl, lim, off, lo, hi, quant(col, ty, 0.5) AS mid
+FROM (VALUES ('ts', 'timestamp'), ('tz', 'timestamptz'), ('d', 'date'), ('s', 'smallint'), ('b', 'bigint'), ('dup', 'int')) c(col, ty),
+	 (VALUES ('ASC'), ('DESC')) d(dir),
+	 (VALUES ('NULLS FIRST'), ('NULLS LAST')) n(nl),
+	 (VALUES (1), (20), (100)) l(lim),
+	 (VALUES (0), (30), (700)) o(off),
+	 (VALUES (NULL::float8), (0.01), (0.5), (0.98)) b1(lo),
+	 (VALUES (NULL::float8), (0.02), (0.5), (0.99)) b2(hi)
+WHERE (lo IS NULL OR hi IS NULL OR lo < hi) AND (off = 0 OR lim = 20);
+SELECT count(*) AS shapes FROM shapes;
+ shapes 
+--------
+   1440
+(1 row)
+
+CREATE FUNCTION shape_sql(s shapes) RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT %1$s AS k FROM @ WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', s.col,
+		concat_ws(' AND ', CASE WHEN s.lo IS NOT NULL THEN format('%s >= %s', s.col, quant(s.col, s.ty, s.lo)) END,
+						   CASE WHEN s.hi IS NOT NULL THEN format('%s <= %s', s.col, quant(s.col, s.ty, s.hi)) END, 'true'),
+		s.dir, s.nl, s.lim, s.off)
+$$;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SELECT count(*) FILTER (WHERE same(format('SELECT %1$s AS k FROM @ WHERE %1$s >= %2$s AND %1$s <= %3$s ORDER BY %1$s', s.col, quant(s.col, s.ty, s.lo), quant(s.col, s.ty, s.hi)))) AS ranges_whole, count(*) AS n
+FROM shapes s WHERE lo IS NOT NULL AND hi IS NOT NULL AND dir = 'ASC' AND nl = 'NULLS LAST' AND lim = 1 AND off = 0;
+ ranges_whole | n  
+--------------+----
+           30 | 30
+(1 row)
+
+-- a range or count across the middle is answered by the order, and a bound inside a bracket is the same row as the table's
+SELECT global_order('SELECT ts AS k FROM t WHERE ts >= TIMESTAMP ''2026-04-01'' ORDER BY ts DESC LIMIT 20') AS a_range_at_the_end;
+ a_range_at_the_end 
+--------------------
+ t
+(1 row)
+
+SELECT same('SELECT ts AS k FROM @ WHERE ts BETWEEN TIMESTAMP ''2026-04-01'' AND TIMESTAMP ''2026-04-03'' ORDER BY ts') AS a_range_in_the_middle;
+ a_range_in_the_middle 
+-----------------------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM t WHERE ts BETWEEN TIMESTAMP '2026-04-01' AND TIMESTAMP '2026-05-01') = (SELECT count(*) FROM p WHERE ts BETWEEN TIMESTAMP '2026-04-01' AND TIMESTAMP '2026-05-01') AS count_same;
+ count_same 
+------------
+ t
+(1 row)
+
+SELECT same('SELECT dup AS k FROM @ ORDER BY dup LIMIT 700') AS ties_asc, same('SELECT dup AS k FROM @ ORDER BY dup DESC LIMIT 700') AS ties_desc;
+ ties_asc | ties_desc 
+----------+-----------
+ t        | t
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- an update that changes a key is not a HOT update (the column is in the index): the old version stays in the segment and the new one is in the write buffer
+UPDATE t SET ts = ts + INTERVAL '3 days', s = s + 1 WHERE id % 13 = 0;
+-- one that does not (pad is not in the order, still covered): the chain keeps the key
+UPDATE t SET pad = 1 WHERE id % 5 = 0;
+-- an aborted update and an aborted insert leave versions nobody sees
+BEGIN;
+UPDATE t SET ts = ts + INTERVAL '1 year' WHERE id % 3 = 0;
+INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01', TIMESTAMPTZ '2026-01-01', DATE '2026-01-01', 1, 1, 1, 0 FROM generate_series(1, 200) i;
+ROLLBACK;
+DROP TABLE p;
+CREATE TABLE p AS SELECT * FROM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1372 |   1440
+(1 row)
+
+-- pruned HOT chains: the root of a chain is a redirect
+VACUUM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- dead rows: the segment has a row bulkdelete cleared, so its order is not read from the heap (the units answer), and a new row may take the address of a dead one
+DELETE FROM t WHERE ts < TIMESTAMP '2026-02-01' OR id % 17 = 0;
+VACUUM t;
+INSERT INTO t SELECT 30000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 700) i;
+DROP TABLE p;
+CREATE TABLE p AS SELECT * FROM t;
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a merge and a rewrite write the order again, compact again
+SELECT sift.col_promote('t_ix') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('t_ix', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+ format | segments | rows 
+--------+----------+------
+     41 |        1 | 7132
+(1 row)
+
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- REINDEX writes it as the setting says: whole again
+SET sift.test_col_gorder_layout = 0;
+REINDEX INDEX t_ix;
+SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+ format | segments | rows 
+--------+----------+------
+     38 |        1 | 7132
+(1 row)
+
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SET sift.test_col_gorder_layout = 1;
+REINDEX INDEX t_ix;
+SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
+ format | segments | rows 
+--------+----------+------
+     41 |        1 | 7132
+(1 row)
+
+SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;
+ same | shapes 
+------+--------
+ 1440 |   1440
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+

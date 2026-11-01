@@ -19,6 +19,12 @@
  * group; header words 6 and 7 are their number and the group leaf + 1. The keys of a group ascend, so a scan that pins the group reads its entries only, as a b-tree
  * on (group, key) would; a scan that does not pin it cannot use the block.
  *
+ * Version 4, a block of the layout compact (column format minor 41, option order_layout): the chunks of the first and last 2 * SIFT_CGORD_ENDS (8,192) entries of the segment and the chunks that
+ * hold NULL rows are as in version 1; every other chunk (SIFT_CGORD_COMPACT in the directory's pad word) has the key of every bracket-th entry only (header word 6 is the bracket,
+ * word 7 is 0): its first blob codes those keys, its second the addresses of all its entries as block << ob | offset, the offset bits of the whole chunk. The key of another entry
+ * is the one of the row at its address (sift_cseg_gorder_fill reads it from the heap and keeps it between the keys of the entries next to it). A block with a compact chunk is usable only while
+ * the segment has no dead row: a row that bulkdelete cleared may have a new tenant at its address.
+ *
  * Version 3, a block of a text leaf: the key of an entry is the rank of its string among the distinct strings of the segment in the order of the leaf's collation (then
  * the bytes), so equal keys are equal strings and a scan merges the segments by comparing their strings, not their keys. Header words 6 and 7 are the collation (an OID) and
  * the bytes of the strings, which end the block: {u32 strings, u32 strings in a block, u32 blocks, u32 0}, u32 offset[blocks + 1] from the start of this section, then the
@@ -36,6 +42,11 @@
 #define SIFT_CGORD_VERSION	1
 #define SIFT_CGORD_VERSION_GROUP	2
 #define SIFT_CGORD_VERSION_TEXT	3
+#define SIFT_CGORD_VERSION_COMPACT	4
+#define SIFT_CGORD_BRACKET	32		/* the entries between two stored keys of a compact chunk */
+#define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the key of every bracket-th entry only */
+#define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
+#define SIFT_CGORD_L_COMPACT	1
 #define SIFT_CGORD_STR_BLK	16
 #define SIFT_CGORD_STR_MAX	256		/* bytes of the buffer for a string of a text block (SIFT_COL_DICT_MAX_ENTRY + 1) */
 #define SIFT_CGORD_GRPENT	24
@@ -58,6 +69,9 @@ typedef struct SiftCGOrdBuf
 	uint32		at;				/* the position of the chunk's first entry */
 	uint32		cm;				/* the entries of the chunk decoded: the first cm */
 	uint32		rows;			/* the entries of the chunk */
+	uint32		bracket;		/* a compact chunk: key[] holds the keys of every bracket-th entry, and those of the window below; else 0 */
+	uint32		kfrom;			/* the keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (the first cm of a chunk that is not compact) */
+	uint32		kn;
 	int64		key[SIFT_CGORD_CAP];
 	uint64		addr[SIFT_CGORD_CAP];
 } SiftCGOrdBuf;
@@ -74,6 +88,7 @@ typedef struct SiftCGOrdHdr
 	uint32		strbytes;
 	uint32		head;			/* a block of the ends only: the entries of the first end (the others of the values are the last end); else 0 */
 	uint32		vtotal;			/* ... and the values the segment has in all; 0: the block is complete */
+	uint32		bracket;		/* version 4: the entries between two stored keys of a compact chunk; else 0 */
 } SiftCGOrdHdr;
 
 /* What a scan wants of the blocks (sift_col_gorder_open): a block of the ends only answers a scan of few rows that starts at an end of it */
@@ -120,8 +135,9 @@ typedef struct SiftCGOrdDir
  * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
  * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  * ends: a segment of more than 2 * SIFT_CGORD_ENDS values keeps the ends only.
+ * layout: SIFT_CGORD_L_COMPACT writes a block of version 4 when the segment has more than 8 * SIFT_CGORD_ENDS (32,768) values and dense is set, else the whole order.
  */
-extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, StringInfo out);
+extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
 extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, StringInfo out);
 
@@ -147,6 +163,7 @@ extern bool sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint
 extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
 
 #ifdef SIFT_TESTING
+extern int	sift_test_col_gorder_layout;	/* sift.test_col_gorder_layout: 1 writes the order of every plain leaf of many rows as a compact block */
 extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
 extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
 extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
@@ -215,5 +232,7 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
  * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
 extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
+/* A compact chunk of m entries: its ceil(m / bracket) stored keys into key[0], key[bracket], ... and the addresses of its first w entries into addr (SIFT_CGORD_CAP slots each) */
+extern void sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 bracket, uint32 w, int64 *key, uint64 *addr);
 
 #endif

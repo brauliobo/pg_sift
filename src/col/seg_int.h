@@ -350,6 +350,9 @@ typedef struct GOrdLeaf
 	uint32		sblen;
 	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
 	SiftCStrPos spos;			/* the decode of the block, which goes on from the string decoded last */
+	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
+	AttrNumber	hatt;			/* ... and the heap attribute of the leaf */
+	Oid			hrel;			/* ... the heap */
 } GOrdLeaf;
 
 typedef struct SegPriv

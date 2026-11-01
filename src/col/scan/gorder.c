@@ -475,6 +475,8 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 	buf->at = p / SIFT_CGORD_ROWS * SIFT_CGORD_ROWS;
 	buf->rows = Min(g->n - buf->at, (uint32) SIFT_CGORD_ROWS);
 	buf->cm = Min(buf->rows, Max(w, p - buf->at + 1));
+	buf->bracket = buf->kfrom = 0;
+	buf->kn = buf->cm;
 	memcpy(buf->key, g->key + buf->at, buf->cm * sizeof(int64));
 	for (uint32 k = 0; k < buf->cm; k++)
 		buf->addr[k] = g->tid[buf->at + k];

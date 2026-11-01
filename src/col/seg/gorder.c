@@ -6,8 +6,17 @@
 #include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
+#include "access/heapam.h"
+#include "access/tableam.h"
+#include "catalog/pg_am_d.h"
+#include "catalog/pg_type_d.h"
+#include "storage/bufpage.h"
+#include "utils/rel.h"
+#include "utils/relcache.h"
 
 /* ---- the global order of a leaf (col/gorder.h) ---- */
+
+static bool gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
 
 /* The block of leaf col with its header read (the directory entries are read and checked when they are used, the whole directory by verify), NULL when the segment has none */
 GOrdLeaf *
@@ -172,12 +181,215 @@ sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 sle
 int
 sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 {
-	const GOrdLeaf *g = grouped ? seg_gord_leaf(seg, seg->schema->ncols + col) : NULL;
+	GOrdLeaf   *g = grouped ? seg_gord_leaf(seg, seg->schema->ncols + col) : NULL;
 
 	if (g != NULL)
 		return seg->schema->ncols + col;
 	g = seg_gord_leaf(seg, col);
-	return g != NULL && (g->hdr.gcol >= 0) == grouped ? col : -1;
+	return g != NULL && (g->hdr.gcol >= 0) == grouped && gord_probe_ok(seg, g, col) ? col : -1;
+}
+
+/*
+ * Whether the keys a compact block does not store can be read from the heap: the segment has no row that bulkdelete cleared (the address of such a row may have a new tenant),
+ * and the leaf is a column of a heap table of the type its key is made of. A block that cannot is not used: its scans read the units.
+ */
+static bool
+gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
+{
+	const SiftColDef *d;
+	Form_pg_index ix = seg->index->rd_index;
+	Relation	heap;
+	Oid			ty = InvalidOid;
+
+	if (g->hdr.bracket == 0)
+		return true;
+	if (g->probe != 0)
+		return g->probe > 0;
+	g->probe = -1;
+	if ((seg->entry.flags & SIFT_SEG_DIRTY) || col >= seg->schema->ncols)
+		return false;
+	d = &seg->schema->cols[col];
+	if (d->attno < 1 || d->attno > ix->indnatts || ix->indkey.values[d->attno - 1] <= 0 || !sift_cgord_leaf_ok(seg->schema, d))
+		return false;
+	switch (d->type)
+	{
+		case SIFT_COLT_INT2:
+			ty = INT2OID;
+			break;
+		case SIFT_COLT_INT4:
+			ty = INT4OID;
+			break;
+		case SIFT_COLT_INT8:
+			ty = INT8OID;
+			break;
+		case SIFT_COLT_DATE:
+			ty = DATEOID;
+			break;
+		case SIFT_COLT_TIMESTAMP:
+			ty = TIMESTAMPOID;
+			break;
+		case SIFT_COLT_TIMESTAMPTZ:
+			ty = TIMESTAMPTZOID;
+			break;
+		default:
+			return false;
+	}
+	g->hatt = ix->indkey.values[d->attno - 1];
+	g->hrel = ix->indrelid;
+	heap = RelationIdGetRelation(g->hrel);
+	if (!RelationIsValid(heap))
+		return false;
+	if (heap->rd_rel->relkind == RELKIND_RELATION && heap->rd_rel->relam == HEAP_TABLE_AM_OID && g->hatt <= RelationGetDescr(heap)->natts &&
+		!TupleDescAttr(RelationGetDescr(heap), g->hatt - 1)->attisdropped && TupleDescAttr(RelationGetDescr(heap), g->hatt - 1)->atttypid == ty)
+		g->probe = 1;
+	RelationClose(heap);
+	return g->probe > 0;
+}
+
+/* The heap rows a window of keys is read from (the relation is opened for the window and closed with it) */
+typedef struct GOrdProbe
+{
+	Relation	rel;
+	BlockNumber nblocks;
+	AttrNumber	att;
+	bool		wide;			/* the key is the 8 bytes of the datum, else 4 or 2 */
+	bool		two;
+} GOrdProbe;
+
+static void
+probe_open(SiftColSegment *seg, GOrdLeaf *g, int col, GOrdProbe *pr)
+{
+	pr->rel = NULL;
+	if (g->hdr.bracket == 0 || !gord_probe_ok(seg, g, col))
+		return;
+	pr->rel = RelationIdGetRelation(g->hrel);
+	if (!RelationIsValid(pr->rel))
+	{
+		pr->rel = NULL;
+		return;
+	}
+	pr->nblocks = RelationGetNumberOfBlocks(pr->rel);
+	pr->att = g->hatt;
+	pr->two = seg->schema->cols[col].type == SIFT_COLT_INT2;
+	pr->wide = !pr->two && seg->schema->cols[col].type != SIFT_COLT_INT4 && seg->schema->cols[col].type != SIFT_COLT_DATE;
+}
+
+static void
+probe_close(GOrdProbe *pr)
+{
+	if (pr->rel != NULL)
+		RelationClose(pr->rel);
+	pr->rel = NULL;
+}
+
+/*
+ * The key of the row at addr, read from its heap tuple: a redirect is followed (the versions of a chain keep the indexed columns), a dead or missing tuple or an
+ * attribute with no value gives false.
+ */
+static bool
+probe_key(const GOrdProbe *pr, uint64 addr, int64 *key)
+{
+	BlockNumber blk = (BlockNumber) (addr >> 16);
+	Buffer		b;
+	Page		page;
+	bool		ok = false;
+
+	if (pr->rel == NULL || blk >= pr->nblocks)
+		return false;
+	b = ReadBuffer(pr->rel, blk);
+	LockBuffer(b, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(b);
+	if (!PageIsNew(page) && !PageIsEmpty(page))
+	{
+		OffsetNumber off = (OffsetNumber) (addr & 0xFFFF),
+					maxoff = PageGetMaxOffsetNumber(page);
+
+		for (int hop = 0; hop < 2 && off >= FirstOffsetNumber && off <= maxoff; hop++)
+		{
+			ItemId		lp = PageGetItemId(page, off);
+
+			if (ItemIdIsRedirected(lp))
+			{
+				off = ItemIdGetRedirect(lp);
+				continue;
+			}
+			if (ItemIdIsNormal(lp) && ItemIdGetLength(lp) >= SizeofHeapTupleHeader)
+			{
+				HeapTupleData tup;
+				bool		isnull;
+				Datum		v;
+
+				tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+				tup.t_len = ItemIdGetLength(lp);
+				v = heap_getattr(&tup, pr->att, RelationGetDescr(pr->rel), &isnull);
+				if (!isnull)
+				{
+					*key = pr->wide ? DatumGetInt64(v) : pr->two ? (int64) DatumGetInt16(v) : (int64) DatumGetInt32(v);
+					ok = true;
+				}
+			}
+			break;
+		}
+	}
+	UnlockReleaseBuffer(b);
+	return ok;
+}
+
+/* The key of the non-anchor entry i of a compact chunk in buf: the heap row's, between the keys of its bracket's anchors; an entry the heap cannot answer for gets the anchor's */
+static int64
+compact_key(const GOrdProbe *pr, const SiftCGOrdBuf *buf, uint32 i)
+{
+	uint32		b = i / buf->bracket * buf->bracket,
+				nx = b + buf->bracket;
+	int64		lo = buf->key[b],
+				hi = nx < buf->rows ? buf->key[nx] : buf->key[buf->rows],
+				k;
+
+	if (!probe_key(pr, buf->addr[i], &k))
+		return lo;
+	return Max(lo, Min(hi, k));
+}
+
+/* The chunk c of a compact block into buf: its addresses, its anchors at key[j * bracket] and the first key of the next chunk after the last entry; no window of keys yet */
+static void
+compact_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf)
+{
+	uint32		m = sift_cgord_chunk_rows(&g->hdr, c);
+	uint8	   *raw = palloc(ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen) + SIFT_COL_PAD);
+
+	seg_read(seg, g->at + d->off, ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen), raw);
+	sift_cgord_decode_compact(seg->mcxt, raw, d->klen, raw + ALIGN8((Size) d->klen), d->alen, d->pad, m, g->hdr.bracket, m, buf->key, buf->addr);
+	pfree(raw);
+	buf->at = c * g->hdr.crows;
+	buf->rows = buf->cm = m;
+	buf->bracket = g->hdr.bracket;
+	buf->kfrom = buf->kn = 0;
+	buf->key[m] = c + 1 < g->hdr.chunks ? seg_gord_dirent(seg, g, col, c + 1).first : PG_INT64_MAX;
+}
+
+/* The keys of the bracket j of the compact chunk in buf, into its window */
+static void
+compact_window(SiftColSegment *seg, GOrdLeaf *g, int col, SiftCGOrdBuf *buf, uint32 j)
+{
+	GOrdProbe	pr;
+	uint32		from = j * buf->bracket,
+				to = Min(from + buf->bracket, buf->rows);
+
+	probe_open(seg, g, col, &pr);
+	for (uint32 i = from + 1; i < to; i++)
+		buf->key[i] = Max(buf->key[i - 1], compact_key(&pr, buf, i));
+	probe_close(&pr);
+	buf->kfrom = from;
+	buf->kn = to - from;
+}
+
+/* Every key of the compact chunk c: verify and the listing of a block read them */
+static void
+compact_all(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf)
+{
+	compact_load(seg, g, col, c, d, buf);
+	for (uint32 j = 0; j * buf->bracket < buf->rows; j++)
+		compact_window(seg, g, col, buf, j);
 }
 
 /* A complete block: the entries and values it holds. False for a segment without one and for one that keeps the ends only (sift_cseg_gorder_ends): nothing counts or lists a range from those */
@@ -186,7 +398,7 @@ sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
-	if (g == NULL || g->hdr.vtotal != 0)
+	if (g == NULL || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
 		return false;
 	*entries = g->hdr.entries;
 	*values = g->hdr.values;
@@ -221,6 +433,17 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 		corrupt(seg, "The global order of leaf %d has no chunk %u.", col, c);
 	d = seg_gord_dirent(seg, g, col, c);
 	m = sift_cgord_chunk_rows(&g->hdr, c);
+	if (d.pad & SIFT_CGORD_COMPACT)
+	{
+		SiftCGOrdBuf *all = palloc(sizeof(SiftCGOrdBuf));
+
+		compact_all(seg, g, col, c, &d, all);
+		w = Min(w, m);
+		memcpy(key, all->key, w * sizeof(int64));
+		memcpy(addr, all->addr, w * sizeof(uint64));
+		pfree(all);
+		return w;
+	}
 	buf = palloc(ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen) + SIFT_COL_PAD);
 	seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
 	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, d.pad, m, w, key, addr))
@@ -229,19 +452,40 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 	return Min(w, m);
 }
 
-/* The first max(w, up to p) entries of the chunk that holds the entry p, into buf (SiftCGOrdBuf: its first entry, the entries of the chunk, the count decoded) */
-void
-sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, SiftCGOrdBuf *buf)
+/*
+ * The first max(w, up to p) entries of the chunk that holds the entry p, into buf (SiftCGOrdBuf: its first entry, the entries of the chunk, the count decoded). A compact chunk is
+ * decoded once (every address) and gives the keys of the bracket of p, which a cursor asks for again when it leaves the bracket; keys false: the addresses only.
+ */
+static void
+gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrdBuf *buf)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+	SiftCGOrdDir d;
 	uint32		c;
 
 	if (g == NULL)
 		corrupt(seg, "The global order of leaf %d is not there.", col);
 	c = p / g->hdr.crows;
+	d = seg_gord_dirent(seg, g, col, c);
+	if (d.pad & SIFT_CGORD_COMPACT)
+	{
+		if (buf->at != c * g->hdr.crows || buf->bracket == 0)
+			compact_load(seg, g, col, c, &d, buf);
+		if (keys && p - buf->at - buf->kfrom >= buf->kn)
+			compact_window(seg, g, col, buf, (p - buf->at) / buf->bracket);
+		return;
+	}
 	buf->at = c * g->hdr.crows;
 	buf->rows = sift_cgord_chunk_rows(&g->hdr, c);
 	buf->cm = sift_cseg_gorder_head(seg, col, c, Max(w, p - buf->at + 1), buf->key, buf->addr);
+	buf->bracket = buf->kfrom = 0;
+	buf->kn = buf->cm;
+}
+
+void
+sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, SiftCGOrdBuf *buf)
+{
+	gord_fill(seg, col, p, w, true, buf);
 }
 
 uint32
@@ -317,8 +561,49 @@ gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 	uint32		at = c * seg_gord_leaf(seg, col)->hdr.crows;
 
 	if (memo->at != at)
-		sift_cseg_gorder_fill(seg, col, at, UINT32_MAX, memo);
+		gord_fill(seg, col, at, UINT32_MAX, false, memo);
 	return memo->cm;
+}
+
+/*
+ * The first entry of [from, to) in the compact chunk c whose key is not before key (after: is after it): the bracket of two anchors that holds it, then a bisection of the
+ * entries between them by the keys of their heap rows (about log2(bracket) of them); to when there is none. The chunk is left in memo with its addresses.
+ */
+static uint32
+compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, uint32 to, int64 key, bool after, SiftCGOrdBuf *memo)
+{
+	GOrdProbe	pr;
+	uint32		at = c * g->hdr.crows,
+				nb,
+				jlo = 0,
+				jhi,
+				lo,
+				hi;
+	SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
+
+	if (memo->at != at || memo->bracket == 0)
+		compact_load(seg, g, col, c, &d, memo);
+	nb = (memo->rows + memo->bracket - 1) / memo->bracket;
+	jhi = nb;
+	SIFT_BISECT(uint32, mid, jlo, jhi, after ? memo->key[mid * memo->bracket] <= key : memo->key[mid * memo->bracket] < key);
+	/* the anchor jlo is the first that satisfies, the one before it does not: the answer is in (that one, jlo * bracket], whose entries but the last are not anchors */
+	lo = jlo == 0 ? 0 : (jlo - 1) * memo->bracket + 1;
+	hi = jlo < nb ? jlo * memo->bracket : memo->rows;
+	lo = Max(lo, from - at);
+	hi = Min(hi, to - at);
+	probe_open(seg, g, col, &pr);
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+		int64		k = mid % memo->bracket == 0 ? memo->key[mid] : compact_key(&pr, memo, mid);
+
+		if (after ? k <= key : k < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	probe_close(&pr);
+	return Min(at + lo, to);
 }
 
 /*
@@ -349,6 +634,8 @@ gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool 
 	seg_gord_dir_read(seg, g);
 	SIFT_BISECT(uint32, mid, lo, hi, after ? seg_gord_dirent(seg, g, col, mid).first <= key : seg_gord_dirent(seg, g, col, mid).first < key);
 	lo--;
+	if (seg_gord_dirent(seg, g, col, lo).pad & SIFT_CGORD_COMPACT)
+		return compact_seek(seg, g, col, lo, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
 	m = gorder_chunk_memo(seg, col, lo, memo);
 	from = Max(vs, lo * crows);
 	to = Min(ve, lo * crows + m);
@@ -374,7 +661,7 @@ gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	/* the keys of a text block are ranks of the segment's strings, not the codes of its dictionary that a range of the scan is in */
-	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0)
+	if (g == NULL || g->hdr.gcol >= 0 || g->hdr.strbytes != 0 || g->hdr.vtotal != 0 || !gord_probe_ok(seg, g, col))
 		return false;
 	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
 	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);

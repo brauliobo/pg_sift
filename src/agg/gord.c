@@ -71,7 +71,7 @@ gbuf_get(void)
 		b = MemoryContextAlloc(gbuf_cx, sizeof(SiftCGOrdBuf));
 	}
 	b->at = UINT32_MAX;
-	b->cm = b->rows = 0;
+	b->cm = b->rows = b->bracket = b->kfrom = b->kn = 0;
 	return b;
 }
 
@@ -124,7 +124,7 @@ cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 static inline void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	if (p - c->buf->at >= c->buf->cm)
+	if (p - c->buf->at - c->buf->kfrom >= c->buf->kn)
 		cur_fill(g, c, p);
 	*key = c->buf->key[p - c->buf->at];
 	*addr = c->buf->addr[p - c->buf->at];

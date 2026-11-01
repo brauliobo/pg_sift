@@ -146,7 +146,7 @@ group_runs(const OrdEnt *ent, uint32 from, uint32 n, SiftCGOrdGrp *out, bool nul
  * and, as a second blob, the gaps to the address before it: {u32 bytes of the first blob, u32 runs, the first blobs padded to 8, the gaps blob}.
  */
 static void
-addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, const SiftCcPolicy *pol)
+addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, bool runs, const SiftCcPolicy *pol)
 {
 	int64	   *dv = palloc(m * sizeof(int64)),
 			   *fv = palloc(m * sizeof(int64)),
@@ -155,7 +155,7 @@ addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, u
 	uint32		nf = 0,
 				ob,
 				k0 = body->len;
-	bool		ascend = true;
+	bool		ascend = runs;
 	StringInfoData one,
 				first,
 				gaps;
@@ -165,7 +165,7 @@ addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, u
 	ob = Max(1, 64 - __builtin_clzll(maxoff | 1));
 	for (uint32 i = 0; i < m; i++)
 		dv[i] = (int64) (((uint64) av[i] >> 9) << ob | ((uint64) av[i] & (SIFT_CPOINT_TID_MAXOFF - 1)));
-	for (uint32 i = 0; i < m; i++)
+	for (uint32 i = 0; runs && i < m; i++)
 	{
 		if (i == 0 || kv[i] != kv[i - 1])
 			fv[nf++] = dv[i];
@@ -209,7 +209,7 @@ addr_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, u
 }
 
 static void
-build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 head, uint32 vtotal)
+build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 head, uint32 vtotal, bool compact)
 {
 	uint64		n = (uint64) nvals + nnull;
 	uint32		crows = sift_cgord_rows();
@@ -226,6 +226,13 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 				ng = 0;
 	uint32		hdr[8] = {SIFT_CGORD_MAGIC, strs != NULL ? SIFT_CGORD_VERSION_TEXT : SIFT_CGORD_VERSION, (uint32) n, nvals, nchunks, crows, head, vtotal};
 	SiftCcPolicy pol;
+
+	if (compact)
+	{
+		hdr[1] = SIFT_CGORD_VERSION_COMPACT;
+		hdr[6] = SIFT_CGORD_BRACKET;
+		hdr[7] = 0;
+	}
 
 	if (strs != NULL)
 	{
@@ -295,12 +302,27 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		dir[c].first = kv[0];
 		dir[c].off = (uint32) body.len;		/* made absolute below */
 		k0 = body.len;
+		if (compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
+		{
+			int64		anchor[SIFT_CGORD_CAP];
+			uint32		nb = (m + SIFT_CGORD_BRACKET - 1) / SIFT_CGORD_BRACKET;
+
+			for (uint32 j = 0; j < nb; j++)
+				anchor[j] = kv[j * SIFT_CGORD_BRACKET];
+			sift_cc_encode(&body, SIFT_CC_INT, anchor, nb, NULL, &pol, NULL);
+			dir[c].klen = body.len - k0;
+			pad8(&body);
+			addr_chunk(&body, &dir[c], kv, av, m, false, &pol);
+			dir[c].pad |= SIFT_CGORD_COMPACT;
+			pad8(&body);
+			continue;
+		}
 		sift_cc_encode(&body, SIFT_CC_INT, kv, m, NULL, &pol, NULL);
 		dir[c].klen = body.len - k0;
 		pad8(&body);
 		k0 = body.len;
 		if (dense)
-			addr_chunk(&body, &dir[c], kv, av, m, &pol);
+			addr_chunk(&body, &dir[c], kv, av, m, true, &pol);
 		else
 		{
 			sift_cc_encode(&body, SIFT_CC_INT, av, m, NULL, &pol, NULL);
@@ -340,6 +362,8 @@ int			sift_test_col_gorder_rows = 0;
 int			sift_test_col_gorder_ends = 0;
 
 int			sift_test_col_gorder_choice = 0;
+
+int			sift_test_col_gorder_layout = 0;
 #endif
 
 /* the bits of x >= 1, as a real: log2 within a few percent, which is what a size estimate needs */
@@ -462,7 +486,7 @@ ends_reduce(OrdEnt *ent, uint32 *nvals, uint32 *nnull, uint32 *head, uint32 *vto
 }
 
 void
-sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, StringInfo out)
+sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out)
 {
 	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
 	uint32		head = 0,
@@ -478,7 +502,7 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 		ord_sort(ent + nvals, nnull);
 		ends_reduce(ent, &nvals, &nnull, &head, &vtotal);
 	}
-	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, head, vtotal);
+	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, head, vtotal, layout == SIFT_CGORD_L_COMPACT && dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE);
 	pfree(ent);
 }
 
@@ -491,7 +515,7 @@ sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, ui
 		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0);
+	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, false);
 	pfree(ent);
 }
 
@@ -599,7 +623,7 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 		ent[i] = (OrdEnt) {0, rank[key[i]], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, 0, 0);
+	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, 0, 0, false);
 	pfree(order);
 	pfree(rank);
 	pfree(boff);
@@ -686,12 +710,20 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 	memcpy(w, blk, sizeof(w));
 	grouped = w[1] == SIFT_CGORD_VERSION_GROUP;
 	text = w[1] == SIFT_CGORD_VERSION_TEXT;
+	if (w[1] == SIFT_CGORD_VERSION_COMPACT)
+	{
+		if (w[0] != SIFT_CGORD_MAGIC || w[3] > w[2] || w[5] != SIFT_CGORD_ROWS_FINE || w[6] < 8 || w[6] > 64 || (w[6] & (w[6] - 1)) != 0 || w[7] != 0 ||
+			w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) || SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT > len)
+			return false;
+		*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], 0, -1, 0, 0, 0, 0, w[6]};
+		return true;
+	}
 	if (w[0] != SIFT_CGORD_MAGIC || (w[1] != SIFT_CGORD_VERSION && !grouped && !text) || w[3] > w[2] || (w[5] != SIFT_CGORD_ROWS && w[5] != SIFT_CGORD_ROWS_FINE) ||
 		(grouped ? (w[6] == 0 || w[7] == 0 || w[7] > SIFT_COL_MAX_COLS) : text ? (w[7] == 0 || w[7] % 8 != 0) : (w[7] == 0 ? w[6] != 0 : (w[6] > w[3] || w[7] <= w[3] || w[3] - w[6] > SIFT_CGORD_ENDS || w[6] > SIFT_CGORD_ENDS || w[2] - w[3] > SIFT_CGORD_ENDS))) ||
 		w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) ||
 		SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT + (uint64) (text ? w[7] : grouped ? (uint64) w[6] * SIFT_CGORD_GRPENT : 0) > len)
 		return false;
-	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0};
+	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, 0};
 	return true;
 }
 
@@ -721,7 +753,7 @@ sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 	if (c >= h->chunks)
 		return false;
 	memcpy(d, ent, sizeof(*d));
-	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | 0xF00u)) == 0 && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
+	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->bracket == 0)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
 		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
 }
 
@@ -783,4 +815,26 @@ sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 
 		sift_cc_close(a);
 	}
 	return true;
+}
+
+void
+sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 bracket, uint32 w, int64 *key, uint64 *addr)
+{
+	uint32		nb = (m + bracket - 1) / bracket,
+				ob = pad >> 8 & 0xF;
+	int64	   *anchor = palloc(SIFT_CGORD_CAP * sizeof(int64));
+	SiftCc	   *k = sift_cc_open_rows(mcxt, kb, klen, false, nb),
+			   *a;
+
+	sift_cc_decode_head(k, nb, anchor);
+	sift_cc_close(k);
+	for (uint32 j = 0; j < nb; j++)
+		key[j * bracket] = anchor[j];
+	pfree(anchor);
+	w = Min(w, m);
+	a = sift_cc_open_rows(mcxt, ab, alen, false, m);
+	sift_cc_decode_head(a, w, (int64 *) addr);
+	for (uint32 i = 0; i < w; i++)
+		addr[i] = (addr[i] >> ob) << 16 | (addr[i] & (((uint64) 1 << ob) - 1));
+	sift_cc_close(a);
 }
