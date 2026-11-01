@@ -9,6 +9,7 @@
 *.orig
 *.rej
 results/
+!/docs/results/
 regression.diffs
 regression.out
 tmp_check/
