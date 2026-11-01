@@ -156,8 +156,10 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 			appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), len);
 	}
 	MemoryContextSwitchTo(old);
+#ifdef SIFT_TESTING
 	if (sift_test_page_text)
 		mem_sample();
+#endif
 	if (detoasted || len > bs->page_text)
 		MemoryContextReset(bs->tmpcxt);
 }
