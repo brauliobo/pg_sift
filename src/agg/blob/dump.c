@@ -16,6 +16,26 @@ numeric_sum_agg(const SiftAggAgg *a)
 	return (a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == NUMERICOID;
 }
 
+/* dst[r] = src[gl[r]] for elements of esize bytes: a copy of a size the compiler knows is a load and a store, where memcpy(esize) is a call for each element */
+static void
+gather(char *dst, const void *src, const uint32 *gl, uint32 ng, int esize)
+{
+	switch (esize)
+	{
+		case 1:
+			for (uint32 r = 0; r < ng; r++)
+				dst[r] = ((const char *) src)[gl[r]];
+			break;
+		case 8:
+			for (uint32 r = 0; r < ng; r++)
+				memcpy(dst + (Size) r * 8, (const char *) src + (Size) gl[r] * 8, 8);
+			break;
+		default:
+			for (uint32 r = 0; r < ng; r++)
+				memcpy(dst + (Size) r * sizeof(sift_i128), (const char *) src + (Size) gl[r] * sizeof(sift_i128), sizeof(sift_i128));
+	}
+}
+
 /* the aggregate arrays a state holds per group, besides the count: what acc_alloc made */
 static void
 bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
@@ -31,8 +51,7 @@ bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
 	{
 		if (col[c].src == NULL)
 			continue;
-		for (uint32 r = 0; r < ng; r++)
-			memcpy(tmp + (Size) r * col[c].esize, (const char *) col[c].src + (Size) gl[r] * col[c].esize, col[c].esize);
+		gather(tmp, col[c].src, gl, ng, col[c].esize);
 		bw_put(b, tmp, (Size) ng * col[c].esize);
 	}
 	pfree(tmp);
@@ -114,24 +133,38 @@ bw_values(StringInfo b, const OutTable *t, const uint32 *old, uint32 nused)
 	pfree(vb.data);
 }
 
-/* renumbers the ids ids[0..n) from 1 in order of use (0 stays 0); returns the old ids by new id */
+/*
+ * Renumbers the ids ids[0..n) from 1 in order of use (0 stays 0); returns the old ids by new id. The map of the old ids is the scan's (ex->renum), all zero
+ * between two calls: a table spilled to many partitions renumbers the ids of each, and a map of the ids of the whole table made and cleared for each was most of it.
+ */
 uint32 *
-renumber(uint32 *ids, uint32 n, uint32 nold, uint32 *nused)
+renumber(AggExec *ex, uint32 *ids, uint32 n, uint32 nold, uint32 *nused)
 {
-	uint32	   *rm = palloc0((nold + 1) * sizeof(uint32)),
-			   *old;
+	uint32	   *rm,
+			   *old = palloc(Max(n, 1) * sizeof(uint32));
+	uint32		u = 0;
 
-	*nused = 0;
+	if (ex->renum_cap < (Size) nold + 1)
+	{
+		Size		cap = Max((Size) nold + 1, ex->renum_cap * 2);
+
+		if (ex->renum)
+			pfree(ex->renum);
+		ex->renum = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
+		ex->renum_cap = cap;
+	}
+	rm = ex->renum;
 	for (uint32 r = 0; r < n; r++)
 		if (ids[r] && !rm[ids[r]])
-			rm[ids[r]] = ++*nused;
-	old = palloc(Max(*nused, 1) * sizeof(uint32));
-	for (uint32 id = 1; id <= nold; id++)
-		if (rm[id])
-			old[rm[id] - 1] = id;
+		{
+			rm[ids[r]] = ++u;
+			old[u - 1] = ids[r];
+		}
 	for (uint32 r = 0; r < n; r++)
 		ids[r] = ids[r] ? rm[ids[r]] : 0;
-	pfree(rm);
+	for (uint32 i = 0; i < u; i++)
+		rm[old[i]] = 0;
+	*nused = u;
 	return old;
 }
 
@@ -149,7 +182,7 @@ blob_key_table(AggExec *ex, int j, uint32 *ids, uint32 n, StringInfo b)
 	uint32	   *old,
 				nused;
 
-	old = renumber(ids, n, k->numk ? k->im.n : k->ident ? k->nident : k->ot.n, &nused);
+	old = renumber(ex, ids, n, k->numk ? k->im.n : k->ident ? k->nident : k->ot.n, &nused);
 	if (k->ident || k->numk)
 	{
 		/* the values themselves: 64 bits for an integer or the bits of a float, 128 for a numeric */
@@ -224,7 +257,7 @@ blob_mset(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 				hd[2];
 
 	dset_pairs(ex, ai, cidx, &pg, &pv, &np);
-	old = renumber(pv, np, t->n, &nused);
+	old = renumber(ex, pv, np, t->n, &nused);
 	hd[0] = np;
 	hd[1] = 0;
 	bw_put(b, hd, sizeof(hd));

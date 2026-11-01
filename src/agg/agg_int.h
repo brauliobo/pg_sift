@@ -155,6 +155,8 @@ typedef struct AggExec
 	int			n_gs;			/* ... and the batches of final groups it gave */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
+	uint32	   *renum;			/* blob/dump.c renumber: the new id of each old one, all zero between two calls */
+	Size		renum_cap;
 	uint32	   *glist;
 	uint32		nglist;
 	uint32		gpos;
