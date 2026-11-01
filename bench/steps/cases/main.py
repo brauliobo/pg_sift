@@ -9,12 +9,12 @@ import time
 from . import runcfg
 from .runcfg import BENCH, MIN_RUNS, REPO
 from .coverage import cmd_coverage
-from .run import cmd_list, cmd_plan, cmd_run
+from .run import cmd_cpus, cmd_list, cmd_plan, cmd_run
 
 
 def main(doc):
     ap = argparse.ArgumentParser(description=doc.split('\n')[0])
-    ap.add_argument('cmd', choices=['run', 'list', 'plan', 'coverage'])
+    ap.add_argument('cmd', choices=['run', 'list', 'plan', 'coverage', 'cpus'])
     ap.add_argument('--cases', type=lambda s: s.split(','), default=[])
     ap.add_argument('--engines', default='sift,native')
     ap.add_argument('--rows', type=int, default=200000)
@@ -39,6 +39,8 @@ def main(doc):
     ap.add_argument('--since', help='coverage: the commits since this tag are the landed claims (default: the last tag behind HEAD)')
     ap.add_argument('--root', help='coverage: the checkout to read (default: this one)')
     ap.add_argument('--docs', action='store_true')
+    ap.add_argument('--cpus', type=int, default=1, help='cpus: the quota asked for (the answer is the quota the cases need, at least this)')
+    ap.add_argument('--selftest', action='store_true', help='cpus: check the rule on made-up variants')
     ap.add_argument('--profile', metavar='DIR', help='load cases: perf record of the backend during the timed load statements, one CASE.LANE.data.txt (symbols by self cycles) for each lane in DIR')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)
@@ -47,4 +49,4 @@ def main(doc):
         os.makedirs(args.profile, exist_ok=True)
     if args.work_mem:
         os.environ['CASES_WORK_MEM'] = args.work_mem
-    sys.exit({'run': cmd_run, 'list': cmd_list, 'plan': cmd_plan, 'coverage': cmd_coverage}[args.cmd](args))
+    sys.exit({'run': cmd_run, 'list': cmd_list, 'plan': cmd_plan, 'coverage': cmd_coverage, 'cpus': cmd_cpus}[args.cmd](args))

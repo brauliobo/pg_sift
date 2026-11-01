@@ -35,7 +35,7 @@ CHECKS=(
 	'file-size	scripts/check-file-size.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
-	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest'\'
+	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
 	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
 	'ci-claim	scripts/test-ci-claim.sh'
 	'affected-untracked	scripts/test-affected-untracked.sh'

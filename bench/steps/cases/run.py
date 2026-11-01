@@ -13,7 +13,7 @@ from duckdb import busy, wait_quiet
 
 from . import runcfg
 from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
-from .registry import read_registry
+from .registry import Case, lane_cpus, read_registry, workers_asked
 from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck, psql, server_load
 from .measure import PerfFailed, expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
 
@@ -105,7 +105,7 @@ def run_point(args, cases, rows, engines, results, failed, known):
                 point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
                 if 'ms' in c.metrics:
-                    point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                    point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else '') + (' [%s cpus]' % os.environ.get('CASES_CPUS', '?') if c.cpus_needed() > 1 else ''), load=load, **stats(times[lane])))
                 if ('minstr' in c.metrics or args.minstr) and lane in ('sift', 'native', 'base', 'btree') and not isinstance(lanes[lane], Fresh):
                     try:
                         mi = minstr(lanes[lane], expand(c.statement(lane), c))
@@ -199,7 +199,7 @@ def write_results(args, cases, results):
     sha = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()
     meta = {'orders': args.rows, 'postgresql': psql('SHOW server_version', 'postgres'), 'pg_sift': version, 'build': sha, 'date': datetime.date.today().isoformat(),
             'cpu': host(), 'method': 'client-side milliseconds of one psql session per lane, interleaved: %d rounds of 1 untimed and %d timed runs, median of all; the sift lane is the '
-            'planner\'s own choice, native is sift.enable_agg = off on the same table; %s parallel workers; every answer compared with native' % (args.rounds, args.runs, os.environ.get('CASES_WORKERS', '2')),
+            'planner\'s own choice, native is sift.enable_agg = off on the same table; %s parallel workers under a quota of %s cpus; every answer compared with native' % (args.rounds, args.runs, os.environ.get('CASES_WORKERS', '2'), os.environ.get('CASES_CPUS', '?')),
             'work_mem': os.environ.get('CASES_WORK_MEM', '64MB')}
     if IO_HOW:
         meta['io_cold'] = '; '.join(sorted(IO_HOW)) + ' (the cold run is the first after the relations of the case were emptied; io_warm is the run after it; steps/iolib.py)'
@@ -242,6 +242,32 @@ def write_times(args, cases):
              'case\torders\tbuild_s\trun_s'] + ['\t'.join(v) for v in old.values()]
     open(path, 'w').write('\n'.join(lines) + '\n')
     log('wrote %s' % path)
+
+
+def cmd_cpus(args):
+    """the quota the selected cases need (steps/cases.sh starts the cluster under it): one line, `CPUS WHO`"""
+    if args.selftest:
+        return selftest_cpus()
+    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    need, who = lane_cpus(cases, args.cpus)
+    print(need, who or '-')
+
+
+def selftest_cpus():
+    class C:
+        def __init__(self, id, variants):
+            self.id, self.variants = id, variants
+        cpus_needed = Case.cpus_needed
+
+    w = lambda n: ['workers_%d' % n, 'max_parallel_maintenance_workers = %d' % n]
+    cases = [C('plain', []), C('scan', [['scan', 'sift.agg_preagg=off'], ['g3', 'max_parallel_workers_per_gather = 3']]), C('build', [w(0), w(4), w(8)])]
+    ok = [lane_cpus(cases[:1], 1) == (1, None), lane_cpus(cases[:2], 1) == (4, 'scan'), lane_cpus(cases, 1) == (9, 'build'), lane_cpus(cases, 16) == (16, None),
+          workers_asked('max_parallel_maintenance_workers=2; x = 1') == 2, workers_asked('sift.agg_preagg=off') == 0]
+    if not all(ok):
+        print('cases cpus selftest failed: %s' % ok)
+        return 1
+    print('cases cpus selftest ok')
+    return 0
 
 
 def cmd_list(_):

@@ -6,7 +6,7 @@
 # The benchmark cases (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
 # EXPLAIN), on PostgreSQL with sift.enable_agg = off (the same table and statement), on the sift variants of its row and, with --engines pg_duckdb, on a pg_duckdb container that holds a
 # plain copy of the rows; every answer is compared with PostgreSQL's. A private cluster (scripts/pgtest.sh, release build) under a CPU quota of --cpus (default 1: one backend, no
-# parallel workers, how the CHANGELOG numbers were taken; 3 is the budget of the store benchmark, where a parallel normal plan can beat the scan on the planner's cost) and a memory cap; the timed part holds the
+# parallel workers, how the CHANGELOG numbers were taken, raised to the workers plus one when a case declares worker variants; 3 is the budget of the store benchmark, where a parallel normal plan can beat the scan on the planner's cost) and a memory cap; the timed part holds the
 # perf lock. Small by default (--rows 200000); the published size is `bench/bench cases --docs --rows 1000000`.
 #   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "Benchmark cases, by size"
 #               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
@@ -45,8 +45,12 @@ need psql python3 flock
 [[ -z ${CASES_UNCAPPED:-} ]] || capped() { nice "$@"; }   # a CI runner has no user session for systemd-run
 [[ -z $KEEP ]] || export CASES_KEEP=1   # the tables stay with the cluster
 [[ $CPUS =~ ^[1-9][0-9]*$ && $ROWS =~ ^[1-9][0-9]*$ ]] || die "--cpus and --rows take whole numbers"
+# a case that declares worker variants (workers_4: max_parallel_maintenance_workers = 4) cannot gain under a quota of one core: the quota is raised to the workers and the backend
+read -r NEED WHO < <(python3 -I "$STEPS/cases.py" cpus --cpus "$CPUS" "${PY[@]}")
+CPUS_ASKED=$CPUS   # the parallel plans of the other cases and the duck container keep what was asked; only the quota of the cluster grows, for the variants that ask for workers
+if (( NEED > CPUS )); then echo "cases: a quota of $NEED cpus instead of $CPUS: $WHO declares worker variants"; CPUS=$NEED; fi
 
-export SIFT_TMP=${CASES_TMP:-/dev/shm/sift-cases} SIFT_PORT=${CASES_PORT:-56262} SIFT_TESTING= CASES_TMP=${CASES_TMP:-/dev/shm/sift-cases} CASES_WORKERS=$((CPUS - 1))
+export SIFT_TMP=${CASES_TMP:-/dev/shm/sift-cases} SIFT_PORT=${CASES_PORT:-56262} SIFT_TESTING= CASES_TMP=${CASES_TMP:-/dev/shm/sift-cases} CASES_WORKERS=$((CPUS_ASKED - 1)) CASES_CPUS=$CPUS
 export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
@@ -75,8 +79,8 @@ if [[ ,$ENGINES, == *,pg_duckdb,* ]]; then
   need docker
   ports_free "$DUCK_PORT" 1 || exit 1
   pull_missing "$STORE_DUCKDB_IMAGE"
-  mapfile -t CAPS < <(docker_caps "$CPUS" 8g)
-  pg_container "$DUCK" "$DUCK_PORT" "$STORE_DUCKDB_IMAGE" "${PG_FLAGS[@]}" -c max_parallel_workers_per_gather=$((CPUS - 1)) -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
+  mapfile -t CAPS < <(docker_caps "$CPUS_ASKED" 8g)
+  pg_container "$DUCK" "$DUCK_PORT" "$STORE_DUCKDB_IMAGE" "${PG_FLAGS[@]}" -c max_parallel_workers_per_gather=$((CPUS_ASKED - 1)) -c duckdb.threads="$CPUS_ASKED" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
   psql -X -q -h 127.0.0.1 -p "$DUCK_PORT" -U postgres -d postgres -c "DROP DATABASE IF EXISTS bench WITH (FORCE)" -c "CREATE DATABASE bench"
   PY+=(--duck-port "$DUCK_PORT" --engines "$ENGINES")
 fi
