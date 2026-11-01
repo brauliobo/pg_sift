@@ -390,21 +390,25 @@ sift_ktab_decode(const SiftColSchema *s, const uint8 *p, uint32 len, MemoryConte
 	MemoryContextSwitchTo(old);
 	for (uint32 i = 0; i < h.ng; i++)
 	{
-		KtGroup		g = {0};
+		const uint8 *rec = p + sizeof(h) + (Size) i * KT_REC(h.nm);
+		KtGroup		g;
 
-		memcpy(&g, p + sizeof(h) + (Size) i * KT_REC(h.nm), KT_REC(h.nm));
+		memcpy(&g, rec, offsetof(KtGroup, m));
 		out->key[i] = g.key;
 		out->count[i] = g.cnt;
 		if (g.pad || (h.nullg && i == h.ng - 1 && g.key != 0))
 			return 0;
 		for (int m = 0; m < h.nm; m++)
 		{
-			if (g.m[m].pad)
+			KtMeas		km;
+
+			memcpy(&km, rec + offsetof(KtGroup, m) + m * sizeof(KtMeas), sizeof(km));
+			if (km.pad)
 				return 0;
-			out->nn[m][i] = g.m[m].nn;
-			out->sum[m][i] = (SiftCI128) (((unsigned __int128) g.m[m].sum[1] << 64) | g.m[m].sum[0]);
-			out->min[m][i] = g.m[m].mn;
-			out->max[m][i] = g.m[m].mx;
+			out->nn[m][i] = km.nn;
+			out->sum[m][i] = (SiftCI128) (((unsigned __int128) km.sum[1] << 64) | km.sum[0]);
+			out->min[m][i] = km.mn;
+			out->max[m][i] = km.mx;
 		}
 		if (i > 0 && i + h.nullg < h.ng && g.key <= out->key[i - 1])
 			return 0;
