@@ -116,6 +116,9 @@
 	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
 	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/api/format.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
+	X(par_build_rows, "PAR_BUILD_ROWS", "col/build_par.c", 150000, "rows", \
+	  "rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table)", \
+	  "fewer workers are launched, down to the build of the leader alone: one segment", "max_parallel_maintenance_workers, the parallel_workers option of the table", 1) \
 	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
 	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
 	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \

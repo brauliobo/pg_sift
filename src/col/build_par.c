@@ -8,10 +8,12 @@
 
 #include "access/parallel.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "optimizer/paths.h"
 #include "pgstat.h"
 #include "storage/condition_variable.h"
 #include "tcop/tcopprot.h"
@@ -23,10 +25,21 @@
 #include "bm25/build.h"
 #endif
 #include "col/build.h"
+#include "core/limits.h"
 #include "core/parbuild.h"
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15
+
+/*
+ * The rows a participant takes at the least. Every participant writes segments of its own, interleaved with the others' (a superblock is claimed at a time), so each
+ * further one costs the index 4 to 5% of its bytes, a unit's worth of instructions in the floor of every statement (+0.025 M of 0.22 M for the count of one value, +11%)
+ * and a merge afterwards that is dearer (0.65 to 0.8 of the build) than the build saved: 300,000 rows, 0.22 s alone, 0.15 s with 1 worker, 0.13 s with 2, 0.12 s with 4;
+ * 1,000,000 rows 0.64, 0.41, 0.29, 0.27 s. The weighted formula (log2(speedup of the build) / log2(1.05) against the bytes / 3 and the statements' floor, as for the arrays)
+ * pays from 150,000 rows to a participant: +3.9 for 300,000 rows with 1 worker, -0.2 with 2 (100,000 each), negative with 4. The 150,000 are for the default
+ * min_parallel_table_scan_size (8 MB) and go down with it, to none at 0; a table that sets parallel_workers has its participants.
+ */
+#define PAR_BUILD_ROWS	150000
 
 typedef struct ColShared
 {
@@ -179,9 +192,21 @@ static SiftParLeader *
 begin_parallel(Relation heap, Relation index, IndexInfo *info)
 {
 	int			nworkers = Min(info->ii_ParallelWorkers, MAX_WORKERS);
-	SiftParLeader *ldr = sift_par_enter(info->ii_Concurrent);
+	SiftParLeader *ldr;
 	ColShared  *sh;
+	BlockNumber pages;
+	double		tuples,
+				allvisfrac;
 
+	/* a table that sets parallel_workers, or a server that lowers min_parallel_table_scan_size, asks for its participants: the rows are the rule of the others */
+	if (RelationGetParallelWorkers(heap, -1) < 0)
+	{
+		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+		nworkers = Min(nworkers, (int) Min(tuples / (sift_limit(par_build_rows, PAR_BUILD_ROWS) * Min(1.0, min_parallel_table_scan_size / 1024.0)), MAX_WORKERS) - 1);
+	}
+	if (nworkers < 1)
+		return NULL;
+	ldr = sift_par_enter(info->ii_Concurrent);
 	if (!sift_par_setup(ldr, "sift_col_build_worker", nworkers, sizeof(ColShared),
 						mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
 		return NULL;

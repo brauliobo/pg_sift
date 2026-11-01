@@ -4,6 +4,7 @@
 -- 8 bytes, NULLs, empty strings, unicode, a unit with inline strings, DML, the write buffer and a promoted segment.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 CREATE FUNCTION dl_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a bigint; b bigint; ex bigint; mi bigint;

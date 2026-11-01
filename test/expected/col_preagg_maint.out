@@ -2,6 +2,7 @@
 -- stored with it, so after DELETE and UPDATE traffic the units are exact again only when a rewrite drops the dead rows. VACUUM and the
 -- normal maintenance (promote, the merge policy) have to do it, without REINDEX and without a forced merge.
 CREATE EXTENSION pg_sift;
+SET sift.test_limits = 'par_build_rows=1';
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)

@@ -1,0 +1,40 @@
+-- A parallel CREATE INDEX of a sift_col index launches a worker only for each further par_build_rows rows of the table (150,000): every participant writes segments of its own,
+-- which cost the index bytes and every statement its floor, so a table that two or three participants would split in pieces of fewer rows is built by fewer, down to the
+-- leader alone and one segment. The limit is lowered here (sift.test_limits) so that 12,000 rows show it; the rows are the heap's whatever the participants.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test;
+
+-- 12,000 rows, 3 per page: 16 superblocks of 256 pages
+CREATE TABLE pr (id int, v int, pad text) WITH (fillfactor = 10, autovacuum_enabled = off);
+INSERT INTO pr SELECT i, i % 97, repeat('x', 100) FROM generate_series(1, 12000) i;
+SELECT pg_relation_size('pr') / 8192 >= 3 * 256 AS three_superblocks;
+ANALYZE pr;
+SET maintenance_work_mem = '128MB';
+SET min_parallel_table_scan_size = '1MB';   -- the limit is for 8MB: it is divided by 8 here
+SET max_parallel_maintenance_workers = 2;
+
+CREATE FUNCTION pr_build(rows_limit bigint) RETURNS TABLE (workers int, segments bigint, rows_ok bool) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_limits', 'par_build_rows=' || rows_limit * 8, true);
+	DROP INDEX IF EXISTS pr_i;
+	CREATE INDEX pr_i ON pr USING sift_col (id, v);
+	RETURN QUERY SELECT current_setting('sift.test_col_workers')::int, count(*), sum(s.rows) = (SELECT count(*) FROM pr) FROM sift.col_segments('pr_i') s;
+END $$;
+
+-- 12,000 rows: three participants of 4,000 or more, two of 6,000 or more, one alone above
+SELECT rows_limit, (pr_build(rows_limit)).* FROM unnest(ARRAY[1, 4000, 4001, 6000, 6001, 12000, 12001]) AS rows_limit;
+
+-- a server that lowers min_parallel_table_scan_size to nothing, or a table that sets parallel_workers, has its participants whatever the rows
+SET min_parallel_table_scan_size = 0;
+SELECT 'scan size 0' AS asked, (pr_build(12001)).*;
+RESET min_parallel_table_scan_size;
+SET min_parallel_table_scan_size = '1MB';
+ALTER TABLE pr SET (parallel_workers = 2);
+SELECT 'parallel_workers = 2' AS asked, (pr_build(12001)).*;
+SELECT sift.col_verify('pr_i', true);
+
+DROP FUNCTION pr_build(bigint);
+DROP TABLE pr;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_limits = 'par_build_rows=1';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET sift.agg_force = on;

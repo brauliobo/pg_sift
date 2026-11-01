@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_limits = 'par_build_rows=1';
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ls_facts (id int PRIMARY KEY, grp int NOT NULL, amount numeric(12,2), label text, ts timestamptz, tags jsonb, pad text) WITH (autovacuum_enabled = false);
@@ -17,7 +18,7 @@ SELECT count(*) > 1 AS several_segments_or_units, bool_or(lstats) AS with_block 
 SELECT sift.col_verify('ls_small', true);
 DROP INDEX ls_small;
 
-SET sift.test_limits = 'lst_min_units=2';
+SET sift.test_limits = 'par_build_rows=1,lst_min_units=2';
 CREATE INDEX ls_col ON ls_facts USING sift_col (id, grp, amount, label, ts, tags) WITH (paths = 'tags.a int8');
 VACUUM (FREEZE, ANALYZE) ls_facts;
 SELECT bool_and(lstats) AS every_segment_has_the_block, count(*) AS segments FROM sift._test_col_formats('ls_col'::regclass);
@@ -53,7 +54,7 @@ SELECT sift.col_verify('ls_col', true);
 SELECT chk('SELECT grp, count(*) n, sum(amount) s, max(id) m FROM ls_facts GROUP BY 1') AS differing_rows;
 
 -- a segment under the limit is written without it
-RESET sift.test_limits;
+SET sift.test_limits = 'par_build_rows=1';
 REINDEX INDEX ls_col;
 SELECT bool_or(lstats) AS with_block FROM sift._test_col_formats('ls_col'::regclass);
 SELECT sift.col_verify('ls_col', true);
