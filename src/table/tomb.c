@@ -378,6 +378,48 @@ sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint32 *pos, uint
 	hot_offsets(st->recent, st->nrecent, pos ? pos + 1 : NULL, lo, lo | 0xFFFF, mask);
 }
 
+/* The entries of a with lo <= key <= lo | 0xFFFF: the first and how many (two bisections of the log) */
+static const SiftTblTomb *
+page_entries(const SiftTblTomb *a, uint32 na, uint64 lo, uint32 *n)
+{
+	uint32		l = 0,
+				h = na,
+				first,
+				end;
+
+	SIFT_BISECT(uint32, mid, l, h, a[mid].key < lo);
+	first = l;
+	h = na;
+	SIFT_BISECT(uint32, mid, l, h, a[mid].key <= (lo | 0xFFFF));
+	end = l;
+	*n = end - first;
+	return a + first;
+}
+
+static void
+deleted_offsets(const SiftTblTomb *f, uint32 n, Snapshot snapshot, uint64 *mask)
+{
+	for (; n > 0; f++, n--)
+		if (f->kind != SIFT_TBL_TOMB_LOCK && sift_tbl_tomb_deletes(snapshot, f))
+			mask[((f->key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((f->key & 0xFFFF) - 1) % 64);
+}
+
+bool
+sift_tbl_deleted_offsets(const SiftTblRel *st, Snapshot snapshot, BlockNumber vblock, uint32 budget, uint64 *mask)
+{
+	uint64		lo = (uint64) vblock << 16;
+	uint32		nm,
+				nr;
+	const SiftTblTomb *m = page_entries(st->ents, st->nents, lo, &nm),
+			   *r = page_entries(st->recent, st->nrecent, lo, &nr);
+
+	if (nm + nr > budget)
+		return false;
+	deleted_offsets(m, nm, snapshot, mask);
+	deleted_offsets(r, nr, snapshot, mask);
+	return true;
+}
+
 bool
 sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi)
 {

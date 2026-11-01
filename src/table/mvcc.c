@@ -100,8 +100,8 @@ sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead
 }
 
 /* Does the tombstone e (not a LOCK) delete its row for the snapshot? Dirty snapshots also learn of an in-progress deleter */
-static bool
-tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
+bool
+sift_tbl_tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
 {
 	switch (snapshot->snapshot_type)
 	{
@@ -167,7 +167,7 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 	{
 		if (e[i].kind == SIFT_TBL_TOMB_LOCK)
 			continue;
-		if (tomb_deletes(snapshot, &e[i]))
+		if (sift_tbl_tomb_deletes(snapshot, &e[i]))
 			return false;
 		if (snapshot->snapshot_type == SNAPSHOT_MVCC && TransactionIdIsValid(e[i].xid) && !TransactionIdDidAbort(e[i].xid))
 			CheckForSerializableConflictOut(rel, e[i].xid, snapshot);
@@ -188,7 +188,7 @@ sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key)
 	if ((e = sift_tbl_tomb_find(st, key, &n)) == NULL)
 		return false;
 	for (int i = 0; i < n; i++)
-		if (e[i].kind != SIFT_TBL_TOMB_LOCK && TransactionIdIsCurrentTransactionId(e[i].xid) && tomb_deletes(snapshot, &e[i]))
+		if (e[i].kind != SIFT_TBL_TOMB_LOCK && TransactionIdIsCurrentTransactionId(e[i].xid) && sift_tbl_tomb_deletes(snapshot, &e[i]))
 			return true;
 	return false;
 }

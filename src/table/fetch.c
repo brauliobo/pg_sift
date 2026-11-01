@@ -20,6 +20,7 @@
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/read_stream.h"
+#include "core/popcount.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -147,6 +148,9 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync, true);
 }
 
+/* The rows a page is asked for from which its tombstones are read at once (sift_tbl_filter_page_vers) */
+#define PAGE_ROWS_MIN	16
+
 typedef struct VblockTest
 {
 	Relation	rel;
@@ -223,6 +227,37 @@ sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, Bl
 		}
 		if (state == SIFT_TBL_VER_ROWS)
 			sift_tbl_vers_page(vers, vblock, &t.vp);
+		else if (!chain && snapshot->snapshot_type == SNAPSHOT_MVCC && !IsolationIsSerializable())
+		{
+			/*
+			 * every row of the page was inserted for the snapshot: what is left to ask of a row is its tombstones, read once for the page where a row asks
+			 * for them with two bisections of the log (about 300 instructions); a page asked for fewer than PAGE_ROWS_MIN rows, or with more entries than three for each row asked (a key lookup
+			 * leaves both), keeps the rows one by one: its bisections cost about a third of them. A serializable snapshot also records the conflict of each row it asks about.
+			 */
+			int			want = 0;
+
+			for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+				for (uint64 m = offmask[wd]; m && want < PAGE_ROWS_MIN; m &= m - 1)
+					want++;
+			if (want >= PAGE_ROWS_MIN)
+			{
+				uint64		deleted[SIFT_OFFMASK_WORDS] = {0};
+				int			left = 0;
+
+				want = 0;
+				for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+					want += sift_pc64(offmask[wd]);
+				if (sift_tbl_deleted_offsets(t.st, snapshot, vblock, 3 * want, deleted))
+				{
+					for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+					{
+						offmask[wd] &= ~deleted[wd];
+						left += sift_pc64(offmask[wd]);
+					}
+					return left;
+				}
+			}
+		}
 	}
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }

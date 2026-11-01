@@ -355,6 +355,10 @@ extern bool sift_tbl_hot_pred(const SiftTblRel *st, uint64 key, uint64 *pred);
  * of a walk over ascending vblocks, zeroed at its start; NULL looks each vblock up alone
  */
 extern void sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint32 *pos, uint64 *mask);
+/* Does the tombstone e (not a LOCK) delete its row for the snapshot? */
+extern bool sift_tbl_tomb_deletes(Snapshot snapshot, const SiftTblTomb *e);
+/* Sets the bit of the offset of each row of vblock that a tombstone deletes for the snapshot (an MVCC one): the page's tombstones are read once, where sift_tbl_visible bisects the log for each row. false, mask unusable, when the page has more than budget entries */
+extern bool sift_tbl_deleted_offsets(const SiftTblRel *st, Snapshot snapshot, BlockNumber vblock, uint32 budget, uint64 *mask);
 #ifdef SIFT_TESTING
 /* Test only: the lookups of a vblock alone in the log (pos NULL) by this backend: a walk over the pages of a search makes none */
 extern PGDLLIMPORT uint64 sift_tbl_hot_probes;
