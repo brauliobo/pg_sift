@@ -33,10 +33,11 @@ tight() {
 }
 loose() { test "$(size)" -gt "$(( $(live) * ${1:-16} / 10 ))"; }
 vacuum() { sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null; }
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 3; }
+# the standby reports its horizon every second (hot_standby_feedback): a pass moves what the horizon has passed
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
 # VACUUM until the file is within PERCENT of the live bytes: a pass moves a share of the file, and the cut follows once the horizon has passed what it moved
 vacuum_until() {
-	for _ in $(seq 20); do
+	for _ in $(seq 40); do
 		past
 		vacuum
 		[[ $(size) -le $(( $(live) * ${1:-120} / 100 )) ]] && return 0
@@ -63,13 +64,15 @@ replayed_within() {
 	sleep "$1"
 	[[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]]
 }
+# a standby query on the table that stays open until release (or $1 seconds)
 hold() {
-	rm -f "$D/held"
-	{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep($1);"
+	rm -f "$D/held" "$D/unhold"
+	{ echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"; echo "SELECT count(*) FROM t WHERE id < 10;"; echo "\\! touch '$D/held'"; echo "\\! n=0; while [ ! -e '$D/unhold' ] && [ \$n -lt $(( $1 * 20 )) ]; do sleep 0.05; n=\$((n + 1)); done"
 	  echo "SET enable_seqscan = off; SELECT 'after', count(*), sum(amount) FROM t WHERE grp = 5;"; echo "COMMIT;"; } | sql standby >"$D/hold.out" 2>&1 &
 	HOLDER=$!
 	until [[ -e $D/held ]]; do sleep 0.05; done
 }
+release() { touch "$D/unhold"; wait "$HOLDER"; }
 held_answer_ok() { test "$(grep after "$D/hold.out" | tr -d ' ')" == "after|$(answer primary)"; }
 no_failure() { ! grep -q -E 'ERROR|pgbench: error|failed transactions: [1-9]' "$1"; }
 verified() { test -z "$(sql "$1" "SELECT sift.col_verify('t_idx', true)" 2>&1)"; }
@@ -85,7 +88,7 @@ vacuum_until
 check "a standby query holds the table: the file is within 1.2 times the live bytes" tight
 check "... it did not grow meanwhile" test "$(size)" -le "$size_before"
 check "... the replay does not stall behind the query" replayed_within 3
-wait "$HOLDER"
+release
 check "... the query reads the same rows as the primary" held_answer_ok
 check "... the index counts as the table" agree
 catchup primary standby
@@ -98,10 +101,10 @@ hold 30
 printf 'INSERT INTO t SELECT -g - %s, g %% 500, 1, $$w$$ FROM generate_series(1, 20) g;\n' "$RANDOM" >"$D/ins.sql"
 printf '\\set g random(0, 499)\nSELECT count(*), sum(amount) FROM t WHERE grp = :g;\n' >"$D/rd.sql"
 printf 'DELETE FROM t WHERE id = -(1 + (random() * 100000)::int);\n' >"$D/del.sql"
-pgbench_bg primary 4 16 -f "$D/ins.sql@2" -f "$D/rd.sql@3" -f "$D/del.sql@1"
-for _ in 1 2 3 4 5; do sleep 3; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_promote('t_idx')" "SELECT sift.col_merge('t_idx')" "VACUUM t" >/dev/null; done
+pgbench_bg primary 4 8 -f "$D/ins.sql@2" -f "$D/rd.sql@3" -f "$D/del.sql@1"
+for _ in 1 2 3 4 5; do sleep 1; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_promote('t_idx')" "SELECT sift.col_merge('t_idx')" "VACUUM t" >/dev/null; done
 wait "$PGBENCH_PID"
-wait "$HOLDER"
+release
 check "churn: no statement failed" no_failure "$D/pgbench.log"
 catchup primary standby
 check "... the index counts as the table" agree
