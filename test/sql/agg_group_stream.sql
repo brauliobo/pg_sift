@@ -9,17 +9,18 @@ SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '120s';
 SET client_min_messages = warning;
 
--- 120,000 rows a minute apart in the heap order, 1,000 of them without a time, 50 values of k: about 100,000 groups of an hour and k
+-- 60,000 rows a minute apart in the heap order (a superblock is 256 pages: 6,656 rows of 250 bytes), 500 of them without a time, 50 values of k: about 50,000 groups of an hour and k
 CREATE TABLE gs (id int, ts timestamp, d date, k int, v int, pad text, f float8) WITH (autovacuum_enabled = false);
+ALTER TABLE gs ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gs
-SELECT i, CASE WHEN i % 120 = 0 THEN NULL ELSE timestamp '2025-01-01' + i * interval '1 minute' END, date '2025-01-01' + i / 1000, i % 50, i % 1000, repeat('x', 100), (i % 7) * 0.5
-FROM generate_series(1, 120000) i;
+SELECT i, CASE WHEN i % 120 = 0 THEN NULL ELSE timestamp '2025-01-01' + i * interval '1 minute' END, date '2025-01-01' + i / 500, i % 50, i % 1000, repeat('x', 250), (i % 7) * 0.5
+FROM generate_series(1, 60000) i;
 CREATE INDEX gs_col ON gs USING sift_col (id, ts, d, k, v) WITH (key_cut = 'ts');
 -- the same rows in a random heap order: the zones of its superblocks overlap
-CREATE TABLE gr (LIKE gs) WITH (autovacuum_enabled = false);
+CREATE TABLE gr (LIKE gs INCLUDING STORAGE) WITH (autovacuum_enabled = false);
 INSERT INTO gr SELECT * FROM gs ORDER BY hashint4(id);
 CREATE INDEX gr_col ON gr USING sift_col (id, ts, d, k, v);
--- 37,632 rows (three superblocks) a minute apart, then six superblocks whose times lie anywhere in a range of their own (all but one row of each far above the zone's
+-- 37,632 rows (three superblocks of 12,544 rows of 100 bytes, as pad is not plain here) a minute apart, then six superblocks whose times lie anywhere in a range of their own (all but one row of each far above the zone's
 -- start): the zones of the last ones overlap and nothing is final after the batches of the first, so the scan goes on as a spill does
 CREATE TABLE gh (LIKE gs) WITH (autovacuum_enabled = false);
 INSERT INTO gh
@@ -78,12 +79,12 @@ $$;
 SELECT * FROM stream_cases('gs');
 
 -- rows of the write buffer, appended to the heap, with times anywhere in the range (and in none): the superblocks that hold them have no zone to go by and are read first
-INSERT INTO gs SELECT 200000 + i, CASE WHEN i % 90 = 0 THEN NULL ELSE timestamp '2025-01-01' + (i * 7919 % 120000) * interval '1 minute' END, date '2025-01-01' + i % 150, i % 50, i % 1000, repeat('y', 100), (i % 7) * 0.5
+INSERT INTO gs SELECT 200000 + i, CASE WHEN i % 90 = 0 THEN NULL ELSE timestamp '2025-01-01' + (i * 7919 % 60000) * interval '1 minute' END, date '2025-01-01' + i % 150, i % 50, i % 1000, repeat('y', 100), (i % 7) * 0.5
 FROM generate_series(1, 3000) i;
 SELECT * FROM stream_cases('gs');
 
 -- updated rows (the old versions are dead, the new ones in the write buffer of every superblock: no superblock has a zone) and deleted ones
-UPDATE gs SET ts = ts + interval '3 days' WHERE id % 1000 = 0 AND ts IS NOT NULL;
+UPDATE gs SET ts = ts + interval '3 days' WHERE id % 100 = 0 AND ts IS NOT NULL;
 UPDATE gs SET ts = NULL WHERE id % 1777 = 0;
 DELETE FROM gs WHERE id % 777 = 0;
 SELECT * FROM stream_cases('gs');
