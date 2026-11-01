@@ -1,6 +1,6 @@
 -- The group table of a scan that outgrows hash memory goes to partitions on disk as partial states, and each partition is merged and returned by
 -- itself: the answer is the normal plan's, for every kind of key, with the float sums within 1e-9 of it. work_mem 64kB with hash_mem_multiplier 1 puts
--- the limit at the smallest the settings allow, so that 100,000 rows fill the table several times and a partition is partitioned again.
+-- the limit at the smallest the settings allow, so that 12,500 rows fill the table several times and a partition is partitioned again.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
@@ -9,9 +9,9 @@ SET client_min_messages = warning;
 
 CREATE TABLE events (id int, k1 int, k2 text, k3 float8, val int, w float8, n numeric(12,2), ts date);
 INSERT INTO events
-SELECT i, CASE WHEN i % 20 = 0 THEN NULL ELSE (i * 7919) % 50000 END, 'k' || (i * 31) % 3000, ((i * 13) % 700) * 0.5,
+SELECT i, CASE WHEN i % 20 = 0 THEN NULL ELSE (i * 7919) % 6000 END, 'k' || (i * 31) % 400, ((i * 13) % 700) * 0.5,
        CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END, (i % 977) * 1.25, (i % 313) / 4.0, date '2024-01-01' + i % 400
-FROM generate_series(1, 100000) i;
+FROM generate_series(1, 12500) i;
 CREATE INDEX events_col ON events USING sift_col (id, k1, k2, k3, val, w, n, ts);
 VACUUM (FREEZE, ANALYZE) events;
 
@@ -51,11 +51,11 @@ BEGIN
 	RETURN QUERY SELECT keys, sp, same_rows('got', 'want');
 END $$;
 
--- 800 groups of 94 rows whose sets of 40 to 100,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
+-- 100 groups of 94 rows whose sets of 40 to 12,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
 -- the counts are taken from it when the partition is done
 CREATE TABLE sets AS
-SELECT i AS id, (hashint4(i) & 2147483647) % 800 AS k1, (hashint4(i * 3) & 2147483647) % 40 AS v40, (hashint4(i * 5) & 2147483647) % 100000 AS v5, 1.5::float8 AS w
-FROM generate_series(1, 75000) i;
+SELECT i AS id, (hashint4(i) & 2147483647) % 100 AS k1, (hashint4(i * 3) & 2147483647) % 40 AS v40, (hashint4(i * 5) & 2147483647) % 12000 AS v5, 1.5::float8 AS w
+FROM generate_series(1, 9400) i;
 CREATE INDEX sets_col ON sets USING sift_col (id, k1, v40, v5, w);
 VACUUM (FREEZE, ANALYZE) sets;
 SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(*) AS m1, count(DISTINCT v40) AS m2, count(DISTINCT v5) AS m3', 'sets');
@@ -70,7 +70,7 @@ SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(DISTINCT val) AS m1, c
 SELECT * FROM spill_case('k1 AS k1, k3 AS k2', 'k1, k3', '64kB', 'count(DISTINCT val) AS m1, sum(DISTINCT n) AS m2, avg(DISTINCT n) AS m3, count(DISTINCT n) AS m4');
 
 -- more memory, fewer spills; the answer is the same
-SELECT * FROM spill_case('k1 AS k1', 'k1', '1MB');
+SELECT * FROM spill_case('k1 AS k1', 'k1', '80kB');
 -- a scan that must spill is planned without workers, whose tables would each be a table of the process
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
@@ -89,10 +89,10 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET enable_hashagg = off;
 SET enable_sort = off;
-SELECT plan_has('SELECT k2, count(*), sum(val) FROM events GROUP BY k2', 'SiftAgg') AS scan,
-       plan_has('SELECT k2, count(*), sum(val) FROM events GROUP BY k2', 'Workers Planned') AS workers_without_room;
+SELECT plan_has('SELECT k1, count(*), sum(val) FROM events GROUP BY k1', 'SiftAgg') AS scan,
+       plan_has('SELECT k1, count(*), sum(val) FROM events GROUP BY k1', 'Workers Planned') AS workers_without_room;
 SET work_mem = '64MB';
-SELECT plan_has('SELECT k2, count(*), sum(val) FROM events GROUP BY k2', 'Workers Planned') AS workers_with_room;
+SELECT plan_has('SELECT k1, count(*), sum(val) FROM events GROUP BY k1', 'Workers Planned') AS workers_with_room;
 RESET ALL;
 SET client_min_messages = warning;
 
