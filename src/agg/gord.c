@@ -372,6 +372,10 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 	uint32	   *clo;
 	uint32		total = 0;
 
+#ifdef SIFT_TESTING
+	if (sift_test_col_gorder_noskip)
+		return 0;
+#endif
 	if (g->started || g->collid != 0 || g->ends || k == 0 || g->ncur == 0)
 		return 0;
 	for (int i = 0; i < g->ncur; i++)

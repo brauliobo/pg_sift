@@ -519,6 +519,22 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 	return n;
 }
 
+/* The condition is nothing but bounds on the first key (a conjunction of =, <, <=, >, >= and IS NOT NULL on it): every value entry between the bounds the array was opened with passes it */
+static bool
+gcond_bounds_only(const SiftTopGPred *p)
+{
+	if (p->kind == STG_NOTNULL)
+		return p->lead;
+	if (p->kind == STG_CMP)
+		return p->lead && (p->op == SCMP_EQ || p->op == SCMP_LT || p->op == SCMP_LE || p->op == SCMP_GT || p->op == SCMP_GE);
+	if (p->kind != STG_AND)
+		return false;
+	for (int i = 0; i < p->nchild; i++)
+		if (!gcond_bounds_only(p->child[i]))
+			return false;
+	return true;
+}
+
 /* the leaves of a condition, into t->rleaf: false when there are more than it holds */
 static bool
 resid_leaves(SiftTopN *t, const SiftSrcLayout *lay, const SiftTopGPred *p)
@@ -653,7 +669,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 		t->go = NULL;
 		return false;
 	}
-	t->gcond = cond;
+	t->gcond = t->nkey == 1 && !t->gtext && cond != NULL && gcond_bounds_only(cond) ? NULL : cond;
 	t->limit = t->all ? t->gwant : t->limit;
 	if (t->nkey > 1 && !gord_prep(t))
 		t->go = NULL;

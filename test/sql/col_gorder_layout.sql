@@ -9,19 +9,19 @@ SET sift.test_col_gorder_layout = 1;
 SET max_parallel_workers_per_gather = 0;
 SELECT setseed(0.42);
 
-CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigint, dup int, pad int);
+CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigint, dup int, pad int, tie bigint);
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30000)::int - 15000 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (random() * 1000000000000)::bigint - 500000000000 END, (random() * 20)::int, 0
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30000)::int - 15000 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (random() * 1000000000000)::bigint - 500000000000 END, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint
 FROM generate_series(1, 6000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad) WITH (order_columns = 'ts, tz, d, s, b, dup', order_array_columns = 'ts, tz, d, s, b, dup', write_buffer_limit = 64);
+CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad, tie) WITH (order_columns = 'ts, tz, d, s, b, dup, tie', order_array_columns = 'ts, tz, d, s, b, dup, tie', write_buffer_limit = 64);
 INSERT INTO t SELECT 6000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 1500) i;
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 1500) i;
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;
 SELECT format, count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
 SELECT sift.col_verify('t_ix');
 -- rows that stay in the write buffer: the order reads them from memory
 INSERT INTO t SELECT 8000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 100) i;
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 100) i;
 
 CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
@@ -53,7 +53,7 @@ BEGIN
 END $$;
 CREATE TABLE shapes AS
 SELECT col, ty, dir, nl, lim, off, lo, hi, quant(col, ty, 0.5) AS mid
-FROM (VALUES ('ts', 'timestamp'), ('tz', 'timestamptz'), ('d', 'date'), ('s', 'smallint'), ('b', 'bigint'), ('dup', 'int')) c(col, ty),
+FROM (VALUES ('ts', 'timestamp'), ('tz', 'timestamptz'), ('d', 'date'), ('s', 'smallint'), ('b', 'bigint'), ('dup', 'int'), ('tie', 'bigint')) c(col, ty),
 	 (VALUES ('ASC'), ('DESC')) d(dir),
 	 (VALUES ('NULLS FIRST'), ('NULLS LAST')) n(nl),
 	 (VALUES (1), (20), (100)) l(lim),
@@ -88,7 +88,7 @@ UPDATE t SET pad = 1 WHERE id % 5 = 0;
 -- an aborted update and an aborted insert leave versions nobody sees
 BEGIN;
 UPDATE t SET ts = ts + INTERVAL '1 year' WHERE id % 3 = 0;
-INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01', TIMESTAMPTZ '2026-01-01', DATE '2026-01-01', 1, 1, 1, 0 FROM generate_series(1, 200) i;
+INSERT INTO t SELECT 20000 + i, TIMESTAMP '2026-01-01', TIMESTAMPTZ '2026-01-01', DATE '2026-01-01', 1, 1, 1, 0, 1000000000 FROM generate_series(1, 200) i;
 ROLLBACK;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
@@ -103,7 +103,7 @@ SELECT sift.col_verify('t_ix');
 DELETE FROM t WHERE ts < TIMESTAMP '2026-02-01' OR id % 17 = 0;
 VACUUM t;
 INSERT INTO t SELECT 30000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
-	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0 FROM generate_series(1, 700) i;
+	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 700) i;
 DROP TABLE p;
 CREATE TABLE p AS SELECT * FROM t;
 SELECT count(*) FILTER (WHERE same(shape_sql(s))) AS same, count(*) AS shapes FROM shapes s;

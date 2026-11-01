@@ -360,6 +360,8 @@ int			sift_test_col_gorder_ends = 0;
 int			sift_test_col_gorder_choice = 0;
 
 int			sift_test_col_gorder_layout = 0;
+
+bool		sift_test_col_gorder_noskip = false;
 #endif
 
 /* the bits of x >= 1, as a real: log2 within a few percent, which is what a size estimate needs */

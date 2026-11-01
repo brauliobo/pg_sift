@@ -336,17 +336,40 @@ probe_key(const GOrdProbe *pr, uint64 addr, int64 *key)
 	return ok;
 }
 
-/* The exact key of entry i of the compact chunk in buf, from the heap row; an entry whose bucket is one key, or that the heap cannot answer for, gets the bucket's first key, and a key outside the bucket is clamped to it */
-static int64
-compact_key(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i)
+/* The exact key of entry i of the compact chunk in buf, from the heap row, clamped to its bucket (the bucket of one key, entry 0 and a heap row with no key are answered by the bucket's first key); false when the heap cannot answer */
+static bool
+compact_probe(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i, int64 *key)
 {
 	int64		lo = buf->kmin[i],
 				hi = i == 0 ? lo : sift_gq_kmax(lo, buf->sh),
 				k;
 
-	if (lo == hi || !probe_key(pr, buf->addr[i], &k))
-		return lo;
-	return Max(lo, Min(hi, k));
+	*key = lo;
+	if (lo == hi)
+		return true;
+	if (!probe_key(pr, buf->addr[i], &k))
+		return false;
+	*key = Max(lo, Min(hi, k));
+	return true;
+}
+
+/*
+ * The key of entry i of the compact chunk in buf for the order of a cursor (kept in key[i], with its exact bit). Where the heap has no answer (a dead row) it is the key of the entry
+ * before, so that it neither passes the live entries after it nor hides them when the cursor reads backwards.
+ */
+static int64
+compact_key(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i)
+{
+	if (!(buf->exact[i / 64] >> (i % 64) & 1))
+	{
+		int64		k;
+
+		if (!compact_probe(pr, buf, i, &k))
+			k = i == 0 ? buf->kmin[0] : Max(buf->kmin[i], compact_key(pr, buf, i - 1));
+		buf->key[i] = k;
+		buf->exact[i / 64] |= UINT64CONST(1) << (i % 64);
+	}
+	return buf->key[i];
 }
 
 /* The chunk c of a compact block into buf: its addresses and, with keys, the buckets of its entries; no exact key yet */
@@ -377,9 +400,8 @@ compact_resolve(SiftColSegment *seg, GOrdLeaf *g, int col, SiftCGOrdBuf *buf, ui
 		GOrdProbe	pr;
 
 		probe_open(seg, g, col, &pr);
-		buf->key[i] = compact_key(&pr, buf, i);
+		compact_key(&pr, buf, i);
 		probe_close(&pr);
-		buf->exact[i / 64] |= UINT64CONST(1) << (i % 64);
 	}
 	buf->kfrom = i;
 	buf->kn = 1;
@@ -394,7 +416,7 @@ compact_all(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrd
 	compact_load(seg, g, col, c, d, true, buf);
 	probe_open(seg, g, col, &pr);
 	for (uint32 i = 0; i < buf->rows; i++)
-		buf->key[i] = i == 0 ? buf->kmin[0] : Max(buf->key[i - 1], compact_key(&pr, buf, i));
+		compact_key(&pr, buf, i);
 	probe_close(&pr);
 	buf->kfrom = 0;
 	buf->kn = buf->rows;
@@ -581,14 +603,14 @@ gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
  */
 /* The first entry i0 of the compact chunk in buf that is not certainly before key (its last key is not: before(k) is k < key, or k <= key for after) and the first i1 that certainly is not (its first key is not before) */
 static void
-compact_bounds(const SiftCGOrdBuf *buf, int64 key, bool after, uint32 *i0, uint32 *i1)
+compact_bounds(const SiftCGOrdBuf *buf, uint32 rows, int64 key, bool after, uint32 *i0, uint32 *i1)
 {
 	uint32		lo = 0,
-				hi = buf->rows;
+				hi = rows;
 
 	SIFT_BISECT(uint32, mid, lo, hi, after ? (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) <= key : (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) < key);
 	*i0 = lo;
-	hi = buf->rows;
+	hi = rows;
 	SIFT_BISECT(uint32, mid, lo, hi, after ? buf->kmin[mid] <= key : buf->kmin[mid] < key);
 	*i1 = lo;
 }
@@ -606,17 +628,21 @@ compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, u
 
 	if (memo->at != at || !memo->compact || !memo->kmin_ok)
 		compact_load(seg, g, col, c, &d, true, memo);
-	compact_bounds(memo, key, after, &i0, &i1);
+	compact_bounds(memo, to - at, key, after, &i0, &i1);
 	lo = Max(i0, from - at);
 	hi = Min(i1, to - at);
 	probe_open(seg, g, col, &pr);
 	while (lo < hi)
 	{
-		uint32		mid = lo + (hi - lo) / 2;
-		int64		k = compact_key(&pr, memo, mid);
+		uint32		mid = lo + (hi - lo) / 2,
+					j = mid;
+		int64		k;
 
-		if (after ? k <= key : k < key)
-			lo = mid + 1;
+		/* an entry the heap cannot answer for is a dead row (the executor drops it wherever it stands): the next one that can be read decides, and when none can, the rest are dead */
+		while (j < hi && !compact_probe(&pr, memo, j, &k))
+			j++;
+		if (j < hi && (after ? k <= key : k < key))
+			lo = j + 1;
 		else
 			hi = mid;
 	}
@@ -795,7 +821,8 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 	}
 	gord_chunk_keys(seg, g, col, cs, memo);
 	base = cs * crows;
-	m = memo->rows;
+	/* the NULL rows that end the last chunk of values are keyed 0 */
+	m = Min(memo->rows, g->hdr.values - base);
 	if (!memo->compact)
 	{
 		lo = 0;
@@ -808,7 +835,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 		uint32		i0,
 					i1;
 
-		compact_bounds(memo, v, false, &i0, &i1);
+		compact_bounds(memo, m, v, false, &i0, &i1);
 		pc = base + i0;
 		pp = base + i1;
 	}
@@ -818,7 +845,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 					i1;
 
 		/* the entries certainly above v start at the first whose first key is, those that may be at the first whose last key is */
-		compact_bounds(memo, v, true, &i0, &i1);
+		compact_bounds(memo, m, v, true, &i0, &i1);
 		pc = base + i1;
 		pp = base + i0;
 	}

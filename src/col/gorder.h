@@ -167,6 +167,7 @@ extern bool sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint
 extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
 
 #ifdef SIFT_TESTING
+extern bool sift_test_col_gorder_noskip;	/* sift.test_col_gorder_noskip: an OFFSET walks the entries it throws away (sift_gord_skip takes none) */
 extern int	sift_test_col_gorder_layout;	/* sift.test_col_gorder_layout: 1 writes the order of every plain leaf of many rows as a compact block */
 extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
 extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
