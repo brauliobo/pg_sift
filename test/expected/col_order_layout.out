@@ -1,0 +1,133 @@
+-- order_layout: the layout of the order array of each column ('whole', 'compact', 'auto', or a list of columns for each), what CREATE INDEX says about it, and that merges and REINDEX keep to it. It never adds an array.
+CREATE EXTENSION pg_sift;
+SET sift.test_col_gorder_ends = 64;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int, ts timestamp, c date, name text);
+INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + (i * 7919 % 20011) * INTERVAL '1 minute', DATE '2026-01-01' + (i * 31 % 300), 'n' || i FROM generate_series(1, 20000) i;
+CREATE TABLE o AS SELECT * FROM t;
+-- the value is checked when it is set
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'sequence');
+ERROR:  invalid order_layout option "sequence": the layout sequence is not built in this version
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'dense');
+ERROR:  invalid order_layout option "dense": unknown layout "dense" (auto, whole or compact)
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact ts');
+ERROR:  invalid order_layout option "compact ts": unknown layout "compact ts" (auto, whole or compact)
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact:');
+ERROR:  invalid order_layout option "compact:": empty column list
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: nope');
+ERROR:  invalid order_layout option: unknown column
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: name');
+ERROR:  invalid order_layout option: unknown column
+CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: ts; whole: ts');
+ERROR:  invalid order_layout option: column "ts" is in two layouts
+-- the layout of each segment and the bytes of each column, as CREATE INDEX says them
+CREATE INDEX t_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'id, ts, c', order_layout = 'compact: ts, c; whole: id');
+NOTICE:  sift_col index "t_ix": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
+DETAIL:  1.7 bytes a row for each column, 0.1 MB together; the segments are column format minor 38, which a library before 3.7 cannot read.
+HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+NOTICE:  sift_col index "t_ix": order_layout: id: whole, 0.4 bytes a row; ts: compact, 2.7 bytes a row; c: compact, 2.2 bytes a row
+DETAIL:  A compact order keeps the heap address of every row and its key to within a bucket of a few bits, and reads the exact key of the rows it needs from the table; the segments that have one are column format minor 41, which a library before 3.8 cannot read. A whole order keeps every key.
+HINT:  ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write the whole order again; 'compact: column' and 'whole: column' choose it for a column.
+SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
+ format | rows  
+--------+-------
+     41 | 20000
+(1 row)
+
+-- the layout names every column, the array is only on ts: the option adds none
+CREATE INDEX u_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'ts', order_layout = 'compact');
+NOTICE:  sift_col index "u_ix": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+DETAIL:  2.7 bytes a row for each column, 0.1 MB together; the segments are column format minor 38, which a library before 3.7 cannot read.
+HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+NOTICE:  sift_col index "u_ix": order_layout: ts: compact, 2.7 bytes a row
+DETAIL:  A compact order keeps the heap address of every row and its key to within a bucket of a few bits, and reads the exact key of the rows it needs from the table; the segments that have one are column format minor 41, which a library before 3.8 cannot read. A whole order keeps every key.
+HINT:  ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write the whole order again; 'compact: column' and 'whole: column' choose it for a column.
+SELECT format FROM sift.col_segments('u_ix') WHERE kind = 'immutable';
+ format 
+--------
+     41
+(1 row)
+
+SELECT sift.col_verify('t_ix'), sift.col_verify('u_ix');
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+-- ordered results are the table's, with a write buffer
+INSERT INTO t SELECT 20000 + i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 minute', DATE '2026-06-01', 'm' || i FROM generate_series(1, 300) i;
+INSERT INTO o SELECT 20000 + i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 minute', DATE '2026-06-01', 'm' || i FROM generate_series(1, 300) i;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 't')) INTO a;
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'o')) INTO b;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT same('SELECT ts AS k FROM @ ORDER BY ts LIMIT 50 OFFSET 700') AS ts_asc,
+	   same('SELECT ts AS k FROM @ ORDER BY ts DESC LIMIT 50 OFFSET 5000') AS ts_desc,
+	   same('SELECT id AS k FROM @ WHERE id >= 12000 ORDER BY id LIMIT 50 OFFSET 3000') AS id_range,
+	   same('SELECT c AS k FROM @ WHERE c <= DATE ''2026-03-01'' ORDER BY c DESC LIMIT 100 OFFSET 20') AS c_range;
+ ts_asc | ts_desc | id_range | c_range 
+--------+---------+----------+---------
+ t      | t       | t        | t
+(1 row)
+
+-- a merge and a REINDEX write the layout of the option as it is then; a setting that is wrong is refused
+ALTER INDEX t_ix SET (order_layout = 'bogus');
+ERROR:  invalid order_layout option "bogus": unknown layout "bogus" (auto, whole or compact)
+ALTER INDEX t_ix SET (order_layout = 'whole');
+SELECT sift.col_promote('t_ix') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('t_ix', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
+ format | rows  
+--------+-------
+     38 | 20300
+(1 row)
+
+SELECT same('SELECT ts AS k FROM @ ORDER BY ts LIMIT 50 OFFSET 700') AS ts_asc, same('SELECT c AS k FROM @ ORDER BY c DESC LIMIT 50 OFFSET 9000') AS c_desc;
+ ts_asc | c_desc 
+--------+--------
+ t      | t
+(1 row)
+
+ALTER INDEX t_ix SET (order_layout = 'compact: ts');
+REINDEX INDEX t_ix;
+NOTICE:  sift_col index "t_ix": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
+DETAIL:  1.3 bytes a row for each column, 0.1 MB together; the segments are column format minor 38, which a library before 3.7 cannot read.
+HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+NOTICE:  sift_col index "t_ix": order_layout: id: whole, 0.4 bytes a row; ts: compact, 2.7 bytes a row; c: whole, 0.8 bytes a row
+DETAIL:  A compact order keeps the heap address of every row and its key to within a bucket of a few bits, and reads the exact key of the rows it needs from the table; the segments that have one are column format minor 41, which a library before 3.8 cannot read. A whole order keeps every key.
+HINT:  ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write the whole order again; 'compact: column' and 'whole: column' choose it for a column.
+SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
+ format | rows  
+--------+-------
+     41 | 20300
+(1 row)
+
+SELECT same('SELECT ts AS k FROM @ ORDER BY ts DESC LIMIT 50 OFFSET 700') AS ts_desc, same('SELECT id AS k FROM @ ORDER BY id LIMIT 50 OFFSET 9000') AS id_asc;
+ ts_desc | id_asc 
+---------+--------
+ t       | t
+(1 row)
+
+SELECT sift.col_verify('t_ix');
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP FUNCTION same(text);
+DROP TABLE o;
+DROP TABLE t;
+DROP EXTENSION pg_sift;

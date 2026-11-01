@@ -19,6 +19,8 @@ COL_OPT_STR(sift_col_options_order_array_group, order_array_group, "")
 
 COL_OPT_STR(sift_col_options_order_array_columns, order_array_columns, NULL)
 
+COL_OPT_STR(sift_col_options_order_layout, order_layout, "")
+
 COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
 
 COL_OPT_STR(sift_col_options_return_columns, return_columns, "")
@@ -141,6 +143,8 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
 				r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
+		if ((err = sift_cgord_layout_parse(sift_col_options_order_layout(index), r->schema, (const char *const *) names, r->pagg.glayout)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_layout option: %s", err)));
 		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
 		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
 		{

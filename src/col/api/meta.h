@@ -49,6 +49,7 @@ typedef struct SiftColLeafStats
 	double		head_units;		/* the units of the segments whose sorted runs hold heads (column format minor 18) */
 	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
+	double		gord_compact_rows;	/* ... of which the entries of the compact blocks (order_layout) */
 	double		gord_ends_bytes;	/* ... and their bytes (gord_bytes is those of the complete blocks) */
 	double		gord_ends_rows;	/* the values of the segments whose block holds the ends of the order only (column format minor 40): gord_rows leaves them out, as a range is not counted from them */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */

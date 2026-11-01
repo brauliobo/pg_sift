@@ -47,6 +47,9 @@
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
 #define SIFT_CGORD_L_COMPACT	1
+#define SIFT_CGORD_OL_AUTO	0		/* what the option order_layout asks of a column (SiftCPAgg.glayout) */
+#define SIFT_CGORD_OL_WHOLE	1
+#define SIFT_CGORD_OL_COMPACT	2
 #define SIFT_CGORD_STR_BLK	16
 #define SIFT_CGORD_STR_MAX	256		/* bytes of the buffer for a string of a text block (SIFT_COL_DICT_MAX_ENTRY + 1) */
 #define SIFT_CGORD_GRPENT	24
@@ -212,6 +215,11 @@ extern uint32 sift_cgord_ends(void);
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
 /* ... or a text one of the top level (version 3): the leaves order_array_columns names */
 extern bool sift_cgord_leaf_array_ok(const SiftColSchema *s, const SiftColDef *d);
+/* The layout (SIFT_CGORD_L_*) of the block of a segment of nvals values for a column whose order_layout is want (SIFT_CGORD_OL_*): the option, or for 'auto' the rule of this function */
+extern int	sift_cgord_layout_pick(uint8 want, uint32 nvals);
+extern const char *sift_cgord_layout_name(int layout);
+/* The value of order_layout into want[column]; s NULL: the syntax only. NULL, or why it is not valid */
+extern const char *sift_cgord_layout_parse(const char *opt, const SiftColSchema *s, const char *const *names, uint8 *want);
 /* a text leaf: its block is version 3 */
 extern bool sift_cgord_leaf_text(const SiftColDef *d);
 /* a date or a timestamp: the leaves whose order is read by a range or an ORDER BY .. LIMIT */

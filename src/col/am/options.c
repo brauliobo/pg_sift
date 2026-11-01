@@ -138,6 +138,7 @@ SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
 SYNTAX_VALIDATOR(return_columns, am_return_walk(value, NULL, NULL))
 SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
 SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
+SYNTAX_VALIDATOR(order_layout, sift_cgord_layout_parse(value, NULL, NULL, NULL))
 SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
 SYNTAX_VALIDATOR(hll_columns, sift_hll_syntax(value))
 SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
@@ -409,6 +410,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_layout",
+						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap addresses and the keys to a few bits, read back from the rows of the table where they are needed; 'auto' chooses (default); a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
+						 "", sift_col_validate_order_layout, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_group",
 						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
 						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
@@ -455,6 +459,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
+	{"order_layout", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_layout)},
 	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},

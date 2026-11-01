@@ -49,6 +49,7 @@ extern void	colb_notice_key_overflow(Relation index);
 extern void	colb_notice_point_tid(Relation index);
 
 extern void	colb_notice_order_array(Relation index);
+extern void	colb_notice_order_layout(Relation index);
 
 extern void	colb_notice_pkey(Relation heap, Relation index);
 

@@ -463,6 +463,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 				{
 					acc->gord_rows += g->hdr.entries;
 					acc->gord_bytes += g->bytes;
+					acc->gord_compact_rows += g->hdr.quant != 0 ? g->hdr.entries : 0;
 				}
 				if (g->hdr.strbytes != 0)
 					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;

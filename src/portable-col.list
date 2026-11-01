@@ -59,6 +59,7 @@ col/preagg_super.c
 col/ktab.c
 col/gorder.c
 col/gquant.c
+col/gorder_opt.c
 col/point.c
 col/runs.c
 col/hll.c

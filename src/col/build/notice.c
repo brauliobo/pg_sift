@@ -184,6 +184,36 @@ colb_notice_order_array(Relation index)
 				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
 }
 
+/* The layout of the order array of each column, and its bytes a row, when the option asks for one or the build chose the compact layout */
+void
+colb_notice_order_layout(Relation index)
+{
+	const SiftColLeafStats *ls;
+	const SiftColIndexMeta *d;
+	StringInfoData out;
+	bool		any = false;
+
+	d = sift_col_index_defs(index);
+	ls = sift_col_leaf_stats(index);
+	initStringInfo(&out);
+	for (int c = 0; c < d->ncols; c++)
+	{
+		const char *layout;
+
+		if (ls[c].gord_rows <= 0)
+			continue;
+		any = any || ls[c].gord_compact_rows > 0;
+		layout = ls[c].gord_compact_rows <= 0 ? "whole" : ls[c].gord_compact_rows >= ls[c].gord_rows ? "compact" : "compact and whole";
+		appendStringInfo(&out, "%s%s: %s, %.1f bytes a row", out.len ? "; " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname), layout, ls[c].gord_bytes / ls[c].gord_rows);
+	}
+	if (out.len == 0 || !(any || sift_col_options_order_layout(index)[0] != '\0'))
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": order_layout: %s", RelationGetRelationName(index), out.data),
+			 errdetail("A compact order keeps the heap address of every row and its key to within a bucket of a few bits, and reads the exact key of the rows it needs from the table; the segments that have one are column format minor 41, which a library before 3.8 cannot read. A whole order keeps every key."),
+			 errhint("ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge, write the whole order again; 'compact: column' and 'whole: column' choose it for a column.")));
+}
+
 /*
  * The primary key of a table that other tables reference is the key a join to it reads. When it is not a column of the index, an aggregate scan of two
  * sift tables joined on it keeps the normal plan (join_condition), and the column costs a few bytes a row (3.4 on 353,029 rows with ids up to 15.5 million;
