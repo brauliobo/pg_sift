@@ -1,0 +1,26 @@
+-- The values of INCLUDE columns are read from heap tuples when a segment is written (bm25/attr.c); a sift_table has none, so a BM25 index with INCLUDE columns on one is refused
+-- when it is created (not when its first segment is written, with sealed segments piling up until then), whether the table is empty or not. An index without INCLUDE columns on a
+-- sift_table and one with them on a heap table answer as the sequential scan does.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE t_empty (id int, body text, n int, d date) USING sift_table;
+CREATE INDEX t_empty_idx ON t_empty USING sift (body) INCLUDE (n, d);
+CREATE TABLE t_rows (id int, body text, n int, d date) USING sift_table;
+INSERT INTO t_rows SELECT g, 'word w' || g % 7, g % 10, DATE '2026-01-01' + g FROM generate_series(1, 5000) g;
+CREATE INDEX t_rows_idx ON t_rows USING sift (body) INCLUDE (n);
+CREATE INDEX t_rows_idx ON t_rows USING sift (body) INCLUDE (n, d) WITH (stemmer = 'en');
+SELECT count(*) AS no_index FROM pg_index WHERE indrelid IN ('t_empty'::regclass, 't_rows'::regclass);
+
+-- without INCLUDE columns, the same filter is checked on the table
+CREATE INDEX t_rows_plain ON t_rows USING sift (body);
+CREATE TABLE t_heap AS SELECT * FROM t_rows;
+CREATE INDEX t_heap_idx ON t_heap USING sift (body) INCLUDE (n, d);
+SELECT sift.promote('t_rows_plain') >= 0 AND sift.promote('t_heap_idx') >= 0 AS promoted;
+SELECT (SELECT count(*) FROM t_rows WHERE body @@> 'w3' AND n = 3 AND d >= '2026-06-01') =
+	(SELECT count(*) FROM t_heap WHERE body @@> 'w3' AND n = 3 AND d >= '2026-06-01') AS same_answer;
+SELECT (SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM t_rows WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20) a) =
+	(SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM t_heap WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20) b) AS same_top;
+SELECT segments, failures FROM sift.worker_state('t_rows_plain');
+
+DROP TABLE t_empty, t_rows, t_heap;
+DROP EXTENSION pg_sift;

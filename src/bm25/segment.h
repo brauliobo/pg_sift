@@ -51,6 +51,7 @@ typedef struct SiftAttrSrc
 } SiftAttrSrc;
 
 /* The attribute source of the index a target writes (NULL: it has no INCLUDE column, or the host keeps none); bm25/attr.c */
+extern void sift_attr_check_table(Relation index, Relation heap);
 extern SiftAttrSrc *sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt);
 
 /*

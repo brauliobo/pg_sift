@@ -115,6 +115,17 @@ heap_attrs_close(void *arg)
 	table_close(((HeapAttrs *) arg)->heap, AccessShareLock);
 }
 
+/* The INCLUDE values are read from heap tuples: refused when the index is created, not when its first segment is written (sealed segments pile up until then) */
+void
+sift_attr_check_table(Relation index, Relation heap)
+{
+	if (IndexRelationGetNumberOfAttributes(index) > IndexRelationGetNumberOfKeyAttributes(index) && heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift index \"%s\": INCLUDE columns need a heap table", RelationGetRelationName(index)),
+				 errhint("Create the index without INCLUDE columns, or on a heap table.")));
+}
+
 SiftAttrSrc *
 sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 {
@@ -132,11 +143,7 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 				 errhint("Name the columns that searches filter on most.")));
 	h = MemoryContextAllocZero(mcxt, sizeof(HeapAttrs));
 	h->heap = table_open(ix->indrelid, AccessShareLock);
-	if (h->heap->rd_rel->relam != HEAP_TABLE_AM_OID)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift index \"%s\": INCLUDE columns need a heap table", RelationGetRelationName(index)),
-				 errhint("Create the index without INCLUDE columns, or on a heap table.")));
+	sift_attr_check_table(index, h->heap);
 	h->desc = RelationGetDescr(h->heap);
 	h->cb.func = heap_attrs_close;
 	h->cb.arg = h;
