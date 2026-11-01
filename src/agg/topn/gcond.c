@@ -379,7 +379,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 						hnull;
 			Datum		d;
 
-			if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+			if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 				continue;
 			t->fetched++;
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
@@ -474,7 +474,7 @@ gord_probe(SiftTopN *t)
 			n++;
 			continue;
 		}
-		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		d = slot_getattr(f->slot, t->gatt[0], &hnull);
 		if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))

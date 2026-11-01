@@ -207,6 +207,7 @@ fetch_begin(SiftTopN *t, int part)
 	}
 	f->slot = table_slot_create(heap, NULL);
 	f->fetch = sift_table_index_fetch_begin(heap);
+	f->nblocks = RelationGetNumberOfBlocks(heap);
 	MemoryContextSwitchTo(old);
 }
 

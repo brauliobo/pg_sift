@@ -47,7 +47,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 			t->emitted++;
 			return skipped_row(t, slot);
 		}
-		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		if (t->nkey == 1)
 		{

@@ -129,6 +129,7 @@ typedef struct TopFetch
 	TupleTableSlot *slot;
 	IndexFetchTableData *fetch;
 	int		   *attno;
+	BlockNumber nblocks;		/* the heap's pages when the scan opens: the entry of a row that a vacuum took out of a truncated page lists an address past them. A row the snapshot sees is on a page that existed when the snapshot was taken, before this, and a truncation needs the lock this scan blocks, so a page added since holds only rows the snapshot does not see */
 } TopFetch;
 /*
  * The order code of a dictionary of a first key that compares as bytes (text under C, uuid, bytea): ord[code] puts the entries in the key's order, so that a
