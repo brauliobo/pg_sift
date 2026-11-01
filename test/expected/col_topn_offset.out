@@ -75,18 +75,19 @@ SELECT * FROM ot_all(60, ARRAY[100, 3000]);
 (1 row)
 
 RESET sift.test_limits;
--- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) reads the heap
+-- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b > 100'), ('b', 'b <> 3 AND b < 6'), ('b', 'b <= 7 OR b >= 490 OR b = 250'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b IS NOT NULL'), ('b', 'b > 1000'),
 				 ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('id', 'id <= 6000 AND id <> 77'), ('b', 'b > 100 AND a > 0')) q(c, w),
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 25, 800]) o) r
 GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- skipped |    84
- units   |    24
-(2 rows)
+  result   | count 
+-----------+-------
+ confirmed |    16
+ skipped   |    84
+ units     |     8
+(3 rows)
 
 -- rows of the write buffer, deleted rows (the pages are not all-visible until a VACUUM) and updated rows
 INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, TIMESTAMP '2021-01-01' + i * interval '1 minute', 'z' || i % 77 FROM generate_series(1, 1500) i;

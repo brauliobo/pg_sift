@@ -61,8 +61,8 @@ SELECT count(*) AS statements FROM trs;
 SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs) r GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |  4296
- units        |  1848
+ global order |  4516
+ units        |  1628
 (2 rows)
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
@@ -72,8 +72,8 @@ INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM 
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 DELETE FROM tr WHERE id % 7 = 0;
@@ -82,16 +82,16 @@ UPDATE tr SET l = NULL WHERE id % 13 = 0;
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 VACUUM tr;
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
@@ -109,16 +109,16 @@ SELECT sift.col_verify('tr_i');
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
@@ -136,8 +136,8 @@ SELECT sift.col_verify('tr_i');
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
 REINDEX INDEX tr_i;
@@ -151,17 +151,17 @@ SELECT sift.col_verify('tr_i');
 SELECT * FROM tr_all();
     result    |  n  
 --------------+-----
- global order | 887
- units        | 392
+ global order | 933
+ units        | 346
 (2 rows)
 
--- a condition on another column, a sort under another collation, and an unbounded condition keep the units or the normal plan, and the answers are the heap's
+-- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
 SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
 	   tr_chk('SELECT c FROM tr WHERE c <> ''a'' ORDER BY c LIMIT 10') AS not_equal, tr_chk('SELECT c FROM tr WHERE lower(c) >= ''a'' ORDER BY c LIMIT 10') AS expression,
 	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;
  other_column | posix_sort | not_equal | expression | locale_prefix 
 --------------+------------+-----------+------------+---------------
- units        | units      | units     | units      | units
+ global order | units      | units     | units      | units
 (1 row)
 
 DROP TABLE tr, trq, trs CASCADE;

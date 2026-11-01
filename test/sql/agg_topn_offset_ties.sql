@@ -46,7 +46,7 @@ $$ SELECT result, count(*) FROM (SELECT ot_chk(c, d, nl, lim, o, other) AS resul
 -- every unit exact: the groups before the OFFSET are not fetched (an offset inside a group of ties, at its edge, past the nulls); near the end of 12,000 rows the boundary group and the tail after it are fetched
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 199, 200, 201, 3000, 11990]);
 SELECT * FROM ot_all(300, ARRAY[100, 3000]);
--- a condition on another column that the array cannot decide alone reads the heap: no group is skipped, the rows are the same
+-- a condition on another column that the array cannot decide alone is tested on the heap row of each entry: no group is skipped, the rows are the same
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b IS NOT NULL'), ('b', 'b > 100 AND a > 0'), ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('a', 'a <> 3 AND a < 20')) q(c, w),

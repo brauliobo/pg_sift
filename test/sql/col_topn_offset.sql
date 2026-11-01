@@ -56,7 +56,7 @@ SELECT * FROM ot_all(10, ARRAY[100, 3000, 11990, 13000]);
 SELECT * FROM ot_all(40, ARRAY[100, 3000]);
 SELECT * FROM ot_all(60, ARRAY[100, 3000]);
 RESET sift.test_limits;
--- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) reads the heap
+-- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b > 100'), ('b', 'b <> 3 AND b < 6'), ('b', 'b <= 7 OR b >= 490 OR b = 250'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b IS NOT NULL'), ('b', 'b > 1000'),

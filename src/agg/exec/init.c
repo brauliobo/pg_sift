@@ -147,6 +147,10 @@ sift_agg_init(void)
 							 "Testing: a top-N scan of one integer or time key reads the global order of the key (column format minor 21) in place of the units.",
 							 NULL, &sift_topn_gorder_on, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_topn_gbudget",
+							"Testing: the heap fetches a global-order walk with a condition on another column may make before the units read less (0: from the size of the heap).",
+							NULL, &sift_topn_gbudget, 0, 0, INT_MAX,
+							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	DefineCustomBoolVariable("sift.topn_runs",
 							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",

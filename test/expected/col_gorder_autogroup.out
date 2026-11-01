@@ -71,9 +71,9 @@ GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- a group range cannot read the array of a group (the plain order has no bound on the key for it); two groups, OR or IN, are read one after the other
 SELECT ag_chk('SELECT id, ts FROM ag WHERE g > 390 ORDER BY ts, id LIMIT 10') AS group_range, ag_chk('SELECT id, ts FROM ag WHERE g = 3 OR g = 4 ORDER BY ts, id LIMIT 10') AS two_groups;
- group_range |  two_groups  
--------------+--------------
- units       | global order
+ group_range  |  two_groups  
+--------------+--------------
+ global order | global order
 (1 row)
 
 -- the plain order still answers a range of the key from the addresses, with no unit read

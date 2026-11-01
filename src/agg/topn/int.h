@@ -282,6 +282,12 @@ struct SiftTopN
 	int			gqn;
 	int			gqroom;
 	int			gqpos;
+	bool		gprep;			/* the rows of the walk are queued before the first goes out (gord_prep): more keys, or a condition that the heap row of an entry decides */
+	int64		gtried;			/* ... heap rows it fetched, and those of them that passed */
+	int64		gpass;
+	int64		gbudget;		/* ... fetches it may make before the units read less (gord_giveup), and the heap blocks the units would vet row by row (not all-visible), with the rows of a block */
+	int64		gdirty;
+	double		grpp;
 	const SiftTopGPred *gcond;	/* sift_topn_gorder: what the key of an entry must satisfy */
 	struct SiftGOrd *go;		/* the global order of the key read in place of the units (sift_topn_gorder): rows come from the heap in the order of the key */
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */

@@ -96,10 +96,12 @@ resid_test(const RunWalk *w, const SiftTopGPred *p, int ki, int oi)
 	bool		unknown = false;
 	int64		v;
 
-	if (p->kind == STG_NOTNULL || p->kind == STG_CMP)
+	if (p->kind == STG_NOTNULL || p->kind == STG_ISNULL || p->kind == STG_CMP)
 	{
 		if (oi < 0 && p->leaf != w->t->key[0].leaf)
 			return RESID_MAYBE;
+		if (p->kind == STG_ISNULL)
+			return !resid_value(w, p->leaf, ki, oi, &v);
 		return resid_value(w, p->leaf, ki, oi, &v) && (p->kind == STG_NOTNULL || gcond_cmp(p->op, v, p->val));
 	}
 	for (int c = 0; c < p->nchild; c++)

@@ -48,8 +48,8 @@ $$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   256
- units        |    96
+ global order |   328
+ units        |    24
 (2 rows)
 
 -- a range of the key and the page after a key inside the group
@@ -63,7 +63,7 @@ GROUP BY 1 ORDER BY 1;
  units        |     6
 (2 rows)
 
--- a list of groups is read one group after the other and merged by the key; more values than the scan pins, a NULL in the list or another condition on the group read the units
+-- a list of groups is read one group after the other and merged by the key; more values than the scan pins or a NULL in the list read the plain order or the units, and another condition on the group is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT gg_chk(format('SELECT id, k FROM gg WHERE %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
 	FROM unnest(ARRAY['g IN (1, 2)', 'g IN (3, 3)', 'g = ANY (ARRAY[6, 7, 8])', 'g IN (2, 4, 6) AND k > 250', 'g IN (2, 4, 6) AND (k, id) > (250, 5000)', 'g IN (100, 101)',
@@ -146,8 +146,8 @@ $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 20
- units  | 16
+ array  | 24
+ units  | 12
 (2 rows)
 
 -- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge
@@ -158,30 +158,30 @@ UPDATE gg SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   256
- units        |    96
+ global order |   322
+ units        |    30
 (2 rows)
 
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 20
- units  | 16
+ array  | 23
+ units  | 13
 (2 rows)
 
 VACUUM gg;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   256
- units        |    96
+ global order |   317
+ units        |    35
 (2 rows)
 
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 20
- units  | 16
+ array  | 22
+ units  | 14
 (2 rows)
 
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
@@ -199,8 +199,8 @@ SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   256
- units        |    96
+ global order |   317
+ units        |    35
 (2 rows)
 
 SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
@@ -218,8 +218,8 @@ SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   256
- units        |    96
+ global order |   317
+ units        |    35
 (2 rows)
 
 -- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted: the order answers
@@ -235,9 +235,9 @@ DROP INDEX gg_i;
 CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k');
 NOTICE:  sift_col index "gg_p": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;
- plain_array 
--------------
- units
+ plain_array  
+--------------
+ global order
 (1 row)
 
 DROP INDEX gg_p;

@@ -41,11 +41,10 @@ $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIM
 SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |   128
- c   | units        |    32
- l   | global order |     8
- l   | units        |   152
-(4 rows)
+ c   | global order |   160
+ l   | global order |    16
+ l   | units        |   144
+(3 rows)
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
 DELETE FROM tx WHERE id > 8000 AND id % 7 = 0;
@@ -64,10 +63,10 @@ SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('tx_
 SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |   128
- c   | units        |    32
- l   | global order |     8
- l   | units        |   152
+ c   | global order |   150
+ c   | units        |    10
+ l   | global order |    16
+ l   | units        |   144
 (4 rows)
 
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
@@ -81,10 +80,10 @@ ANALYZE tx;
 SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |   128
- c   | units        |    32
- l   | global order |     8
- l   | units        |   152
+ c   | global order |   150
+ c   | units        |    10
+ l   | global order |    16
+ l   | units        |   144
 (4 rows)
 
 SELECT sift.col_verify('tx_i');

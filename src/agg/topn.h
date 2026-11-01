@@ -112,7 +112,9 @@ typedef enum SiftTopGKind
 	STG_OR,
 	STG_CMP,
 	STG_NOTNULL,				/* the column is not NULL (op, val unused) */
-	STG_STR						/* the first sort key, a text column, against a constant string: sop, str, collid (op, val unused) */
+	STG_ISNULL,					/* the column is NULL (op, val unused) */
+	STG_STR,					/* the first sort key, a text column, against a constant string: sop, str, collid (op, val unused) */
+	STG_BOOL					/* a boolean column other than the key, through any expression of it: tab (op, val unused) */
 } SiftTopGKind;
 
 typedef struct SiftTopGPred
@@ -129,6 +131,7 @@ typedef struct SiftTopGPred
 	const char *str;
 	uint32		slen;
 	Oid			collid;			/* ... and the collation it compares under */
+	bool		tab[3];			/* STG_BOOL: whether the row passes for false, for true and for NULL */
 	int			nchild;
 	struct SiftTopGPred **child;
 } SiftTopGPred;
@@ -145,6 +148,7 @@ extern int	sift_topn_leaf(const SiftTopN *t, int j);
 extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
 /* ... and of a text or varchar one, which the global order of a text key orders */
 extern int	sift_topn_text_attno(const SiftSrcLayout *lay, int leaf);
+extern int	sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf);
 extern bool sift_topn_same_scale(Oid a, Oid b);
 
 /*
@@ -176,6 +180,7 @@ extern PGDLLIMPORT bool sift_topn_heads;	/* sift.test_topn_heads: answer a unit 
 #define sift_topn_heads true
 #endif
 extern PGDLLIMPORT bool sift_topn_gorder_on;	/* sift.test_topn_gorder */
+extern PGDLLIMPORT int sift_topn_gbudget;	/* sift.test_topn_gbudget */
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
 extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */

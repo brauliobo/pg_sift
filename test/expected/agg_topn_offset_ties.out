@@ -58,7 +58,7 @@ SELECT * FROM ot_all(300, ARRAY[100, 3000]);
  skipped |  8
 (3 rows)
 
--- a condition on another column that the array cannot decide alone reads the heap: no group is skipped, the rows are the same
+-- a condition on another column that the array cannot decide alone is tested on the heap row of each entry: no group is skipped, the rows are the same
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b IS NOT NULL'), ('b', 'b > 100 AND a > 0'), ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('a', 'a <> 3 AND a < 20')) q(c, w),
@@ -66,9 +66,8 @@ SELECT result, count(*) FROM (
 GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- same   |    36
- units  |    12
-(2 rows)
+ same   |    48
+(1 row)
 
 -- rows of the write buffer, deleted rows (the pages are not all-visible until a VACUUM) and updated rows
 INSERT INTO ot (id, a, b, t) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), TIMESTAMP '2021-01-01' + i * interval '1 minute' FROM generate_series(1, 1500) i;

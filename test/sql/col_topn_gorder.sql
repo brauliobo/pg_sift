@@ -1,7 +1,7 @@
 -- ORDER BY column LIMIT n over the global order of the column: the scan merges the sorted arrays of the segments
 -- and of the write buffer and fetches n rows of the heap, which confirms each entry as a b-tree's entry is confirmed. The rows are the heap's, in the heap's order with the
 -- addresses of the rows as the tie-break, over NULLs, ties, DESC, NULLS FIRST and LAST, deleted and updated rows, rows of the write buffer, a promotion and a merge;
--- a segment without the array, a second key or a filter on another column keep the scan that reads the units. Conditions of the query on the key bound the part of
+-- a segment without the array keeps the scan that reads the units; a filter on another column is tested on the heap row of each entry, and the units read when it passes too few of them. Conditions of the query on the key bound the part of
 -- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
@@ -58,7 +58,7 @@ $$ SELECT gt_chk(c, d, nl, 10, '', o), 1::bigint FROM unnest(ARRAY['id', 'b', 'c
 SELECT result, count(*) FROM gt_off(ARRAY[1, 7, 40, 3000]) GROUP BY 1 ORDER BY 1;
 
 -- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
--- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
+-- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'walked' a scan priced as the units that read the array (a filter on another column is tested on the heap row of each entry, which the price does not know), 'MISPRICED' a read priced as the array that the scan did not do
 CREATE FUNCTION gt_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
 BEGIN
@@ -68,7 +68,7 @@ BEGIN
 		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
 		used := used OR pl LIKE '%Global Order%';
 	END LOOP;
-	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
+	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' WHEN used THEN 'walked' ELSE 'MISPRICED' END;
 END $$;
 SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
  'SELECT id, b FROM gt ORDER BY b LIMIT 10',
@@ -85,7 +85,7 @@ SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
 DROP FUNCTION gt_plan(text);
 
 -- min(x) and max(x) are the first row, in the order of x, of the rows where x is not NULL: the scan reads the array for it, and the answer is the heap's whatever the type, the
--- NULLs, the ties, a range or a filter on another column (which the units answer)
+-- NULLs, the ties, a range or a filter on another column (tested on the heap row of each entry)
 CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; used bool := false; ra text; rb text;
 BEGIN
@@ -160,7 +160,7 @@ SELECT result, count(*) FROM (
 GROUP BY 1 ORDER BY 1;
 DROP FUNCTION gt_ks(text);
 
--- a shape that reads the units: a filter on another column
+-- a filter on another column is tested on the heap row of each entry
 SELECT gt_chk('b', 'ASC', 'LAST', 50, 'WHERE a > 0');
 SET sift.test_topn_gorder = off;
 SELECT result, count(*) FROM gt_all(ARRAY[10, 200]) GROUP BY 1 ORDER BY 1;

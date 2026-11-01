@@ -30,6 +30,7 @@ bool		sift_topn_heads = true;
 #endif
 bool		sift_topn_runs = true;
 bool		sift_topn_gorder_on = true;
+int			sift_topn_gbudget = 0;
 
 /* Does a heap entry keep the value of the leaf as an integer (leaf_datum gives its Datum): the output of a row is then read from its unit */
 bool
@@ -286,6 +287,13 @@ sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 		default:
 			return 0;
 	}
+}
+
+/* a boolean column other than a key: its condition is tested on the heap row of the entry */
+int
+sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf)
+{
+	return lay->leaf[leaf].typid == BOOLOID ? leaf_var_attno(lay, leaf) : 0;
 }
 
 /* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */

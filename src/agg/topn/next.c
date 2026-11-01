@@ -71,14 +71,14 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		t->emitted++;
 		return skipped_row(t, slot);
 	}
-	while (t->emitted < t->limit && (t->nkey > 1 ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
+	while (t->emitted < t->limit && (t->gprep ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
 	{
 		bool		call_again = false,
 					all_dead,
 					hnull;
 		Datum		d;
 
-		if (t->nkey > 1)
+		if (t->gprep)
 		{
 			const GRow *r = &t->gq[t->gqpos++];
 
@@ -105,7 +105,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		}
 		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
-		if (t->nkey == 1)
+		if (!t->gprep)
 		{
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
 			if (hnull != isnull)

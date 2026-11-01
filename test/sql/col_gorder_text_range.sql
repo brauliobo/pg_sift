@@ -76,7 +76,7 @@ REINDEX INDEX tr_i;
 SELECT sift.col_verify('tr_i');
 SELECT * FROM tr_all();
 
--- a condition on another column, a sort under another collation, and an unbounded condition keep the units or the normal plan, and the answers are the heap's
+-- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
 SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
 	   tr_chk('SELECT c FROM tr WHERE c <> ''a'' ORDER BY c LIMIT 10') AS not_equal, tr_chk('SELECT c FROM tr WHERE lower(c) >= ''a'' ORDER BY c LIMIT 10') AS expression,
 	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;

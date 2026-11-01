@@ -49,7 +49,7 @@ SELECT result, count(*) FROM (
 	FROM unnest(ARRAY['k > 250', 'k <= 40', 'k BETWEEN 100 AND 120', 'k = 77', '(k, id) > (250, 5000)', 'k > 1000', 'k < 10 OR k > 490']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
 GROUP BY 1 ORDER BY 1;
 
--- a list of groups is read one group after the other and merged by the key; more values than the scan pins, a NULL in the list or another condition on the group read the units
+-- a list of groups is read one group after the other and merged by the key; more values than the scan pins or a NULL in the list read the plain order or the units, and another condition on the group is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT gg_chk(format('SELECT id, k FROM gg WHERE %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
 	FROM unnest(ARRAY['g IN (1, 2)', 'g IN (3, 3)', 'g = ANY (ARRAY[6, 7, 8])', 'g IN (2, 4, 6) AND k > 250', 'g IN (2, 4, 6) AND (k, id) > (250, 5000)', 'g IN (100, 101)',
