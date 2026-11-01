@@ -229,3 +229,42 @@ class Release(unittest.TestCase):
 
     def test_a_load_case_drops_its_own_schema_too(self):
         self.assertEqual(self.dropped(['a'], load=True), ['DROP SCHEMA IF EXISTS c_a CASCADE DROP SCHEMA IF EXISTS c_docs CASCADE'])
+
+
+class Perf(unittest.TestCase):
+    """minstr against a stand-in for steps/perf.sh: the counts, a retry, and the reason when every attempt fails"""
+    class Session:
+        def run(self, sql):
+            return None, ['4242']
+
+    def fake(self, body):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        f.write('#!/usr/bin/env bash\n' + body + '\n')
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def minstr(self, body, **kw):
+        from unittest import mock
+        from cases import measure
+        with mock.patch.object(measure, 'PERF', self.fake(body)), mock.patch.object(measure.time, 'sleep', lambda s, real=__import__('time').sleep: real(0.3)):
+            return measure.minstr(self.Session(), 'SELECT 1', **kw)
+
+    def test_the_median_of_the_runs(self):
+        self.assertEqual(self.minstr('echo 10 5000000 1', runs=1), 5.0)
+
+    def test_an_attempt_that_failed_is_tried_again(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, d)
+        body = 'if [ -e %s/n ]; then echo "10 7000000 1"; else touch %s/n; echo "NA NA NA"; fi' % (d, d)
+        self.assertEqual(self.minstr(body, runs=1), 7.0)
+
+    def test_every_attempt_failing_says_why(self):
+        from cases.measure import PerfFailed
+        with self.assertRaises(PerfFailed) as e:
+            self.minstr("echo 'NA NA NA'; echo no permission >&2; exit 1", runs=1, tries=2)
+        self.assertIn('attempt 2', str(e.exception))
+        self.assertIn('perf_event_paranoid', str(e.exception))
+        self.assertIn('no permission', str(e.exception))

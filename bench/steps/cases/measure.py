@@ -119,26 +119,45 @@ def why(session, sql):
 PERF = os.path.join(HERE, 'perf.sh')
 
 
-def minstr(session, sql, runs=3):
-    """user instructions (millions) of the backend of the session for one run of the statement, median of `runs` (steps/perf.sh, perf stat on the backend with no parallel workers: the count does
-    not depend on the load of the host); None when perf may not count them"""
+class PerfFailed(Exception):
+    """perf did not give the instructions of a statement in any of its attempts; the message is the reason of each"""
+
+
+def count_once(session, sql, pid):
+    """(millions of user instructions of one run of SQL by the backend PID, None) or (None, why): steps/perf.sh, perf stat on the backend with no parallel workers"""
+    p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    time.sleep(1)   # perf.sh traps SIGTERM only once bash has started: on a loaded host 0.3 s was too short and the signal killed bash, leaving perf to count to the end of the backend
+    session.run(sql)
+    p.send_signal(signal.SIGTERM)
+    try:
+        out, err = p.communicate(timeout=60)   # a SIGTERM that lands before perf.sh traps it leaves perf counting for ever
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        return None, 'perf did not end 60 s after the SIGTERM (it reached perf.sh before its trap)'
+    fields = out.split()
+    if len(fields) == 3 and fields[1].isdigit():
+        return int(fields[1]) / 1e6, None
+    with open('/proc/sys/kernel/perf_event_paranoid') as f:
+        return None, 'perf counted "%s" (perf_event_paranoid %s, exit %s): %s' % (' '.join(fields), f.read().strip(), p.returncode, err.strip()[-200:] or 'no message')
+
+
+def minstr(session, sql, runs=3, tries=3):
+    """user instructions (millions) of the backend of the session for one run of the statement, median of `runs`; a count that perf could not give is tried again up to TRIES times, then
+    PerfFailed says why each attempt failed (the count does not depend on the load of the host, so a retry is the same measurement)"""
     session.run('SET max_parallel_workers_per_gather = 0')
     pid = session.run('SELECT pg_backend_pid()')[1][0]
     session.run(sql)
     counts = []
     for _ in range(runs):
-        p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-        time.sleep(1)   # perf.sh traps SIGTERM only once bash has started: on a loaded host 0.3 s was too short and the signal killed bash, leaving perf to count to the end of the backend
-        session.run(sql)
-        p.send_signal(signal.SIGTERM)
-        try:
-            fields = p.communicate(timeout=60)[0].split()   # a SIGTERM that lands before perf.sh traps it leaves perf counting for ever
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            return None
-        if len(fields) != 3 or not fields[1].isdigit():
-            return None
-        counts.append(int(fields[1]) / 1e6)
+        whys = []
+        for _ in range(tries):
+            n, why = count_once(session, sql, pid)
+            if why is None:
+                counts.append(n)
+                break
+            whys.append(why)
+        else:
+            raise PerfFailed('; '.join('attempt %d: %s' % (k + 1, w) for k, w in enumerate(whys)))
     return statistics.median(counts)
 
 

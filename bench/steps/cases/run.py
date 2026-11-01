@@ -15,7 +15,7 @@ from . import runcfg
 from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
 from .registry import read_registry
 from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck, psql, server_load
-from .measure import expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
+from .measure import PerfFailed, expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
 
 
 def release(c, left, rows, scaled):
@@ -88,11 +88,12 @@ def run_point(args, cases, rows, engines, results, failed):
                 if 'ms' in c.metrics:
                     point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
                 if ('minstr' in c.metrics or args.minstr) and lane in ('sift', 'native', 'base') and not isinstance(lanes[lane], Fresh):
-                    mi = minstr(lanes[lane], expand(c.statement(lane), c))
-                    if mi is not None:
-                        point.append(dict(case=c.id, arm=lane, metric='minstr', value='%.1f' % mi, note=notes[lane], load=load))
+                    try:
+                        mi = minstr(lanes[lane], expand(c.statement(lane), c))
+                    except PerfFailed as e:
+                        failed.append('%s%s on %s: %s' % (c.id, tag, lane, e))
                     else:
-                        failed.append('%s%s on %s: perf cannot count instructions (perf_event_paranoid)' % (c.id, tag, lane))
+                        point.append(dict(case=c.id, arm=lane, metric='minstr', value='%.1f' % mi, note=notes[lane], load=load))
                 if lane != 'pg_duckdb' and not c.load:
                     ios, names, size = io_load(lanes[lane], c, lane, expand(c.statement(lane), c), texts.get(lane, ''), args.io)
                     for io in ios if args.io != 'off' else []:   # off: the rows of before the IO measure (buffers, index_bytes) only
