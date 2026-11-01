@@ -67,23 +67,24 @@ grep -q '"key": "k2"' "$T/runs/run-kill1/a-1.json" || fail "a result of another 
 echo "ok: a run with another key measures again"
 
 # a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
-d=$T/runs/run-orphan
+d=$T/runs/run-orphan$$   # unique: the run id is in the environment of its processes, and a second copy of this test (another lint) must not find or stop these
 CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
 sleep 0.6; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
-( . "$LIBSH"; run_procs orphan ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
+( . "$LIBSH"; run_procs orphan$$ ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
-( . "$LIBSH"; run_procs orphan ) | grep -q . && fail "the orphan of the killed run is still running" || true
+( . "$LIBSH"; run_procs orphan$$ ) | grep -q . && fail "the orphan of the killed run is still running" || true
 echo "ok: the processes a killed run left are stopped"
 
+started() { local n; for n in $(seq 200); do [[ -s $1/.run/state ]] && return; sleep 0.05; done; }   # the run has its manifest, so its traps are set: a signal sent before that (a loaded host) kills it with the default action
 d=$T/runs/run-crash
 "$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!
-sleep 0.15; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+started "$d"; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 [[ $(cut -f1 "$d/.run/state") == running ]] || fail "a killed run should still say running"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
 [[ $(cut -f1 "$d/.run/state") == crashed ]] || fail "a run whose process is gone was not found out"
 d=$T/runs/run-term
 "$T/work.sh" "$d" k4 >/dev/null 2>&1 & pid=$!
-sleep 0.15; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+started "$d"; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
 (( rc == 75 )) || fail "SIGTERM exit status is $rc, not 75"
 [[ $(cut -f1 "$d/.run/state") == interrupted ]] || fail "SIGTERM did not record interrupted"
 "$T/work.sh" "$d" k4 >/dev/null 2>&1

@@ -355,10 +355,10 @@ run_begin() { # ARGV...: the manifest of this run; the command line is what `ben
   printf '%q ' "$@" | atomic_write "$(run_dir)/argv"
   echo $$ | atomic_write "$(run_dir)/pid"
   fingerprint | atomic_write "$(run_dir)/fingerprint"
-  run_state running
-  trap 'run_exit $?' EXIT
+  trap 'run_exit $?' EXIT   # before the state says running: a signal that comes once it does must find the traps (a loaded host failed the resume test with exit 143)
   trap 'run_signal INT' INT
   trap 'run_signal TERM' TERM
+  run_state running
 }
 kill_tree() { local p; for p in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$p"; done; kill -TERM "$1" 2>/dev/null || true; }   # PID and everything below it
 run_signal() { # the stage's processes stop, the state is recorded, the exit status says resumable
