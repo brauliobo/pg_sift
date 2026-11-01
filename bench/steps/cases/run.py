@@ -106,7 +106,7 @@ def run_point(args, cases, rows, engines, results, failed, known):
             else:
                 if 'ms' in c.metrics:
                     point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else '') + (' [%s cpus]' % os.environ.get('CASES_CPUS', '?') if c.cpus_needed() > 1 else ''), load=load, **stats(times[lane])))
-                if ('minstr' in c.metrics or args.minstr) and lane in ('sift', 'native', 'base', 'btree') and not isinstance(lanes[lane], Fresh):
+                if ('minstr' in c.metrics or args.minstr) and (lane in ('sift', 'native', 'base', 'btree') or 'minstr' in c.metrics) and lane != 'pg_duckdb' and not isinstance(lanes[lane], Fresh):   # a variant has instructions only where the case asks for the metric
                     try:
                         mi = minstr(lanes[lane], expand(c.statement(lane), c))
                     except PerfFailed as e:
