@@ -14,6 +14,8 @@
 \set seed 1
 \endif
 SET default_statistics_target = 1000;
+-- an asynchronous commit leaves the hint bit of the inserted rows unset until the WAL writer flushes, and VACUUM marks a page visible only when all its rows have it
+SET synchronous_commit = on;
 SELECT greatest(60, :n / 500) AS np \gset
 
 CREATE TABLE dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL, settings jsonb NOT NULL);
