@@ -228,7 +228,7 @@ typedef struct SiftCVals
 	uint32	   *voff;			/* n + 1 entries once a value was added */
 	char	   *vb;
 	Size		vcap;
-	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised */
+	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised for this batch */
 } SiftCVals;
 
 /* A batch of the write buffer as a scan reads it, encoded as a unit, kept with the batch until it changes (col/wbuf/batches.c) */

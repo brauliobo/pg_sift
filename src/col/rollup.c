@@ -453,6 +453,30 @@ leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n
 	return buf.data;
 }
 
+/* The leaves one kind of cap hit: their names for the message, and the share of the units each lost for the DETAIL */
+typedef struct CapKind
+{
+	StringInfoData names,
+				shares;
+	int			n;
+} CapKind;
+
+static void
+cap_init(CapKind *k)
+{
+	initStringInfo(&k->names);
+	initStringInfo(&k->shares);
+	k->n = 0;
+}
+
+static void
+cap_add(CapKind *k, const char *item, uint32 hits, uint32 units, const char *extra)
+{
+	appendStringInfo(&k->names, "%s\"%s\"", k->n ? ", " : "", item);
+	appendStringInfo(&k->shares, "%s\"%s\" %d%%%s", k->n ? ", " : "", item, share_pct(hits, units), extra);
+	k->n++;
+}
+
 /*
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
  * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
@@ -483,6 +507,11 @@ sift_col_report_caps(Relation index)
 	bool		any = spec->fixed && spec->ndims > 0;
 	int			nleft = 0;
 	StringInfoData left;
+	CapKind		dims,
+				blooms,
+				no_sums,
+				no_lists,
+				no_rolls;
 
 	/* the default cube holds 16 dimensions: the plain columns past them (the cells of the dates came first) have no histogram */
 	initStringInfo(&left);
@@ -550,36 +579,45 @@ sift_col_report_caps(Relation index)
 		sift_cseg_close(seg);
 		MemoryContextReset(cx);
 	}
+	cap_init(&dims);
+	cap_init(&blooms);
+	cap_init(&no_sums);
+	cap_init(&no_lists);
+	cap_init(&no_rolls);
 	for (int d = 0; units > 0 && spec->fixed && d < spec->ndims; d++)
 		if ((units - with_dim[d]) * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube dim \"%s\" has no histogram in %d%% of %u units, which hold more than %u groups of it",
-									name, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), share_pct(units - with_dim[d], units), units, spec->max_groups),
-							 errdetail("A query that groups or filters by it scans those units (sift.col_rollup_misses counts them)."),
-							 errhint("Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.")));
+			cap_add(&dims, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), units - with_dim[d], units, "");
 	for (int l = 0; units > 0 && !spec->keyauto && l < rel->schema->ncols; l++)
 	{
 		if (!spec->pres[l] && bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": the keys of \"%s\" are a bloom filter, not a list, in %d%% of %u units, which hold more than %d distinct keys",
-									name, leaf_label(index, &rel->schema->cols[l]), share_pct(bloom[l], units), units, SIFT_CSET_LIMIT),
-							 errdetail("The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to %u distinct keys.", keys[l])));
+			cap_add(&blooms, leaf_label(index, &rel->schema->cols[l]), bloom[l], units, psprintf(" (up to %u keys a unit)", keys[l]));
 		if (cap_hits(no_set[l], sets_units))
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no summary of \"%s\" in %d%% of %u units, whose keys are one value, or every integer of a range, or inline text",
-									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_set[l], sets_units), sets_units),
-							 errdetail("A summary that could not skip a unit is not stored; a query that filters by the column scans those units."),
-							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+			cap_add(&no_sums, leaf_label(index, &rel->schema->cols[l]), no_set[l], sets_units, "");
 		if (cap_hits(no_pres[l], pres_units))
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no key list or bitmap of \"%s\" in %d%% of %u units, where it would take more than %d%% of the bytes of the unit",
-									name, leaf_label(index, &rel->schema->cols[l]), share_pct(no_pres[l], pres_units), pres_units, SIFT_CSET_PRES_PCT),
-							 errdetail("A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than %d, else exact or, where they fill their range, nothing.", SIFT_CSET_LIMIT),
-							 errhint("Leave \"%s\" out of key_columns, or sort the table by it before REINDEX.", leaf_label(index, &rel->schema->cols[l]))));
+			cap_add(&no_lists, leaf_label(index, &rel->schema->cols[l]), no_pres[l], pres_units, "");
 	}
 	for (int r = 0; rows_units > 0 && r < spec->nrollups; r++)
 		if (spec->rollup[r].list < 0 && cap_hits(rows_units - with_roll[r], rows_units))
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims writes no rollup of \"%s\" in %d%% of %u units, which hold more combinations of them than a unit may keep",
-									name, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims),
-									share_pct(rows_units - with_roll[r], rows_units), rows_units),
-							 errdetail("A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", SIFT_PAGG_ROWS_CELLS),
-							 errhint("Name fewer columns, or columns with fewer values per unit.")));
+			cap_add(&no_rolls, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims), rows_units - with_roll[r], rows_units, "");
+	if (dims.n > 0)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube has no histogram of %s in %d%% or more of the units, which hold more than %u groups of a dim", name, dims.names.data, CAPS_REPORT_PCT, spec->max_groups),
+						 errdetail("The share of the %u units without it: %s. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).", units, dims.shares.data),
+						 errhint("Group by leaves with fewer values per unit, or sort the table by them before REINDEX.")));
+	if (blooms.n > 0)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": the keys of %s are a bloom filter, not a list, in %d%% or more of the units, which hold more than %d distinct keys", name, blooms.names.data, CAPS_REPORT_PCT, SIFT_CSET_LIMIT),
+						 errdetail("The share of the %u units: %s. The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them.", units, blooms.shares.data)));
+	if (no_sums.n > 0)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no summary of %s in %d%% or more of the units, whose keys are one value, or every integer of a range, or inline text", name, no_sums.names.data, CAPS_REPORT_PCT),
+						 errdetail("The share of the %u units: %s. A summary that could not skip a unit is not stored; a query that filters by the column scans those units.", sets_units, no_sums.shares.data),
+						 errhint("Leave them out of key_columns, or sort the table by them before REINDEX.")));
+	if (no_lists.n > 0)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no key list or bitmap of %s in %d%% or more of the units, where it would take more than %d%% of the bytes of the unit", name, no_lists.names.data, CAPS_REPORT_PCT, SIFT_CSET_PRES_PCT),
+						 errdetail("The share of the %u units: %s. A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than %d, else exact or, where they fill their range, nothing.", pres_units, no_lists.shares.data, SIFT_CSET_LIMIT),
+						 errhint("Leave them out of key_columns, or sort the table by them before REINDEX.")));
+	if (no_rolls.n > 0)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims writes no rollup of %s in %d%% or more of the units, which hold more combinations of them than a unit may keep", name, no_rolls.names.data, CAPS_REPORT_PCT),
+						 errdetail("The share of the %u units: %s. A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", rows_units, no_rolls.shares.data, SIFT_PAGG_ROWS_CELLS),
+						 errhint("Name fewer columns, or columns with fewer values per unit.")));
 	if (nleft > 0)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube holds %d dimensions and leaves out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
 						 errdetail("The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",

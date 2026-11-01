@@ -201,7 +201,7 @@ CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
-NOTICE:  sift_col: the strings of leaf 1 (attribute 2) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
 RESET sift.test_limits;
 ANALYZE tv;

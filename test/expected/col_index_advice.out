@@ -51,8 +51,8 @@ SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE k
 SET client_min_messages = notice;
 CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off', point_tid_columns = 'off');
 CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off', point_tid_columns = 'off');
-NOTICE:  sift_col index "ad_over": rollup_dims writes no rollup of "source, region" in 100% of 8 units, which hold more combinations of them than a unit may keep
-DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+NOTICE:  sift_col index "ad_over": rollup_dims writes no rollup of "source, region" in 10% or more of the units, which hold more combinations of them than a unit may keep
+DETAIL:  The share of the 8 units: "source, region" 100%. A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
 SET client_min_messages = warning;
 -- a covered column that looks rewritten often: its UPDATEs are not HOT

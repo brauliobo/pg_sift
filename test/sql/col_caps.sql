@@ -7,10 +7,10 @@ SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '60s';
 CREATE EXTENSION pg_sift;
 
--- 100,000 rows in 3 units. few: 7 values; many: 50,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
+-- 100,000 rows in 3 units. few: 7 values; many and many2: 50,000 and 60,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
 -- (a bloom filter beyond 32 keys, and no gap-free range that a zone would tell); wide: 3,000 values
-CREATE TABLE caps (id int, few int, many int, mid int, wide bigint) WITH (autovacuum_enabled = off);
-INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3 FROM generate_series(1, 100000) g;
+CREATE TABLE caps (id int, few int, many int, mid int, wide bigint, many2 int) WITH (autovacuum_enabled = off);
+INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3, (g * 20011) % 60000 FROM generate_series(1, 100000) g;
 
 -- a dim over its cap, and a summary of more than 32 keys that is a bloom filter
 CREATE INDEX caps_a ON caps USING sift_col (id, few, many, wide) WITH (preagg = 'cube(few: id; many: id)', key_columns = 'wide', point_tid_columns = 'off', order_array_columns = 'off');
@@ -24,6 +24,8 @@ CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid) WITH (point_tid_
 CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
 CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
+-- two columns hit by one kind of cap are one NOTICE, with the share of the units of each in the DETAIL
+CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_dims = 'off', point_tid_columns = 'off', order_array_columns = 'off');
 -- the cube holds 16 dimensions: the cells of the dates come first and the plain columns give way (the NOTICE names them); 'all' leaves date columns out only when the dates alone are more than 16
 CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;

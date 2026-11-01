@@ -16,9 +16,9 @@ FROM generate_series(1, 3000) i;
 -- the build: three string leaves pass 64 kB in the one unit of 3000 rows (192, 320 and 128 bytes a row)
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX wv_col ON wv USING sift_col (id, grp, payload, note, bin);
-NOTICE:  sift_col: the strings of leaf 2 (attribute 3) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 2 (attribute 3) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 4 (attribute 5) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 4 (attribute 5) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
 RESET sift.test_limits;
 VACUUM (FREEZE, ANALYZE) wv;
@@ -64,17 +64,17 @@ SELECT pushed('SELECT grp, count(*), count(DISTINCT payload) FROM wm GROUP BY gr
 
 SET sift.test_limits = 'unit_bytes=65536';
 SELECT sift.col_merge('wm_col', true) AS merges;
-NOTICE:  sift_col: the strings of leaf 2 (attribute 3) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 2 (attribute 3) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 3 (attribute 4) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 3 (attribute 4) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 2 (attribute 3) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 2 (attribute 3) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 3 (attribute 4) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 3 (attribute 4) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 2 (attribute 3) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 2 (attribute 3) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 3 (attribute 4) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 3 (attribute 4) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
  merges 
 --------
@@ -114,7 +114,21 @@ SELECT pushed('SELECT count(DISTINCT payload) FROM ws') AS scanned, same('SELECT
  t       | same
 (1 row)
 
-DROP TABLE wv, wm, ws;
+-- a leaf that passes the budget in each of several superblocks is one NOTICE for the statement, naming the first superblock
+CREATE TABLE wsb (id int, payload text) WITH (autovacuum_enabled = false);
+INSERT INTO wsb SELECT i, repeat(md5(i::text), 12) FROM generate_series(1, 12000) i;
+SELECT pg_relation_size('wsb') / 8192 / 256 >= 2 AS spans_superblocks;
+ spans_superblocks 
+-------------------
+ t
+(1 row)
+
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX wsb_col ON wsb USING sift_col (id, payload);
+NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
+HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+RESET sift.test_limits;
+DROP TABLE wv, wm, ws, wsb;
 DROP FUNCTION runq(text, bool), same(text), pushed(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

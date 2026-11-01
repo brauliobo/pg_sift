@@ -301,9 +301,6 @@ SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.col_auto_merge', 'si
 SET sift.col_auto_merge = on;
 CREATE TABLE facts_f (LIKE facts_a);
 CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
-NOTICE:  sift_col index "facts_f_col": sift.col_auto_merge keeps it answerable after churn
-DETAIL:  A background worker vacuums "facts_f" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.
-HINT:  SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.
 RESET sift.col_auto_merge;
 DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f;
 DROP FUNCTION fa_state(text);

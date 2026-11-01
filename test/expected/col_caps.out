@@ -6,37 +6,36 @@ SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '60s';
 CREATE EXTENSION pg_sift;
--- 100,000 rows in 3 units. few: 7 values; many: 50,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
+-- 100,000 rows in 3 units. few: 7 values; many and many2: 50,000 and 60,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
 -- (a bloom filter beyond 32 keys, and no gap-free range that a zone would tell); wide: 3,000 values
-CREATE TABLE caps (id int, few int, many int, mid int, wide bigint) WITH (autovacuum_enabled = off);
-INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3 FROM generate_series(1, 100000) g;
+CREATE TABLE caps (id int, few int, many int, mid int, wide bigint, many2 int) WITH (autovacuum_enabled = off);
+INSERT INTO caps SELECT g, g % 7, (g * 7919) % 50000, ((g * 7919) % 400) * 3, ((g * 7919) % 3000) * 3, (g * 20011) % 60000 FROM generate_series(1, 100000) g;
 -- a dim over its cap, and a summary of more than 32 keys that is a bloom filter
 CREATE INDEX caps_a ON caps USING sift_col (id, few, many, wide) WITH (preagg = 'cube(few: id; many: id)', key_columns = 'wide', point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "caps_a": the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
-DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
-HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
+NOTICE:  sift_col index "caps_a": the cube has no histogram of "many" in 10% or more of the units, which hold more than 4096 groups of a dim
+DETAIL:  The share of the 3 units without it: "many" 100%. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).
+HINT:  Group by leaves with fewer values per unit, or sort the table by them before REINDEX.
 -- the same for a column of 3,000 keys, alone
 CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (key_columns = 'wide', point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "caps_b": key_columns writes no key list or bitmap of "wide" in 34% of 3 units, where it would take more than 3% of the bytes of the unit
-DETAIL:  A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
-HINT:  Leave "wide" out of key_columns, or sort the table by it before REINDEX.
 -- the caps hold: nothing to tell (the 7 keys of few are a bitmap)
 CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', key_columns = 'few', point_tid_columns = 'off', order_array_columns = 'off');
 -- the default spec asks for no dim by name, and no set: silent
 CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid) WITH (point_tid_columns = 'off', order_array_columns = 'off');
 -- no key list or bitmap of many (over 3% of the unit: a bloom filter instead), a rollup of more cells than a tenth of the rows
 CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "caps_e": key_columns writes no key list or bitmap of "many" in 100% of 3 units, where it would take more than 3% of the bytes of the unit
-DETAIL:  A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
-HINT:  Leave "many" out of key_columns, or sort the table by it before REINDEX.
-NOTICE:  sift_col index "caps_e": rollup_dims writes no rollup of "few, many" in 100% of 3 units, which hold more combinations of them than a unit may keep
-DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+NOTICE:  sift_col index "caps_e": key_columns writes no key list or bitmap of "many" in 10% or more of the units, where it would take more than 3% of the bytes of the unit
+DETAIL:  The share of the 3 units: "many" 100%. A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
+HINT:  Leave them out of key_columns, or sort the table by them before REINDEX.
+NOTICE:  sift_col index "caps_e": rollup_dims writes no rollup of "few, many" in 10% or more of the units, which hold more combinations of them than a unit may keep
+DETAIL:  The share of the 3 units: "few, many" 100%. A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
 CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "caps_f": rollup_dims writes no rollup of "few, mid" in 34% of 3 units, which hold more combinations of them than a unit may keep
-DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
-HINT:  Name fewer columns, or columns with fewer values per unit.
+-- two columns hit by one kind of cap are one NOTICE, with the share of the units of each in the DETAIL
+CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_dims = 'off', point_tid_columns = 'off', order_array_columns = 'off');
+NOTICE:  sift_col index "caps_g": the cube has no histogram of "many", "many2" in 10% or more of the units, which hold more than 4096 groups of a dim
+DETAIL:  The share of the 3 units without it: "many" 100%, "many2" 100%. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).
+HINT:  Group by leaves with fewer values per unit, or sort the table by them before REINDEX.
 -- the cube holds 16 dimensions: the cells of the dates come first and the plain columns give way (the NOTICE names them); 'all' leaves date columns out only when the dates alone are more than 16
 CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;
@@ -78,15 +77,15 @@ HINT:  To drop it, run ALTER INDEX caps_cal_two SET (rollup_dims = 'off') and RE
 -- off says nothing
 ALTER INDEX caps_a SET (key_columns = 'off');
 REINDEX INDEX caps_a;
-NOTICE:  sift_col index "caps_a": the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
-DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
-HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
+NOTICE:  sift_col index "caps_a": the cube has no histogram of "many" in 10% or more of the units, which hold more than 4096 groups of a dim
+DETAIL:  The share of the 3 units without it: "many" 100%. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).
+HINT:  Group by leaves with fewer values per unit, or sort the table by them before REINDEX.
 -- a refresh tells the same, whether or not it rewrote a segment
 ALTER INDEX caps_c SET (preagg = 'cube(few: id; many: id)');
 SELECT * FROM sift.col_refresh('caps_c');
-NOTICE:  sift_col index "caps_c": the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
-DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
-HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
+NOTICE:  sift_col index "caps_c": the cube has no histogram of "many" in 10% or more of the units, which hold more than 4096 groups of a dim
+DETAIL:  The share of the 3 units without it: "many" 100%. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).
+HINT:  Group by leaves with fewer values per unit, or sort the table by them before REINDEX.
  refreshed | remaining 
 -----------+-----------
          0 |         0

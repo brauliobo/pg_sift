@@ -3,7 +3,7 @@
 # and 3.3, and one the new library does not know: a setting a release removed or renamed). After the library is replaced and ALTER EXTENSION UPDATE: the session still
 # starts (the unknown name is a warning, "removing it", not an error), the stored settings apply, the defaults that 3.3 changed are the shipped ones
 # (sift.col_auto_merge on, within 5% of the WAL), the update prints nothing about the auto merge and sift.col_maintenance_status answers for the old index,
-# CREATE INDEX prints the auto merge NOTICE once, and pg_dump -C | psql (the stored settings of the database and of the role in it travel with the dump) brings
+# CREATE INDEX says nothing about the auto merge (a default that is on needs no word), and pg_dump -C | psql (the stored settings of the database and of the role in it travel with the dump) brings
 # the same settings and a verifying index back.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -45,7 +45,7 @@ check "sift.col_maintenance_status answers for the index the release wrote" test
 check "the index the release wrote answers as it did" test "$(qd app "SET sift.enable_agg = off" "SELECT g, count(*) FROM docs GROUP BY g ORDER BY g" | tr '\n' ' ')" == "$want"
 check "col_verify and verify pass" test -z "$(qd app "SELECT sift.col_verify('docs_col', true)" "SELECT sift.verify('docs_idx', true)" 2>&1 | grep -v '^$' | grep -iv 'true\|^t$')"
 qd app "CREATE INDEX docs_col2 ON docs USING sift_col (id, g)" >/dev/null
-check "CREATE INDEX prints the auto merge NOTICE once" test "$(grep -c 'sift.col_auto_merge keeps it answerable' "$TAPDIR/err.txt")" == 1
+check "CREATE INDEX says nothing about the auto merge" test "$(grep -c 'sift.col_auto_merge' "$TAPDIR/err.txt")" == 0
 
 # the dump: the database with its settings, dropped and restored
 PGHOST=$(dir us)/sock PGPORT=$(port us) PGUSER=postgres pg_dump -C -d app -f "$(dir us)/app.sql" || bail "pg_dump failed"
