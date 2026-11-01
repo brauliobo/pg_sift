@@ -3,11 +3,14 @@
 -- for phrases, after deletes and VACUUM.
 CREATE EXTENSION pg_sift;
 
--- 200,000 rows on about 2,100 heap pages (8 superblocks): 'common' in every row, seven terms in 28,000, 500 terms in 400, 'rare' in 2,000, 'x y' in 15,000,
--- 'early' in the first 300 rows, 'mid' in 401 rows of one superblock, 'late' in the last 5,000: a conjunction of them with a dense term skips whole superblocks of the dense one
+-- 20,000 rows of 900 bytes on about 2,100 heap pages (8 superblocks, as 200,000 narrow rows have): 'common' in every row, seven terms in 2,800, 500 terms in 40, 'rare' in 200, 'x y' in 1,500,
+-- 'early' in the first 30 rows, 'mid' in 41 rows of one superblock, 'late' in the last 500: a conjunction of them with a dense term skips whole superblocks of the dense one
 CREATE TABLE src AS
-SELECT g AS id, g % 10 AS counter_a, concat_ws(' ', 'common', 'w' || g % 7, 'r' || g % 500, CASE WHEN g % 100 = 0 THEN 'rare' END, CASE WHEN g % 13 = 0 THEN 'x y' END, CASE WHEN g < 300 THEN 'early' END, CASE WHEN g BETWEEN 100000 AND 100400 THEN 'mid' END, CASE WHEN g > 195000 THEN 'late' END, repeat('f ', g % 5)) AS body
-FROM generate_series(1, 200000) g;
+SELECT g AS id, g % 10 AS counter_a, concat_ws(' ', 'common', 'w' || g % 7, 'r' || g % 500, CASE WHEN g % 100 = 0 THEN 'rare' END, CASE WHEN g % 13 = 0 THEN 'x y' END, CASE WHEN g < 30 THEN 'early' END, CASE WHEN g BETWEEN 10000 AND 10040 THEN 'mid' END, CASE WHEN g > 19500 THEN 'late' END, repeat('f ', g % 5)) AS body,
+	repeat('p', 720) AS pad
+FROM generate_series(1, 20000) g;
+ALTER TABLE src ALTER COLUMN pad SET STORAGE PLAIN;
+SELECT pg_relation_size('src') / current_setting('block_size')::int BETWEEN 1800 AND 2300 AS eight_superblocks;
 SET sift.grouped_min_df = 1000000;
 CREATE INDEX src_idx ON src USING sift (body);
 
