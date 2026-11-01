@@ -63,12 +63,14 @@ typedef struct BatchSet
 	int			refs;			/* the scans that hold the batches: the memory context that was given for them is alive */
 	bool		kept;			/* in the cache of the backend */
 	uint64		used;
+	Size		recbytes;		/* the bytes of records the batches were made from */
 } BatchSet;
 
 #define BATCH_SETS			4
 
-/* A set bigger than this is built for its scan and not kept */
+/* A set bigger than this is built for its scan and not kept, unless it is within BATCH_AMPLIFY times the records it was made from: a buffer of the size the index allows (write_buffer_limit) is kept whole, whatever its limit */
 #define BATCH_SET_BYTES		((Size) 16 << 20)
+#define BATCH_AMPLIFY		6
 
 static MemoryContext sets_cxt;
 
@@ -192,6 +194,7 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 {
 	SiftColRow	row;
 
+	s->recbytes += f->arena.len;
 	for (int i = 0; i < f->nheld; i++)
 	{
 		const Held *h = &f->held[i];
@@ -409,7 +412,7 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	if (!s->kept && s->n > 0 && MemoryContextMemAllocated(s->cx, true) <= BATCH_SET_BYTES)
+	if (!s->kept && s->n > 0 && MemoryContextMemAllocated(s->cx, true) <= Max(BATCH_SET_BYTES, BATCH_AMPLIFY * s->recbytes))
 	{
 		int			slot = 0;
 
