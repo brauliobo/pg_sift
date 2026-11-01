@@ -11,7 +11,7 @@ CREATE TABLE rc (id int PRIMARY KEY, tenant_id int, foreign_id int, counter_a in
 INSERT INTO rc SELECT i, i / 150, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
 FROM generate_series(1, 120000) i;
 VACUUM ANALYZE rc;
-CREATE INDEX rc_ix ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at);
+CREATE INDEX rc_ix ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at) WITH (dead_rewrite_pct = 50);
 -- the same columns with the key the user wrote
 CREATE INDEX rc_off ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at) WITH (key_cut = 'off');
 -- built on rows in the order of the tenants: no cut

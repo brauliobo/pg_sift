@@ -10,7 +10,7 @@ CREATE TABLE events (id bigint PRIMARY KEY, tenant_id int, foreign_id int, kind 
 	WITH (autovacuum_enabled = off, fillfactor = 85);
 INSERT INTO events SELECT g, g % 20, hashint8(g * 31) % 5000, 'kind_' || g % 8, (hashint8(g * 17) % 100000) / 100.0,
 	timestamptz '2026-01-01' + interval '90 days' * g / 100000 FROM generate_series(1, 100000) g;
-CREATE INDEX events_col ON events USING sift_col (tenant_id, foreign_id, kind, value_num, updated_at);
+CREATE INDEX events_col ON events USING sift_col (tenant_id, foreign_id, kind, value_num, updated_at) WITH (dead_rewrite_pct = 50);
 VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) events;
 
 -- blocks after the last block in use (a free list page counts as in use)

@@ -21,17 +21,17 @@ int			sift_test_col_refresh_sleep_armed = 0;
 
 /*
  * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
- * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 430, rows * 45) a unit (a grouped sum over 300,000
- * rows: 10.7 M with 5% of them dead in every unit, 17.2 M with 13%, 1.3 M with the first 13% dead, which are whole units). The rewrite re-encodes every live row, 900 + 463 *
- * bytes instructions (300,000 rows: 4,200 at 7.1 bytes a row, 35,400 at 74.5). It pays once the SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a
- * segment half dead is rewritten whatever the scans, for the space.
+ * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 700, rows * 58) a unit (a grouped count and sum over 1,000,000
+ * rows: 36 M with 5% of them dead in every unit, 58 M with 10%, 55 M with 20%; 300,000 rows: 13.5, 17.5, 16.7 M). The rewrite re-encodes every live row, 800 + 230 * bytes
+ * instructions (1,000,000 rows: 2,200 at 6.2 bytes a row, 4,600 at 16.5 with three order arrays; one price a byte fits the chunks and the order arrays). It pays once the
+ * SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a segment half dead is rewritten whatever the scans, for the space.
  */
 static bool
 rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 {
 	uint64		live = sift_cseg_live_rows(seg),
 				scan = 0,
-				row_cost = 900 + 463 * e->bytes / Max(e->ndocs, 1);
+				row_cost = SIFT_COL_REWRITE_ROW + SIFT_COL_REWRITE_BYTE * e->bytes / Max(e->ndocs, 1);
 	uint64	   *bits = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 
 	if (live * 2 <= e->ndocs)

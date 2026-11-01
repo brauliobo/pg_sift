@@ -15,9 +15,9 @@ CREATE TABLE facts_b (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_b SELECT * FROM facts_a ORDER BY id;
 CREATE TABLE facts_c (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_c SELECT * FROM facts_a ORDER BY id;
-CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount);
-CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount);
-CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount);
+CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
+CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
+CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 
 -- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree

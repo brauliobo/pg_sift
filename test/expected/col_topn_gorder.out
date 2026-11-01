@@ -21,7 +21,7 @@ SELECT i,
 	   CASE WHEN i % 47 = 0 THEN NULL ELSE TIMESTAMPTZ '2000-01-01 00:00:00+00' + ((i * 104729) % 900000) * interval '1 second' END
 FROM generate_series(1, 12000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
-	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z');
+	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', dead_rewrite_pct = 50);
 NOTICE:  sift_col index "gt_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 7 columns
 ANALYZE gt;
 -- an answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key (rows of a tie may come in any order);

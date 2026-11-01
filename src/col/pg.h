@@ -147,9 +147,12 @@ typedef struct SiftColOptions
 /* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/maint/maint.c) */
 #define SIFT_COL_DEAD_AUTO	0
 /* Instructions a scan pays for each dead row of a unit (the unit answers net of them), for each row of a unit more than a tenth dead, and the scans expected between two VACUUMs */
-#define SIFT_COL_DEAD_ROW	430
-#define SIFT_COL_DEAD_SCAN_ROW	45
+#define SIFT_COL_DEAD_ROW	700
+#define SIFT_COL_DEAD_SCAN_ROW	58
 #define SIFT_COL_DEAD_SCANS	100
+/* Instructions the rewrite takes a live row, and for each byte of it: measured on 6 to 17 bytes a row, with and without order arrays, 300,000 and 1,000,000 rows */
+#define SIFT_COL_REWRITE_ROW	800
+#define SIFT_COL_REWRITE_BYTE	230
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
