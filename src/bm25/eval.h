@@ -114,6 +114,7 @@ typedef struct SiftPlanStats
 	int64		blocks_skipped;
 	int64		candidates;
 	int64		verified;
+	int64		searches;		/* searches of the ranker (a drained one repeats them with more hits) */
 	float4		theta;
 } SiftPlanStats;
 
@@ -177,6 +178,14 @@ extern SiftRanker *sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify,
 extern bool sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score);
 extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs the search */
 extern void sift_rank_end(SiftRanker *r);
+
+/*
+ * The consumer is an incremental sort under a LIMIT of k rows (call before the first sift_rank_next; k > 0): the first search keeps, with the k
+ * best hits, every hit that ties with the k-th one, and then the scan is at its end, as the sort needs no row after its group. A consumer
+ * that drops a hit calls sift_rank_reopen: the ranker goes on as without ties, with the next search.
+ */
+extern void sift_rank_ties(SiftRanker *r);
+extern void sift_rank_reopen(SiftRanker *r);
 
 /* The k of the search after one of k hits that was not enough: it grows fast while the hits are few, slowly beyond */
 extern int64 sift_rank_next_k(int64 k);

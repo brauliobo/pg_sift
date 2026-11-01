@@ -43,6 +43,7 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_KEYOPS,			/* List of Const, three per leading sort key: its ordering operator, collation and NULLS FIRST (nil: ranked by score alone) */
 	SIFT_PRIV_ATTR,				/* List of int8 Const, per test of an INCLUDE column the ranker applies: column, SiftAttrOp, value, n and the n values of a list (nil: none; planner_attr.c) */
 	SIFT_PRIV_SEMI,				/* List, per small table that an inner join keys to an INCLUDE column: its Oid, the column's position, the attribute of the table's key and its own quals (planner_attr.c); nil: none */
+	SIFT_PRIV_TIES,				/* int32: 1 = the scan's rows go to an incremental sort under a LIMIT of exactly the k hint rows (planner_ties.c), 0 otherwise */
 	SIFT_NPRIV
 } SiftPrivateField;
 

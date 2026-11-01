@@ -267,6 +267,7 @@ make_path(Oid heapoid, RelOptInfo *parent, ScanCand *c, SiftScanMode mode, int64
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->keyops : NIL);
 	cp->custom_private = lappend(cp->custom_private, c->attr);
 	cp->custom_private = lappend(cp->custom_private, c->semi);
+	cp->custom_private = lappend(cp->custom_private, makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true));
 	cp->custom_private = lappend(cp->custom_private, c->queries);
 	cp->custom_private = lappend(cp->custom_private, ko ? ko->exprs : NIL);
 	return cp;

@@ -30,6 +30,37 @@ hot_forget(SiftRanker *r)
 	r->hot = NULL;
 }
 
+/* A tie-inclusive search keeps, next to the K best hits, every verified hit that ties with the worst of them (r->ties) */
+static void
+tie_add(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
+{
+	if (tk->ntie == tk->tiecap)
+	{
+		tk->tiecap = Max(2 * tk->tiecap, 256);
+		tk->tie = tk->tie ? repalloc_huge(tk->tie, tk->tiecap * sizeof(SiftHit)) :
+			MemoryContextAllocHuge(r->plan->mcxt, tk->tiecap * sizeof(SiftHit));
+	}
+	tk->tie[tk->ntie++] = (SiftHit) {.key = key,.score = score};
+}
+
+static void
+tie_defer(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
+{
+	if (tk->nlazy == tk->lazycap)
+	{
+		tk->lazycap = Max(2 * tk->lazycap, 256);
+		tk->lazy = tk->lazy ? repalloc_huge(tk->lazy, tk->lazycap * sizeof(SiftLazyHit)) :
+			MemoryContextAllocHuge(r->plan->mcxt, tk->lazycap * sizeof(SiftLazyHit));
+	}
+	tk->lazy[tk->nlazy++] = (SiftLazyHit) {.key = key,.score = score,.seg = seg};
+}
+
+static inline bool
+tie_hit(const SiftRanker *r, const SiftTopK *tk, float4 score)
+{
+	return r->ties && tk->n == tk->k && score == tk->hit[0].score;
+}
+
 /*
  * Verifies one candidate and keeps it when it is among the best. Ties go by the ctid of the visible
  * tuple, which shares the index entry's page but not its offset along a HOT chain: the first check
@@ -46,13 +77,23 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	bool		ok,
 				heap = p->recheck || p->nphr > 0;
 
-	if (!sift_kern_topk_admits(tk, score, (key & ~UINT64CONST(0xFFFF)) | 1))
+	if (!sift_kern_topk_admits(tk, score, (key & ~UINT64CONST(0xFFFF)) | 1) && !tie_hit(r, tk, score))
 		return;
 	if (seg >= 0 && r->posok)
 	{
 		if (!phrases_hold(r->phrpos, seg, sift_key_block(key) & (SIFT_SB_PAGES - 1), (key & 0xFFFF) - 1))
 			return;
 		heap = p->recheck || p->segheap[seg];
+	}
+	/*
+	 * A candidate that cannot enter the kept hits but ties with the worst of them is only a tie if the worst score stays: the early
+	 * worst scores of a search are low and their groups large, so it waits (its score is exact when no text decides it) and the
+	 * search verifies the ones that tie with the final worst score (rank_close_ties)
+	 */
+	if (!heap && r->ties && !sift_kern_topk_admits(tk, score, (key & ~UINT64CONST(0xFFFF)) | 1))
+	{
+		tie_defer(r, tk, key, score, seg);
+		return;
 	}
 	sift_key_to_tid(key, &tid);
 	p->stats.candidates++;
@@ -66,13 +107,84 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		return;
 	p->stats.verified++;
 	vis = sift_key_from_tid(&tid);
-	if (!sift_kern_topk_admits(tk, score, vis))
+	if (sift_kern_topk_admits(tk, score, vis))
+	{
+		bool		full = tk->n == tk->k;
+		SiftHit		out = full ? tk->hit[0] : (SiftHit) {0};
+
+		if (tk->n == tk->cap && tk->n < tk->k)
+			tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
+		sift_kern_topk_push(tk, score, vis);
+		/* the hit the new one pushed out ties with the new worst one, or the worst score rose and the ties are behind it */
+		if (r->ties && full)
+		{
+			if (tk->hit[0].score == out.score)
+				tie_add(r, tk, out.key, out.score);
+			else
+				tk->ntie = tk->nlazy = 0;
+		}
+	}
+	else if (tie_hit(r, tk, score))
+		tie_add(r, tk, vis, score);
+	else
 		return;
-	if (tk->n == tk->cap && tk->n < tk->k)
-		tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
-	sift_kern_topk_push(tk, score, vis);
 	if (vis != key)
 		hot_remember(r, vis, key);
+}
+
+/* Verifies the deferred candidates that tie with the final worst score and keeps the ones that pass */
+static void
+rank_close_ties(SiftRanker *r, SiftTopK *tk)
+{
+	SiftPlan   *p = r->plan;
+
+	for (int64 i = 0; i < tk->nlazy && tk->n == tk->k; i++)
+	{
+		SiftLazyHit *c = &tk->lazy[i];
+		ItemPointerData tid;
+		text	   *doc = NULL;
+		MemoryContext old;
+		bool		ok;
+		SiftKey		vis;
+
+		if (c->score != tk->hit[0].score)
+			continue;
+		CHECK_FOR_INTERRUPTS();
+		sift_key_to_tid(c->key, &tid);
+		p->stats.candidates++;
+		old = MemoryContextSwitchTo(r->tmpcx);
+		ok = r->verify(r->arg, &tid, false, &doc);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(r->tmpcx);
+		if (!ok)
+			continue;
+		p->stats.verified++;
+		vis = sift_key_from_tid(&tid);
+		tie_add(r, tk, vis, c->score);
+		if (vis != c->key)
+			hot_remember(r, vis, c->key);
+	}
+	tk->nlazy = 0;
+}
+
+static int
+hit_key_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u64(((const SiftHit *) a)->key, ((const SiftHit *) b)->key);
+}
+
+/* The tied hits follow the sorted ones, by ascending key as equal scores sort */
+static void
+rank_append_ties(SiftTopK *tk)
+{
+	if (tk->ntie == 0)
+		return;
+	if (tk->n + tk->ntie > tk->cap)
+		tk->hit = repalloc_huge(tk->hit, (tk->cap = tk->n + tk->ntie) * sizeof(SiftHit));
+	qsort(tk->tie, tk->ntie, sizeof(SiftHit), hit_key_cmp);
+	memcpy(tk->hit + tk->n, tk->tie, tk->ntie * sizeof(SiftHit));
+	tk->n += tk->ntie;
+	tk->ntie = 0;
 }
 
 /* Blocks by descending bound, ties by block number: at most 16 entries, so an insertion sort */
@@ -389,7 +501,10 @@ rank_merge_shared(SiftRanker *r)
 	qsort(all, n, sizeof(SiftParHit), par_hit_cmp);
 	hot_forget(r);
 	r->nhit = Min(n, r->K);
-	r->complete = n < r->K;
+	/* the hits that tie with the K-th one are all there: each participant published its own */
+	while (r->ties && r->nhit < n && all[r->nhit].score == all[r->K - 1].score)
+		r->nhit++;
+	r->complete = r->ties || n < r->K;
 	if (r->nhit > r->hitcap)
 		r->hit = repalloc_huge(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
 	for (int64 i = 0; i < r->nhit; i++)
@@ -419,13 +534,17 @@ rank_search(SiftRanker *r)
 	cap = Min(r->K, RANK_INITIAL_K);
 	sift_kern_topk_init(&tk, MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
+	p->stats.searches++;
 	if (shared)
 		rank_units_shared(r, &tk);
 	else
 		rank_units(r, &tk);
 	p->stats.theta = sift_kern_topk_theta(&tk);
-	r->complete = tk.n < r->K;
-	r->nhit = sift_kern_topk_sort(&tk);
+	r->complete = r->ties || tk.n < r->K;
+	rank_close_ties(r, &tk);
+	sift_kern_topk_sort(&tk);
+	rank_append_ties(&tk);
+	r->nhit = tk.n;
 	r->hit = tk.hit;
 	r->hitcap = tk.cap;
 	r->searched = true;
@@ -473,6 +592,23 @@ rank_ensure(SiftRanker *r)
 	else
 		return;
 	rank_search(r);
+}
+
+void
+sift_rank_ties(SiftRanker *r)
+{
+	Assert(r->k > 0 && !r->searched);
+	r->ties = true;
+}
+
+void
+sift_rank_reopen(SiftRanker *r)
+{
+	if (!r->ties)
+		return;
+	r->ties = false;
+	r->complete = false;
+	r->K = Max(r->K, r->nhit);
 }
 
 void

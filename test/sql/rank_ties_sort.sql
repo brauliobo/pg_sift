@@ -1,6 +1,6 @@
 -- ORDER BY sift.score(ctid) DESC, id LIMIT k: the rows after the score are sorted by an Incremental Sort that reads the whole group of rows tied with
--- the k-th and the row after it. The scan asks the ranker for the rows of its second search at once (a ranked scan under a sort key beyond the score),
--- so a group of up to 175 documents is read by one search and not two. The answers must be those of the sort of every match.
+-- the k-th and the row after it. The scan under it keeps that group itself (the finished plan tells it, planner_ties.c), so a group of any size is read by one search.
+-- The answers must be those of the sort of every match.
 CREATE EXTENSION pg_sift;
 \ir test/sift_plan.sql
 
@@ -34,7 +34,7 @@ SELECT sift_plan('SELECT id FROM docs WHERE body @@> ''tie'' ORDER BY sift.score
 SELECT c.q, c.k FROM cases c, LATERAL (SELECT array_agg(id) AS ids FROM (SELECT id FROM docs WHERE body @@> c.q ORDER BY sift.score(ctid) DESC, id LIMIT c.k) t) r
 WHERE r.ids IS DISTINCT FROM unlimited(c.q, c.k) ORDER BY 1, 2;
 
--- the scan under a sort key asks for the rows of its second search at once (16 times the limit and one row), a scan the query ends on asks for the limit
+-- the scan under the sort key keeps the group tied with the k-th itself (rank_ties_group): its hint is the limit, as for a scan the query ends on
 SELECT k, hint_of('tie', k, ', id') AS sorted, hint_of('tie', k, '') AS alone FROM (VALUES (1), (10), (100), (1000)) v(k) ORDER BY 1;
 
 DROP FUNCTION unlimited(text, int), hint_of(text, int, text), sift_plan(text);

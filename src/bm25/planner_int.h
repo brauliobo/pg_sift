@@ -87,6 +87,9 @@ extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double ke
 extern List *param_limits(PlannerInfo *root);
 extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
 
+/* bm25/planner_ties.c: the scans of the finished plan whose rows go to an incremental sort under a LIMIT are told to hand out the group tied with the last */
+extern void sift_tie_scans(PlannedStmt *stmt);
+
 /* bm25/planner_path.c */
 extern bool any_list_too_long(PlannerInfo *root, ScanCand *c, const ScanCost *sc);
 extern void scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, BitmapHeapPath *filter,

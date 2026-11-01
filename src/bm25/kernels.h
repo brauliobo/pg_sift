@@ -204,12 +204,25 @@ typedef struct SiftHit
 	float4		score;
 } SiftHit;
 
+typedef struct SiftLazyHit
+{
+	SiftKey		key;
+	float4		score;
+	int32		seg;
+} SiftLazyHit;
+
 typedef struct SiftTopK
 {
 	SiftHit    *hit;
 	int64		k;
 	int64		n;
 	int64		cap;			/* slots of hit, at least k or n + 1 */
+	SiftHit    *tie;			/* a tie-inclusive search: the verified hits that tie with the worst kept one and are not kept (rank_search.c) */
+	int64		ntie;
+	int64		tiecap;
+	SiftLazyHit *lazy;			/* ... and the candidates that tie with it and are not verified yet: their score is exact, the verification waits for the final worst score */
+	int64		nlazy;
+	int64		lazycap;
 } SiftTopK;
 
 static inline bool

@@ -224,6 +224,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	init_keys(ss, cs);
 	init_attrs(ss, list_nth_node(List, cs->custom_private, SIFT_PRIV_ATTR));
 	ss->semi = list_nth_node(List, cs->custom_private, SIFT_PRIV_SEMI);
+	ss->ties = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_TIES))->constvalue) != 0;
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
 	ss->heap = node->ss.ss_currentRelation;
@@ -337,6 +338,8 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Order", order_text(ss, cs, dctx), es);
 		if (ss->k > 0)
 			ExplainPropertyInteger("Limit Hint", NULL, ss->k, es);
+		if (ss->ties)
+			ExplainPropertyBool("Includes Ties", true, es);
 		if (ss->nattr > 0 || ss->semi != NIL)
 			ExplainPropertyInteger("Include Tests", NULL, ss->semi_done ? ss->nattr : ss->nattr + list_length(ss->semi), es);
 		if (ss->bitmap && gated(ss) && es->verbose)
@@ -353,6 +356,7 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	{
 		const SiftPlanStats *s = sift_plan_stats(ss->plan);
 
+		t.searches += s->searches;
 		t.sb_scanned += s->sb_scanned;
 		t.blocks_scored += s->blocks_scored;
 		t.blocks_skipped += s->blocks_skipped;
@@ -374,6 +378,8 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	sift_explain_int(&ln, "Superblocks", NULL, "superblocks", t.sb_scanned, SIFT_XI_KEEP);
 	if (ss->mode == SIFT_MODE_RANKED)
 	{
+		if (t.searches > 1)
+			sift_explain_int(&ln, "Ranker Searches", NULL, "ranker searches", t.searches, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Blocks Scored", NULL, "blocks scored", t.blocks_scored, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Blocks Skipped", NULL, "skipped", t.blocks_skipped, SIFT_XI_SUB | SIFT_XI_KEEP);
 	}

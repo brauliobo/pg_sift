@@ -160,6 +160,7 @@ add_stats(SiftScanState *ss)
 		return;
 	s = sift_plan_stats(ss->plan);
 	ss->tot.sb_scanned += s->sb_scanned;
+	ss->tot.searches += s->searches;
 	ss->tot.blocks_scored += s->blocks_scored;
 	ss->tot.blocks_skipped += s->blocks_skipped;
 	ss->tot.candidates += s->candidates;
@@ -343,6 +344,8 @@ start_scan(SiftScanState *ss)
 			if (ss->filter)
 				sift_plan_set_filter(ss->plan, ss->filter);
 			ss->rank = sift_rank_begin(ss->plan, ss->k, scan_verify, ss);
+			if (ss->ties)
+				sift_rank_ties(ss->rank);
 			if (ss->par.sh)
 				sift_rank_parallel(ss->rank, &ss->par);
 			for (int i = 0; i < ss->ncols; i++)
@@ -489,15 +492,18 @@ ranked_next(SiftScanState *ss)
 		if (!sift_rank_next(ss->rank, &tid, &score))
 			return NULL;
 		ss->nread++;
-		if (!sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
-			continue;
-		ResetExprContext(econtext);
-		econtext->ecxt_scantuple = fill_scan_slot(ss, score);
-		if (ExecQual(ss->cuts, econtext) && (!ss->late || ExecQual(ss->quals, econtext)))
+		if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
 		{
-			ss->nkept++;
-			return econtext->ecxt_scantuple;
+			ResetExprContext(econtext);
+			econtext->ecxt_scantuple = fill_scan_slot(ss, score);
+			if (ExecQual(ss->cuts, econtext) && (!ss->late || ExecQual(ss->quals, econtext)))
+			{
+				ss->nkept++;
+				return econtext->ecxt_scantuple;
+			}
 		}
+		/* a row less than the hits: the k rows the sort wants are not the k first hits' ties any more */
+		sift_rank_reopen(ss->rank);
 	}
 }
 

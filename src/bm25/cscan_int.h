@@ -26,6 +26,7 @@ typedef struct SiftCol
 
 typedef struct SiftTotals
 {
+	int64		searches;			/* searches of the ranker */
 	int64		sb_scanned;
 	int64		blocks_scored;
 	int64		blocks_skipped;
@@ -69,6 +70,7 @@ typedef struct SiftScanState
 	int64		late_rows;			/* > 0: the plan asked the ranker for the hits that this many rows take through the quals (SIFT_PRIV_LATE) */
 	int64		nread;				/* late quals: hits read from the ranker, and those that passed */
 	int64		nkept;
+	bool		ties;				/* the rows go to an incremental sort under a LIMIT of k rows: the ranker keeps the hits tied with the k-th (SIFT_PRIV_TIES) */
 	bool		late;				/* a ranked scan checks the quals on the rows it hands out, not on every candidate */
 	bool		secure;				/* a policy or security barrier view hides rows: no counter of the index in EXPLAIN ANALYZE */
 	Relation	index;

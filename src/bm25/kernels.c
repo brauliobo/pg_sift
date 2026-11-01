@@ -300,6 +300,10 @@ sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int64 cap, int64 k)
 	t->cap = cap;
 	t->k = k;
 	t->n = 0;
+	t->tie = NULL;
+	t->ntie = t->tiecap = 0;
+	t->lazy = NULL;
+	t->nlazy = t->lazycap = 0;
 }
 
 float4

@@ -333,6 +333,7 @@ struct SiftRanker
 	int64		fb_kept;
 	int64		fb_want;
 	bool		complete;
+	bool		ties;				/* the search keeps every hit that ties with its worst one; nothing is asked after them (sift_rank_ties) */
 	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
 	bool		par_active;			/* ... and is running now */
 	PosCtx	   *phrpos;
