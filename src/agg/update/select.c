@@ -176,22 +176,15 @@ eval_vx(AggExec *ex, SiftAggAgg *a, int nsel)
  * (float8_accum) that overflows first: it is not tracked, the error is raised when the inputs are so large that it could have.
  */
 void
-float_guard(AggExec *ex, int ai, const double *x, int nsel)
+float_guard(AggExec *ex, int ai, const double *x, const uint64 *ok, int n, const uint32 *gid)
 {
-	AggAcc	   *acc = &ex->acc[ai];
-	double		m = 0;
-	bool		bad = false;
+	double		m;
 
-	for (int j = 0; j < nsel; j++)
+	if (!sift_aggk->absmax_f64(x, ok, n, &m))
 	{
-		bad |= ex->okb[j] && !isfinite(x[j]);
-		m = Max(m, ex->okb[j] ? fabs(x[j]) : 0);
-	}
-	if (bad)
-	{
-		for (int j = 0; j < nsel; j++)
-			if (ex->okb[j] && !isfinite(x[j]))
-				acc->nf[ex->gid[j]] = 1;
+		for (int j = 0; j < n; j++)
+			if ((!ok || sift_colsrc_bit(ok, j)) && !isfinite(x[j]))
+				ex->acc[ai].nf[gid[j]] = 1;
 		return;
 	}
 	ex->amax[ai] = Max(ex->amax[ai], m);

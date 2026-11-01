@@ -72,7 +72,7 @@ upd_sum_f64(const AggUpd *u)
 		sift_colk->for_i64_sel[SIFT_COLW_64](u->v->data, u->idx, nsel, 0, (int64 *) ex->c64);
 		x = (const double *) ex->c64;
 	}
-	float_guard(ex, u->ai, x, nsel);
+	float_guard(ex, u->ai, x, u->ok, nsel, ex->gid);
 	sift_aggk->sum_gid_f64(u->acc->d, ex->gid, x, u->ok, nsel);
 	upd_count(u);
 }
