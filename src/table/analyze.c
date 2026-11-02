@@ -130,7 +130,7 @@ analyze_load_vblock(SiftTblScan *s)
 		keep = s->an_mask;
 	}
 	s->ari = 0;
-	s->narows = sift_tbl_gscan_block(s->g, vblock, keep, s->arows, s->axmin, s->acmin);
+	s->narows = sift_tbl_gscan_block(s->g, vblock, keep, s->arows, s->axmin, s->acmin, NULL);
 }
 
 bool

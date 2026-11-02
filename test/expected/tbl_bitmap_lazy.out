@@ -1,0 +1,203 @@
+-- A bitmap heap scan of a sift_table hands its slot the rows of the column groups undecoded, as the fetch by TID does: the columns the plan reads are decoded when it reads them. The rows
+-- are the heap's: the same ones through updates (HOT and not), deletes not yet vacuumed, a write buffer and units of several superblocks, and a mutant that skips the snapshot test is not.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.table_inline_promote = on;
+CREATE TABLE t (id int PRIMARY KEY, k int, v int, note text, tag text) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE h (id int PRIMARY KEY, k int, v int, note text, tag text) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT g, g % 500, g, 'note number ' || g, md5(g::text) FROM generate_series(1, 120000) g;
+INSERT INTO h SELECT * FROM t;
+CREATE INDEX t_k ON t (k);
+CREATE INDEX h_k ON h (k);
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM sift.table_segments('t') WHERE kind = 'columns') > 0 AS in_groups;
+ in_groups 
+-----------
+ t
+(1 row)
+
+-- changes that leave units with rows the snapshot does not see, and rows in the write buffer
+UPDATE t SET v = v + 1 WHERE id % 11 = 1;
+UPDATE h SET v = v + 1 WHERE id % 11 = 1;
+UPDATE t SET note = note || '!' WHERE id % 13 = 2;
+UPDATE h SET note = note || '!' WHERE id % 13 = 2;
+DELETE FROM t WHERE id % 7 = 3;
+DELETE FROM h WHERE id % 7 = 3;
+INSERT INTO t SELECT g, g % 500, g, 'late ' || g, 'x' FROM generate_series(120001, 120300) g;
+INSERT INTO h SELECT g, g % 500, g, 'late ' || g, 'x' FROM generate_series(120001, 120300) g;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET sift.enable_agg = off;
+EXPLAIN (COSTS OFF) SELECT sum(v) FROM t WHERE k BETWEEN 10 AND 20;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on t
+         Recheck Cond: ((k >= 10) AND (k <= 20))
+         ->  Bitmap Index Scan on t_k
+               Index Cond: ((k >= 10) AND (k <= 20))
+(5 rows)
+
+-- the same rows as the heap: a column of numbers, a column of strings, both, the row as a whole, and a key with few rows
+SELECT q.name, q.mine = q.heap AS same
+FROM (VALUES
+  ('sum of the numbers',  (SELECT sum(v)::text FROM t WHERE k BETWEEN 10 AND 20),                      (SELECT sum(v)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('count',               (SELECT count(*)::text FROM t WHERE k BETWEEN 10 AND 20),                    (SELECT count(*)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('strings',             (SELECT string_agg(note, ',' ORDER BY id) FROM t WHERE k IN (3, 4, 400)),     (SELECT string_agg(note, ',' ORDER BY id) FROM h WHERE k IN (3, 4, 400))),
+  ('the last string',     (SELECT string_agg(tag, ',' ORDER BY id) FROM t WHERE k BETWEEN 495 AND 499), (SELECT string_agg(tag, ',' ORDER BY id) FROM h WHERE k BETWEEN 495 AND 499)),
+  ('whole rows',          (SELECT string_agg(t::text, ';' ORDER BY id) FROM t WHERE k = 17),            (SELECT string_agg(h::text, ';' ORDER BY id) FROM h WHERE k = 17)),
+  ('ids with the buffer', (SELECT string_agg(id::text, ',' ORDER BY id) FROM t WHERE k = 1 AND id > 119000), (SELECT string_agg(id::text, ',' ORDER BY id) FROM h WHERE k = 1 AND id > 119000))
+) q(name, mine, heap);
+        name         | same 
+---------------------+------
+ sum of the numbers  | t
+ count               | t
+ strings             | t
+ the last string     | t
+ whole rows          | t
+ ids with the buffer | t
+(6 rows)
+
+SET sift.test_bitmap_bulk_rows = 0;
+-- group scan
+SELECT q.name, q.mine = q.heap AS same
+FROM (VALUES
+  ('sum of the numbers',  (SELECT sum(v)::text FROM t WHERE k BETWEEN 10 AND 20),                      (SELECT sum(v)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('count',               (SELECT count(*)::text FROM t WHERE k BETWEEN 10 AND 20),                    (SELECT count(*)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('strings',             (SELECT string_agg(note, ',' ORDER BY id) FROM t WHERE k IN (3, 4, 400)),     (SELECT string_agg(note, ',' ORDER BY id) FROM h WHERE k IN (3, 4, 400))),
+  ('the last string',     (SELECT string_agg(tag, ',' ORDER BY id) FROM t WHERE k BETWEEN 495 AND 499), (SELECT string_agg(tag, ',' ORDER BY id) FROM h WHERE k BETWEEN 495 AND 499)),
+  ('whole rows',          (SELECT string_agg(t::text, ';' ORDER BY id) FROM t WHERE k = 17),            (SELECT string_agg(h::text, ';' ORDER BY id) FROM h WHERE k = 17)),
+  ('ids with the buffer', (SELECT string_agg(id::text, ',' ORDER BY id) FROM t WHERE k = 1 AND id > 119000), (SELECT string_agg(id::text, ',' ORDER BY id) FROM h WHERE k = 1 AND id > 119000))
+) q(name, mine, heap);
+        name         | same 
+---------------------+------
+ sum of the numbers  | t
+ count               | t
+ strings             | t
+ the last string     | t
+ whole rows          | t
+ ids with the buffer | t
+(6 rows)
+
+SET sift.test_bitmap_bulk_rows = 1000000;
+-- by TID
+SELECT q.name, q.mine = q.heap AS same
+FROM (VALUES
+  ('sum of the numbers',  (SELECT sum(v)::text FROM t WHERE k BETWEEN 10 AND 20),                      (SELECT sum(v)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('count',               (SELECT count(*)::text FROM t WHERE k BETWEEN 10 AND 20),                    (SELECT count(*)::text FROM h WHERE k BETWEEN 10 AND 20)),
+  ('strings',             (SELECT string_agg(note, ',' ORDER BY id) FROM t WHERE k IN (3, 4, 400)),     (SELECT string_agg(note, ',' ORDER BY id) FROM h WHERE k IN (3, 4, 400))),
+  ('the last string',     (SELECT string_agg(tag, ',' ORDER BY id) FROM t WHERE k BETWEEN 495 AND 499), (SELECT string_agg(tag, ',' ORDER BY id) FROM h WHERE k BETWEEN 495 AND 499)),
+  ('whole rows',          (SELECT string_agg(t::text, ';' ORDER BY id) FROM t WHERE k = 17),            (SELECT string_agg(h::text, ';' ORDER BY id) FROM h WHERE k = 17)),
+  ('ids with the buffer', (SELECT string_agg(id::text, ',' ORDER BY id) FROM t WHERE k = 1 AND id > 119000), (SELECT string_agg(id::text, ',' ORDER BY id) FROM h WHERE k = 1 AND id > 119000))
+) q(name, mine, heap);
+        name         | same 
+---------------------+------
+ sum of the numbers  | t
+ count               | t
+ strings             | t
+ the last string     | t
+ whole rows          | t
+ ids with the buffer | t
+(6 rows)
+
+RESET sift.test_bitmap_bulk_rows;
+-- the mutant that skips the snapshot returns the deleted rows
+SET sift.test_bitmap_no_visible = on;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS mutant_agrees;
+ mutant_agrees 
+---------------
+ f
+(1 row)
+
+RESET sift.test_bitmap_no_visible;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS agrees_again;
+ agrees_again 
+--------------
+ t
+(1 row)
+
+SET sift.test_bitmap_bulk_rows = 0;
+SET sift.test_bitmap_no_visible = on;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS mutant_agrees;
+ mutant_agrees 
+---------------
+ f
+(1 row)
+
+RESET sift.test_bitmap_no_visible;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS agrees_again;
+ agrees_again 
+--------------
+ t
+(1 row)
+
+SET sift.test_bitmap_bulk_rows = 1000000;
+SET sift.test_bitmap_no_visible = on;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS mutant_agrees;
+ mutant_agrees 
+---------------
+ f
+(1 row)
+
+RESET sift.test_bitmap_no_visible;
+SELECT (SELECT count(*) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT count(*) FROM h WHERE k BETWEEN 10 AND 20) AS agrees_again;
+ agrees_again 
+--------------
+ t
+(1 row)
+
+RESET sift.test_bitmap_bulk_rows;
+-- after a rewrite of the units
+SELECT sift.table_maintain('t') IS NOT NULL AS maintained_again;
+ maintained_again 
+------------------
+ t
+(1 row)
+
+SELECT (SELECT sum(v) FROM t WHERE k BETWEEN 10 AND 20) = (SELECT sum(v) FROM h WHERE k BETWEEN 10 AND 20) AS same_after;
+ same_after 
+------------
+ t
+(1 row)
+
+-- a bitmap that does not fit work_mem keeps whole pages (lossy): every row of the page is looked at and the condition rechecked
+SET work_mem = '64kB';
+CREATE FUNCTION lossy_pages(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+    IF l ~ 'lossy=[1-9]' THEN RETURN true; END IF;
+  END LOOP;
+  RETURN false;
+END $$;
+SELECT lossy_pages('SELECT sum(v) FROM t WHERE k BETWEEN 0 AND 400') AS is_lossy;
+ is_lossy 
+----------
+ t
+(1 row)
+
+SELECT q.name, q.mine = q.heap AS same
+FROM (VALUES
+  ('lossy sum',     (SELECT sum(v)::text FROM t WHERE k BETWEEN 0 AND 400),                      (SELECT sum(v)::text FROM h WHERE k BETWEEN 0 AND 400)),
+  ('lossy strings', (SELECT md5(string_agg(note || tag, ',' ORDER BY id)) FROM t WHERE k BETWEEN 0 AND 400), (SELECT md5(string_agg(note || tag, ',' ORDER BY id)) FROM h WHERE k BETWEEN 0 AND 400))
+) q(name, mine, heap);
+     name      | same 
+---------------+------
+ lossy sum     | t
+ lossy strings | t
+(2 rows)
+
+DROP FUNCTION lossy_pages(text);
+RESET work_mem;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET sift.enable_agg;
+DROP TABLE t, h;
+DROP EXTENSION pg_sift;

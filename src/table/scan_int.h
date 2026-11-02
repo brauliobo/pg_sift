@@ -58,6 +58,14 @@ typedef struct SiftTblScan
 	int			nbrows;
 	int			bri;
 	int			nbcap;
+	SiftTblBlockRow *lrows;		/* the rows of the column groups of the page, undecoded, of g: they follow brows */
+	int			nlrows;
+	int			lri;
+	ItemPointerData *ltids;		/* the TIDs of a sparse page of the column groups, fetched as an index entry's when they are read: they follow lrows */
+	int			nltids;
+	int			lti;
+	uint32		lsb;			/* the superblock of the rows of the pages so far and how many of them are selected: from BITMAP_BULK_ROWS on its pages are read through g */
+	uint32		lsb_rows;
 	/* analyze */
 	bool		an_started;
 	uint64		an_next;		/* visits so far */

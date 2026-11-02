@@ -422,9 +422,18 @@ extern bool sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv);
 extern void sift_tbl_gscan_seek_end(SiftTblGroupScan *g);
 extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
+/* A live row of a block of the groups left undecoded: where its unit holds it (a slot reads its columns by token and pos, sift_tbl_slot_store_group), and its version */
+typedef struct SiftTblBlockRow
+{
+	ItemPointerData tid;
+	uint32		token;
+	uint32		pos;
+	TransactionId xmin;			/* 0: frozen */
+	CommandId	cmin;
+} SiftTblBlockRow;
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF) and their xmin and cmin
- * into xmin / cmin (0: frozen; either may be NULL); their number */
-extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin);
+ * into xmin / cmin (0: frozen; either may be NULL); their number. lazy (room for SIFT_TBL_MAX_OFF): the rows undecoded into it instead, out, xmin and cmin unused */
+extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin, SiftTblBlockRow *lazy);
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
@@ -517,6 +526,8 @@ extern PGDLLIMPORT bool sift_tbl_load_from_copy;
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_load_publish;
 extern PGDLLIMPORT int sift_test_load_unit_bytes;
+extern PGDLLIMPORT bool sift_test_bitmap_no_visible;
+extern PGDLLIMPORT int sift_test_bitmap_bulk_rows;
 #endif
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
 extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);

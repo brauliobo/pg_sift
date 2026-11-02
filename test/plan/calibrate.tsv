@@ -1,10 +1,10 @@
 # name<TAB>class[<TAB>ratio]: the shapes of shapes.sql that scripts/plangate.sh --calibrate ranks the plans of (a competitor besides the scan: b-tree, bitmap, sequential, PostgreSQL's own aggregate); every shape of the file is here, the class other for those that no class names; known: a wrong choice that is open work, with the worst ratio of its instructions to the best plan's that bench/results/estimate-misses.tsv records (written by --calibrate --update): a run that grows it by over 25% fails
-one_parent_narrow	known	113.17
+one_parent_narrow	point
 point_day_count	point
 point_days_three	point
 point_days_ten	point
 distinct_one_parent	point
-one_day	known	97.96
+one_day	point
 range_only_by_month	range
 deleted_rows	range
 global	range

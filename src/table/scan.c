@@ -151,6 +151,8 @@ scan_close_state(SiftTblScan *s)
 		sift_tbl_gscan_end(s->g);
 	s->seg = NULL;
 	s->g = NULL;
+	s->nlrows = s->lri = s->nltids = s->lti = 0;
+	s->lsb = PG_UINT32_MAX;
 }
 
 /* PG18 keeps the bitmap iterator in the scan descriptor; it ends itself when exhausted */

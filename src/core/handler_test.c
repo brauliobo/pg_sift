@@ -46,6 +46,12 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_range_bytes",
 							"Testing: bytes of runs under which a range of terms of a parallel CREATE INDEX is not cut (0 = the default).",
 							NULL, &sift_test_range_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_bitmap_bulk_rows",
+							"Testing: rows of a superblock a bitmap heap scan of a sift_table selects before it reads its pages through the group scan, not by TID (0: always the group scan; a big number: always by TID).",
+							NULL, &sift_test_bitmap_bulk_rows, sift_test_bitmap_bulk_rows, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_bitmap_no_visible",
+							 "Testing: a bitmap heap scan of a sift_table returns the rows of its column groups without testing them against the snapshot (a mutant of the lazy bitmap rows).",
+							 NULL, &sift_test_bitmap_no_visible, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_load_publish",
 							"Testing: segments of a COPY's ring the backend takes before it publishes them (0 = the default of 8).",
 							NULL, &sift_test_load_publish, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

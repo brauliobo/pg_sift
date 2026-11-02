@@ -123,7 +123,7 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 }
 
 int
-sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin)
+sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin, SiftTblBlockRow *lazy)
 {
 	uint32		sb = vblock / SIFT_SB_PAGES;
 	int			nout = 0;
@@ -141,6 +141,12 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 			if (offmask == NULL || sift_col_bit_test(offmask, ItemPointerGetOffsetNumberNoCheck(&u->tid[j]) - 1))
 			{
 				unit_load(g, k, sb);
+				if (lazy)
+				{
+					lazy[nout++] = (SiftTblBlockRow) {.tid = u->tid[j],.token = g->token,.pos = u->ord[j],
+						.xmin = u->xmin ? u->xmin[u->ord[j]] : InvalidTransactionId,.cmin = u->xmin ? u->cmin[u->ord[j]] : 0};
+					continue;
+				}
 				if (xmin)
 				{
 					xmin[nout] = u->xmin ? u->xmin[u->ord[j]] : InvalidTransactionId;

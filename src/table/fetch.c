@@ -453,6 +453,13 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	return horizon;
 }
 
+#ifdef SIFT_TESTING
+bool		sift_test_bitmap_no_visible = false;
+#define BITMAP_NO_VISIBLE	sift_test_bitmap_no_visible
+#else
+#define BITMAP_NO_VISIBLE	false
+#endif
+
 static void
 bitmap_add(SiftTblScan *s, HeapTuple tup)
 {
@@ -507,12 +514,70 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
 	}
 }
 
-/* The visible rows of vblock of the column groups at the given offsets (n < 0: all); chain: the bitmap's, which reaches the members of the chains from their roots */
+/*
+ * A bitmap's rows of the column groups are not decoded when the page is read: they wait, and the slot decodes the columns the plan reads when it reads them. Two ways to wait:
+ * the place of each row in the unit of g, the scan's group scan (one pass over the page: the superblock's TIDs are read once for its pages, and the visibility of a row is tested from
+ * the versions of the unit), or the TID alone, fetched as an index scan fetches it (fetch_visible: the units that the statements before kept decoded cost nothing; each row is found
+ * by its TID: 10,000 instructions a row against 2,900 for a row of g, which pays about 3 M instructions to read the TIDs of the superblock once, so g is cheaper from about 400 selected rows of a superblock
+ * (records on 300,000 and 1,000,000 rows)
+ */
+#define BITMAP_BULK_ROWS	400
+
+#ifdef SIFT_TESTING
+int			sift_test_bitmap_bulk_rows = BITMAP_BULK_ROWS;
+#define BULK_ROWS	sift_test_bitmap_bulk_rows
+#else
+#define BULK_ROWS	BITMAP_BULK_ROWS
+#endif
+
+static void
+bitmap_lazy_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n)
+{
+	uint64		mask[SIFT_OFFMASK_WORDS] = {0};
+	uint64		emitted[SIFT_OFFMASK_WORDS] = {0};
+	int			cnt;
+
+	if (s->lrows == NULL)
+	{
+		s->lrows = MemoryContextAlloc(GetMemoryChunkContext(s), SIFT_TBL_MAX_OFF * sizeof(SiftTblBlockRow));
+		s->ltids = MemoryContextAlloc(GetMemoryChunkContext(s), SIFT_TBL_MAX_OFF * sizeof(ItemPointerData));
+	}
+	if (vblock / SIFT_SB_PAGES != s->lsb)
+	{
+		s->lsb = vblock / SIFT_SB_PAGES;
+		s->lsb_rows = 0;
+	}
+	if (n >= 0)
+		s->lsb_rows += n;
+	if (n >= 0 && s->lsb_rows < BULK_ROWS)
+	{
+		for (int i = 0; i < n; i++)
+			ItemPointerSet(&s->ltids[s->nltids++], vblock, offsets[i]);
+		return;
+	}
+	if (s->g == NULL)
+		s->g = scan_gscan(s, s->base.rs_snapshot);
+	for (int i = 0; i < n; i++)
+		sift_col_bit_set(mask, offsets[i] - 1);
+	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, NULL, NULL, NULL, s->lrows);
+	for (int i = 0; i < cnt; i++)
+	{
+		SiftTblRowVer rv = {.key = sift_key_from_tid(&s->lrows[i].tid),.wbuf = false,.xmin = s->lrows[i].xmin,.cmin = s->lrows[i].cmin};
+
+		if (!sift_tomb_hot_member(&s->st->tomb, rv.key) && (BITMAP_NO_VISIBLE || sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv)))
+		{
+			s->lrows[s->nlrows++] = s->lrows[i];
+			sift_col_bit_set(emitted, ItemPointerGetOffsetNumberNoCheck(&s->lrows[i].tid) - 1);
+		}
+	}
+	bitmap_chains(rel, s, vblock, offsets, n, emitted);
+}
+
+/* The visible rows of vblock of the column groups at the given offsets (n < 0: all), decoded: the sample's */
 static void
 bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
 {
 	uint64		mask[SIFT_OFFMASK_WORDS] = {0};
-	uint64		emitted[SIFT_OFFMASK_WORDS] = {0};
 	HeapTuple	row[SIFT_TBL_MAX_OFF];
 	TransactionId xmin[SIFT_TBL_MAX_OFF];
 	CommandId	cmin[SIFT_TBL_MAX_OFF];
@@ -520,25 +585,25 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 
 	if (vblock >= SIFT_TBL_NEXT_VBLOCK(&s->dir->meta))
 		return;
+	if (chain)
+	{
+		bitmap_lazy_page(rel, s, vblock, offsets, n);
+		return;
+	}
 	if (s->g == NULL)
 		s->g = scan_gscan(s, s->base.rs_snapshot);
 	for (int i = 0; i < n; i++)
 		sift_col_bit_set(mask, offsets[i] - 1);
-	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row, xmin, cmin);
+	cnt = sift_tbl_gscan_block(s->g, vblock, n < 0 ? NULL : mask, row, xmin, cmin, NULL);
 	for (int i = 0; i < cnt; i++)
 	{
 		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = xmin[i],.cmin = cmin[i]};
 
-		if ((!chain || !sift_tomb_hot_member(&s->st->tomb, rv.key)) && sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
-		{
+		if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			bitmap_add(s, row[i]);
-			sift_col_bit_set(emitted, ItemPointerGetOffsetNumberNoCheck(&row[i]->t_self) - 1);
-		}
 		else
 			heap_freetuple(row[i]);
 	}
-	if (chain)
-		bitmap_chains(rel, s, vblock, offsets, n, emitted);
 }
 
 /* Collects the visible rows of vblock at the given offsets (n < 0: every slot) */
@@ -551,6 +616,7 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 	uint64		emitted[SIFT_OFFMASK_WORDS] = {0};
 
 	s->nbrows = s->bri = 0;
+	s->nlrows = s->lri = s->nltids = s->lti = 0;
 	/* the write buffers the scan began with, like its column groups (s->dir): a UPDATE reads the directory again at every row */
 	if (!sift_tbl_load_vblock_in(rel, s->seg, s->nseg, vblock, s->copy, &gen, &held))
 	{
@@ -579,12 +645,30 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 }
 
 static bool
-bitmap_emit(SiftTblScan *s, TupleTableSlot *slot)
+bitmap_emit(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 {
-	if (s->bri >= s->nbrows)
-		return false;
-	sift_tbl_store(slot, s->brows[s->bri++]);
-	return true;
+	if (s->bri < s->nbrows)
+	{
+		sift_tbl_store(slot, s->brows[s->bri++]);
+		return true;
+	}
+	while (s->lri < s->nlrows)
+	{
+		const SiftTblBlockRow *r = &s->lrows[s->lri++];
+		SiftTblRowVer rv;
+
+		if (sift_tbl_slot_is_lazy(slot))
+			sift_tbl_slot_store_group(slot, rel, (ItemPointer) &r->tid, s->g, r->token, r->pos);
+		else if (sift_tbl_fetch_row(rel, s->st, (ItemPointer) &r->tid, &rv))
+			sift_tbl_store(slot, rv.tuple);
+		else
+			continue;
+		return true;
+	}
+	while (s->lti < s->nltids)
+		if (fetch_visible(rel, s->st, &s->ltids[s->lti++], BITMAP_NO_VISIBLE ? SnapshotAny : s->base.rs_snapshot, slot, NULL, false, true))
+			return true;
+	return false;
 }
 
 static int
@@ -653,7 +737,7 @@ sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *
 	{
 		TBMIterateResult tbmres;
 
-		if (bitmap_emit(s, slot))
+		if (bitmap_emit(scan->rs_rd, s, slot))
 			return true;
 		if (!tbm_iterate(&scan->st.rs_tbmiterator, &tbmres))
 			return false;
@@ -690,7 +774,7 @@ sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
 bool
 sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot)
 {
-	return bitmap_emit((SiftTblScan *) scan, slot);
+	return bitmap_emit(scan->rs_rd, (SiftTblScan *) scan, slot);
 }
 
 #endif

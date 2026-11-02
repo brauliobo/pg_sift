@@ -34,3 +34,10 @@ a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	
 a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	instr_m	4467	25	
 a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	wall_ms	114	25	the b-tree twin, own statement name
 a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	instr_m	1957	25	
+A bitmap of 25 rows of 300,000 takes 0.39 M instructions	one_parent_narrow	300000	btree	bitmap	instr_m	0.39	25	run ff4c9d592493-20261102T223617Z-6866, records in program-scale/records/table-bitmap-lazy-300k-20261102.rec
+and 6 blocks (4.9 M and 38 before)	one_parent_narrow_before	300000	btree	bitmap	instr_m	4.9	25	run 64778b8de6be-20261102T223825Z-1d3e, records in program-scale/records/table-bitmap-base-300k-20261102.rec
+and of 1,000,000 rows 0.63 M instructions	one_parent_narrow	1000000	btree	bitmap	instr_m	0.63	25	run ff4c9d592493-20261102T223642Z-37d4, records in program-scale/records/table-bitmap-lazy-1m-20261102.rec
+(18.3 M and 240 before)	one_parent_narrow_before	1000000	btree	bitmap	instr_m	18.3	25	run 64778b8de6be-20261102T223850Z-2f6d, records in program-scale/records/table-bitmap-base-1m-20261102.rec
+4,110 rows of 1,000,000 take 40 M instructions	ten_days	1000000	btree	bitmap	instr_m	40	25	run ff4c9d592493-20261102T223642Z-37d4, records in program-scale/records/table-bitmap-lazy-1m-20261102.rec
+(94.5 M and 988 before)	ten_days_before	1000000	btree	bitmap	instr_m	94.5	25	run 64778b8de6be-20261102T223850Z-2f6d, records in program-scale/records/table-bitmap-base-1m-20261102.rec
+4,110 rows of 300,000 cost 19.5 M	ten_days	300000	btree	bitmap	instr_m	19.5	25	run ff4c9d592493-20261102T223617Z-6866, records in program-scale/records/table-bitmap-lazy-300k-20261102.rec
