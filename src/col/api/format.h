@@ -46,7 +46,8 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_ENDORD	40	/* 3.8: the global order of a leaf the build chose (order_array_columns 'auto') holds the ends of a segment of many rows only */
 #define SIFT_COL_FORMAT_ORDLAYOUT	41	/* 3.8: the global order of a leaf may be a compact block (order_layout = compact: the heap address of every row and its key to within a bucket, the exact key read from the heap row) */
 #define SIFT_COL_FORMAT_TEXTPERM	42	/* 3.8: the global order of a text leaf names the strings of its ranks by their dictionary codes (version 5) and does not keep a second copy of them */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_TEXTPERM	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_ROWKEY	43	/* 3.8: the index has a tombstone log (directory kind SIFT_SEG_TOMB) and the rows of its write buffer carry the transaction that inserted them (option row_key) */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_ROWKEY	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

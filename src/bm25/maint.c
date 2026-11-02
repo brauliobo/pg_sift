@@ -371,6 +371,11 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
+		else if (snap->segs[i].kind == SIFT_SEG_TOMB)
+		{
+			if (ops->bulkdelete_tomb)
+				ops->bulkdelete_tomb(index, &snap->segs[i], callback, callback_state, stats);
+		}
 		else
 			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */

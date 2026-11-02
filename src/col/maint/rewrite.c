@@ -103,7 +103,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		sift_cseg_close(seg);
 	}
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED)
 		{
 			uint64		nrows,
 						npages;

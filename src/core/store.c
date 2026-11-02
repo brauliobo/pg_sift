@@ -292,7 +292,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 	{
 		const SiftSegEntry *s = &dir->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED)
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_TOMB)
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";

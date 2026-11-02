@@ -274,7 +274,7 @@ sift_store_verify(Relation index)
 	{
 		const SiftSegEntry *s = &snap->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED || s->gen == 0 ||
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_TOMB || s->gen == 0 ||
 			s->gen >= snap->meta.next_gen)
 			corrupt(index, "Directory entry %d has kind %u generation %llu (next %llu).",
 					i, s->kind, ULL(s->gen), ULL(snap->meta.next_gen));

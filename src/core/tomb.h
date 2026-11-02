@@ -96,8 +96,8 @@ typedef struct SiftTombLog
 extern void sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir);
 /* The directory entry of the log segment in a directory copy (NULL when the relation has none) */
 extern const SiftSegEntry *sift_tomb_find_seg(const SiftDirSnapshot *dir);
-/* A new empty log segment: its directory entry, to be added by the caller's directory change */
-extern SiftSegEntry sift_tomb_new_segment(Relation rel);
+/* A new empty log segment of the kind and segment format the relation keeps it as (a table: WBUF_OPEN, an index: SIFT_SEG_TOMB): its directory entry, to be added by the caller's directory change */
+extern SiftSegEntry sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format);
 /* Forgets what was read (the cache of the log follows the log of the directory now) */
 extern void sift_tomb_forget(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);

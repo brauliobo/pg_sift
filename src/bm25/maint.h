@@ -127,6 +127,7 @@ typedef struct SiftMaintOps
 	SiftStepResult (*merge_next) (Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 	void		(*bulkdelete_immutable) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	void		(*bulkdelete_wbuf) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
+	void		(*bulkdelete_tomb) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);	/* NULL: the index keeps no tombstone log; else drops the entries of the rows the callback names */
 	bool		(*vacuum_truncate) (Relation index);	/* NULL: the file is not truncated by VACUUM */
 	uint64		(*vacuum_rotate) (Relation index);	/* NULL: an open buffer stays where it is; else VACUUM seals it, empty or not, when it ends the file past what a shrink can reach */
 	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */

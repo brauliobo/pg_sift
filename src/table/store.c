@@ -203,7 +203,7 @@ sift_tbl_ensure_init(Relation rel)
 		sift_dir_read(rel, &st->dir);
 		if (sift_tomb_find_seg(&st->dir) == NULL)
 		{
-			arg.tomb = sift_tomb_new_segment(rel);
+			arg.tomb = sift_tomb_new_segment(rel, SIFT_SEG_WBUF_OPEN, 0);
 			sift_dir_update(rel, &(SiftDirChange) {.fn = init_dir,.arg = &arg,.extra = InvalidBuffer});
 		}
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);

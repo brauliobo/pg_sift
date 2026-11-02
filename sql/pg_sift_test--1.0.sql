@@ -460,3 +460,11 @@ CREATE FUNCTION sift._test_syn_init(internal) RETURNS internal
 CREATE FUNCTION sift._test_syn_lexize(internal, internal, internal, internal) RETURNS internal
 	AS 'MODULE_PATHNAME', 'sift_test_syn_lexize' LANGUAGE C STRICT;
 CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE = sift._test_syn_lexize);
+
+-- the tombstone log of a heap column index (col/tomblog.c): add the segment, append an entry for a heap address by the current transaction, and list the entries in log order
+CREATE FUNCTION sift._test_col_log_create(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_create' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_append' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;

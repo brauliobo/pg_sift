@@ -11,6 +11,7 @@
 #include "core/ops.h"
 #include "core/sql.h"
 #include "col/maint/maint_int.h"
+#include "core/tomb.h"
 
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
 Datum
@@ -149,7 +150,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				plain->segs[plain->nsegs++] = snap->segs[i];
 			sift_cseg_close(seg);
 		}
-		else
+		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
 			nwbuf++;
 	units += sift_cseg_dir_units(plain);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
@@ -317,7 +318,7 @@ sift_col_segments(PG_FUNCTION_ARGS)
 		bool		nulls[12] = {0};
 
 		v[0] = Int64GetDatum(e->gen);
-		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" :
+		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" : e->kind == SIFT_SEG_TOMB ? "tombstones" :
 								   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
 		if (e->kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -334,6 +335,11 @@ sift_col_segments(PG_FUNCTION_ARGS)
 			v[10] = Int32GetDatum(e->format);
 			v[11] = Int64GetDatum(sift_cseg_preagg_bytes(seg));
 			sift_cseg_close(seg);
+		}
+		else if (e->kind == SIFT_SEG_TOMB)
+		{
+			v[2] = Int64GetDatum(sift_tomb_entries(index, snap));
+			nulls[3] = nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[10] = nulls[11] = true;
 		}
 		else
 		{

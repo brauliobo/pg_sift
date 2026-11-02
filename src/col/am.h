@@ -38,6 +38,11 @@ typedef struct SiftColRel
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
+/* The tombstone log of a heap index with a row key, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
+struct SiftTombLog;
+extern struct SiftTombLog *sift_col_log(Relation index);
+extern void sift_col_log_create(Relation index);
+
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool
 sift_col_key_cut(const SiftColRel *r)

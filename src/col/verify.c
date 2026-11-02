@@ -279,7 +279,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			}
 			sift_cseg_close(seg);
 		}
-		else
+		else if (e->kind != SIFT_SEG_TOMB)
 		{
 			int			n;
 			SiftColBatch **bs;

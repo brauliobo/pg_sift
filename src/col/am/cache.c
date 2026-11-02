@@ -187,7 +187,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 				sift_cseg_close(seg);
 			}
 			for (int i = 0; i < dir->nsegs; i++)
-				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
+				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].kind != SIFT_SEG_TOMB && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
 					for (int c = 0; c < d->ncols; c++)
 						st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
 			sift_stat_add(SIFT_STAT_LEAF_BUILT, 1);
@@ -247,7 +247,7 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 			if (sift_cseg_keyed(e))
 				m->stats.keyed_frac += e->ndocs;
 		}
-		else
+		else if (e->kind != SIFT_SEG_TOMB)
 			m->stats.nwbuf++;
 	}
 	if (m->stats.nrows > 0)
