@@ -137,7 +137,7 @@ DROP FUNCTION pt_plan(text);
 
 -- one damage at a time in the directories, through a fresh open and the check of the segment (meaningful under SANITIZE=1)
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pt_t', 1000000000);
-SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 997);
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 9973);
 
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
 SET sift.col_format_minor = 14;

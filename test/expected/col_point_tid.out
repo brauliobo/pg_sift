@@ -398,7 +398,7 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all
  t            | t    | t           |         0
 (1 row)
 
-SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 997);
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 9973);
  has_sections | many | some_refused 
 --------------+------+--------------
  t            | t    | t

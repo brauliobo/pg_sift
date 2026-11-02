@@ -314,8 +314,8 @@ wbuf_layout_text_offset	the reloption `order_layout` of a `sift_col` index	event
 wbuf_layout_text_count	the reloption `order_layout` of a `sift_col` index	events	-	Pushed Aggregates: count	native	btree:search_path = c_wbuf_layout_text_count__btree	ms	faster33	no	-
 point_scattered_1	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_1__btree	ms	faster33	no	-
 point_scattered_10	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_10__btree	ms	faster33	no	-
-point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_60__btree	ms	faster33	no	-
-point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_500__btree	ms	faster33	no	-
+point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_60__btree	ms	faster33	no	-
+point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_500__btree	ms	faster33	no	-
 search_open_buffer	a search reads the documents of the open write buffer of a BM25 index by their hashes	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-
 col_build_cube_13cols	the cube of a unit adds the integer measures of a dimension in one pass per group	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4,workers_8:max_parallel_maintenance_workers = 8	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an integer leaf	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
@@ -359,8 +359,8 @@ topn_offset_filter_int	a page under a condition on another column	orders	default
 topn_offset_filter_date	-	orders	default	(?s)\A(?=.*Global Order)(?=.*Top-N: d)(?!.*[^0-9](?:10[1-9]|1[1-9][0-9]|[2-9][0-9]{2}|[0-9]{4,}) heap fetches)	native	btree:search_path = c_topn_offset_filter_date__btree	ms	faster33	no	-
 lateral_latest_row_default	order_array_group = auto groups the sorted arrays of dates, timestamps and integers by an entity column	orders	default	Top-N	native	btree:search_path = c_lateral_latest_row_default__btree	ms,minstr	faster33	no	-
 ioss_whole_scan	an index-only scan of a `sift_col` index whose returned columns are i	orders	default	Seq Scan on iw|Index Only Scan using iw_col	native	ioss:sift.enable_agg = off;enable_seqscan = off;seq_page_cost = 1000;enable_indexscan = off;enable_bitmapscan = off;max_parallel_workers_per_gather = 0,btree:search_path = c_ioss_whole_scan__btree	ms,minstr	faster33	no	-
-group_count_entity	counts the group from the entries of its second order	orders	default	Custom Scan \(SiftAgg\)	native	btree:search_path = c_group_count_entity__btree	ms	faster33	no	-
-group_latest_entity	the latest row of each of 200 groups	orders	default	Custom Scan \(SiftAgg\)	native	btree:search_path = c_group_latest_entity__btree	ms	faster33	no	-
+group_count_entity	counts the group from the entries of its second order	orders	default	Custom Scan \(SiftAgg\)	native	btree:search_path = c_group_count_entity__btree,ungrouped:search_path = c_group_count_entity__ungrouped	ms	faster33	no	-
+group_latest_entity	the latest row of each of 200 groups	orders	default	Custom Scan \(SiftAgg\)	native	btree:search_path = c_group_latest_entity__btree,ungrouped:search_path = c_group_latest_entity__ungrouped	ms	faster33	no	-
 tenant_latest_20	reads the units a filter leaves when the walk of the order array would fetch more rows	orders	default	Top-N: event_date	native	btree:search_path = c_tenant_latest_20__btree	ms	faster33	no	-
 topn_offset_dict_blocks	keep the last 32 blocks read	orders	default	Top-N: t	native	btree:search_path = c_topn_offset_dict_blocks__btree	ms	faster33	no	-
 group_range_count	counts the entries of the group between the two keys	orders	default	from pre-aggregates	native	btree:search_path = c_group_range_count__btree	ms	faster33	no	-
