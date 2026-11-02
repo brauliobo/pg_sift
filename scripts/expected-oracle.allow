@@ -1,0 +1,4 @@
+# scripts/check-expected-oracle.py: an oracle column (agree, same, equal, match, ok, identical, ...) that is f on purpose.
+# file:column<TAB>number of cells<TAB>why it is the right answer. A new f in the same column changes the number and fails the check.
+test/expected/dead_stale.out:same_scores	9	the scores of a table with dead rows stay within 1% of those of the table indexed afresh and are not equal; the test's verdicts are same_top20 and max_diff_below_1pct, both t
+test/expected/fields.out:match	1	the column is the name of the function sift.match(); the second call is the case that must not match ('alpha beta' against 'name:(alpha beta)')
