@@ -9,3 +9,5 @@ the planner charges the start of an aggregate scan of a partitioned table 40,000
 the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64s	300000	picked	default	instr_m	0.5	25	same run
 the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	exec_ms	0.02	40	same run, the b-tree twin
 the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	instr_m	0.2	25	same run, the b-tree twin
+153 M instructions before the VACUUM	table_read_churned	1000000	picked	default	instr_m	153	25	run e4cbf120533c-20261102T191856Z-f772, records in program-scale/records/churn-table-cases-1m-20261102.rec
+1.7 M after it	table_read_settled	1000000	picked	default	instr_m	1.7	25	run e4cbf120533c-20261102T191856Z-f772, records in program-scale/records/churn-table-cases-1m-20261102.rec
