@@ -81,7 +81,8 @@ def main():
         print('oracle ' + label + ' passed', flush=True)
 
     def subject(cell, state, kind='read'):
-        return collect.Subject(cell, a.rows, 'sorted', state, 'w', key='id', keys=a.rows, kind=kind,
+        dataset = '%s-%s-%s' % (*cell.rsplit('-',1)[:1], state, cell.rsplit('-',1)[1]) if kind == 'read' else cell
+        return collect.Subject(dataset, a.rows, 'sorted', state, 'w', key='id', keys=a.rows, kind=kind,
                                structures='constraint,heap,sift', churn=churn if state != 'fresh_vacuumed' else None,
                                settled=state == 'churned_vacuumed')
 
