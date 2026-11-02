@@ -208,8 +208,9 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 		sift_col_log_create(index);
 		log = sift_col_log(index);
 	}
+	uoid = sift_col_row_key_unique(heap, hatt);
 	snap = RegisterSnapshot(GetLatestSnapshot());
-	hint = latest_slot(index, tc, att->attcollation, key);
+	hint = OidIsValid(uoid) ? latest_slot(index, tc, att->attcollation, key) : NULL;
 	if (hint != NULL)
 	{
 		hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, att->attcollation, key));
@@ -227,7 +228,6 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 				goto done;
 		}
 	}
-	uoid = sift_col_row_key_unique(heap, hatt);
 #ifdef SIFT_TESTING
 	if (sift_test_supersede_scan)
 		uoid = InvalidOid;

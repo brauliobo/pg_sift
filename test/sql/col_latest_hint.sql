@@ -56,6 +56,16 @@ INSERT INTO expected SELECT ctid FROM t WHERE id = 1;
 UPDATE t SET v = v + 1 WHERE id = 1;
 SELECT check_log() AS exact_after_reindex;
 COMMIT;
+-- Losing the uniqueness proof must restore the complete probe, even for a warm hint.
+ALTER TABLE t DROP CONSTRAINT t_pkey;
+INSERT INTO t VALUES (1, 10000);
+BEGIN;
+INSERT INTO expected SELECT ctid FROM t WHERE id = 1;
+UPDATE t SET v = v + 1 WHERE id = 1;
+INSERT INTO expected SELECT ctid FROM t WHERE id = 1;
+UPDATE t SET v = v + 1 WHERE id = 1 AND v < 10000;
+SELECT check_log() AS exact_without_unique;
+COMMIT;
 DROP TABLE t;
 DROP FUNCTION check_log();
 DROP EXTENSION pg_sift_test;
