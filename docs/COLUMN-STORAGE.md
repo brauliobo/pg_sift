@@ -56,7 +56,7 @@ An equality, an `IN` list or a short range on a column of many distinct values.
   - **What**: the first and last keys of a run (up to 32 at each end, with the heap addresses of their rows) answer `ORDER BY .. LIMIT n` (n at most 32, one sort key, no condition, join or aggregate) without reading the unit.
   - **Default**: on with `order_columns`: 2 to 3 times faster on an unfiltered `LIMIT` up to 32, for 0.6% to 2.4% of the index and write cost inside noise.
   - **Off**: `sift.col_format_minor = 14` writes runs without heads, or `sift.topn_runs = off` / `sift.enable_topn = off`.
-  - **Measured**: `ORDER BY k LIMIT 10` 0.128 to 0.051 ms on 800,000 rows (a b-tree 0.010 ms); `docs/results/col-run-heads.tsv`.
+  - **Measured**: `ORDER BY k LIMIT 10` 0.128 to 0.051 ms on 800,000 rows (a b-tree 0.010 ms).
 - **Top-N run probes** (automatic).
   - **What**: a top-N over a table with `order_columns` reads the sort key of a unit's rows only for the rows it keeps, and sizes its candidate buffers by the unit.
   - **Default**: on; the same rows and units are read with less work a scan. No format change, no growth.
@@ -141,7 +141,7 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
   - **What**: the rows of a heap page that a scan reads twice (the units of a key-cut index list rows of the same page) are checked for visibility once.
   - **Default**: on: about 48 bytes for each heap page visited (at most 1,048,576 pages) and nothing written; no gain at 100,000 rows.
   - **Off**: `SET sift.vis_page_cache = off`; the page is checked each time.
-  - **Measured**: a key-cut range query on 100,000 rows, 0.20 ms off and 0.23 ms on (within noise); `docs/results/options-evidence.tsv`.
+  - **Measured**: a key-cut range query on 100,000 rows, 0.20 ms off and 0.23 ms on (within noise).
 
 ## Dictionaries and text
 

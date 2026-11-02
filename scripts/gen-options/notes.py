@@ -127,6 +127,9 @@ def anchors(path, cache={}):
     return cache[path]
 
 
+SKIPPED = []     # the files of docs/results/ some row names that this checkout does not hold
+
+
 def check(opts, notes, errors, released, srcs=None):
     docs = [o for o in opts if not o['testing']]
     auto = {k for k in notes if re.fullmatch(r'auto\(.+\)', k)}
@@ -191,9 +194,11 @@ def check(opts, notes, errors, released, srcs=None):
         if b.startswith('test:'):
             if not (os.path.exists(os.path.join(ROOT, 'test/sql', t + '.sql')) or glob.glob(os.path.join(ROOT, 'test/t', t + '.*'))):
                 errors.append('%s: bench %s is no regress test (test/sql) or TAP test (test/t)' % (n, b))
-        elif b and b != '-' and not b.startswith('n/a') and b not in cases and not (bf.startswith('docs/') and os.path.exists(os.path.join(ROOT, bf)) and (not ba or ba in anchors(bf[5:]))):
+        elif b and b != '-' and not b.startswith('n/a') and b not in cases and not bf.startswith('docs/results/') and not (bf.startswith('docs/') and os.path.exists(os.path.join(ROOT, bf)) and (not ba or ba in anchors(bf[5:]))):
             errors.append('%s: bench %s is neither a case of bench/cases.tsv, `test:NAME`, `n/a: reason`, `-`, nor a file%s of docs/ (written docs/results/x.tsv)' % (n, b, ' and heading' if ba else ''))
-        if bf.startswith('docs/results/') and os.path.exists(os.path.join(ROOT, bf)):
+        if bf.startswith('docs/results/') and not os.path.exists(os.path.join(ROOT, bf)):
+            SKIPPED.append(bf)      # the stored results are not published: a checkout without them cannot compare the figures, and says so
+        elif bf.startswith('docs/results/'):
             have = table_figures(read(bf))
             for c in ('gain', 'growth', 'write'):
                 lost = sorted(f for f in figures(r[c] or first[c]) if f not in have)

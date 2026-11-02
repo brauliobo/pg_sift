@@ -50,6 +50,9 @@ def selftest():
         ('a figure that no row of the results table holds', dict(notes_text=text.replace(rows_vis, set_cell(rows_vis, 'gain', 'a key-cut range query 987.65 ms off'))), 'figures that no row of docs/results/options-evidence.tsv holds (987.65)'),
         ('a link to nowhere', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'link', 'NOWHERE.md#x'))), 'NOWHERE.md#x is not a file'),
     ]
+    if not os.path.exists(os.path.join(ROOT, 'docs/results/options-evidence.tsv')):     # the stored results are not published: a checkout without them skips the case and says so
+        print('options: selftest: the case "a figure that no row of the results table holds" is skipped, docs/results/options-evidence.tsv is not in this checkout')
+        cases = [c for c in cases if not c[2].startswith('figures that no row of docs/results/')]
     for what, kw, want in cases:
         e = []
         load(e, **kw)

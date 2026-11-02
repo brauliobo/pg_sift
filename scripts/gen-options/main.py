@@ -44,7 +44,8 @@ else:
                     f.write(new)
         if not errors:
             n = [o for o in opts if not o['testing']]
-            print('options: ok, %d settings and %d reloptions listed' % (sum(o['kind'] == 'guc' for o in n), sum(o['kind'] == 'rel' for o in n)))
+            print('options: ok, %d settings and %d reloptions listed' % (sum(o['kind'] == 'guc' for o in n), sum(o['kind'] == 'rel' for o in n)) +
+                  ('; the figures of %d rows were not compared with their stored results (%s are not in this checkout)' % (len(SKIPPED), ', '.join(sorted(set(SKIPPED)))) if SKIPPED else ''))
 if errors:
     for e in errors:
         print('options: ' + e, file=sys.stderr)

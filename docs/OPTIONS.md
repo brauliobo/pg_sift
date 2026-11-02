@@ -110,7 +110,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** CREATE INDEX .. WITH (positions = off): smaller index, phrases rechecked in the heap. Existing index: ALTER INDEX .. SET (positions = off) then REINDEX; units written before keep their positions until then.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on so phrases are decided by the index. Set positions = off when phrases are rare and index size matters; phrases are then rechecked in the heap. Needs REINDEX.
-- **Sources:** benchmark [docs/results/bm25size.tsv](results/bm25size.tsv); [SIZING](SIZING.md#disk)
+- **Sources:** benchmark `bm25size`; [SIZING](SIZING.md#disk)
 
 #### sift(write_buffer_limit)
 
@@ -152,7 +152,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a tuning value (2 to 32). ALTER INDEX .. RESET (merge_fanin) returns 4 at the next merge; no REINDEX. No value turns merging off; async_maintenance = off moves it to inserters and VACUUM.
 - **Upgrade from 3.7:** After ALTER EXTENSION UPDATE an index that did not set merge_fanin merges at 4 segments of a size tier from its next merge (8 in 3.7), so it keeps fewer segments and writes more while it ingests; no REINDEX. An index that set the option keeps its value; ALTER INDEX .. SET (merge_fanin = 8) keeps the old policy.
 - **Advice:** Leave 4. Lower merges sooner (more write work, fewer segments to query); higher merges less and keeps up to merge_fanin - 1 segments per size tier. ALTER INDEX applies at the next merge.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [USAGE](USAGE.md#maintenance-and-operations)
+- **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift(dead_rewrite_pct)
 
@@ -204,11 +204,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** GROUP BY after three rounds of updates of 30 rows in every 100 and VACUUM: 0.82 ms (never rewritten) to 0.16 ms (10) (100,000 rows)
 - **Impact:** index size: 4.05 MB (never rewritten) to 2.15 MB (10) (-46.8%, 100,000 rows after three rounds); build, merge and writes: VACUUM of the third round 61 ms (never rewritten), 56 ms (10): within noise (100,000 rows); other: a rewrite writes the whole segment and re-encodes every live row (4,200 instructions a row at 7 bytes, 35,400 at 75); 100 never rewrites
 - **When:** VACUUM rewrites a lone segment of a sift_col index when half of it is dead or, with 0, when 100 scans of its dirty units (about 430 instructions a dead row up to 45 a row of a unit a tenth dead) cost more than the rewrite of its live rows (900 + 463 * bytes of a row); with a percent, above that share of dead rows. The tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units, which answer from their pre-aggregates net of the dead rows. The BM25 index keeps 50.
-- **Default:** 0 — 0, by cost: a rewrite re-encodes 900 + 463 * bytes instructions a live row, a query pays 430 a dead row of a dirty unit up to 45 a row, so 100 scans between two VACUUMs break even at about 9% dead rows in every unit of a 7 bytes a row segment and never below half for 75. 300,000 rows, 13% dead: VACUUM 1,356 against 1,354 Minstr at 7 bytes a row (unchanged), 292 against 9,528 at 75 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite (docs/results/col-dead-rewrite.tsv).
+- **Default:** 0 — 0, by cost: a rewrite re-encodes 900 + 463 * bytes instructions a live row, a query pays 430 a dead row of a dirty unit up to 45 a row, so 100 scans between two VACUUMs break even at about 9% dead rows in every unit of a 7 bytes a row segment and never below half for 75. 300,000 rows, 13% dead: VACUUM 1,356 against 1,354 Minstr at 7 bytes a row (unchanged), 292 against 9,528 at 75 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite.
 - **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; a percent from 1 fixes it; RESET returns to 0; no REINDEX. sift.col_auto_merge can still rewrite the index.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 0: a segment is rewritten when half of it is dead, or when the scans of its dirty units cost more than the rewrite (dead rows in every unit of a narrow segment from about 9%, a wide one not before half). Set a percent to rewrite earlier or later (WAL); 100 never rewrites. ALTER INDEX, no REINDEX.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [USAGE](USAGE.md#maintenance-and-operations)
+- **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift_col(vacuum_truncate)
 
@@ -250,7 +250,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (compression = 'none') stores plain chunks (index +111.6%, fastest scans); 'auto' or RESET (compression) is the default. REINDEX applies it to segments already written.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at auto: it adds a general-purpose layer only where it pays. Set zstd on a column for a smaller index at slower scans and builds; none for the fastest scans. REINDEX to apply.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COL-TAM 8](COL-TAM.md#8-compression-options-defaults)
+- **Sources:** benchmark `options-evidence`; [COL-TAM 8](COL-TAM.md#8-compression-options-defaults)
 
 #### sift_col(preagg)
 
@@ -278,7 +278,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (rollup = 'off') removes the rollups and keeps the cube; 'default' or RESET returns to the automatic rule. Segments written afterwards; older units change at a merge, REINDEX or sift.col_refresh(index).
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at default: the rollups of array elements and map values are chosen by a 2% byte budget. Name the leaves (leaf, leaf) to answer more groupings, up to 4096 tuples a unit; off removes them.
-- **Sources:** benchmark [docs/results/rollup.tsv](results/rollup.tsv); [COL-PREAGG 2](COL-PREAGG.md#2-what-is-precomputed-written-when-a-unit-is-built-merged-promoted-rewritten-by-vacuums-merge-and-by-every-worker-of-a-parallel-build)
+- **Sources:** benchmark `rollup`; [COL-PREAGG 2](COL-PREAGG.md#2-what-is-precomputed-written-when-a-unit-is-built-merged-promoted-rewritten-by-vacuums-merge-and-by-every-worker-of-a-parallel-build)
 
 #### sift_col(rollup_on_demand)
 
@@ -292,7 +292,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (rollup_on_demand = false) for one index; SET sift.col_rollup_on_demand = off for a session; sift.col_rollup_worker = off keeps requests queued for sift.col_rollup_refresh(index).
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on: a scan that lacks rollups queues a background rewrite. Turn it off to keep units as they are until a merge or REINDEX, or to refresh on a schedule with sift.col_rollup_refresh.
-- **Sources:** benchmark [docs/results/rollup.tsv](results/rollup.tsv); [COL-PREAGG 7](COL-PREAGG.md#7-on-demand-refresh-of-the-rollups-srccolrollupc)
+- **Sources:** benchmark `rollup`; [COL-PREAGG 7](COL-PREAGG.md#7-on-demand-refresh-of-the-rollups-srccolrollupc)
 
 #### sift_col(dict_lookup)
 
@@ -337,7 +337,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (array_lengths = off), then REINDEX (or array_lengths = off on CREATE INDEX): the index keeps the images alone, as before 3.6. No column format minor: the leaves are ordinary integer leaves of the schema.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave it. CREATE INDEX keeps the lengths of every array column and says so; array_lengths = off drops them (ALTER INDEX .. SET (array_lengths = off), then REINDEX).
-- **Sources:** benchmark `test:col_array_lengths`; [COL-LEAFTYPES-32 7](COL-LEAFTYPES-32.md#7-the-other-types-time-enum-uuid-bytea-arrays-ranges-network-timetz-and-bit-strings)
+- **Sources:** benchmark `test:col_array_lengths`
 
 #### sift_col(rollup_dims)
 
@@ -556,7 +556,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.async_maintenance = off (superuser: postgresql.conf, ALTER SYSTEM, ALTER DATABASE .. SET): promotions and merges are left to VACUUM, sift.merge() and inserting sessions.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. A background worker promotes write buffers and merges segments so writers do not; off leaves them to VACUUM and inserting sessions. It needs a worker slot (max_worker_processes).
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [USAGE](USAGE.md#maintenance-and-operations)
+- **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.maintenance_naptime
 
@@ -598,7 +598,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.vis_page_cache = off (session, ALTER ROLE/DATABASE, postgresql.conf): the page is checked again each time. No REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on: a heap page the scan reads twice (the units of a key-cut index list rows of one page) is checked for visibility once. Turn it off only to compare.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
+- **Sources:** benchmark `options-evidence`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift.col_rollup_on_demand
 
@@ -612,7 +612,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_rollup_on_demand = off (session, ALTER ROLE/DATABASE, postgresql.conf): units stay as they are until a merge or REINDEX. Per index: rollup_on_demand = false.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on, per session; the index option rollup_on_demand switches one index. Off leaves units as they are until a merge or REINDEX. Members: col_rollup_worker.
-- **Sources:** benchmark [docs/results/rollup.tsv](results/rollup.tsv); [COL-PREAGG 7](COL-PREAGG.md#7-on-demand-refresh-of-the-rollups-srccolrollupc)
+- **Sources:** benchmark `rollup`; [COL-PREAGG 7](COL-PREAGG.md#7-on-demand-refresh-of-the-rollups-srccolrollupc)
 
 #### sift.col_rollup_worker
 
@@ -976,7 +976,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.agg_rollup_cost = 0 answers every unit from its rollup (the older behavior, used by tests); a large value never does. Session, role, database or postgresql.conf; no REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 1 (the cost of a rollup tuple against an element scan). 0 always answers from the rollup (tests), large values never do. EXPLAIN ANALYZE shows Units Scanned By Cost.
-- **Sources:** benchmark [docs/results/rollup.tsv](results/rollup.tsv); [COL-PREAGG 6](COL-PREAGG.md#6-consumption-in-siftagg-built)
+- **Sources:** benchmark `rollup`; [COL-PREAGG 6](COL-PREAGG.md#6-consumption-in-siftagg-built)
 
 #### sift.agg_dense
 
@@ -1074,7 +1074,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a size, not a switch. RESET sift.table_write_buffer_limit returns 4096; 2048 kB is the smallest. Buffers already written keep their size.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave 4096 kB (2048 to 8192, rounded down to 2 MB). A row has to fit one buffer unless table_wide_rows is on; a larger buffer means fewer, larger promotions. Applies to segments written afterwards.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COL-TAM 2.3](COL-TAM.md#23-write-buffer-row-format-the-write-buffer)
+- **Sources:** benchmark `options-evidence`; [COL-TAM 2.3](COL-TAM.md#23-write-buffer-row-format-the-write-buffer)
 
 #### sift.table_wide_rows
 
@@ -1117,7 +1117,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_inline_promote = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): promotion is left to VACUUM and autovacuum. Autovacuum reads the server or database setting, not the writer's.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on so the writer promotes closed buffers as it inserts. Off leaves them to VACUUM and autovacuum; table_async_promote moves the work to a worker instead.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COL-TAM 7](COL-TAM.md#7-maintenance)
+- **Sources:** benchmark `options-evidence`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 
 #### sift.table_dict_lookup
 
@@ -1174,7 +1174,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_compression = 'none' for no compression (scans fastest at 2x bytes); RESET returns auto. Segments already written keep their codec until a merge or rewrite.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave unset (auto: encodings, plus lz4 or zstd only where the cost rule says the bytes repay the decode time). none scans fastest at 2x the bytes. Per column: 'auto; col=zstd:9'. New segments only.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [COL-TAM 8](COL-TAM.md#8-compression-options-defaults)
+- **Sources:** benchmark `options-evidence`; [COL-TAM 8](COL-TAM.md#8-compression-options-defaults)
 
 #### sift.table_dead_rewrite_pct
 
@@ -1445,7 +1445,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.col_format_minor = 14 (runs are written without heads; units already written keep them until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off (no top-N scan).
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on for an index with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
-- **Sources:** benchmark [docs/results/col-run-heads.tsv](results/col-run-heads.tsv); [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
+- **Sources:** benchmark `col-run-heads`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### auto(table-cube-minmax)
 
@@ -1706,7 +1706,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** Leave the default text: CREATE INDEX without analyzer. On an existing index ALTER INDEX .. RESET (analyzer) makes it unusable until REINDEX; build a text index with CREATE INDEX CONCURRENTLY and drop the keyword one.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at text. Set keyword on a separate index of a column used for exact keys and facet counts (sift.facets): it indexes each whole value as one term. Needs REINDEX.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [FIELDS-FACETS](FIELDS-FACETS.md#facets-siftfacet_counts)
+- **Sources:** benchmark `options-evidence`; [FIELDS-FACETS](FIELDS-FACETS.md#facets-siftfacet_counts)
 
 #### sift(stemmer)
 
@@ -1737,7 +1737,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave 0: broad prefixes work without it (cached per backend). Set n to the longest prefix that must be sub-millisecond on first use; it grows the index. Needs REINDEX.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [USAGE](USAGE.md#queries)
+- **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#queries)
 
 #### sift(fields)
 
@@ -1752,7 +1752,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
+- **Sources:** benchmark `options-evidence`; [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
 
 #### sift_col(point_columns)
 
@@ -1921,7 +1921,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** Default off. SET sift.gpu = off (superuser setting; ALTER ROLE/DATABASE .. SET or postgresql.conf). Without a VULKAN=1 build the CPU runs whatever it says; a failing device is dropped for the session.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave off. Needs make VULKAN=1 and a Vulkan device, and persistent connections (0.2 s and about 100 MB of context per backend). Measure first: the 3.2.0 pass shows no gain over the CPU path.
-- **Sources:** benchmark [docs/results/gpu.tsv](results/gpu.tsv); [GPU](GPU.md#settings)
+- **Sources:** benchmark `gpu`; [GPU](GPU.md#settings)
 
 #### sift.gpu_min_rows
 
@@ -2025,7 +2025,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.enable_scan = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf); RESET returns on. Read when a statement is planned, so a prepared plan keeps its choice.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. enable_scan, enable_count, filter_pushdown and prefetch switch the ranked scan, the count(*) pushdown, the bitmap of other quals and the read-ahead; off compares with PostgreSQL's own plan.
-- **Sources:** benchmark [docs/results/options-evidence.tsv](results/options-evidence.tsv); [USAGE](USAGE.md#filter-pushdown)
+- **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#filter-pushdown)
 
 #### sift.enable_count
 

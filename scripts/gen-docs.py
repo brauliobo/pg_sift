@@ -320,6 +320,9 @@ def generate(root):
         open(stamp, 'w').close()
 
 
+UNPUBLISHED = ('docs/COVERAGE.md',)   # generated for the maintainers, left out of the public tree (public-repo-allowlist): a checkout without it does not compare it, and says so
+
+
 def check():
     with tempfile.TemporaryDirectory(prefix='sift-gen-docs.') as tmp:
         files = subprocess.run(['git', '-C', REPO, 'ls-files', '-z'], check=True, capture_output=True).stdout.split(b'\0')[:-1]
@@ -329,17 +332,19 @@ def check():
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
         generate(tmp)
-        stale = []
+        stale, unpublished = [], []
         for d, _, fs in os.walk(tmp):
             for f in fs:
                 rel = os.path.relpath(os.path.join(d, f), tmp)
                 if rel == 'README.md' or rel.startswith('docs' + os.sep):
                     other = os.path.join(REPO, rel)
-                    if not os.path.exists(other) or open(other, 'rb').read() != open(os.path.join(d, f), 'rb').read():
+                    if rel in UNPUBLISHED and not os.path.exists(other):
+                        unpublished.append(rel)
+                    elif not os.path.exists(other) or open(other, 'rb').read() != open(os.path.join(d, f), 'rb').read():
                         stale.append(rel)
     if stale:
         sys.exit('gen-docs: stale (a generated block no longer matches its source): %s\nrun scripts/gen-docs.py and commit the result' % ', '.join(sorted(stale)))
-    print('gen-docs: every generated block is current')
+    print('gen-docs: every generated block is current' + ('; not compared, the page is not in this checkout: %s' % ', '.join(unpublished) if unpublished else ''))
 
 
 ROW_KEY = {'docs/results/cases.tsv': 4, 'docs/results/cases-scale.tsv': 4, 'docs/results/cases-time.tsv': 2, 'bench/cases.tsv': 1, 'scripts/bench-cases.allow': 1}   # the leading columns that name a row of the files cases add to

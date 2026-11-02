@@ -150,7 +150,7 @@ def generate(opts, notes, released, version, old_version):
         for os_, r in sub:
             why = ', '.join(WHY[w.strip()] for w in meta(r, 'why').split(',')) if meta(r, 'why') else ''
             bench = ev(r, 'bench')
-            bench = bench if bench.startswith(('as `', 'n/a')) else '' if bench in ('', '-') else '`%s`' % bench if '/' not in bench else '[%s](%s)' % (bench, bench[5:])
+            bench = bench if bench.startswith(('as `', 'n/a')) else '' if bench in ('', '-') else '`%s`' % bench if '/' not in bench else '`%s`' % bench.rpartition('/')[2].partition('.')[0] if bench.startswith('docs/results/') else '[%s](%s)' % (bench, bench[5:])
             imp = ['index size: %s' % shown(r, 'growth'), 'build, merge and writes: %s' % shown(r, 'write')] + (['other: %s' % cost(r, False)] if meta(r, 'cost') not in ('', '-') else [])
             lines = ['', '#### %s' % heading(os_), '', '%s · %s%s · default %s' % ('`%s`' % r['applies'].replace(', ', '`, `') if r['applies'] != '-' else 'all', c, ' · since %s' % r['since'] if r['since'] else '', defaults(os_)), '',
                      '- **What it does:** %s' % meta(r, 'buys'),
