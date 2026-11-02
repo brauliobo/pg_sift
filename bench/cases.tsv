@@ -314,8 +314,8 @@ wbuf_layout_text_offset	the reloption `order_layout` of a `sift_col` index	event
 wbuf_layout_text_count	the reloption `order_layout` of a `sift_col` index	events	-	Pushed Aggregates: count	native	btree:search_path = c_wbuf_layout_text_count__btree	ms	faster33	no	-
 point_scattered_1	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_1__btree	ms	faster33	no	-
 point_scattered_10	the reloption `order_layout` of a `sift_col` index	events	-	from point directory	native	btree:search_path = c_point_scattered_10__btree	ms	faster33	no	-
-point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_60__btree	ms	faster33	no	-
-point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_500__btree	ms	faster33	no	-
+point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_60__btree,serial:search_path = c_point_scattered_60__serial	ms	faster33	no	-
+point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_500__btree,serial:search_path = c_point_scattered_500__serial	ms	faster33	no	-
 search_open_buffer	a search reads the documents of the open write buffer of a BM25 index by their hashes	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-
 col_build_cube_13cols	the cube of a unit adds the integer measures of a dimension in one pass per group	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4,workers_8:max_parallel_maintenance_workers = 8	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an integer leaf	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
