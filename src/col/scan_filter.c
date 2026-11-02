@@ -748,6 +748,7 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 				ahead;
 	int			npages = 0;
 	bool		streamed = false;
+	bool		hf = col_hf_unit(src, cu);
 
 	SIFT_COL_JITTER();
 #ifdef SIFT_TESTING
@@ -788,7 +789,7 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		blk = cur.blk;
 
 		/* a vet of many pages reads them through a stream from here on (the first few are read as they come: a point query vets one) */
-		if (++npages == VET_STREAM_AFTER && vis->stream != NULL)
+		if (++npages == VET_STREAM_AFTER && vis->stream != NULL && !hf)
 		{
 			vis->stream(vis->arg, vet_stream_next, &ahead, cu->v.keyed);
 			streamed = true;
@@ -806,7 +807,14 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 			n++;
 		}
 		src->cnt.rows_vetted += n;
-		vis->filter_page(vis->arg, blk, offmask);
+		/* a stamped segment's rows are all inserted for the snapshot: the log says which of them were deleted, and the heap page is not read */
+		if (hf && col_hf_filter_page(src, blk, offmask, &(int) {0}))
+		{
+			src->cnt.rows_log += n;
+			sift_col_hf_taken += n;
+		}
+		else
+			vis->filter_page(vis->arg, blk, offmask);
 		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
 		{
 			OffsetNumber off = dense ? q - lo + 1 : offs[q - lo];

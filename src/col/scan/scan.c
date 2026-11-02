@@ -149,6 +149,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	sift_dir_read(index, &src->dir);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
+	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
 		ereport(ERROR,
@@ -254,7 +255,7 @@ sift_col_counters(const SiftColSource *src)
 }
 
 static void
-add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
+add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp)
 {
 	if (src->nmem == src->capmem)
 	{
@@ -263,7 +264,7 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 	}
 	uint32		id = ++src->nmem;
 
-	src->mem[id - 1] = (ColMem) {b, id, lane};
+	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp};
 }
 
 void
@@ -272,7 +273,7 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 	src->wtok = NULL;
 	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
-		add_mem(src, batches[i], false);
+		add_mem(src, batches[i], false, InvalidTransactionId);
 }
 
 void
@@ -289,6 +290,7 @@ scan_load_wbuf(SiftColSource *src)
 	{
 		int			n;
 		SiftColBatch **bs;
+		TransactionId stamp = InvalidTransactionId;
 
 		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
 			continue;
@@ -299,9 +301,9 @@ scan_load_wbuf(SiftColSource *src)
 		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
 		 * after that snapshot, which the heap check does not return.
 		 */
-		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL);
+		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
 		for (int j = 0; j < n; j++)
-			add_mem(src, bs[j], true);
+			add_mem(src, bs[j], true, stamp);
 	}
 	src->mem_loaded = true;
 }
@@ -630,6 +632,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->sb = b->sb;
 	cu->memid = m->id;
 	cu->lane = m->lane;
+	cu->xstamp = m->xstamp;
 	cu->clean = cu->clean_ready = true;
 }
 
@@ -727,7 +730,7 @@ void
 sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 {
 	ColUnit    *cu = &src->cu;
-	ColMem		m = {b, MEM_BATCH_ID + ++src->batch_seq, false};
+	ColMem		m = {b, MEM_BATCH_ID + ++src->batch_seq, false, InvalidTransactionId};
 	MemoryContext old;
 
 	MemoryContextReset(src->arena);

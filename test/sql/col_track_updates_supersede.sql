@@ -1,6 +1,6 @@
 -- An UPDATE of a row of a table whose sift_col index has track_updates writes a tombstone for the entry of the version it replaced, in the transaction and command of the update: the log
 -- holds exactly the addresses the updates of committed transactions left behind in the index. A HOT update, an insert, a delete and a change of the key itself write none (deletes
--- and key changes need hear_deletes). The oracle is the heap: the address a row had before each statement.
+-- and key changes need track_deletes). The oracle is the heap: the address a row had before each statement.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;

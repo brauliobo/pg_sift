@@ -82,7 +82,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
-	sift_colb_publish(index, segs, nsegs);
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
 	sift_colb_free(b);
 	return res;
 }
@@ -129,6 +129,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	autocut = sift_col_auto_cut(heap, index);
 	sift_col_auto_gorder(heap, index);
 	sift_col_row_key_prepare(heap, index);
+	sift_col_track_check(heap, index);
 	sift_col_auto_point(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
@@ -136,6 +137,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = serial_build(heap, index, info);
 	if (sift_col_row_key_on(index))
 		sift_col_log_create(index);
+	if (sift_col_options(index)->track_deletes)
+		sift_col_track_install(heap, index, info->ii_Concurrent);
 	colb_notice_key_order(index);
 	colb_notice_key_overflow(index);
 	colb_notice_point_tid(index);

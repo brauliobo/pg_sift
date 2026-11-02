@@ -731,7 +731,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 
 		x->state = 2;
 		if (!keyed)
-			src->visibility.sb_mask(src->visibility.arg, sb, x->av);
+			col_sb_mask(src, seg, sb, x->av);
 		if (segments_current(src))
 		{
 			SIFT_COL_JITTER();
@@ -773,7 +773,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 
 		if (src->vis.heap == NULL)
 			return -2;
-		sift_vis_blocks_allvisible(&src->vis, &blk, 1, av);
+		col_blocks_allvisible(src, seg, &blk, 1, av);
 		pg = 0;
 	}
 	else

@@ -4,6 +4,9 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
+#include "storage/procarray.h"
+#include "col/am.h"
+#include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 
 /* A live record kept for sorting: its payload is at off in the arena */
@@ -13,8 +16,51 @@ typedef struct Held
 	ItemPointerData tid;
 	uint32		seq;			/* order of reading, to keep the first record of a repeated TID */
 	uint32		len;
+	TransactionId xmin;
+	uint8		xst;			/* XST_*: what was known of the inserter when the record was read */
 	Size		off;
 } Held;
+
+/* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_updates), committed, or not finished */
+#define XST_NONE		0
+#define XST_COMMITTED	1
+#define XST_OPEN		2
+#define XST_ABORTED		3
+
+static TransactionId xst_last = InvalidTransactionId;
+static uint8 xst_last_st;
+
+/* Committed and aborted are final, and a read of the log does not repeat for the next record of the same transaction; the memory is for one pass over records, since an xid comes round */
+static uint8
+xst_of(TransactionId x)
+{
+	uint8		st;
+
+	if (x == xst_last && TransactionIdIsValid(x))
+		return xst_last_st;
+	switch (sift_xid_state(x))
+	{
+		case SIFT_XID_COMMITTED:
+			st = XST_COMMITTED;
+			break;
+		case SIFT_XID_OPEN:
+			return XST_OPEN;
+		case SIFT_XID_ABORTED:
+			st = XST_ABORTED;
+			break;
+		default:
+			return XST_NONE;
+	}
+	xst_last = x;
+	xst_last_st = st;
+	return st;
+}
+
+static void
+xst_forget(void)
+{
+	xst_last = InvalidTransactionId;
+}
 
 typedef struct Fresh
 {
@@ -43,6 +89,8 @@ typedef struct StampList
 	bool		stale;			/* a page the last read resumed had records flagged dead since its stamp */
 } StampList;
 
+#define SET_XOPEN			16
+
 /* The batches of one write buffer and where the records they hold end in its lanes; the batches and the set are in cx */
 typedef struct BatchSet
 {
@@ -64,6 +112,16 @@ typedef struct BatchSet
 	bool		kept;			/* in the cache of the backend */
 	uint64		used;
 	Size		recbytes;		/* the bytes of records the batches were made from */
+	/*
+	 * Who inserted the rows of the batches (docs/COL-HEAPFREE.md): xtop the largest xid among the transactions that committed, xopen those that had not when their record
+	 * was read (they may since), xbad a record that says nothing of its inserter or whose transaction did not commit. set_stamp turns that into the xid before which
+	 * every inserter committed, or none.
+	 */
+	TransactionId xtop;
+	TransactionId xlast;
+	TransactionId xopen[SET_XOPEN];
+	int			nopen;
+	bool		xbad;
 } BatchSet;
 
 #define BATCH_SETS			4
@@ -80,6 +138,7 @@ static uint64 sets_clock;
 
 static uint64 sets_serial;
 
+
 static int
 held_cmp(const void *a, const void *b)
 {
@@ -93,10 +152,14 @@ static void
 fresh_add(void *arg, const RawRec *rec)
 {
 	Fresh	   *f = arg;
+	uint8		st = xst_of(rec->xmin);
 
+	/* the tuple of a transaction that did not commit is seen by no one: VACUUM would take its entry out, and the set does not hold it */
+	if (st == XST_ABORTED)
+		return;
 	if (f->nheld == f->cap)
 		f->held = repalloc(f->held, (f->cap *= 2) * sizeof(Held));
-	f->held[f->nheld] = (Held) {sift_key_from_tid((ItemPointer) &rec->tid), rec->tid, f->nheld, rec->len, f->arena.len};
+	f->held[f->nheld] = (Held) {sift_key_from_tid((ItemPointer) &rec->tid), rec->tid, f->nheld, rec->len, rec->xmin, st, f->arena.len};
 	f->nheld++;
 	appendBinaryStringInfo(&f->arena, (const char *) rec->payload, rec->len);
 }
@@ -139,6 +202,7 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 {
 	bool		located = true;
 
+	xst_forget();
 	f->cap = 256;
 	f->nheld = 0;
 	f->held = palloc(f->cap * sizeof(Held));
@@ -189,6 +253,63 @@ set_find(const BatchSet *s, uint32 sb, bool *found)
  * the last of its superblock's batch: the TID of a row that is already there (the record of a tuple VACUUM removed, flagged dead after it was
  * read, and the new tuple that took its address) or one below it, which a batch cannot take in place.
  */
+/* A record is in the set: its inserter is accounted for */
+static void
+set_note(BatchSet *s, const Held *h)
+{
+	if (s->xbad || h->xmin == s->xlast)
+		return;
+	s->xlast = h->xmin;
+	if (h->xst == XST_COMMITTED)
+	{
+		if (!TransactionIdIsValid(s->xtop) || TransactionIdFollows(h->xmin, s->xtop))
+			s->xtop = h->xmin;
+	}
+	else if (h->xst == XST_OPEN)
+	{
+		for (int i = 0; i < s->nopen; i++)
+			if (s->xopen[i] == h->xmin)
+				return;
+		if (s->nopen == SET_XOPEN)
+			s->xbad = true;
+		else
+			s->xopen[s->nopen++] = h->xmin;
+	}
+	else
+		s->xbad = true;
+}
+
+/* The xid before which every transaction that inserted a row of the set committed, now; InvalidTransactionId when one has not or never will, or the set has no row */
+static TransactionId
+set_stamp(BatchSet *s)
+{
+	TransactionId top;
+
+	xst_forget();
+	for (int i = 0; i < s->nopen && !s->xbad;)
+	{
+		TransactionId x = s->xopen[i];
+
+		uint8		st = xst_of(x);
+
+		if (st == XST_COMMITTED)
+		{
+			if (!TransactionIdIsValid(s->xtop) || TransactionIdFollows(x, s->xtop))
+				s->xtop = x;
+			s->xopen[i] = s->xopen[--s->nopen];
+		}
+		else if (st == XST_OPEN)
+			return InvalidTransactionId;
+		else
+			s->xbad = true;
+	}
+	if (s->xbad || !TransactionIdIsValid(s->xtop))
+		return InvalidTransactionId;
+	top = s->xtop;
+	TransactionIdAdvance(top);
+	return top;
+}
+
 static bool
 set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 {
@@ -231,7 +352,8 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 			pfree(b->image);
 			b->image = NULL;
 		}
-		rec = (RawRec) {h->tid, false, (const uint8 *) f->arena.data + h->off, h->len};
+		set_note(s, h);
+		rec = (RawRec) {.tid = h->tid,.xmin = h->xmin,.payload = (const uint8 *) f->arena.data + h->off,.len = h->len};
 		wbuf_decode_row(r, &rec, &row);
 		sift_cbatch_add(b, &row);
 	}
@@ -245,8 +367,30 @@ lanes_unread(WbufLane *lane)
 		lane[l] = (WbufLane) {InvalidBlockNumber, 0};
 }
 
+/*
+ * The xid before which the transactions that inserted the records of f all committed: one past the largest xmin; InvalidTransactionId when a record has no xmin
+ * (the row of a speculative insertion, of an index without track_updates, of a buffer written before the xmin was kept) or its transaction had not finished (it may still
+ * commit). A segment made of these rows says so with SIFT_SEG_XSTAMP.
+ */
+static TransactionId
+fresh_stamp(const Fresh *f)
+{
+	TransactionId top = InvalidTransactionId;
+
+	for (int i = 0; i < f->nheld; i++)
+	{
+		if (f->held[i].xst != XST_COMMITTED)
+			return InvalidTransactionId;
+		if (!TransactionIdIsValid(top) || TransactionIdFollows(f->held[i].xmin, top))
+			top = f->held[i].xmin;
+	}
+	if (TransactionIdIsValid(top))
+		TransactionIdAdvance(top);
+	return top;
+}
+
 SiftColBatch **
-sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n)
+sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -259,6 +403,8 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 	fresh_read(r, lane, NULL, &f);
 	if (!set_fill(&s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
+	if (stamp)
+		*stamp = fresh_stamp(&f);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*n = s.n;
@@ -402,7 +548,8 @@ rebuild:
  * address of the dead tuple may be reused); a scan that holds a set keeps its copy, which it checks against the heap.
  */
 SiftColBatch **
-sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok)
+sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok,
+						  TransactionId *stamp)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -430,6 +577,8 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 		s->kept = true;
 	}
 	s->used = ++sets_clock;
+	if (stamp)
+		*stamp = set_stamp(s);
 	cb = MemoryContextAlloc(mcxt, sizeof(MemoryContextCallback));
 	*cb = (MemoryContextCallback) {set_release, s};
 	MemoryContextRegisterResetCallback(mcxt, cb);

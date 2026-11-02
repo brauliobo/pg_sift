@@ -227,6 +227,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
+	c->rows_log = cc->rows_log;
 	c->heap_pages = cc->heap_pages;
 	c->rechecked = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nrechecked : 0;
 	c->recheck_units = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nunits : 0;

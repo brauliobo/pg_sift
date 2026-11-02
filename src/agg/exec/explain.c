@@ -288,6 +288,7 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	sift_explain_int(&ln, "Dense Chunks", NULL, "dense chunks", c->n_dense, 0);
 	sift_explain_int(&ln, "Combo Caches Restarted", NULL, "combo caches restarted", c->n_combo_trim, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Rows Vetted By Heap", NULL, "vetted by heap", cc->rows_vetted, 0);
+	sift_explain_int(&ln, "Rows Decided By The Log", NULL, "of them decided by the tombstone log", cc->rows_log, SIFT_XI_SUB | SIFT_XI_OPT);
 	sift_explain_int(&ln, "Heap Pages", NULL, "heap pages", cc->heap_pages, 0);
 	if (c->recheck)
 		sift_explain_int(&ln, "Rows Read Again From The Heap", NULL, "re-read from the heap", cc->rechecked, SIFT_XI_KEEP);

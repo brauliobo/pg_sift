@@ -40,9 +40,10 @@ extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
  * Appends the row to the open write buffer (creating it when none; lane MyProcNumber % SIFT_LANES, other lanes when the tail is
  * busy), one generic WAL record per page touched. Returns true when the segment reached write_buffer_limit pages (the caller asks maintenance to
  * seal: sift_col_maint_after_seal). schema_hash is checked against meta->analyzer_hash when the hint is refreshed (REINDEX needed error).
- * A row whose record exceeds a page is split in pieces (SIFT_COLR_CONT).
+ * A row whose record exceeds a page is split in pieces (SIFT_COLR_CONT). xmin: the transaction that inserted the heap tuple of the row, kept in the record
+ * (InvalidTransactionId: none, as for the rows of an index without track_updates and of a speculative insertion).
  */
-extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row);
+extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin);
 
 /*
  * A row of a transaction that already wrote one is buffered in the backend (false: the index has no slot, append it) and reaches the lane with
@@ -50,7 +51,7 @@ extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftCol
  * append), sift_cwbuf_pending names the index that has the file of a slot that holds some (a swap of files moves rows to the other index), sift_cwbuf_discard drops those of an index (all when InvalidOid): the transaction
  * aborted, or the index was rebuilt from the heap that holds them. Every reader of this file flushes first.
  */
-extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, bool *crossed);
+extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed);
 extern bool sift_cwbuf_flush(Relation index);
 extern bool sift_cwbuf_pending(Oid *index);
 extern void sift_cwbuf_discard(Oid index);
@@ -78,7 +79,7 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
  * All live rows of the segment, sorted by key (a repeated TID keeps its first record), as batches, one per superblock, ascending, in
  * mcxt. *n = the number of batches (0 for none).
  */
-extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n);
+extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp);
 
 /*
  * What a scan was given of a kept set: the set (a serial, never reused) and the rows added to it in place since it was made. A cache of the scan that
@@ -94,9 +95,11 @@ typedef struct SiftCWbufToken
 /*
  * The same for a scan: kept by the backend, which reads the records appended since the last scan only; not to be changed, alive until mcxt is reset or deleted.
  * dirver is the version of the directory the scan read before this call: while it is the one the kept set was checked at, no VACUUM has flagged a record since and the
- * pages of the buffer are not read to find out.
+ * pages of the buffer are not read to find out. stamp (may be NULL): the xid before which every transaction that inserted a row of the batches committed, now; none when
+ * one has not, or its record does not say (docs/COL-HEAPFREE.md).
  */
-extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok);
+extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok,
+													TransactionId *stamp);
 
 /* The heap addresses of the live records whose plain leaf holds one of the constants of the EQ or IN predicate (an overflow value is kept for the heap to check), ascending, in mcxt; no batch is built (sift_col_wbuf_lookup). *n = the count; *rows = the live records of the leaf */
 extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows);

@@ -247,7 +247,7 @@ sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, Bl
 				want = 0;
 				for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 					want += sift_pc64(offmask[wd]);
-				if (sift_tomb_deleted_offsets(&t.st->tomb, snapshot, vblock, 3 * want, deleted))
+				if (sift_tomb_deleted_offsets(&t.st->tomb, snapshot, vblock, 3 * want, deleted, NULL))
 				{
 					for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 					{

@@ -371,13 +371,15 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
-		else if (snap->segs[i].kind == SIFT_SEG_TOMB)
-		{
-			if (ops->bulkdelete_tomb)
-				ops->bulkdelete_tomb(index, &snap->segs[i], callback, callback_state, stats);
-		}
-		else
+		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
 			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
+	/*
+	 * The tombstones of the entries removed go last, whatever the order of the directory: a reader that took the log and then the liveness of an entry that is now
+	 * cleared sees the tombstone or the clear bit, never neither (docs/COL-HEAPFREE.md).
+	 */
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)
+			ops->bulkdelete_tomb(index, &snap->segs[i], callback, callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
@@ -417,6 +419,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	if (ops->vacuum_seal)
 		ops->vacuum_seal(index);
 	promote_locked(ops, index, false, false);
+	if (ops->vacuum_log)
+		ops->vacuum_log(index);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
 	if (ops->vacuum_net)

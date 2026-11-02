@@ -405,7 +405,26 @@ typedef struct MergeOut
 	MemoryContext pcx;
 	SiftSegEntry neu[MAX_PARTS];
 	int			nneu;
+	TransactionId xstamp;		/* of the segments merged: all of them said so, else InvalidTransactionId */
 } MergeOut;
+
+/* The latest of the stamps of the segments, none when one has no stamp: a row of it may have an inserter that did not commit */
+static TransactionId
+merge_stamp(const SiftSegEntry *in, int n)
+{
+	TransactionId top = InvalidTransactionId;
+
+	for (int i = 0; i < n; i++)
+	{
+		TransactionId x;
+
+		if (!sift_seg_xstamp(&in[i], &x))
+			return InvalidTransactionId;
+		if (!TransactionIdIsValid(top) || TransactionIdFollows(x, top))
+			top = x;
+	}
+	return top;
+}
 
 static void
 out_begin(MergeOut *o)
@@ -430,7 +449,8 @@ out_begin(MergeOut *o)
 static void
 out_finish(MergeOut *o)
 {
-	sift_colw_finish(o->w, &o->neu[o->nneu++]);
+	sift_colw_finish(o->w, &o->neu[o->nneu]);
+	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
 	o->w = NULL;
 	MemoryContextDelete(o->pcx);
@@ -487,7 +507,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1};
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? merge_stamp(in, n) : InvalidTransactionId};
 	uint64		live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();

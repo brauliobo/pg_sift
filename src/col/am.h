@@ -6,6 +6,7 @@
 #define SIFT_COL_AM_H
 
 #include "access/amapi.h"
+#include "access/transam.h"
 #include "executor/execdesc.h"
 #include "datatype/timestamp.h"
 
@@ -14,6 +15,27 @@
 #include "col/enc.h"
 #include "col/preagg.h"
 #include "col/wbuf.h"
+
+/* The xid before which every transaction that inserted an entry of the segment committed; false when the segment does not say */
+static inline bool
+sift_seg_xstamp(const SiftSegEntry *e, TransactionId *xid)
+{
+	if (!(e->flags & SIFT_SEG_XSTAMP))
+		return false;
+	*xid = e->reserved;
+	return true;
+}
+
+static inline void
+sift_seg_set_xstamp(SiftSegEntry *e, TransactionId xid)
+{
+	e->flags &= ~SIFT_SEG_XSTAMP;
+	if (TransactionIdIsNormal(xid))
+	{
+		e->flags |= SIFT_SEG_XSTAMP;
+		e->reserved = xid;
+	}
+}
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
 #define SIFT_COL_CUT_MAX 4
@@ -35,24 +57,46 @@ typedef struct SiftColRel
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
 	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
-	bool		rowkey;			/* the option track_updates names a column of the index: the leaf below */
-	int			rowkey_leaf;
+	bool		rowkey;			/* the option track_updates names a column of the index: its attribute */
+	int			rowkey_attno;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
-/* The tombstone log of a heap index with a row key, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
+/* The tombstone log of a heap index with track_updates, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
 struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
+extern void sift_col_log_cache_stats(int64 *entries, int64 *bytes);
 extern void sift_col_log_create(Relation index);
 /* The option track_updates (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
 extern void sift_col_row_key_check(Relation index);
 extern void sift_col_row_key_prepare(Relation heap, Relation index);
+extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
+/* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
+extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
+/* The option track_deletes (col/track.c): the check of the table, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+extern void sift_col_track_check(Relation heap, Relation index);
+extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
+extern void sift_col_track_remove(Relation heap, Relation index);
+extern void sift_col_track_reconcile(Relation index);
+extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
+extern bool sift_col_updates_supersede(void);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;
+extern PGDLLIMPORT bool sift_test_supersede_scan;
+extern PGDLLIMPORT bool sift_test_track_all_updates;
+extern PGDLLIMPORT bool sift_test_no_track;
+extern PGDLLIMPORT bool sift_test_no_log_reap;
+extern PGDLLIMPORT bool sift_test_no_log_hide;
+extern PGDLLIMPORT uint64 sift_test_col_log_hidden_count;
+extern PGDLLIMPORT bool sift_test_no_heapfree;
+extern PGDLLIMPORT bool sift_test_hf_ignore_tombs;
+extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 #endif
+/* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
+extern PGDLLIMPORT int64 sift_col_hf_taken;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool

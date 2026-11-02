@@ -159,6 +159,13 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	}
 }
 
+/* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_updates)? */
+bool
+sift_col_updates_supersede(void)
+{
+	return batch_updates > 0;
+}
+
 bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
@@ -170,6 +177,12 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	SiftColRow	row;
 	bool		crossed;
 	bool		supersede = r->rowkey && batch_updates > 0;
+	/*
+	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index
+	 * (docs/COL-HEAPFREE.md). Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
+	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
+	 */
+	TransactionId xmin = r->rowkey && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
 
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	if (!batch_hooked)
@@ -179,8 +192,8 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 		batch_hooked = true;
 	}
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && !supersede && sift_cwbuf_pend(index, &hint, r->schema, &row, &crossed)))
-		crossed = sift_cwbuf_append(index, &hint, r->schema, &row);
+	if (!(batch_seen && batch_stmts == 0 && !supersede && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
+		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);
 	/* the append reads the catalog, which can reload the relcache entry and free r: keep the hint in the entry as it is now */

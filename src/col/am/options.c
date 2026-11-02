@@ -410,6 +410,9 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "track_deletes",
+					   "Needs track_updates. Two internal statement triggers on the table (AFTER DELETE, AFTER UPDATE; transition table of the old rows) write a tombstone for the entries of deleted rows and of rows whose key changed, so that the log is complete (default off; the triggers are the object this option creates, the index drops them)",
+					   false, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
 					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
@@ -494,6 +497,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
 	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
+	{"track_deletes", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, track_deletes)},
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	{"key_table", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, key_table)},
@@ -638,6 +642,7 @@ sift_col_alter_check(Relation index)
 		return;
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
+	sift_col_track_reconcile(index);
 }
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)

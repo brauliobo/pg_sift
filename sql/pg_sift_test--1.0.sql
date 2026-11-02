@@ -468,3 +468,21 @@ CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_append' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_log_hidden(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_hidden' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_unit_tombs(index regclass, OUT segment int8, OUT unit int4, OUT keyed bool, OUT rows int4, OUT pages int4, OUT pages_any int4, OUT pages_own int4, OUT tombs int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_unit_tombs' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_xid_state(xid) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_xid_state' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_tomb_header(rel regclass, legacy bool DEFAULT false, stale bool DEFAULT false, OUT covered bool, OUT flags int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_tomb_header' LANGUAGE C STRICT;

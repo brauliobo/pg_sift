@@ -55,8 +55,12 @@ extern double sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Sna
 extern int	sift_colb_end(ColBuild *b);
 extern double sift_colb_rows(const ColBuild *b);
 extern void sift_colb_free(ColBuild *b);
-/* Publishes the segments of a build in the directory, ordered by their first superblock */
-extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs);
+/*
+ * Publishes the segments of a build in the directory, ordered by their first superblock. stamped: the build ran under the lock that holds the writers out
+ * (not CONCURRENTLY) of an index with track_updates, so every transaction that inserted a row it read has finished: the segments say that every inserter is before the
+ * next xid (SIFT_SEG_XSTAMP). A row the building transaction itself inserted is of an xid below it too, and no snapshot has an xmin above that xid before it commits.
+ */
+extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped);
 
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);

@@ -26,6 +26,7 @@
 #include "col/pagg.h"
 #include "bm25/estimate.h"
 #include "col/seg.h"
+#include "core/tomb.h"
 #include "core/visibility.h"
 #include "col/scan_int.h"
 
@@ -145,6 +146,151 @@ segments_current(SiftColSource *src)
 	return src->dir_current;
 }
 
+#ifdef SIFT_TESTING
+bool		sift_test_no_heapfree = false;
+bool		sift_test_hf_ignore_tombs = false;
+bool		sift_test_hf_ignore_stamp = false;
+#endif
+
+/* The masks, ranges and blocks the log made all-visible where the map said no (tests, sift._test_hf_taken) */
+int64		sift_col_hf_taken;
+
+/*
+ * Opens the log before the first segment or liveness page is read: a tombstone is dropped by the VACUUM that cleared the entry it names, after it cleared it, so a
+ * source that took the log first and the liveness after sees the tombstone or the clear bit. Only an index that tracks deletes and a snapshot of the usual kind: the
+ * serializable ones record what they read from each heap tuple (CheckForSerializableConflictOut), which a read of the index alone does not.
+ */
+void
+col_hf_open(SiftColSource *src)
+{
+	src->hflog = NULL;
+	src->hf = 0;
+	memset(&src->hfmemo, 0, sizeof(src->hfmemo));
+#ifdef SIFT_TESTING
+	if (sift_test_no_heapfree)
+		return;
+#endif
+	if ((src->flags & COLO_TABLE) || IsolationIsSerializable() || src->snap->snapshot_type != SNAPSHOT_MVCC || !TransactionIdIsNormal(src->snap->xmin) ||
+		!sift_col_row_key_on(src->index) || !sift_col_options(src->index)->track_deletes)
+		return;
+	src->hflog = sift_col_log(src->index);
+	if (src->hflog != NULL)
+		src->hfgen = src->hflog->gen;
+}
+
+/* Do tombstones delete rows of the blocks for the snapshot (a block of them to be checked in the heap) */
+static bool
+hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_hf_ignore_tombs)
+		return false;
+#endif
+	return sift_tomb_deleted_blocks(src->hflog, src->snap, first, nblocks, mask, &src->hfmemo);
+}
+
+/* May the log be taken for complete for the snapshot (decided on the first need, one catalog read), and is it the log read at open */
+static bool
+hf_on(SiftColSource *src)
+{
+	if (src->hflog == NULL)
+		return false;
+	if (src->hf == 0)
+		src->hf = sift_col_track_ok(src->index, src->heap, src->snap) ? 1 : -1;
+	return src->hf > 0 && src->hflog->gen == src->hfgen;
+}
+
+/* Did every inserter of the rows (stamp: none when not known) commit before the snapshot's xmin, and may the log be taken for complete */
+static bool
+hf_stamped(SiftColSource *src, TransactionId stamp)
+{
+	if (src->hflog == NULL)
+		return false;
+#ifdef SIFT_TESTING
+	if (sift_test_hf_ignore_stamp)
+		return hf_on(src);
+#endif
+	return TransactionIdIsNormal(stamp) && TransactionIdPrecedesOrEquals(stamp, src->snap->xmin) && hf_on(src);
+}
+
+/* ... for the entries of a stored segment */
+static bool
+hf_seg(SiftColSource *src, const SiftColSegment *seg)
+{
+	TransactionId stamp = InvalidTransactionId;
+
+	if (seg == NULL)
+		return false;
+	(void) sift_seg_xstamp(&seg->entry, &stamp);
+	return hf_stamped(src, stamp);
+}
+
+bool
+col_hf_unit(SiftColSource *src, const ColUnit *cu)
+{
+	return cu->lane ? hf_stamped(src, cu->xstamp) : hf_seg(src, cu->seg);
+}
+
+/*
+ * The rows of block blk in offmask that the snapshot sees, for a stored segment that is stamped (hf_seg): all but those a tombstone deletes for the snapshot. No heap
+ * page is read. false, offmask untouched, when the block has more tombstones than are worth reading (the caller asks the heap).
+ */
+bool
+col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *left)
+{
+	uint64		gone[SIFT_OFFMASK_WORDS] = {0};
+	int			n = 0;
+
+	if (!sift_tomb_deleted_offsets(src->hflog, src->snap, blk, 4096, gone, &src->hfmemo))
+		return false;
+	for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+	{
+		offmask[w] &= ~gone[w];
+		n += pg_popcount64(offmask[w]);
+	}
+	*left = n;
+	return true;
+}
+
+void
+col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
+{
+	src->visibility.sb_mask(src->visibility.arg, sb, av);
+	if (hf_seg(src, seg))
+	{
+		uint64		bad[SIFT_PAGEMASK_WORDS] = {0};
+
+		hf_deleted(src, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, bad);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			av[w] |= ~bad[w];
+		sift_col_hf_taken++;
+	}
+}
+
+bool
+col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi)
+{
+	if (sift_vis_range_allvisible(&src->vis, lo, hi))
+		return true;
+	if (!hf_seg(src, seg) || hf_deleted(src, lo, hi - lo + 1, NULL))
+		return false;
+	sift_col_hf_taken++;
+	return true;
+}
+
+void
+col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits)
+{
+	sift_vis_blocks_allvisible(&src->vis, blocks, n, bits);
+	if (hf_seg(src, seg))
+		for (uint32 i = 0; i < n; i++)
+			if (!(bits[i / 64] >> (i % 64) & 1) && !hf_deleted(src, blocks[i], 1, NULL))
+			{
+				bits[i / 64] |= UINT64CONST(1) << (i % 64);
+				sift_col_hf_taken++;
+			}
+}
+
 /* A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible) */
 static const uint64 *
 unit_allvisible_keyed(ColUnit *cu)
@@ -154,7 +300,7 @@ unit_allvisible_keyed(ColUnit *cu)
 		uint32		nw;
 
 		/* no page between the first and the last of the unit is unclean (the list of those pages is made once per scan): the directory is not needed */
-		if (!cu->lane && sift_vis_range_allvisible(&cu->src->vis, cu->v.kblk0, cu->v.kblk1) &&
+		if (!cu->lane && col_range_allvisible(cu->src, cu->seg, cu->v.kblk0, cu->v.kblk1) &&
 			!(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src)))
 		{
 			cu->avk = NULL;
@@ -165,7 +311,7 @@ unit_allvisible_keyed(ColUnit *cu)
 		nw = (cu->v.npages + 63) / 64;
 		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
 		if (!cu->lane && cu->src->vis.heap != NULL)
-			sift_vis_blocks_allvisible(&cu->src->vis, cu->v.blocks, cu->v.npages, cu->avk);
+			col_blocks_allvisible(cu->src, cu->seg, cu->v.blocks, cu->v.npages, cu->avk);
 		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
 			memset(cu->avk, 0, Max(nw, 1) * sizeof(uint64));
 		cu->av_ready = true;
@@ -183,7 +329,7 @@ unit_allvisible(ColUnit *cu)
 		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
 		 * and made their pages all-visible: no page of a lane batch is taken as all-visible, so its rows are checked against the heap */
 		if (!cu->lane)
-			cu->src->visibility.sb_mask(cu->src->visibility.arg, cu->sb, cu->av);
+			col_sb_mask(cu->src, cu->seg, cu->sb, cu->av);
 		/* the directory is checked after the mask, as the liveness is */
 		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
 			memset(cu->av, 0, sizeof(cu->av));
@@ -317,7 +463,7 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 	}
 	if (seg == NULL || !sift_cseg_sbhead(seg, u, col, &h))
 		return false;
-	src->visibility.sb_mask(src->visibility.arg, sb, av);
+	col_sb_mask(src, seg, sb, av);
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (h.pm[w] & ~av[w])
 			return false;
@@ -511,11 +657,11 @@ units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 			/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
 			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
 
-			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
+			if (!col_range_allvisible(src, seg, (uint32) r, (uint32) (r >> 32)))
 				return false;
 			continue;
 		}
-		src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, first + i), av);
+		col_sb_mask(src, seg, sift_cseg_unit_sb(seg, first + i), av);
 		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
 				return false;

@@ -25,6 +25,8 @@
 
 #define SIFT_COLR_CONT		0x0002	/* more payload of the preceding row: not counted */
 
+#define SIFT_COLR_XMIN		0x0004	/* the payload starts with the xid (4 bytes) of the transaction that inserted the row, ahead of the values; first piece only. A row of an index without track_updates, one a speculative insertion wrote and one of a buffer written before this flag have none: nothing is claimed of their inserter */
+
 #define COLV_NULL			0x01
 
 #define COLV_OVERFLOW		0x02
@@ -88,6 +90,7 @@ typedef struct RawRec
 {
 	ItemPointerData tid;
 	bool		deleted;
+	TransactionId xmin;			/* InvalidTransactionId: the record has none */
 	const uint8 *payload;
 	Size		len;
 } RawRec;
@@ -104,9 +107,9 @@ extern const SiftColRecHead *	wbuf_rec_at(PageCursor *c, Size *size);
 
 extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, uint32 *jnull);
 
-extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, bool cont, const char *payload, Size len);
+extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
 
-extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, const char *payload, Size len, BlockNumber *tail);
+extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, BlockNumber *tail);
 
 extern void	wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask);
 

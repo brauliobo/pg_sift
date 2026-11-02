@@ -400,7 +400,7 @@ sift_test_col_wbuf_append(PG_FUNCTION_ARGS)
 		gen_row(seed, id, t);
 		if (busy)
 			nbusy = lock_busy(index, &hint, pg_prng_uint64(&pg_global_prng_state), bufs);
-		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 		for (int k = 0; k < nbusy; k++)
 			UnlockReleaseBuffer(bufs[k]);
 		MemoryContextSwitchTo(old);
@@ -424,7 +424,7 @@ sift_test_col_wbuf_torn(PG_FUNCTION_ARGS)
 		elog(ERROR, "only the rows with id %% 1000 = 999 are big enough to be torn");
 	gen_row(PG_GETARG_INT64(1), id, t);
 	sift_cwbuf_fail_grow = PG_GETARG_INT32(3);
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 	sift_cwbuf_fail_grow = 0;
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
@@ -440,7 +440,7 @@ sift_test_col_wbuf_long(PG_FUNCTION_ARGS)
 
 	gen_row(1, 1, t);
 	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }
@@ -506,8 +506,8 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 
 		if (!sift_seg_is_wbuf(&snap->segs[i]))
 			continue;
-		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb, NULL) :
-			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
+		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb, NULL, NULL) :
+			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb, NULL);
 		for (int k = 0; k < nb; k++)
 		{
 			SiftColBatch *b = batches[k];

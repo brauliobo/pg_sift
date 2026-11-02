@@ -150,6 +150,15 @@ wbuf_next_rec(SiftCWbufReader *r, RawRec *rec)
 		rec->deleted = (h->flags & SIFT_COLR_DELETED) != 0;
 		rec->payload = (const uint8 *) (h + 1);
 		rec->len = h->len;
+		rec->xmin = InvalidTransactionId;
+		if (h->flags & SIFT_COLR_XMIN)
+		{
+			if (rec->len < sizeof(TransactionId))
+				SIFT_CORRUPT(r->cur.index, "A record of segment %llu has an xmin flag and %u payload bytes.", (unsigned long long) r->entry.gen, (unsigned) rec->len);
+			memcpy(&rec->xmin, rec->payload, sizeof(TransactionId));
+			rec->payload += sizeof(TransactionId);
+			rec->len -= sizeof(TransactionId);
+		}
 		if (r->cur.pos < r->cur.used || !(r->pflags & SIFT_WBUFPAGE_SPANS))
 			return true;
 		r->joinedlen = 0;

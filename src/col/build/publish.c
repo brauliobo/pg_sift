@@ -42,12 +42,19 @@ seg_cmp(const void *a, const void *b)
 }
 
 void
-sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs)
+sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped)
 {
 	ColPublish	p = {segs, nsegs};
 
 	if (nsegs == 0)
 		return;
+	if (stamped)
+	{
+		TransactionId next = ReadNextTransactionId();
+
+		for (int i = 0; i < nsegs; i++)
+			sift_seg_set_xstamp(&segs[i], next);
+	}
 	qsort(segs, nsegs, sizeof(SiftSegEntry), seg_cmp);
 	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.extra = InvalidBuffer});
 }

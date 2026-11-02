@@ -78,9 +78,10 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
 	SiftCPaggSpec rewrite = r->pagg;
+	TransactionId xstamp = InvalidTransactionId;
 
 	sift_cwbuf_flag_sealed(index, sealed);
-	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb);
+	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xstamp);
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
@@ -123,6 +124,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
+		if (r->rowkey)
+			sift_seg_set_xstamp(&neu, xstamp);
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);

@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 116 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
@@ -1822,7 +1822,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 4.0 · default ''
 
-- **What it does:** names the column that identifies a row across updates. An UPDATE or INSERT .. ON CONFLICT that writes the new version of a row looks the older entries of that key up in the write buffer and the point directory (it turns point_tid_columns on for the column), checks the key against the heap tuple and writes a tombstone for each older entry into a log segment of the index, which VACUUM drops with the rows it removes. A read applies the log, so the old and the new version of an updated row are not both live between the update and VACUUM. The option alone does not make reads free of the heap: deletes and key changes are not heard until hear_deletes is on
+- **What it does:** names the column that identifies a row across updates. An UPDATE or INSERT .. ON CONFLICT that writes the new version of a row looks the older entries of that key up in the write buffer and the point directory (it turns point_tid_columns on for the column), checks the key against the heap tuple and writes a tombstone for each older entry into a log segment of the index, which VACUUM drops with the rows it removes. A read applies the log, so the old and the new version of an updated row are not both live between the update and VACUUM. A read leaves out an entry the log says a transaction visible to its snapshot ended (index scan, index-only scan, bitmap scan; not the column source of an aggregate); the heap still decides for every entry returned, and deletes and key changes are not heard until track_deletes is on
 - **Gain:** n/a: not measured until the heap-free read stage
 - **Impact:** index size: n/a: not measured until the heap-free read stage; build, merge and writes: n/a: not measured until the heap-free read stage; other: format minor 43; one extra lookup in the point directory and, for a candidate, one heap fetch of its tuple on each UPDATE or ON CONFLICT DO UPDATE of a covered row; plain INSERT and COPY do not look; one 32-byte log entry for each superseded entry until VACUUM
 - **When:** UPDATE and INSERT .. ON CONFLICT DO UPDATE of a row whose key the index covers on a heap table; not a sift_table (its tombstones are native), not a partitioned parent (set it on each partition's index)
@@ -1830,8 +1830,23 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Why not the default:** the history does not say
 - **Turn off:** ALTER INDEX .. RESET (track_updates) stops new tombstones; the log segment and the format stay until a REINDEX writes the index again. Reads of an index with no track_updates never look at a log.
 - **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its options; the segments of an index with track_updates are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them
-- **Advice:** Set it on an index of a table that has a primary key and is updated: the entries of an updated row stop being live in the log at once instead of waiting for VACUUM. Leave it off on an append-only table. It is the base of hear_deletes, which is what lets a read skip the heap; CREATE INDEX CONCURRENTLY is allowed with track_updates alone.
+- **Advice:** Set it on an index of a table that has a primary key and is updated: the entries of an updated row stop being live in the log at once instead of waiting for VACUUM. Leave it off on an append-only table. It is the base of track_deletes, which is what lets a read skip the heap; CREATE INDEX CONCURRENTLY is allowed with track_updates alone.
 - **Sources:** benchmark `test:col_track_updates_option`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
+
+#### sift_col(track_deletes)
+
+`sift_col` · opt-in · since 4.0 · default false
+
+- **What it does:** two internal statement triggers on the table (AFTER DELETE and AFTER UPDATE, with a transition table of the old rows; always enabled, named sift_track_delete_INDEX and sift_track_update_INDEX with the oid of the trigger added, dependent on the index and dropped with it) write a tombstone for the entries of the rows a statement deleted or gave another key. The transaction that turns the option on first writes a tombstone for every version of the table that is dead then (a pass over the heap under a lock that holds the writers out). The log is then complete from that transaction; sift.col_tracking(index) says whether it still is: the option, the two triggers as the option created them (any change to their catalog rows, such as disabling and enabling them again, makes them other rows), the baseline and the unique index of the key. An index scan, an index-only scan and a bitmap scan with an MVCC snapshot leave out an entry the log says a transaction visible to the snapshot ended; nothing is heap-free: the heap decides for every entry returned, and a missing tombstone means nothing
+- **Gain:** n/a: not measured until the heap-free read stage
+- **Impact:** index size: n/a: not measured until the heap-free read stage; build, merge and writes: n/a: not measured until the heap-free read stage; other: format minor 43; every DELETE and UPDATE statement probes the unique index once for each old row (a b-tree descent and a heap check, tens of microseconds) and writes a 32-byte entry for each dead version; turning it on (ALTER INDEX .. SET, or RESET then SET) passes over the whole heap under ShareRowExclusiveLock, and turning it off takes AccessExclusiveLock on the table briefly to drop the triggers
+- **When:** DELETE, UPDATE, MERGE and INSERT .. ON CONFLICT DO UPDATE statements of the table, including the ones the foreign keys fire; TRUNCATE rebuilds the index and so makes the baseline again; not logical replication apply, not a partition or a child table
+- **Default:** false — It is not the default: the triggers are an object on the user's table, a table with children or a subscriber cannot use them, the baseline is a pass over the heap, and the reads only use the log to leave dead entries out. A read never infers that there are no deletes
+- **Why not the default:** the history does not say
+- **Turn off:** ALTER INDEX .. RESET (track_deletes) drops the triggers (AccessExclusiveLock on the table for an instant) and the log stops being complete; track_updates and its log stay
+- **Upgrade from 3.7:** unchanged: the option is part of column format minor 43 with track_updates; an index of 3.7 keeps its options. The triggers are internal, so pg_dump does not write them and a restore creates them with the index
+- **Advice:** Set it with track_updates on an index whose table is deleted from or has its key changed, when reads should not depend on the heap for those rows. Leave it off for an append-only or update-only table. To turn it on for an existing index: ALTER INDEX .. SET (track_deletes = on) (a pass over the heap); after a concurrent build, or after anyone disables and enables the triggers, ALTER INDEX .. RESET (track_deletes) and SET again, or REINDEX. Not for a partition or a table with inheritance children (a statement on the parent fires no trigger of the child), nor for a table a logical replication subscription writes (the apply worker fires no statement trigger).
+- **Sources:** benchmark `test:col_track_deletes`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
 #### sift_col(hll_columns)
 
@@ -2471,7 +2486,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_updates)`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(track_deletes)`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_updates)`.
 
 | Option | 3.7 | 4.0 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
@@ -2479,6 +2494,7 @@ Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sif
 | `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |
 | `sift_col(order_layout)` | new | '' | minor 41, unreadable by 3.7 | unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
 | `sift_col(track_updates)` | new | '' | minor 43, unreadable by 3.7 | unchanged: an index of 3.7 keeps its options; the segments of an index with track_updates are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them |
+| `sift_col(track_deletes)` | new | false | minor 43, unreadable by 3.7 | unchanged: the option is part of column format minor 43 with track_updates; an index of 3.7 keeps its options. The triggers are internal, so pg_dump does not write them and a restore creates them with the index |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
 <!-- sift-upgrade:end -->

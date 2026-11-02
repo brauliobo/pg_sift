@@ -8,6 +8,7 @@
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -68,6 +69,7 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	t->lastcnt = 0;
 	t->seqbase = 0;
 	t->followed = false;
+	memset(&t->chan, 0, sizeof(t->chan));
 	t->nents = t->nrecent = 0;
 	if (t->hotm)
 	{
@@ -276,6 +278,11 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
 	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
 	n = SIFT_TOMB_HDR(BufferGetPage(buf))->nentries;
+	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing */
+	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr))
+		t->chan = SIFT_TOMB_HDR(BufferGetPage(buf))->chan;
+	else
+		memset(&t->chan, 0, sizeof(t->chan));
 	blk = BlockNumberIsValid(t->last) ? t->last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
 	UnlockReleaseBuffer(buf);
 	if (n == t->synced)
@@ -423,16 +430,162 @@ page_entries(const SiftTomb *a, uint32 na, uint64 lo, uint32 *n)
 	return a + first;
 }
 
-static void
-deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask)
+#ifdef SIFT_TESTING
+int			sift_test_clog_horizon = 0;
+#endif
+
+/* Is xid older than what the commit log keeps, or not one the server has given out? XactTruncationLock is held by the caller */
+static bool
+beyond_clog(TransactionId xid)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_clog_horizon != 0 && TransactionIdPrecedes(xid, (TransactionId) sift_test_clog_horizon))
+		return true;
+#endif
+#if PG_VERSION_NUM >= 170000
+	if (TransactionIdPrecedes(xid, TransamVariables->oldestClogXid))
+#else
+	if (TransactionIdPrecedes(xid, ShmemVariableCache->oldestClogXid))
+#endif
+		return true;
+	return TransactionIdFollowsOrEquals(xid, ReadNextTransactionId());
+}
+
+/* Did xid commit, from the commit log only: false in *known when the log cannot say */
+static bool
+clog_committed(TransactionId xid, bool *known)
+{
+	bool		committed;
+
+	if (!TransactionIdIsNormal(xid))
+	{
+		*known = TransactionIdIsValid(xid);
+		return *known;
+	}
+	LWLockAcquire(XactTruncationLock, LW_SHARED);
+	*known = !beyond_clog(xid);
+	committed = *known && TransactionIdDidCommit(xid);
+	LWLockRelease(XactTruncationLock);
+	return committed;
+}
+
+SiftXidState
+sift_xid_state(TransactionId xid)
+{
+	for (int pass = 0; pass < 2; pass++)
+	{
+		bool		known;
+
+		if (clog_committed(xid, &known))
+			return SIFT_XID_COMMITTED;
+		if (!known)
+			return SIFT_XID_UNKNOWN;
+		if (pass == 0 && TransactionIdIsInProgress(xid))
+			return SIFT_XID_OPEN;
+	}
+	return SIFT_XID_ABORTED;
+}
+
+SiftTombVerdict
+sift_tomb_verdict(Snapshot snapshot, const SiftTomb *e)
+{
+	bool		known;
+
+	Assert(snapshot->snapshot_type == SNAPSHOT_MVCC);
+	if (TransactionIdIsCurrentTransactionId(e->xid))
+		return e->cid < snapshot->curcid ? SIFT_TOMB_DELETES : SIFT_TOMB_KEEPS;
+	if (XidInMVCCSnapshot(e->xid, snapshot))
+		return SIFT_TOMB_KEEPS;
+	if (clog_committed(e->xid, &known))
+		return SIFT_TOMB_DELETES;
+	return known ? SIFT_TOMB_KEEPS : SIFT_TOMB_UNKNOWN;
+}
+
+static SiftTombVerdict
+verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo)
+{
+	SiftTombVerdict r;
+
+	if (snapshot->snapshot_type != SNAPSHOT_MVCC)
+		return sift_tomb_deletes(snapshot, e) ? SIFT_TOMB_DELETES : SIFT_TOMB_KEEPS;
+	if (memo == NULL || TransactionIdIsCurrentTransactionId(e->xid))
+		return sift_tomb_verdict(snapshot, e);
+	for (int i = 0; i < 4; i++)
+		if (memo->xid[i] == e->xid)
+			return memo->verdict[i];
+	r = sift_tomb_verdict(snapshot, e);
+	memo->xid[memo->next & 3] = e->xid;
+	memo->verdict[memo->next++ & 3] = r;
+	return r;
+}
+
+static bool
+deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, SiftTombMemo *memo)
 {
 	for (; n > 0; f++, n--)
-		if (f->kind != SIFT_TOMB_LOCK && sift_tomb_deletes(snapshot, f))
+	{
+		SiftTombVerdict v;
+
+		if (f->kind == SIFT_TOMB_LOCK)
+			continue;
+		v = verdict_memo(snapshot, f, memo);
+		if (v == SIFT_TOMB_UNKNOWN)
+			return false;
+		if (v == SIFT_TOMB_DELETES)
 			mask[((f->key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((f->key & 0xFFFF) - 1) % 64);
+	}
+	return true;
+}
+
+/* The entries of a with lo <= key <= hi */
+static const SiftTomb *
+range_entries(const SiftTomb *a, uint32 na, uint64 lo, uint64 hi, uint32 *n)
+{
+	uint32		l = 0,
+				h = na,
+				first;
+
+	SIFT_BISECT(uint32, mid, l, h, a[mid].key < lo);
+	first = l;
+	h = na;
+	SIFT_BISECT(uint32, mid, l, h, a[mid].key <= hi);
+	*n = l - first;
+	return a + first;
+}
+
+static bool
+deleted_blocks(const SiftTomb *f, uint32 n, Snapshot snapshot, BlockNumber first, uint64 *mask, SiftTombMemo *memo)
+{
+	bool		any = false;
+
+	for (; n > 0; f++, n--)
+	{
+		if (f->kind == SIFT_TOMB_LOCK || verdict_memo(snapshot, f, memo) == SIFT_TOMB_KEEPS)
+			continue;
+		if (mask == NULL)
+			return true;
+		any = true;
+		mask[((f->key >> 16) - first) / 64] |= UINT64CONST(1) << (((f->key >> 16) - first) % 64);
+	}
+	return any;
 }
 
 bool
-sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask)
+sift_tomb_deleted_blocks(const SiftTombLog *t, Snapshot snapshot, BlockNumber first, uint32 nblocks, uint64 *mask, SiftTombMemo *memo)
+{
+	uint64		lo = (uint64) first << 16,
+				hi = ((uint64) first + nblocks) * 65536 - 1;
+	uint32		nm,
+				nr;
+	const SiftTomb *m = range_entries(t->ents, t->nents, lo, hi, &nm),
+			   *r = range_entries(t->recent, t->nrecent, lo, hi, &nr);
+	bool		a = deleted_blocks(m, nm, snapshot, first, mask, memo);
+
+	return deleted_blocks(r, nr, snapshot, first, mask, memo) || a;
+}
+
+bool
+sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask, SiftTombMemo *memo)
 {
 	uint64		lo = (uint64) block << 16;
 	uint32		nm,
@@ -442,9 +595,7 @@ sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber b
 
 	if (nm + nr > budget)
 		return false;
-	deleted_offsets(m, nm, snapshot, mask);
-	deleted_offsets(r, nr, snapshot, mask);
-	return true;
+	return deleted_offsets(m, nm, snapshot, mask, memo) && deleted_offsets(r, nr, snapshot, mask, memo);
 }
 
 bool
@@ -515,6 +666,27 @@ sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, Co
 	UnlockReleaseBuffer(hbuf);
 	UnlockReleaseBuffer(cur);
 	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
+}
+
+void
+sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c)
+{
+	const SiftSegEntry *e;
+	Buffer		hbuf;
+	SiftPageEdit ed;
+
+	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
+	sift_dir_read(rel, t->dir);
+	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
+		corrupt(rel, "There is no tombstone segment.");
+	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
+	sift_page_edit_begin(&ed, hbuf, SIFT_PAGE_DATA_OFFSET);
+	sift_page_edit_extra(&ed, (char *) &SIFT_TOMB_HDR(ed.page)->chan - (char *) ed.page, sizeof(SiftTombChan));
+	SIFT_TOMB_HDR(ed.page)->chan = *c;
+	sift_page_edit_end(rel, &ed, 1);
+	UnlockReleaseBuffer(hbuf);
+	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
+	t->chan = *c;
 }
 
 typedef struct TombSwap
@@ -612,6 +784,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SiftLaneHdr(hp)->lanes[0].npages = npages;
 		SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
 		SIFT_TOMB_HDR(hp)->nentries = kept;
+		SIFT_TOMB_HDR(hp)->chan = t->chan;
 		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
 		GenericXLogFinish(state);
 	}

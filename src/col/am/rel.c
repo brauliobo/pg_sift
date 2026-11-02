@@ -263,8 +263,10 @@ build_rel(Relation index, MemoryContext mcxt)
 				id = i;
 		if (id < 0)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_updates option: \"%s\" is not a column of the index", rk)));
+		for (int a = 1; a <= natts; a++)
+			if (r->first[a] == id)
+				r->rowkey_attno = a;
 		r->rowkey = true;
-		r->rowkey_leaf = id;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};

@@ -22,12 +22,26 @@ StaticAssertDecl(SIFT_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TOMB_LOC
 				 SIFT_TOMB_LOCK_BLKNO != SIFT_MAINT_LOCK_BLKNO && SIFT_TOMB_LOCK_BLKNO != SIFT_DIRECTORY_BLKNO,
 				 "the lock targets of a relation are distinct");
 
+/*
+ * What an index log says of its own completeness (a heap sift_col index with track_deletes; zero for a table, whose log is complete by construction): flags, the
+ * transaction from which the log is complete, and the identity (the xmin of the catalog row) of the two statement triggers that feed it.
+ */
+#define SIFT_TOMB_COMPLETE		0x0001
+
+typedef struct SiftTombChan
+{
+	uint32		flags;
+	TransactionId base_xid;
+	uint32		witness[2];
+} SiftTombChan;
+
 /* Tombstone segment header page: SiftWbufHeaderData then this; data pages: SiftTombPage then SiftTomb[] */
 typedef struct SiftTombHdr
 {
 	uint32		magic;
 	uint32		pad;
 	uint64		nentries;		/* appended so far: the version of the log */
+	SiftTombChan chan;
 } SiftTombHdr;
 
 typedef struct SiftTombPage
@@ -79,6 +93,7 @@ typedef struct SiftTombLog
 	uint64		synced;
 	BlockNumber last;
 	uint32		lastcnt;
+	SiftTombChan chan;			/* the completeness record of the header at the last sync */
 	uint32		seqbase;		/* the entries of the logs read before the current one, which only follows them (tomb_follow) */
 	bool		followed;
 	SiftTomb   *ents;			/* sorted by (key, seq): the bulk of the log */
@@ -103,6 +118,8 @@ extern void sift_tomb_forget(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);
 /* The entries appended to the log so far, from its header page alone: no page of the log is read and no entry sorted */
 extern uint64 sift_tomb_entries(Relation rel, const SiftDirSnapshot *dir);
+/* Writes the completeness record of the header */
+extern void sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c);
 extern void sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, CommandId cid, SiftTombKind kind, uint16 flags, uint64 succ);
 /*
  * Rewrites the tombstone segment without the entries keep() refuses, under the lock that keeps appenders out, and switches the
@@ -125,10 +142,48 @@ extern bool sift_tomb_hot_pred(const SiftTombLog *t, uint64 key, uint64 *pred);
 extern void sift_tomb_hot_offsets(const SiftTombLog *t, BlockNumber block, uint32 *pos, uint64 *mask);
 /* Does the tombstone e (not a LOCK) delete its row for the snapshot? Dirty snapshots also learn of an in-progress deleter */
 extern bool sift_tomb_deletes(Snapshot snapshot, const SiftTomb *e);
-/* Sets the bit of the offset of each row of block that a tombstone deletes for the snapshot (an MVCC one): the page's tombstones are read once, where a lookup bisects the log for each row. false, mask unusable, when the page has more than budget entries */
-extern bool sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask);
+
+/*
+ * What became of a transaction, as far as the commit log still says. The log is truncated up to the oldest xid every table is frozen up to, and an index (unlike a heap)
+ * may hold an xid past that: a tombstone, the transaction that made the log complete. UNKNOWN is such an xid, one the server could not have given out yet (a
+ * wrapped one), and an invalid one: the commit log is not asked, and the caller reads the heap or does without the answer. Frozen and bootstrap xids are COMMITTED.
+ */
+typedef enum SiftXidState
+{
+	SIFT_XID_UNKNOWN,
+	SIFT_XID_COMMITTED,
+	SIFT_XID_OPEN,
+	SIFT_XID_ABORTED
+} SiftXidState;
+extern SiftXidState sift_xid_state(TransactionId xid);
+
+/* Does the tombstone e (not a LOCK) delete its row for an MVCC snapshot: UNKNOWN when its transaction is beyond the commit log (nothing is claimed) */
+typedef enum SiftTombVerdict
+{
+	SIFT_TOMB_KEEPS,
+	SIFT_TOMB_DELETES,
+	SIFT_TOMB_UNKNOWN
+} SiftTombVerdict;
+extern SiftTombVerdict sift_tomb_verdict(Snapshot snapshot, const SiftTomb *e);
+
+/* The verdicts of a few transactions for one MVCC snapshot, which a walk over many pages reuses: the tombstones of a page come from few transactions, and the clog is read for each otherwise */
+typedef struct SiftTombMemo
+{
+	TransactionId xid[4];
+	uint8		verdict[4];		/* SiftTombVerdict */
+	uint8		next;
+} SiftTombMemo;
+/*
+ * Do tombstones delete rows of the blocks [first, first + nblocks) for the snapshot (an MVCC one): sets the bit (block - first) of mask (nblocks / 64 rounded up words, zeroed
+ * by the caller) for each such block, and for each block with a tombstone of a transaction beyond the commit log; mask NULL stops at the first. MEMO (NULL: none) belongs to one snapshot. A row of such a block is to be checked in the heap, any other is not deleted for the snapshot
+ */
+extern bool sift_tomb_deleted_blocks(const SiftTombLog *t, Snapshot snapshot, BlockNumber first, uint32 nblocks, uint64 *mask, SiftTombMemo *memo);
+/* Sets the bit of the offset of each row of block that a tombstone deletes for the snapshot (an MVCC one): the page's tombstones are read once, where a lookup bisects the log for each row. false, mask unusable, when the page has more than budget entries or a tombstone of a transaction beyond the commit log */
+extern bool sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask, SiftTombMemo *memo);
 
 #ifdef SIFT_TESTING
+/* Test only: transactions older than this (not 0) are taken for older than the commit log keeps */
+extern PGDLLIMPORT int sift_test_clog_horizon;
 /* Test only: the lookups of a block alone in the log (pos NULL) by this backend: a walk over the pages of a search makes none */
 extern PGDLLIMPORT uint64 sift_tomb_hot_probes;
 #endif

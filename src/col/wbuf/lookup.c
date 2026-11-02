@@ -307,7 +307,7 @@ verify_page(void *arg, Page page, BlockNumber blk)
 		Size		size;
 		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
 
-		if (!ItemPointerIsValid(&h->tid) || (h->flags & ~(SIFT_COLR_DELETED | SIFT_COLR_CONT)))
+		if (!ItemPointerIsValid(&h->tid) || (h->flags & ~(SIFT_COLR_DELETED | SIFT_COLR_CONT | SIFT_COLR_XMIN)))
 			SIFT_CORRUPT(index, "A write buffer record has tid (%u,%u) and flags %x.", ItemPointerGetBlockNumberNoCheck(&h->tid),
 					ItemPointerGetOffsetNumberNoCheck(&h->tid), h->flags);
 		nrecs += !(h->flags & SIFT_COLR_CONT);

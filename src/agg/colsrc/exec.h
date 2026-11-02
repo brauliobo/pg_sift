@@ -393,7 +393,8 @@ typedef struct SiftSrcCounters
 	int64		units_search_pruned;	/* of those, the ones without a row of the search selection */
 	int64		rows;			/* rows of the units returned */
 	int64		bytes;			/* bytes decoded */
-	int64		rows_vetted;	/* rows checked against the heap */
+	int64		rows_vetted;	/* rows checked for visibility against the heap or the tombstone log */
+	int64		rows_log;		/* ... of those, the rows the tombstone log decided */
 	int64		heap_pages;		/* heap pages read for them */
 	int64		rechecked;		/* rows of units read again from the heap (SiftSrcProvider.set_recheck) */
 	int64		recheck_units;	/* the units that had such rows */

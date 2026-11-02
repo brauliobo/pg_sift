@@ -27,19 +27,9 @@
 
 #ifdef SIFT_TESTING
 bool		sift_test_no_supersede = false;
+bool		sift_test_supersede_scan = false;
+bool		sift_test_track_all_updates = false;
 #endif
-
-/* The attribute of the index that holds the key */
-static int
-key_attno(const SiftColRel *r)
-{
-	int			a = 1;
-
-	while (a < r->natts && r->first[a] != r->rowkey_leaf)
-		a++;
-	SIFT_INVARIANT(r->first[a] == r->rowkey_leaf, "track_updates leaf %d is not an attribute of the index", r->rowkey_leaf);
-	return a;
-}
 
 /*
  * Is the version at newtid a speculative insertion (INSERT .. ON CONFLICT before it is confirmed)? It may be killed when the conflict is found, and the row it
@@ -62,38 +52,61 @@ is_speculative(Relation heap, ItemPointer newtid)
 	return spec;
 }
 
-void
-sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt)
+/* The key of the version in slot is the key (the point directory lists the fingerprint of a key: another key of the same fingerprint is not the row's), and the entry is not the new version's own: its tombstone */
+static void
+tomb_replaced(Relation index, SiftTombLog *log, TupleTableSlot *slot, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc, Datum key, ItemPointer entry, uint64 succ)
 {
-	int			attno = key_attno(sift_col_rel(index));
-	AttrNumber	hatt = index->rd_index->indkey.values[attno - 1];
-	Datum		key = values[attno - 1];
-	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(heap), hatt - 1);
-	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
-	Snapshot	snap;
+	bool		isnull;
+	Datum		old = slot_getattr(slot, hatt, &isnull);
+
+	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
+		return;
+	sift_tomb_append(index, log, sift_key_from_tid(entry), GetCurrentTransactionId(), GetCurrentCommandId(true), SIFT_TOMB_UPDATE, 0, succ);
+}
+
+/*
+ * The addresses of the key come from the table's unique index on it, which lists every version of a row that has an entry in this one (a version that is not a HOT member
+ * has an entry in each index, and the one being updated is not dead, so neither index has dropped it): a probe of a b-tree where the index's own scan opens the
+ * segments and reads the buffers. An index scan of the access method is what finds them when the table has no such index now.
+ */
+static void
+supersede_by_unique(Relation index, SiftTombLog *log, Relation heap, Oid uoid, Snapshot snap, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc, Datum key,
+					ItemPointer newtid, uint64 succ)
+{
+	Relation	uidx = index_open(uoid, AccessShareLock);
+	Oid			intype = uidx->rd_opcintype[0];
+	ScanKeyData skey;
+	IndexScanDesc scan;
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+	ScanKeyEntryInitialize(&skey, 0, 1, BTEqualStrategyNumber, InvalidOid, uidx->rd_indcollation[0],
+						   get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber)), key);
+	scan = sift_index_beginscan(heap, uidx, snap, 1);
+	index_rescan(scan, &skey, 1, NULL, 0);
+	for (ItemPointer t; (t = index_getnext_tid(scan, ForwardScanDirection)) != NULL;)
+	{
+		ItemPointerData entry = *t;
+
+		if (!ItemPointerEquals(&entry, newtid) && index_fetch_heap(scan, slot))
+			tomb_replaced(index, log, slot, hatt, att, tc, key, &entry, succ);
+	}
+	index_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	index_close(uidx, NoLock);
+}
+
+static void
+supersede_by_scan(Relation index, SiftTombLog *log, Relation heap, Snapshot snap, int attno, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc, Datum key,
+				  ItemPointer newtid, uint64 succ)
+{
 	ScanKeyData skey;
 	IndexScanDesc scan;
 	ItemPointerData *cand = NULL;
 	int			ncand = 0,
 				capcand = 0;
-	SiftTombLog *log;
 	TupleTableSlot *slot;
 	IndexFetchTableData *fetch;
-	uint64		succ = sift_key_from_tid(newtid);
 
-#ifdef SIFT_TESTING
-	if (sift_test_no_supersede)
-		return;
-#endif
-	if (speculative_stmt && is_speculative(heap, newtid))
-		return;
-	if ((log = sift_col_log(index)) == NULL)
-	{
-		sift_col_log_create(index);
-		log = sift_col_log(index);
-	}
-	/* the latest committed version (or the transaction's own) is the one being updated: a snapshot of now sees it, the version of this command not */
-	snap = RegisterSnapshot(GetLatestSnapshot());
 	/* the operator class is polymorphic: the access method reads the strategy, the function of the type's equality is for the form of the key */
 	ScanKeyInit(&skey, attno, BTEqualStrategyNumber, tc->eq_opr_finfo.fn_oid, key);
 	scan = sift_index_beginscan(heap, index, snap, 1);
@@ -109,30 +122,57 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	}
 	index_endscan(scan);
 	if (ncand == 0)
-	{
-		UnregisterSnapshot(snap);
 		return;
-	}
 	slot = table_slot_create(heap, NULL);
 	fetch = table_index_fetch_begin(heap);
 	for (int i = 0; i < ncand; i++)
 	{
 		ItemPointerData t = cand[i];
 		bool		again = false,
-					dead = false,
-					isnull;
-		Datum		old;
+					dead = false;
 
-		if (ItemPointerEquals(&t, newtid) || !table_index_fetch_tuple(fetch, &t, snap, slot, &again, &dead))
-			continue;
-		old = slot_getattr(slot, hatt, &isnull);
-		/* the point directory lists the fingerprint of a key: another key of the same fingerprint is not the row's */
-		if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
-			continue;
-		sift_tomb_append(index, log, sift_key_from_tid(&cand[i]), GetCurrentTransactionId(), GetCurrentCommandId(true), SIFT_TOMB_UPDATE, 0, succ);
+		if (!ItemPointerEquals(&t, newtid) && table_index_fetch_tuple(fetch, &t, snap, slot, &again, &dead))
+			tomb_replaced(index, log, slot, hatt, att, tc, key, &cand[i], succ);
 	}
 	table_index_fetch_end(fetch);
 	ExecDropSingleTupleTableSlot(slot);
-	UnregisterSnapshot(snap);
 	pfree(cand);
+}
+
+void
+sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt)
+{
+	int			attno = sift_col_rel(index)->rowkey_attno;
+	AttrNumber	hatt = index->rd_index->indkey.values[attno - 1];
+	Datum		key = values[attno - 1];
+	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(heap), hatt - 1);
+	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
+	Snapshot	snap;
+	SiftTombLog *log;
+	Oid			uoid;
+	uint64		succ = sift_key_from_tid(newtid);
+
+#ifdef SIFT_TESTING
+	if (sift_test_no_supersede)
+		return;
+#endif
+	if (speculative_stmt && is_speculative(heap, newtid))
+		return;
+	if ((log = sift_col_log(index)) == NULL)
+	{
+		sift_col_log_create(index);
+		log = sift_col_log(index);
+	}
+	uoid = sift_col_row_key_unique(heap, hatt);
+#ifdef SIFT_TESTING
+	if (sift_test_supersede_scan)
+		uoid = InvalidOid;
+#endif
+	/* the latest committed version (or the transaction's own) is the one being updated: a snapshot of now sees it, the version of this command not */
+	snap = RegisterSnapshot(GetLatestSnapshot());
+	if (OidIsValid(uoid))
+		supersede_by_unique(index, log, heap, uoid, snap, hatt, att, tc, key, newtid, succ);
+	else
+		supersede_by_scan(index, log, heap, snap, attno, hatt, att, tc, key, newtid, succ);
+	UnregisterSnapshot(snap);
 }

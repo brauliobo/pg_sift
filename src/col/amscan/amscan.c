@@ -14,6 +14,7 @@
 #include "utils/uuid.h"
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
+#include "core/tomb.h"
 
 
 /*
@@ -280,6 +281,61 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
 	return so->src;
 }
 
+/*
+ * The tombstone log of an index with track_updates, read for a scan with an MVCC snapshot. An entry the log says a transaction visible to the snapshot ended is not a row of this
+ * snapshot, whatever the heap would say of the address: it is not returned (the heap fetch of a dead row, between the UPDATE or DELETE and VACUUM, is saved). The log
+ * only ever hides: no tombstone says nothing, and the heap decides for every entry that is returned, so an incomplete log (track_deletes off, a trigger disabled, a
+ * concurrent build) costs nothing in correctness. It is read after the snapshot was taken, so it holds every tombstone that could hide a row for the snapshot, and the
+ * ones VACUUM dropped since are of addresses whose row no snapshot of this age sees (the heap gives a freed address to rows inserted after it).
+ */
+static void
+col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, const SiftColRel *r)
+{
+	SiftTombLog *log;
+
+	so->log = NULL;
+#ifdef SIFT_TESTING
+	if (sift_test_no_log_hide)
+		return;
+#endif
+	if (!r->rowkey || scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_MVCC)
+		return;
+	log = sift_col_log(scan->indexRelation);
+	if (log != NULL && log->nents + log->nrecent > 0)
+		so->log = log;
+}
+
+static bool
+col_tomb_hides(ColScanOpaque *so, Snapshot snap, const ItemPointerData *tid)
+{
+	int			n;
+	const SiftTomb *e = sift_tomb_find(so->log, sift_key_from_tid((ItemPointer) tid), &n);
+
+	for (int i = 0; i < n; i++)
+		if (e[i].kind != SIFT_TOMB_LOCK && sift_tomb_verdict(snap, &e[i]) == SIFT_TOMB_DELETES)
+		{
+#ifdef SIFT_TESTING
+			sift_test_col_log_hidden_count++;
+#endif
+			return true;
+		}
+	return false;
+}
+
+/* The addresses of tids that the log does not hide, in place; the count */
+static uint32
+col_tomb_keep(ColScanOpaque *so, Snapshot snap, ItemPointerData *tids, uint32 n)
+{
+	uint32		m = 0;
+
+	if (so->log == NULL)
+		return n;
+	for (uint32 i = 0; i < n; i++)
+		if (!col_tomb_hides(so, snap, &tids[i]))
+			tids[m++] = tids[i];
+	return m;
+}
+
 /* Opens the source and makes the predicates of the keys; the executor checked the privileges and the row security of the table, and the planner only offers operators it knows leak nothing */
 static void
 col_scan_begin(IndexScanDesc scan, bool lazy)
@@ -310,6 +366,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys; i++)
 		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
+	col_tomb_open(scan, so, r);
 	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
 	if (sat)
 	{
@@ -387,6 +444,7 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	int64		ntids = 0;
 
 	col_scan_begin(scan, false);
+	so->ndtids = col_tomb_keep(so, scan->xs_snapshot, so->dtids, so->ndtids);
 	if (so->ndtids > 0)
 	{
 		tbm_add_tuples(tbm, so->dtids, so->ndtids, true);
@@ -400,6 +458,9 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			so->tids = so->tids ? repalloc(so->tids, so->cap * sizeof(ItemPointerData)) : palloc(so->cap * sizeof(ItemPointerData));
 		}
 		sift_col_tids(&unit, &sel, so->tids);
+		sel.count = col_tomb_keep(so, scan->xs_snapshot, so->tids, sel.count);
+		if (sel.count == 0)
+			continue;
 		/* the stored values are the heap's (HOT keeps the indexed columns), and a row the snapshot cannot see is dropped by the heap scan: no recheck but for a key the leaf cannot test */
 		tbm_add_tuples(tbm, so->tids, sel.count, so->recheck);
 		ntids += sel.count;
@@ -800,27 +861,33 @@ sift_col_unordered_next(IndexScanDesc scan)
 		so->tids = so->dtids;
 		so->n = so->ndtids;
 	}
-	while (so->pos >= so->n)
+	for (;;)
 	{
-		if (so->ltids)
+		while (so->pos >= so->n)
 		{
-			SiftKey		tids[COL_LAZY_MAX];
-
-			/* a scan that stops early reads a few addresses: the chunks double up to the size that keeps the cost of a call small */
-			so->n = sift_col_point_next(so->src, tids, Min(COL_LAZY_MAX, Max(COL_LAZY_FIRST, so->nlazy * 2)));
-			so->pos = 0;
-			if (so->n > 0)
+			if (so->ltids)
 			{
-				so->nlazy = so->n;
-				for (uint32 i = 0; i < so->n; i++)
-					sift_key_to_tid(tids[i], &so->ltids[i]);
-				so->tids = so->ltids;
-				continue;
+				SiftKey		tids[COL_LAZY_MAX];
+
+				/* a scan that stops early reads a few addresses: the chunks double up to the size that keeps the cost of a call small */
+				so->n = sift_col_point_next(so->src, tids, Min(COL_LAZY_MAX, Max(COL_LAZY_FIRST, so->nlazy * 2)));
+				so->pos = 0;
+				if (so->n > 0)
+				{
+					so->nlazy = so->n;
+					for (uint32 i = 0; i < so->n; i++)
+						sift_key_to_tid(tids[i], &so->ltids[i]);
+					so->tids = so->ltids;
+					continue;
+				}
+				so->ltids = NULL;
 			}
-			so->ltids = NULL;
+			if (!col_fill_batch(scan))
+				return false;
 		}
-		if (!col_fill_batch(scan))
-			return false;
+		if (so->log == NULL || !col_tomb_hides(so, scan->xs_snapshot, &so->tids[so->pos]))
+			break;
+		so->pos++;
 	}
 	scan->xs_heaptid = so->tids[so->pos];
 	sift_col_ioss_sample(scan, so, &scan->xs_heaptid);

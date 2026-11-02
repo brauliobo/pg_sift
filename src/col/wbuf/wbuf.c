@@ -138,18 +138,18 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 }
 
 void
-wbuf_put_piece(Page page, const ItemPointerData *tid, bool cont, const char *payload, Size len)
+wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len)
 {
 	Size		used = SiftPageGetUsed(page),
 				size = RECSIZE(len);
 	SiftColRecHead *h = (SiftColRecHead *) (SiftPageGetData(page) + used);
 
 	h->tid = *tid;
-	h->flags = cont ? SIFT_COLR_CONT : 0;
+	h->flags = flags;
 	h->len = len;
 	memcpy(h + 1, payload, len);
 	memset((char *) (h + 1) + len, 0, size - sizeof(SiftColRecHead) - len);
-	if (!cont)
+	if (!(flags & SIFT_COLR_CONT))
 		SiftLaneHead(page)->nrecs++;
 	SiftPageSetUsed(page, used + size);
 }
@@ -166,7 +166,7 @@ piece_fit(Size room, Size rem)
 typedef struct PieceArg
 {
 	const ItemPointerData *tid;
-	bool		cont;
+	uint16		flags;
 	const char *payload;
 	Size		len;
 	bool		spans;			/* the row goes on in the next page */
@@ -177,14 +177,14 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 {
 	PieceArg   *a = arg;
 
-	wbuf_put_piece(cp, a->tid, a->cont, a->payload, a->len);
+	wbuf_put_piece(cp, a->tid, a->flags, a->payload, a->len);
 	if (a->spans)
 		SiftLaneHead(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 }
 
 /* Writes the row starting at the locked tail cur; returns whether the segment reached write_buffer_limit. Leaves the final tail block in *tail. */
 bool
-wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, const char *payload, Size len,
+wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len,
 		  BlockNumber *tail)
 {
 	bool		crossed = false,
@@ -204,13 +204,13 @@ wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const Ite
 			SiftPageEdit ed;
 
 			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
-			wbuf_put_piece(ed.page, tid, !first, payload + done, n);
+			wbuf_put_piece(ed.page, tid, first ? flags : SIFT_COLR_CONT, payload + done, n);
 			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
 		/* a row that fits an empty page moves there whole rather than splitting */
 		place = n > 0 && !(first && RECSIZE(len) <= EMPTY_ROOM);
-		pa = (PieceArg) {tid, !first, payload + done, n, done + n < len};
+		pa = (PieceArg) {tid, first ? flags : SIFT_COLR_CONT, payload + done, n, done + n < len};
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, HDRSIZE, limit, place ? fill_piece : NULL, &pa, &crossed);
 #ifdef SIFT_TESTING
 		if (sift_cwbuf_fail_grow > 0 && --sift_cwbuf_fail_grow == 0)
@@ -314,7 +314,7 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 }
 
 bool
-sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row)
+sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin)
 {
 	StringInfoData buf;
 	Buffer		tailbuf;
@@ -325,6 +325,8 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 				jnull;
 
 	initStringInfo(&buf);
+	if (TransactionIdIsValid(xmin))
+		appendBinaryStringInfo(&buf, (const char *) &xmin, sizeof(xmin));
 	ovf = wbuf_encode_row(&buf, schema, row, &jnull);
 	for (;;)
 	{
@@ -335,7 +337,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 			break;
 		h->gen = 0;
 	}
-	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, buf.data, buf.len, &tail);
+	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0, buf.data, buf.len, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

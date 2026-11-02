@@ -7,6 +7,7 @@
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/seg.h"
+#include "core/tomb.h"
 #include "core/visibility.h"
 
 #define corrupt(...) \
@@ -90,6 +91,7 @@ typedef struct ColMem
 	SiftColBatch *b;
 	uint32		id;
 	bool		lane;			/* read from the write buffer when the source began */
+	TransactionId xstamp;		/* a lane batch: the xid before which every transaction that inserted a row of it committed (SIFT_SEG_XSTAMP), none when not known */
 } ColMem;
 
 /* The element structure of one group leaf in the current unit */
@@ -156,6 +158,7 @@ typedef struct ColUnit
 	const SiftKey *ptid;		/* the addresses of ptidv that lie in this unit's superblock, when the cursor has some (nptid may be 0 only for a unit the directory lists nothing in) */
 	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
+	TransactionId xstamp;		/* ... and the xid before which every transaction that inserted a row of it committed, none when not known */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
 	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */
@@ -204,6 +207,16 @@ struct SiftColSource
 	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
+	/*
+	 * Reads that do without the heap (docs/COL-HEAPFREE.md): hflog is the tombstone log of an index with track_updates and track_deletes, read at open before any liveness, and hfgen
+	 * its generation then (a log replaced since says nothing of the entries VACUUM cleared). hf: 0 not decided, 1 the log can be taken for complete for this snapshot,
+	 * -1 it cannot. A stored segment that says its inserters committed before the xmin of the snapshot (SIFT_SEG_XSTAMP) has its pages taken for all-visible unless a
+	 * tombstone deletes a row of the page for the snapshot; the others are checked against the heap as ever.
+	 */
+	struct SiftTombLog *hflog;
+	SiftTombMemo hfmemo;		/* verdicts of the log's transactions for snap */
+	uint64		hfgen;
+	int			hf;
 	bool		begun;			/* a begin ran: sift_col_rescan refuses */
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
 	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
@@ -354,6 +367,20 @@ unit_clean(ColUnit *cu)
 
 /* col/delta.c */
 extern bool unit_pages_allvisible(ColUnit *cu);
+
+/*
+ * The all-visible state of the pages of a stored segment's units: what the visibility map says (the hook, or sift_vis_*), and, for a segment that is stamped and a
+ * source that can take the log for complete, the pages no tombstone deletes a row of for the snapshot as well. seg NULL: the rows are not a stored segment's (a write
+ * buffer batch): the map alone.
+ */
+extern void col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av);
+extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi);
+extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
+/* Opens the log of the source (before its first liveness read) */
+extern void col_hf_open(SiftColSource *src);
+/* Can the rows of a unit of this segment be told visible or not by the log, without the heap (the segment is stamped for the snapshot and the log is complete) */
+extern bool col_hf_unit(SiftColSource *src, const ColUnit *cu);
+extern bool col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *left);
 
 /* The units a begin reads, [ulo, uhi), and the bits of those that a small-set summary cleared */
 typedef struct PruneRange

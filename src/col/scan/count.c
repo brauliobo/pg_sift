@@ -100,7 +100,7 @@ unit_exact(SiftColSource *src, SiftColSegment *seg, uint32 u)
 
 	if (sift_cseg_dirty(seg, u) || !sift_cseg_unit_pagemask(seg, u, pm))
 		return false;
-	src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, u), av);
+	col_sb_mask(src, seg, sift_cseg_unit_sb(seg, u), av);
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (pm[w] & ~av[w])
 			return false;
