@@ -129,6 +129,8 @@ typedef struct SiftCPaggSpec
 	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
 	bool		gorder_group_auto;	/* order_array_group is the choice of the build ('auto: g'): every block of a date, timestamp or integer array is grouped and keeps its plain order beside it */
 	bool		gorder_only[SIFT_COL_MAX_COLS];	/* ... and these arrays keep the second order only, no plain order beside it ('auto: g, a, b': a time column the units are cut by or that follows the heap order) */
+	bool		gorder_listed;		/* ... 'auto: g, a, b; c, d': only the arrays named (a, b: second order only; c, d: beside their plain order) are grouped, the others keep the plain order alone; without the ';' every array is grouped */
+	bool		gorder_with[SIFT_COL_MAX_COLS];
 	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write/seg_write.c) */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */

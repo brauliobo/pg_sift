@@ -21,9 +21,9 @@ NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the d
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 41.5% of 467 chunks, exact in the rest, 4.5 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
-                                              reloptions                                               
--------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_group=auto: g","order_array_columns=auto: ts","point_tid_columns=auto: id"}
+                                                reloptions                                                 
+-----------------------------------------------------------------------------------------------------------
+ {key_cut=off,"order_array_group=auto: g; ts","order_array_columns=auto: ts","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT min(format) AS format FROM sift.col_segments('ag_i') WHERE kind = 'immutable';
@@ -126,9 +126,9 @@ NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the d
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
-                                              reloptions                                               
--------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_group=auto: g","order_array_columns=auto: ts","point_tid_columns=auto: id"}
+                                                reloptions                                                 
+-----------------------------------------------------------------------------------------------------------
+ {key_cut=off,"order_array_group=auto: g; ts","order_array_columns=auto: ts","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT ag_chk('SELECT id, ts FROM ag WHERE g = 7 ORDER BY ts, id LIMIT 20') AS reindexed_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS reindexed_plain;
@@ -179,9 +179,9 @@ NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the d
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
 NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
-                                              reloptions                                               
--------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_group=auto: g","order_array_columns=auto: ts","point_tid_columns=auto: id"}
+                                                reloptions                                                 
+-----------------------------------------------------------------------------------------------------------
+ {key_cut=off,"order_array_group=auto: g; ts","order_array_columns=auto: ts","point_tid_columns=auto: id"}
 (1 row)
 
 -- the choice is made again by REINDEX: a group of rows too few for a group is dropped (one row in 64 at least)

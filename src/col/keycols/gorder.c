@@ -142,6 +142,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 				nends = 0,
 				pick[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
 	bool		gonly[GORD_AUTO_MAX + SIFT_CGORD_ENDS_LEAVES];
+	bool	   *gsel;			/* by candidate: the array has a second order */
 	double		index_bytes;
 	StringInfoData v;
 
@@ -160,6 +161,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	cand = palloc(rel->schema->ncols * sizeof(GordCand));
 	fit = palloc(rel->schema->ncols * sizeof(bool));
+	gsel = palloc0(rel->schema->ncols * sizeof(bool));
 	for (int c = 0; c < rel->schema->ncols; c++)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
@@ -291,16 +293,26 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		for (int i = 0; i < ncand; i++)
 			if (cand[i].leaf == grp && fit[i])
 				bytes -= GORD_ENDS_BYTES;
-			else if (cand[i].grouped && (fit[i] || cand[i].time) && ngrouped < SIFT_CGORD_ENDS_LEAVES)
+		/* one array at a time, the dates and timestamps first: an array has a second order while the whole still pays (a narrow index can afford one where it cannot afford all) */
+		for (int pass = 0; pass < 2; pass++)
+			for (int i = 0; i < ncand; i++)
 			{
-				ngrouped++;
-				bytes += GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+				double		more = bytes + GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+
+				if (cand[i].leaf == grp || !cand[i].grouped || !(fit[i] || cand[i].time) || cand[i].time != (pass == 0) || ngrouped >= SIFT_CGORD_ENDS_LEAVES)
+					continue;
+				if (log2(GORD_GROUP_SPEEDUP) / log2(1.05) > more / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
+				{
+					bytes = more;
+					ngrouped++;
+					gsel[i] = true;
+				}
 			}
-		if (ngrouped == 0 || log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
+		if (ngrouped == 0)
 			grp = -1;
 	}
 	for (int i = 0; i < ncand; i++)
-		if ((fit[i] || (grp >= 0 && cand[i].time && cand[i].grouped)) && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
+		if ((fit[i] || (grp >= 0 && cand[i].time && cand[i].grouped && gsel[i])) && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))
 		{
 			pick[npick++] = cand[i].leaf;
 			gonly[npick - 1] = !fit[i];
@@ -329,6 +341,11 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		for (int i = 0; i < npick; i++)
 			if (gonly[i])
 				appendStringInfo(&v, ", %s", keycols_leaf_name(index, &rel->schema->cols[pick[i]]));
+		/* ... and, after the ';', the arrays of their own that have one beside it (the others keep the plain order alone) */
+		appendStringInfoChar(&v, ';');
+		for (int i = 0, n = 0; i < ncand; i++)
+			if (gsel[i] && fit[i] && cand[i].leaf != grp)
+				appendStringInfo(&v, "%s %s", n++ ? "," : "", keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]));
 		sift_col_set_option(index, "order_array_group", v.data);
 	}
 	else if (gauto)

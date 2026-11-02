@@ -194,8 +194,8 @@ colb_notice_order_array(Relation index)
 		return;
 	while (*glist == ' ')
 		glist++;
-	if (strchr(glist, ',') != NULL)
-		glist = pnstrdup(glist, strchr(glist, ',') - glist);	/* 'auto: g, a': the arrays after the group keep the second order only */
+	if (strpbrk(glist, ",;") != NULL)
+		glist = pnstrdup(glist, strpbrk(glist, ",;") - glist);	/* 'auto: g, a; c': the arrays after the group are the ones that have a second order, a without the plain order */
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	initStringInfo(&names);

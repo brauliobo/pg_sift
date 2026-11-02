@@ -168,7 +168,18 @@ build_rel(Relation index, MemoryContext mcxt)
 		{
 			bool		grp[SIFT_COL_MAX_COLS] = {false};
 			int			ng = 0;
-			const char *only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
+			const char *with = r->pagg.gorder_group_auto ? strchr(glist, ';') : NULL;
+			const char *only;
+
+			/* 'auto: g, a, b; c, d': the arrays that are grouped beside their plain order, after the ';' */
+			if (with != NULL)
+			{
+				if ((err = sift_cpagg_leaf_list(with + 1, r->schema, (const char *const *) names, r->pagg.gorder_with, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+				r->pagg.gorder_listed = true;
+				glist = pnstrdup(glist, with - glist);
+			}
+			only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
 
 			/* 'auto: g, a, b': the arrays after the group keep the second order only */
 			if (only != NULL)

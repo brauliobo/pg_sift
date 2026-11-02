@@ -30,9 +30,9 @@ NOTICE:  sift_col index "ak_i": point_tid_columns = 'auto' chooses "id" by the d
 NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' keeps sorted arrays of d, created, score, amt
 NOTICE:  sift_col index "ak_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
-                                                                             reloptions                                                                             
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created","order_array_columns=auto: d, created, score, amt","point_tid_columns=auto: id"}
+                                                                                  reloptions                                                                                  
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; d, score","order_array_columns=auto: d, created, score, amt","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT sift.col_verify('ak_i');
@@ -129,9 +129,9 @@ NOTICE:  sift_col index "ak3_i": point_tid_columns = 'auto' chooses "id" by the 
 NOTICE:  sift_col index "ak3_i": order_array_columns = 'auto' keeps sorted arrays of created, score
 NOTICE:  sift_col index "ak3_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
-                                                                         reloptions                                                                         
-------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
+                                                                            reloptions                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
@@ -147,9 +147,9 @@ CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH 
 NOTICE:  sift_col index "ak4_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ak4_i": order_array_columns = 'auto' keeps sorted arrays of ent_id, created
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
-                                                                    reloptions                                                                    
---------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_group=auto: score, created","order_array_columns=auto: ent_id, created","point_tid_columns=auto: id",key_columns=auto}
+                                                                        reloptions                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,"order_array_group=auto: score, created; ent_id","order_array_columns=auto: ent_id, created","point_tid_columns=auto: id",key_columns=auto}
 (1 row)
 
 -- a timestamp the units are cut by has no plain array to build, and the second order by the entity is the only one that serves WHERE ent_id = x ORDER BY created
@@ -161,9 +161,9 @@ NOTICE:  sift_col index "ak5_i": point_tid_columns = 'auto' chooses "id" by the 
 NOTICE:  sift_col index "ak5_i": order_array_columns = 'auto' keeps sorted arrays of created
 NOTICE:  sift_col index "ak5_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
-                                                                       reloptions                                                                        
----------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=created,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created","order_array_columns=auto: created","point_tid_columns=auto: id"}
+                                                                        reloptions                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=created,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created;","order_array_columns=auto: created","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS cut_latest,
@@ -183,9 +183,9 @@ NOTICE:  sift_col index "ak6_i": order_array_columns = 'auto' keeps sorted array
 NOTICE:  sift_col index "ak6_i": order_layout: created: rounded keys in 30.0% of 470 chunks, exact in the rest, 4.7 bytes a row
 NOTICE:  sift_col index "ak6_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
-                                                                    reloptions                                                                    
---------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=tenant_id,"order_array_group=auto: ent_id","order_array_columns=auto: created","point_tid_columns=auto: id","key_columns=auto: ent_id"}
+                                                                        reloptions                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=tenant_id,"order_array_group=auto: ent_id; created","order_array_columns=auto: created","point_tid_columns=auto: id","key_columns=auto: ent_id"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
