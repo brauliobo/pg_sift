@@ -214,6 +214,7 @@ ord_give(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 		key_put(o->type, (char *) t + o->koff, key);
 	t->t_tid = *tid;
 	scan->xs_heaptid = *tid;
+	sift_col_ioss_sample(scan, scan->opaque, tid);
 	scan->xs_itup = t;
 	scan->xs_recheck = false;
 }

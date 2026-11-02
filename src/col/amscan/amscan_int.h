@@ -21,6 +21,10 @@ typedef struct ColScanOpaque
 	MemoryContext batch;		/* the values of the unit being returned */
 	MemoryContext scx;			/* the source, which a rescan keeps for the next probe while the snapshot and the segments are the same (col_scan_source) */
 	Relation	heap;
+	uint64		returned;		/* the rows an index-only scan gave (all its probes), the sample of them whose heap page was checked in the visibility map, and those it does not hold: the evidence for sift_col_vacuum_tick */
+	uint32		sampled,
+				unseen;
+	Buffer		vmbuf;
 	SiftColSource *src;
 	Snapshot	ssnap;			/* the snapshot the source was opened with, and the flags */
 	uint32		sflags;
@@ -88,6 +92,7 @@ extern bool sift_col_ordered_whole(Oid indexoid);
 extern bool sift_col_ordered_type(Oid type);
 extern bool sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir);
 extern void sift_col_ordered_end(ColScanOpaque *so);
+extern void sift_col_ioss_sample(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid);
 extern bool sift_col_unordered_next(IndexScanDesc scan);
 extern void sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel);
 

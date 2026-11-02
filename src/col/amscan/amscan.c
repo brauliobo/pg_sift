@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include <math.h>
 #include "access/table.h"
+#include "access/visibilitymap.h"
 #include "utils/datum.h"
 #include "pgstat.h"
 #include "nodes/nodeFuncs.h"
@@ -211,10 +212,26 @@ sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys,
 		memcpy(scan->keyData, keys, scan->numberOfKeys * sizeof(ScanKeyData));
 }
 
+/*
+ * Every 64th row an index-only scan returns: is its heap page in the visibility map? The executor fetches the heap for the rows of a page that is not, and the count it
+ * keeps is for EXPLAIN alone. A table that only updates in place (HOT) leaves no dead tuple for the statistics once a read prunes it, so these fetches are the evidence
+ * that a VACUUM would pay; the scan ends with an estimate of them (sift_col_amendscan).
+ */
+void
+sift_col_ioss_sample(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid)
+{
+	if (!scan->xs_want_itup || (++so->returned & 63) != 0)
+		return;
+	so->sampled++;
+	if (!VM_ALL_VISIBLE(so->heap, ItemPointerGetBlockNumber(tid), &so->vmbuf))
+		so->unseen++;
+}
+
 void
 sift_col_amendscan(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
+	int64		fetches = so->sampled > 0 ? (int64) (so->returned * ((double) so->unseen / so->sampled)) : 0;
 
 	sift_col_ordered_end(so);
 	col_fetch_end(so);
@@ -224,6 +241,9 @@ sift_col_amendscan(IndexScanDesc scan)
 		table_close(so->heap, NoLock);
 	MemoryContextDelete(so->scx);
 	MemoryContextDelete(so->cxt);
+	if (BufferIsValid(so->vmbuf))
+		ReleaseBuffer(so->vmbuf);
+	sift_col_vacuum_tick(RelationGetRelid(scan->indexRelation), scan->indexRelation->rd_index->indrelid, fetches);
 }
 
 /*
@@ -769,6 +789,7 @@ sift_col_unordered_next(IndexScanDesc scan)
 			return false;
 	}
 	scan->xs_heaptid = so->tids[so->pos];
+	sift_col_ioss_sample(scan, so, &scan->xs_heaptid);
 	scan->xs_recheck = so->recheck;
 	if (scan->xs_want_itup)
 	{
