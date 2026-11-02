@@ -16,3 +16,21 @@ sizes the candidate buffers of a unit	tenant_latest_20_before	300000	picked	defa
 sizes the candidate buffers of a unit	tenant_latest_20	300000	picked	default	exec_ms	0.11	40	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
 sizes the candidate buffers of a unit	tenant_latest_20	300000	picked	default	instr_m	1.0	10	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
 sizes the candidate buffers of a unit	tenant_latest_20b	300000	btree	default	instr_m	0.2	30	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+the key in order (	ordered_key_scan	1000000	picked	default	wall_ms	51	25	run 07c83e7cf116-20261102T212146Z-94df (ordered_key_scan_07c83e7c.rec)
+the key in order (	ordered_key_scan	1000000	picked	default	instr_m	785	25	
+the key in order (	ordered_key_scan	1000000	heap	default	wall_ms	147	25	sift.enable_agg = off, sift.enable_col_scan = off
+the key in order (	ordered_key_scan	1000000	heap	default	instr_m	1741	25	
+the key in order (	ordered_key_scanb	1000000	btree	default	wall_ms	42	25	the b-tree twin, own statement name
+the key in order (	ordered_key_scanb	1000000	btree	default	instr_m	708	25	
+a window over the key (	ordered_window_rank	1000000	picked	default	wall_ms	253	25	run 07c83e7cf116-20261102T212224Z-7161 (ordered_window_rank_07c83e7c.rec)
+a window over the key (	ordered_window_rank	1000000	picked	default	instr_m	3256	25	
+a window over the key (	ordered_window_rank	1000000	heap	default	wall_ms	335	25	sift.enable_agg = off, sift.enable_col_scan = off
+a window over the key (	ordered_window_rank	1000000	heap	default	instr_m	4338	25	
+a window over the key (	ordered_window_rankb	1000000	btree	default	wall_ms	219	25	the b-tree twin, own statement name
+a window over the key (	ordered_window_rankb	1000000	btree	default	instr_m	3180	25	
+a merge join of two tables on the key (	ordered_join_order	1000000	picked	default	wall_ms	151	25	run 07c83e7cf116-20261102T212346Z-ba5a (ordered_join_order_07c83e7c.rec)
+a merge join of two tables on the key (	ordered_join_order	1000000	picked	default	instr_m	2165	25	
+a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	wall_ms	504	30	sift.enable_agg = off, sift.enable_col_scan = off
+a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	instr_m	4467	25	
+a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	wall_ms	114	25	the b-tree twin, own statement name
+a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	instr_m	1957	25	
