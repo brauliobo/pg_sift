@@ -20,6 +20,7 @@ maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDelet
 	SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
 
 	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
+	maint_unit_rewrite(index, seg);
 	sift_cseg_close(seg);
 }
 

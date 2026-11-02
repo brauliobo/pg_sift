@@ -12,6 +12,8 @@
 #include "bm25/build.h"
 #endif
 #include "col/build/build_int.h"
+#include "col/maint/maint_int.h"
+#include "core/eval.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_workers = 0;
@@ -139,6 +141,12 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_col_log_create(index);
 	if (sift_col_options(index)->track_deletes)
 		sift_col_track_install(heap, index, info->ii_Concurrent);
+	if (sift_eval_on(SIFT_EVAL_UNIT_REWRITE))
+	{
+		(void) sift_maint_lock(index, true);
+		maint_unit_layout(index, true);
+		sift_maint_unlock(index);
+	}
 	colb_notice_key_order(index);
 	colb_notice_key_overflow(index);
 	colb_notice_point_tid(index);

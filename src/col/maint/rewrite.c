@@ -110,6 +110,13 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		uint32		d = 0;
 
 		rows += e->ndocs;
+		if (e->flags & SIFT_SEG_UNIT)
+		{
+			sbytes[i] = 0;
+			lsn[i] = InvalidXLogRecPtr;
+			sift_cseg_close(seg);
+			continue;
+		}
 		bytes += e->bytes;
 		sbytes[i] = e->bytes;
 		lsn[i] = automatic ? maint_header_lsn(index, e) : InvalidXLogRecPtr;

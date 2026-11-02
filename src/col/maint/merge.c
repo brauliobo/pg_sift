@@ -782,14 +782,23 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	bool		cut = false;
 
 	sift_dir_read(index, snap);
+	int total = snap->nsegs;
+	for (int i = 0; i < total; i++)
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+	if (!force)
+	{
+		int keep = 0;
+		for (int i = 0; i < total; i++)
+			if (!(snap->segs[i].flags & SIFT_SEG_UNIT))
+				snap->segs[keep++] = snap->segs[i];
+		snap->nsegs = keep;
+	}
 	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut) : pick_merge(index, snap, force, sel);
 	/* the output of a merge of an index over the limit is partitions too: one segment of all the bytes of a build's tier would be larger than the space step moves */
 	if (goal != SIFT_GOAL_REWRITE)
 		cut = maint_part_kb > 0;
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
-	room = SIFT_MAX_SEGMENTS - 16 - (snap->nsegs - n);
-	for (int i = 0; i < snap->nsegs; i++)
-		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+	room = SIFT_MAX_SEGMENTS - 16 - (total - n);
 	pfree(snap);
 	if (n > 0)
 	{

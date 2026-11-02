@@ -18,7 +18,7 @@ SHOW sift.eval_methods;
 SET sift.eval_methods = 'snapshot_masks';
 SELECT name || '=' || current_setting(name) AS in_the_settings_hash FROM pg_settings WHERE (source NOT IN ('default', 'override') OR name = 'sift.eval_methods') AND name = 'sift.eval_methods';
 RESET sift.eval_methods;
--- An unavailable rewrite must fail atomically, rather than silently measure the baseline.
+-- Every method is available explicitly; a minus name turns it off.
 SET sift.eval_methods = 'latest_hint';
 SET sift.eval_methods = 'unit_rewrite';
 SHOW sift.eval_methods;

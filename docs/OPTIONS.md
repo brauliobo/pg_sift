@@ -50,7 +50,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: REINDEX to change; no size effect
 - **When:** sift (BM25) indexes; scales the score of every ranked query. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
-- **Default:** 1.2 — 1.2: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
+- **Default:** 1.2 — 1.2: the value of the ranked top-10 kernel benchmarks (docs/CODEC.md 5.7); no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter. ALTER INDEX .. RESET (k1) returns 1.2 but the index fails queries and inserts until REINDEX; build a new index with CREATE INDEX CONCURRENTLY and drop the old one.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 1.2. Higher lets repeated words keep raising the score, lower flattens that. Changing it needs REINDEX; the index size does not change.
@@ -64,7 +64,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: REINDEX to change; no size effect
 - **When:** sift (BM25) indexes; scales the length normalization of every ranked score. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
-- **Default:** 0.75 — 0.75: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
+- **Default:** 0.75 — 0.75: the value of the ranked top-10 kernel benchmarks (docs/CODEC.md 5.7); no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter (0 ignores document length). ALTER INDEX .. RESET (b) returns 0.75 but the index fails until REINDEX; prefer CREATE INDEX CONCURRENTLY with the new value, then drop the old one.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 0.75. 0 ignores document length, 1 normalizes fully by length. Changing it needs REINDEX; the index size does not change.
@@ -2188,12 +2188,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** selects developer evaluation methods: the ones named are on; skip_trigger_lookup, which leaves out the statement-trigger look at an UPDATE that kept the key, is on unless -skip_trigger_lookup is named, and an empty list is that default
 - **Gain:** **not measured**
-- **Impact:** index size: **not measured**; build, merge and writes: **not measured**; other: Experimental methods can add maintenance work and backend memory; latest_hint's entry array uses at most 16 KiB per backend, plus fixed callback bookkeeping
-- **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint. penalty_maintenance (priced vacuum and rewrite of units that reads found dirty) is off: in 12 cells of one 300,000-row churn matrix its net cost is negative in 10, it pays only for random changes of 5% with at most 2 reads/s, and each cell is one window without repetition; the 0.6 G-instruction per MB of WAL it is priced with is an assumption, not a measurement.
+- **Impact:** index size: **not measured**; build, merge and writes: **not measured**; other: Experimental methods can add maintenance work and backend memory; latest_hint's entry array uses at most 16 KiB per backend, plus fixed callback bookkeeping; unit_rewrite gives each unit a full segment allocation within the directory capacity
+- **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint.
 - **Default:** '' — Empty: only skip_trigger_lookup (an exact-coverage skip) is on; the other experiments require explicit selection and are not enabled by an upgrade.
 - **Turn off:** RESET sift.eval_methods returns the empty list.
-- **Upgrade from 3.7:** Available after the extension library is loaded; no REINDEX for the setting itself.
-- **Advice:** Leave empty; explicitly name methods only for developer evaluation. unit_rewrite is unavailable: the current format does not have a verified unit-generation retirement protocol for snapshots and hot standby.
+- **Upgrade from 3.7:** Available after the extension library is loaded; unit_rewrite needs CREATE INDEX or REINDEX to establish its complete layout. RESET does not change existing allocation boundaries; REINDEX with it off does. Use the selection in the VACUUM session as well. Forced or space-pressure merges may restore ordinary multi-unit segments.
+- **Advice:** Leave empty; explicitly name methods only for developer evaluation. unit_rewrite establishes independent one-unit segments at build and promotion, then prices only confirmed-dead owned tombstones during VACUUM; a build that cannot fit that layout errors.
 - **Sources:** benchmark `test:col_latest_hint`; [OPTIONS](OPTIONS.md)
 
 ### safety
@@ -2461,7 +2461,7 @@ all · deprecated · since 1.0 · default 4096
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: none: the same as write_buffer_limit
 - **When:** A sift index created by 1.x or 2.0 that still carries the old spelling; the new name wins when both are set. Applies to sift indexes only (sift_col is new in 3.0).
-- **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore; no measurement.
+- **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore (docs/NAMING.md); no measurement.
 - **Turn off:** ALTER INDEX .. RESET (mutable_limit), and use SET (write_buffer_limit = n); scripts/upgrade-check.sh lists indexes that still carry it. No REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set). Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
@@ -2511,7 +2511,7 @@ Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sif
 | `sift_col(track_deletes)` | new | false | minor 43, unreadable by 3.7 | unchanged: the option is part of column format minor 43 with track_updates; an index of 3.7 keeps its options. The triggers are internal, so pg_dump does not write them and a restore creates them with the index |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
-| `sift.eval_methods` | new | '' |  | Available after the extension library is loaded; no REINDEX for the setting itself. |
+| `sift.eval_methods` | new | '' |  | Available after the extension library is loaded; unit_rewrite needs CREATE INDEX or REINDEX to establish its complete layout. RESET does not change existing allocation boundaries; REINDEX with it off does. Use the selection in the VACUUM session as well. Forced or space-pressure merges may restore ordinary multi-unit segments. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
