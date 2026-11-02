@@ -36,6 +36,11 @@ typedef struct ColOrd
 	IndexTuple	ntup;			/* ... of a row without */
 	Size		koff;
 	Oid			type;
+	bool		ahead;			/* the entry after a dead one was read to see whether another source repeats it: it is given next */
+	int64		a_key;
+	bool		a_null;
+	ItemPointerData a_tid;
+	int			a_st;
 } ColOrd;
 
 static int64
@@ -263,11 +268,33 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		ItemPointerData tid;
 		int			st;
 
-		if (!sift_gord_next(o->g, &key, &isnull, &tid))
-			return false;
-		st = sift_gord_state(o->g, &tid);
-		/* a row whose page is all-visible and unit has it live is the entry; a row of a page the heap has to say, the executor checks; a row its segment lost, or that the unit cannot vouch for, has the heap say what it holds now */
-		if (st == SIFT_GORD_DEAD || st == SIFT_GORD_UNKNOWN)
+		if (o->ahead)
+		{
+			key = o->a_key;
+			isnull = o->a_null;
+			tid = o->a_tid;
+			st = o->a_st;
+			o->ahead = false;
+		}
+		else
+		{
+			if (!sift_gord_next(o->g, &key, &isnull, &tid))
+				return false;
+			st = sift_gord_state(o->g, &tid);
+		}
+		/*
+		 * A row its segment lost (dead) is an entry of no row, unless another source holds a row at that address with that key, which the merge dropped as the repeat of this
+		 * entry: the next read tells. A row the unit cannot vouch for (unknown) has the heap say what it holds now. A row on a page the heap has to say, the executor checks.
+		 */
+		if (st == SIFT_GORD_DEAD)
+		{
+			o->ahead = sift_gord_next(o->g, &o->a_key, &o->a_null, &o->a_tid);
+			if (o->ahead)
+				o->a_st = sift_gord_state(o->g, &o->a_tid);
+			if (!sift_gord_repeated(o->g))
+				continue;
+		}
+		else if (st == SIFT_GORD_UNKNOWN)
 		{
 			int64		hkey;
 			bool		hnull;

@@ -105,6 +105,13 @@ INSERT INTO os (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 7919) % 3
 INSERT INTO ot (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 104729::int8) % 5003 - 2500 ELSE 9000 + i END FROM generate_series(1, 1000) i;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
 
+-- the same keys at the addresses the vacuum freed: the merge keeps one of the two sources' entries of an address and key, and the row must be given once
+CREATE TEMP TABLE os_gone AS SELECT id, k FROM os WHERE id % 97 = 5 AND id < 9000 ORDER BY id;
+DELETE FROM os WHERE id IN (SELECT id FROM os_gone);
+VACUUM os;
+INSERT INTO os (id, k) SELECT id + 60000, k FROM os_gone ORDER BY id;
+SELECT n, q, (os_check(q)).* FROM os_q WHERE n <= 5 ORDER BY n;
+
 DROP FUNCTION os_check(text), os_run(text, bool);
 DROP TABLE os_q, os, ot, oc;
 DROP EXTENSION pg_sift CASCADE;

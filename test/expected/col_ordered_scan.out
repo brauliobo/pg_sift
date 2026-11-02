@@ -195,6 +195,21 @@ SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
  11 | SELECT k FROM oc ORDER BY k DESC                         | 32600 | t     |             1 |     0
 (11 rows)
 
+-- the same keys at the addresses the vacuum freed: the merge keeps one of the two sources' entries of an address and key, and the row must be given once
+CREATE TEMP TABLE os_gone AS SELECT id, k FROM os WHERE id % 97 = 5 AND id < 9000 ORDER BY id;
+DELETE FROM os WHERE id IN (SELECT id FROM os_gone);
+VACUUM os;
+INSERT INTO os (id, k) SELECT id + 60000, k FROM os_gone ORDER BY id;
+SELECT n, q, (os_check(q)).* FROM os_q WHERE n <= 5 ORDER BY n;
+ n |                            q                             | rows | agree | ordered_scans | sorts 
+---+----------------------------------------------------------+------+-------+---------------+-------
+ 1 | SELECT k FROM os ORDER BY k                              | 9882 | t     |             1 |     0
+ 2 | SELECT k FROM os ORDER BY k DESC                         | 9882 | t     |             1 |     0
+ 3 | SELECT k FROM os WHERE k BETWEEN -300 AND 700 ORDER BY k | 2261 | t     |             1 |     0
+ 4 | SELECT k FROM os WHERE k IS NOT NULL ORDER BY k DESC     | 8430 | t     |             1 |     0
+ 5 | SELECT k FROM os ORDER BY k NULLS FIRST                  | 9882 | t     |             1 |     1
+(5 rows)
+
 DROP FUNCTION os_check(text), os_run(text, bool);
 DROP TABLE os_q, os, ot, oc;
 DROP EXTENSION pg_sift CASCADE;
