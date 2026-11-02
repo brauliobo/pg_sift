@@ -65,6 +65,6 @@ done
 bad=0
 for i in "${!pids[@]}"; do
 	if wait "${pids[i]}"; then echo "ok    ${names[i]}: $(tail -n 1 "$tmp/${names[i]}" | cut -c1-150)"
-	else bad=1; echo "FAIL  ${names[i]}"; tail -n 25 "$tmp/${names[i]}"; fi
+	else rc=$?; bad=1; echo "FAIL  ${names[i]} (exit $rc)"; [[ -s $tmp/${names[i]} ]] && tail -n 25 "$tmp/${names[i]}" || echo "(the check printed nothing: a defect of the check)"; fi
 done
 (( ! bad )) || exit 1
