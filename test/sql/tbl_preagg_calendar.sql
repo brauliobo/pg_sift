@@ -105,8 +105,9 @@ INSERT INTO pm_q VALUES
 -- the shapes n of lo..hi but those in skip (keep: just those, when it is not empty)
 CREATE FUNCTION pm_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 100, skip int[] DEFAULT '{}', keep int[] DEFAULT '{}') RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
-	       pm_rows(z.q, true, true) IS NOT DISTINCT FROM pm_rows(z.q, false, true) AND pm_rows(z.q, false, true) IS NOT DISTINCT FROM pm_rows(z.q, false, false)
-	FROM (SELECT n, shape, format(q, tbl) AS q FROM pm_q WHERE n BETWEEN lo AND hi AND n <> ALL (skip) AND (keep = '{}' OR n = ANY (keep))) z, LATERAL pm_units(z.q) u ORDER BY z.n
+	       r.pre_agg IS NOT DISTINCT FROM r.scan AND r.scan IS NOT DISTINCT FROM r.plain
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pm_q WHERE n BETWEEN lo AND hi AND n <> ALL (skip) AND (keep = '{}' OR n = ANY (keep))) z, LATERAL pm_units(z.q) u,
+	     LATERAL (SELECT pm_rows(z.q, true, true) AS pre_agg, pm_rows(z.q, false, true) AS scan, pm_rows(z.q, false, false) AS plain OFFSET 0) r ORDER BY z.n
 $$;
 
 -- three windows of data: 45 days (a unit has a few dozen days: cells of days), 3 years (months), 40 years (years); a cell costs a few dozen bytes of the
