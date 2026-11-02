@@ -83,6 +83,7 @@ FIELDS = [
     ('wal_bytes', 'i', False, 'WAL written by the run'),
     ('fpw', 'b', True, 'full_page_writes of the server'),
     ('cpus', 'f', True, 'the CPU quota the server ran with (cpus)'),
+    ('noise', 'b', False, '1 when the host CPU or IO pressure was above 10 points during the run: a flag, not a refusal (the load of the host is a fact about the run)'),
     ('psi_cpu_start', 'f', False, 'host CPU pressure (some, avg10) at the start of the run'),
     ('psi_cpu_end', 'f', False, 'host CPU pressure at its end'),
     ('psi_io_start', 'f', False, 'host IO pressure at the start'),

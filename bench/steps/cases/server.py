@@ -4,6 +4,7 @@
 import os
 import re
 import subprocess
+import time
 from collections import Counter
 
 from duckdb import Session, key as row_key, same
@@ -19,7 +20,11 @@ ENV = {**os.environ, 'LC_ALL': 'C'}
 
 def psql(sql, db=DB, port=None, *args):
     cmd = ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', db] + (['-h', '127.0.0.1', '-p', str(port)] if port else []) + list(args)
-    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning -c synchronous_commit=on' % runcfg.TIMEOUT})
+    for _ in range(5):
+        r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning -c synchronous_commit=on' % runcfg.TIMEOUT})
+        if not r.returncode or 'deadlock detected' not in r.stderr:
+            break
+        time.sleep(1)   # DROP SCHEMA of the table a maintenance worker has just left takes the locks in the other order: the worker finishes, the retry goes through
     if r.returncode:
         die('psql: %s' % r.stderr.strip()[:500])
     return r.stdout.strip()

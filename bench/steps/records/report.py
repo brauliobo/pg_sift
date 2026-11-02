@@ -68,7 +68,7 @@ def warm_table(rs):
     out = [head]
     for k, v in rows_of(rs, 'warm'):
         ex, cost = med([r.get('exec_ms') for r in v]), med([r.get('est_cost') for r in v])
-        noisy = cv([r['wall_ms'] for r in v]) > check.NOISY_CV or max([max(r.get('psi_cpu_start') or 0, r.get('psi_cpu_end') or 0) for r in v]) > check.NOISY_PSI
+        noisy = cv([r['wall_ms'] for r in v]) > check.NOISY_CV or any(r.get('noise') for r in v) or max([max(r.get('psi_cpu_start') or 0, r.get('psi_cpu_end') or 0) for r in v]) > check.NOISY_PSI
         out.append([label(k, v), fmt(med([r.get('plan_ms') for r in v]), 3), fmt(ex, 3), fmt(med([r['wall_ms'] for r in v]), 3), fmt(med([r.get('instr_m') for r in v]), 1),
                     fmt(blocks(v, ['heap'])), fmt(blocks(v, ['btree'])), fmt(blocks(v, ['gin'])), fmt(blocks(v, ['sift'])), fmt(cost, 1), fmt(1000 * ex / cost if ex and cost else None, 3),
                     str(len(v)), fmt(cv([r['wall_ms'] for r in v]), 1), 'noisy' if noisy else ''])
@@ -105,7 +105,8 @@ def report(records, tsv=False):
         extra = ', settings %s%s%s' % (a['settings_hash'], (' (%s)' % a['settings'].replace(';', ', ')) if a.get('settings') else ' (all default)',
                                       ', MAINTENANCE DISABLED' if a['maintenance'] == 'disabled' else '') + \
             (', NOT VACUUMED AFTER THE CHURN (every arm reads the table as it is: %s%% of its pages all-visible, so an index-only scan fetches heap rows)' % fmt(a.get('allvisible_pct'), 0) if a['table_state'] == 'churned_unvacuumed' else '')
-        gone = ''.join('\n\nno plan for %s%s: the plans name %s' % ('' if r['variant'] == 'main' else r['variant'] + ': ', r['arm'] + ('' if r['arm_option'] == 'default' else ' ' + r['arm_option']), r['structure'])
+        warn = [w for w in check.load_warnings(rs)]
+        gone = ''.join('\n\nWARNING: measured under different host load: ' + w for w in warn) + ''.join('\n\nno plan for %s%s: the plans name %s' % ('' if r['variant'] == 'main' else r['variant'] + ': ', r['arm'] + ('' if r['arm_option'] == 'default' else ' ' + r['arm_option']), r['structure'])
                        for r in sorted((x for x in rs if x['mode'] == 'unavailable'), key=lambda x: (x['variant'], x['arm'], x['arm_option'])))
         for title, t in (('warm', warm_table(rs)), ('cold', cold_table(rs))):
             if not t:

@@ -297,7 +297,6 @@ class Checker(unittest.TestCase):
             ('PLANNING NOT SEPARATE', first(plan_ms=None)),
             ('COLD WITHOUT os_cache_dropped', [dict(r, os_cache_dropped=None) if r['temp'] == 'cold' else r for r in clean()]),
             ('TOO FEW RUNS', clean()[1:]),
-            ('DIFFERENT LOAD', [dict(r, psi_cpu_start=40.0, psi_cpu_end=45.0) if r['arm'] == 'heap' else r for r in clean()]),
             ('OTHER STRUCTURES', every(kind='maintenance', structures='gin,heap,sift', exec_ms=1.0)),
             ('is empty', first(tip=None)),
         ]
@@ -319,6 +318,15 @@ class Checker(unittest.TestCase):
         self.assertIn('no plan for gin: the plans name btree', text)
         self.assertEqual(len([l for l in text.split('\n') if l.startswith('| gin')]), 0)
         self.assertTrue(any('also measured' in p for p in problems(clean() + [dict(gone, arm='btree', structure='heap')])))
+
+    def test_host_load_is_a_flag_and_a_warning_never_a_refusal(self):
+        rs = [dict(r, psi_cpu_start=40.0, psi_cpu_end=45.0, noise=1) if r['arm'] == 'heap' else r for r in clean()]
+        self.assertEqual(problems(rs), [])
+        self.assertEqual(len(check.load_warnings(rs)), 1)
+        self.assertEqual(check.load_warnings(clean()), [])
+        text = report.report(rs)
+        self.assertIn('WARNING: measured under different host load', text)
+        self.assertIn('noisy', [l for l in text.split('\n') if l.startswith('| heap')][0])
 
     def test_a_new_backend_is_compared_with_a_kept_one_but_not_with_rounds(self):
         rs = [dict(r, protocol='fresh backend') if r['arm'] == 'heap' else r for r in clean()]

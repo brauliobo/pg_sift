@@ -28,6 +28,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import check  # noqa: E402
 import schema  # noqa: E402
 
 PERF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'perf.sh')
@@ -492,7 +493,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
             r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
                      instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, workers_requested=requested, workers_launched=launched,
-                     os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes, psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
+                     os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes, noise=int(max(x or 0 for x in p0 + p1) > check.NOISY_PSI), psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
             r.update(block_deltas(b0, b1))
             if arm.structures:
                 r['structures'] = arm.structures

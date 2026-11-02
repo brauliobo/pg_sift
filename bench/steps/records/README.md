@@ -90,6 +90,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `wal_bytes` | integer |  | WAL written by the run |
 | `fpw` | 0 or 1 | yes | full_page_writes of the server |
 | `cpus` | number | yes | the CPU quota the server ran with (cpus) |
+| `noise` | 0 or 1 |  | 1 when the host CPU or IO pressure was above 10 points during the run: a flag, not a refusal (the load of the host is a fact about the run) |
 | `psi_cpu_start` | number |  | host CPU pressure (some, avg10) at the start of the run |
 | `psi_cpu_end` | number |  | host CPU pressure at its end |
 | `psi_io_start` | number |  | host IO pressure at the start |
@@ -123,7 +124,7 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | PLANNING NOT SEPARATE | a read has planning and execution apart |
 | COLD WITHOUT os_cache_dropped | a cold row says what was emptied |
 | TOO FEW RUNS / DUPLICATE REPETITIONS | at least 3 repetitions of each arm and temperature |
-| DIFFERENT LOAD | the host pressure of the arms within 10 points of each other; a run above 10 points of pressure or 10% CV is marked noisy in the report |
+| (not a refusal) noisy host | a run above 10 points of host pressure carries `noise` = 1 and a cell above it or with a CV over 10% is marked noisy; the report warns when the arms of a comparison were measured under pressure more than 10 points apart. The load of the host is a fact about the run, so it never refuses a file; different data, table state or settings do |
 | OTHER STRUCTURES | a maintenance or load figure is of a table that holds the arm's structure alone |
 | NO RECORDS | an empty set proves nothing |
 
@@ -148,6 +149,6 @@ Each row is a way a reported number was wrong or had to be revised, and the colu
 | a number that held for one setting of a structure stated for all | `arm_option` carries the options that changed the structure |
 | one round quoted as the average of twelve | `protocol` |
 | a state measured on a cluster whose configuration turned the maintenance off (dead rows no VACUUM took, segments no merge joined), reported as the default's | `settings`, `settings_hash`, `maintenance`: TEST SETTINGS NOT LABELLED, MIXED SETTINGS |
-| a time taken while the host was busy beside one taken while it was not | `psi_*`: DIFFERENT LOAD, the noisy mark |
+| a time taken while the host was busy beside one taken while it was not | `psi_*`, `noise`: the noisy mark and the warning of the report |
 | a pass read from an empty output | NO RECORDS, and the count of rows the tools print |
 | a CHANGELOG figure that no longer matches the measurement | the claims check against the records |

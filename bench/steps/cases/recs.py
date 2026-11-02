@@ -9,6 +9,7 @@
 import os
 import re
 import subprocess
+import time
 
 import iolib
 
@@ -56,7 +57,7 @@ def arms(case):
         if name == 'btree':
             out.append(collect.Arm('btree', base=sets))
         elif name != runcfg.FORCED[0]:
-            out.append(collect.Arm('sift', option=name, base=sets, keep=name.startswith('warm')))
+            out.append(collect.Arm('sift', option='default_variant' if name == 'default' else name, base=sets, keep=name.startswith('warm')))   # `default` is the table with the default options beside the case's own index
     return out
 
 
@@ -110,6 +111,15 @@ def native_structure(case):
     return 'gin' if re.search(r'USING gin\b', text, re.I) else 'btree' if re.search(r'\bCREATE\s+(UNIQUE\s+)?INDEX\b|PRIMARY KEY', text, re.I) else 'heap'
 
 
+def quiet(session, limit=60):
+    """wait until no other backend of the database is working (a maintenance worker of the table just measured): DROP SCHEMA of the next preparation takes the locks of the table in another order
+    than a worker does and the two deadlock"""
+    for _ in range(limit * 5):
+        if collect.one(session, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state = 'active'")[0] == '0':
+            return
+        time.sleep(0.2)
+
+
 def emit_load(case, csv, rows, runs, build, workers):
     """append the records of a load CASE: a session keeps the schema of the case, each repetition of an arm builds it empty again (`build`), prepares the table (untimed) and times the
     statements of the load; a second session counts the parallel workers. The lanes are the sift table (or the sift index) and the heap with its twin, and each variant."""
@@ -121,6 +131,7 @@ def emit_load(case, csv, rows, runs, build, workers):
 
         def preparer(am):
             def prepare():
+                quiet(session)
                 build(case, rows)
                 for stmt in split(case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):
                     err = session.run(stmt)[2]

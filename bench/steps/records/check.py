@@ -15,7 +15,8 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   instructions    every warm row has a count
   a true churn    a churned read says what was applied; 'settled' needs a VACUUM or a pass on record
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
-  a calm host     the host pressure of the arms within `PSI_SPREAD` points of each other; a run above `NOISY_PSI` or with a CV above `NOISY_CV` is marked noisy by the report
+  a noisy host    never a refusal (the load of the host is a fact about the run, not about the data): a record whose host pressure was above `NOISY_PSI` carries noise = 1, a cell above it or with a CV
+                  above `NOISY_CV` is marked noisy by the report, which warns when the arms of a comparison were measured under pressure more than `PSI_SPREAD` points apart
   enough runs     MIN_REPS repetitions of every arm and temperature
   separate times  planning and execution apart for a read; cold rows say whether the OS cache was emptied
   one structure   a maintenance or load figure is of a table that holds the arm's structure alone
@@ -29,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import schema  # noqa: E402
 
 MIN_REPS = 3
-PSI_SPREAD = 10.0
+PSI_SPREAD = 10.0   # points of host pressure between the arms of a comparison: the report warns, nothing is refused
 NOISY_PSI = 10.0
 NOISY_CV = 10.0
 SAME = ('table_state', 'churn_history', 'vacuums', 'autovacuums', 'settled', 'settings_hash', 'maintenance', 'keys', 'rows_per_key', 'shared_buffers_mb', 'work_mem_mb', 'pg_version', 'cpus', 'fpw', 'kind', 'tip', 'harness')
@@ -70,7 +71,7 @@ def one_record(r):
     return out
 
 
-def comparison_problems(key, rs, min_reps, psi_spread):
+def comparison_problems(key, rs, min_reps):
     name = '%s on %s, %s rows' % (key[0], key[1], format(key[2], ',') if isinstance(key[2], int) else key[2])
     out = []
     runs = sorted({r['run_id'] for r in rs})
@@ -168,18 +169,10 @@ def comparison_problems(key, rs, min_reps, psi_spread):
             out.append('%s: TOO FEW RUNS: %s has %d repetitions, %d are required' % (name, ' '.join(k), len(v), min_reps))
         if len({r['rep'] for r in v}) != len(v):
             out.append('%s: DUPLICATE REPETITIONS in %s' % (name, ' '.join(k)))
-    load = {}
-    for k, v in cells.items():
-        p = [max(r['psi_cpu_start'] or 0, r['psi_cpu_end'] or 0) for r in v if r.get('psi_cpu_start') is not None or r.get('psi_cpu_end') is not None]
-        if p:
-            load[k] = statistics.median(p)
-    if load and max(load.values()) - min(load.values()) > psi_spread:
-        hi, lo = max(load, key=load.get), min(load, key=load.get)
-        out.append('%s: DIFFERENT LOAD: host CPU pressure %.1f during %s and %.1f during %s' % (name, load[hi], ' '.join(hi), load[lo], ' '.join(lo)))
     return out
 
 
-def check(records, min_reps=MIN_REPS, psi_spread=PSI_SPREAD):
+def check(records, min_reps=MIN_REPS):
     out = []
     if not records:
         return ['NO RECORDS: an empty set proves nothing']
@@ -191,7 +184,7 @@ def check(records, min_reps=MIN_REPS, psi_spread=PSI_SPREAD):
     for r in records:
         groups[(r['statement'], r['dataset'], r['rows'])].append(r)
     for key, rs in sorted(groups.items(), key=lambda kv: str(kv[0])):
-        out += comparison_problems(key, rs, min_reps, psi_spread)
+        out += comparison_problems(key, rs, min_reps)
     return out
 
 
@@ -210,3 +203,18 @@ def main(argv):
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))
+
+
+def load_warnings(records):
+    """a line for each comparison whose arms were measured under host CPU pressure more than PSI_SPREAD points apart: a warning of the report, never a refusal"""
+    groups = defaultdict(lambda: defaultdict(list))
+    for r in records:
+        if r['mode'] != 'unavailable' and (r.get('psi_cpu_start') is not None or r.get('psi_cpu_end') is not None):
+            groups[(r['statement'], r['dataset'], r['rows'])][(r['variant'], r['mode'], r['arm'], r['arm_option'], r['temp'])].append(max(r.get('psi_cpu_start') or 0, r.get('psi_cpu_end') or 0))
+    out = []
+    for key, cells in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        load = {k: statistics.median(v) for k, v in cells.items()}
+        hi, lo = max(load, key=load.get), min(load, key=load.get)
+        if load[hi] - load[lo] > PSI_SPREAD:
+            out.append('%s on %s, %s rows: host CPU pressure %.1f during %s and %.1f during %s' % (key[0], key[1], format(key[2], ',') if isinstance(key[2], int) else key[2], load[hi], ' '.join(hi), load[lo], ' '.join(lo)))
+    return out
