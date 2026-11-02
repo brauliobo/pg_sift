@@ -7,10 +7,8 @@ CREATE FUNCTION blocks(idx regclass) RETURNS bigint LANGUAGE sql
 	AS $$ SELECT relation_blocks FROM sift.col_index_info(idx) $$;
 CREATE TABLE cs (id int PRIMARY KEY, grp int, amount numeric(10,2), note text) WITH (autovacuum_enabled = off);
 INSERT INTO cs SELECT g, g % 50, g % 1000, 'note ' || md5(g::text) FROM generate_series(1, 200000) g;
--- a serial build: the NOTICE says the size of the order arrays, and a build whose parallel workers did not start (a loaded host) makes them 0.1 MB, one with workers 0.2 MB
-SET max_parallel_maintenance_workers = 0;
+-- the NOTICE says the size of the order arrays, which a build with participants writes in more segments: a table of this size is built by one process whatever the workers
 CREATE INDEX cs_col ON cs USING sift_col (grp, amount);
-RESET max_parallel_maintenance_workers;
 SELECT blocks('cs_col') AS built \gset
 SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
 
