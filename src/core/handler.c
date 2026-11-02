@@ -50,6 +50,7 @@
 #include "core/parbuild.h"
 #include "core/sql.h"
 #include "core/build_id.h"
+#include "core/eval.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
@@ -111,6 +112,7 @@ static bool catalog_valid;
 static void
 define_gucs(void)
 {
+	sift_eval_init();
 	DefineCustomIntVariable("sift.max_expansions",
 							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
 							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",

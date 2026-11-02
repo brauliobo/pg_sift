@@ -36,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 116 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 14 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
 
@@ -2182,6 +2182,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** A diagnostic first: it takes the scan whatever the cost model says, to time a refused plan. Set it for a role only if its requests are large; SET LOCAL it per statement. Small requests get slower.
 - **Sources:** [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
+#### sift.eval_methods
+
+`sift_col` · diagnostic · since 4.0 · default ''
+
+- **What it does:** selects developer evaluation methods; an empty list disables every method
+- **Gain:** **not measured**
+- **Impact:** index size: **not measured**; build, merge and writes: **not measured**; other: Experimental methods can add maintenance work and backend memory; latest_hint uses at most 16 KiB per backend
+- **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint.
+- **Default:** '' — Empty: experiments require explicit selection and are not enabled by an upgrade.
+- **Turn off:** RESET sift.eval_methods returns the empty list.
+- **Upgrade from 3.7:** Available after the extension library is loaded; no REINDEX for the setting itself.
+- **Advice:** Leave empty; explicitly name methods only for developer evaluation.
+- **Sources:** benchmark `test:col_latest_hint`; [OPTIONS](OPTIONS.md)
+
 ### safety
 
 #### sift.max_expansions
@@ -2486,7 +2500,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(track_deletes)`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_updates)`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(track_deletes)`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_updates)`, `sift.eval_methods`.
 
 | Option | 3.7 | 4.0 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
@@ -2497,6 +2511,7 @@ Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sif
 | `sift_col(track_deletes)` | new | false | minor 43, unreadable by 3.7 | unchanged: the option is part of column format minor 43 with track_updates; an index of 3.7 keeps its options. The triggers are internal, so pg_dump does not write them and a restore creates them with the index |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
+| `sift.eval_methods` | new | '' |  | Available after the extension library is loaded; no REINDEX for the setting itself. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

@@ -215,7 +215,7 @@ def server_env(s):
 
 def settings_of(s):
     """{name: value} of every setting that is not the default: the cluster (files, command line) and the session as it is before an arm forces anything"""
-    rows = s.run("SELECT name || '=' || current_setting(name) FROM pg_settings WHERE source NOT IN ('default', 'override') ORDER BY name")[1]
+    rows = s.run("SELECT name || '=' || current_setting(name) FROM pg_settings WHERE source NOT IN ('default', 'override') OR name = 'sift.eval_methods' ORDER BY name")[1]
     return dict(r.split('=', 1) for r in rows if '=' in r)
 
 
