@@ -269,6 +269,12 @@ col_gorder_compact(void *impl, int i, int leaf)
 }
 
 bool
+col_gorder_clean(void *impl, int i)
+{
+	return sift_col_gorder_clean(((ColSource *) impl)->cs, i);
+}
+
+bool
 col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups)
 {
 	return sift_col_gorder_groups(((ColSource *) impl)->cs, i, leaf, ngroups);

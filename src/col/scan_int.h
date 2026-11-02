@@ -65,6 +65,7 @@ typedef struct ColCursor
 	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
 	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
 	SiftCGOrdCuts gcuts;
+	int8		gclean;			/* sift_col_gorder_exact: 1 every entry of the segment is exact (no dead row, every page of its superblocks all-visible), 2 not, 0 not asked yet */
 	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's gxcx: kept from one probe of a rescanned source to the next, as long as the segments are current) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
 	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */

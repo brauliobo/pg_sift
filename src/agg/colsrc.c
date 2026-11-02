@@ -434,6 +434,12 @@ sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const Si
 }
 
 bool
+sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
+{
+	return src->prov->gorder_clean && src->prov->gorder_clean(src->impl, i);
+}
+
+bool
 sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
 {
 	return sift_colsrc_gorder_state(src, i, tid) == SIFT_GORD_EXACT;

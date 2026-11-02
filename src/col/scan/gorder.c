@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "port/pg_bitutils.h"
+#include "storage/bufmgr.h"
 #include "col/point.h"
 #include "col/wbuf.h"
 #include "core/cmp.h"
@@ -685,6 +686,62 @@ gexact_cx(SiftColSource *src)
 /* ---- what is known of an entry of the order: exact, dead, to be confirmed by the heap ---- */
 
 /*
+ * Is every entry of the segment exact: no unit has a dead row and every page of the heap that its superblocks cover is all-visible? A table that was vacuumed after its last change is
+ * all of this kind, and then the lookup of each entry in its unit (below) is most of what a scan of the whole order costs besides the merge. Asked once for a scan (the units' answers
+ * below are kept the same way); a page that is not all-visible, a dead row or a directory that moved leaves the lookups to the units.
+ */
+static bool
+gorder_clean(SiftColSource *src, ColCursor *c)
+{
+	SiftColSegment *seg = c->seg;
+	uint64	   *dirty;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+	BlockNumber nblocks;
+	bool		clean = true;
+
+	if (sift_cseg_keyed(&seg->entry) || seg->nsb == 0 || !segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	sift_cseg_dirty_units(seg, dirty);
+	for (uint32 w = 0; w < SIFT_COL_NWORDS(seg->nsb); w++)
+		clean &= dirty[w] == 0;
+	pfree(dirty);
+	nblocks = RelationGetNumberOfBlocks(src->heap);
+	for (uint32 u = 0; clean && u < seg->nsb; u++)
+	{
+		uint32		sb = sift_cseg_unit_sb(seg, u);
+		uint64		first = (uint64) sb * SIFT_SB_PAGES,
+					pages;
+
+		if (first >= nblocks)
+			return false;
+		pages = Min((uint64) SIFT_SB_PAGES, nblocks - first);
+		src->visibility.sb_mask(src->visibility.arg, sb, av);
+		for (uint64 p = 0; p < pages; p += 64)
+		{
+			uint64		need = pages - p >= 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (pages - p)) - 1;
+
+			clean &= (av[p / 64] & need) == need;
+		}
+	}
+	return clean;
+}
+
+bool
+sift_col_gorder_clean(SiftColSource *src, int i)
+{
+	ColCursor  *c;
+
+	if (i >= src->nseg || (src->flags & COLO_TABLE))
+		return false;
+	c = &src->seg[i];
+	if (c->gclean == 0)
+		c->gclean = gorder_clean(src, c) ? 1 : 2;
+	return c->gclean == 1;
+}
+
+/*
  * What is known of the entry of the global order of stored segment i at heap address tid: 1 if it is of a row that is live and visible to every snapshot, so that nothing needs
  * the heap to confirm it (an OFFSET throws it away unread): its page is all-visible and its row not among the dead rows of its unit; -1 if the row is among them; 0 if the unit holds it
  * live on a page that is not all-visible, which the heap confirms for the snapshot; -2 if the unit cannot say. The dead rows of a unit are listed once for the unit, in the
@@ -708,6 +765,8 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 
 	if (i >= src->nseg || (src->flags & COLO_TABLE))
 		return -2;
+	if (sift_col_gorder_clean(src, i))
+		return 1;
 	c = &src->seg[i];
 	seg = c->seg;
 	keyed = sift_cseg_keyed(&seg->entry);

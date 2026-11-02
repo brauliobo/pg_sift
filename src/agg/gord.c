@@ -296,7 +296,13 @@ sift_gord_compact(const SiftGOrd *g)
 int
 sift_gord_state(const SiftGOrd *g, const ItemPointerData *tid)
 {
-	return g->prev == NULL ? SIFT_GORD_UNKNOWN : sift_colsrc_gorder_state(g->src, g->prev->src, sift_key_from_tid((ItemPointer) tid));
+	GCur	   *c = g->prev;
+
+	if (c == NULL)
+		return SIFT_GORD_UNKNOWN;
+	if (c->clean == 0)
+		c->clean = sift_colsrc_gorder_clean(g->src, c->src) ? 1 : 2;
+	return c->clean == 1 ? SIFT_GORD_EXACT : sift_colsrc_gorder_state(g->src, c->src, sift_key_from_tid((ItemPointer) tid));
 }
 
 /* The source of the entry sift_gord_next gave last: with its address, what sift_gord_values reads */

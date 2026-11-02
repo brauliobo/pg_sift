@@ -120,6 +120,8 @@ DELETE FROM os WHERE id % 500 = 0;
 DELETE FROM ot WHERE id % 500 = 0;
 VACUUM os;
 VACUUM ot;
+-- every page is all-visible and the units hold the dead rows' entries: none of them is exact
+SELECT n, q, (os_check(q)).* FROM os_q WHERE n IN (1, 2, 6, 7, 13, 14) ORDER BY n;
 INSERT INTO os (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 7919) % 3001 - 1500 ELSE 8000 + i END FROM generate_series(1, 1500) i;
 INSERT INTO ot (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 104729::int8) % 5003 - 2500 ELSE 9000 + i END FROM generate_series(1, 1000) i;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;

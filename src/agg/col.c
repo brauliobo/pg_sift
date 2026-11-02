@@ -941,6 +941,7 @@ static const SiftSrcProvider col_provider = {
 	.gorder_cuts = col_gorder_cuts,
 	.gorder_before = col_gorder_before,
 	.gorder_exact = col_gorder_exact,
+	.gorder_clean = col_gorder_clean,
 	.gorder_head = col_gorder_head,
 	.gorder_values = col_gorder_values,
 	.gorder_range = col_gorder_range,

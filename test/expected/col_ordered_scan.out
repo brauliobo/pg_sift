@@ -217,6 +217,18 @@ DELETE FROM os WHERE id % 500 = 0;
 DELETE FROM ot WHERE id % 500 = 0;
 VACUUM os;
 VACUUM ot;
+-- every page is all-visible and the units hold the dead rows' entries: none of them is exact
+SELECT n, q, (os_check(q)).* FROM os_q WHERE n IN (1, 2, 6, 7, 13, 14) ORDER BY n;
+ n  |                         q                         | rows | agree | ordered_scans | sorts 
+----+---------------------------------------------------+------+-------+---------------+-------
+  1 | SELECT k FROM os ORDER BY k                       | 8382 | t     |             1 |     0
+  2 | SELECT k FROM os ORDER BY k DESC                  | 8382 | t     |             1 |     0
+  6 | SELECT k FROM ot ORDER BY k                       | 5322 | t     |             1 |     0
+  7 | SELECT k FROM ot ORDER BY k DESC                  | 5322 | t     |             1 |     0
+ 13 | SELECT max(k) OVER (ORDER BY k) AS k FROM os      | 8382 | t     |             1 |     0
+ 14 | SELECT max(k) OVER (ORDER BY k DESC) AS k FROM ot | 5322 | t     |             1 |     0
+(6 rows)
+
 INSERT INTO os (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 7919) % 3001 - 1500 ELSE 8000 + i END FROM generate_series(1, 1500) i;
 INSERT INTO ot (id, k) SELECT 30000 + i, CASE WHEN i % 2 = 0 THEN (i * 104729::int8) % 5003 - 2500 ELSE 9000 + i END FROM generate_series(1, 1000) i;
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;

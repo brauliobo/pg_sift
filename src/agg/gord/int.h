@@ -43,6 +43,7 @@ typedef struct GCur
 	uint64		tid;
 	uint32		slen;			/* a text key: the string of k (str, slen bytes) */
 	int64		skey;			/* ... and the key str is the string of (-1: none yet) */
+	int8		clean;			/* every entry of the source is exact (sift_colsrc_gorder_clean): 1 yes, 2 no, 0 not asked */
 	SiftCGOrdBuf *buf;			/* from the pool: the chunk of the entry in buf->key / buf->addr (a seek may have left it): the first buf->cm entries, the scan asks for more when it goes past them */
 	char		str[SIFT_CGORD_STR_MAX];	/* last: a cursor clears the fields before it */
 } GCur;
