@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The aggregate that reads without the heap (docs/COL-HEAPFREE.md) on a real physical standby that streams the churn of the primary, on that standby once it is promoted, and on the
+# The aggregate that reads without the heap on a real physical standby that streams the churn of the primary, on that standby once it is promoted, and on the
 # subscriber of a logical replication, which is no place for track_deletes (the apply worker fires no statement trigger and writes no replacement). On every node the answer of the
 # heap-free read is the oracle's (no sift plan); on the primary and the standby it reads fewer heap pages than the read that checks every page, on the subscriber it does not use the log.
 . "$(dirname "$0")/lib.bash"

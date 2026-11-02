@@ -113,7 +113,7 @@ typedef struct BatchSet
 	uint64		used;
 	Size		recbytes;		/* the bytes of records the batches were made from */
 	/*
-	 * Who inserted the rows of the batches (docs/COL-HEAPFREE.md): xtop the largest xid among the transactions that committed, xopen those that had not when their record
+	 * Who inserted the rows of the batches: xtop the largest xid among the transactions that committed, xopen those that had not when their record
 	 * was read (they may since), xbad a record that says nothing of its inserter or whose transaction did not commit. set_stamp turns that into the xid before which
 	 * every inserter committed, or none.
 	 */

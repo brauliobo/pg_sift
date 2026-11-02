@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reads of a heap sift_col index with track_updates and track_deletes that do without the heap (docs/COL-HEAPFREE.md): the rows of a segment whose inserters the stamp says committed
+# Reads of a heap sift_col index with track_updates and track_deletes that do without the heap: the rows of a segment whose inserters the stamp says committed
 # before the snapshot's xmin and of a write buffer whose records say the same, with the tombstone log for what was deleted. What the single-session test (col_heapfree_xmin)
 # cannot: a snapshot older than the commits, a transaction in doubt (prepared), a backend that keeps its cache of the log while VACUUM gives the addresses to new rows, and a
 # hot standby. Every answer is compared with the same aggregate with the heap checking every page and with no sift plan at all; the stamp mutant must be wrong where a stamp is needed.

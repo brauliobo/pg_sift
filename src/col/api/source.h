@@ -149,7 +149,7 @@ typedef struct SiftColCounters
 	int64		point_rows;		/* and the rows they were narrowed to */
 	int64		run_windows;	/* units whose range on a leaf with a sorted run was answered by the run (sift_col_filter) */
 	int64		rows_vetted;	/* rows checked for visibility (page not all-visible) */
-	int64		rows_log;		/* ... of those, the rows the tombstone log decided and no heap page was read for (docs/COL-HEAPFREE.md) */
+	int64		rows_log;		/* ... of those, the rows the tombstone log decided and no heap page was read for */
 	int64		heap_pages;
 	int64		bytes_decoded;
 	int64		tests_made;		/* predicates turned into a test of the stored codes (a LUT over a segment's dictionary for a text or an image leaf) */

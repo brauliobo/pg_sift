@@ -178,8 +178,8 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	bool		crossed;
 	bool		supersede = r->rowkey && batch_updates > 0;
 	/*
-	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index
-	 * (docs/COL-HEAPFREE.md). Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
+	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index.
+	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
 	TransactionId xmin = r->rowkey && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;

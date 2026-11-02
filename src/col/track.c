@@ -1,5 +1,5 @@
 /*
- * col/track.c - the option track_deletes of a heap column index with track_updates (docs/COL-HEAPFREE.md).
+ * col/track.c - the option track_deletes of a heap column index with track_updates.
  *
  * A DELETE, and an UPDATE that changes the key, end a row version without writing a new entry, so the index cannot tell. With the option on, two statement triggers
  * (AFTER DELETE, AFTER UPDATE; transition table of the old rows) hand the old keys to sift.col_track_old_rows, which writes a tombstone for each entry of those keys

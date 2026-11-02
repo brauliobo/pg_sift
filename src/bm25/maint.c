@@ -375,7 +375,7 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
 	/*
 	 * The tombstones of the entries removed go last, whatever the order of the directory: a reader that took the log and then the liveness of an entry that is now
-	 * cleared sees the tombstone or the clear bit, never neither (docs/COL-HEAPFREE.md).
+	 * cleared sees the tombstone or the clear bit, never neither.
 	 */
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)

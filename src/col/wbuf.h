@@ -96,7 +96,7 @@ typedef struct SiftCWbufToken
  * The same for a scan: kept by the backend, which reads the records appended since the last scan only; not to be changed, alive until mcxt is reset or deleted.
  * dirver is the version of the directory the scan read before this call: while it is the one the kept set was checked at, no VACUUM has flagged a record since and the
  * pages of the buffer are not read to find out. stamp (may be NULL): the xid before which every transaction that inserted a row of the batches committed, now; none when
- * one has not, or its record does not say (docs/COL-HEAPFREE.md).
+ * one has not, or its record does not say.
  */
 extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok,
 													TransactionId *stamp);

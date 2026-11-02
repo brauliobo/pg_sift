@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tombstone log of a heap sift_col index with track_updates in the reads of an index scan, an index-only scan and a bitmap scan (docs/COL-HEAPFREE.md). The log only ever hides an
+# The tombstone log of a heap sift_col index with track_updates in the reads of an index scan, an index-only scan and a bitmap scan. The log only ever hides an
 # entry that a transaction visible to the snapshot ended; every entry returned is still checked by the heap. Three tables get the same statements: a (track_updates), b (track_updates and
 # track_deletes) and c (no track_updates, the control). Every read is compared with a sequential scan of the same table and with the other tables; the hidden-entry counter says the log
 # was used (a, b), not used (c), and not used for what is not committed before the snapshot: an older snapshot, a transaction in progress (prepared), a rolled back transaction
