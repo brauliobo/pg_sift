@@ -49,9 +49,14 @@
 #define SIFT_CGORD_VERSION_TEXT	3
 #define SIFT_CGORD_VERSION_COMPACT	4
 #define SIFT_CGORD_VERSION_TEXTPERM	5
+#define SIFT_CGORD_VERSION_GROUPQ	6		/* a grouped block (version 2) some of whose chunks are compact (column format minor 41) */
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_TIES	4		/* SiftCGOrdDir.pad bit 2, with SIFT_CGORD_COMPACT: the chunk has a run of SIFT_CGORD_TIE_RUN equal keys or more, which the buckets do not tell apart */
 #define SIFT_CGORD_TIE_RUN	8
+#define SIFT_CGORD_RUNS_SHIFT	16		/* SiftCGOrdDir.pad bits 16..23, in a compact chunk of a grouped block: the groups after the first that start in the chunk */
+#define SIFT_CGORD_ANCHORS(pad)	(((pad) >> SIFT_CGORD_RUNS_SHIFT) & 0xFFu)
+/* what follows the addresses of such a chunk: n positions (u16, padded to 8) and n exact keys, the first key of each of those groups in it */
+#define SIFT_CGORD_ANCHOR_BYTES(n)	((n) == 0 ? (uint64) 0 : (((uint64) (n) * 2 + 7) & ~(uint64) 7) + (uint64) (n) * 8)
 #define SIFT_CGORD_L_WHOLE	0		/* the layouts of sift_cgord_build */
 #define SIFT_CGORD_L_COMPACT	1		/* every chunk of the middle of the order compact */
 #define SIFT_CGORD_L_AUTO	2		/* each chunk of the middle compact where that is at least a fifth smaller than the whole one */
@@ -160,7 +165,7 @@ typedef struct SiftCGOrdDir
  */
 extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
-extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, StringInfo out);
+extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, int layout, StringInfo out);
 
 /*
  * The block of a text leaf (version 3): key[i] is the segment code of the string of the entry in d, ranked here by cmp under collid (0: the bytes), which the caller
@@ -265,5 +270,6 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
 extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
 /* A compact chunk of m entries whose first key is first: the first key of the bucket of each entry into kmin (SIFT_CGORD_CAP slots; NULL: not wanted) with its shift, and the addresses of the first w entries into addr (SIFT_CGORD_CAP slots); false when malformed */
 extern bool sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr);
+extern bool sift_cgord_group_bounds(int64 *kmin, int64 *key, uint64 *exact, uint32 m, int64 first, const uint8 *anch, uint32 n);
 
 #endif

@@ -105,7 +105,13 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		ob->nent = nv + nl;
 		ob->nvals = nv;
 		if (ob->nent > 0)
-			sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, dense, &ob->tab);
+			{
+				SiftCGOrdHdr h;
+
+				sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, dense,
+										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv), &ob->tab);
+				w->anycompact = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.quant != 0) || w->anycompact;
+			}
 		pfree(key);
 		pfree(grp);
 		pfree(ngrp);

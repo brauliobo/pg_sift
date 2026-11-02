@@ -44,7 +44,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 			if (d.off != next || (g->hdr.gcol < 0 && c > 0 && c < vchunks && d.first < pf))
 				corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
 			pf = d.first;
-			next = (uint64) d.off + ALIGN8((uint64) d.klen) + ALIGN8((uint64) d.alen);
+			next = (uint64) d.off + ALIGN8((uint64) d.klen) + ALIGN8((uint64) d.alen) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(d.pad));
 		}
 	}
 	/* the entries of a range ascend by (key, address), those of a NULL range by address; a block that is not grouped is two ranges, the values and the NULL rows */

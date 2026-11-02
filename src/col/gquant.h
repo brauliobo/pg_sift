@@ -22,6 +22,8 @@
 
 /* Appends the blob of key[0..m) (ascending) to out and returns its bytes; q buckets per mean gap */
 extern uint32 sift_gq_encode(const int64 *key, uint32 m, uint32 q, StringInfo out);
+/* ... with the shift given: bucket i is (key[i] - key[0]) >> sh */
+extern uint32 sift_gq_encode_sh(const int64 *key, uint32 m, uint32 sh, StringInfo out);
 /* kmin[0..m) of a blob of len bytes whose chunk starts at first, and its shift; false when the blob is malformed */
 typedef bool (*SiftGqDecode) (const uint8 *b, uint32 len, uint32 m, int64 first, int64 *kmin, uint32 *sh);
 extern bool sift_gq_decode(const uint8 *b, uint32 len, uint32 m, int64 first, int64 *kmin, uint32 *sh);

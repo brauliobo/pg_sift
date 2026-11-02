@@ -251,40 +251,115 @@ whole_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, 
 	pad8(body);
 }
 
-/* The longest run of equal keys of the chunk (sorted) */
+/* The longest run of equal keys of the chunk (sorted), within a group when e, the entries of a grouped block, is given */
 static uint32
-longest_run(const int64 *kv, uint32 m)
+longest_run(const int64 *kv, const OrdEnt *e, uint32 m)
 {
 	uint32		best = 0,
 				run = 0;
 
 	for (uint32 i = 0; i < m; i++)
 	{
-		run = i > 0 && kv[i] == kv[i - 1] ? run + 1 : 1;
+		run = i > 0 && kv[i] == kv[i - 1] && (e == NULL || e[i].group == e[i - 1].group) ? run + 1 : 1;
 		best = Max(best, run);
 	}
 	return best;
 }
 
 /*
- * Writes the chunk compact when that is at least a fifth smaller than the whole one and has no run of SIFT_CGORD_TIE_RUN equal keys, the whole one otherwise; true when it is the compact
- * one. A run of equal keys is cheap to address as a run, which a compact chunk has no form for, and a bound that falls on it makes the compact chunk ask the heap for the exact key of
- * every row of the run (a table of half unique timestamps and half 50 days read up to 4 times the blocks of the whole order). d has the first key and the offset of the chunk.
+ * A chunk of a grouped block as a compact one. The keys of a group ascend and those of the next start again, which the buckets (they only ascend) cannot follow: the chunk is written
+ * as if every group came one bucket after the one before it, and the first key of each group after the first (the chunk's first key is the first group's) is kept exact after the
+ * addresses with its position, so that the reader gives each group its own base again. False, nothing written, when more groups start in the chunk than the directory counts (255) or the
+ * shifted keys would pass 62 bits. e are the entries of the chunk.
  */
 static bool
-compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m, bool dense, const SiftCcPolicy *pol)
+compact_group_chunk(StringInfo body, SiftCGOrdDir *d, const OrdEnt *e, const int64 *kv, const int64 *av, uint32 m, const SiftCcPolicy *pol)
+{
+	uint64		gapsum = 0,
+				ngap = 0,
+				off = 0,
+				offa = 0;
+	uint32		sh = 0,
+				nan = 0,
+				a = 0,
+				k0 = body->len;
+	uint16		pos[255];
+	int64		anc[255];
+	int64	   *tv;
+
+	for (uint32 i = 1; i < m; i++)
+		if (e[i].group == e[i - 1].group)
+		{
+			gapsum += (uint64) kv[i] - (uint64) kv[i - 1];
+			ngap++;
+		}
+		else if (++nan > lengthof(pos))
+			return false;
+	if (ngap > 0 && gapsum / ngap / SIFT_GQ_Q >= 2)
+		sh = 63 - __builtin_clzll(gapsum / ngap / SIFT_GQ_Q);
+	tv = palloc(m * sizeof(int64));
+	tv[0] = kv[0];
+	nan = 0;
+	for (uint32 i = 1; i < m; i++)
+	{
+		if (e[i].group == e[i - 1].group)
+			off = offa + ((uint64) kv[i] - (uint64) kv[a]);
+		else
+		{
+			a = i;
+			off = offa = ((off >> sh) + 1) << sh;
+			pos[nan] = (uint16) i;
+			anc[nan++] = kv[i];
+		}
+		if (off >= UINT64CONST(1) << 62 || off < offa)
+		{
+			pfree(tv);
+			return false;
+		}
+		tv[i] = (int64) ((uint64) kv[0] + off);
+	}
+	sift_gq_encode_sh(tv, m, sh, body);
+	d->klen = body->len - k0;
+	pad8(body);
+	addr_chunk(body, d, kv, av, m, false, pol);
+	d->pad |= SIFT_CGORD_COMPACT | (nan << SIFT_CGORD_RUNS_SHIFT);
+	pad8(body);
+	if (nan > 0)
+	{
+		appendBinaryStringInfo(body, (const char *) pos, nan * sizeof(uint16));
+		pad8(body);
+		appendBinaryStringInfo(body, (const char *) anc, nan * sizeof(int64));
+	}
+	pfree(tv);
+	return true;
+}
+
+/*
+ * Writes the chunk compact when that is at least a fifth smaller than the whole one and has no run of SIFT_CGORD_TIE_RUN equal keys, the whole one otherwise; true when it is the compact
+ * one. A run of equal keys is cheap to address as a run, which a compact chunk has no form for, and a bound that falls on it makes the compact chunk ask the heap for the exact key of
+ * every row of the run (a table of half unique timestamps and half 50 days read up to 4 times the blocks of the whole order). force: compact wherever it can be, with the runs marked.
+ * d has the first key and the offset of the chunk; e the entries of a chunk of a grouped block.
+ */
+static bool
+compact_smaller(StringInfo body, SiftCGOrdDir *d, const OrdEnt *e, const int64 *kv, const int64 *av, uint32 m, bool dense, bool force, const SiftCcPolicy *pol)
 {
 	StringInfoData cb,
 				wb;
 	SiftCGOrdDir cd = *d,
 				wd = *d;
+	uint32		best = longest_run(kv, e, m);
 	bool		smaller;
 
 	initStringInfo(&cb);
 	initStringInfo(&wb);
-	compact_chunk(&cb, &cd, kv, av, m, pol);
+	if (e != NULL)
+		smaller = compact_group_chunk(&cb, &cd, e, kv, av, m, pol);
+	else
+		compact_chunk(&cb, &cd, kv, av, m, pol), smaller = true;
 	whole_chunk(&wb, &wd, kv, av, m, dense, pol);
-	smaller = (uint64) cb.len * 5 <= (uint64) wb.len * 4 && longest_run(kv, m) < SIFT_CGORD_TIE_RUN;
+	smaller = smaller && (force || ((uint64) cb.len * 5 <= (uint64) wb.len * 4 && best < SIFT_CGORD_TIE_RUN));
+	if (smaller && best >= SIFT_CGORD_TIE_RUN)
+		cd.pad |= SIFT_CGORD_TIES;
 	*d = smaller ? cd : wd;
 	appendBinaryStringInfo(body, smaller ? cb.data : wb.data, smaller ? cb.len : wb.len);
 	pfree(cb.data);
@@ -295,7 +370,8 @@ compact_smaller(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *
 static void
 build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 strver, uint32 head, uint32 vtotal, int layout)
 {
-	bool		compact = layout != SIFT_CGORD_L_WHOLE,
+	bool		compact = !grouped && layout != SIFT_CGORD_L_WHOLE,
+				gcompact = grouped && layout != SIFT_CGORD_L_WHOLE,
 				anycompact = false;
 	uint64		n = (uint64) nvals + nnull;
 	uint32		crows = sift_cgord_rows();
@@ -386,21 +462,15 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		}
 		dir[c].first = kv[0];
 		dir[c].off = (uint32) body.len;		/* made absolute below */
-		if (compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
+		if (grouped ? gcompact && at + m <= nvals : compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
 		{
-			if (layout == SIFT_CGORD_L_COMPACT)
-			{
-				compact_chunk(&body, &dir[c], kv, av, m, &pol);
-				if (longest_run(kv, m) >= SIFT_CGORD_TIE_RUN)
-					dir[c].pad |= SIFT_CGORD_TIES;
-				anycompact = true;
-			}
-			else
-				anycompact = compact_smaller(&body, &dir[c], kv, av, m, dense, &pol) || anycompact;
+			anycompact = compact_smaller(&body, &dir[c], grouped ? ent + at : NULL, kv, av, m, dense, layout == SIFT_CGORD_L_COMPACT, &pol) || anycompact;
 			continue;
 		}
 		whole_chunk(&body, &dir[c], kv, av, m, dense, &pol);
 	}
+	if (grouped && anycompact)
+		hdr[1] = SIFT_CGORD_VERSION_GROUPQ;
 	if (compact && !anycompact)
 	{
 		/* no chunk is smaller compact: the block is the whole order, of the version a library before the compact blocks reads */
@@ -585,7 +655,7 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 }
 
 void
-sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, StringInfo out)
+sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, int layout, StringInfo out)
 {
 	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
 
@@ -593,7 +663,7 @@ sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, ui
 		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, dense && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }
 
@@ -735,221 +805,4 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 	pfree(boff);
 	pfree(ent);
 	pfree(strs.data);
-}
-
-bool
-sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk)
-{
-	uint32		w[4];
-
-	if (h->strbytes < sizeof(w))
-		return false;
-	memcpy(w, sec, sizeof(w));
-	if (w[1] != SIFT_CGORD_STR_BLK || w[2] != (w[0] + w[1] - 1) / w[1] || w[3] != 0 || (uint64) sizeof(w) + ((uint64) w[2] + 1) * sizeof(uint32) > h->strbytes)
-		return false;
-	*nstr = w[0];
-	*nblk = w[2];
-	return true;
-}
-
-bool
-sift_cgord_perm_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *bits)
-{
-	uint32		w[4];
-
-	if (h->strbytes < sizeof(w))
-		return false;
-	memcpy(w, sec, sizeof(w));
-	if (w[1] != sift_cdict_perm_bits(w[0]) || w[2] != 0 || w[3] != 0 || (uint64) h->strbytes != (((uint64) sizeof(w) + ((uint64) w[0] * w[1] + 7) / 8) + 7) / 8 * 8)
-		return false;
-	*nstr = w[0];
-	*bits = w[1];
-	return true;
-}
-
-bool
-sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint32 idx, char *out, uint32 *slen)
-{
-	uint32		pos,
-				olen;
-
-	/* the string before idx is out's: a walk in rank order decodes each string once (a block of 16 would otherwise be decoded from its start for every one) */
-	if (idx + 1 < st->next)
-		*st = (SiftCStrPos) {0, 0, 0};
-	pos = st->pos;
-	olen = st->olen;
-	for (uint32 i = st->next; i <= idx; i++)
-	{
-		uint32		shared = 0,
-					own = 0;
-		int			sh = 0;
-
-		for (;;)
-		{
-			if (pos >= len)
-				return false;
-			shared |= (uint32) (b[pos] & 0x7F) << sh;
-			sh += 7;
-			if (!(b[pos++] & 0x80))
-				break;
-			if (sh > 28)
-				return false;
-		}
-		sh = 0;
-		for (;;)
-		{
-			if (pos >= len)
-				return false;
-			own |= (uint32) (b[pos] & 0x7F) << sh;
-			sh += 7;
-			if (!(b[pos++] & 0x80))
-				break;
-			if (sh > 28)
-				return false;
-		}
-		if (shared > olen || (uint64) shared + own >= SIFT_CGORD_STR_MAX || (uint64) pos + own > len)
-			return false;
-		memcpy(out + shared, b + pos, own);
-		pos += own;
-		olen = shared + own;
-		*st = (SiftCStrPos) {i + 1, pos, olen};
-	}
-	*slen = olen;
-	return true;
-}
-
-bool
-sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
-{
-	uint32		w[8];
-	bool		grouped,
-				text;
-
-	if (len < SIFT_CGORD_HDR)
-		return false;
-	memcpy(w, blk, sizeof(w));
-	grouped = w[1] == SIFT_CGORD_VERSION_GROUP;
-	text = w[1] == SIFT_CGORD_VERSION_TEXT || w[1] == SIFT_CGORD_VERSION_TEXTPERM;
-	if (w[1] == SIFT_CGORD_VERSION_COMPACT)
-	{
-		if (w[0] != SIFT_CGORD_MAGIC || w[3] > w[2] || w[5] != SIFT_CGORD_ROWS_FINE || w[6] < 1 || w[6] > 16 || w[7] != 0 ||
-			w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) || SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT > len)
-			return false;
-		*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], 0, -1, 0, 0, 0, 0, w[6]};
-		return true;
-	}
-	if (w[0] != SIFT_CGORD_MAGIC || (w[1] != SIFT_CGORD_VERSION && !grouped && !text) || w[3] > w[2] || (w[5] != SIFT_CGORD_ROWS && w[5] != SIFT_CGORD_ROWS_FINE) ||
-		(grouped ? (w[6] == 0 || w[7] == 0 || w[7] > SIFT_COL_MAX_COLS) : text ? (w[7] == 0 || w[7] % 8 != 0) : (w[7] == 0 ? w[6] != 0 : (w[6] > w[3] || w[7] <= w[3] || w[3] - w[6] > SIFT_CGORD_ENDS || w[6] > SIFT_CGORD_ENDS || w[2] - w[3] > SIFT_CGORD_ENDS))) ||
-		w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) ||
-		SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT + (uint64) (text ? w[7] : grouped ? (uint64) w[6] * SIFT_CGORD_GRPENT : 0) > len)
-		return false;
-	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, 0, w[1] == SIFT_CGORD_VERSION_TEXTPERM};
-	return true;
-}
-
-bool
-sift_cgord_groups(const uint8 *blk, const SiftCGOrdHdr *h, uint64 len, SiftCGOrdGrp *out)
-{
-	uint32		vnext = 0,
-				nnext = h->values;
-
-	memcpy(out, blk + len - (uint64) h->ngroups * SIFT_CGORD_GRPENT, (Size) h->ngroups * SIFT_CGORD_GRPENT);
-	for (uint32 i = 0; i < h->ngroups; i++)
-	{
-		const SiftCGOrdGrp *g = &out[i];
-
-		if ((i > 0 && g->group <= out[i - 1].group) || g->vstart != vnext || g->nstart != nnext || (g->vcount == 0 && g->ncount == 0) ||
-			(uint64) g->vstart + g->vcount > h->values || (uint64) g->nstart + g->ncount > h->entries)
-			return false;
-		vnext += g->vcount;
-		nnext += g->ncount;
-	}
-	return vnext == h->values && nnext == h->entries;
-}
-
-bool
-sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c, SiftCGOrdDir *d)
-{
-	if (c >= h->chunks)
-		return false;
-	memcpy(d, ent, sizeof(*d));
-	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | SIFT_CGORD_TIES | 0xF00u)) == 0 && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (!(d->pad & SIFT_CGORD_TIES) || (d->pad & SIFT_CGORD_COMPACT)) && (d->pad >> 8) >= 1 && (d->pad >> 8) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) <= len &&
-		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
-}
-
-bool
-sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr)
-{
-	SiftCc	   *k = sift_cc_open_rows(mcxt, kb, klen, false, m);
-	uint32		ob = pad ? pad >> 8 & 0xF : 9;
-
-	w = Min(w, m);
-	sift_cc_decode_head(k, w, key);
-	sift_cc_close(k);
-	if (pad & SIFT_CGORD_GAPS)
-	{
-		uint32		hdr[2],
-					flen,
-					nf,
-					f = 0,
-					fi = 0,
-					gi = 0;
-		int64	   *fv,
-				   *gv;
-		SiftCc	   *fc,
-				   *gc;
-		uint64		prev = 0;
-
-		if (alen < sizeof(hdr))
-			return false;
-		memcpy(hdr, ab, sizeof(hdr));
-		flen = hdr[0];
-		nf = hdr[1];
-		if (nf == 0 || nf >= m || (uint64) sizeof(hdr) + GORD_ALIGN8(flen) > alen)
-			return false;
-		fc = sift_cc_open_rows(mcxt, ab + sizeof(hdr), flen, false, nf);
-		gc = sift_cc_open_rows(mcxt, ab + sizeof(hdr) + GORD_ALIGN8(flen), alen - sizeof(hdr) - GORD_ALIGN8(flen), false, m - nf);
-		for (uint32 i = 0; i < w; i++)
-			f += i == 0 || key[i] != key[i - 1];
-		fv = palloc((Size) (f + 1) * sizeof(int64));
-		gv = palloc((Size) (w - f + 1) * sizeof(int64));
-		sift_cc_decode_head(fc, f, fv);
-		sift_cc_decode_head(gc, w - f, gv);
-		for (uint32 i = 0; i < w; i++)
-		{
-			prev = i == 0 || key[i] != key[i - 1] ? (uint64) fv[fi++] : prev + (uint64) gv[gi++] + 1;
-			addr[i] = (prev >> ob) << 16 | (prev & (((uint64) 1 << ob) - 1));
-		}
-		pfree(fv);
-		pfree(gv);
-		sift_cc_close(fc);
-		sift_cc_close(gc);
-		return true;
-	}
-	{
-		SiftCc	   *a = sift_cc_open_rows(mcxt, ab, alen, false, m);
-
-		sift_cc_decode_head(a, w, (int64 *) addr);
-		for (uint32 i = 0; i < w; i++)
-			addr[i] = (addr[i] >> ob) << 16 | (addr[i] & (((uint64) 1 << ob) - 1));
-		sift_cc_close(a);
-	}
-	return true;
-}
-
-bool
-sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr)
-{
-	uint32		ob = pad >> 8 & 0xF;
-	SiftCc	   *a;
-
-	if (kmin != NULL && !sift_gq_decode(kb, klen, m, first, kmin, sh))
-		return false;
-	w = Min(w, m);
-	a = sift_cc_open_rows(mcxt, ab, alen, false, m);
-	sift_cc_decode_head(a, w, (int64 *) addr);
-	for (uint32 i = 0; i < w; i++)
-		addr[i] = (addr[i] >> ob) << 16 | (addr[i] & (((uint64) 1 << ob) - 1));
-	sift_cc_close(a);
-	return true;
 }

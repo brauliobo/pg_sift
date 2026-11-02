@@ -19,7 +19,7 @@ ANALYZE ag;
 CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad) WITH (key_cut = 'off');
 NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 41.5% of 467 chunks, exact in the rest, 4.5 bytes a row
+NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 82.0% of 467 chunks, exact in the rest, 3.4 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------
@@ -124,7 +124,7 @@ SELECT sift.col_verify('ag_i');
 REINDEX INDEX ag_i;
 NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
+NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 78.0% of 477 chunks, exact in the rest, 3.5 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------
@@ -159,6 +159,7 @@ ALTER INDEX ag_i SET (order_array_group = 'v', order_array_columns = 'ts', order
 REINDEX INDEX ag_i;
 NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ag_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 95.8% of 240 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                reloptions                                               
 --------------------------------------------------------------------------------------------------------
@@ -177,7 +178,7 @@ ALTER INDEX ag_i RESET (order_columns);
 REINDEX INDEX ag_i;
 NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 37.1% of 477 chunks, exact in the rest, 4.6 bytes a row
+NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 78.0% of 477 chunks, exact in the rest, 3.5 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------

@@ -25,7 +25,7 @@ typedef struct HeapProbe
 } HeapProbe;
 
 /*
- * Whether the keys a compact block does not store can be read from the heap: the leaf is a column of a heap table of the type its key is made of (the address of a row that
+ * Whether the keys a compact block does not store can be read from the heap (col is the leaf of the block, or ncols + the leaf for its second order, the one sorted by group): the leaf is a column of a heap table of the type its key is made of (the address of a row that
  * bulkdelete cleared may have a new tenant, so such a row is answered as dead without the heap, see probe_dead). A block that cannot is not used: its scans read the units.
  */
 static bool
@@ -37,9 +37,9 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 	Oid			ty = InvalidOid;
 	bool		ok = false;
 
-	if (col >= seg->schema->ncols)
+	if (col >= 2 * seg->schema->ncols)
 		return false;
-	d = &seg->schema->cols[col];
+	d = &seg->schema->cols[col % seg->schema->ncols];
 	if (d->attno < 1 || d->attno > ix->indnatts || ix->indkey.values[d->attno - 1] <= 0 || !sift_cgord_leaf_ok(seg->schema, d))
 		return false;
 	switch (d->type)
@@ -99,6 +99,7 @@ static void *
 probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 {
 	HeapProbe  *pr = palloc(sizeof(HeapProbe));
+	const SiftColDef *d;
 
 	pr->rel = RelationIdGetRelation(g->hrel);
 	if (!RelationIsValid(pr->rel))
@@ -112,8 +113,9 @@ probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 	pr->ndead = g->ndead;
 	pr->nblocks = RelationGetNumberOfBlocks(pr->rel);
 	pr->att = g->hatt;
-	pr->two = seg->schema->cols[col].type == SIFT_COLT_INT2;
-	pr->wide = !pr->two && seg->schema->cols[col].type != SIFT_COLT_INT4 && seg->schema->cols[col].type != SIFT_COLT_DATE;
+	d = &seg->schema->cols[col % seg->schema->ncols];
+	pr->two = d->type == SIFT_COLT_INT2;
+	pr->wide = !pr->two && d->type != SIFT_COLT_INT4 && d->type != SIFT_COLT_DATE;
 	return pr;
 }
 

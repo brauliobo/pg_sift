@@ -50,7 +50,7 @@ seg_gord_leaf(SiftColSegment *seg, int col)
 			seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
 		if (!sift_cgord_dirent(raw + SIFT_CGORD_HDR, &h, g->bytes, h.chunks - 1, &last))
 			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, h.chunks - 1);
-		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen);
+		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(last.pad));
 	}
 	if (g->gat + (h.strbytes != 0 ? (uint64) h.strbytes : (uint64) h.ngroups * SIFT_CGORD_GRPENT) != g->bytes)
 		corrupt(seg, "The global order of leaf %d ends at %llu of %llu.", col, (unsigned long long) g->gat, (unsigned long long) g->bytes);
@@ -215,7 +215,7 @@ sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
 	GOrdLeaf   *g = grouped ? seg_gord_leaf(seg, seg->schema->ncols + col) : NULL;
 
 	if (g != NULL)
-		return seg->schema->ncols + col;
+		return seg_gord_probe_ok(seg, g, seg->schema->ncols + col) ? seg->schema->ncols + col : -1;
 	g = seg_gord_leaf(seg, col);
 	return g != NULL && (g->hdr.gcol >= 0) == grouped && seg_gord_probe_ok(seg, g, col) ? col : -1;
 }
@@ -307,15 +307,20 @@ compact_key(const GOrdProbe *pr, SiftCGOrdBuf *buf, uint32 i)
 	return buf->key[i];
 }
 
-/* The chunk c of a compact block into buf: its addresses and, with keys, the buckets of its entries; no exact key yet */
+/* The chunk c of a compact block into buf: its addresses and, with keys, the buckets of its entries; no exact key yet but the first entry of a group */
 static void
 compact_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, bool keys, SiftCGOrdBuf *buf)
 {
-	uint32		m = sift_cgord_chunk_rows(&g->hdr, c);
-	uint8	   *raw = palloc(ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen) + SIFT_COL_PAD);
+	uint32		m = sift_cgord_chunk_rows(&g->hdr, c),
+				nan = SIFT_CGORD_ANCHORS(d->pad);
+	Size		front = ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen);
+	uint8	   *raw = palloc(front + SIFT_CGORD_ANCHOR_BYTES(nan) + SIFT_COL_PAD);
+	bool		ok;
 
-	seg_read(seg, g->at + d->off, ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen), raw);
-	if (!sift_cgord_decode_compact(seg->mcxt, raw, d->klen, raw + ALIGN8((Size) d->klen), d->alen, d->pad, m, d->first, m, keys ? buf->kmin : NULL, &buf->sh, buf->addr))
+	seg_read(seg, g->at + d->off, front + SIFT_CGORD_ANCHOR_BYTES(nan), raw);
+	ok = sift_cgord_decode_compact(seg->mcxt, raw, d->klen, raw + ALIGN8((Size) d->klen), d->alen, d->pad, m, d->first, m, keys ? buf->kmin : NULL, &buf->sh, buf->addr);
+	memset(buf->exact, 0, sizeof(buf->exact));
+	if (!ok || (keys && nan > 0 && !sift_cgord_group_bounds(buf->kmin, buf->key, buf->exact, m, d->first, raw + front, nan)))
 		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
 	pfree(raw);
 	buf->at = c * g->hdr.crows;
@@ -323,7 +328,6 @@ compact_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOr
 	buf->compact = true;
 	buf->kmin_ok = keys;
 	buf->kfrom = buf->kn = 0;
-	memset(buf->exact, 0, sizeof(buf->exact));
 }
 
 /* The exact key of entry i of the compact chunk in buf into key[i] (the entry alone becomes the window of keys) */
@@ -605,16 +609,19 @@ seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
  * key (their last key is) and which certainly are not (their first is): the entries between, in the bucket that holds key, are searched by the keys of their heap rows (0.7 of them a seek
  * for keys 4 buckets to a mean gap). The chunk is left in memo with its addresses.
  */
-/* The first entry i0 of the compact chunk in buf that is not certainly before key (its last key is not: before(k) is k < key, or k <= key for after) and the first i1 that certainly is not (its first key is not before) */
+/*
+ * The first entry i0 of [from, to) in the compact chunk in buf that is not certainly before key (its last key is not: before(k) is k < key, or k <= key for after) and the first i1 that
+ * certainly is not (its first key is not before). The keys ascend in the range only: a chunk of a grouped block has the keys of each group from the start.
+ */
 static void
-compact_bounds(const SiftCGOrdBuf *buf, uint32 rows, int64 key, bool after, uint32 *i0, uint32 *i1)
+compact_bounds(const SiftCGOrdBuf *buf, uint32 from, uint32 to, int64 key, bool after, uint32 *i0, uint32 *i1)
 {
-	uint32		lo = 0,
-				hi = rows;
+	uint32		lo = from,
+				hi = to;
 
 	SIFT_BISECT(uint32, mid, lo, hi, after ? (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) <= key : (mid == 0 ? buf->kmin[0] : sift_gq_kmax(buf->kmin[mid], buf->sh)) < key);
 	*i0 = lo;
-	hi = rows;
+	hi = to;
 	SIFT_BISECT(uint32, mid, lo, hi, after ? buf->kmin[mid] <= key : buf->kmin[mid] < key);
 	*i1 = lo;
 }
@@ -632,9 +639,9 @@ compact_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 from, u
 
 	if (memo->at != at || !memo->compact || !memo->kmin_ok)
 		compact_load(seg, g, col, c, &d, true, memo);
-	compact_bounds(memo, to - at, key, after, &i0, &i1);
-	lo = Max(i0, from - at);
-	hi = Min(i1, to - at);
+	compact_bounds(memo, from - at, to - at, key, after, &i0, &i1);
+	lo = i0;
+	hi = i1;
 	probe_open(seg, g, col, &pr);
 	while (lo < hi)
 	{
@@ -951,7 +958,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 		uint32		i0,
 					i1;
 
-		compact_bounds(memo, m, v, false, &i0, &i1);
+		compact_bounds(memo, 0, m, v, false, &i0, &i1);
 		pc = base + i0;
 		pp = base + i1;
 	}
@@ -961,7 +968,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 					i1;
 
 		/* the entries certainly above v start at the first whose first key is, those that may be at the first whose last key is */
-		compact_bounds(memo, m, v, true, &i0, &i1);
+		compact_bounds(memo, 0, m, v, true, &i0, &i1);
 		pc = base + i1;
 		pp = base + i0;
 	}

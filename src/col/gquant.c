@@ -39,19 +39,14 @@ static const uint32 gq_shift[GQ_WSIMD + 1][8] __attribute__((aligned(32))) = {GQ
  * differences patched in. Integers only.
  */
 uint32
-sift_gq_encode(const int64 *key, uint32 m, uint32 q, StringInfo out)
+sift_gq_encode_sh(const int64 *key, uint32 m, uint32 sh, StringInfo out)
 {
 	uint64		first = (uint64) key[0],
-				span = m > 1 ? (uint64) key[m - 1] - first : 0,
-				tgt = m > 1 ? span / (m - 1) / q : 0,
 				qprev = 0;
-	uint32		sh = 0,
-				nmb = (m + SIFT_GQ_MB - 1) / SIFT_GQ_MB,
+	uint32		nmb = (m + SIFT_GQ_MB - 1) / SIFT_GQ_MB,
 				len = 1;
 	uint8	   *buf = palloc0(1 + (Size) nmb * (1 + 4 * GQ_MAXW + 2 + SIFT_GQ_MB + 4 * SIFT_GQ_MB) + 16);
 
-	if (tgt >= 2)
-		sh = 63 - __builtin_clzll(tgt);
 	buf[0] = (uint8) sh;
 	for (uint32 j = 0; j < nmb; j++)
 	{
@@ -113,6 +108,14 @@ sift_gq_encode(const int64 *key, uint32 m, uint32 q, StringInfo out)
 	appendBinaryStringInfo(out, (const char *) buf, len);
 	pfree(buf);
 	return len;
+}
+
+uint32
+sift_gq_encode(const int64 *key, uint32 m, uint32 q, StringInfo out)
+{
+	uint64		tgt = m > 1 ? ((uint64) key[m - 1] - (uint64) key[0]) / (m - 1) / q : 0;
+
+	return sift_gq_encode_sh(key, m, tgt >= 2 ? 63 - __builtin_clzll(tgt) : 0, out);
 }
 
 /* w bits (w <= 32) at bit pos of the stream b, LSB first; b has 8 readable bytes past pos / 8 */
