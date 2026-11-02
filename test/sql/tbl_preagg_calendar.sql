@@ -3,8 +3,10 @@
 -- (date_trunc, extract, ::date), a range on the column or a test of its calendar parts is answered from them. Every query runs three ways, which must give
 -- the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units
 -- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
--- Size: 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27 and 46; the states of the data
--- below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
+-- Size, 16 s of CPU: tcy has 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27
+-- and 46, and tcm has them so that the dirty states leave shapes 9, 12 and 20 'none' (60000 rows of either changes those answers); tcd has 60000, which is as many units as it needs.
+-- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones, 12 four times on tc7.
+-- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
@@ -109,7 +111,7 @@ $$;
 
 -- three windows of data: 45 days (a unit has a few dozen days: cells of days), 3 years (months), 40 years (years); a cell costs a few dozen bytes of the
 -- 5% a unit may spend on cells, and rows of other years in the last unit (the edges) do not take its cells from the others
-SELECT pm_fill('tcd', '2000-02-10', 45, 1, 150000);
+SELECT pm_fill('tcd', '2000-02-10', 45, 1, 60000);
 SELECT pm_fill('tcm', '1999-01-31 23:59:59', 1100, 1, 150000);
 SELECT pm_fill('tcy', '1980-01-01', 14600, 1, 150000);
 SELECT pm_edges('tcd', '2000-02-10', '2000-03-27');
