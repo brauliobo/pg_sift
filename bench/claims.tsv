@@ -5,3 +5,7 @@ phrase	statement	rows	arm	option	metric	value	tolerance	note
 `LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	exec_ms	1.6	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
 `LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	instr_m	19	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
 `LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	btree	default	exec_ms	1.2	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64s	300000	picked	default	exec_ms	0.07	40	run 9179bfe5a825-20261102T022539Z-634a (planner-pl11-h64-20261101.rec)
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64s	300000	picked	default	instr_m	0.5	25	same run
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	exec_ms	0.02	40	same run, the b-tree twin
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	instr_m	0.2	25	same run, the b-tree twin

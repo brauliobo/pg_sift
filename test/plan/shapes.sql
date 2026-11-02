@@ -295,7 +295,7 @@ SELECT d.tier, count(*) AS n, sum(e.amount) AS total FROM events_part e JOIN dim
 SELECT parent_id, sum(amount) AS total FROM events_part WHERE deleted_at IS NULL GROUP BY 1 ORDER BY total DESC, parent_id LIMIT 5;
 
 -- name: partitions_count
--- expect: either 0.17 0.67
+-- expect: either 0.068 0.27
 SELECT count(*) AS n FROM events_part;
 
 -- name: count_all

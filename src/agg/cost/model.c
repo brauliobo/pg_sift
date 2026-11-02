@@ -162,7 +162,7 @@ agg_group_open_cost(void)
 Cost
 agg_open_cost(int nparts)
 {
-	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
+	return ((nparts > 0 ? AGG_START_PART : AGG_START_COST) + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
 }
 
 /*
