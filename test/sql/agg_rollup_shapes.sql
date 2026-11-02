@@ -52,7 +52,7 @@ INSERT INTO pa_q VALUES
 	(10, 'grouping sets',     'SELECT e.kind, e.flag, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY ROLLUP (1, 2)'),
 	(11, 'joined table',      'SELECT m.label, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) JOIN ev_dim m ON m.kind = e.kind GROUP BY 1'),
 	(12, 'key of the rows',   'SELECT d.grp, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
-	(13, 'variance',          'SELECT e.kind, var_pop(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
+	(13, 'variance',          'SELECT e.kind, round(var_pop(e.score)::numeric, 9) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(14, 'key: a measure',    'SELECT e.qty, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(15, 'row set test',      'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE d.grp IN (1, 3, 5) GROUP BY 1'),
 	(16, 'key: coalesce',     'SELECT coalesce(e.kind, ''none''), count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
