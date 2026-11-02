@@ -100,7 +100,7 @@ SELECT name, topn_plan(q) AS topn, topn_plan(q, true) AS forced, rows_equal(q) A
  a list and the scope on the joined table | t    | t      | t
  a lookup again of the joined column      | t    | t      | t
  ascending                                | t    | t      | t
- column of the joined table               | t    | t      | t
+ column of the joined table               | f    | t      | t
  columns of two joined tables, scope      | t    | t      | t
  columns with NULLs, a total              | t    | t      | t
  exists                                   | t    | t      | t

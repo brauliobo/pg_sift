@@ -42,7 +42,7 @@ SET client_min_messages = warning;
 SELECT sift.col_maintain('rc_off');
  col_maintain 
 --------------
- t
+ f
 (1 row)
 
 VACUUM rc;

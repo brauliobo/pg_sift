@@ -330,12 +330,25 @@ sift_cwbuf_rotate(Relation index)
 	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS);
 }
 
-/* VACUUM seals an open buffer once it holds a quarter of write_buffer_limit: its rows are promoted and merged with the rest instead of waiting for a seal that may never come */
+/* A quarter of a unit: rows this few are not worth a segment of their own for a reader of the units, but a buffer that holds them is read row by row by every probe */
+static bool
+quarter_unit(Relation index, const SiftSegEntry *entry)
+{
+	return wbuf_count_rows(index, entry, false) >= SIFT_COL_UNIT_MAX_ROWS / 4;
+}
+
+/*
+ * VACUUM seals an open buffer once it holds a quarter of write_buffer_limit or a quarter of a unit of rows (a point column's row is a few bytes: 45,000 of them stay under the pages
+ * and every probe of a join reads each one): its rows are promoted and merged with the rest instead of waiting for a seal that may never come
+ */
 uint64
 sift_cwbuf_seal_vacuum(Relation index)
 {
+	uint64		gen;
+
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, 0, quarter_unit);
 }
 
 void

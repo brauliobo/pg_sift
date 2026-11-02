@@ -25,7 +25,7 @@ VACUUM pv;
 SELECT sift.col_promote('pv_idx') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 UPDATE pv SET set_id = (id::bigint * 104729 % 600)::int;
@@ -33,7 +33,7 @@ VACUUM pv;
 SELECT sift.col_promote('pv_idx') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 -- rows to remove, so that the index is vacuumed; every index is big enough for a worker
