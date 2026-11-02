@@ -241,7 +241,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans / redundant, 1);
 	/* a scan repeated for the rows of a join (loop_count) opens the index once and walks its pages once: a probe is the unit it looks up (82 units priced against 8.5 us measured) */
 	repeat = Max(loop_count, 1.0);
-	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK)) / repeat;
+	/* the seek in the sorted keys is made for each key a probe passes down: it is not shared by the loops, as the opening of the index is */
+	costs.indexStartupCost = scale * ((COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK)) / repeat + extra);
 	costs.indexTotalCost = costs.indexStartupCost
 		+ (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? Min(kept_units, 1.0) * COL_SCAN_UNIT_RESCAN + Max(kept_units - 1.0, 0.0) * COL_SCAN_UNIT : kept_units * COL_SCAN_UNIT) +
 											  kept_units * Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)

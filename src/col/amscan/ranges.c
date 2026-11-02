@@ -375,7 +375,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
 		List	   *ranges = NIL;
-		bool		other = false;
+		bool		other = false,
+					eqonly = true;
 		double		keys = 0.0,
 					gcover = 0.0;
 
@@ -390,6 +391,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				if (strategy == BTEqualStrategyNumber || strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
 				{
 					ranges = lappend(ranges, ri);
+					eqonly &= strategy == BTEqualStrategyNumber;
 				}
 				else if (IsA(ri->clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) ri->clause)->useOr &&
 						 get_op_opfamily_strategy(((ScalarArrayOpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber &&
@@ -417,7 +419,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				kept = 1.0 - cover + cover * share;
 				*nprobes = 1;
 				*tid = path->path.pathtype == T_IndexOnlyScan ? 0.0 : cover;
-				*extra = (2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + keys * COL_SCAN_GORD_KEY + rows * COL_SCAN_GORD_SORT;
+				/* the two bounds of an equality lie in one chunk; a range reads the chunk of each bound and those between */
+				*extra = (eqonly && keys == 0.0 ? Max(1.0, ceil(rows / 1024.0)) : 2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + keys * COL_SCAN_GORD_KEY + rows * COL_SCAN_GORD_SORT;
 			}
 		}
 		list_free(ranges);
