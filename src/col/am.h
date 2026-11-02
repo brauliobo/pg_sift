@@ -86,7 +86,6 @@ extern void sift_col_supersede(Relation index, Relation heap, const Datum *value
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
-extern PGDLLIMPORT bool sift_test_track_all_updates;
 extern PGDLLIMPORT bool sift_test_no_track;
 extern PGDLLIMPORT bool sift_test_no_log_reap;
 extern PGDLLIMPORT bool sift_test_no_log_hide;

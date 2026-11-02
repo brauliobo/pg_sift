@@ -2186,11 +2186,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · diagnostic · since 4.0 · default ''
 
-- **What it does:** selects developer evaluation methods; an empty list disables every method
+- **What it does:** selects developer evaluation methods: the ones named are on; skip_trigger_lookup, which leaves out the statement-trigger look at an UPDATE that kept the key, is on unless -skip_trigger_lookup is named, and an empty list is that default
 - **Gain:** **not measured**
 - **Impact:** index size: **not measured**; build, merge and writes: **not measured**; other: Experimental methods can add maintenance work and backend memory; latest_hint uses at most 16 KiB per backend
 - **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint.
-- **Default:** '' — Empty: experiments require explicit selection and are not enabled by an upgrade.
+- **Default:** '' — Empty: only skip_trigger_lookup (an exact-coverage skip) is on; the other experiments require explicit selection and are not enabled by an upgrade.
 - **Turn off:** RESET sift.eval_methods returns the empty list.
 - **Upgrade from 3.7:** Available after the extension library is loaded; no REINDEX for the setting itself.
 - **Advice:** Leave empty; explicitly name methods only for developer evaluation.

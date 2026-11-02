@@ -1,4 +1,4 @@
-/* Developer experiments; every method is off unless named in sift.eval_methods. */
+/* Developer experiments: sift.eval_methods names the ones that are on. A method is off unless named, except those of the default set (skip_trigger_lookup), which a name with a minus sign turns off. */
 #ifndef SIFT_EVAL_H
 #define SIFT_EVAL_H
 

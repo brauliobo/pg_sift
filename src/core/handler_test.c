@@ -86,9 +86,6 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_supersede_scan",
 							 "Testing: the entries a new row version replaces are found by a scan of the index itself, as when the table has no unique index on the key.",
 							 NULL, &sift_test_supersede_scan, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_track_all_updates",
-							 "Testing: the statement trigger of track_deletes looks at the rows of every UPDATE, also one that leaves the key alone.",
-							 NULL, &sift_test_track_all_updates, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_track",
 							 "Testing: the statement triggers of track_deletes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -30,7 +30,6 @@
 #ifdef SIFT_TESTING
 bool sift_test_no_supersede = false;
 bool sift_test_supersede_scan = false;
-bool sift_test_track_all_updates = false;
 #endif
 
 /* Transaction-local hints cannot outlive the horizon that prevents reuse of their heap addresses. */

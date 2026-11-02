@@ -51,11 +51,11 @@ END $$;
 SELECT mk('events_scan'), mk('events_both'), mk('events_skip');
 VACUUM events_scan, events_both, events_skip;
 SET sift.test_supersede_scan = on;
-SET sift.test_track_all_updates = on;
+SET sift.eval_methods = '-skip_trigger_lookup';
 SELECT ops('events_scan');
 SET sift.test_supersede_scan = off;
 SELECT ops('events_both');
-SET sift.test_track_all_updates = off;
+RESET sift.eval_methods;
 SELECT ops('events_skip');
 
 -- the tombstones: the same addresses on all three (the transactions differ, and the trigger writes a second tombstone for an address a replacement covered in an earlier transaction)
@@ -101,7 +101,7 @@ END $$;
 SELECT t, rows_of(t, true) = rows_of(t, false) AS through_the_index_equals_the_heap FROM (VALUES ('events_scan'), ('events_both'), ('events_skip')) v(t) ORDER BY t;
 
 -- an UPDATE that gives the key a new value is looked at by the trigger whatever the other rows did; so is one with a BEFORE trigger that may change it
-SET sift.test_track_all_updates = off;
+RESET sift.eval_methods;
 CREATE FUNCTION touch_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.id := NEW.id + 500000; RETURN NEW; END $$;
 CREATE TRIGGER events_skip_before BEFORE UPDATE ON events_skip FOR EACH ROW WHEN (NEW.counter_a = -1) EXECUTE FUNCTION touch_key();
 UPDATE events_skip SET counter_a = -1 WHERE id IN (1, 2, 3);
