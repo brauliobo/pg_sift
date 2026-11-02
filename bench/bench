@@ -69,7 +69,8 @@ Commands
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
              asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--any-plan] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh); `cases --check [--strict] [--host-plan]` checks that every claim of the release has a case, current rows, peer rows and a block
-  records     the measurement records (steps/records/README.md): `records check FILE...` refuses a set that mixes runs, table states or settings, `records report [--tsv] FILE...` writes its tables
+  records     the measurement records (steps/records/README.md): `records check FILE...` refuses a set that mixes runs, table states or settings, `records report [--tsv] FILE...` writes its tables,
+             `records claims FILE...` checks the CHANGELOG figures against them, `records migrate FILE...` writes a file of an older schema again in the current one
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)
   release    the one authoritative run after a release, every table of the docs, one command: `release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN]` (steps/release.sh;

@@ -9,6 +9,7 @@ when check.py finds one dataset, one table state and one set of settings in it. 
     TEMP        warm: the statement ran before in this session; cold: the shared buffers of its relations were evicted first (`os_cache_dropped` says whether the OS cache was too)
 """
 import hashlib
+import os
 import re
 import time
 
@@ -65,6 +66,7 @@ FIELDS = [
     ('instr_m', 'f', False, 'millions of user instructions of the statement'),
     ('cycles_m', 'f', False, 'millions of user cycles'),
     ('instr_scope', 's', False, 'cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched)'),
+    ('instr_n', 'i', False, 'statements run in the window the instructions were counted over (a statement under 5 ms is run again and again in the one backend between two readings and the count divided: the number is of one run); 1 for a long one'),
     ('workers_requested', 'i', True, 'parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started)'),
     ('workers_launched', 'i', True, 'parallel workers that ran'),
     ('heap_hit', 'i', False, 'blocks of heap relations found in shared buffers'),
@@ -96,10 +98,13 @@ FIELDS = [
     ('maintenance', 's', True, 'default, or disabled when a switch that turns the maintenance off is set (autovacuum, sift.col_auto_merge, sift.async_maintenance, a sift.test_* setting)'),
 ]
 COLUMNS = [f[0] for f in FIELDS]
+from history import HISTORY  # noqa: E402  (the columns of every version, frozen)
 TYPE = {f[0]: f[1] for f in FIELDS}
 REQUIRED = [f[0] for f in FIELDS if f[2]]
 BLOCKS = [f[0] for f in FIELDS if f[0].endswith(('_hit', '_read'))]
 LIBRARY = 'records-1'
+VERSION = 5   # the schema of the file: history.py keeps the columns of each version, MIGRATIONS the step from it to the next
+MARK = '#records-schema '
 
 
 def sql_hash(sql):
@@ -137,6 +142,7 @@ def parse(name, text):
 
 def write(path, records):
     with open(path, 'w') as f:
+        f.write('%s%d\n' % (MARK, VERSION))
         f.write('\t'.join(COLUMNS) + '\n')
         for r in records:
             unknown = set(r) - set(COLUMNS)
@@ -145,22 +151,91 @@ def write(path, records):
             f.write('\t'.join(cell(c, r.get(c)) for c in COLUMNS) + '\n')
 
 
-def read(path):
-    """the records of a file as dicts (None for an empty cell), each with `_line`; a file whose header is not COLUMNS is refused"""
+# The step from a version to the next, on the row of that version: a column that was added gets its value, from what the row says or as "not recorded". A change of FIELDS is a new VERSION,
+# the columns of the new one in history.py, a step here, a frozen sample in bench/test/records_samples (test_records.py fails until all three exist).
+def _from_1(r):
+    r['variant'] = 'main'
+
+
+def _from_2(r):
+    if r['table_state'].startswith('churned') and r['kind'] == 'read':
+        r['churn_history'] = 'not recorded (schema 2)'
+
+
+def _from_3(r):
+    r['noise'] = int(max(r.get(c) or 0 for c in ('psi_cpu_start', 'psi_cpu_end', 'psi_io_start', 'psi_io_end')) > 10.0)
+
+
+def _from_4(r):
+    r['instr_n'] = 1 if r.get('instr_m') is not None else None
+
+
+MIGRATIONS = {1: _from_1, 2: _from_2, 3: _from_3, 4: _from_4}
+
+
+def header_of(path):
+    """(schema version, line number of the first record) of a records file: the mark of its first line, else the version whose columns are its header (files before the mark)"""
     with open(path) as f:
-        head = f.readline().rstrip('\n').split('\t')
-        if head != COLUMNS:
-            raise ValueError('%s: the header is not the record schema (%s)' % (path, LIBRARY))
-        out = []
-        for n, line in enumerate(f, 2):
+        first = f.readline().rstrip('\n')
+        if first.startswith(MARK):
+            version, head, start = int(first[len(MARK):]), f.readline().rstrip('\n').split('\t'), 3
+        else:
+            version, head, start = None, first.split('\t'), 2
+    if version is None:
+        version = next((v for v, cols in HISTORY.items() if cols == head), None)
+    if version not in HISTORY or HISTORY[version] != head:
+        raise ValueError('%s: the header is none of the %d schema versions of the records library (current %d): not a records file or from a newer library' % (path, len(HISTORY), VERSION))
+    return version, start
+
+
+def upgrade(row, version):
+    """ROW of schema VERSION as a row of the current schema"""
+    for v in range(version, VERSION):
+        MIGRATIONS[v](row)
+    for c in COLUMNS:
+        row.setdefault(c, None)
+    return row
+
+
+def read(path):
+    """the records of a file as dicts (None for an empty cell), each with `_line`, `_file` and `_schema` (the version it was written with), upgraded in memory to the current schema;
+    `migrate` writes the file again in it"""
+    version, start = header_of(path)
+    cols = HISTORY[version]
+    out = []
+    with open(path) as f:
+        for _ in range(start - 1):
+            f.readline()
+        for n, line in enumerate(f, start):
             cells = line.rstrip('\n').split('\t')
-            if len(cells) != len(COLUMNS):
-                raise ValueError('%s:%d: %d cells, %d expected' % (path, n, len(cells), len(COLUMNS)))
-            r = {c: parse(c, v) for c, v in zip(COLUMNS, cells)}
-            r['_line'] = n
-            r['_file'] = path
+            if len(cells) != len(cols):
+                raise ValueError('%s:%d: %d cells, %d expected' % (path, n, len(cells), len(cols)))
+            r = upgrade({c: parse(c, v) for c, v in zip(cols, cells)}, version)
+            r['_line'], r['_file'], r['_schema'] = n, path, version
             out.append(r)
     return out
+
+
+def read_files(paths, say=None):
+    """the records of FILES; SAY (a function of a line) is told of each file that is of an older schema and was upgraded in memory"""
+    out = []
+    for f in paths:
+        rs = read(f)
+        if rs and rs[0]['_schema'] != VERSION and say:
+            say('%s is schema %d, read as schema %d: `bench records migrate %s` writes it again in the current one' % (f, rs[0]['_schema'], VERSION, f))
+        out += rs
+    return out
+
+
+def migrate(path):
+    """write PATH again in the current schema (the old file stays next to it as PATH.schemaN) and return its old version; a file in the current one is left alone (None)"""
+    version, _ = header_of(path)
+    if version == VERSION:
+        return None
+    rows = read(path)
+    os.replace(path, '%s.schema%d' % (path, version))
+    write(path, [{k: v for k, v in r.items() if not k.startswith('_')} for r in rows])
+    return version
 
 
 def doc_table():

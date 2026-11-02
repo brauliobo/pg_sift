@@ -88,7 +88,11 @@ def emit(case, lanes, rows, runs):
         env = run_env(session, runs)
         subject = collect.Subject(case.dataset, rows, 'other', table_state(case), table, protocol='fresh backend' if fresh else 'single')
         missed = []
-        ROWS.extend(collect.measure_statement(session, case.id, sql, subject, arms(case), env, fresh=fresh, unavailable=missed))
+        try:
+            ROWS.extend(collect.measure_statement(session, case.id, sql, subject, arms(case), env, fresh=fresh, unavailable=missed))
+        except collect.PerfUnavailable as e:
+            SKIPPED.append((case.id, str(e)))
+            return
         UNAVAILABLE.extend((case.id,) + m for m in missed)
     finally:
         if fresh:
@@ -151,7 +155,10 @@ def emit_load(case, csv, rows, runs, build, workers):
         state = table_state(case, ('prepare', 'load'))
         subject = collect.Subject(case.dataset, rows, 'other', state, case.schema(), kind='load', protocol='single')
         hash_text = '\n'.join(case.sec[k] for k in ('prepare', 'load', 'load_sift') if k in case.sec)
-        ROWS.extend(collect.measure_statement(session, case.id, fill(text('heap')), subject, arms, env, monitor=monitor, temps=('warm',), hash_text=hash_text))
+        try:
+            ROWS.extend(collect.measure_statement(session, case.id, fill(text('heap')), subject, arms, env, monitor=monitor, temps=('warm',), hash_text=hash_text))
+        except collect.PerfUnavailable as e:
+            SKIPPED.append((case.id, str(e)))
     finally:
         session.close()
         monitor.close()

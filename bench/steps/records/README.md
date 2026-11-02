@@ -72,6 +72,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `instr_m` | number |  | millions of user instructions of the statement |
 | `cycles_m` | number |  | millions of user cycles |
 | `instr_scope` | text |  | cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched) |
+| `instr_n` | integer |  | statements run in the window the instructions were counted over (a statement under 5 ms is run again and again in the one backend between two readings and the count divided: the number is of one run); 1 for a long one |
 | `workers_requested` | integer | yes | parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started) |
 | `workers_launched` | integer | yes | parallel workers that ran |
 | `heap_hit` | integer |  | blocks of heap relations found in shared buffers |
@@ -102,6 +103,13 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `settings_hash` | text | yes | ten hex digits of `settings`: two rows compared have the same one |
 | `maintenance` | text | yes | default, or disabled when a switch that turns the maintenance off is set (autovacuum, sift.col_auto_merge, sift.async_maintenance, a sift.test_* setting) |
 <!-- /columns -->
+
+## Versions of the schema
+
+A file starts with `#records-schema N` (files before the mark are known by their header). Every version's columns are frozen in `history.py`; columns are only added. A reader upgrades an older file
+in memory (`schema.MIGRATIONS`: a step from each version to the next, a new column gets its value from what the row says or "not recorded") and the tools say so: `note: FILE is schema 3, read
+as schema 5`; `bench records migrate FILE...` writes the file again in the current schema and keeps the old one as `FILE.schema3`. A change of the columns is a new `VERSION`, its columns in
+`history.py`, a step in `MIGRATIONS` and a frozen sample in `bench/test/records_samples`; `test_records.py` (part of lint) fails until the three exist and when a frozen sample is edited.
 
 ## What the checker refuses
 

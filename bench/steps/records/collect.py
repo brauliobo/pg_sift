@@ -18,6 +18,7 @@ Reads are repeated in place; a maintenance statement or a load (kind != read) ch
 """
 import contextlib
 import json
+import math
 import os
 import re
 import signal
@@ -297,6 +298,19 @@ def pressure():
     return psi(read_text('/proc/pressure/cpu')), psi(read_text('/proc/pressure/io'))
 
 
+SHORT_MS = 5.0     # a statement faster than this is counted over a window of runs, not one run
+WINDOW_MS = 5.0    # the window of a short one holds at least this much of the statement
+MAX_REPEATS = 5000
+
+
+def repeats_for(ms):
+    """how many times a statement of MS (client time of one run) is run in the window its instructions are counted over: 1 for a long one, else enough for the window to hold WINDOW_MS of
+    it and at least 50 runs (a count of one run of 20 microseconds is lost in what perf attaches and detaches), at most MAX_REPEATS"""
+    if ms >= SHORT_MS:
+        return 1
+    return min(MAX_REPEATS, max(50, math.ceil(WINDOW_MS / max(ms, 0.001))))
+
+
 def run_all(s, sql):
     """milliseconds of SQL on S: a list of statements one after the other with their times added; an error raises, a statement that failed is no measurement"""
     ms = 0.0
@@ -308,23 +322,92 @@ def run_all(s, sql):
     return ms
 
 
-def count_instructions(s, sql, pid, post, tries=3):
-    """(millions of instructions, millions of cycles) of one run of SQL on the backend PID and the postmaster POST (the workers are its children, forked after perf attached), or
-    (None, None) when perf cannot count after TRIES attempts (a busy host signals perf before it attached): the record then has no instructions, never a count of the backend alone"""
-    for _ in range(tries):
-        p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-        time.sleep(1)
-        run_all(s, sql)
-        p.send_signal(signal.SIGTERM)
+class PerfUnavailable(RuntimeError):
+    """perf could not count the instructions of a statement: the reason of each attempt, and the `perf stat` processes that hold the counters"""
+
+
+def stale_perf(min_age_s=600, proc='/proc'):
+    """[(pid, age in seconds, uid)] of `perf stat -p` processes older than MIN_AGE_S: a count that never ended (a shell killed before its trap, a lane that stopped) keeps counting while the
+    process it watches lives and holds the counters of the processor, so every later `perf stat` reports <not counted>"""
+    out = []
+    ticks = os.sysconf('SC_CLK_TCK')
+    up = float(read_text(os.path.join(proc, 'uptime')).split()[0] or 0)
+    for d in os.listdir(proc):
+        if not d.isdigit():
+            continue
         try:
-            out, _ = p.communicate(timeout=60)
+            args = read_text(os.path.join(proc, d, 'cmdline')).split('\0')
+            if os.path.basename(args[0]) != 'perf' or 'stat' not in args or '-p' not in args:
+                continue
+            age = up - int(read_text(os.path.join(proc, d, 'stat')).rsplit(')', 1)[1].split()[19]) / ticks
+            uid = os.stat(os.path.join(proc, d)).st_uid
+        except (OSError, ValueError, IndexError):
+            continue
+        if age > min_age_s:
+            out.append((int(d), int(age), uid))
+    return sorted(out)
+
+
+def check_perf_free():
+    held = stale_perf()
+    if held:
+        raise PerfUnavailable('perf stat processes older than 10 minutes hold the counters of the processor, so a count reports <not counted>: pids %s (age in seconds %s): end them with `kill -INT PID`' % (
+            ', '.join(str(p) for p, _, _ in held), ', '.join(str(a) for _, a, _ in held)))
+
+
+def wait_attached(p, limit=10.0):
+    """until the shell of a count has started its perf (it has a child) and a moment longer for perf to open its counters"""
+    end = time.time() + limit
+    while time.time() < end and p.poll() is None:
+        if read_text('/proc/%d/task/%d/children' % (p.pid, p.pid)).split():
+            time.sleep(0.5)
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def stop_perf(p, wait=30):
+    """the output of the count PROCESS p: SIGINT to its group (perf prints its counts on it), SIGKILL to anything that is left, on every path: no perf outlives its count"""
+    out = ''
+    try:
+        try:
+            os.killpg(p.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            out, _ = p.communicate(timeout=wait)
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGKILL)
-            continue
+            out, _ = p.communicate()
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return out
+
+
+def count_instructions(s, sql, pid, post, tries=3, repeats=1):
+    """(millions of instructions, millions of cycles) of one run of SQL on the backend PID and the postmaster POST (the workers are its children, forked after perf attached), counted
+    over REPEATS runs in the one backend between the two readings and divided (a short statement). The count is tried again up to TRIES times; PerfUnavailable says why each attempt
+    failed (never a count of the backend alone, never a record without instructions). Whatever happens, no perf of this count is left running"""
+    why = []
+    for attempt in range(tries):
+        p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            if not wait_attached(p):
+                why.append('attempt %d: perf did not start' % (attempt + 1))
+                continue
+            for _ in range(repeats):
+                run_all(s, sql)
+        finally:
+            out = stop_perf(p)
         f = out.split()
         if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
-            return int(f[1]) / 1e6, int(f[0]) / 1e6
-    return None, None
+            return int(f[1]) / 1e6 / repeats, int(f[0]) / 1e6 / repeats
+        why.append('attempt %d: perf printed "%s" (NA is a counter that was not counted)' % (attempt + 1, out.strip()[:60]))
+    held = stale_perf(60)
+    raise PerfUnavailable('perf counters unavailable; %s%s' % ('; '.join(why), ('; perf stat processes alive for over a minute: pids %s' % ', '.join(str(p) for p, _, _ in held)) if held else ''))
 
 
 class WorkerMonitor:
@@ -358,6 +441,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     the timed run, the EXPLAIN and the instruction count each in a new one, while S holds the facts of the server. An arm for which none of the ways to force it (Arm.tries)
     gives the structure of its name is not measured: one row of mode unavailable says so in the file (its `structure` is what the plans named: the b-tree twin that cannot serve a statement is an
     answer, not a refusal), and UNAVAILABLE, a list, gets (arm, option, the structures the plans named)."""
+    check_perf_free()
     pid = backend_pid(s)
     post = postmaster_pid(pid)
     catalog = (index_methods(s), subject.table, index_tables(s))
@@ -485,14 +569,15 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
             if temp == 'warm':
                 if prepare and not read:
                     prepare()
+                repeats = repeats_for(ms) if read and not fresh else 1   # a new backend for each run is measured once: its first statement is the point
                 with on_session() as t:
-                    instr, cycles = count_instructions(t, sql, backend_pid(t) if fresh else pid, post)
+                    instr, cycles = count_instructions(t, sql, backend_pid(t) if fresh else pid, post, repeats=repeats)
             if not read:
                 requested = launched   # a maintenance statement has no plan that asks for workers: the cap is the setting, the workers it started are what the record can say
             if temp == 'cold':
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
             r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
-                     instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, workers_requested=requested, workers_launched=launched,
+                     instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, instr_n=repeats if instr is not None and temp == 'warm' else None, workers_requested=requested, workers_launched=launched,
                      os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes, noise=int(max(x or 0 for x in p0 + p1) > check.NOISY_PSI), psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
             r.update(block_deltas(b0, b1))
             if arm.structures:

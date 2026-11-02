@@ -66,7 +66,7 @@ class Schema(unittest.TestCase):
             p = os.path.join(d, 'r.tsv')
             with open(p, 'w') as f:
                 f.write('case\tarm\tmetric\n')
-            with self.assertRaisesRegex(ValueError, 'not the record schema'):
+            with self.assertRaisesRegex(ValueError, 'none of the 5 schema versions'):
                 schema.read(p)
 
     def test_the_statement_hash_ignores_white_space(self):
@@ -135,6 +135,28 @@ class Collect(unittest.TestCase):
         parts = {'Node Type': 'Append', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'p1'}, {'Node Type': 'Seq Scan', 'Relation Name': 'p2'}]}
         self.assertEqual(collect.plan_structure(parts, AM, table='parent'), 'heap')   # no scan of the table itself: the plan as a whole
 
+    def test_a_perf_stat_that_outlived_its_count_is_found_by_its_pids(self):
+        with tempfile.TemporaryDirectory() as proc:
+            def process(pid, args, started_ticks):
+                os.makedirs(os.path.join(proc, str(pid)))
+                open(os.path.join(proc, str(pid), 'cmdline'), 'w').write('\0'.join(args) + '\0')
+                open(os.path.join(proc, str(pid), 'stat'), 'w').write('%d (perf) S ' % pid + ' '.join(['0'] * 18 + [str(started_ticks)]) + ' 0 0\n')
+            ticks = os.sysconf('SC_CLK_TCK')
+            open(os.path.join(proc, 'uptime'), 'w').write('10000.00 9000.00\n')
+            process(11, ['perf', 'stat', '-x,', '-e', 'cycles:u', '-p', '5,6'], 100 * ticks)       # 9,900 s old: a count that never ended
+            process(12, ['perf', 'stat', '-x,', '-p', '5,6'], 9900 * ticks)                         # 100 s old: a count in progress
+            process(13, ['perf', 'record', '-p', '5'], 100 * ticks)                                 # not a stat
+            process(14, ['perf', 'stat', '-a', 'sleep', '1'], 100 * ticks)                          # not of a process
+            os.makedirs(os.path.join(proc, 'self'))
+            self.assertEqual([(p, a) for p, a, _ in collect.stale_perf(600, proc)], [(11, 9900)])
+            self.assertEqual([p for p, _, _ in collect.stale_perf(60, proc)], [11, 12])
+
+    def test_a_short_statement_is_counted_over_a_window_of_runs(self):
+        # (ms of one run, runs in the window)
+        for ms, want in ((120.0, 1), (5.0, 1), (4.9, 50), (1.0, 50), (0.1, 50), (0.02, 250), (0.0, 5000), (0.0004, 5000)):
+            with self.subTest(ms=ms):
+                self.assertEqual(collect.repeats_for(ms), want)
+
     def test_a_list_of_statements_adds_its_times_and_a_failed_one_is_no_measurement(self):
         class Fake:
             def run(self, sql):
@@ -188,6 +210,23 @@ class Live(unittest.TestCase):
         self.assertEqual(check.check(recs), [])
         self.assertTrue(all(r['instr_m'] for r in recs if r['temp'] == 'warm'))
 
+    def test_a_point_lookup_of_twenty_microseconds_has_a_stable_instruction_count(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
+        from duckdb import Session
+        import iolib
+        import statistics
+        s = Session(int(os.environ['RECORDS_PORT']), 60, None, db=os.environ.get('RECORDS_DB', 'postgres'), host=os.environ['RECORDS_HOST'])
+        s.run('CREATE TABLE IF NOT EXISTS point_t AS SELECT g AS k, g % 100 AS v FROM generate_series(1, 100000) g')
+        s.run('ALTER TABLE point_t ADD PRIMARY KEY (k)') if 'point_t_pkey' not in ''.join(s.run("SELECT relname FROM pg_class WHERE relname = 'point_t_pkey'")[1]) else None
+        s.run('VACUUM ANALYZE point_t')
+        env = collect.Env('abc123456789', 'test', schema.run_id('abc123456789'), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=5, cool=iolib.cool)
+        recs = collect.measure_statement(s, 'point', 'SELECT v FROM point_t WHERE k = 4242', collect.Subject('point_t', 100000, 'sorted', 'fresh_vacuumed', 'point_t', key='k'),
+                                         [collect.Arm('btree')], env, temps=('warm',))
+        counts = [r['instr_m'] for r in recs if r['mode'] == 'forced']
+        self.assertEqual(len(counts), 5)
+        self.assertLess(statistics.pstdev(counts) / statistics.mean(counts), 0.05)
+        self.assertTrue(all(r['instr_n'] > 1 for r in recs if r['mode'] == 'forced'))
+
 
 LINE = '- Improved: pg_sift: a top 20 over a sorted key takes 1 ms and 5 million instructions where the heap took 40 ms.'
 
@@ -237,6 +276,71 @@ class Claims(unittest.TestCase):
                 f.write('# c\nphrase\tstatement\trows\tarm\toption\tmetric\tvalue\ttolerance\tnote\na top 20\ttop20\t300,000\tsift\t\texec_ms\t1\t10\t\n')
             c = claims.read_claims(p)
         self.assertEqual((c[0]['rows'], c[0]['option'], c[0]['tol'], c[0]['line']), (300000, 'default', 10.0, 3))
+
+
+SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'records_samples')
+
+
+class Versions(unittest.TestCase):
+    """the schema is versioned: a change of FIELDS is a new version with its columns frozen in history.py, a step in schema.MIGRATIONS and a frozen sample here"""
+
+    def test_a_change_of_the_columns_needs_a_new_version_a_migration_and_a_sample(self):
+        self.assertEqual(schema.HISTORY[schema.VERSION], schema.COLUMNS, 'FIELDS changed: bump schema.VERSION, freeze the columns in history.py, add the step to MIGRATIONS and a records_samples/vN.tsv')
+        self.assertEqual(sorted(schema.MIGRATIONS), list(range(1, schema.VERSION)), 'a migration from every version to the next')
+        self.assertEqual(sorted(schema.HISTORY), list(range(1, schema.VERSION + 1)))
+        for v, cols in schema.HISTORY.items():
+            with self.subTest(version=v):
+                self.assertTrue(set(cols) <= set(schema.COLUMNS), 'columns are only added')
+                self.assertEqual(cols, [c for c in schema.COLUMNS if c in cols], 'and keep their order')
+                with open(os.path.join(SAMPLES, 'v%d.tsv' % v)) as f:
+                    first = f.readline().rstrip('\n')
+                    head = f.readline().rstrip('\n') if first.startswith(schema.MARK) else first
+                self.assertEqual(head.split('\t'), cols, 'the frozen sample of version %d is never edited' % v)
+
+    def test_a_frozen_sample_of_every_version_is_read_upgraded_and_passes_the_checker(self):
+        for v in schema.HISTORY:
+            with self.subTest(version=v):
+                rs = schema.read(os.path.join(SAMPLES, 'v%d.tsv' % v))
+                self.assertEqual(len(rs), 24)
+                self.assertEqual({r['_schema'] for r in rs}, {v})
+                self.assertEqual(problems(rs), [])
+                self.assertTrue(all(set(schema.COLUMNS) <= set(r) for r in rs))
+
+    def test_old_rows_get_the_values_the_migrations_define(self):
+        v1 = schema.read(os.path.join(SAMPLES, 'v1.tsv'))
+        self.assertEqual({r['variant'] for r in v1}, {'main'})
+        self.assertEqual({r['instr_n'] for r in v1 if r['instr_m'] is not None}, {1})
+        row = dict(psi_cpu_start=3.0, psi_cpu_end=12.0, psi_io_start=0.0, psi_io_end=0.0)
+        self.assertEqual(schema.upgrade(dict(row), 3)['noise'], 1)
+        self.assertEqual(schema.upgrade(dict(row, psi_cpu_end=2.0), 3)['noise'], 0)
+        churned = schema.upgrade(dict(table_state='churned_vacuumed', kind='read', instr_m=None), 2)
+        self.assertEqual(churned['churn_history'], 'not recorded (schema 2)')
+
+    def test_migrate_writes_the_file_again_keeps_the_old_one_and_leaves_a_current_one_alone(self):
+        import shutil
+        import tmpfs
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'old.tsv')
+            shutil.copy(os.path.join(SAMPLES, 'v2.tsv'), path)
+            self.assertEqual(schema.migrate(path), 2)
+            self.assertTrue(os.path.exists(path + '.schema2'))
+            self.assertEqual(schema.header_of(path)[0], schema.VERSION)
+            self.assertEqual({r['_schema'] for r in schema.read(path)}, {schema.VERSION})
+            self.assertEqual(problems(schema.read(path)), [])
+            self.assertIsNone(schema.migrate(path))
+
+    def test_a_file_that_is_no_version_says_so_and_an_old_one_is_noted(self):
+        import tmpfs
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'x.tsv')
+            open(path, 'w').write('a\tb\n1\t2\n')
+            with self.assertRaisesRegex(ValueError, 'none of the 5 schema versions'):
+                schema.read(path)
+        said = []
+        schema.read_files([os.path.join(SAMPLES, 'v1.tsv'), os.path.join(SAMPLES, 'v5.tsv')], say=said.append)
+        self.assertEqual(len(said), 1)
+        self.assertIn('schema 1, read as schema 5', said[0])
+        self.assertIn('bench records migrate', said[0])
 
 
 class Doc(unittest.TestCase):

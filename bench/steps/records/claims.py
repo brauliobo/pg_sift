@@ -101,8 +101,7 @@ def main(argv):
     if not files:
         sys.exit(__doc__)
     records = []
-    for f in files:
-        records += schema.read(f)
+    records += schema.read_files(files, say=lambda m: print('note: ' + m, file=sys.stderr))
     claims = read_claims(claims_file)
     problems = verify(claims, records, open(changelog).read(), tol, claims_file)
     for p in problems:

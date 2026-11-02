@@ -143,7 +143,7 @@ def comparison_problems(key, rs, min_reps):
         if r['mode'] == 'forced' and r['arm'] != r['structure']:
             out.append('%s: WRONG ARM at %s: arm %s but the EXPLAIN names %s' % (name, where(r), r['arm'], r['structure']))
         if r['temp'] == 'warm' and r.get('instr_m') is None:
-            out.append('%s: INSTRUCTIONS MISSING at %s: a warm row has no instruction count (perf failed or was not run)' % (name, where(r)))
+            out.append('%s: INSTRUCTIONS MISSING at %s: a warm row has no instruction count (perf counters unavailable: the collector raises PerfUnavailable and writes no such row; a harness of its own or an older library left it)' % (name, where(r)))
         if r.get('instr_m') is not None:
             if not r.get('instr_scope'):
                 out.append('%s: INSTRUCTIONS WITHOUT SCOPE at %s' % (name, where(r)))
@@ -192,8 +192,7 @@ def main(argv):
     if not argv:
         sys.exit(__doc__)
     records = []
-    for f in argv:
-        records += schema.read(f)
+    records += schema.read_files(argv, say=lambda m: print('note: ' + m, file=sys.stderr))
     problems = check(records)
     for p in problems:
         print(p)
