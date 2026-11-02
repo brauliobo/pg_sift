@@ -252,10 +252,10 @@ col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *le
 	return true;
 }
 
-void
-col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
+/* Adds to av, read from the map, the pages of the superblock that no tombstone deletes from (the log is read after the map, as the liveness is) */
+static void
+sb_add_log(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
 {
-	src->visibility.sb_mask(src->visibility.arg, sb, av);
 	if (hf_seg(src, seg))
 	{
 		uint64		bad[SIFT_PAGEMASK_WORDS] = {0};
@@ -265,6 +265,44 @@ col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av
 			av[w] |= ~bad[w];
 		sift_col_hf_taken++;
 	}
+}
+
+void
+col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
+{
+	src->visibility.sb_mask(src->visibility.arg, sb, av);
+	sb_add_log(src, seg, sb, av);
+}
+
+/*
+ * Is every page of pm all-visible for the snapshot: by the visibility map, or by the log for the pages it does not hold (none of them has a tombstone). The log is asked about
+ * those pages one by one and the first tombstone ends it, where col_sb_mask reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
+ * read it now.
+ */
+bool
+col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm)
+{
+	uint64		mine[SIFT_PAGEMASK_WORDS];
+	const uint64 *av = vm;
+	bool		missing = false;
+
+	if (av == NULL)
+	{
+		src->visibility.sb_mask(src->visibility.arg, sb, mine);
+		av = mine;
+	}
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		missing |= (pm[w] & ~av[w]) != 0;
+	if (!missing)
+		return true;
+	if (!hf_seg(src, seg))
+		return false;
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		for (uint64 m = pm[w] & ~av[w]; m != 0; m &= m - 1)
+			if (hf_deleted(src, sb * SIFT_SB_PAGES + w * 64 + pg_rightmost_one_pos64(m), 1, NULL))
+				return false;
+	sift_col_hf_taken++;
+	return true;
 }
 
 bool
@@ -329,13 +367,37 @@ unit_allvisible(ColUnit *cu)
 		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
 		 * and made their pages all-visible: no page of a lane batch is taken as all-visible, so its rows are checked against the heap */
 		if (!cu->lane)
-			col_sb_mask(cu->src, cu->seg, cu->sb, cu->av);
+		{
+			memcpy(cu->av, unit_allvisible_vm(cu), sizeof(cu->av));
+			sb_add_log(cu->src, cu->seg, cu->sb, cu->av);
+		}
 		/* the directory is checked after the mask, as the liveness is */
 		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
 			memset(cu->av, 0, sizeof(cu->av));
 		cu->av_ready = true;
 	}
 	return cu->av;
+}
+
+/*
+ * The all-visible pages of the unit's superblock by the visibility map alone (a key-cut unit: its own mask). It is read before the liveness (unit_clean). A read of a few rows
+ * asks the log about the pages of those rows (col_hf_filter_page, a bisection each), where unit_allvisible asks it about the 256 pages of the superblock and so reads every
+ * tombstone of the range.
+ */
+const uint64 *
+unit_allvisible_vm(ColUnit *cu)
+{
+	if (cu->v.keyed)
+		return unit_allvisible(cu);
+	if (!cu->avvm_ready)
+	{
+		if (!cu->lane)
+			cu->src->visibility.sb_mask(cu->src->visibility.arg, cu->sb, cu->avvm);
+		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+			memset(cu->avvm, 0, sizeof(cu->avvm));
+		cu->avvm_ready = true;
+	}
+	return cu->avvm;
 }
 
 /* The element structure of a group leaf of the unit (counts decoded from the group's chunk) */
@@ -436,7 +498,6 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 {
 	SiftColSegment *seg = NULL;
 	uint32		u = 0;
-	uint64		av[SIFT_PAGEMASK_WORDS];
 	SiftCSbHead h;
 
 	if (src->flags & COLO_TABLE)
@@ -463,10 +524,8 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 	}
 	if (seg == NULL || !sift_cseg_sbhead(seg, u, col, &h))
 		return false;
-	col_sb_mask(src, seg, sb, av);
-	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-		if (h.pm[w] & ~av[w])
-			return false;
+	if (!col_sb_covers(src, seg, sb, NULL, h.pm))
+		return false;
 	if (!segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
@@ -611,7 +670,12 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 bool
 unit_pages_allvisible(ColUnit *cu)
 {
-	const uint64 *av = unit_allvisible(cu);
+	const uint64 *av;
+
+	/* the answer alone, with no mask kept: the log is asked about the pages the map lacks, not about the whole superblock (col_sb_covers) */
+	if (!cu->v.keyed && !cu->av_ready && !cu->lane && !(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src)))
+		return col_sb_covers(cu->src, cu->seg, cu->sb, unit_allvisible_vm(cu), cu->v.pagemask);
+	av = unit_allvisible(cu);
 
 	if (cu->v.keyed)
 	{
@@ -647,7 +711,6 @@ bool
 units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
 {
 	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
-	uint64		av[SIFT_PAGEMASK_WORDS];
 
 	sift_cseg_super_pagemask(seg, first / sift_cseg_super_fan(seg), n, pm);
 	for (uint32 i = 0; i < n; i++)
@@ -661,10 +724,8 @@ units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 				return false;
 			continue;
 		}
-		col_sb_mask(src, seg, sift_cseg_unit_sb(seg, first + i), av);
-		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
-				return false;
+		if (!col_sb_covers(src, seg, sift_cseg_unit_sb(seg, first + i), NULL, pm + i * SIFT_PAGEMASK_WORDS))
+			return false;
 	}
 	return true;
 }

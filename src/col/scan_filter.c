@@ -737,24 +737,28 @@ vet_stream_next(void *arg)
 /* The pages a vet reads on its own before it asks the heap for the others through a stream */
 #define VET_STREAM_AFTER	8
 
+/* A selection of this many rows or fewer is vetted page by page against the log, not by the mask of the superblock (unit_allvisible_vm) */
+#define VET_FEW_ROWS		32
+
 bool
 sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 {
 	ColUnit    *cu = unit->priv;
 	SiftColSource *src = cu->src;
 	const SiftColVisibility *vis = &src->visibility;
-	const uint64 *av = unit_allvisible(cu);
 	VetCursor	cur,
 				ahead;
 	int			npages = 0;
 	bool		streamed = false;
 	bool		hf = col_hf_unit(src, cu);
+	bool		few = hf && !cu->lane && !cu->v.keyed && !cu->av_ready && sift_col_sel_count(sel) <= VET_FEW_ROWS;
+	const uint64 *av = few ? unit_allvisible_vm(cu) : unit_allvisible(cu);
 
 	SIFT_COL_JITTER();
 #ifdef SIFT_TESTING
 	if (!sift_test_col_paranoid)	/* the paranoid check reads the heap under every all-visible page */
 #endif
-	if (sift_col_unit_allvisible(unit))
+	if (!few && sift_col_unit_allvisible(unit))
 		return sift_col_sel_count(sel) > 0;
 	/* no mask for a key-cut unit means every page of its block range is all-visible, dead rows or not */
 	if (cu->v.keyed && av == NULL)

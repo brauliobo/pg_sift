@@ -95,16 +95,11 @@ span_each(SiftColSegment *seg, const CountSpan *sp, uint32 limit, void (*fn) (vo
 static bool
 unit_exact(SiftColSource *src, SiftColSegment *seg, uint32 u)
 {
-	uint64		pm[SIFT_PAGEMASK_WORDS],
-				av[SIFT_PAGEMASK_WORDS];
+	uint64		pm[SIFT_PAGEMASK_WORDS];
 
 	if (sift_cseg_dirty(seg, u) || !sift_cseg_unit_pagemask(seg, u, pm))
 		return false;
-	col_sb_mask(src, seg, sift_cseg_unit_sb(seg, u), av);
-	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-		if (pm[w] & ~av[w])
-			return false;
-	return true;
+	return col_sb_covers(src, seg, sift_cseg_unit_sb(seg, u), NULL, pm);
 }
 
 /*

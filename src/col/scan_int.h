@@ -170,6 +170,8 @@ typedef struct ColUnit
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
+	bool		avvm_ready;
+	uint64		avvm[SIFT_PAGEMASK_WORDS];	/* the pages the visibility map holds all-visible, no page the log added (unit_allvisible_vm) */
 	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
 	ColGroup   *grp;
 	ColSelCache selc;
@@ -318,6 +320,7 @@ extern bool unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, Si
 extern bool unit_inline(ColUnit *cu, int col);
 extern SiftCDict *unit_dict(ColUnit *cu, int col);
 extern const uint64 *unit_allvisible(ColUnit *cu);
+extern const uint64 *unit_allvisible_vm(ColUnit *cu);
 extern ColGroup *unit_group(ColUnit *cu, int group);
 extern bool types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel);
 
@@ -358,7 +361,7 @@ unit_clean(ColUnit *cu)
 {
 	if (!cu->clean_ready)
 	{
-		unit_allvisible(cu);
+		unit_allvisible_vm(cu);
 		SIFT_COL_JITTER();
 		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
 		cu->clean_ready = true;
@@ -375,6 +378,7 @@ extern bool unit_pages_allvisible(ColUnit *cu);
  * buffer batch): the map alone.
  */
 extern void col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av);
+extern bool col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm);
 extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi);
 extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
 /* Opens the log of the source (before its first liveness read) */
