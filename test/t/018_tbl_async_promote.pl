@@ -65,7 +65,7 @@ subtest 'a crash while the writers and the worker run' => sub {
 	$node->safe_psql('postgres', 'TRUNCATE s; TRUNCATE h');
 	my ($out, $err) = ('', '');
 	my $h = start([ @bench, '-T', '30', 'postgres' ], '>', \$out, '2>', \$err);
-	sleep 2;
+	sleep 1;
 	$node->stop('immediate');
 	finish($h);
 	$node->start;
