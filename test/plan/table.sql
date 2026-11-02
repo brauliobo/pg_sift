@@ -8,4 +8,4 @@ SELECT format('ALTER TABLE %s SET ACCESS METHOD sift_table', c.oid::regclass) FR
 	WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p') ORDER BY c.relname \gexec
 SELECT sift.table_set_paths('events', 'doc', 'doc.metrics.* float8, doc.parts[]{kind astext, sub astext, dir_a astext, score float8}');
 VACUUM FULL events;
-VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
+VACUUM (FREEZE, ANALYZE) dims, parents, events, events_dirty, facts, buckets, events_part;
