@@ -50,7 +50,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: REINDEX to change; no size effect
 - **When:** sift (BM25) indexes; scales the score of every ranked query. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
-- **Default:** 1.2 — 1.2: the value of the ranked top-10 kernel benchmarks (docs/CODEC.md 5.7); no size or write effect (gain, growth, write are -), so the default carries no cost.
+- **Default:** 1.2 — 1.2: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter. ALTER INDEX .. RESET (k1) returns 1.2 but the index fails queries and inserts until REINDEX; build a new index with CREATE INDEX CONCURRENTLY and drop the old one.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 1.2. Higher lets repeated words keep raising the score, lower flattens that. Changing it needs REINDEX; the index size does not change.
@@ -64,7 +64,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: REINDEX to change; no size effect
 - **When:** sift (BM25) indexes; scales the length normalization of every ranked score. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
-- **Default:** 0.75 — 0.75: the value of the ranked top-10 kernel benchmarks (docs/CODEC.md 5.7); no size or write effect (gain, growth, write are -), so the default carries no cost.
+- **Default:** 0.75 — 0.75: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter (0 ignores document length). ALTER INDEX .. RESET (b) returns 0.75 but the index fails until REINDEX; prefer CREATE INDEX CONCURRENTLY with the new value, then drop the old one.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 0.75. 0 ignores document length, 1 normalizes fully by length. Changing it needs REINDEX; the index size does not change.
@@ -2461,7 +2461,7 @@ all · deprecated · since 1.0 · default 4096
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: none: the same as write_buffer_limit
 - **When:** A sift index created by 1.x or 2.0 that still carries the old spelling; the new name wins when both are set. Applies to sift indexes only (sift_col is new in 3.0).
-- **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore (docs/NAMING.md); no measurement.
+- **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore; no measurement.
 - **Turn off:** ALTER INDEX .. RESET (mutable_limit), and use SET (write_buffer_limit = n); scripts/upgrade-check.sh lists indexes that still carry it. No REINDEX.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set). Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
