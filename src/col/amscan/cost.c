@@ -30,7 +30,8 @@
 /*
  * The cost of a scan, in microseconds of a warm run (the figures below are measured, docs/COL-SCAN.md), turned into the planner's units in one place, the scale of
  * sift_col_amcostestimate: a unit of the joins over the heap is about 1.75 microseconds (a hash join of 100k to 1M rows costs 493 to 553 units a millisecond), and
- * priced as one unit a microsecond the nested loop of probes crossed the hash join at 0.55 to 0.65 of the probes it was measured at. The scale follows cpu_operator_cost.
+ * priced as one unit a microsecond the nested loop of probes crossed the hash join at 0.44 to 0.63 of the probes it was measured at (0.65 to 0.95 with this scale:
+ * records planner-pl15-arms-*-20261102). The scale follows cpu_operator_cost.
  */
 #define COL_SCAN_US_PER_UNIT	1.75
 
