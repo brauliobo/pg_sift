@@ -28,9 +28,12 @@
  */
 
 /*
- * The cost of a scan, in microseconds of an ordinary run (cost units are about that on the default settings: a cached b-tree lookup of 8 units takes 6-8 us and a
- * bitmap heap scan of 1,700 units about 1.7 ms; the figures below are measured, docs/COL-SCAN.md, and scale with cpu_operator_cost like the rest of the planner's costs).
+ * The cost of a scan, in microseconds of a warm run (the figures below are measured, docs/COL-SCAN.md), turned into the planner's units in one place, the scale of
+ * sift_col_amcostestimate: a unit of the joins over the heap is about 1.75 microseconds (a hash join of 100k to 1M rows costs 493 to 553 units a millisecond), and
+ * priced as one unit a microsecond the nested loop of probes crossed the hash join at 0.55 to 0.65 of the probes it was measured at. The scale follows cpu_operator_cost.
  */
+#define COL_SCAN_US_PER_UNIT	1.75
+
 #define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
 
 #define COL_SCAN_FIXED_TID	12.0	/* ... for a lookup the directory of heap addresses answers: the source is opened and the first addresses read in 67,000 instructions (16 us measured, 4 of them the probe) */
@@ -171,7 +174,7 @@ ios_var_columns(IndexOptInfo *index)
 }
 
 /*
- * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
+ * The cost of the scan in the planner's units (see COL_SCAN_US_PER_UNIT): the startup is the opening of the index and the pruning of the units (the
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
  * values (only the rows the directory lists, when it is what keeps them) and handing the rows over. The start is separate so that a LIMIT stops the scan early: the units are read one at a time.
  */
@@ -192,7 +195,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				rescan,
 				repeat,
 				row_cost,
-				scale = cpu_operator_cost / 0.0025;
+				scale = cpu_operator_cost / 0.0025 / COL_SCAN_US_PER_UNIT;
 	Bitmapset  *cols = NULL,
 			   *slow = NULL,
 			   *narrowed = NULL;
