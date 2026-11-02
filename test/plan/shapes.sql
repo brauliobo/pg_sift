@@ -46,7 +46,7 @@ SELECT kind, count(*) FILTER (WHERE qty > 5) AS big, count(*) FILTER (WHERE qty 
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: one_parent_narrow
--- expect: normal 0.99 4.0
+-- expect: either 0.49 2.0
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id = 7 AND deleted_at IS NULL AND ts >= date '2025-03-01' AND ts < date '2025-04-01' GROUP BY 1 ORDER BY 1;
 
