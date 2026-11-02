@@ -321,12 +321,6 @@ read_dir(Relation index)
 	return snap;
 }
 
-static bool
-is_wbuf(const SiftSegEntry *e)
-{
-	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
-}
-
 static void
 set_hash(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
@@ -477,7 +471,7 @@ sift_test_col_wbuf_rows(PG_FUNCTION_ARGS)
 		SiftColRow	row;
 		bool		deleted;
 
-		if (!is_wbuf(&snap->segs[i]))
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
 			continue;
 		r = sift_cwbuf_open(index, &snap->segs[i], test_schema(), CurrentMemoryContext);
 		while (sift_cwbuf_next(r, &row, &deleted))
@@ -510,7 +504,7 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 		SiftColBatch **batches;
 		SiftColRow	row = {0};
 
-		if (!is_wbuf(&snap->segs[i]))
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
 			continue;
 		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb, NULL) :
 			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
@@ -601,7 +595,7 @@ sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	snap = read_dir(index);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (is_wbuf(&snap->segs[i]))
+		if (sift_seg_is_wbuf(&snap->segs[i]))
 			removed += sift_cwbuf_bulkdelete(index, &snap->segs[i], test_schema(), dead_every, &state, &stats);
 	/* as sift_mops_bulkdelete: the readers that keep batches find out by the version */
 	if (removed > 0)
@@ -671,7 +665,7 @@ sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 		Datum		values[7];
 		bool		nulls[7] = {0};
 
-		if (!is_wbuf(e))
+		if (!sift_seg_is_wbuf(e))
 			continue;
 		sift_cwbuf_summary(index, e, &nrows, &npages);
 		ext = sift_cwbuf_pages(index, e, &next);

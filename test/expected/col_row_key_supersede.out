@@ -1,0 +1,176 @@
+-- An UPDATE of a row of a table whose sift_col index has row_key writes a tombstone for the entry of the version it replaced, in the transaction and command of the update: the log
+-- holds exactly the addresses the updates of committed transactions left behind in the index. A HOT update, an insert, a delete and a change of the key itself write none (deletes
+-- and key changes need hear_deletes). The oracle is the heap: the address a row had before each statement.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(1, 3000) i;
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (row_key = 'id');
+CREATE TEMP TABLE expected (tid tid);
+-- the addresses of the log that no aborted transaction wrote, against the addresses the heap oracle expects
+CREATE FUNCTION log_matches() RETURNS bool LANGUAGE sql AS $$
+  SELECT coalesce((SELECT array_agg(tid ORDER BY tid) FROM expected), '{}') =
+         coalesce((SELECT array_agg(tid ORDER BY tid) FROM sift._test_col_log_entries('t_c') WHERE txid_status(xid::text::bigint) IS DISTINCT FROM 'aborted'), '{}') $$;
+CREATE FUNCTION log_entries() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift._test_col_log_entries('t_c') $$;
+SELECT log_entries() AS entries, log_matches() AS matches;
+ entries | matches 
+---------+---------
+       0 | t
+(1 row)
+
+-- a covered column changes: the update is never HOT, every old address gets a tombstone
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+UPDATE t SET v = v + 1 WHERE id <= 50;
+INSERT INTO expected SELECT old FROM before WHERE id <= 50;
+SELECT log_entries() AS entries, log_matches() AS matches;
+ entries | matches 
+---------+---------
+      50 | t
+(1 row)
+
+SELECT kind, count(*) FROM sift._test_col_log_entries('t_c') GROUP BY kind;
+ kind | count 
+------+-------
+    2 |    50
+(1 row)
+
+-- an uncovered column: a HOT update where the page has room, a new address on another page where it has none (the pages are full): only that one writes an entry
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+UPDATE t SET w = 1 WHERE id BETWEEN 101 AND 600;
+INSERT INTO expected SELECT b.old FROM before b JOIN t USING (id)
+ WHERE id BETWEEN 101 AND 600 AND (b.old::text::point)[0] <> (t.ctid::text::point)[0];
+SELECT count(*) > 0 AS some_moved, count(*) < 500 AS some_hot FROM before b JOIN t USING (id) WHERE id BETWEEN 101 AND 600 AND (b.old::text::point)[0] <> (t.ctid::text::point)[0];
+ some_moved | some_hot 
+------------+----------
+ t          | t
+(1 row)
+
+SELECT log_matches() AS matches;
+ matches 
+---------
+ t
+(1 row)
+
+-- a rolled back update: its entries are in the log, voided by the transaction
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+BEGIN;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 801 AND 820;
+SELECT txid_current() AS aborted_tx \gset
+ROLLBACK;
+SELECT txid_status(:aborted_tx) AS status, (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_tx) AS entries_of_it;
+ status  | entries_of_it 
+---------+---------------
+ aborted |            20
+(1 row)
+
+SELECT log_matches() AS matches;
+ matches 
+---------
+ t
+(1 row)
+
+-- a savepoint that is rolled back, then one that is kept
+BEGIN;
+SAVEPOINT s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 901 AND 910;
+SELECT xmin::text::bigint AS aborted_sub FROM t WHERE id = 901 \gset
+ROLLBACK TO s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 911 AND 920;
+COMMIT;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 911 AND 920;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_sub) AS entries_of_it, log_matches() AS matches;
+ entries_of_it | matches 
+---------------+---------
+            10 | t
+(1 row)
+
+-- ON CONFLICT: the existing row's old address; a new key, and a conflict that does nothing, write none
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+INSERT INTO t VALUES (1001, 1, 1, 1), (1002, 2, 2, 2), (5000, 3, 3, 3) ON CONFLICT (id) DO UPDATE SET v = excluded.v + 1000;
+INSERT INTO t VALUES (1003, 1, 1, 1) ON CONFLICT (id) DO NOTHING;
+INSERT INTO expected SELECT old FROM before WHERE id IN (1001, 1002);
+SELECT log_matches() AS matches;
+ matches 
+---------
+ t
+(1 row)
+
+-- a row inserted and updated in one transaction: its entry is not in the write buffer's pages yet when the update looks for it
+BEGIN;
+INSERT INTO t VALUES (7000, 7, 7, 7);
+SELECT ctid AS first_version FROM t WHERE id = 7000 \gset
+UPDATE t SET v = 8 WHERE id = 7000;
+COMMIT;
+INSERT INTO expected VALUES (:'first_version');
+SELECT log_matches() AS matches;
+ matches 
+---------
+ t
+(1 row)
+
+-- inserts, copy, deletes and a change of the key write none
+INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(8001, 8300) i;
+COPY (SELECT i, i % 10, i, 0 FROM generate_series(9001, 9100) i) TO '/dev/null';
+DELETE FROM t WHERE id BETWEEN 2001 AND 2020;
+UPDATE t SET id = id + 100000 WHERE id BETWEEN 2021 AND 2030;
+SELECT log_matches() AS matches;
+ matches 
+---------
+ t
+(1 row)
+
+-- the reads are the heap's, by the index and by a scan of the table
+SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off;
+CREATE TEMP TABLE by_heap AS SELECT count(*) AS c, sum(v) AS s, (SELECT count(*) FROM t WHERE id IN (25, 911, 1001, 7000)) AS p FROM t WHERE g = 3;
+SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = on;
+CREATE TEMP TABLE by_index AS SELECT count(*) AS c, sum(v) AS s, (SELECT count(*) FROM t WHERE id IN (25, 911, 1001, 7000)) AS p FROM t WHERE g = 3;
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+SELECT h.c = i.c AND h.s = i.s AND h.p = i.p AS same_answers, h.p AS points FROM by_heap h, by_index i;
+ same_answers | points 
+--------------+--------
+ t            |      4
+(1 row)
+
+SELECT sift.col_verify('t_c');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- the mutant: with the supersede off an update writes none, and the oracle sees it
+SET sift.test_no_supersede = on;
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 1101 AND 1110;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 1101 AND 1110;
+SELECT log_matches() AS matches_with_mutant;
+ matches_with_mutant 
+---------------------
+ f
+(1 row)
+
+RESET sift.test_no_supersede;
+-- VACUUM removes the old versions, and with their entries the tombstones of them; the tombstones of the rolled back updates (their old versions live) go too
+SELECT log_entries() > 0 AS has_entries;
+ has_entries 
+-------------
+ t
+(1 row)
+
+VACUUM t;
+SELECT log_entries() AS entries_after_vacuum;
+ entries_after_vacuum 
+----------------------
+                    0
+(1 row)
+
+DROP FUNCTION log_matches();
+DROP FUNCTION log_entries();
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

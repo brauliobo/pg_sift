@@ -289,7 +289,7 @@ scan_load_wbuf(SiftColSource *src)
 		int			n;
 		SiftColBatch **bs;
 
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
 			continue;
 		/*
 		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their

@@ -10,6 +10,7 @@
 #include "bm25/prefix.h"
 #include "core/visibility.h"
 #include "core/parbuild.h"
+#include "col/am.h"
 #include "table/table.h"
 #include "agg/par_int.h"
 
@@ -60,6 +61,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_vis_pause",
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_no_supersede",
+							 "Testing: an index with row_key writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
+							 NULL, &sift_test_no_supersede, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

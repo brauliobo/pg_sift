@@ -5,7 +5,9 @@
  */
 #include "postgres.h"
 
+#include "access/transam.h"
 #include "access/xact.h"
+#include "storage/procarray.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -101,7 +103,10 @@ typedef struct DropArg
 	uint64		dropped;
 } DropArg;
 
-/* A tombstone names an entry of the index: when VACUUM removes the entry, the heap may give its address to another row, which the tombstone must not touch */
+/*
+ * A tombstone names an entry of the index: when VACUUM removes the entry, the heap may give its address to another row, which the tombstone must not touch. One whose
+ * transaction ended without committing deletes nothing and never will: it would stay as long as its entry does.
+ */
 static bool
 drop_keep(SiftTomb *t, void *arg)
 {
@@ -109,7 +114,7 @@ drop_keep(SiftTomb *t, void *arg)
 	ItemPointerData tid;
 
 	sift_key_to_tid(t->key, &tid);
-	if (d->cb(&tid, d->state))
+	if (d->cb(&tid, d->state) || (!TransactionIdIsInProgress(t->xid) && !TransactionIdDidCommit(t->xid)))
 	{
 		d->dropped++;
 		return false;

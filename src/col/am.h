@@ -48,6 +48,11 @@ extern void sift_col_log_create(Relation index);
 extern bool sift_col_row_key_on(Relation index);
 extern void sift_col_row_key_check(Relation index);
 extern void sift_col_row_key_prepare(Relation heap, Relation index);
+/* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
+extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT bool sift_test_no_supersede;
+#endif
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool

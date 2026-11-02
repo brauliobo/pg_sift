@@ -117,6 +117,13 @@ typedef struct SiftSegEntry
 	uint64		bytes;
 } SiftSegEntry;
 
+/* A write buffer (open or sealed): the segments that are neither this nor immutable are lane chains of another use (the tombstone log) */
+static inline bool
+sift_seg_is_wbuf(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
+}
+
 typedef struct SiftDirectoryData
 {
 	uint32		version;		/* bumped by every directory update */

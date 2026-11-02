@@ -76,6 +76,8 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
+static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with row_key supersedes the entries of the old versions */
+
 static void
 batch_flush_all(void)
 {
@@ -111,10 +113,25 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 		sift_cwbuf_discard(InvalidOid);
 }
 
+#define STMT_SPECULATIVE	1
+#define STMT_UPDATING		2
+
 static void
 batch_stmt_done(void *arg)
 {
-	batch_stmts--;
+	uintptr_t	what = (uintptr_t) arg;
+
+	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
+	batch_updates -= (what & STMT_UPDATING) != 0;
+}
+
+static bool
+plan_updates(Plan *plan)
+{
+	if (plan == NULL || !IsA(plan, ModifyTable))
+		return false;
+	return ((ModifyTable *) plan)->operation == CMD_UPDATE || ((ModifyTable *) plan)->operation == CMD_MERGE ||
+		((ModifyTable *) plan)->onConflictAction == ONCONFLICT_UPDATE;
 }
 
 void
@@ -123,16 +140,22 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	PlannedStmt *ps = queryDesc->plannedstmt;
 	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
 
+	bool		updating = plan_updates(ps->planTree);
+
 	foreach_ptr(Plan, sub, ps->subplans)
+	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
-	if (speculative)
+		updating |= plan_updates(sub);
+	}
+	if (speculative || updating)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
 
 		cb->func = batch_stmt_done;
-		cb->arg = NULL;
+		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0));
 		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
-		batch_stmts++;
+		batch_stmts += speculative;
+		batch_updates += updating;
 	}
 }
 
@@ -146,6 +169,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	MemoryContext rowcxt = r->rowcxt;
 	SiftColRow	row;
 	bool		crossed;
+	bool		supersede = r->rowkey && batch_updates > 0;
 
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	if (!batch_hooked)
@@ -155,7 +179,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 		batch_hooked = true;
 	}
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, &crossed)))
+	if (!(batch_seen && batch_stmts == 0 && !supersede && sift_cwbuf_pend(index, &hint, r->schema, &row, &crossed)))
 		crossed = sift_cwbuf_append(index, &hint, r->schema, &row);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);
@@ -163,6 +187,9 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	sift_col_rel(index)->hint = hint;
 	if (crossed)
 		sift_col_maint_after_seal(index);
+	/* after the append: the scan of the candidates reads the catalog, which can reload the relcache entry and free r */
+	if (supersede)
+		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);
 	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0);
 	return false;
 }
