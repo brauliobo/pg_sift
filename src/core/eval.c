@@ -39,6 +39,12 @@ check_methods(char **value, void **extra, GucSource source)
 			else
 				bits |= 1U << i;
 		}
+	if (ok && (bits & (1U << SIFT_EVAL_UNIT_REWRITE)))
+	{
+		GUC_check_errdetail("Evaluation method unit_rewrite is disabled: independent unit-generation retirement is not verified for snapshots and hot standby.");
+		GUC_check_errhint("Leave unit_rewrite disabled; use VACUUM and the existing segment maintenance paths.");
+		ok = false;
+	}
 	list_free(items);
 	pfree(raw);
 	if (ok)

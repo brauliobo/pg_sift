@@ -14,11 +14,11 @@ SHOW sift.eval_methods;
  snapshot_masks, latest_hint
 (1 row)
 
-SET sift.eval_methods = '-skip_trigger_lookup,penalty_maintenance,unit_rewrite';
+SET sift.eval_methods = '-skip_trigger_lookup,penalty_maintenance,-unit_rewrite';
 SHOW sift.eval_methods;
-                   sift.eval_methods                   
--------------------------------------------------------
- -skip_trigger_lookup,penalty_maintenance,unit_rewrite
+                   sift.eval_methods                    
+--------------------------------------------------------
+ -skip_trigger_lookup,penalty_maintenance,-unit_rewrite
 (1 row)
 
 SET sift.eval_methods = 'skip_trigger_lookup,-skip_trigger_lookup';
@@ -53,5 +53,30 @@ SELECT name || '=' || current_setting(name) AS in_the_settings_hash FROM pg_sett
  sift.eval_methods=snapshot_masks
 (1 row)
 
+RESET sift.eval_methods;
+-- An unavailable rewrite must fail atomically, rather than silently measure the baseline.
+SET sift.eval_methods = 'latest_hint';
+SET sift.eval_methods = 'unit_rewrite';
+ERROR:  invalid value for parameter "sift.eval_methods": "unit_rewrite"
+DETAIL:  Evaluation method unit_rewrite is disabled: independent unit-generation retirement is not verified for snapshots and hot standby.
+HINT:  Leave unit_rewrite disabled; use VACUUM and the existing segment maintenance paths.
+SHOW sift.eval_methods;
+ sift.eval_methods 
+-------------------
+ latest_hint
+(1 row)
+
+SET sift.eval_methods = 'snapshot_masks,unit_rewrite';
+ERROR:  invalid value for parameter "sift.eval_methods": "snapshot_masks,unit_rewrite"
+DETAIL:  Evaluation method unit_rewrite is disabled: independent unit-generation retirement is not verified for snapshots and hot standby.
+HINT:  Leave unit_rewrite disabled; use VACUUM and the existing segment maintenance paths.
+SHOW sift.eval_methods;
+ sift.eval_methods 
+-------------------
+ latest_hint
+(1 row)
+
+SET sift.eval_methods = '-unit_rewrite';
+SET sift.eval_methods = 'unit_rewrite,-unit_rewrite';
 RESET sift.eval_methods;
 DROP EXTENSION pg_sift;
