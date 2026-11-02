@@ -288,6 +288,8 @@ gorder_src(const SiftColSource *src, int i, int *v)
 static int
 gorder_slot(SiftColSource *src, int j, int col)
 {
+	if (src->galeaf1 > 0)
+		return sift_cseg_gorder_slot(src->seg[j].seg, src->galeaf1 - 1, true);
 	return src->gpin_leaf >= 0 ? sift_cseg_gorder_slot(src->seg[j].seg, col, true) : col;
 }
 
@@ -390,6 +392,33 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
 }
 
 /*
+ * A leaf with no order of its own, that every stored segment has as the group of the second order of one leaf (the same in all): that second order lists the rows group after
+ * group, in the order of the groups, and the rows of every group (a row with no group is not in the block, so the block must hold every row). -1 when it is not so.
+ */
+static int
+gorder_by_group(SiftColSource *src, int col)
+{
+	int			found = -1;
+
+	if (src->nseg == 0)
+		return -1;
+	for (int a = 0; a < src->schema->ncols && found < 0; a++)
+		if (a != col && sift_cseg_gorder_grouped_by(src->seg[0].seg, a, col))
+			found = a;
+	for (int i = 0; i < src->nseg && found >= 0; i++)
+	{
+		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, found, true);
+		uint32		entries,
+					values;
+
+		if (slot < 0 || !sift_cseg_gorder_grouped_by(src->seg[i].seg, found, col) || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) ||
+			entries != (uint32) src->seg[i].seg->entry.ndocs)
+			found = -1;
+	}
+	return found;
+}
+
+/*
  * The sources of the global order of leaf col: one for each stored segment, then one for the write buffers when they hold rows. -1 when the order cannot
  * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value, a block grouped by a leaf that none of the npin pins (leaf pinleaf[i]
  * = pinval[i], conditions of the query) names). A scan that pins the group of the blocks sorted by group reads the entries of that group only: the sources are those of that
@@ -402,10 +431,19 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 				nv = 0;
 	int64		vals[SIFT_GORD_PIN_MAX];
 
+	src->galeaf1 = 0;
 	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
 	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, vals, &nv, collid)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, vals, &nv, collid))
-		return -1;
+	{
+		int			a = npin == 0 && collid == 0 && (want == NULL || !(want->has_lo || want->has_hi)) ? gorder_by_group(src, col) : -1;
+
+		if (a < 0)
+			return -1;
+		src->galeaf1 = a + 1;
+		nv = 0;
+		gleaf = -1;
+	}
 	src->gpin_leaf = gleaf;
 	src->gpin_n = Max(nv, 1);
 	memcpy(src->gpin_vals, vals, nv * sizeof(int64));
@@ -533,6 +571,28 @@ sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve
 		*ve = *ns = src->gmem[v]->nvals;
 		*ne = src->gmem[v]->n;
 	}
+}
+
+/* Is source i read group after group (its entries are those of the second order of another leaf, whose key here is the group), and how many groups it has */
+bool
+sift_col_gorder_groups(SiftColSource *src, int i, int col, uint32 *ngroups)
+{
+	int			v,
+				j = gorder_src(src, i, &v);
+
+	if (src->galeaf1 == 0 || j >= src->nseg)
+		return false;
+	*ngroups = sift_cseg_gorder_ngroups(src->seg[j].seg, gorder_slot(src, j, col));
+	return true;
+}
+
+void
+sift_col_gorder_group_at(SiftColSource *src, int i, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	int			v,
+				j = gorder_src(src, i, &v);
+
+	sift_cseg_gorder_group_at(src->seg[j].seg, gorder_slot(src, j, col), gi, group, vs, ve, ns, ne);
 }
 
 uint32

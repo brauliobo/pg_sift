@@ -1,5 +1,5 @@
 /*
- * agg/gord/int.h - the cursors and the state of the merge of the global order (agg/gord.c), shared with the files of agg/gord/.
+ * agg/gord/int.h - the cursors and the state of the merge of the global order (agg/gord.c), shared with the cursors that read a second order group after group (agg/gord/group.c).
  */
 #ifndef SIFT_AGG_GORD_INT_H
 #define SIFT_AGG_GORD_INT_H
@@ -30,6 +30,12 @@ typedef struct GCur
 	uint32		gs;
 	uint32		ge;
 	bool		ends;			/* the source is the ends of a segment's order (cuts says where they stop being its own) */
+	bool		gm;				/* the source lists its rows group after group, from the second order of another leaf: the key of an entry is its group (cur_next_g) */
+	bool		gnull;			/* ... the NULL-key entries [ns, ne) of the group have been (or are being) read */
+	uint32		ngrp;
+	uint32		gnext;			/* ... the groups taken so far */
+	uint32		gskip;			/* ... the groups sift_gord_skip took off the front */
+	int64		gval;
 	SiftCGOrdCuts cuts;
 	bool		have;			/* cls, k and tid are the cursor's entry */
 	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
@@ -57,6 +63,7 @@ struct SiftGOrd
 	GCur	   *runner;
 	int		   *tree;			/* a text key: the tournament of the cursors, tree[0] the winner and tree[1..] the loser of each match (log2 of the sources compares a step, where the scan of them compares each) */
 	bool		ends;			/* some source is the ends of a segment's order */
+	bool		gm;				/* some source lists its rows group after group (no skip of an OFFSET) */
 	bool		short_;			/* a source of the ends is spent: the order is not known past the last entry given */
 	MemoryContext cxt;
 	SiftGPend  *pend;			/* the entries sift_gord_skip took off the front that need the heap's word (sift_gord_pending) */
@@ -74,6 +81,9 @@ struct SiftGOrd
 };
 
 extern void gord_cur_fill(SiftGOrd *g, GCur *c, uint32 p);
+extern bool gord_group_load(SiftGOrd *g, GCur *c);
+extern void gord_group_next(SiftGOrd *g, GCur *c);
+extern uint32 gord_group_skip(SiftGOrd *g, uint32 k);
 
 /* the entry p of the cursor's source */
 static inline void

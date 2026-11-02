@@ -293,13 +293,14 @@ bool
 topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked)
 {
 	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
-	bool		bounded = false,
+	bool		bygroup = leaf[0] >= 0 && c->stats.gord_bygroup[leaf[0]] && s->npred == 0,
+				bounded = false,
 				key_pinned = false,
 				group_pinned = false,
 				loose = false;
 
 	*walked = 0;
-	if (leaf[0] < 0 || (c->stats.gord_cover[leaf[0]] < 0.9 && gl < 0) || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
+	if (leaf[0] < 0 || (c->stats.gord_cover[leaf[0]] < 0.9 && gl < 0 && !bygroup) || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
 		nkey > 4)
 		return false;
 	for (int j = 0; j < nkey; j++)
@@ -326,7 +327,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 		group_pinned |= (p->kind == SAP_CMP && p->op == SCMP_EQ && p->leaf == gl) || (p->kind == SAP_IN && p->op == 0 && p->leaf == gl);
 	}
 	if (!loose)
-		return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded));
+		return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded)) || bygroup;
 	/* the walk queues the rows of the page before the first goes out (gord_prep), in work_mem, for one key and a page under the cap of the heap */
 	if (nkey != 1 || rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) || rows * SIFT_TOPN_GROW_BYTES > work_mem * 1024.0 ||
 		!((gl >= 0 && group_pinned) || c->stats.gord_cover[leaf[0]] >= 0.9))

@@ -250,6 +250,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 		if (cols[i].parent >= 0 && st->ovf_frac[i] > 0)
 			st->ovf_frac[i] = Min(1.0, st->ovf_frac[i] * Max(st->elems_per_row[cols[i].parent], 1.0));
+	col_stats_bygroup(st, ls, ncols);
 }
 
 /* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide */
@@ -943,6 +944,8 @@ static const SiftSrcProvider col_provider = {
 	.gorder_head = col_gorder_head,
 	.gorder_values = col_gorder_values,
 	.gorder_range = col_gorder_range,
+	.gorder_groups = col_gorder_groups,
+	.gorder_group_at = col_gorder_group_at,
 	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,

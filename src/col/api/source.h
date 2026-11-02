@@ -314,6 +314,8 @@ extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *ent
 extern int	sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid);
 extern void sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
+extern bool sift_col_gorder_groups(SiftColSource *src, int i, int col, uint32 *ngroups);
+extern void sift_col_gorder_group_at(SiftColSource *src, int i, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern bool sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);
 extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);

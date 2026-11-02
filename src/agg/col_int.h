@@ -141,5 +141,8 @@ extern void col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool col_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern bool col_gorder_compact(void *impl, int i, int leaf);
+extern bool col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups);
+extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
+extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
 
 #endif							/* SIFT_AGG_COL_INT_H */

@@ -389,6 +389,18 @@ sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, ui
 	return src->prov->gorder_info(src->impl, i, leaf, entries, values);
 }
 
+bool
+sift_colsrc_gorder_groups(SiftSrcSource *src, int i, int leaf, uint32 *ngroups)
+{
+	return src->prov->gorder_groups && src->prov->gorder_groups(src->impl, i, leaf, ngroups);
+}
+
+void
+sift_colsrc_gorder_group_at(SiftSrcSource *src, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	src->prov->gorder_group_at(src->impl, i, leaf, gi, group, vs, ve, ns, ne);
+}
+
 void
 sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {

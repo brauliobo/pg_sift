@@ -62,7 +62,7 @@ gord_release(void *arg)
 pg_noinline void
 gord_cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 {
-	uint32		w = p - c->buf->at < c->buf->rows ? c->buf->cm * 2 : g->head;
+	uint32		w = c->gm ? UINT32_MAX : p - c->buf->at < c->buf->rows ? c->buf->cm * 2 : g->head;
 
 	sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, w, c->buf);
 }
@@ -142,6 +142,11 @@ cur_str(SiftGOrd *g, GCur *c, int64 k)
 static void
 cur_next(SiftGOrd *g, GCur *c)
 {
+	if (c->gm)
+	{
+		gord_group_next(g, c);
+		return;
+	}
 	for (;;)
 	{
 		bool		nulls;
@@ -192,6 +197,14 @@ cur_start(SiftGOrd *g, GCur *c)
 {
 	c->region = 0;
 	c->have = false;
+	if (c->gm)
+	{
+		c->gnext = c->gskip;
+		c->pos = c->end = c->ns = c->ne = 0;
+		c->gnull = true;
+		gord_group_next(g, c);
+		return;
+	}
 	cur_enter(g, c);
 	cur_next(g, c);
 }
@@ -232,9 +245,16 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		c->skey = -1;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
+		c->buf = gbuf_get();
+		if (b == NULL && collid == 0 && sift_colsrc_gorder_groups(src, i, leaf, &c->ngrp))
+		{
+			c->gm = g->gm = true;
+			c->slot = g->ncur;
+			g->cur[g->ncur++] = c;
+			continue;
+		}
 		c->ends = sift_colsrc_gorder_cuts(src, i, leaf, &c->cuts);
 		g->ends |= c->ends;
-		c->buf = gbuf_get();
 		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
 		if (g->bounded && collid != 0)
 		{
@@ -496,6 +516,8 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 #endif
 	if (g->started || g->ends || k == 0 || g->ncur == 0 || (g->collid != 0 && k < GORD_TEXT_SKIP_MIN))
 		return 0;
+	if (g->gm)
+		return g->collid == 0 && g->ncur > 0 ? gord_group_skip(g, k) : 0;
 	for (int i = 0; i < g->ncur; i++)
 		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
 			return 0;
@@ -613,6 +635,7 @@ sift_gord_rewind(SiftGOrd *g)
 		else
 			c->vs -= c->sk;
 		c->sk = 0;
+		c->gskip = 0;
 	}
 	g->started = false;
 	g->last_set = false;

@@ -547,6 +547,49 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	*vs = *ve = *ns = *ne = 0;
 }
 
+/* The groups of a grouped block (an ungrouped one has one) */
+uint32
+sift_cseg_gorder_ngroups(SiftColSegment *seg, int col)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+
+	if (g == NULL)
+		corrupt(seg, "The global order of leaf %d is not there.", col);
+	return g->hdr.gcol < 0 ? 1 : g->hdr.ngroups;
+}
+
+/*
+ * The group at place gi in the order of the groups of a grouped block, and its entries as sift_cseg_gorder_range gives them. A scan that walks the groups one after the other
+ * reads the table whole, once (as a segment probed again does).
+ */
+void
+sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+	SiftCGOrdGrp e;
+
+	if (g == NULL || g->hdr.gcol < 0 || gi >= g->hdr.ngroups)
+		corrupt(seg, "The global order of leaf %d has no group %u.", col, gi);
+	if (g->grps == NULL && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
+	{
+		SiftCGOrdGrp *all = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
+
+		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, all);
+		g->grps = all;
+	}
+	if (g->grps != NULL)
+		e = g->grps[gi];
+	else
+		seg_read(seg, g->at + g->gat + (uint64) gi * SIFT_CGORD_GRPENT, sizeof(e), &e);
+	if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
+		corrupt(seg, "The global order of leaf %d has a malformed group.", col);
+	*group = e.group;
+	*vs = e.vstart;
+	*ve = e.vstart + e.vcount;
+	*ns = e.nstart;
+	*ne = e.nstart + e.ncount;
+}
+
 uint32
 seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 {

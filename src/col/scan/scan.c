@@ -201,6 +201,7 @@ sift_col_rescan(SiftColSource *src)
 		MemoryContextReset(src->gcx);
 	memset(src->gmem, 0, sizeof(src->gmem));
 	src->gpin_leaf = -1;
+	src->galeaf1 = 0;
 	src->gpin_n = src->gper = 0;
 	memset(&src->cnt, 0, sizeof(src->cnt));
 	src->cnt.segments = src->nseg;

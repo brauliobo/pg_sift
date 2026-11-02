@@ -260,6 +260,7 @@ struct SiftColSource
 	uint32		capptid;
 	int			pstream;		/* the first cursor that may still have addresses to hand over (SIFT_COLO_POINT_LAZY) */
 	int			gpin_leaf;		/* the leaf the global order blocks are grouped by and the group the scan pinned (sift_col_gorder_open), -1: none */
+	int			galeaf1;		/* 1 + the leaf whose second order the scan reads group after group in place of the order of a group leaf that has none (sift_col_gorder_open), 0: none */
 	int			gpin_n;			/* the values of the group the scan reads (an IN list reads each in turn), in gpin_vals */
 	int64		gpin_vals[SIFT_GORD_PIN_MAX];
 	int			gper;			/* the sources of one value: the stored segments, then the write buffers when they hold rows (value v of source i is i / gper) */
