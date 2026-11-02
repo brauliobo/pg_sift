@@ -26,12 +26,15 @@ typedef struct ColOrd
 	SiftSrcSource *src;
 	SiftGOrd   *g;				/* the merge of the order; NULL: the order is not whole, the rows were sorted here (pairs) */
 	bool		desc;
-	bool		sorted;			/* the pairs are read and sorted */
 	GOrdPair   *pairs;			/* the rows with a key, ascending by (key, address) */
 	uint32		npairs;
 	uint64	   *nulls;			/* the addresses of the rows without one */
 	uint32		nnulls;
-	uint32		at;				/* the place in the sequence of the scan: NULL rows first for desc, else last */
+	int			run;			/* the runs of the sequence given: the rows with a key and those without (NULL rows first for desc) */
+	bool		nullrun;
+	uint32		left;			/* the rows of the run not yet given, the next at idx (step 1 or -1) */
+	int64		idx;
+	int			step;
 	IndexTuple	ktup;			/* the index tuple of a row with a key, whose bytes at koff are replaced */
 	IndexTuple	ntup;			/* ... of a row without */
 	Size		koff;
@@ -181,27 +184,30 @@ ord_sort(IndexScanDesc scan, ColScanOpaque *so)
 
 	o->pairs = palloc(cap * sizeof(GOrdPair));
 	o->nulls = palloc(ncap * sizeof(uint64));
-	while (sift_col_unordered_next(scan))
 	{
-		bool		isnull;
-		Datum		d = index_getattr(scan->xs_itup, 1, scan->xs_itupdesc, &isnull);
-		uint64		tid = ((uint64) ItemPointerGetBlockNumber(&scan->xs_heaptid) << 16) | ItemPointerGetOffsetNumber(&scan->xs_heaptid);
+		uint32		n;
+		const ItemPointerData *tids;
+		const int64 *vals;
+		const uint64 *isnull;
 
-		if (isnull)
+		while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull))
 		{
-			if (o->nnulls == ncap)
-				o->nulls = repalloc(o->nulls, (ncap *= 2) * sizeof(uint64));
-			o->nulls[o->nnulls++] = tid;
-		}
-		else
-		{
-			if (o->npairs == cap)
-				o->pairs = repalloc(o->pairs, (cap *= 2) * sizeof(GOrdPair));
-			o->pairs[o->npairs++] = (GOrdPair) {key_of(o->type, d), tid};
+			if (o->npairs + n > cap)
+				o->pairs = repalloc(o->pairs, (cap = Max(cap * 2, o->npairs + n)) * sizeof(GOrdPair));
+			if (o->nnulls + n > ncap)
+				o->nulls = repalloc(o->nulls, (ncap = Max(ncap * 2, o->nnulls + n)) * sizeof(uint64));
+			for (uint32 k = 0; k < n; k++)
+			{
+				uint64		tid = ((uint64) ItemPointerGetBlockNumber(&tids[k]) << 16) | ItemPointerGetOffsetNumber(&tids[k]);
+
+				if (isnull != NULL && (isnull[k >> 6] >> (k & 63) & 1))
+					o->nulls[o->nnulls++] = tid;
+				else
+					o->pairs[o->npairs++] = (GOrdPair) {vals[k], tid};
+			}
 		}
 	}
 	gord_pairs_sort(o->pairs, o->npairs);
-	o->sorted = true;
 	MemoryContextSwitchTo(old);
 }
 
@@ -236,27 +242,34 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 	}
 	if (o->g == NULL)
 	{
-		/* the sequence: the rows with a key then those without, reversed for desc */
-		uint32		total = o->npairs + o->nnulls,
-					i;
+		/* the sequence: the rows with a key then those without, each run reversed for desc, which has the rows without a key first */
 		ItemPointerData tid;
-		bool		nulls_run;
 
-		if (o->at >= total)
-			return false;
-		i = o->at++;
-		nulls_run = o->desc ? i < o->nnulls : i >= o->npairs;
-		if (nulls_run)
+		while (o->left == 0)
 		{
-			uint64		t = o->desc ? o->nulls[o->nnulls - 1 - i] : o->nulls[i - o->npairs];
+			int			r = o->run++;
 
+			if (r >= 2)
+				return false;
+			o->nullrun = (r == 0) == o->desc;
+			o->left = o->nullrun ? o->nnulls : o->npairs;
+			o->step = o->desc ? -1 : 1;
+			o->idx = o->desc ? (int64) o->left - 1 : 0;
+		}
+		o->left--;
+		if (o->nullrun)
+		{
+			uint64		t = o->nulls[o->idx];
+
+			o->idx += o->step;
 			ItemPointerSet(&tid, (BlockNumber) (t >> 16), (OffsetNumber) (t & 0xFFFF));
 			ord_give(scan, o, 0, true, &tid);
 		}
 		else
 		{
-			const GOrdPair *p = o->desc ? &o->pairs[o->npairs - 1 - (i - o->nnulls)] : &o->pairs[i];
+			const GOrdPair *p = &o->pairs[o->idx];
 
+			o->idx += o->step;
 			ItemPointerSet(&tid, (BlockNumber) (p->tid >> 16), (OffsetNumber) (p->tid & 0xFFFF));
 			ord_give(scan, o, p->key, false, &tid);
 		}

@@ -95,6 +95,7 @@ extern bool sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir);
 extern void sift_col_ordered_end(ColScanOpaque *so);
 extern void sift_col_ioss_sample(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid);
 extern bool sift_col_unordered_next(IndexScanDesc scan);
+extern bool sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls);
 extern void sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel);
 
 extern bool	xtime_pair(Oid coltype, Oid argtype);

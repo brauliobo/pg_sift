@@ -14,14 +14,18 @@ CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
 CREATE INDEX ot_i ON ot USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_layout = 'whole');
+CREATE TABLE oa (k int4, id int4, b int8);
+INSERT INTO oa SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE i % 700 END, i, i FROM generate_series(1, 3000) i;
+CREATE INDEX oa_i ON oa USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, b sift.col_int8_ops);
 CREATE TABLE oc (id int, k int4);
 INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
 CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
 VACUUM (ANALYZE) oc;
+VACUUM (ANALYZE) oa;
 VACUUM (ANALYZE) os;
 VACUUM (ANALYZE) ot;
 
--- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10, 11) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
+-- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10, 11; 12 is an aggregate that orders by the first column of an index scan whose subquery names the others, and the scan must give those columns too) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
 -- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off)
 CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -47,6 +51,9 @@ BEGIN
 	SELECT * INTO a FROM os_run(q, true);
 	SELECT * INTO h FROM os_run(q, false);
 	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; ordered_scans := a.scans; sorts := a.sorts;
+	IF NOT agree THEN
+		RAISE EXCEPTION 'the ordered scan gives other rows than the heap: % (% against % rows)', q, a.n, h.n;
+	END IF;
 END $$;
 
 CREATE TABLE os_q (n int, q text);
@@ -61,7 +68,8 @@ INSERT INTO os_q VALUES
  (8, 'SELECT k FROM ot WHERE k < 0 ORDER BY k DESC'),
  (9, 'SELECT k, d FROM os ORDER BY k'),
  (10, 'SELECT k FROM oc ORDER BY k'),
- (11, 'SELECT k FROM oc ORDER BY k DESC');
+ (11, 'SELECT k FROM oc ORDER BY k DESC'),
+ (12, 'SELECT array_agg(k ORDER BY k)::text AS k FROM (SELECT k, id, b FROM oa WHERE k IS NULL OR k <> ALL (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))) s');
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
 
 -- an order with compact chunks has the bucket of each key, the heap the key: the scan sorts the rows of the units instead, and reads no heap block
@@ -113,5 +121,5 @@ INSERT INTO os (id, k) SELECT id + 60000, k FROM os_gone ORDER BY id;
 SELECT n, q, (os_check(q)).* FROM os_q WHERE n <= 5 ORDER BY n;
 
 DROP FUNCTION os_check(text), os_run(text, bool);
-DROP TABLE os_q, os, ot, oc;
+DROP TABLE os_q, os, ot, oc, oa;
 DROP EXTENSION pg_sift CASCADE;

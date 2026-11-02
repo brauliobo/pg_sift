@@ -129,6 +129,16 @@ ioss_walk(PlanState *ps, void *context)
 				w->project &= a > 0;
 				w->want = bms_add_member(w->want, a);
 			}
+			if (w->ordered)
+			{
+				/*
+				 * The planner offered the order for a plan that reads the first column alone (ordpath.c): the other columns of the node's list are the padding of a physical target list (the whole index is
+				 * what an index-only scan is given when it has no projection to make), which nothing above reads. The scan gives NULL for them and reads the first column in batches.
+				 */
+				bms_free(w->want);
+				w->want = bms_make_singleton(1);
+				w->project = true;
+			}
 			ioss_pending = lappend(ioss_pending, w);
 			MemoryContextSwitchTo(old);
 			bms_free(attrs);
@@ -755,6 +765,28 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	if (((ColScanOpaque *) scan->opaque)->ordered)
 		return sift_col_ordered_next(scan, dir);
 	return sift_col_unordered_next(scan);
+}
+
+/*
+ * The next unit of an index-only scan that reads one fixed-size integer column, as arrays instead of tuples: the addresses of its rows, the values (n of them, the key domain
+ * of the column) and the bits of those that are NULL (NULL: none). False at the end. For the scan that collects every row before it gives the first (ordered.c).
+ */
+bool
+sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls)
+{
+	ColScanOpaque *so = scan->opaque;
+
+	if (!so->started)
+		col_scan_begin(scan, true);
+	if (!col_fill_batch(scan))
+		return false;
+	SIFT_INVARIANT(so->funit && so->nfast == 1, "an ordered scan reads a unit of the first column alone, in a form the batch gives");
+	*n = so->n;
+	*tids = so->tids;
+	*vals = so->fvec[0].i;
+	*nulls = so->fvec[0].nulls;
+	so->pos = so->n;
+	return true;
 }
 
 bool

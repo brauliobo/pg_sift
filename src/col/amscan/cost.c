@@ -51,8 +51,8 @@
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
 #define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
-#define COL_SCAN_ORDERED	0.04	/* a row of an ordered index-only scan (ordpath.c) of a whole order array: the merge of the segments and the write buffers, no unit read. 1,000,000 rows of a random key, summed: 109 ms and 1,010 Minstr where Seq Scan and Sort take 212 and 1,266 (run 144ceee9fda0-20261101T230829Z-3e23); the price of the heap plan is 1.75 us a cost unit, so 62,000 units less the 15,000 of the sum */
-#define COL_SCAN_ORDERED_SORT	0.06	/* ... of an order with compact chunks or the ends only (the default build): the units are read in the order of the heap and the rows sorted by key and address, 135 ms and 1,085 Minstr in the same run */
+#define COL_SCAN_ORDERED	0.045	/* a row of an ordered index-only scan (ordpath.c) of a whole order array: the merge of the segments and the write buffers, no unit read. 1,000,000 rows of a random key, summed: 1,019 Minstr and 133 ms where Seq Scan and Sort take 1,266 and 211 (run b5080144b211-20261102T020207Z-39fc); the heap plan is 1.75 us a cost unit */
+#define COL_SCAN_ORDERED_SORT	0.042	/* ... of an order with compact chunks or the ends only (the default build): the units are read in batches and the rows sorted by key and address, 913 Minstr and 109 ms in the same run */
 
 #define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
 #define COL_SCAN_EMIT_IOS_VAR	0.06	/* ... and for each text column the plan reads, which is formed by the path of a variable width (115 ns a row with one, 56 without); the TID of the bitmap node takes 10 ns */

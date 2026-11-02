@@ -68,7 +68,10 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 		if (!OidIsValid(opclass))
 			continue;
 		opfamily = get_opclass_family(opclass);
-		/* the plan node keeps the index's target list: the copy of the index the path is made of names its first entry, which tells the scan that its plan wants the order */
+		/*
+		 * The plan node keeps the index's target list: the copy of the index the path is made of names its first entry, which tells the scan that its plan wants the order. The list keeps every column: the scan's
+		 * tuples have the columns of the index (xs_itupdesc), and the executor stores them in a slot of as many as the node's list, so a shorter one has it write past the slot, over its null flags.
+		 */
 		oi = makeNode(IndexOptInfo);
 		memcpy(oi, ii, sizeof(IndexOptInfo));
 		oi->indextlist = NIL;
