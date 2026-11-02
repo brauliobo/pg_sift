@@ -726,7 +726,7 @@ text_tournament(SiftGOrd *g)
 }
 
 /* the merge of a text key: the sources are the leaves of a tournament, so a step compares strings log2(sources) times, where the scan of the sources does it once for each */
-static bool
+static pg_noinline bool
 gord_next_text(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
 	if (!g->started)
@@ -784,6 +784,47 @@ sift_gord_group(const SiftGOrd *g)
 	return g->grouped;
 }
 
+/* The source of the next entry (NULL: none is left) */
+static inline GCur *
+gord_pick(SiftGOrd *g)
+{
+	GCur	   *best;
+
+	if (g->ncur == 2)
+	{
+		/* the usual table (a parallel build makes a segment for each 150,000 rows): one comparison picks the next entry */
+		GCur	   *a = g->cur[0],
+				   *b = g->cur[1];
+
+		best = !b->have || (a->have && cand_cmp(g, a, b, false) < 0) ? a : b;
+		return best->have ? best : NULL;
+	}
+	best = g->prev;
+	/*
+	 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row
+	 * where the scan of every source costs one for each
+	 */
+	if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner, false) >= 0))
+	{
+		best = g->runner = NULL;
+		for (int i = 0; i < g->ncur; i++)
+		{
+			GCur	   *c = g->cur[i];
+
+			if (!c->have)
+				continue;
+			if (best == NULL || cand_cmp(g, c, best, false) < 0)
+			{
+				g->runner = best;
+				best = c;
+			}
+			else if (g->runner == NULL || cand_cmp(g, c, g->runner, false) < 0)
+				g->runner = c;
+		}
+	}
+	return best;
+}
+
 bool
 sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
@@ -797,36 +838,25 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		g->started = true;
 		g->prev = NULL;
 	}
+	/* one source (a table of one segment): nothing to choose from or to repeat */
+	if (g->ncur == 1)
+	{
+		GCur	   *best = g->cur[0];
+
+		if (g->short_ || !best->have)
+			return false;
+		*key = best->k;
+		*isnull = best->cls != 1;
+		ItemPointerSet(tid, (BlockNumber) (best->tid >> 16), (OffsetNumber) (best->tid & 0xFFFF));
+		g->prev = best;
+		cur_next(g, best);
+		return true;
+	}
 	for (;;)
 	{
-		GCur	   *best = g->prev;
+		GCur	   *best;
 
-		if (g->short_)
-			return false;
-
-		/*
-		 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row
-		 * where the scan of every source costs one for each
-		 */
-		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner, false) >= 0))
-		{
-			best = g->runner = NULL;
-			for (int i = 0; i < g->ncur; i++)
-			{
-				GCur	   *c = g->cur[i];
-
-				if (!c->have)
-					continue;
-				if (best == NULL || cand_cmp(g, c, best, false) < 0)
-				{
-					g->runner = best;
-					best = c;
-				}
-				else if (g->runner == NULL || cand_cmp(g, c, g->runner, false) < 0)
-					g->runner = c;
-			}
-		}
-		if (best == NULL)
+		if (g->short_ || (best = gord_pick(g)) == NULL)
 			return false;
 		*key = best->k;
 		*isnull = best->cls != 1;
