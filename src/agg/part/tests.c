@@ -33,6 +33,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->point_units += pc.point_units;
 		c->point_rows += pc.point_rows;
 		c->run_windows += pc.run_windows;
+		c->dirty_rows += pc.dirty_rows;
 	}
 }
 

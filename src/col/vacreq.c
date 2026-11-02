@@ -134,17 +134,34 @@ static Oid	vacuum_heap_of(Oid indexoid);
 /*
  * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (vetted 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
+ *
+ * The scans also report the rows of units with a dead row that they read as units, which a rewrite would have spared them (a unit with a dead row is not served from the
+ * point directory, and a table that is not deleted from enough to hold 30% of the units dirty is not rewritten by the rule of VACUUM). A read pays at least 30 instructions
+ * for each (300,000 rows, 4,000 deleted from one segment, a point read of 60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it, until the rewrite takes 886 M and
+ * 2.7 to 3.2 MB of WAL). The look adds them up for the index in this backend, and the worker is asked when they come to half of what the rewrite costs (maint_read_due):
+ * the fixed 30% of the units and the WAL budget of the changes stand for reads no one made.
  */
+#define OWE_DIRTY_ROW	30
+
 void
-sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
+sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 {
 	static Oid	looked = InvalidOid;
 	static TimestampTz looked_at = 0;
+	static Oid	owing = InvalidOid;
+	static double owed = 0;
 	TimestampTz now;
 	Relation	index;
 
-	if (!sift_col_auto_merge || (vetted > 0 && vetted < MIN_VETTED) || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() ||
-		RecoveryInProgress())
+	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
+		return;
+	if (owing != indexoid)
+	{
+		owing = indexoid;
+		owed = 0;
+	}
+	owed += (double) dirty_rows * OWE_DIRTY_ROW;
+	if (vetted > 0 && vetted < MIN_VETTED)
 		return;
 	now = GetCurrentTimestamp();
 	if (looked == indexoid && now - looked_at < (int64) sift_maintenance_naptime * 1000)
@@ -157,8 +174,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 		if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 			sift_maint_register_worker(index, vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main");
 	}
-	else if (OidIsValid(vacuum_heap_of(indexoid)))
-		sift_col_rewrite_tick(index);
+	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed))
+		owed = 0;
 	index_close(index, AccessShareLock);
 }
 

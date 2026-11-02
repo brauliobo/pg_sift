@@ -670,6 +670,8 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	else if (!((src->super || src->whole || src->pcnt) && col_super_take(src, best, cu)))
 	{
 		load_stored(cu, best->seg, best->cur);
+		if (sift_cseg_dirty(best->seg, best->cur))
+			src->cnt.dirty_rows += best->seg->sbdir[best->cur].nrows;
 		if (best->prow != NULL)
 		{
 			const SiftColSBRef *r = &best->seg->sbdir[best->cur];

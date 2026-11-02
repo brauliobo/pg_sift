@@ -314,7 +314,13 @@ sift_col_ordered_end(ColScanOpaque *so)
 	if (so->ord == NULL)
 		return;
 	if (so->ord->src != NULL)
+	{
+		SiftSrcCounters cc;
+
+		sift_colsrc_counters(so->ord->src, &cc);
+		so->dirty_rows += cc.dirty_rows;
 		sift_colsrc_close(so->ord->src);
+	}
 	MemoryContextDelete(so->ord->cxt);
 	so->ord = NULL;
 }

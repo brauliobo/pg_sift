@@ -400,6 +400,7 @@ typedef struct SiftSrcCounters
 	int64		point_units;	/* units narrowed to the rows a point directory lists */
 	int64		point_rows;		/* and the rows they were narrowed to */
 	int64		run_windows;	/* units whose range on a leaf with a sorted run was answered by the run */
+	int64		dirty_rows;	/* rows of the units with a dead row that were read as units: what a rewrite would spare the scan */
 } SiftSrcCounters;
 
 /*

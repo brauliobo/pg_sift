@@ -298,3 +298,11 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	}
 	PG_END_TRY();
 }
+
+/* The rewrite that the reads of a backend priced (sift_col_vacuum_tick): the rule of VACUUM and the WAL budget of the changes do not hold what the reads owe */
+void
+sift_col_read_rewrite_worker_main(Datum main_arg)
+{
+	maint_read_asked = true;
+	sift_col_rewrite_worker_main(main_arg);
+}

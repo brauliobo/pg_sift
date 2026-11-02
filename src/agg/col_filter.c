@@ -233,6 +233,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->point_units = cc->point_units;
 	c->point_rows = cc->point_rows;
 	c->run_windows = cc->run_windows;
+	c->dirty_rows = cc->dirty_rows;
 }
 
 #endif							/* __has_include("col/col.h") */

@@ -275,6 +275,7 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
@@ -298,8 +299,8 @@ extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n,
 #define SIFT_COL_PEERS		4
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
-extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);
-extern void sift_col_rewrite_tick(Relation index);
+extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
+extern bool sift_col_rewrite_tick(Relation index, double owed);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
 

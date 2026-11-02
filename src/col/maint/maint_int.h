@@ -103,6 +103,10 @@ extern const char *	maint_rewrite_due(Relation index, bool automatic);
 
 extern bool	maint_rewrite_all(const char *why);
 
+/* the reads of a backend owe the rewrite (maint_read_due); the worker started for it takes the rewrite as due */
+extern bool	maint_read_asked;
+extern bool	maint_read_due(Relation index, double owed);
+
 extern void	maint_rewrite_request(Relation index);
 
 #endif

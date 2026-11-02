@@ -232,8 +232,10 @@ sift_col_amendscan(IndexScanDesc scan)
 {
 	ColScanOpaque *so = scan->opaque;
 	int64		fetches = so->sampled > 0 ? (int64) (so->returned * ((double) so->unseen / so->sampled)) : 0;
+	int64		dirty_rows;
 
 	sift_col_ordered_end(so);
+	dirty_rows = so->dirty_rows + (so->src ? sift_col_counters(so->src)->dirty_rows : 0);
 	col_fetch_end(so);
 	if (so->src)
 		sift_col_close(so->src);
@@ -243,7 +245,7 @@ sift_col_amendscan(IndexScanDesc scan)
 	MemoryContextDelete(so->cxt);
 	if (BufferIsValid(so->vmbuf))
 		ReleaseBuffer(so->vmbuf);
-	sift_col_vacuum_tick(RelationGetRelid(scan->indexRelation), scan->indexRelation->rd_index->indrelid, fetches);
+	sift_col_vacuum_tick(RelationGetRelid(scan->indexRelation), scan->indexRelation->rd_index->indrelid, fetches, dirty_rows);
 }
 
 /*

@@ -739,6 +739,7 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->point_units += c->par->cc.point_units;
 		cc->point_rows += c->par->cc.point_rows;
 		cc->run_windows += c->par->cc.run_windows;
+		cc->dirty_rows += c->par->cc.dirty_rows;
 	}
 }
 
@@ -764,7 +765,7 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
 	if (OidIsValid(c->spec->indexoid))
-		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted);
+		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted, cc.dirty_rows);
 	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
 	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
 	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);

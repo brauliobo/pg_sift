@@ -667,7 +667,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 30 — 30, with the fragmentation and buffer reasons: a 1% churn spread over the table left 0 of 50 units answering from pre-aggregates, the rewrite 25 of 25 (200,000 rows).
 - **Turn off:** n/a: a threshold. 100 never fires this reason (it is 'above'); the other reasons stay, and sift.col_auto_merge = off stops the worker. Server or database level.
 - **Upgrade from 3.7:** unchanged
-- **Advice:** Leave at 30: the rewrite runs when more than this percent of the units hold a dead row (such a unit answers from rows, not pre-aggregates). Lower it to rewrite sooner, at more WAL.
+- **Advice:** Leave at 30: the rewrite runs when more than this percent of the units hold a dead row (such a unit answers from rows, not pre-aggregates). Lower it to rewrite sooner, at more WAL. Under it, the reads of a backend that find dead rows in units ask for the rewrite when they have cost half of it.
 - **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_fragmentation

@@ -25,6 +25,7 @@ typedef struct ColScanOpaque
 	uint32		sampled,
 				unseen;
 	Buffer		vmbuf;
+	int64		dirty_rows;		/* the rows of units with a dead row that the ordered sources read (the other source keeps its own count): the evidence for sift_col_vacuum_tick */
 	SiftColSource *src;
 	Snapshot	ssnap;			/* the snapshot the source was opened with, and the flags */
 	uint32		sflags;

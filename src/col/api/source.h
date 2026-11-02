@@ -140,6 +140,7 @@ typedef struct SiftColCounters
 {
 	int64		segments;		/* immutable segments in the directory snapshot */
 	int64		wbuf_rows;	/* rows read from write buffers */
+	int64		dirty_rows;	/* rows of the units with a dead row that were read as units (sift_col_vacuum_tick prices the rewrite by them) */
 	int64		units;			/* candidate units visited */
 	int64		units_pruned;	/* skipped by their zone maps or small-set summaries */
 	int64		units_set;		/* of those, the ones only a small-set summary could skip */

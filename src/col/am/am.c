@@ -190,7 +190,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	/* after the append: the scan of the candidates reads the catalog, which can reload the relcache entry and free r */
 	if (supersede)
 		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);
-	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0);
+	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0, 0);
 	return false;
 }
 
