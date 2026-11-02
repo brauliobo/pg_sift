@@ -35,6 +35,8 @@ typedef struct SiftColRel
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
 	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
+	bool		rowkey;			/* the option row_key names a column of the index: the leaf below */
+	int			rowkey_leaf;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
@@ -42,6 +44,10 @@ typedef struct SiftColRel
 struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
 extern void sift_col_log_create(Relation index);
+/* The option row_key (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
+extern bool sift_col_row_key_on(Relation index);
+extern void sift_col_row_key_check(Relation index);
+extern void sift_col_row_key_prepare(Relation heap, Relation index);
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool
@@ -130,6 +136,7 @@ extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
+extern void sift_col_validate_row_key(const char *value);
 extern void sift_col_validate_key_order(const char *value);
 extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);

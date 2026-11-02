@@ -145,6 +145,17 @@ SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 
+/* one column name, or off or auto */
+static const char *
+row_key_syntax(const char *value)
+{
+	if (strpbrk(value, ", ;") != NULL)
+		return "a single column: a composite key is not supported";
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(row_key, row_key_syntax(value))
+
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
 key_order_syntax(const char *value)
@@ -458,6 +469,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
 						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "row_key",
+						 "the column that identifies a row (off, auto = the primary key, or a column with a unique index of its own, NOT NULL): when a row is updated the index finds the older entry of the same key and records that it stopped being live (a tombstone log; column format minor 43, which only 3.8 and later read); it adds the column to point_tid_columns (default off)",
+						 "", sift_col_validate_row_key, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -499,6 +513,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
+	{"row_key", RELOPT_TYPE_STRING, offsetof(SiftColOptions, row_key)},
 };
 
 /*
@@ -622,6 +637,7 @@ sift_col_alter_check(Relation index)
 	if (sift_col_paths_redecide(index))
 		return;
 	(void) sift_col_rel(index);
+	sift_col_row_key_check(index);
 }
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
@@ -633,6 +649,8 @@ COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
 
 COL_OPT_STR(sift_col_options_key_order, key_order, "")
+
+COL_OPT_STR(sift_col_options_row_key, row_key, "")
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *

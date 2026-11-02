@@ -253,6 +253,19 @@ build_rel(Relation index, MemoryContext mcxt)
 			r->cut_rows = sift_col_options(index)->key_cut_rows;
 		}
 	}
+	if (sift_col_row_key_on(index))
+	{
+		const char *rk = sift_col_options_row_key(index);
+		int			id = -1;
+
+		for (int i = 0; i < n && id < 0; i++)
+			if (strcmp(names[i], rk) == 0)
+				id = i;
+		if (id < 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid row_key option: \"%s\" is not a column of the index", rk)));
+		r->rowkey = true;
+		r->rowkey_leaf = id;
+	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);

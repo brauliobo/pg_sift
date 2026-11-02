@@ -128,11 +128,14 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	chosen = sift_col_auto_keys(heap, index);
 	autocut = sift_col_auto_cut(heap, index);
 	sift_col_auto_gorder(heap, index);
+	sift_col_row_key_prepare(heap, index);
 	sift_col_auto_point(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
+	if (sift_col_row_key_on(index))
+		sift_col_log_create(index);
 	colb_notice_key_order(index);
 	colb_notice_key_overflow(index);
 	colb_notice_point_tid(index);
