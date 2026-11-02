@@ -231,6 +231,8 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->amrescan = sift_col_amrescan;
 	am->amgetbitmap = sift_col_amgetbitmap;
 	am->amgettuple = sift_col_amgettuple;
+	am->ammarkpos = sift_col_ammarkpos;
+	am->amrestrpos = sift_col_amrestrpos;
 	am->amcanreturn = sift_col_amcanreturn;
 	am->amendscan = sift_col_amendscan;
 	am->amsearcharray = am->amsearchnulls = true;

@@ -44,7 +44,19 @@ typedef struct ColOrd
 	bool		a_null;
 	ItemPointerData a_tid;
 	int			a_st;
+	struct OrdMark *mark;		/* the rows given since the last mark, which a restore gives again (a merge join marks at the start of a group of equal keys: the group is all it keeps) */
+	uint32		nmark;
+	uint32		cmark;
+	uint32		replay;			/* the next of them to give again; nmark: the scan goes on */
+	bool		marked;
 } ColOrd;
+
+typedef struct OrdMark
+{
+	int64		key;
+	bool		isnull;
+	ItemPointerData tid;
+} OrdMark;
 
 static int64
 key_of(Oid type, Datum d)
@@ -212,7 +224,7 @@ ord_sort(IndexScanDesc scan, ColScanOpaque *so)
 }
 
 static void
-ord_give(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
+ord_fill(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 {
 	IndexTuple	t = isnull ? o->ntup : o->ktup;
 
@@ -220,9 +232,58 @@ ord_give(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 		key_put(o->type, (char *) t + o->koff, key);
 	t->t_tid = *tid;
 	scan->xs_heaptid = *tid;
-	sift_col_ioss_sample(scan, scan->opaque, tid);
 	scan->xs_itup = t;
 	scan->xs_recheck = false;
+}
+
+/* The row given after a mark is kept for a restore */
+static pg_noinline void
+ord_remember(ColOrd *o, int64 key, bool isnull, ItemPointer tid)
+{
+	OrdMark    *m;
+
+	if (o->nmark >= o->cmark)
+	{
+		MemoryContext old = MemoryContextSwitchTo(o->cxt);
+
+		o->cmark = Max(64, o->cmark * 2);
+		o->mark = o->mark ? repalloc(o->mark, o->cmark * sizeof(OrdMark)) : palloc(o->cmark * sizeof(OrdMark));
+		MemoryContextSwitchTo(old);
+	}
+	m = &o->mark[o->nmark++];
+	m->key = key;
+	m->isnull = isnull;
+	m->tid = *tid;
+	o->replay = o->nmark;
+}
+
+static pg_attribute_always_inline void
+ord_give(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
+{
+	if (unlikely(o->marked))
+		ord_remember(o, key, isnull, tid);
+	ord_fill(scan, o, key, isnull, tid);
+	sift_col_ioss_sample(scan, scan->opaque, tid);
+}
+
+/* The rows after the mark are kept from now on; those a restore has given again and the scan has passed are not needed any more */
+void
+sift_col_ordered_mark(ColScanOpaque *so)
+{
+	ColOrd	   *o = so->ord;
+
+	Assert(o != NULL);
+	if (o->replay > 0)
+		memmove(o->mark, o->mark + o->replay, (o->nmark - o->replay) * sizeof(OrdMark));
+	o->nmark -= o->replay;
+	o->replay = 0;
+	o->marked = true;
+}
+
+void
+sift_col_ordered_restore(ColScanOpaque *so)
+{
+	so->ord->replay = 0;
 }
 
 bool
@@ -231,6 +292,13 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 	ColScanOpaque *so = scan->opaque;
 	ColOrd	   *o = so->ord;
 
+	if (unlikely(o != NULL && o->marked) && o->replay < o->nmark)
+	{
+		OrdMark    *m = &o->mark[o->replay++];
+
+		ord_fill(scan, o, m->key, m->isnull, &m->tid);
+		return true;
+	}
 	if (o == NULL)
 	{
 		/* the planner offers the path for a plan that reads the first column alone, with no index condition (ordpath.c) */

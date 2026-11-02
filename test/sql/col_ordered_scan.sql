@@ -28,8 +28,9 @@ VACUUM (ANALYZE) ot;
 -- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10 to 17: 12 is an aggregate that orders by the first column of an index scan whose subquery names the others, and the scan must give those columns too; a window, a merge join of
 -- two ordered scans and a sorted GROUP BY read it too, though SiftAgg may answer a statement that aggregates; the window result is the column k itself, as a window nothing reads is dropped from the subquery that os_run hashes)
 -- and 1 for query 5 (NULLS FIRST ascending is not the order of the scan), 9 and 18 (they read another column)
+-- materials is 0 throughout (enable_material is off, which leaves the Materialize that a scan with no mark and restore needs): the inner side of a merge join (query 16, with many equal keys) marks its position and goes back to it, and the scan keeps the rows of one group for that, where PostgreSQL would put a Materialize over it
 -- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off)
-CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int, OUT mats int) LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'off', true);
@@ -41,21 +42,24 @@ BEGIN
 	PERFORM set_config('enable_hashjoin', 'false', true);
 	PERFORM set_config('enable_nestloop', 'false', true);
 	PERFORM set_config('enable_hashagg', 'false', true);
+	PERFORM set_config('enable_material', 'false', true);
 	scans := 0;
 	sorts := 0;
+	mats := 0;
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF line ~ 'Index Only Scan (Backward )?using o._i' THEN scans := scans + 1; END IF;
 		IF line ~ '^ *(->  )?Sort$' THEN sorts := sorts + 1; END IF;
+		IF line ~ '^ *(->  )?Materialize$' THEN mats := mats + 1; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(coalesce(k::text, ''null''), ''|'')) FROM (' || q || ') w' INTO n, md5;
 END $$;
 
-CREATE FUNCTION os_check(q text, OUT rows bigint, OUT agree bool, OUT ordered_scans int, OUT sorts int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION os_check(q text, OUT rows bigint, OUT agree bool, OUT ordered_scans int, OUT sorts int, OUT materials int) LANGUAGE plpgsql AS $$
 DECLARE a record; h record;
 BEGIN
 	SELECT * INTO a FROM os_run(q, true);
 	SELECT * INTO h FROM os_run(q, false);
-	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; ordered_scans := a.scans; sorts := a.sorts;
+	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; ordered_scans := a.scans; sorts := a.sorts; materials := a.mats;
 	IF NOT agree THEN
 		RAISE EXCEPTION 'the ordered scan gives other rows than the heap: % (% against % rows)', q, a.n, h.n;
 	END IF;

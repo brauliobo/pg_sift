@@ -94,6 +94,8 @@ extern bool sift_col_ordered_whole(Oid indexoid);
 extern bool sift_col_ordered_type(Oid type);
 extern bool sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir);
 extern void sift_col_ordered_end(ColScanOpaque *so);
+extern void sift_col_ordered_mark(ColScanOpaque *so);
+extern void sift_col_ordered_restore(ColScanOpaque *so);
 extern void sift_col_ioss_sample(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid);
 extern bool sift_col_unordered_next(IndexScanDesc scan);
 extern bool sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls);

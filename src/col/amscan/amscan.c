@@ -820,6 +820,21 @@ col_fill_batch(IndexScanDesc scan)
 	return true;
 }
 
+/* A merge join marks the position of its inner side at the start of each group of equal keys and comes back to it for the next row of the outer side of that key: only the ordered scan is offered to one (ordpath.c) */
+void
+sift_col_ammarkpos(IndexScanDesc scan)
+{
+	SIFT_INVARIANT(((ColScanOpaque *) scan->opaque)->ordered, "only the ordered scan of an index marks its position");
+	sift_col_ordered_mark(scan->opaque);
+}
+
+void
+sift_col_amrestrpos(IndexScanDesc scan)
+{
+	SIFT_INVARIANT(((ColScanOpaque *) scan->opaque)->ordered, "only the ordered scan of an index restores its position");
+	sift_col_ordered_restore(scan->opaque);
+}
+
 bool
 sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 {
