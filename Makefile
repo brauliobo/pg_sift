@@ -71,6 +71,7 @@ TESTING_REGRESS += col_dict_shared_stale
 TESTING_REGRESS += col_point_auto
 TESTING_REGRESS += col_gorder_autogroup_kinds
 TESTING_REGRESS += col_gorder_group_count
+TESTING_REGRESS += col_gorder_count_big_group
 TESTING_REGRESS += col_gorder_group_range
 TESTING_REGRESS += col_gorder_group_points
 TESTING_REGRESS += agg_explain_why_scan

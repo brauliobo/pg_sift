@@ -252,23 +252,53 @@ count_by_entries(SiftColSource *src, ColCursor *c, const CountSpan *sp, uint32 l
 }
 
 /*
- * The count of a range when the segment has units that are not exact: the entries of the range when they are fewer than an eighth of the rows of those units (each costs a liveness
- * test, a row of a unit a few instructions), and for a text key whatever their number (a text test of a row costs thousands of instructions: the strings of the unit are tested one by one),
+ * What the units cost against what the entries do, in instructions, when units are not exact. An entry costs ENTRY_INSTR in its liveness test (sift_col_gorder_exact); a row of a unit read
+ * costs ROW_INSTR; a unit with the pre-aggregates net of its dead rows (col/seg/net.c) answers a count by a leaf with a rollup at UNIT_INSTR, whatever its rows (measured at 1,000,000 and
+ * 3,000,000 rows in 40 to 140 units).
+ */
+#define ENTRY_INSTR		265
+#define ROW_INSTR		33
+#define UNIT_INSTR		60000
+
+/* The instructions the units that are not exact cost to answer the count, without the entries */
+static uint64
+units_cost(SiftColSource *src, SiftColSegment *seg)
+{
+	uint64		cost = 0;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift col count units", ALLOCSET_SMALL_SIZES);
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftKey    *dead = NULL;
+		uint32		nd = 0,
+					room = 0;
+
+		if (unit_exact(src, seg, u))
+			continue;
+		cost += sift_cseg_unit_dead(seg, u, cx, &dead, &nd, &room) && sift_cseg_net_has(seg, u, nd) ? UNIT_INSTR : (uint64) seg->sbdir[u].nrows * ROW_INSTR;
+		MemoryContextReset(cx);
+	}
+	MemoryContextDelete(cx);
+	return cost;
+}
+
+/*
+ * The count of a range when the segment has units that are not exact: the entries of the range when they cost less than those units (units_cost: an entry costs eight rows of a unit, a unit with its pre-aggregates net of dead rows a fixed price), and for a text key whatever their number (a text test of a row costs thousands of instructions: the strings of the unit are tested one by one),
  * else the units are read after the exact ones are counted (count_dirty_units), else the entries.
  */
 static bool
 count_inexact(SiftColSource *src, ColCursor *c, const CountSpan *sp)
 {
 	SiftColSegment *seg = c->seg;
-	uint64		drows = 0;
+	uint64		alt;
+	uint32		m;
 
 	if ((src->flags & COLO_TABLE) || sift_cseg_keyed(&seg->entry) || !segments_current(src))
 		return false;
-	for (uint32 u = 0; u < seg->nsb; u++)
-		if (!unit_exact(src, seg, u))
-			drows += seg->sbdir[u].nrows;
-	return (drows / 8 >= 256 && count_by_entries(src, c, sp, (uint32) (drows / 8))) || (sp->str && count_by_entries(src, c, sp, PG_UINT32_MAX)) ||
-		count_dirty_units(src, c, sp) || (!sp->str && count_by_entries(src, c, sp, PG_UINT32_MAX));
+	alt = units_cost(src, seg);
+	m = sp->gcol >= 0 ? sift_cseg_gorder_count_group(seg, sp->col, sp->gcol, sp->gval, sp->lo, sp->hi) : sift_cseg_gorder_count(seg, sp->col, sp->str, sp->group, sp->lo, sp->hi);
+	return (alt / ENTRY_INSTR >= 256 && count_by_entries(src, c, sp, (uint32) Min(alt / ENTRY_INSTR, PG_UINT32_MAX))) || (sp->str && count_by_entries(src, c, sp, PG_UINT32_MAX)) ||
+		count_dirty_units(src, c, sp) || (!sp->str && m != UINT32_MAX && (uint64) m * ENTRY_INSTR <= alt && count_by_entries(src, c, sp, PG_UINT32_MAX));
 }
 
 /*
