@@ -116,7 +116,7 @@ SELECT sift.stats_reset();
 SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats();
  nonzero | counters 
 ---------+----------
-       0 |       26
+       0 |       29
 (1 row)
 
 -- the workers' share reaches the leader's figures

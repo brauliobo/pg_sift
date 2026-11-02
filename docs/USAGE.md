@@ -884,6 +884,9 @@ Rewriting the table:
 | `rows_vetted` | rows checked against the heap for visibility |
 | `rows_rechecked` | rows of dirty units read again from the heap |
 | `units_rechecked` | units that had such rows |
+| `rows_dirty_units` | rows of units with a dead row that were read as units (what a rewrite of the index would spare the reads) |
+| `read_penalty_kinstr` | thousands of instructions the reads of this backend spent on what maintenance would spare them: rows checked in the heap, rows of dirty units |
+| `maintenance_asks` | VACUUMs and rewrites this backend asked a worker for because its reads owed them |
 | `units_no_rollup` | exact units scanned for lack of their rollup |
 | `units_rollup_cost` | exact units scanned because their rollup cost more than their elements |
 | `lookup_cache_hits` | lookup tables taken from the cache of an earlier query |

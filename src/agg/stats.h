@@ -22,6 +22,9 @@
 	X(ROWS_VETTED, "rows_vetted", "rows checked against the heap for visibility") \
 	X(ROWS_RECHECKED, "rows_rechecked", "rows of dirty units read again from the heap") \
 	X(UNITS_RECHECKED, "units_rechecked", "units that had such rows") \
+	X(ROWS_DIRTY, "rows_dirty_units", "rows of units with a dead row that were read as units (what a rewrite of the index would spare the reads)") \
+	X(READ_PENALTY_KINSTR, "read_penalty_kinstr", "thousands of instructions the reads of this backend spent on what maintenance would spare them: rows checked in the heap, rows of dirty units") \
+	X(MAINT_ASKS, "maintenance_asks", "VACUUMs and rewrites this backend asked a worker for because its reads owed them") \
 	X(UNITS_NO_ROLLUP, "units_no_rollup", "exact units scanned for lack of their rollup") \
 	X(UNITS_ROLLUP_COST, "units_rollup_cost", "exact units scanned because their rollup cost more than their elements") \
 	X(LOOKUP_HITS, "lookup_cache_hits", "lookup tables taken from the cache of an earlier query") \

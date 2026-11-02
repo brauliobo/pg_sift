@@ -348,6 +348,7 @@ extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 
 extern bool sift_col_rewrite_tick(Relation index, double owed);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_vacuum_once_worker_main(Datum main_arg);
 
 extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 
