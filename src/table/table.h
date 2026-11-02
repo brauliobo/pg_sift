@@ -240,7 +240,7 @@ extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTbl
 /* Does the table have HOT chains (as the log this backend has read tells) */
 extern bool sift_tbl_has_chains(Relation rel);
 typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
-/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tbl_hot_offsets, for the vblocks of a search in ascending order */
+/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tomb_hot_offsets, for the vblocks of a search in ascending order */
 extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
