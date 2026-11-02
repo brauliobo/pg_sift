@@ -47,8 +47,9 @@ TRIES = {'sift': [[], FORCING['sift'], FORCING['sift'] + ['SET enable_indexscan 
 class Subject:
     """the data of the measurement: dataset name, rows, keys, how the heap holds the key (arrival, sorted, hash, other), the variant (the table of a comparison that has several), the churn history, the table state (schema.STATES) and the protocol of a repetition"""
 
-    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default', variant='main', churn=None, settled=None):
+    def __init__(self, dataset, rows, heap_order, table_state, table, key=None, keys=None, protocol='single', structures=None, kind='read', default_option='default', variant='main', churn=None, settled=None, facts=None):
         self.default_option, self.variant = default_option, variant
+        self.facts = facts   # churn_facts of the primary taken beside the table: a standby has no statistics of its own (pg_stat is not replicated), the arms start from the primary's
         self.churn, self.settled = churn, settled   # CHURN: what apply_churn returned; SETTLED: the harness waited for the maintenance to settle after the churn (True), or did not (False)
         self.dataset, self.rows, self.heap_order, self.table_state = dataset, rows, heap_order, table_state
         self.table, self.key, self.keys, self.protocol, self.structures, self.kind = table, key, keys, protocol, structures, kind
@@ -264,6 +265,9 @@ def churn_facts(s, table, declared=None):
     out = dict(churn_history=declared or 'ins=%s;upd=%s;del=%s' % (ins, upd, dele), vacuums=int(vac), autovacuums=int(auto), settled_s=float(since) if since else None,
                dead_pct=100.0 * int(dead) / max(1, int(live) + int(dead)), tombstone_pct=None)
     try:
+        if one(s, "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.oid = '%s'::regclass" % table)[0] == 'sift_table':
+            dead_rows, rows = one(s, "SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.table_segments('%s') WHERE kind = 'columns'" % table)
+            out['tombstone_pct'] = 100.0 * int(dead_rows) / int(rows) if int(rows) else None
         index = one(s, "SELECT i.indexrelid::regclass FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '%s'::regclass AND am.amname = 'sift_col' LIMIT 1" % table)
         if index:
             dead_rows, rows = one(s, 'SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.col_segments(%s)' % ("'%s'" % index[0]))
@@ -274,6 +278,13 @@ def churn_facts(s, table, declared=None):
     except RuntimeError:
         pass   # the sift functions are not in this database: no tombstones to count
     return out
+
+
+def start_state(s, subject):
+    """the churn facts the arms start from: those the harness took on the primary (Subject.facts, for a standby, which has no statistics of its own) or measured on S; a declared history wins"""
+    if subject.facts:
+        return dict(subject.facts, **({'churn_history': subject.churn} if subject.churn else {}))
+    return churn_facts(s, subject.table, subject.churn)
 
 
 def structure_bytes(s, table, arm):
@@ -291,7 +302,8 @@ def structure_bytes(s, table, arm):
 
 
 def wal_lsn(s):
-    return int(one(s, "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint")[0])
+    """the WAL position of the server: written (pg_current_wal_lsn) on a primary, replayed (pg_last_wal_replay_lsn) on a standby, which has no current one"""
+    return int(one(s, "SELECT pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END, '0/0')::bigint")[0])
 
 
 def pressure():
@@ -450,7 +462,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     restore = session_base(s)
     read = subject.kind == 'read'
     vis, corr, structures = table_facts(s, subject.table, subject.key) if read else (None, None, ','.join(sorted({'heap'} | {a.arm for a in arms})))
-    churn = churn_facts(s, subject.table, subject.churn) if read else {}
+    churn = start_state(s, subject) if read else {}
     if churn and not subject.table_state.startswith('churned'):
         churn['churn_history'] = None   # the tuples a fresh table's statistics counted are its load
     base = dict(run_id=env.run_id, tip=env.tip, harness=env.harness, dataset=subject.dataset, variant=subject.variant, rows=subject.rows, keys=subject.keys,
@@ -475,6 +487,11 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
             s.run(st)
         try:
             rows = arm_rows(s, text, subject, env, base, mode, arm, pid, post, catalog, arm.prepare or prepare, monitor, temps, fresh)
+        except NotForced as e:
+            out.append(dict(base, mode='unavailable', arm=arm.arm, arm_option=arm.option, picked=0, structure=e.structure, temp='warm', rep=1, workers_requested=0, workers_launched=0))
+            if unavailable is not None:
+                unavailable.append((arm.arm, arm.option, e.structure))
+            continue
         finally:
             s.run('RESET ALL')
             for st in restore:
@@ -488,6 +505,12 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
                 r['picked'] = 1 if (r['arm'], r['arm_option']) == default else 0
         out += rows
     return out
+
+
+class NotForced(Exception):
+    def __init__(self, structure):
+        super().__init__(structure)
+        self.structure = structure
 
 
 def forceable(s, arm, sql, catalog, restore):
@@ -522,6 +545,8 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
         if err:
             raise RuntimeError('EXPLAIN: %s' % err)
         _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
+        if mode == 'forced' and structure != arm.arm:
+            raise NotForced(structure)   # the plan without ANALYZE named the arm, the executed one does not: a node that falls back to the heap when it runs
     out = []
 
     @contextlib.contextmanager

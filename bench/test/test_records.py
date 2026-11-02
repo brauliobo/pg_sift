@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
 import check  # noqa: E402
@@ -124,6 +125,26 @@ class Collect(unittest.TestCase):
         arm, named = collect.forceable(s, collect.Arm('sift', option='o'), 'SELECT 1', (AM, None, {}), [])
         self.assertEqual((arm, named), (None, ('sift', 'o', 'btree')))
 
+    def test_an_arm_whose_executed_plan_is_not_its_structure_is_unavailable(self):
+        # the plain EXPLAIN names the sift node; when it runs it falls back to a scan of the heap
+        sift = {'Node Type': 'Custom Scan', 'Custom Plan Provider': 'SiftAgg'}
+        ran = dict(sift, Plans=[{'Node Type': 'Seq Scan', 'Relation Name': 't'}])
+
+        class Planner:
+            def run(self, sql):
+                if sql.startswith('EXPLAIN (ANALYZE'):
+                    return (1, [json.dumps([{'Plan': ran}])], '')
+                if sql.startswith('EXPLAIN'):
+                    return (1, [json.dumps([{'Plan': sift}])], '')
+                return (1.0, [], '')
+        s, catalog = Planner(), (AM, 't', {})
+        arm, _ = collect.forceable(s, collect.Arm('sift'), 'SELECT 1', catalog, [])
+        self.assertEqual(arm.arm, 'sift')
+        subject = collect.Subject('t', 1, 'arrival', 'fresh_vacuumed', 't')
+        with self.assertRaises(collect.NotForced) as caught:
+            collect.arm_rows(s, 'SELECT 1', subject, None, {}, 'forced', arm, 1, 1, catalog, None, None, ('warm',))
+        self.assertEqual(caught.exception.structure, 'mixed')
+
     def test_only_the_scans_of_the_subject_table_name_the_structure(self):
         lateral = {'Node Type': 'Nested Loop', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'probe'},
                                                          {'Node Type': 'Index Scan', 'Index Name': 'ix', 'Relation Name': 'events'}]}
@@ -150,6 +171,40 @@ class Collect(unittest.TestCase):
             os.makedirs(os.path.join(proc, 'self'))
             self.assertEqual([(p, a) for p, a, _ in collect.stale_perf(600, proc)], [(11, 9900)])
             self.assertEqual([p for p, _, _ in collect.stale_perf(60, proc)], [11, 12])
+
+    def test_a_standby_starts_from_the_facts_of_the_primary(self):
+        class Standby:
+            def run(self, sql):
+                raise AssertionError('the standby has no statistics to ask: %s' % sql)
+        facts = dict(churn_history='upd=5;ins=0;del=0;rounds=2', vacuums=9, autovacuums=0, settled_s=42.0, dead_pct=0.0, tombstone_pct=1.5)
+        subject = collect.Subject('t', 1, 'arrival', 'churned_vacuumed', 't', facts=facts, settled=True)
+        self.assertEqual(collect.start_state(Standby(), subject), facts)
+        self.assertEqual(collect.start_state(Standby(), collect.Subject('t', 1, 'arrival', 'churned_vacuumed', 't', facts=facts, churn='declared'))['churn_history'], 'declared')
+        rs = [dict(r, table_state='churned_vacuumed', settled=1, **facts) for r in clean()]
+        self.assertEqual(problems(rs), [])
+
+    def test_table_tombstones_count_column_rows_only(self):
+        class Table:
+            def run(self, sql):
+                return (0, [], '')
+
+        def answer(session, sql):
+            if 'pg_stat_all_tables' in sql:
+                return (100, 5, 0, 100, 0, 1, 0, 42)
+            if 'SELECT am.amname' in sql:
+                return ('sift_table',)
+            if 'sift.table_segments' in sql:
+                self.assertIn("WHERE kind = 'columns'", sql)
+                return (5, 100)
+            if 'pg_index' in sql:
+                return None
+            raise AssertionError(sql)
+
+        with patch.object(collect, 'one', side_effect=answer):
+            facts = collect.churn_facts(Table(), 't')
+        self.assertEqual(facts['tombstone_pct'], 5.0)
+        self.assertEqual(facts['dead_pct'], 0.0)
+        self.assertEqual(facts['vacuums'], 1)
 
     def test_a_short_statement_is_counted_over_a_window_of_runs(self):
         # (ms of one run, runs in the window)

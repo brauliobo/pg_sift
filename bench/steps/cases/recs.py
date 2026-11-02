@@ -6,6 +6,7 @@
 # with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares the table again and the statements are timed and added. A case that gives no records is
 # listed with its reason (SKIPPED) and fails the run.
 
+import json
 import os
 import re
 import subprocess
@@ -61,6 +62,26 @@ def arms(case):
     return out
 
 
+def native_arm(session, case, sql, table):
+    """the arm of the native lane's own statement when the case has one (`--@ pg` beside `--@ sift`: a GIN match against the BM25 operator, a plain query against the rewritten one): the
+    structure its plan names with sift.enable_agg off, under the option native_text; None when its plan mixes structures"""
+    native = expand(case.statement('native'), case)
+    if native.strip() == sql.strip():
+        return None
+    settings = ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])
+    restore = collect.session_base(session)
+    for st in settings:
+        session.run(st)
+    try:
+        _, rows, err, *_ = session.run('EXPLAIN (FORMAT JSON) ' + native.rstrip().rstrip(';'))
+        got = 'mixed' if err else collect.plan_structure(json.loads('\n'.join(rows))[0]['Plan'], collect.index_methods(session), table, collect.index_tables(session))
+    finally:
+        session.run('RESET ALL')
+        for st in restore:
+            session.run(st)
+    return None if got == 'mixed' else collect.Arm(got, option='native_text', settings=settings, sql=native)
+
+
 def run_env(session, runs):
     if not RUN:
         pid = collect.backend_pid(session)
@@ -88,8 +109,10 @@ def emit(case, lanes, rows, runs):
         env = run_env(session, runs)
         subject = collect.Subject(case.dataset, rows, 'other', table_state(case), table, protocol='fresh backend' if fresh else 'single')
         missed = []
+        forced = arms(case)
+        extra = None if fresh else native_arm(session, case, sql, table)
         try:
-            ROWS.extend(collect.measure_statement(session, case.id, sql, subject, arms(case), env, fresh=fresh, unavailable=missed))
+            ROWS.extend(collect.measure_statement(session, case.id, sql, subject, forced + ([extra] if extra else []), env, fresh=fresh, unavailable=missed))
         except collect.PerfUnavailable as e:
             SKIPPED.append((case.id, str(e)))
             return
