@@ -733,6 +733,7 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->units_set_pruned += c->par->cc.units_set_pruned;
 		cc->units_search_pruned += c->par->cc.units_search_pruned;
 		cc->rows_vetted += c->par->cc.rows_vetted;
+		cc->rows_log += c->par->cc.rows_log;
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
 		cc->recheck_units += c->par->cc.recheck_units;
@@ -765,7 +766,8 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
 	if (OidIsValid(c->spec->indexoid))
-		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted, cc.dirty_rows);
+		/* the rows the log decided read no heap page: a VACUUM would not spare their scan anything */
+		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted - cc.rows_log, cc.dirty_rows);
 	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
 	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
 	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);
