@@ -39,7 +39,7 @@ log_ent(Relation index)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};
 
-		log_tab = hash_create("sift_col tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		log_tab = hash_create("sift cache tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	e = hash_search(log_tab, &relid, HASH_ENTER, &found);
 	if (found && e->relnumber != index->rd_locator.relNumber)
@@ -50,7 +50,7 @@ log_ent(Relation index)
 	if (!found)
 	{
 		e->relnumber = index->rd_locator.relNumber;
-		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift_col tombstone log", ALLOCSET_DEFAULT_SIZES);
+		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);
 		memset(&e->dir, 0, sizeof(e->dir));
 		memset(&e->log, 0, sizeof(e->log));
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
