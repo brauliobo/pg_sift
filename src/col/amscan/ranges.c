@@ -375,8 +375,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
 		List	   *ranges = NIL;
-		bool		other = false,
-					eqonly = true;
+		bool		other = false;
 		double		keys = 0.0,
 					gcover = 0.0;
 
@@ -391,7 +390,6 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				if (strategy == BTEqualStrategyNumber || strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
 				{
 					ranges = lappend(ranges, ri);
-					eqonly &= strategy == BTEqualStrategyNumber;
 				}
 				else if (IsA(ri->clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) ri->clause)->useOr &&
 						 get_op_opfamily_strategy(((ScalarArrayOpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber &&
@@ -404,11 +402,10 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 					other = true;
 			}
 		}
-		/* the leaf that is the group of second orders has no order of its own: an equality or an IN list finds its rows in the table of groups of those */
-		if (eqonly)
-			for (int j = 0; j < sift_col_rel(irel)->schema->ncols; j++)
-				if (ls[j].gord_gcol == sift_col_rel(irel)->first[col + 1])
-					gcover = Max(gcover, Min(ls[j].gord_grp_rows / Max(index->rel->tuples, 1.0), 1.0));
+		/* the leaf that is the group of second orders has no order of its own: an equality, an IN list or a range finds its rows in the table of groups of those */
+		for (int j = 0; j < sift_col_rel(irel)->schema->ncols; j++)
+			if (ls[j].gord_gcol == sift_col_rel(irel)->first[col + 1])
+				gcover = Max(gcover, Min(ls[j].gord_grp_rows / Max(index->rel->tuples, 1.0), 1.0));
 		if (ranges != NIL && !other && l->nunits > 0 && (l->gord_rows > l->gord_grp_rows || gcover > 0.0))
 		{
 			double		rows = clauselist_selectivity(root, ranges, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples,

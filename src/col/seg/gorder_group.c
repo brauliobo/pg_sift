@@ -136,6 +136,70 @@ sift_cseg_gorder_tids_groups(SiftColSegment *seg, int gcol, const int64 *set, ui
 	return true;
 }
 
+/* The group at place gi of the table of groups of block slot */
+static int64
+group_value(SiftColSegment *seg, int slot, uint32 gi)
+{
+	int64		g;
+	uint32		vs,
+				ve,
+				ns,
+				ne;
+
+	sift_cseg_gorder_group_at(seg, slot, gi, &g, &vs, &ve, &ns, &ne);
+	return g;
+}
+
+/*
+ * The heap addresses of every row of the groups in [lo, hi] (all keys, NULL keys too) as sift_cseg_gorder_tids_groups: the table of groups is sorted by group and the value runs, like the
+ * NULL-key runs, lie in the order of the groups, so the groups of a range are one span of each.
+ */
+bool
+sift_cseg_gorder_tids_group_range(SiftColSegment *seg, int gcol, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids)
+{
+	SiftCGOrdBuf memo;
+	int64		g;
+	uint32		a = 0,
+				b,
+				end,
+				vs = 0,
+				ve = 0,
+				ns = 0,
+				ne = 0,
+				n = 0;
+	int			slot = -1;
+	SiftKey    *t;
+
+	for (int col = 0; col < seg->schema->ncols && slot < 0; col++)
+		slot = gorder_group_view(seg, col, gcol);
+	if (slot < 0)
+		return false;
+	end = sift_cseg_gorder_ngroups(seg, slot);
+	b = end;
+	SIFT_BISECT(uint32, mid, a, b, group_value(seg, slot, mid) < lo);
+	b = a;
+	SIFT_BISECT(uint32, mid, b, end, group_value(seg, slot, mid) <= hi);
+	if (a < b)
+	{
+		uint32		x,
+					y;
+
+		sift_cseg_gorder_group_at(seg, slot, a, &g, &vs, &x, &ns, &y);
+		sift_cseg_gorder_group_at(seg, slot, b - 1, &g, &x, &ve, &y, &ne);
+	}
+	if ((ve - vs) + (ne - ns) > limit)
+		return false;
+	memo.at = UINT32_MAX;
+	t = palloc(Max((ve - vs) + (ne - ns), 1) * sizeof(SiftKey));
+	seg_gord_addrs(seg, slot, vs, ve, &memo, t, &n);
+	seg_gord_addrs(seg, slot, ns, ne, &memo, t, &n);
+	if (n > 1)
+		sift_sort_u64(t, n);
+	*tids = t;
+	*ntids = n;
+	return true;
+}
+
 /* fn(arg, address) for each row of the group in the order of the keys, a chunk at a time (sift_cseg_gorder_each of a group); false when there is no such block or more than limit entries */
 bool
 sift_cseg_gorder_each_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg)

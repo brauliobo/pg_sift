@@ -342,8 +342,8 @@ scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo
 
 	if (!gorder_tids_ok(src, c, &limit, false))
 		return false;
-	/* an equality on the leaf that is the group of a second order has no order of its own: the group table lists its rows */
-	if (!sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n) && !(lo == hi && sift_cseg_gorder_tids_groups(c->seg, col, &lo, 1, limit, &tids, &n)))
+	/* a range on the leaf that is the group of a second order has no order of its own: the group table lists its rows */
+	if (!sift_cseg_gorder_tids(c->seg, col, false, lo, hi, limit, &tids, &n) && !sift_cseg_gorder_tids_group_range(c->seg, col, lo, hi, limit, &tids, &n))
 		return false;
 	return gorder_tids_adopt(src, c, i, keep, tids, n);
 }

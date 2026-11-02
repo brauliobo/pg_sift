@@ -1,5 +1,5 @@
--- The column a second order is grouped by (order_array_group) has no order of its own, and an equality or an IN list on it is still a lookup: the table of groups lists the rows of each key
--- (the NULL-key rows of the group too), so the plan is an index scan that hands the heap the addresses, not an index-only scan that reads every unit. The answers are the table's (a copy
+-- The column a second order is grouped by (order_array_group) has no order of its own, and an equality, an IN list or a range on it is still a lookup: the table of groups lists the rows of each key
+-- (the NULL-key rows of the group too; the groups of a range are one span of the table), so the plan is an index scan that hands the heap the addresses, not an index-only scan that reads every unit. The answers are the table's (a copy
 -- without an index is the oracle): a hit, a miss, a duplicate, rows with a NULL key, a write buffer, deleted and updated rows, a promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
@@ -12,6 +12,8 @@ CREATE TABLE t AS SELECT i AS id, CASE WHEN i % 53 = 0 THEN NULL ELSE 1 + abs(ha
 FROM generate_series(1, 150000) i;
 -- the group 1000 has three rows in three places of the table
 UPDATE t SET g = 1000 WHERE id IN (11, 50011, 100011);
+-- the groups 2000 to 2099 have one row each in every 1,500: every unit holds one, so no unit is skipped by its bounds
+UPDATE t SET g = 2000 + id / 1500 % 100 WHERE id % 1500 = 0;
 CREATE INDEX t_ix ON t USING sift_col (id, g, created, score) WITH (order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', point_tid_columns = 'off', key_columns = 'off', key_cut = 'off');
 VACUUM ANALYZE t;
 CREATE TABLE p AS SELECT * FROM t;
@@ -46,6 +48,10 @@ INSERT INTO qs VALUES ('SELECT id, g, created FROM @ WHERE g = 7'), ('SELECT id,
 	('SELECT id, g, created FROM @ WHERE g IN (7, 8, 9, 7, 400, 12)'), ('SELECT id, g, created FROM @ WHERE g IN (1, 150, 300)'),
 	('SELECT id, g, created FROM @ WHERE g = 7 AND score < 500'), ('SELECT id, g, created FROM @ WHERE g IN (7, 8) AND created IS NULL'),
 	('SELECT id, g, created FROM @ WHERE g IN (7, 8) AND created > ''2024-03-01'''), ('SELECT id, g, created FROM @ WHERE g = 7 OR g = 8'), ('SELECT id, g, created FROM @ WHERE g IN (1000, 1001)'), ('SELECT id, g, created FROM @ WHERE g IS NULL');
+
+INSERT INTO qs VALUES ('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9'), ('SELECT id, g, created FROM @ WHERE g >= 299'), ('SELECT id, g, created FROM @ WHERE g < 3'),
+	('SELECT id, g, created FROM @ WHERE g > 300 AND g < 1000'), ('SELECT id, g, created FROM @ WHERE g BETWEEN 1000 AND 2000'), ('SELECT id, g, created FROM @ WHERE g > 9 AND g < 9'),
+	('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9 AND score < 500'), ('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9 AND created IS NULL');
 
 SELECT plan_of('SELECT id, g, created FROM t WHERE g = 7') AS equality_plan;
 -- an index scan of the planner's own choice or forced: the IN list reads the rows of its groups, not the units
