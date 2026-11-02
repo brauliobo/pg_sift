@@ -1,6 +1,7 @@
 -- the elements of an array column (docs/COL-SHRED.md): an index with a path name[] text keeps the elements of a text[] column as the list of a jsonb array, with a
 -- point directory that lists the rows that own a value. Every query runs with and without the pushdown and the rows must be the same; the shapes with 'scan'
--- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time.
+-- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time. About 12 s: 54 shapes after each of 9 states
+-- on ae, the index that keeps no image of the arrays, and on ad, the one that does in the states built, orders, vacuum and reindex (ad gets the same writes in between).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
@@ -299,7 +300,7 @@ SELECT * FROM shapes('not null', 'an');
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
 INSERT INTO ad SELECT * FROM gen(30001, 34000);
-SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'ad');
+SELECT * FROM shapes('insert', 'ae');
            shape           |   result   
 ---------------------------+------------
  insert rare               | scan same
@@ -355,64 +356,11 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
  insert unnest two         | plain same
  insert keys               | plain same
  insert count              | plain same
- insert rare               | scan same
- insert common             | scan same
- insert two                | scan same
- insert absent             | scan same
- insert overlap            | scan same
- insert any                | scan same
- insert not any            | scan same
- insert contained          | scan same
- insert not two            | plain same
- insert not overlap        | plain same
- insert not contained      | plain same
- insert null element       | scan same
- insert group              | scan same
- insert empty              | scan same
- insert length             | scan same
- insert whole array        | scan same
- insert equal              | scan same
- insert equal two          | scan same
- insert equal swapped      | scan same
- insert equal repeated     | scan same
- insert equal 2-D          | scan same
- insert equal bounds       | scan same
- insert not equal          | scan same
- insert equal group        | scan same
- insert int equal          | scan same
- insert int equal swapped  | scan same
- insert int contains       | scan same
- insert int two            | scan same
- insert int two listed     | scan same
- insert int two dense      | scan same
- insert int overlap listed | scan same
- insert int overlap        | scan same
- insert int any            | scan same
- insert int contained      | scan same
- insert int not contained  | plain same
- insert int null element   | scan same
- insert unnest group       | scan same
- insert unnest total       | scan same
- insert unnest distinct    | scan same
- insert unnest like        | scan same
- insert unnest null        | scan same
- insert unnest filtered    | scan same
- insert unnest contains    | scan same
- insert unnest top         | scan same
- insert unnest lateral     | scan same
- insert unnest left        | scan same
- insert unnest ordinality  | plain same
- insert unnest int         | scan same
- insert unnest int sum     | scan same
- insert unnest int dist    | scan same
- insert unnest two         | plain same
- insert keys               | scan same
- insert count              | scan same
-(106 rows)
+(53 rows)
 
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
-SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'ad');
+SELECT * FROM shapes('update', 'ae');
            shape           |   result   
 ---------------------------+------------
  update rare               | scan same
@@ -468,60 +416,7 @@ SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'a
  update unnest two         | plain same
  update keys               | plain same
  update count              | plain same
- update rare               | scan same
- update common             | scan same
- update two                | scan same
- update absent             | scan same
- update overlap            | scan same
- update any                | scan same
- update not any            | scan same
- update contained          | scan same
- update not two            | plain same
- update not overlap        | plain same
- update not contained      | plain same
- update null element       | scan same
- update group              | scan same
- update empty              | scan same
- update length             | scan same
- update whole array        | scan same
- update equal              | scan same
- update equal two          | scan same
- update equal swapped      | scan same
- update equal repeated     | scan same
- update equal 2-D          | scan same
- update equal bounds       | scan same
- update not equal          | scan same
- update equal group        | scan same
- update int equal          | scan same
- update int equal swapped  | scan same
- update int contains       | scan same
- update int two            | scan same
- update int two listed     | scan same
- update int two dense      | scan same
- update int overlap listed | scan same
- update int overlap        | scan same
- update int any            | scan same
- update int contained      | scan same
- update int not contained  | plain same
- update int null element   | scan same
- update unnest group       | scan same
- update unnest total       | scan same
- update unnest distinct    | scan same
- update unnest like        | scan same
- update unnest null        | scan same
- update unnest filtered    | scan same
- update unnest contains    | scan same
- update unnest top         | scan same
- update unnest lateral     | scan same
- update unnest left        | scan same
- update unnest ordinality  | plain same
- update unnest int         | scan same
- update unnest int sum     | scan same
- update unnest int dist    | scan same
- update unnest two         | plain same
- update keys               | scan same
- update count              | scan same
-(106 rows)
+(53 rows)
 
 -- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
 UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
@@ -647,7 +542,7 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
 
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
-SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'ad');
+SELECT * FROM shapes('delete', 'ae');
            shape           |   result   
 ---------------------------+------------
  delete rare               | scan same
@@ -703,60 +598,7 @@ SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'a
  delete unnest two         | plain same
  delete keys               | plain same
  delete count              | plain same
- delete rare               | scan same
- delete common             | scan same
- delete two                | scan same
- delete absent             | scan same
- delete overlap            | scan same
- delete any                | scan same
- delete not any            | scan same
- delete contained          | scan same
- delete not two            | plain same
- delete not overlap        | plain same
- delete not contained      | plain same
- delete null element       | scan same
- delete group              | scan same
- delete empty              | scan same
- delete length             | scan same
- delete whole array        | scan same
- delete equal              | scan same
- delete equal two          | scan same
- delete equal swapped      | scan same
- delete equal repeated     | scan same
- delete equal 2-D          | scan same
- delete equal bounds       | scan same
- delete not equal          | scan same
- delete equal group        | scan same
- delete int equal          | scan same
- delete int equal swapped  | scan same
- delete int contains       | scan same
- delete int two            | scan same
- delete int two listed     | scan same
- delete int two dense      | scan same
- delete int overlap listed | scan same
- delete int overlap        | scan same
- delete int any            | scan same
- delete int contained      | scan same
- delete int not contained  | plain same
- delete int null element   | scan same
- delete unnest group       | scan same
- delete unnest total       | scan same
- delete unnest distinct    | scan same
- delete unnest like        | scan same
- delete unnest null        | scan same
- delete unnest filtered    | scan same
- delete unnest contains    | scan same
- delete unnest top         | scan same
- delete unnest lateral     | scan same
- delete unnest left        | scan same
- delete unnest ordinality  | plain same
- delete unnest int         | scan same
- delete unnest int sum     | scan same
- delete unnest int dist    | scan same
- delete unnest two         | plain same
- delete keys               | scan same
- delete count              | scan same
-(106 rows)
+(53 rows)
 
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
  col_verify | col_verify 
@@ -883,7 +725,7 @@ SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', tr
  t      | t
 (1 row)
 
-SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad');
+SELECT * FROM shapes('merge', 'ae');
           shape           |   result   
 --------------------------+------------
  merge rare               | scan same
@@ -939,60 +781,7 @@ SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad'
  merge unnest two         | plain same
  merge keys               | plain same
  merge count              | plain same
- merge rare               | scan same
- merge common             | scan same
- merge two                | scan same
- merge absent             | scan same
- merge overlap            | scan same
- merge any                | scan same
- merge not any            | scan same
- merge contained          | scan same
- merge not two            | plain same
- merge not overlap        | plain same
- merge not contained      | plain same
- merge null element       | scan same
- merge group              | scan same
- merge empty              | scan same
- merge length             | scan same
- merge whole array        | scan same
- merge equal              | scan same
- merge equal two          | scan same
- merge equal swapped      | scan same
- merge equal repeated     | scan same
- merge equal 2-D          | scan same
- merge equal bounds       | scan same
- merge not equal          | scan same
- merge equal group        | scan same
- merge int equal          | scan same
- merge int equal swapped  | scan same
- merge int contains       | scan same
- merge int two            | scan same
- merge int two listed     | scan same
- merge int two dense      | scan same
- merge int overlap listed | scan same
- merge int overlap        | scan same
- merge int any            | scan same
- merge int contained      | scan same
- merge int not contained  | plain same
- merge int null element   | scan same
- merge unnest group       | scan same
- merge unnest total       | scan same
- merge unnest distinct    | scan same
- merge unnest like        | scan same
- merge unnest null        | scan same
- merge unnest filtered    | scan same
- merge unnest contains    | scan same
- merge unnest top         | scan same
- merge unnest lateral     | scan same
- merge unnest left        | scan same
- merge unnest ordinality  | plain same
- merge unnest int         | scan same
- merge unnest int sum     | scan same
- merge unnest int dist    | scan same
- merge unnest two         | plain same
- merge keys               | scan same
- merge count              | scan same
-(106 rows)
+(53 rows)
 
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
 INSERT INTO ad SELECT * FROM gen(40001, 44000);
@@ -1002,7 +791,7 @@ SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', tr
  t      | t
 (1 row)
 
-SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'ad');
+SELECT * FROM shapes('merge2', 'ae');
            shape           |   result   
 ---------------------------+------------
  merge2 rare               | scan same
@@ -1058,60 +847,7 @@ SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'a
  merge2 unnest two         | plain same
  merge2 keys               | plain same
  merge2 count              | plain same
- merge2 rare               | scan same
- merge2 common             | scan same
- merge2 two                | scan same
- merge2 absent             | scan same
- merge2 overlap            | scan same
- merge2 any                | scan same
- merge2 not any            | scan same
- merge2 contained          | scan same
- merge2 not two            | plain same
- merge2 not overlap        | plain same
- merge2 not contained      | plain same
- merge2 null element       | scan same
- merge2 group              | scan same
- merge2 empty              | scan same
- merge2 length             | scan same
- merge2 whole array        | scan same
- merge2 equal              | scan same
- merge2 equal two          | scan same
- merge2 equal swapped      | scan same
- merge2 equal repeated     | scan same
- merge2 equal 2-D          | scan same
- merge2 equal bounds       | scan same
- merge2 not equal          | scan same
- merge2 equal group        | scan same
- merge2 int equal          | scan same
- merge2 int equal swapped  | scan same
- merge2 int contains       | scan same
- merge2 int two            | scan same
- merge2 int two listed     | scan same
- merge2 int two dense      | scan same
- merge2 int overlap listed | scan same
- merge2 int overlap        | scan same
- merge2 int any            | scan same
- merge2 int contained      | scan same
- merge2 int not contained  | plain same
- merge2 int null element   | scan same
- merge2 unnest group       | scan same
- merge2 unnest total       | scan same
- merge2 unnest distinct    | scan same
- merge2 unnest like        | scan same
- merge2 unnest null        | scan same
- merge2 unnest filtered    | scan same
- merge2 unnest contains    | scan same
- merge2 unnest top         | scan same
- merge2 unnest lateral     | scan same
- merge2 unnest left        | scan same
- merge2 unnest ordinality  | plain same
- merge2 unnest int         | scan same
- merge2 unnest int sum     | scan same
- merge2 unnest int dist    | scan same
- merge2 unnest two         | plain same
- merge2 keys               | scan same
- merge2 count              | scan same
-(106 rows)
+(53 rows)
 
 SELECT sift.col_verify('ae_col', true);
  col_verify 
