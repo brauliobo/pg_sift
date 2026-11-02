@@ -67,6 +67,9 @@ BEGIN
 			CONTINUE WHEN (t = 'pi' AND z NOT IN ('UTC', 'America/New_York')) OR (t = 'pw' AND z IN ('Pacific/Apia', 'America/Sao_Paulo'));
 			FOREACH col IN ARRAY CASE WHEN z = 'UTC' THEN ARRAY['tz', 'ts'] ELSE ARRAY['tz'] END LOOP
 				FOR c IN SELECT * FROM pc_case LOOP
+					-- the minutes of pc try 47,000 windows of an hour (85 ms a statement, 13 of the 16 s of the file in the 51 statements of the 7 zones): the whole-hour zones
+					-- shift the windows by hours, so UTC, Kolkata and Lord Howe (the half hours) check them, and pw has the same cases in every zone
+					CONTINUE WHEN t = 'pc' AND c.f LIKE 'extract(minute%' AND z IN ('America/New_York', 'Pacific/Apia', 'America/Sao_Paulo', 'Europe/London');
 					q := format('SELECT count(*) FROM %s WHERE ' || replace(c.f, '%1$s', col) || ' = %s', t, c.o);
 					n := n + 1;
 					IF count_of(q, true) = count_of(q, false) THEN s := s + 1; END IF;
