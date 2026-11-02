@@ -2,3 +2,6 @@
 # sift, picked), option, metric (exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks, cold_blocks), the value the line gives, a tolerance in percent (default 25).
 phrase	statement	rows	arm	option	metric	value	tolerance	note
 4.0 M instructions	cnt_top	1050000	sift	key_order=k,ts	instr_m	4.0	25	count(*) of the biggest group after churn and VACUUM, run 89c6a2e19f1f-20261101T235905Z-8380
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	exec_ms	4.3	25	run a62375c32fe9-20261102T004243Z-77ea (after), 27.5 ms before: run a62375c32fe9-20261102T004316Z-9573 (/tmp/pl6, stored in program-scale/records/planner-pl9-before-20261101.rec and planner-pl9-after-20261101.rec)
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	instr_m	20.2	25	same run
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	btree	default	exec_ms	3.3	25	same run, the b-tree twin

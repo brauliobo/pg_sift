@@ -98,7 +98,8 @@ rescan_floor(PlannerInfo *root, IndexPath *path)
 {
 	IndexOptInfo *index = path->indexinfo;
 
-	if (root->parent_root == NULL)
+	/* a parent that has its relations is planning a subquery of its FROM list (a LATERAL one): its loops are the rows of the join, which the join prices, not the estimate of a subplan's calls */
+	if (root->parent_root == NULL || root->parent_root->simple_rel_array != NULL)
 		return 0.0;
 	foreach_node(IndexClause, ic, path->indexclauses)
 		foreach_node(RestrictInfo, ri, ic->indexquals)
