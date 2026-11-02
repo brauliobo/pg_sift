@@ -24,6 +24,9 @@ CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LA
 DECLARE l text; c text := '';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
+	-- a unit that lacks its rollup asks for one (the request queue) and a background worker replaces the segment that holds it; a statement that began on the old segment
+	-- then scans all its units (segments_current), so the counts of a statement that follows would depend on the worker's timing. The statements counted here make no request.
+	PERFORM set_config('sift.col_rollup_on_demand', 'off', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
@@ -95,7 +98,7 @@ END $$;
 -- Function-local settings also restore the changes made by pa_rows on return.
 CREATE FUNCTION pa_contract(idx regclass, q text, two_keys bool)
 RETURNS TABLE (inventory bool, visible bool, used bool, same bool) LANGUAGE plpgsql
-SET sift.agg_preagg = on SET sift.enable_agg = on SET enable_seqscan = off AS $$
+SET sift.agg_preagg = on SET sift.enable_agg = on SET sift.col_rollup_on_demand = off SET enable_seqscan = off AS $$
 DECLARE
 	stored bigint; eligible bigint; planned int; answered int; l text; siftagg bool := false;
 	a text; b text; c text;
