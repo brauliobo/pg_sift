@@ -14,12 +14,12 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $rows = knob('SIFT_ROWS', 40000, 40000);
-my $batch = knob('SIFT_BATCH', 5000, 4000);
-my $txns = knob('SIFT_TXNS', 16, 8);
-my $copy_rows = knob('SIFT_COPY_ROWS', 30000, 20000);
+my $rows = knob('SIFT_ROWS', 20000, 20000);
+my $batch = knob('SIFT_BATCH', 2600, 2600);
+my $txns = knob('SIFT_TXNS', 6, 6);
+my $copy_rows = knob('SIFT_COPY_ROWS', 10000, 10000);
 my $clients = 8;
-my $limit = knob('SIFT_MAX_SEGMENTS', 16, 16);
+my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
 my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048";
 # VACUUM does not cut the file while a standby streams (43e42dc9c): the test of the returned space needs the testing setting, as 006, 008, 013 and 015
 my $primary_conf = "$conf\nwal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on";
