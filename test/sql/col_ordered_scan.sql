@@ -25,7 +25,9 @@ VACUUM (ANALYZE) oa;
 VACUUM (ANALYZE) os;
 VACUUM (ANALYZE) ot;
 
--- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10, 11; 12 is an aggregate that orders by the first column of an index scan whose subquery names the others, and the scan must give those columns too) and 1 for query 5 (NULLS FIRST ascending is not the order of the scan) and 9 (it reads another column)
+-- sorts is 0 for the ordered scan (queries 1 to 4, 6 to 8, 10 to 17: 12 is an aggregate that orders by the first column of an index scan whose subquery names the others, and the scan must give those columns too; a window, a merge join of
+-- two ordered scans and a sorted GROUP BY read it too, though SiftAgg may answer a statement that aggregates; the window result is the column k itself, as a window nothing reads is dropped from the subquery that os_run hashes)
+-- and 1 for query 5 (NULLS FIRST ascending is not the order of the scan), 9 and 18 (they read another column)
 -- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off)
 CREATE FUNCTION os_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -36,6 +38,9 @@ BEGIN
 	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
 	PERFORM set_config('enable_sort', (NOT ios)::text, true);
 	PERFORM set_config('enable_bitmapscan', 'false', true);
+	PERFORM set_config('enable_hashjoin', 'false', true);
+	PERFORM set_config('enable_nestloop', 'false', true);
+	PERFORM set_config('enable_hashagg', 'false', true);
 	scans := 0;
 	sorts := 0;
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
@@ -69,7 +74,13 @@ INSERT INTO os_q VALUES
  (9, 'SELECT k, d FROM os ORDER BY k'),
  (10, 'SELECT k FROM oc ORDER BY k'),
  (11, 'SELECT k FROM oc ORDER BY k DESC'),
- (12, 'SELECT array_agg(k ORDER BY k)::text AS k FROM (SELECT k, id, b FROM oa WHERE k IS NULL OR k <> ALL (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))) s');
+ (12, 'SELECT array_agg(k ORDER BY k)::text AS k FROM (SELECT k, id, b FROM oa WHERE k IS NULL OR k <> ALL (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))) s'),
+ (13, 'SELECT max(k) OVER (ORDER BY k) AS k FROM os'),
+ (14, 'SELECT max(k) OVER (ORDER BY k DESC) AS k FROM ot'),
+ (15, 'SELECT sum(k) OVER (PARTITION BY k) AS k FROM oc'),
+ (16, 'SELECT a.k FROM os a JOIN os b ON a.k = b.k'),
+ (17, 'SELECT k, count(*) FROM os GROUP BY k'),
+ (18, 'SELECT max(k) OVER (ORDER BY k) + coalesce(d - d, 0) AS k FROM os');
 SELECT n, q, (os_check(q)).* FROM os_q ORDER BY n;
 
 -- an order with compact chunks has the bucket of each key, the heap the key: the scan sorts the rows of the units instead, and reads no heap block

@@ -52,7 +52,8 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 		Bitmapset  *used = NULL;
 		IndexOptInfo *oi;
 
-		if (ii->relam != sift_col_am_oid() || !ii->amhasgettuple || ii->hypothetical || ii->indpred != NIL || ii->indexkeys[0] <= 0 || !ii->canreturn[0])
+		/* amhasgettuple is not asked: cost.c clears it on the copy of the index of a statement that SiftAgg may answer (an aggregate, a window), and the order is what a merge join or a window under it reads */
+		if (ii->relam != sift_col_am_oid() || ii->hypothetical || ii->indpred != NIL || ii->indexkeys[0] <= 0 || !ii->canreturn[0])
 			continue;
 		var = (Var *) ((TargetEntry *) linitial(ii->indextlist))->expr;
 		if (!IsA(var, Var) || !sift_col_ordered_type(var->vartype))
@@ -74,6 +75,7 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 		 */
 		oi = makeNode(IndexOptInfo);
 		memcpy(oi, ii, sizeof(IndexOptInfo));
+		oi->amhasgettuple = true;
 		oi->indextlist = NIL;
 		foreach_node(TargetEntry, te, ii->indextlist)
 		{

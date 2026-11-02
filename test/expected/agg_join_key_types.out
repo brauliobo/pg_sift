@@ -7,6 +7,8 @@ SET client_min_messages = warning;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
+-- the ordered index-only scan of the key joined by a memoized lookup costs few pages and would take the plan over from the pushed one at these page costs: the statements check the pushed plan
+SET sift.enable_col_scan = off;
 -- events with an int8 key, a sparse int4 key (a range past 4 million values) and a dense int4 key
 CREATE TABLE ev (id int PRIMARY KEY, k8 int8, ks int4, kd int4, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
