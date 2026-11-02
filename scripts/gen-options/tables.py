@@ -151,7 +151,6 @@ def generate(opts, notes, released, version, old_version):
             why = ', '.join(WHY[w.strip()] for w in meta(r, 'why').split(',')) if meta(r, 'why') else ''
             bench = ev(r, 'bench')
             bench = bench if bench.startswith(('as `', 'n/a')) else '' if bench in ('', '-') else '`%s`' % bench if '/' not in bench else '[%s](%s)' % (bench, bench[5:])
-            prs = ', '.join('[#%s](https://github.com/brauliobo/pg_sift/pull/%s)' % (n, n) for n in re.findall(r'\d+', r['pr'] or lead.get(r['group'] or '', r)['pr']))
             imp = ['index size: %s' % shown(r, 'growth'), 'build, merge and writes: %s' % shown(r, 'write')] + (['other: %s' % cost(r, False)] if meta(r, 'cost') not in ('', '-') else [])
             lines = ['', '#### %s' % heading(os_), '', '%s · %s%s · default %s' % ('`%s`' % r['applies'].replace(', ', '`, `') if r['applies'] != '-' else 'all', c, ' · since %s' % r['since'] if r['since'] else '', defaults(os_)), '',
                      '- **What it does:** %s' % meta(r, 'buys'),
@@ -165,7 +164,7 @@ def generate(opts, notes, released, version, old_version):
             lines += ['- **Turn off:** %s' % meta(r, 'off'),
                       '- **Upgrade from %s:** %s' % (released_label(), r['upgrade'] or 'unchanged%s' % ('; writes column format minor %s' % r['minor'] if r['minor'] and int(r['minor']) > released_max_read() else '')),
                       '- **Advice:** %s' % meta(r, 'advice')]
-            src = [x for x in (('PR ' + prs) if prs else '', ('benchmark ' + bench) if bench else '', link(r, '').replace('](', '](') if r['link'] else '') if x]
+            src = [x for x in (('benchmark ' + bench) if bench else '', link(r, '') if r['link'] else '') if x]
             if src:
                 lines.append('- **Sources:** %s' % '; '.join(src))
             sections += lines
