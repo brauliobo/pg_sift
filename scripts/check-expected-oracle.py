@@ -4,7 +4,7 @@
 A regression test compares two plans or two engines in SQL and prints the verdict in a column (agree, same, equal, match, ok, identical,
 equivalent, passed, or a name made of such words: rows_agree, same_order). The expected file is accepted from the first run; a verdict
 of f / false in it pins the disagreement as the right answer. Lint fails on
-  - a cell f / false (also 0 / no) in an oracle column of a table or an expanded record, and
+  - a cell f / false or empty (a NULL: the comparison did not say yes) in an oracle column of a table or an expanded record, and
   - a cell with the word FAIL, FAILED, MISMATCH or DIFFERENT in any result column.
 A verdict that is f on purpose (a test of an operator that must not match, scores that differ within a stated bound) is listed in
 scripts/expected-oracle.allow, one `file:column<TAB>hits<TAB>reason` a row: the exact number of cells, so a new one in the same column fails and is read."""
@@ -48,11 +48,13 @@ def scan_text(text):
         if i + 1 < len(lines) and SEP.match(lines[i + 1]) and '|' in l and not l.startswith(('--', '+')) and '+' in lines[i + 1]:
             names = cells(l)
             i += 2
+            more = False        # a value of several lines: the line before ends with `+` and the next one holds the rest of its cells, empty for the others
             while i < len(lines) and lines[i].strip() and not ROW_END.match(lines[i]):
                 row = cells(lines[i])
-                if len(row) == len(names):
+                if len(row) == len(names) and not more:
                     for n, v in zip(names, row):
                         yield from verdict(i + 1, n, v)
+                more = lines[i].rstrip().endswith('+')
                 i += 1
             continue
         i += 1
@@ -61,6 +63,8 @@ def scan_text(text):
 def verdict(n, name, val):
     if oracle_name(name) and val.lower() in FALSE:
         yield (n, name, val, 'oracle column is false')
+    elif oracle_name(name) and val == '':
+        yield (n, name, 'NULL', 'oracle column is NULL')
     m = BAD_CELL.search(val)
     if m:
         yield (n, name, val[:60], f'result cell holds {m.group(1)}')
@@ -91,6 +95,10 @@ def selftest():
         (' a | has_match\n---+------\n 1 | t\n 2 | t\n(2 rows)\n', 0),
         (' a | okay\n---+------\n 1 | f\n(1 row)\n', 0),  # `okay` is not an oracle word
         ('-- agree is f here\nSELECT 1;\n', 0),
+        (' a | agree\n---+------\n 1 | \n(1 row)\n', 1),                                            # NULL
+        ('-[ RECORD 1 ]--\nsame | \nn    | 1\n', 1),
+        (' pushed | same |  result  \n--------+------+----------\n t      | t    | (0,2000)+\n        |      | (1,2000)\n(1 row)\n', 0),   # the rest of a value of several lines is no NULL
+        (' pushed | same |  result  \n--------+------+----------\n t      |      | (0,2000)+\n        |      | (1,2000)\n(1 row)\n', 1),
     ]
     bad = 0
     for n, (text, want) in enumerate(cases):
