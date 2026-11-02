@@ -262,7 +262,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			if (strcmp(names[i], rk) == 0)
 				id = i;
 		if (id < 0)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid row_key option: \"%s\" is not a column of the index", rk)));
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_updates option: \"%s\" is not a column of the index", rk)));
 		r->rowkey = true;
 		r->rowkey_leaf = id;
 	}

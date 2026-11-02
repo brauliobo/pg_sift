@@ -2,7 +2,7 @@
  * core/tomb.h - the tombstone log of a relation: an append-only segment of 32-byte entries (the key of a row version, the transaction and command
  * that ended it) with the sorted copy a backend keeps, the lookups a reader makes and the rewrite VACUUM does.
  *
- * A sift_table keeps the log of its deleted, updated and locked row versions (docs/COL-TAM.md section 2.4); a heap sift_col index with row_key
+ * A sift_table keeps the log of its deleted, updated and locked row versions (docs/COL-TAM.md section 2.4); a heap sift_col index with track_updates
  * keeps the log of the entries that stopped being live. Both read it through the same cache and the same visibility rule.
  */
 #ifndef SIFT_CORE_TOMB_H

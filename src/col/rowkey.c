@@ -1,5 +1,5 @@
 /*
- * col/rowkey.c - the option row_key of a heap column index: the column that identifies a row, the rule that makes the index able to say which older entry
+ * col/rowkey.c - the option track_updates of a heap column index: the column that identifies a row, the rule that makes the index able to say which older entry
  * an updated row replaces. The checks run at CREATE INDEX and at ALTER INDEX; 'auto' is the primary key and is written back as the column.
  */
 #include "postgres.h"
@@ -67,17 +67,17 @@ check_column(Relation heap, Relation index, const char *name)
 	bool		covered = false;
 
 	if (att == InvalidAttrNumber)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("row_key: table \"%s\" has no column \"%s\"", RelationGetRelationName(heap), name)));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("track_updates: table \"%s\" has no column \"%s\"", RelationGetRelationName(heap), name)));
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 		covered |= index->rd_index->indkey.values[i] == att;
 	if (!covered)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("row_key: column \"%s\" is not a plain column of the index", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" is not a plain column of the index", name),
 						errhint("Name a column the index holds, or add it to the column list of the index.")));
 	if (!TupleDescAttr(RelationGetDescr(heap), att - 1)->attnotnull)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("row_key: column \"%s\" can be NULL", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" can be NULL", name),
 						errhint("A row is found by its key: declare the column NOT NULL, or use its primary key.")));
 	if (!unique_on(heap, att, false, NULL))
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("row_key: column \"%s\" has no unique index of its own", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" has no unique index of its own", name),
 						errdetail("The index replaces the older entries of a key when the row is updated, which is exact only when no two live rows share the key."),
 						errhint("Create a UNIQUE or PRIMARY KEY constraint on the column alone: not deferrable, not partial, not on an expression, not on several columns.")));
 }
@@ -116,12 +116,12 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 
 		if (pk == InvalidAttrNumber)
 		{
-			ereport(NOTICE, (errmsg("row_key = auto: table \"%s\" has no primary key of one column, so the index keeps no row key", RelationGetRelationName(heap)),
-							 errhint("Name a column that has a unique index of its own: WITH (row_key = 'id').")));
-			sift_col_set_option(index, "row_key", "off");
+			ereport(NOTICE, (errmsg("track_updates = auto: table \"%s\" has no primary key of one column, so the index keeps no row key", RelationGetRelationName(heap)),
+							 errhint("Name a column that has a unique index of its own: WITH (track_updates = 'id').")));
+			sift_col_set_option(index, "track_updates", "off");
 			return;
 		}
-		sift_col_set_option(index, "row_key", get_attname(RelationGetRelid(heap), pk, false));
+		sift_col_set_option(index, "track_updates", get_attname(RelationGetRelid(heap), pk, false));
 		rk = sift_col_options_row_key(index);
 	}
 	check_column(heap, index, rk);

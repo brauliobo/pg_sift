@@ -76,7 +76,7 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
-static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with row_key supersedes the entries of the old versions */
+static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_updates supersedes the entries of the old versions */
 
 static void
 batch_flush_all(void)

@@ -1818,7 +1818,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Set it on an index of a table whose rows are written in the order of a key (a load sorted by it, CLUSTER, an append-only table in time order): 'ts' for ORDER BY ts LIMIT with a large OFFSET, ranges and lists of points; 'tenant, ts' for the latest rows of each tenant or entity on one big multi-tenant table (b-tree-class latest-N at 1.3x the b-tree's instructions). Write point_tid_columns = 'off' beside the one-column form to leave out the point directory: the index of a sorted table is then 21% smaller than the default's (0.46 against 0.58 MB, 100,000 rows) with the same OFFSET and LIMIT shapes, and 500 points cost what they cost by default (54M against 7.9M instructions with the directory, which makes the index 64% larger). Use key_cut alone when the table is not stored in that order and you want the smaller index and the lower WAL of churn; leave the default when the queries do not range or order by the key. Do not set it on the partitions of a partitioned table, and do not use 'group, key' where queries ORDER BY group, key OFFSET large or count(*) one group often. The three choices of the one-column form, 100,000 rows, 12 rounds of churn, random keys: key_cut 5,661M instructions, 11.1 MB WAL, 1,536 KB index, key_order 5,711M, 12.3 MB, 1,808 KB, default 6,957M, 12.1 MB, 1,880 KB; top-20 0.50M against 0.25M and OFFSET 10,000 36M against 5.4M for key_cut alone and key_order
 - **Sources:** benchmark `test:col_key_order`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
-#### sift_col(row_key)
+#### sift_col(track_updates)
 
 `sift_col` · opt-in · since 4.0 · default ''
 
@@ -1828,10 +1828,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** UPDATE and INSERT .. ON CONFLICT DO UPDATE of a row whose key the index covers on a heap table; not a sift_table (its tombstones are native), not a partitioned parent (set it on each partition's index)
 - **Default:** '' — It is not the default: a unique key is required (an index without one cannot name the older entry), the segments are a new format minor, and the effect on reads is not measured yet
 - **Why not the default:** the history does not say
-- **Turn off:** ALTER INDEX .. RESET (row_key) stops new tombstones; the log segment and the format stay until a REINDEX writes the index again. Reads of an index with no row_key never look at a log.
-- **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its options; the segments of an index with row_key are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them
-- **Advice:** Set it on an index of a table that has a primary key and is updated: the entries of an updated row stop being live in the log at once instead of waiting for VACUUM. Leave it off on an append-only table. It is the base of hear_deletes, which is what lets a read skip the heap; CREATE INDEX CONCURRENTLY is allowed with row_key alone.
-- **Sources:** benchmark `test:col_row_key_option`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
+- **Turn off:** ALTER INDEX .. RESET (track_updates) stops new tombstones; the log segment and the format stay until a REINDEX writes the index again. Reads of an index with no track_updates never look at a log.
+- **Upgrade from 3.7:** unchanged: an index of 3.7 keeps its options; the segments of an index with track_updates are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them
+- **Advice:** Set it on an index of a table that has a primary key and is updated: the entries of an updated row stop being live in the log at once instead of waiting for VACUUM. Leave it off on an append-only table. It is the base of hear_deletes, which is what lets a read skip the heap; CREATE INDEX CONCURRENTLY is allowed with track_updates alone.
+- **Sources:** benchmark `test:col_track_updates_option`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
 #### sift_col(hll_columns)
 
@@ -2471,14 +2471,14 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(row_key)`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_updates)`.
 
 | Option | 3.7 | 4.0 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
 | `sift(merge_fanin)` | 8 | 4 |  | After ALTER EXTENSION UPDATE an index that did not set merge_fanin merges at 4 segments of a size tier from its next merge (8 in 3.7), so it keeps fewer segments and writes more while it ingests; no REINDEX. An index that set the option keeps its value; ALTER INDEX .. SET (merge_fanin = 8) keeps the old policy. |
 | `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |
 | `sift_col(order_layout)` | new | '' | minor 41, unreadable by 3.7 | unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
-| `sift_col(row_key)` | new | '' | minor 43, unreadable by 3.7 | unchanged: an index of 3.7 keeps its options; the segments of an index with row_key are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them |
+| `sift_col(track_updates)` | new | '' | minor 43, unreadable by 3.7 | unchanged: an index of 3.7 keeps its options; the segments of an index with track_updates are column format minor 43, which only 4.0 and later read, and a new directory kind (tombstones) older releases refuse; REINDEX writes them |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
 <!-- sift-upgrade:end -->

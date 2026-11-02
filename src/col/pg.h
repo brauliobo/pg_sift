@@ -131,7 +131,7 @@ typedef struct SiftColOptions
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
-	int			row_key;		/* offset of the "row_key" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
+	int			track_updates;		/* offset of the "track_updates" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */

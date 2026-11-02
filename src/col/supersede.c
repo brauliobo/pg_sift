@@ -1,5 +1,5 @@
 /*
- * col/supersede.c - the entries a new row version replaces, for an index with row_key.
+ * col/supersede.c - the entries a new row version replaces, for an index with track_updates.
  *
  * An UPDATE that moves a row to a new heap address writes a new entry; the entry of the version it replaced stays in the index until VACUUM. Under the unique index
  * the option requires, the row the key names has one live version, so the entry of the key that the new version does not own is the old one: it gets a tombstone
@@ -37,7 +37,7 @@ key_attno(const SiftColRel *r)
 
 	while (a < r->natts && r->first[a] != r->rowkey_leaf)
 		a++;
-	SIFT_INVARIANT(r->first[a] == r->rowkey_leaf, "row_key leaf %d is not an attribute of the index", r->rowkey_leaf);
+	SIFT_INVARIANT(r->first[a] == r->rowkey_leaf, "track_updates leaf %d is not an attribute of the index", r->rowkey_leaf);
 	return a;
 }
 
