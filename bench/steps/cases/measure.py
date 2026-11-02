@@ -231,6 +231,17 @@ def record_stop(proc, path, perf='perf', top=30):
         f.write('\n'.join([l for l in report.split('\n') if l.strip() and not l.startswith('#')][:top]) + '\n')
 
 
+def load_settings(case_id, workers, sets, serial):
+    """the statements that open the session of a pass of a load case: the schema of the case, the parallel maintenance workers of the run, the settings of the variant and, in the serial pass of
+    the instructions, workers 0 as the last one so it overrides the variant's own (perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster)"""
+    return ['SET search_path = c_%s, public' % case_id, 'SET max_parallel_maintenance_workers = %s' % workers] + sets + (['SET max_parallel_maintenance_workers = 0'] if serial else [])
+
+
+def load_passes(instr):
+    """the passes of one lane in one round: the timed one, and with INSTR a serial one for the instructions"""
+    return (False, True) if instr else (False,)
+
+
 def measure_load(case, csv, rounds, rows, instr=False, profile=None):
     """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the user instructions of the whole load in a second, serial run of it (minstr: the backend alone, `max_parallel_maintenance_workers = 0` on every lane, the settings of workers of a variant overridden: the workers of a VACUUM, a build or a merge are children of the postmaster and perf does not follow them)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
@@ -241,9 +252,9 @@ def measure_load(case, csv, rounds, rows, instr=False, profile=None):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
             am, sets = lanes[lane]
-            for serial in ((False, True) if instr else (False,)):   # the instructions in a pass of their own with no parallel workers: perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster
+            for serial in load_passes(instr):   # the instructions in a pass of their own with no parallel workers: perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster
                 s = server_session(600)
-                for st in ['SET search_path = c_%s, public' % case.id, 'SET max_parallel_maintenance_workers = %s' % os.environ.get('CASES_WORKERS', '2')] + sets + (['SET max_parallel_maintenance_workers = 0'] if serial else []):
+                for st in load_settings(case.id, os.environ.get('CASES_WORKERS', '2'), sets, serial):
                     s.run(st)
                 for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
                     err = s.run(stmt)[2]

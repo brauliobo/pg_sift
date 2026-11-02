@@ -45,6 +45,12 @@ def gap_verdict(case, lane, error, judged):
     return 'closed' if error is None else 'known' if error.startswith('PLAN') else None
 
 
+def wants_minstr(metrics, asked, lane, fresh):
+    """whether a lane of a query case gets the instruction count: when the case lists the metric or the run asks for it (--minstr), on the main lanes and, for a variant, only where the case lists the
+    metric; never on pg_duckdb or a fresh lane (a new backend for each run has no backend to count)"""
+    return ('minstr' in metrics or asked) and (lane in ('sift', 'native', 'base', 'btree') or 'minstr' in metrics) and lane != 'pg_duckdb' and not fresh
+
+
 def settle(case, tag, lanes, errors, judged, failed, known, counts):
     """the failures and the known gaps of one case: an error of a lane is a failure when `counts(lane, error)`, a flagged lane is a known gap while it loses its plan and a failure once it keeps it"""
     for lane in lanes:
@@ -110,7 +116,7 @@ def run_point(args, cases, rows, engines, results, failed, known):
             else:
                 if 'ms' in c.metrics:
                     point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else '') + (' [%s cpus]' % os.environ.get('CASES_CPUS', '?') if c.cpus_needed() > 1 else ''), load=load, **stats(times[lane])))
-                if ('minstr' in c.metrics or args.minstr) and (lane in ('sift', 'native', 'base', 'btree') or 'minstr' in c.metrics) and lane != 'pg_duckdb' and not isinstance(lanes[lane], Fresh):   # a variant has instructions only where the case asks for the metric
+                if wants_minstr(c.metrics, args.minstr, lane, isinstance(lanes[lane], Fresh)):
                     try:
                         mi = minstr(lanes[lane], expand(c.statement(lane), c))
                     except PerfFailed as e:
