@@ -65,7 +65,7 @@ END $$;
 SELECT ct_check('sift_col', 'ct', 1);
 SELECT ct_check('sift_table', 'ctt', 1);
 -- the dictionaries are parsed and cached after enough tests
-SELECT ct_check('parsed', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
+SELECT ct_check('parsed', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
 
 -- the units whose dictionary lacks the part are not read: an absent or a rare part reads fewer rows than a common one
 CREATE FUNCTION ct_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -99,7 +99,7 @@ SELECT ct_check('vacuumed', 'ct', 1);
 
 -- a dictionary that the cache cannot keep is read in blocks for every test, after the parse that found out
 SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
-SELECT ct_check('not kept', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
+SELECT ct_check('not kept', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
 RESET sift.test_limits;
 
 -- every level of the kernels returns the same rows

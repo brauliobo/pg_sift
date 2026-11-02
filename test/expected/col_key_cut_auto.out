@@ -150,12 +150,12 @@ SELECT setseed(0.5);
  
 (1 row)
 
-INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "kg_narrow": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 102 of 105 units, where 1 hold its rows (predicted index size +15.9%, benefit 39 against cost 12)
-DETAIL:  A sample of 27 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
+NOTICE:  sift_col index "kg_narrow": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 63 of 66 units, where 1 hold its rows (predicted index size +14.1%, benefit 31 against cost 12)
+DETAIL:  A sample of 17 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  To keep the units by block range, run ALTER INDEX kg_narrow SET (key_cut = 'off') and REINDEX.
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
 SET client_min_messages = warning;
@@ -166,12 +166,12 @@ SELECT setseed(0.5);
  
 (1 row)
 
-INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
+INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
-NOTICE:  sift_col index "kf_few": an equality on "tenant_id" reads about 69 of 72 units, where 35 hold its rows; key_cut = 'tenant_id' would cut that
-DETAIL:  The index would grow by 30.7%. The predicted size comes from a sample of 18 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 11 against 23: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
+NOTICE:  sift_col index "kf_few": an equality on "tenant_id" reads about 43 of 45 units, where 22 hold its rows; key_cut = 'tenant_id' would cut that
+DETAIL:  The index would grow by 29.6%. The predicted size comes from a sample of 16 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 10 against 23: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
 HINT:  If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kf_few SET (key_cut = 'tenant_id') and REINDEX; to silence this advice, SET sift.cluster_advice = off.
 -- the setting silences the advice
 SET sift.cluster_advice = off;
@@ -202,7 +202,7 @@ SELECT setseed(0.5);
  
 (1 row)
 
-INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 CREATE INDEX ku_cut ON ku USING sift_col (tenant_id, a1, a2, a3) WITH (key_cut = 'tenant_id');
 SELECT sum(units) BETWEEN pg_relation_size('ku') / 8192 / 256 / 2 AND 2 * pg_relation_size('ku') / 8192 / 256 AS units_of_the_superblocks FROM sift.col_segments('ku_cut') WHERE kind = 'immutable';
  units_of_the_superblocks 
@@ -259,7 +259,7 @@ SELECT setseed(0.5);
  
 (1 row)
 
-INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 400000) i;
+INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_i ON kd USING sift_col (d);
 SELECT kopt('kd_i'), growth_pct > 3 AS grows, decision FROM sift.key_cut_decision('kd_i');

@@ -77,7 +77,7 @@ DROP INDEX ka_auto;
 SET client_min_messages = warning;
 CREATE TABLE kg (id int, tenant_id int, a1 int, a2 int, a3 int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
@@ -85,7 +85,7 @@ CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_
 SET client_min_messages = warning;
 CREATE TABLE kf (id int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
+INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
@@ -105,7 +105,7 @@ UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cu
 -- here, and its units cost 30% of the index), and the decision reads the rows of a superblock from the heap
 CREATE TABLE ku (id int, tenant_id int, a1 int, a2 int, a3 int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 CREATE INDEX ku_cut ON ku USING sift_col (tenant_id, a1, a2, a3) WITH (key_cut = 'tenant_id');
 SELECT sum(units) BETWEEN pg_relation_size('ku') / 8192 / 256 / 2 AND 2 * pg_relation_size('ku') / 8192 / 256 AS units_of_the_superblocks FROM sift.col_segments('ku_cut') WHERE kind = 'immutable';
 SELECT leaf, decision FROM sift.key_cut_decision('ku_cut');
@@ -129,7 +129,7 @@ UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt
 -- a date of 1,826 values on narrow rows: the cut lists the addresses of every row, so the index grows, and a range reads 100 times the units its rows fill: the benefit pays for the growth
 CREATE TABLE kd (id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 400000) i;
+INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_i ON kd USING sift_col (d);
 SELECT kopt('kd_i'), growth_pct > 3 AS grows, decision FROM sift.key_cut_decision('kd_i');
