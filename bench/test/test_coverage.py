@@ -122,6 +122,22 @@ class Landed(Fixture):
         self.t.append('scripts/bench-cases.allow', 'commit 0000000\tno such commit\n')
         self.assertIn('matches no claim', ' '.join(self.messages()))
 
+    def test_a_waiver_is_the_start_of_the_hash_whatever_its_length(self):
+        self.t.land(SPEED)
+        full = self.t.git('rev-parse', 'HEAD').strip()
+        for n in (7, 8, 9, 10, 40):
+            with self.subTest(length=n):
+                self.t.write('scripts/bench-cases.allow', 'commit %s\tmeasured by the plan gate\n' % full[:n])
+                self.assertEqual(self.messages(), [])
+        self.t.write('scripts/bench-cases.allow', 'commit %s\tmeasured by the plan gate\n' % full[:6])
+        self.assertIn('matches no claim', ' '.join(self.messages()))
+
+    def test_a_waiver_that_starts_two_hashes_is_ambiguous(self):
+        commits = [('abcdef0123' + '0' * 30, 'abcdef0', 'one', False), ('abcdef0999' + '0' * 30, 'abcdef0', 'two', False), ('1234567890' + '0' * 30, '1234567', 'three', False)]
+        self.assertEqual([c[2] for c in coverage.waived_commits('commit abcdef0', commits)], ['one', 'two'])
+        self.assertEqual([c[2] for c in coverage.waived_commits('commit abcdef01', commits)], ['one'])
+        self.assertEqual(coverage.waived_commits('commit abcdef', commits), [])
+
     def test_a_commit_that_adds_its_changelog_line_is_judged_by_that_line(self):
         self.t.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n%s\n\n## 3.7.0\n' % CLAIM_LINE)
         self.t.land(SPEED)

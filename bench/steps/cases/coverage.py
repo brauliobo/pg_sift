@@ -19,6 +19,8 @@ VERSION = re.compile(r'\b\d+\.\d+\.\d+\b')   # a release number (`3.4.0 to 3.7.1
 CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 FOOTER = re.compile(r'`n/a`: (?:a measure )?not measured under')   # steps/triple.py NOT_MEASURED, whatever the version it names
 LANES = ('sift', 'native')
+COMMIT = 'commit '   # a waiver of ALLOW: `commit SHA<TAB>reason`, SHA the start of the full hash (7 characters or more: the abbreviation git prints depends on the size of the repository)
+MIN_SHA = 7
 FIGURE = 'figure '   # a waiver of ALLOW: `figure PHRASE<TAB>reason`, a CHANGELOG line that states a figure with no row in bench/claims.tsv yet
 ROWS = 1000000   # the size of the published cases (bench/results/cases.tsv)
 
@@ -37,14 +39,20 @@ def last_tag(root):
 
 
 def landed(root, since):
-    """[(short sha, subject, touches the CHANGELOG)] of the commits since `since` that change src/ or sql/ and say a measured speed in their message"""
+    """[(sha, short sha, subject, touches the CHANGELOG)] of the commits since `since` that change src/ or sql/ and say a measured speed in their message"""
     out = []
-    for block in git(root, 'log', '--first-parent', '--format=%x00%h%x01%B%x01', '--name-only', since + '..HEAD').split('\0')[1:]:
-        sha, message, files = block.split('\x01')
+    for block in git(root, 'log', '--first-parent', '--format=%x00%H %h%x01%B%x01', '--name-only', since + '..HEAD').split('\0')[1:]:
+        shas, message, files = block.split('\x01')
         files = files.split()
         if any(f.startswith(('src/', 'sql/')) for f in files) and CLAIM.search(VERSION.sub('', message)):
-            out.append((sha, message.split('\n')[0], 'CHANGELOG.md' in files))
+            out.append((*shas.split(), message.split('\n')[0], 'CHANGELOG.md' in files))
     return out
+
+
+def waived_commits(key, commits):
+    """the landed commits that the `commit SHA` waiver `key` names: those whose hash starts with SHA"""
+    sha = key[len(COMMIT):]
+    return [c for c in commits if len(sha) >= MIN_SHA and c[0].startswith(sha)]
 
 
 def unreleased(root):
@@ -88,11 +96,17 @@ def check(root, strict=False, since=None):
             errors.append((f'{c.id}: a known gap on the {c.gap[0]} lane ({c.gap[1]}); the release gate wants the flag gone', []))
 
     claims = []   # (text, the case that measures it or None)
-    for sha, subject, in_changelog in landed(root, since):
-        if f'commit {sha}' in allow:
-            used.add(f'commit {sha}')
-        elif not in_changelog:
-            errors.append((f'{sha} {subject}: a landed commit that gives a speed has no CHANGELOG line and no `commit {sha}<TAB>reason` in {ALLOW}', []))
+    commits = landed(root, since)
+    waived = set()
+    for key in (k for k in allow if k.startswith(COMMIT)):
+        hit = waived_commits(key, commits)
+        used.add(key) if hit else None
+        waived.update(c[0] for c in hit)
+        if len(hit) > 1:
+            errors.append((f'{ALLOW}: "{key}" starts the hash of {len(hit)} landed commits; write more of it', []))
+    for sha, short, subject, in_changelog in commits:
+        if sha not in waived and not in_changelog:
+            errors.append((f'{short} {subject}: a landed commit that gives a speed has no CHANGELOG line and no `commit {short}<TAB>reason` in {ALLOW}', []))
     for line in unreleased(root):
         waiver = next((k for k in allow if k in line), None)
         case = next((c for c in cases if c.changelog != '-' and c.changelog in line), None)
