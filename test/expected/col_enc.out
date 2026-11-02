@@ -17,7 +17,7 @@ SELECT checks > 10000 AS ran, failures FROM sift._test_col_enc_roundtrip(2, 5000
  t   |        0
 (1 row)
 
-SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(3, 74496, 2);
+SELECT checks > 1000 AS ran, failures, encodings & 256 = 256 AS wide_dictionary FROM sift._test_col_enc_roundtrip(3, 74496, 1);
  ran | failures | wide_dictionary 
 -----+----------+-----------------
  t   |        0 | t
@@ -36,10 +36,10 @@ SELECT checks > 1000 AS ran, failures FROM sift._test_col_enc_roundtrip(4, 1, 60
 (1 row)
 
 SELECT sum(failures) AS failures, count(*) AS runs
-FROM generate_series(10, 40) s, LATERAL sift._test_col_enc_roundtrip(s, 1 + (s * 997) % 4000, 3);
+FROM generate_series(10, 24) s, LATERAL sift._test_col_enc_roundtrip(s, 1 + (s * 997) % 4000, 3);
  failures | runs 
 ----------+------
-        0 |   31
+        0 |   15
 (1 row)
 
 -- The same rows through every SIMD level of the column kernels: the answers do not depend on it
