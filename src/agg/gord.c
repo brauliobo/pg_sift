@@ -6,39 +6,10 @@
 
 #include "col/am.h"
 #include "col/gorder.h"
-#include "agg/gord.h"
+#include "agg/gord/int.h"
 #include "core/cmp.h"
 
 #define GORD_HEAD_MIN	32
-
-/* A cursor over one source: the entries in the order of the scan, one chunk decoded at a time */
-typedef struct GCur
-{
-	int			src;
-	int			slot;			/* its place in the cursors of the scan (the leaf of the tournament of a text key) */
-	uint32		entries;
-	uint32		values;
-	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
-	uint32		ve;
-	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
-	uint32		ne;
-	uint32		sk;				/* the entries sift_gord_skip took off the front of [vs, ve) (the back, descending) */
-	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
-	uint32		pos;			/* the next entry of the region (a group of a descending scan: pos in [gs, ge)) */
-	uint32		end;
-	uint32		gs;
-	uint32		ge;
-	bool		ends;			/* the source is the ends of a segment's order (cuts says where they stop being its own) */
-	SiftCGOrdCuts cuts;
-	bool		have;			/* cls, k and tid are the cursor's entry */
-	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
-	int64		k;
-	uint64		tid;
-	uint32		slen;			/* a text key: the string of k (str, slen bytes) */
-	int64		skey;			/* ... and the key str is the string of (-1: none yet) */
-	SiftCGOrdBuf *buf;			/* from the pool: the chunk of the entry in buf->key / buf->addr (a seek may have left it): the first buf->cm entries, the scan asks for more when it goes past them */
-	char		str[SIFT_CGORD_STR_MAX];	/* last: a cursor clears the fields before it */
-} GCur;
 
 /*
  * The 16 KB of keys and addresses of a cursor are the largest buffers of a lookup, and a block of that size is a malloc of its own that goes back to the kernel with
@@ -46,7 +17,6 @@ typedef struct GCur
  * it has used, and a scan gets them back through the reset callback of its context.
  */
 #define GBUF_KEEP	64
-#define GORD_PEND_MAX	(1 << 20)	/* the entries a skip leaves to the heap: the rest of a longer one is walked */
 static MemoryContext gbuf_cx;
 static SiftCGOrdBuf *gbuf_spare[GBUF_KEEP];
 static int	ngbuf_spare;
@@ -79,38 +49,6 @@ gbuf_get(void)
 	return b;
 }
 
-struct SiftGOrd
-{
-	SiftSrcSource *src;
-	int			leaf;
-	bool		desc;
-	bool		nulls_first;
-	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
-	bool		bounded;		/* a range of the key: the rows with no value are not in it */
-	uint32		head;			/* the entries of a chunk decoded when the scan enters it (the rows asked for, shared by the sources, at least GORD_HEAD_MIN) */
-	int			ncur;
-	GCur	  **cur;
-	bool		started;
-	GCur	   *prev;			/* the source of the last entry given, and the best of the others at that time (NULL: the sources are scanned) */
-	GCur	   *runner;
-	int		   *tree;			/* a text key: the tournament of the cursors, tree[0] the winner and tree[1..] the loser of each match (log2 of the sources compares a step, where the scan of them compares each) */
-	bool		ends;			/* some source is the ends of a segment's order */
-	bool		short_;			/* a source of the ends is spent: the order is not known past the last entry given */
-	MemoryContext cxt;
-	SiftGPend  *pend;			/* the entries sift_gord_skip took off the front that need the heap's word (sift_gord_pending) */
-	uint32		npend;
-	uint32		cpend;
-	bool		last_set;
-	bool		repeat;			/* the last sift_gord_next dropped an entry that repeated the one before it */
-	int			last_cls;
-	int64		last_key;
-	uint64		last_tid;
-	uint32		collid;			/* the keys are ranks of strings (a text key under this collation): entries compare by their strings, across sources */
-	uint32		last_len;
-	char		last_str[SIFT_CGORD_STR_MAX];
-	MemoryContextCallback release;
-};
-
 static void
 gord_release(void *arg)
 {
@@ -121,22 +59,12 @@ gord_release(void *arg)
 }
 
 /* the chunk of the entry p is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
-static pg_noinline void
-cur_fill(SiftGOrd *g, GCur *c, uint32 p)
+pg_noinline void
+gord_cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 {
 	uint32		w = p - c->buf->at < c->buf->rows ? c->buf->cm * 2 : g->head;
 
 	sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, w, c->buf);
-}
-
-/* the entry p of the cursor's source */
-static inline void
-cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
-{
-	if (p - c->buf->at - c->buf->kfrom >= c->buf->kn)
-		cur_fill(g, c, p);
-	*key = c->buf->key[p - c->buf->at];
-	*addr = c->buf->addr[p - c->buf->at];
 }
 
 /* a descending scan reads the entries of a key in the order of their addresses, the keys backwards: the group [gs, ge) ends where the last one starts */
