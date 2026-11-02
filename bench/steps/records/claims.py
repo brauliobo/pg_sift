@@ -5,7 +5,8 @@
 
 A claim is a row of bench/claims.tsv: a phrase of the CHANGELOG line that states the figure, the statement and size it was measured on, the arm, the metric and the value the line gives,
 with a tolerance in percent (the default is --tolerance). The check finds the line by its phrase, the statement in the records, and fails when the median of the records is farther from the
-claimed value than the tolerance, naming both: the line and the run that measured. A phrase that matches no line is stale and fails as well.
+claimed value than the tolerance, naming both: the line and the run that measured. A phrase that matches no line is stale and fails as well. The phrase `-` is a claim that no CHANGELOG
+line states (a design note, a page): its note says where it is made, and it is checked against the records alone, so a figure outside the CHANGELOG has a run behind it too.
 
     phrase  statement  rows  arm  option  metric  value  tolerance(optional)  note(optional)
 
@@ -21,7 +22,8 @@ import check  # noqa: E402
 import schema  # noqa: E402
 
 KINDS = ('heap', 'btree', 'gin', 'sift', 'other')
-METRICS = ('exec_ms', 'plan_ms', 'wall_ms', 'instr_m', 'est_cost', 'blocks', 'cold_blocks')
+METRICS = ('exec_ms', 'plan_ms', 'wall_ms', 'instr_m', 'est_cost', 'blocks', 'cold_blocks', 'instr_leader_m', 'instr_workers_m', 'index_bytes', 'wal_bytes', 'segments', 'immutable_segments', 'buffer_segments')
+NO_LINE = '-'   # the phrase of a claim that no CHANGELOG line states (a page, a design note, a patch description): it is checked against the records alone
 
 
 def metric(r, name):
@@ -54,7 +56,7 @@ def read_claims(path):
         if len(f) < 7:
             raise ValueError('%s:%d: %d fields, 7 are required' % (path, n, len(f)))
         out.append(dict(line=n, phrase=f[0], statement=f[1], rows=int(f[2].replace(',', '')), arm=f[3], option=f[4] or 'default', metric=f[5], value=float(f[6]),
-                        tol=float(f[7]) if len(f) > 7 and f[7] else None))
+                        tol=float(f[7]) if len(f) > 7 and f[7] else None, note=f[8] if len(f) > 8 else ''))
     return out
 
 
@@ -70,7 +72,7 @@ def verify(claims, records, changelog, tolerance=25.0, claims_file='claims.tsv')
         if c['metric'] not in METRICS:
             out.append('%s: metric %s is none of %s' % (where, c['metric'], '/'.join(METRICS)))
             continue
-        line = next((l for l in lines if c['phrase'] in l), None)
+        line = next((l for l in lines if c['phrase'] in l), None) if c['phrase'] != NO_LINE else 'no CHANGELOG line (%s)' % c['note']
         if line is None:
             out.append('%s: STALE CLAIM: no CHANGELOG line holds "%s"' % (where, c['phrase']))
             continue

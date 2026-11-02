@@ -172,11 +172,12 @@ def emit_load(case, csv, rows, runs, build, workers):
 
         def fill(statements):
             return [x.replace('{csv}', csv).replace('{rows}', str(rows)) for x in statements]
-        twin = native_structure(case)
-        lanes = [(twin, 'default', 'heap', []), ('sift', 'default', 'sift_table', [])] + [('sift', name, 'sift_table', ['SET %s' % x for x in sets.split(';')]) for name, sets in case.variants]
-        arms = [collect.Arm(arm, option=option, settings=sets, sql=fill(text(am)), prepare=preparer(am), structures=','.join(sorted({'heap', arm}))) for arm, option, am, sets in lanes]
+        build_case = case.opt.get('kind') == 'build'   # a build is the sift index alone: no twin lane, and the leader, the workers and the segments are recorded
+        declared = int(case.opt['segments']) if 'segments' in case.opt else None
+        lanes = ([] if build_case else [(native_structure(case), 'default', 'heap', [])]) + [('sift', 'default', 'sift_table', [])] + [('sift', name, 'sift_table', ['SET %s' % x for x in sets.split(';')]) for name, sets in case.variants]
+        arms = [collect.Arm(arm, option=option, settings=sets, sql=fill(text(am)), prepare=preparer(am), structures=','.join(sorted({'heap', arm})), segments=declared if arm == 'sift' else None) for arm, option, am, sets in lanes]
         state = table_state(case, ('prepare', 'load'))
-        subject = collect.Subject(case.dataset, rows, 'other', state, case.schema(), kind='load', protocol='single')
+        subject = collect.Subject(case.dataset, rows, 'other', state, case.schema(), kind='build' if build_case else 'load', protocol='single')
         hash_text = '\n'.join(case.sec[k] for k in ('prepare', 'load', 'load_sift') if k in case.sec)
         try:
             ROWS.extend(collect.measure_statement(session, case.id, fill(text('heap')), subject, arms, env, monitor=monitor, temps=('warm',), hash_text=hash_text))

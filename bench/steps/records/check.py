@@ -19,7 +19,9 @@ One comparison is the rows of one statement on one dataset and size (`statement`
                   above `NOISY_CV` is marked noisy by the report, which warns when the arms of a comparison were measured under pressure more than `PSI_SPREAD` points apart
   enough runs     MIN_REPS repetitions of every arm and temperature
   separate times  planning and execution apart for a read; cold rows say whether the OS cache was emptied
-  one structure   a maintenance or load figure is of a table that holds the arm's structure alone
+  one structure   a maintenance, load or build figure is of a table that holds the arm's structure alone
+  true segments   a sift arm that has index bytes has its segment, immutable and write buffer counts and its option set (schema 6 on); a count the case declares is the one measured
+  a true build    a build has index bytes and WAL, the instructions of its leader and of its workers (their sum the cluster count) and was measured on a cluster with no sift.test_* setting
 """
 import os
 import re
@@ -69,6 +71,42 @@ def one_record(r):
         out.append('%s: SETTLED WITHOUT A VACUUM: the harness waited for the maintenance to settle but no VACUUM, autovacuum or pass is on record' % where(r))
     if (r.get('rep') or 0) < 1:
         out.append('%s: rep %s is below 1' % (where(r), r.get('rep')))
+    return out
+
+
+SPLIT_TOLERANCE = 0.01   # leader + workers against the cluster count: two counts of two runs of one statement, within this share
+
+
+def segment_problems(name, r):
+    """the facts of a sift index and of a build in a row of schema 6 or later (an older row has none and is not refused for it): a sift arm that has index bytes has its segments, the kinds
+    add up, a count the harness declared is the count measured, and a build says what its leader and its workers executed on a cluster that runs no test setting"""
+    if r.get('_schema', schema.VERSION) < 6 or r['mode'] == 'unavailable':
+        return []
+    out = []
+    at = where(r)
+    segments, immutable, buffer = (r.get(c) for c in ('segments', 'immutable_segments', 'buffer_segments'))
+    if r['arm'] == 'sift' and r.get('index_bytes') is not None and None in (segments, immutable, buffer, r.get('index_options')):
+        out.append('%s: SEGMENTS MISSING at %s: a sift arm with index bytes has no segment count, immutable count, write buffer count or option set' % (name, at))
+    if None not in (segments, immutable, buffer) and immutable + buffer > segments:
+        out.append('%s: SEGMENT KINDS at %s: %d immutable and %d write buffer segments of %d' % (name, at, immutable, buffer, segments))
+    if r.get('segments_declared') is not None and r['segments_declared'] != segments:
+        out.append('%s: SEGMENTS CONTRADICT at %s: the case says %d, the index directory holds %s' % (name, at, r['segments_declared'], segments))
+    if r['kind'] != 'build':
+        return out
+    for c in ('index_bytes', 'wal_bytes'):
+        if r.get(c) is None:
+            out.append('%s: BUILD WITHOUT %s at %s' % (name, c, at))
+    test = [k for k in (r.get('settings') or '').split(';') if k.startswith('sift.test_')]
+    if test:
+        out.append('%s: BUILD ON TEST SETTINGS at %s: %s change what a build does; a build is measured on the defaults' % (name, at, ', '.join(test)))
+    if r['temp'] == 'warm':
+        leader, workers, total = (r.get(c) for c in ('instr_leader_m', 'instr_workers_m', 'instr_m'))
+        if None in (leader, workers, total):
+            out.append('%s: BUILD WITHOUT SPLIT at %s: the instructions of the leader and of the workers are both required' % (name, at))
+        elif abs(leader + workers - total) > SPLIT_TOLERANCE * total:
+            out.append('%s: BUILD SPLIT at %s: leader %g + workers %g is not the %g of the cluster' % (name, at, leader, workers, total))
+        elif (r.get('workers_launched') or 0) == 0 and workers > SPLIT_TOLERANCE * total:
+            out.append('%s: BUILD WORKERS at %s: no worker launched but the cluster executed %g M beyond the leader' % (name, at, workers))
     return out
 
 
@@ -158,11 +196,12 @@ def comparison_problems(key, rs, min_reps):
             out.append('%s: PLANNING NOT SEPARATE at %s: plan_ms and exec_ms are both required for a read' % (name, where(r)))
         if r['temp'] == 'cold' and r.get('os_cache_dropped') is None:
             out.append('%s: COLD WITHOUT os_cache_dropped at %s' % (name, where(r)))
-        if r['kind'] in ('maintenance', 'load'):
+        out += segment_problems(name, r)
+        if r['kind'] in schema.WRITES:
             extra = set(filter(None, (r.get('structures') or '').split(','))) - {'heap', 'constraint', r['arm']}   # `constraint`: the indexes of a primary key or a unique constraint, the table's definition
             if extra:
                 out.append('%s: OTHER STRUCTURES at %s: a %s figure of a table that also holds %s' % (name, where(r), r['kind'], ','.join(sorted(extra))))
-    writes = {'constraint' in (r.get('structures') or '').split(',') for r in rs if r['kind'] in ('maintenance', 'load')}
+    writes = {'constraint' in (r.get('structures') or '').split(',') for r in rs if r['kind'] in schema.WRITES}
     if len(writes) > 1:
         out.append('%s: COMPANION DIFFERS: some write figures of the comparison are of a table with a constraint index (primary key, unique) and some are of a table without: the arms differ in more than their structure' % name)
     cells = defaultdict(list)

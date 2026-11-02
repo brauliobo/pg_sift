@@ -16,7 +16,8 @@ import time
 STRUCTURES = ('heap', 'btree', 'gin', 'sift')
 STATES = ('fresh_vacuumed', 'fresh_unvacuumed', 'churned_vacuumed', 'churned_unvacuumed')
 ORDERS = ('arrival', 'sorted', 'hash', 'other')
-KINDS = ('read', 'maintenance', 'load')
+KINDS = ('read', 'maintenance', 'load', 'build')
+WRITES = ('maintenance', 'load', 'build')   # the kinds that change the table: no plan to pick, one structure each
 MAINTENANCE = ('default', 'disabled')
 IDENTITY = ('data_directory', 'config_file', 'hba_file', 'ident_file', 'external_pid_file', 'port', 'unix_socket_directories', 'unix_socket_group', 'unix_socket_permissions', 'listen_addresses',
             'application_name', 'cluster_name', 'client_encoding', 'DateStyle', 'TimeZone', 'log_timezone', 'default_text_search_config', 'lc_messages', 'lc_monetary', 'lc_numeric', 'lc_time',
@@ -50,7 +51,7 @@ FIELDS = [
     ('statement', 's', True, 'the name of the statement'),
     ('sql_hash', 's', True, 'hash of the statement text without its white space: one name is one text'),
     ('variant', 's', True, 'the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant'),
-    ('kind', 's', True, 'read, maintenance (VACUUM, CREATE INDEX, merge) or load'),
+    ('kind', 's', True, 'read, maintenance (VACUUM, merge), load or build (CREATE INDEX of a sift index: the instructions of the leader and of the workers, the segments it wrote, the options it was built with)'),
     ('protocol', 's', True, 'what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve'),
     ('mode', 's', True, 'forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were)'),
     ('arm', 's', True, 'heap, btree, gin or sift; `default` rows carry the structure the plan named'),
@@ -67,6 +68,8 @@ FIELDS = [
     ('cycles_m', 'f', False, 'millions of user cycles'),
     ('instr_scope', 's', False, 'cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched)'),
     ('instr_n', 'i', False, 'statements run in the window the instructions were counted over (a statement under 5 ms is run again and again in the one backend between two readings and the count divided: the number is of one run); 1 for a long one'),
+    ('instr_leader_m', 'f', False, 'build: millions of user instructions of the leader backend alone, counted in a run of its own after the cluster count (the same statement on the same prepared table)'),
+    ('instr_workers_m', 'f', False, 'build: instr_m - instr_leader_m, the instructions of the parallel workers (0 when none launched)'),
     ('workers_requested', 'i', True, 'parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started)'),
     ('workers_launched', 'i', True, 'parallel workers that ran'),
     ('heap_hit', 'i', False, 'blocks of heap relations found in shared buffers'),
@@ -82,6 +85,11 @@ FIELDS = [
     ('os_cache_dropped', 'b', False, 'cold rows: 1 when the OS page cache was emptied too, 0 when only the shared buffers were'),
     ('table_bytes', 'i', False, 'pg_table_size of the table after the run (heap, TOAST and free space map; a load names the schema, the sum of its tables)'),
     ('index_bytes', 'i', False, 'pg_relation_size of the indexes of the arm\'s structure after the run (sift, b-tree or GIN; none for the heap arm): what a CREATE INDEX or a rewrite built'),
+    ('segments', 'i', False, 'segments in the directory of the sift index of the arm after the run (all kinds: sift.col_segments, sift.segments); none for an arm without a sift index'),
+    ('immutable_segments', 'i', False, 'of them the immutable ones (a build or merge wrote them)'),
+    ('buffer_segments', 'i', False, 'of them the write buffers, open or sealed (rows the maintenance has not yet written as a segment)'),
+    ('segments_declared', 'i', False, 'the segment count the harness says the index has (a case that names it, `-- segments: N`): a row whose count is another is refused'),
+    ('index_options', 's', False, 'the options the sift index of the arm was built with (its reloptions, name=value, sorted, `;` between), `default` when it has none'),
     ('wal_bytes', 'i', False, 'WAL written by the run'),
     ('fpw', 'b', True, 'full_page_writes of the server'),
     ('cpus', 'f', True, 'the CPU quota the server ran with (cpus)'),
@@ -103,7 +111,7 @@ TYPE = {f[0]: f[1] for f in FIELDS}
 REQUIRED = [f[0] for f in FIELDS if f[2]]
 BLOCKS = [f[0] for f in FIELDS if f[0].endswith(('_hit', '_read'))]
 LIBRARY = 'records-1'
-VERSION = 5   # the schema of the file: history.py keeps the columns of each version, MIGRATIONS the step from it to the next
+VERSION = 6   # the schema of the file: history.py keeps the columns of each version, MIGRATIONS the step from it to the next
 MARK = '#records-schema '
 
 
@@ -170,7 +178,11 @@ def _from_4(r):
     r['instr_n'] = 1 if r.get('instr_m') is not None else None
 
 
-MIGRATIONS = {1: _from_1, 2: _from_2, 3: _from_3, 4: _from_4}
+def _from_5(r):
+    """the segments, the leader/worker split and the options were not recorded: they stay empty (a count cannot be rebuilt from a row), which the checker accepts for a row of schema 5"""
+
+
+MIGRATIONS = {1: _from_1, 2: _from_2, 3: _from_3, 4: _from_4, 5: _from_5}
 
 
 def header_of(path):

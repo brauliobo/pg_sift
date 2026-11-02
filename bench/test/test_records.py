@@ -41,6 +41,18 @@ def clean():
     return rs
 
 
+def build_rows(**kw):
+    """the three warm repetitions of a build of a sift index: the leader and two workers counted apart, three segments, none declared"""
+    rows = []
+    for rep in (1, 2, 3):
+        r = dict(BASE, kind='build', mode='forced', picked=0, arm='sift', arm_option='default', structure='sift', temp='warm', rep=rep, plan_ms=None, exec_ms=None, structures='heap,sift', statement='build',
+                 index_bytes=1000, segments=3, immutable_segments=3, buffer_segments=0, index_options='default', instr_m=10.0, instr_leader_m=4.0, instr_workers_m=6.0, workers_requested=2,
+                 workers_launched=2, wal_bytes=5, _file='t.tsv', _line=rep + 1)
+        r.update(kw)
+        rows.append(r)
+    return rows
+
+
 def mutate(**kw):
     rs = clean()
     for k, v in kw.items():
@@ -68,7 +80,7 @@ class Schema(unittest.TestCase):
             p = os.path.join(d, 'r.tsv')
             with open(p, 'w') as f:
                 f.write('case\tarm\tmetric\n')
-            with self.assertRaisesRegex(ValueError, 'none of the 5 schema versions'):
+            with self.assertRaisesRegex(ValueError, 'none of the 6 schema versions'):
                 schema.read(p)
 
     def test_the_statement_hash_ignores_white_space(self):
@@ -455,6 +467,94 @@ class WriteInventory(unittest.TestCase):
         self.assertTrue(any('OTHER STRUCTURES' in p and 'btree' in p for p in problems(records)), problems(records))
 
 
+class SiftIndexFacts(unittest.TestCase):
+    """the segments of a sift index and the leader of a build, from stand-ins for the extension on a plain cluster: access methods that are the b-tree under the names sift and sift_col, and the two
+    directory functions over a table of rows; the instruction count is stubbed"""
+
+    @classmethod
+    def setUpClass(cls):
+        import cluster
+        from duckdb import Session
+        cls.dir, _, cls.port = cluster.start(cls, 'records-facts.', '-c autovacuum=off -c shared_buffers=32MB')
+        cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
+        cls.run_sql(cls, 'CREATE SCHEMA sift', 'CREATE TABLE fake_segments (idx text, kind text)')
+        for am, fn in (('sift_col', 'col_segments'), ('sift', 'segments')):
+            cls.run_sql(cls, 'CREATE ACCESS METHOD %s TYPE INDEX HANDLER bthandler' % am,
+                        'CREATE OPERATOR CLASS int4_%s DEFAULT FOR TYPE int4 USING %s AS OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >, FUNCTION 1 btint4cmp(int4, int4)' % (am, am),
+                        'CREATE FUNCTION sift.%s(index regclass) RETURNS TABLE (gen int8, kind text) LANGUAGE sql AS $$ SELECT row_number() OVER (), kind FROM fake_segments WHERE idx = index::text $$' % fn)
+
+    def run_sql(self, *statements):
+        for q in statements:
+            r = self.s.run(q)
+            if r[2]:
+                raise AssertionError((q, r[2]))
+
+    def directory(self, index, *kinds):
+        self.run_sql("DELETE FROM fake_segments WHERE idx = '%s'" % index, *("INSERT INTO fake_segments VALUES ('%s', '%s')" % (index, k) for k in kinds))
+
+    def test_the_directory_of_the_sift_indexes_of_a_table_is_counted_by_kind(self):
+        self.run_sql('CREATE TABLE fw (k int)', 'CREATE INDEX fw_col ON fw USING sift_col (k) WITH (fillfactor = 70)')
+        self.directory('fw_col', 'immutable', 'immutable', 'immutable', 'buffer', 'sealed buffer', 'tombstones')
+        self.assertEqual(collect.index_facts(self.s, 'fw'), dict(segments=6, immutable_segments=3, buffer_segments=2, index_options='fillfactor=70'))
+        # a second index adds its directory and its options, told apart; the BM25 index is read through sift.segments
+        self.run_sql('CREATE INDEX fw_bm ON fw USING sift (k) WITH (fillfactor = 60)')
+        self.directory('fw_bm', 'immutable', 'active', 'sealed')
+        self.assertEqual(collect.index_facts(self.s, 'fw'), dict(segments=9, immutable_segments=4, buffer_segments=4, index_options='fillfactor=60 | fillfactor=70'))
+        # the table of a load is named by its schema
+        self.run_sql('CREATE SCHEMA c_fw', 'CREATE TABLE c_fw.t (k int)', 'CREATE INDEX c_ix ON c_fw.t USING sift_col (k)')
+        self.directory('c_fw.c_ix', 'immutable')
+        self.assertEqual(collect.index_facts(self.s, 'c_fw'), dict(segments=1, immutable_segments=1, buffer_segments=0, index_options='default'))
+        # no sift index: the heap and b-tree arms have none
+        self.run_sql('CREATE TABLE plain (k int)', 'CREATE INDEX plain_bt ON plain (k)')
+        self.assertEqual(collect.index_facts(self.s, 'plain'), {})
+
+    def build(self, cluster_m, leader_m, declared=None):
+        """the records of a CREATE INDEX of the sift index fb_col: a stub counts CLUSTER_M instructions for the cluster and LEADER_M for the backend alone"""
+        env = collect.Env('0e767cbf3944', 'test build', schema.run_id('0e767cbf3944'), 4.0, reps=3, cool=None, maintenance='disabled')
+
+        def prepare():
+            self.run_sql('DROP TABLE IF EXISTS fb', 'CREATE TABLE fb AS SELECT g AS k FROM generate_series(1, 1000) g')
+            self.directory('fb_col', 'immutable', 'immutable', 'buffer')
+        counts = lambda s, sql, pid, post, **kw: (leader_m, 1.0) if kw.get('leader') else (cluster_m, 2.0)   # noqa: E731
+        subject = collect.Subject('build', 1000, 'arrival', 'fresh_vacuumed', 'fb', kind='build', protocol='single', structures='heap,sift')
+        with patch.object(collect, 'count_instructions', side_effect=counts), patch.object(collect, 'check_perf_free'):
+            return collect.measure_statement(self.s, 'create', 'CREATE INDEX fb_col ON fb USING sift_col (k) WITH (fillfactor = 80)', subject,
+                                             [collect.Arm('sift', 'fill80', settings=[], prepare=prepare, structures='heap,sift', segments=declared)], env, temps=('warm',))
+
+    def test_a_build_records_the_leader_apart_from_the_workers_and_the_directory_it_wrote(self):
+        records = self.build(10.0, 4.0, declared=3)
+        self.assertEqual(len(records), 3)
+        for r in records:
+            self.assertEqual((r['kind'], r['instr_m'], r['instr_leader_m'], r['instr_workers_m']), ('build', 10.0, 4.0, 6.0))
+            self.assertEqual((r['segments'], r['immutable_segments'], r['buffer_segments'], r['segments_declared'], r['index_options']), (3, 2, 1, 3, 'fillfactor=80'))
+            self.assertGreater(r['index_bytes'], 0)
+        # the cluster ran 6 M beyond the leader but the monitor saw no worker: the figures do not agree
+        self.assertTrue(any('BUILD WORKERS' in p for p in problems(records)))
+        self.assertEqual(problems(self.build(4.0, 4.0, declared=3)), [])
+        self.assertEqual(self.build(4.0, 9.0)[0]['instr_workers_m'], 0.0)   # a leader count above the cluster's is no negative figure
+
+    def test_a_case_that_declares_a_count_the_directory_contradicts_is_refused(self):
+        self.assertTrue(any('SEGMENTS CONTRADICT' in p and 'says 7' in p and 'holds 3' in p for p in problems(self.build(4.0, 4.0, declared=7))))
+
+    def test_the_leader_is_counted_on_its_own_pid_and_the_cluster_on_both(self):
+        seen = []
+
+        class Gone:
+            pid = 2 ** 22 + 7
+
+            def poll(self):
+                return 0
+
+        def popen(args, **kw):
+            seen.append(args[-1])
+            return Gone()
+        with patch.object(collect.subprocess, 'Popen', popen), patch.object(collect, 'stop_perf', return_value=''), patch.object(collect, 'stale_perf', return_value=[]):
+            for leader in (False, True):
+                with self.assertRaises(collect.PerfUnavailable):
+                    collect.count_instructions(None, 'SELECT 1', 5, 6, tries=1, leader=leader)
+        self.assertEqual(seen, ['5,6', '5'])
+
+
 @unittest.skipUnless(os.environ.get('RECORDS_HOST'), 'RECORDS_HOST (a socket directory) and RECORDS_PORT name a server with a table t(id, k) with an index on k')
 class Live(unittest.TestCase):
     def test_a_measured_set_passes_the_checker_and_has_instructions_with_workers(self):
@@ -522,6 +622,19 @@ class Claims(unittest.TestCase):
         c = self.claim()
         c[0]['rows'] = 1000000
         self.assertIn('NO RECORD', claims.verify(c, clean(), LINE)[0])
+
+    def test_a_claim_that_no_changelog_line_states_is_checked_against_the_records_alone(self):
+        c = self.claim(note='design note')
+        c[0].update(phrase=claims.NO_LINE, statement='build', arm='sift', option='default', metric='segments', value=3.0)
+        self.assertEqual(claims.verify(c, build_rows(), LINE), [])
+        c[0]['value'] = 7.0
+        out = claims.verify(c, build_rows(), LINE)
+        self.assertEqual(len(out), 1)
+        self.assertIn('CLAIM NOT MET', out[0])
+        self.assertIn('no CHANGELOG line (design note)', out[0])
+        for metric, value in (('instr_leader_m', 4.0), ('instr_workers_m', 6.0), ('index_bytes', 1000.0), ('immutable_segments', 3.0), ('buffer_segments', 0.0), ('wal_bytes', 5.0)):
+            c[0].update(metric=metric, value=value)
+            self.assertEqual(claims.verify(c, build_rows(), LINE), [], metric)
 
     def test_records_the_checker_refuses_check_no_claim(self):
         out = claims.verify(self.claim(), mutate(table_state='churned_unvacuumed', churn_history=CHURN), LINE)
@@ -592,12 +705,12 @@ class Versions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'x.tsv')
             open(path, 'w').write('a\tb\n1\t2\n')
-            with self.assertRaisesRegex(ValueError, 'none of the 5 schema versions'):
+            with self.assertRaisesRegex(ValueError, 'none of the 6 schema versions'):
                 schema.read(path)
         said = []
-        schema.read_files([os.path.join(SAMPLES, 'v1.tsv'), os.path.join(SAMPLES, 'v5.tsv')], say=said.append)
+        schema.read_files([os.path.join(SAMPLES, 'v1.tsv'), os.path.join(SAMPLES, 'v6.tsv')], say=said.append)
         self.assertEqual(len(said), 1)
-        self.assertIn('schema 1, read as schema 5', said[0])
+        self.assertIn('schema 1, read as schema 6', said[0])
         self.assertIn('bench records migrate', said[0])
 
 
@@ -756,6 +869,55 @@ class Checker(unittest.TestCase):
         self.assertIn('fresh_vacuumed', p)
         self.assertIn('churned_unvacuumed', p)
         self.assertIn('t.tsv:', p)
+
+
+class SiftFacts(unittest.TestCase):
+    """the segments, the options and the split of a build are in the record, and the checker refuses what contradicts them"""
+
+    def test_a_build_with_its_split_its_segments_and_its_options_is_clean(self):
+        self.assertEqual(problems(build_rows()), [])
+        self.assertEqual(problems(build_rows(segments_declared=3)), [])
+
+    def test_each_way_to_contradict_the_facts_is_refused_with_its_reason(self):
+        cases = [
+            ('SEGMENTS MISSING', build_rows(segments=None)),
+            ('SEGMENTS MISSING', build_rows(immutable_segments=None)),
+            ('SEGMENTS MISSING', build_rows(buffer_segments=None)),
+            ('SEGMENTS MISSING', build_rows(index_options=None)),
+            ('SEGMENT KINDS', build_rows(immutable_segments=2, buffer_segments=2)),
+            ('SEGMENTS CONTRADICT', build_rows(segments_declared=7)),
+            ('SEGMENTS CONTRADICT', build_rows(segments=None, immutable_segments=None, buffer_segments=None, segments_declared=1)),
+            ('BUILD WITHOUT SPLIT', build_rows(instr_leader_m=None)),
+            ('BUILD WITHOUT SPLIT', build_rows(instr_workers_m=None)),
+            ('BUILD SPLIT', build_rows(instr_workers_m=3.0)),
+            ('BUILD WORKERS', build_rows(workers_requested=0, workers_launched=0)),
+            ('BUILD ON TEST SETTINGS', build_rows(settings='sift.test_col_merge_workers=0', settings_hash='4444444444', maintenance='disabled')),
+            ('BUILD WITHOUT index_bytes', build_rows(index_bytes=None, segments=None, immutable_segments=None, buffer_segments=None, index_options=None)),
+            ('BUILD WITHOUT wal_bytes', build_rows(wal_bytes=None)),
+        ]
+        for reason, rs in cases:
+            with self.subTest(reason=reason, rows=len(rs)):
+                self.assertTrue(any(reason in p for p in problems(rs)), '%s was not refused: %s' % (reason, problems(rs)))
+
+    def test_a_build_with_no_workers_has_the_cluster_of_its_leader(self):
+        self.assertEqual(problems(build_rows(workers_requested=0, workers_launched=0, instr_leader_m=10.0, instr_workers_m=0.0)), [])
+
+    def test_every_record_of_a_sift_index_has_segments_and_other_structures_have_none(self):
+        withbytes = lambda **kw: [dict(r, index_bytes=100, **kw) for r in clean()]   # noqa: E731
+        found = [p for p in problems(withbytes()) if 'SEGMENTS MISSING' in p]
+        self.assertEqual(len(found), 12)   # the sift arm's repetitions and the default row's, warm and cold, not the b-tree's or the heap's
+        self.assertEqual(problems(withbytes(segments=2, immutable_segments=2, buffer_segments=0, index_options='default')), [])
+        # a row written before the facts were recorded is not refused for lacking them
+        self.assertEqual(problems(withbytes(_schema=5)), [])
+
+    def test_the_facts_survive_a_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'r.tsv')
+            schema.write(p, [{k: v for k, v in r.items() if not k.startswith('_')} for r in build_rows(segments_declared=3, index_options='order_columns=created_at;key_cut=off')])
+            back = schema.read(p)
+        self.assertEqual({(r['segments'], r['immutable_segments'], r['buffer_segments'], r['segments_declared'], r['instr_leader_m'], r['instr_workers_m'], r['index_options']) for r in back},
+                         {(3, 3, 0, 3, 4.0, 6.0, 'order_columns=created_at;key_cut=off')})
+        self.assertEqual(problems(back), [])
 
 
 class Report(unittest.TestCase):

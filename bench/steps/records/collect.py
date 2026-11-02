@@ -58,8 +58,9 @@ class Subject:
 class Arm:
     """a structure forced on the data: arm (heap, btree, gin, sift), option (default, key_order=ts, ...), the settings that force it (FORCING[arm]), an optional SQL of its own, an optional prepare of its own, the structures its table holds when they differ from the subject's (a load of a heap with a b-tree beside one of a sift_table)"""
 
-    def __init__(self, arm, option='default', settings=None, sql=None, prepare=None, structures=None, base=None, keep=False):
+    def __init__(self, arm, option='default', settings=None, sql=None, prepare=None, structures=None, base=None, keep=False, segments=None):
         self.arm, self.option, self.sql, self.prepare, self.structures = arm, option, sql, prepare, structures   # PREPARE: the arm's own, run before each repetition of a maintenance or a load (else the measure's)
+        self.segments = segments   # the segment count the harness says the arm's sift index has; recorded beside the measured one, and check.py refuses a row where they differ
         self.keep = keep   # a fresh case's arm that keeps its backend: the statement as the second of a backend (protocol single)
         self.tries = [settings] if settings is not None else [list(base or []) + t for t in TRIES.get(arm) or [FORCING[arm]]]   # BASE: the settings of a variant, in front of each; ways to force the arm: the first whose plan is the structure of its name is used
         self.settings = self.tries[0]
@@ -344,11 +345,16 @@ def start_state(s, subject):
     return churn_facts(s, subject.table, subject.churn)
 
 
+def subject_oids(table):
+    """SQL for the oids of the tables a measurement is of: TABLE (the leaf partitions of a partitioned one) or, when it names a schema, the tables of the schema"""
+    return ("(SELECT relid AS oid FROM pg_partition_tree(to_regclass('%s')) WHERE isleaf UNION SELECT c.oid FROM pg_class c WHERE c.oid = to_regclass('%s') AND c.relkind <> 'p') "
+            "UNION ALL SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relkind IN ('r', 'p', 'm')" % (table, table, table))
+
+
 def structure_bytes(s, table, arm):
     """(table_bytes, index_bytes) after a run: pg_table_size of TABLE (a load names the schema that holds its tables: their sum; a partitioned table has no storage, its leaf partitions
     are summed) and the pg_relation_size of the indexes of ARM's structure, None for the heap arm, for a mixed plan and when the table has no index of that structure"""
-    tables = ("(SELECT relid AS oid FROM pg_partition_tree(to_regclass('%s')) WHERE isleaf UNION SELECT c.oid FROM pg_class c WHERE c.oid = to_regclass('%s') AND c.relkind <> 'p') "
-              "UNION ALL SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relkind IN ('r', 'p', 'm')" % (table, table, table))
+    tables = subject_oids(table)
     size = int(one(s, 'SELECT coalesce(sum(pg_table_size(oid)), 0) FROM (%s) t' % tables)[0])
     if arm in ('heap', 'mixed'):   # no index is the plan's: a mixed plan names none
         return size, None
@@ -356,6 +362,23 @@ def structure_bytes(s, table, arm):
     index = one(s, 'SELECT count(*), coalesce(sum(pg_relation_size(i.indexrelid)), 0) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam '
                    'WHERE i.indrelid IN (%s) AND %s' % (tables, match))
     return size, int(index[1]) if int(index[0]) else None   # no index of that structure (a sift_table keeps its structure in the table): unknown, not 0 bytes
+
+
+def index_facts(s, table):
+    """what the directory of the sift indexes of the tables of TABLE (as subject_oids) holds after a run, summed: {segments, immutable_segments, buffer_segments, index_options}. The segments
+    are the rows of sift.col_segments (sift_col) and sift.segments (sift); a write buffer is a `buffer`, `sealed buffer`, `active` or `sealed` one. index_options are the reloptions of the
+    indexes, sorted, those of different indexes told apart by ` | ` (`default` when none has any). Empty when there is no sift index: the heap, b-tree and GIN arms have no segments"""
+    indexes = all_rows(s, "SELECT am.amname, i.indexrelid, coalesce((SELECT string_agg(o, ';' ORDER BY o) FROM unnest(ic.reloptions) o), '') FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid "
+                          "JOIN pg_am am ON am.oid = ic.relam WHERE am.amname IN ('sift', 'sift_col') AND i.indrelid IN (SELECT oid FROM (%s) t) ORDER BY 2" % subject_oids(table))
+    if not indexes:
+        return {}
+    counts = [0, 0, 0]
+    for am, oid, _ in indexes:
+        fn = 'sift.col_segments' if am == 'sift_col' else 'sift.segments'
+        got = one(s, "SELECT count(*), count(*) FILTER (WHERE kind = 'immutable'), count(*) FILTER (WHERE kind IN ('buffer', 'sealed buffer', 'active', 'sealed')) FROM %s(%s::regclass)" % (fn, oid))
+        counts = [a + int(b) for a, b in zip(counts, got)]
+    options = sorted({o for _, _, o in indexes if o})
+    return dict(zip(('segments', 'immutable_segments', 'buffer_segments'), counts), index_options=' | '.join(options) or 'default')
 
 
 def wal_lsn(s):
@@ -456,13 +479,14 @@ def stop_perf(p, wait=30):
     return out
 
 
-def count_instructions(s, sql, pid, post, tries=3, repeats=1):
+def count_instructions(s, sql, pid, post, tries=3, repeats=1, leader=False):
     """(millions of instructions, millions of cycles) of one run of SQL on the backend PID and the postmaster POST (the workers are its children, forked after perf attached), counted
-    over REPEATS runs in the one backend between the two readings and divided (a short statement). The count is tried again up to TRIES times; PerfUnavailable says why each attempt
-    failed (never a count of the backend alone, never a record without instructions). Whatever happens, no perf of this count is left running"""
+    over REPEATS runs in the one backend between the two readings and divided (a short statement). LEADER counts the backend PID alone (a build's leader: the workers are the postmaster's
+    children, so they are left out). The count is tried again up to TRIES times; PerfUnavailable says why each attempt failed (never a count of the backend alone unless asked for,
+    never a record without instructions). Whatever happens, no perf of this count is left running"""
     why = []
     for attempt in range(tries):
-        p = subprocess.Popen(['bash', PERF, '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        p = subprocess.Popen(['bash', PERF, str(pid) if leader else '%d,%d' % (pid, post)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
             if not wait_attached(p):
                 why.append('attempt %d: perf did not start' % (attempt + 1))
@@ -638,6 +662,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                     ms = run_all(t, sql)
             b1, lsn1 = statio(s), wal_lsn(s)
             table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
+            facts = index_facts(s, subject.table) if index_bytes is not None and (structure if mode == 'default' else arm.arm) == 'sift' else {}
             declared = arm.structures or subject.structures
             if not read and declared:   # a harness that says what its table holds is held to it: a CREATE INDEX that failed, or an index nobody listed, is no measurement
                 held = table_structures(s, subject.table)
@@ -652,20 +677,26 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                     raise RuntimeError('EXPLAIN: %s' % err)
                 plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
                 cost = cost2 if cost2 is not None else cost
-            instr = cycles = None
+            instr = cycles = leader = workers_m = None
             if temp == 'warm':
                 if prepare and not read:
                     prepare()
                 repeats = repeats_for(ms) if read and not fresh else 1   # a new backend for each run is measured once: its first statement is the point
                 with on_session() as t:
                     instr, cycles = count_instructions(t, sql, backend_pid(t) if fresh else pid, post, repeats=repeats)
+                if subject.kind == 'build':   # the leader apart, in a run of its own on a table prepared again: what the workers did is the rest
+                    if prepare:
+                        prepare()
+                    leader = count_instructions(s, sql, pid, post, leader=True)[0]
+                    workers_m = max(0.0, instr - leader)
             if not read:
                 requested = launched   # a maintenance statement has no plan that asks for workers: the cap is the setting, the workers it started are what the record can say
             if temp == 'cold':
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
             r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
-                     instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, instr_n=repeats if instr is not None and temp == 'warm' else None, workers_requested=requested, workers_launched=launched,
-                     os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes, noise=int(max(x or 0 for x in p0 + p1) > check.NOISY_PSI), psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
+                     instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, instr_n=repeats if instr is not None and temp == 'warm' else None, instr_leader_m=leader, instr_workers_m=workers_m,
+                     workers_requested=requested, workers_launched=launched, os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes,
+                     segments_declared=arm.segments, **facts, noise=int(max(x or 0 for x in p0 + p1) > check.NOISY_PSI), psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
             r.update(block_deltas(b0, b1))
             if arm.structures:
                 r['structures'] = arm.structures

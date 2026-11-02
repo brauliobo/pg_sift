@@ -20,7 +20,9 @@ from the records that pass. No figure of a document, a CHANGELOG line or a hand-
 
 `bench/claims.tsv` lists the figures a CHANGELOG line states (a phrase of the line, the statement, size, arm, metric and value, a tolerance in percent). `bench records claims RECORDS...`
 (and `bench cases --check --records FILE`) fails a figure that the median of the records misses by more than its tolerance and prints both: the line and the run. A phrase that matches no
-line is stale and fails as well. The value is the one the line states, typed once there; the records are never typed.
+line is stale and fails as well. The value is the one the line states, typed once there; the records are never typed. The phrase `-` is a figure that no CHANGELOG line states (a design note, a
+page; its `note` column says where): it is checked against the records alone, and its metric may be a build's `instr_leader_m`, `instr_workers_m`, `index_bytes`, `wal_bytes`, `segments`,
+`immutable_segments` or `buffer_segments`.
 
 ## What one row is
 
@@ -56,7 +58,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `statement` | text | yes | the name of the statement |
 | `sql_hash` | text | yes | hash of the statement text without its white space: one name is one text |
 | `variant` | text | yes | the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant |
-| `kind` | text | yes | read, maintenance (VACUUM, CREATE INDEX, merge) or load |
+| `kind` | text | yes | read, maintenance (VACUUM, merge), load or build (CREATE INDEX of a sift index: the instructions of the leader and of the workers, the segments it wrote, the options it was built with) |
 | `protocol` | text | yes | what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve |
 | `mode` | text | yes | forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were) |
 | `arm` | text | yes | heap, btree, gin or sift; `default` rows carry the structure the plan named |
@@ -73,6 +75,8 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `cycles_m` | number |  | millions of user cycles |
 | `instr_scope` | text |  | cluster (the postmaster tree: backend and parallel workers) or backend (the backend alone: only valid with no worker launched) |
 | `instr_n` | integer |  | statements run in the window the instructions were counted over (a statement under 5 ms is run again and again in the one backend between two readings and the count divided: the number is of one run); 1 for a long one |
+| `instr_leader_m` | number |  | build: millions of user instructions of the leader backend alone, counted in a run of its own after the cluster count (the same statement on the same prepared table) |
+| `instr_workers_m` | number |  | build: instr_m - instr_leader_m, the instructions of the parallel workers (0 when none launched) |
 | `workers_requested` | integer | yes | parallel workers the plan asked for (a maintenance statement or a load has no plan: the workers it started) |
 | `workers_launched` | integer | yes | parallel workers that ran |
 | `heap_hit` | integer |  | blocks of heap relations found in shared buffers |
@@ -88,6 +92,11 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `os_cache_dropped` | 0 or 1 |  | cold rows: 1 when the OS page cache was emptied too, 0 when only the shared buffers were |
 | `table_bytes` | integer |  | pg_table_size of the table after the run (heap, TOAST and free space map; a load names the schema, the sum of its tables) |
 | `index_bytes` | integer |  | pg_relation_size of the indexes of the arm's structure after the run (sift, b-tree or GIN; none for the heap arm): what a CREATE INDEX or a rewrite built |
+| `segments` | integer |  | segments in the directory of the sift index of the arm after the run (all kinds: sift.col_segments, sift.segments); none for an arm without a sift index |
+| `immutable_segments` | integer |  | of them the immutable ones (a build or merge wrote them) |
+| `buffer_segments` | integer |  | of them the write buffers, open or sealed (rows the maintenance has not yet written as a segment) |
+| `segments_declared` | integer |  | the segment count the harness says the index has (a case that names it, `-- segments: N`): a row whose count is another is refused |
+| `index_options` | text |  | the options the sift index of the arm was built with (its reloptions, name=value, sorted, `;` between), `default` when it has none |
 | `wal_bytes` | integer |  | WAL written by the run |
 | `fpw` | 0 or 1 | yes | full_page_writes of the server |
 | `cpus` | number | yes | the CPU quota the server ran with (cpus) |
@@ -107,6 +116,11 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 A harness that declares what the table of a write or a maintenance holds (`Subject.structures`, `Arm.structures`) is held to it: after the statement the library reads the table's indexes, and a run whose table holds something else (a CREATE INDEX that failed, an index nobody listed) raises. An index that backs a primary key or a unique constraint is listed as `constraint`, whatever its access method: it is the table's definition, every write pays for it, and the checker accepts it beside the arm's structure when every write figure of the comparison has it (COMPANION DIFFERS). Any other index, a b-tree too, is a structure of the figure and refuses it (OTHER STRUCTURES). The `tip` of a record is a commit: a tree that is no work tree of its revision names it by hand.
 
 The subject table of a partitioned table has no statistics, storage or access method of its own, so its facts are those of its leaf partitions together: tuples and dead tuples summed, `vacuums` and `autovacuums` the fewest of any leaf, `settled_s` the time since the latest pass of any leaf (empty while a leaf has had none), `tombstone_pct` over the leaves with a sift structure, `table_bytes` and `index_bytes` summed over the leaves. A view, or a partitioned table with no leaf, has no facts.
+
+A build (kind `build`: a case with `-- kind: build`, `col_build_default` and `col_build_date_key`) is the `CREATE INDEX` of a sift index alone, the arms its options and worker settings. Each warm
+repetition counts the cluster (leader and workers, `instr_m`), then the leader alone in a run of its own on a table prepared again (`instr_leader_m`); `instr_workers_m` is the difference. Every
+record of a sift arm that has `index_bytes` carries the directory of its index after the run (`segments`, `immutable_segments`, `buffer_segments`, from `sift.col_segments` or `sift.segments`)
+and the options it was built with (`index_options`); a case that says `-- segments: N` is recorded with `segments_declared` and refused when the directory holds another count.
 
 ## Versions of the schema
 
@@ -139,6 +153,12 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | (not a refusal) noisy host | a run above 10 points of host pressure carries `noise` = 1 and a cell above it or with a CV over 10% is marked noisy; the report warns when the arms of a comparison were measured under pressure more than 10 points apart. The load of the host is a fact about the run, so it never refuses a file; different data, table state or settings do |
 | OTHER STRUCTURES | a maintenance or load figure is of a table that holds the arm's structure alone (and `constraint`: the indexes a primary key or unique constraint needs, part of the table's definition) |
 | COMPANION DIFFERS | the write figures of a comparison are not all of a table with a constraint index, or all of one without: the arms would differ in more than their structure |
+| SEGMENTS MISSING | a sift arm with `index_bytes` has no `segments`, `immutable_segments`, `buffer_segments` or `index_options` (rows of schema 6 and later; an older row is not refused) |
+| SEGMENT KINDS | immutable and write buffer segments are more than the segments of the directory |
+| SEGMENTS CONTRADICT | the count a case declares (`segments_declared`) is not the count of the directory |
+| BUILD WITHOUT SPLIT / BUILD SPLIT / BUILD WORKERS | a warm build row lacks `instr_leader_m` or `instr_workers_m`, their sum is not the cluster count (1%), or the cluster ran beyond the leader with no worker launched |
+| BUILD WITHOUT index_bytes / wal_bytes | a build row lacks the bytes of its index or its WAL |
+| BUILD ON TEST SETTINGS | a build measured on a cluster with a `sift.test_*` setting: the build is not the product's |
 | TIP UNKNOWN | the `tip` of a record is not a commit (12 hexadecimal digits) |
 | NO RECORDS | an empty set proves nothing |
 
@@ -161,6 +181,8 @@ Each row is a way a reported number was wrong or had to be revised, and the colu
 | a maintenance figure of an arm whose table also kept another index | `structures`: OTHER STRUCTURES |
 | a write cost with the primary key of the table in it, beside one without | `structures`: `constraint`, COMPANION DIFFERS |
 | a record of code nobody can find again | `tip`: TIP UNKNOWN |
+| a "7 segments" index whose record holds no count | `segments`, `segments_declared`: SEGMENTS MISSING, SEGMENTS CONTRADICT |
+| a build cost that counts the leader only, or the workers by guess | `instr_leader_m`, `instr_workers_m`: BUILD SPLIT |
 | a baseline file of an older harness compared with a new run | `harness` with the library version and one `run_id` |
 | a number that held for one setting of a structure stated for all | `arm_option` carries the options that changed the structure |
 | one round quoted as the average of twelve | `protocol` |
