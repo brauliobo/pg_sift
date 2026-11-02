@@ -26,6 +26,15 @@ SELECT max(id), min(id) FROM op;
 SELECT id FROM op_b ORDER BY id LIMIT 3;
 SELECT id FROM op ORDER BY id DESC LIMIT 3;
 
+-- the leaves keep their ordered scans: the parent's plan is a merge of them
+SET enable_seqscan = off;
+SET enable_sort = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM op ORDER BY id;
+RESET enable_seqscan;
+RESET enable_sort;
+RESET enable_bitmapscan;
+
 -- an index that is not valid yet (CONCURRENTLY failed, or ON ONLY on a table whose partitions are not attached)
 CREATE TABLE ov (id int4, d date) PARTITION BY HASH (id);
 CREATE TABLE ov0 PARTITION OF ov FOR VALUES WITH (MODULUS 2, REMAINDER 0);
@@ -35,5 +44,17 @@ CREATE INDEX ov_i ON ONLY ov USING sift_col (id, d);
 SELECT max(id), min(id) FROM ov;
 SELECT id FROM ov ORDER BY id LIMIT 2;
 
-DROP TABLE op, ov;
+-- the parent of an inheritance tree: its index holds the parent's own rows only, the children's rows come from their own scans
+CREATE TABLE oi (id int4, d date);
+CREATE TABLE oi_c () INHERITS (oi);
+INSERT INTO oi VALUES (5, '2024-01-01'), (1, '2024-01-02');
+INSERT INTO oi_c SELECT i, date '2024-02-01' + i FROM generate_series(10, 40) i;
+CREATE INDEX oi_i ON oi USING sift_col (id, d);
+CREATE INDEX oi_c_i ON oi_c USING sift_col (id, d);
+VACUUM ANALYZE oi;
+SELECT max(id), min(id) FROM oi;
+SELECT id FROM oi ORDER BY id LIMIT 4;
+SELECT id FROM oi ORDER BY id DESC LIMIT 3;
+
+DROP TABLE oi_c, oi, op, ov;
 DROP EXTENSION pg_sift CASCADE;
