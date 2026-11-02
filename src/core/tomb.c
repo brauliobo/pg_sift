@@ -501,26 +501,43 @@ sift_tomb_verdict(Snapshot snapshot, const SiftTomb *e)
 	return known ? SIFT_TOMB_KEEPS : SIFT_TOMB_UNKNOWN;
 }
 
+/*
+ * own: the transaction has an xid, the only case where a tombstone can be its own (a read-only one has none, so the test is skipped for each entry). A run of entries of one
+ * transaction (an UPDATE writes them together) is answered from run, ahead of the memo.
+ */
+typedef struct VerdictRun
+{
+	bool		own;
+	TransactionId xid;
+	SiftTombVerdict verdict;
+} VerdictRun;
+
 static SiftTombVerdict
-verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo)
+verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo, VerdictRun *run)
 {
 	SiftTombVerdict r;
 
 	if (snapshot->snapshot_type != SNAPSHOT_MVCC)
 		return sift_tomb_deletes(snapshot, e) ? SIFT_TOMB_DELETES : SIFT_TOMB_KEEPS;
-	if (memo == NULL || TransactionIdIsCurrentTransactionId(e->xid))
+	if (memo == NULL || (run->own && TransactionIdIsCurrentTransactionId(e->xid)))
 		return sift_tomb_verdict(snapshot, e);
+	if (e->xid == run->xid)
+		return run->verdict;
 	for (int i = 0; i < 4; i++)
 		if (memo->xid[i] == e->xid)
-			return memo->verdict[i];
+		{
+			run->xid = e->xid;
+			return run->verdict = memo->verdict[i];
+		}
 	r = sift_tomb_verdict(snapshot, e);
 	memo->xid[memo->next & 3] = e->xid;
 	memo->verdict[memo->next++ & 3] = r;
-	return r;
+	run->xid = e->xid;
+	return run->verdict = r;
 }
 
 static bool
-deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, SiftTombMemo *memo)
+deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, SiftTombMemo *memo, VerdictRun *run)
 {
 	for (; n > 0; f++, n--)
 	{
@@ -528,7 +545,7 @@ deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, Si
 
 		if (f->kind == SIFT_TOMB_LOCK)
 			continue;
-		v = verdict_memo(snapshot, f, memo);
+		v = verdict_memo(snapshot, f, memo, run);
 		if (v == SIFT_TOMB_UNKNOWN)
 			return false;
 		if (v == SIFT_TOMB_DELETES)
@@ -554,13 +571,13 @@ range_entries(const SiftTomb *a, uint32 na, uint64 lo, uint64 hi, uint32 *n)
 }
 
 static bool
-deleted_blocks(const SiftTomb *f, uint32 n, Snapshot snapshot, BlockNumber first, uint64 *mask, SiftTombMemo *memo)
+deleted_blocks(const SiftTomb *f, uint32 n, Snapshot snapshot, BlockNumber first, uint64 *mask, SiftTombMemo *memo, VerdictRun *run)
 {
 	bool		any = false;
 
 	for (; n > 0; f++, n--)
 	{
-		if (f->kind == SIFT_TOMB_LOCK || verdict_memo(snapshot, f, memo) == SIFT_TOMB_KEEPS)
+		if (f->kind == SIFT_TOMB_LOCK || verdict_memo(snapshot, f, memo, run) == SIFT_TOMB_KEEPS)
 			continue;
 		if (mask == NULL)
 			return true;
@@ -579,9 +596,10 @@ sift_tomb_deleted_blocks(const SiftTombLog *t, Snapshot snapshot, BlockNumber fi
 				nr;
 	const SiftTomb *m = range_entries(t->ents, t->nents, lo, hi, &nm),
 			   *r = range_entries(t->recent, t->nrecent, lo, hi, &nr);
-	bool		a = deleted_blocks(m, nm, snapshot, first, mask, memo);
+	VerdictRun	run = {.own = TransactionIdIsValid(GetTopTransactionIdIfAny())};
+	bool		a = deleted_blocks(m, nm, snapshot, first, mask, memo, &run);
 
-	return deleted_blocks(r, nr, snapshot, first, mask, memo) || a;
+	return deleted_blocks(r, nr, snapshot, first, mask, memo, &run) || a;
 }
 
 bool
@@ -593,9 +611,11 @@ sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber b
 	const SiftTomb *m = page_entries(t->ents, t->nents, lo, &nm),
 			   *r = page_entries(t->recent, t->nrecent, lo, &nr);
 
+	VerdictRun	run = {.own = TransactionIdIsValid(GetTopTransactionIdIfAny())};
+
 	if (nm + nr > budget)
 		return false;
-	return deleted_offsets(m, nm, snapshot, mask, memo) && deleted_offsets(r, nr, snapshot, mask, memo);
+	return deleted_offsets(m, nm, snapshot, mask, memo, &run) && deleted_offsets(r, nr, snapshot, mask, memo, &run);
 }
 
 bool
