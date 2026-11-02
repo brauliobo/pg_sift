@@ -48,7 +48,7 @@ BEGIN
 	RETURN r;
 END $$;
 CREATE FUNCTION pd_plan(w text) RETURNS text LANGUAGE plpgsql
-	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM pd WHERE %s', w) LOOP
