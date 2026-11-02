@@ -46,7 +46,7 @@ def main():
     ap.add_argument('--shares', default='1,5,20')
     ap.add_argument('--patterns', default='recent,random')
     ap.add_argument('--reps', type=int, default=3)
-    ap.add_argument('--track', choices=('on', 'off'), default='on')
+    ap.add_argument('--track', choices=('on', 'updates', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone
     ap.add_argument('--db', default='heapfree_churn_reads')
     ap.add_argument('--tip')
     ap.add_argument('--note')
@@ -59,7 +59,7 @@ def main():
     t = tip(a)
     harness = 'heapfree churn reads' + (' (%s)' % a.note if a.note else '')
     env = collect.Env(t, harness, schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='disabled')
-    opts = "track_updates = 'id', track_deletes = on, " if a.track == 'on' else ''
+    opts = {'on': "track_updates = 'id', track_deletes = on, ", 'updates': "track_updates = 'id', ", 'off': "track_updates = 'off', "}[a.track]
     out = []
 
     def run(sql):
@@ -68,8 +68,8 @@ def main():
             raise RuntimeError('%s: %s' % (sql, err))
 
     def arms():
-        if a.track == 'off':
-            return [collect.Arm('sift', 'track_off', settings=BASE)]
+        if a.track != 'on':
+            return [collect.Arm('sift', 'track_' + a.track, settings=BASE)]
         return [collect.Arm('sift', 'heap_free', settings=BASE + ['SET sift.test_no_heapfree = off']),
                 collect.Arm('sift', 'heap_checked', settings=BASE + ['SET sift.test_no_heapfree = on']),
                 collect.Arm('heap')]
@@ -89,7 +89,7 @@ def main():
         for share in map(int, a.shares.split(',')):
             pred_sql = pred.format(rows=a.rows, share=share)
             for t_ in ('w', 'wb'):
-                if t_ == 'wb' and a.track == 'off':
+                if t_ == 'wb' and a.track != 'on':
                     continue
                 run('DROP TABLE IF EXISTS %s' % t_)
                 run(LOAD.format(t=t_))
