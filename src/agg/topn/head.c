@@ -274,7 +274,7 @@ unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 		worse = MemoryContextAllocZero(t->ucxt, Max(key0->dict->n, 1));
 	t->nord[oc ? (oc->exact ? 0 : 1) : 2]++;
 	t->nties = 0;
-	grow_unit_buffers(t, nrow);
+	grow_unit_buffers(t, nrow, false);
 	t->ln = 0;
 	ord_bar(t, &ob, oc, key0->dict, code, bar);
 	for (int w = 0; w < nw; w++)

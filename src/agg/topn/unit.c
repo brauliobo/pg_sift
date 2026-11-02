@@ -20,22 +20,34 @@
 #define ST_DEFINE
 #include "lib/sort_template.h"
 
+/* A unit starts with scratch buffers (keep false: nothing in them is read again, so the larger ones are new and the old are freed, where repalloc would copy a megabyte of a unit that has just ended); a walk that fills them as it goes keeps what it has */
+static void *
+regrow(SiftTopN *t, void *p, Size sz, bool keep)
+{
+	if (!keep && p)
+	{
+		pfree(p);
+		p = NULL;
+	}
+	return grow(t, p, sz);
+}
+
 void
-grow_unit_buffers(SiftTopN *t, int nrow)
+grow_unit_buffers(SiftTopN *t, int nrow, bool keep)
 {
 	if (t->ccap >= nrow)
 		return;
 	t->ccap = Max(nrow, 2 * t->ccap);
-	t->crow = grow(t, t->crow, t->ccap * sizeof(uint32));
-	t->ck = grow(t, t->ck, t->ccap * sizeof(int64));
-	t->cnul = grow(t, t->cnul, t->ccap);
-	t->cand = grow(t, t->cand, t->ccap * sizeof(uint32));
-	t->ce = grow(t, t->ce, t->ccap * sizeof(TopEnt));
+	t->crow = regrow(t, t->crow, t->ccap * sizeof(uint32), keep);
+	t->ck = regrow(t, t->ck, t->ccap * sizeof(int64), keep);
+	t->cnul = regrow(t, t->cnul, t->ccap, keep);
+	t->cand = regrow(t, t->cand, t->ccap * sizeof(uint32), keep);
+	t->ce = regrow(t, t->ce, t->ccap * sizeof(TopEnt), keep);
 	if (t->all)
 	{
-		t->tids = grow(t, t->tids, t->ccap * sizeof(ItemPointerData));
-		t->skey = grow(t, t->skey, (Size) t->ccap * t->nkey * sizeof(int64));
-		t->snull = grow(t, t->snull, (Size) t->ccap * t->nkey);
+		t->tids = regrow(t, t->tids, t->ccap * sizeof(ItemPointerData), keep);
+		t->skey = regrow(t, t->skey, (Size) t->ccap * t->nkey * sizeof(int64), keep);
+		t->snull = regrow(t, t->snull, (Size) t->ccap * t->nkey, keep);
 	}
 }
 
@@ -371,7 +383,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 				nc = 0;
 	uint16		part;
 
-	grow_unit_buffers(t, nrow);
+	grow_unit_buffers(t, nrow, false);
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 		for (uint64 b = rmask[w]; b; b &= b - 1)
 		{

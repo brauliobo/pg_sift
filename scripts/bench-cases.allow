@@ -191,3 +191,4 @@ figure Improved: pg_sift: the equality, range or prefix of a string of a colu	st
 figure Improved: pg_sift: `DISTINCT ON` and `row_number() = 1` over an `ORDER	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: a scan of a `sift_table` with deleted or updated ro	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Changed: pg_sift: the background pass of a `sift_table` is asked for w	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
+sizes the candidate buffers of a unit that starts afresh without copying	case tenant_latest_20: the latest 20 rows of a tenant on the default index, the statement whose unit buffers were copied (records tenant_unitfix_before / tenant_unitfix_fixed)

@@ -352,7 +352,7 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 		t->nmono++;
 		return true;
 	}
-	grow_unit_buffers(t, Min(nrow, t->limit));
+	grow_unit_buffers(t, Min(nrow, t->limit), false);
 	for (uint32 w = 0; w < nblk && !stop; w++)
 	{
 		uint32		blk = front ? w : nblk - 1 - w,
@@ -472,7 +472,7 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		return;
 	if (key0 == NULL && k0->leaf >= 0)
 		key0 = leaf(ctx, k0->leaf);
-	grow_unit_buffers(t, nrow);
+	grow_unit_buffers(t, nrow, false);
 	t->ln = 0;
 	barred = bar_rank(t, &bar);
 	if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum == 0 && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64 || k0->vtype == SCV_F64) &&

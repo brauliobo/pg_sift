@@ -373,7 +373,7 @@ extern int mem_cmp(const void *a, const void *b, void *arg);
 extern void mem_cut(SiftTopN *t);
 
 extern Tuplesortstate * sort_begin(SiftTopN *t);
-extern void grow_unit_buffers(SiftTopN *t, int nrow);
+extern void grow_unit_buffers(SiftTopN *t, int nrow, bool keep);
 extern void finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc);
 extern bool bar_rank(const SiftTopN *t, Rank *bar);
 extern void share_bar(SiftTopN *t);

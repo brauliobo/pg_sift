@@ -243,7 +243,7 @@ static inline void
 run_room(RunWalk *w)
 {
 	if (w->nc >= w->t->ccap)
-		grow_unit_buffers(w->t, w->nc + 1);
+		grow_unit_buffers(w->t, w->nc + 1, true);
 }
 
 static bool
@@ -476,7 +476,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 			return false;
 		w.budget = t->budget;
 	}
-	grow_unit_buffers(t, Min(nrow, RUN_CAND_MIN));
+	grow_unit_buffers(t, Min(nrow, RUN_CAND_MIN), false);
 	if (t->rwin == NULL)
 	{
 		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * (3 * sizeof(uint32) + 2 * sizeof(uint16)));
