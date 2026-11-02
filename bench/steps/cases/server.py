@@ -48,9 +48,9 @@ def dataset(rows):
 
 
 def partial_maps(schema):
-    """the tables of SCHEMA with relallvisible < relpages: 'rel relallvisible of relpages pages', comma separated"""
+    """the heap tables of SCHEMA (a sift_table has no visibility map) with relallvisible < relpages: 'rel relallvisible of relpages pages', comma separated"""
     return psql("SELECT string_agg(format('%%s %%s of %%s pages', oid::regclass, relallvisible, relpages), ', ') FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') "
-                "AND relpages > 0 AND relallvisible < relpages" % schema)
+                "AND relam = (SELECT oid FROM pg_am WHERE amname = 'heap') AND relpages > 0 AND relallvisible < relpages" % schema)
 
 
 def settle_visibility(schema):
@@ -62,7 +62,7 @@ def settle_visibility(schema):
     partial = partial_maps(schema)
     if partial:
         log('visibility map: VACUUM FULL of %s' % partial)
-        psql("SELECT format('VACUUM FULL %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') AND relpages > 0 AND relallvisible < relpages \\gexec" % schema)
+        psql("SELECT format('VACUUM FULL %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') AND relam = (SELECT oid FROM pg_am WHERE amname = 'heap') AND relpages > 0 AND relallvisible < relpages \\gexec" % schema)
         psql("SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
         bad = partial_maps(schema)
         if bad:

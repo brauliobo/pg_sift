@@ -366,8 +366,8 @@ topn_offset_dict_blocks	keep the last 32 blocks read	orders	default	Top-N: t	nat
 group_range_count	counts the entries of the group between the two keys	orders	default	from pre-aggregates	native	btree:search_path = c_group_range_count__btree	ms	faster33	no	-
 tbl_page_tombstones_scan	a scan of a `sift_table` with deleted or updated rows not yet vacuumed	orders	-	tombstones	native	-	ms	faster33	no	-
 point_one_row	-	orders	default	Index (Only )?Scan	native	-	ms	faster33	no	-
-table_read_churned	the background pass of a `sift_table` is asked for when the reads of the table since the last pass have cost as much as the pass	orders	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
-table_read_settled	a VACUUM of a `sift_table` writes the pre-aggregates of the units that kept a dead row net of those rows	orders	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+table_read_churned	the background pass of a `sift_table` is asked for when the reads of the table since the last pass have cost as much as the pass	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+table_read_settled	a VACUUM of a `sift_table` writes the pre-aggregates of the units that kept a dead row net of those rows	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 col_build_participants	a parallel `CREATE INDEX` of a `sift_col` index launches a worker for each further 150,000 rows of the table	orders	-	^[0-9]+$	native	server_default:min_parallel_table_scan_size = '8MB',one_process:max_parallel_maintenance_workers = 0,all_asked:max_parallel_maintenance_workers = 4;min_parallel_table_scan_size = 0	index_mb,ms	faster33	no	-
 col_participants_point	a parallel `CREATE INDEX` of a `sift_col` index launches a worker for each further 150,000 rows of the table	orders	default	Custom Scan \(SiftAgg	native	parts:search_path = c_col_participants_point__parts	ms,minstr	faster33	no	-
 col_participants_scan	a parallel `CREATE INDEX` of a `sift_col` index launches a worker for each further 150,000 rows of the table	orders	default	Custom Scan \(SiftAgg	native	parts:search_path = c_col_participants_scan__parts	ms,minstr	faster33	no	-
