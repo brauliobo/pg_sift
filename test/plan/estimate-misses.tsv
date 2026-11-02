@@ -1,7 +1,7 @@
 # shape	lane	rows	chosen	cost	best	cost	M instr chosen	M instr best	ratio	state	note: the chosen plans that lose to the best by over 20% and 1M instructions (scripts/plangate.sh --calibrate --update)
 partition_pruned	tuned	30000	index=native	174.8	scan	255.0	4.56	0.30	15.20	known	
-search_one_parent	stock	100000	bitmap=native	766.1	index	3086.4	4.73	1.81	2.61	known	
-search_one_parent	stock	250000	bitmap=native	852.0	index	3193.2	15.81	5.10	3.10	known	
-search_one_parent	tuned	250000	bitmap=native	3182.9	index	3480.6	13.87	5.09	2.72	known	
+search_one_parent	stock	100000	bitmap=native	766.1	index	3086.4	4.71	1.81	2.60	known	
+search_one_parent	stock	250000	bitmap=native	901.7	index	3242.9	12.90	2.18	5.92	known	
+search_one_parent	tuned	250000	bitmap=native	3232.5	index	3530.3	10.96	2.18	5.03	known	
 spine_dims_cross	tuned	250000	index=native=scan	55786.1	seq	1145526.0	1008.19	567.34	1.78	known	
 top_rows_per_kind_unindexed_column	tuned	250000	index=native=scan	104527.0	seq	1190935.0	4221.48	3306.54	1.28	known	
