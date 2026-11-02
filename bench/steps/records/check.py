@@ -22,6 +22,7 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   one structure   a maintenance or load figure is of a table that holds the arm's structure alone
 """
 import os
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -158,9 +159,12 @@ def comparison_problems(key, rs, min_reps):
         if r['temp'] == 'cold' and r.get('os_cache_dropped') is None:
             out.append('%s: COLD WITHOUT os_cache_dropped at %s' % (name, where(r)))
         if r['kind'] in ('maintenance', 'load'):
-            extra = set(filter(None, (r.get('structures') or '').split(','))) - {'heap', r['arm']}
+            extra = set(filter(None, (r.get('structures') or '').split(','))) - {'heap', 'constraint', r['arm']}   # `constraint`: the indexes of a primary key or a unique constraint, the table's definition
             if extra:
                 out.append('%s: OTHER STRUCTURES at %s: a %s figure of a table that also holds %s' % (name, where(r), r['kind'], ','.join(sorted(extra))))
+    writes = {'constraint' in (r.get('structures') or '').split(',') for r in rs if r['kind'] in ('maintenance', 'load')}
+    if len(writes) > 1:
+        out.append('%s: COMPANION DIFFERS: some write figures of the comparison are of a table with a constraint index (primary key, unique) and some are of a table without: the arms differ in more than their structure' % name)
     cells = defaultdict(list)
     for r in rs:
         cells[(r['variant'], r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
@@ -178,6 +182,8 @@ def check(records, min_reps=MIN_REPS):
         return ['NO RECORDS: an empty set proves nothing']
     for r in records:
         out += one_record(r)
+    for tip in sorted({r.get('tip') for r in records if r.get('tip') and not re.fullmatch('[0-9a-f]{12}', r['tip'])}):
+        out.append('TIP UNKNOWN: the revision "%s" is not a commit (12 hexadecimal digits): the code measured cannot be found again' % tip)
     if out:
         return out
     groups = defaultdict(list)

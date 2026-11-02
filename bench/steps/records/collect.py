@@ -83,17 +83,22 @@ def plan_nodes(plan):
 
 def plan_structure(plan, index_am, table=None, index_table=None):
     """heap, btree, gin, sift or mixed for the plan of EXPLAIN (FORMAT JSON): INDEX_AM maps an index name to its access method (btree, gin, sift...). The scan nodes name the
-    structure; a plan with no scan of a table (a Result) is mixed, which no arm is. With TABLE (the subject of the statement, `name` or `schema.name`) only the scans of that table count,
-    the heap of a probe table beside the index of the probed one is not a mix: INDEX_TABLE maps an index name to its table for the index scans that name no relation"""
+    structure; a plan with no scan of a table (a Result) is mixed, which no arm is. With TABLE (the subject of the statement: `name` or `schema.name`, or the list of those of a table and its
+    partitions, which is what a plan of a partitioned table names: `subject_tables`) only the scans of that table count, the heap of a probe table beside the index of the probed one is not a
+    mix: INDEX_TABLE maps an index name to its table for the index scans that name no relation"""
     index_table = index_table or {}
-    schema_name, _, bare = (table or '').rpartition('.')
+    names = [table] if isinstance(table, str) else list(table or [])
+    schemas = {}
+    for name in names:
+        schema_name, _, bare = name.rpartition('.')
+        schemas.setdefault(bare, set()).add(schema_name)
 
     def scans(only):
         found = set()
         for n in plan_nodes(plan):
             t = n.get('Node Type', '')
             rel = n.get('Relation Name') or index_table.get(n.get('Index Name'))
-            if only and rel and (rel != bare or (schema_name and n.get('Schema') not in (None, schema_name))):
+            if only and rel and not (rel in schemas and (n.get('Schema') is None or n['Schema'] in schemas[rel] or '' in schemas[rel])):
                 continue
             if t == 'Seq Scan' or t == 'Tid Scan':
                 found.add('heap')
@@ -105,8 +110,20 @@ def plan_structure(plan, index_am, table=None, index_table=None):
             elif t == 'Custom Scan':
                 found.add('other:custom')
         return found
-    found = scans(bool(table)) or scans(False)   # no scan of the table itself (its partitions, a view): every scan of the plan
+    found = scans(bool(names)) or scans(False)   # no scan of the table itself (a view): every scan of the plan
     return found.pop() if len(found) == 1 and not next(iter(found)).startswith('other:') else 'mixed'
+
+
+def subject_tables(s, table):
+    """the relations whose scans a plan of TABLE names, as `schema.name`: the partition tree of a partitioned table (itself, and its partitions at every level), else TABLE as given"""
+    tree = [r[0] for r in all_rows(s, "SELECT n.nspname || '.' || c.relname FROM pg_partition_tree(to_regclass('%s')) t JOIN pg_class c ON c.oid = t.relid "
+                                      "JOIN pg_namespace n ON n.oid = c.relnamespace" % table)]
+    return tree or [table]
+
+
+def catalog_of(s, table):
+    """what `plan_structure` and `plan_facts` need to name the structure of a plan of TABLE: (index access methods, the relations of TABLE, the table of each index)"""
+    return index_methods(s), subject_tables(s, table), index_tables(s)
 
 
 def plan_facts(doc, index_am, table=None, index_table=None):
@@ -154,11 +171,16 @@ def pg_bytes_mb(text):
 
 # --- the server
 
-def one(s, sql):
+def all_rows(s, sql):
     _, rows, err, *_ = s.run(sql)
     if err:
         raise RuntimeError('%s: %s' % (sql[:80], err))
-    return rows[0].split('|') if rows else []
+    return [r.split('|') for r in rows]
+
+
+def one(s, sql):
+    rows = all_rows(s, sql)
+    return rows[0] if rows else []
 
 
 def backend_pid(s):
@@ -213,12 +235,25 @@ def index_methods(s):
 
 
 def table_facts(s, table, key=None):
-    """(allvisible_pct, heap_corr, structures) of a table, measured: pages all-visible, the correlation of KEY with the heap, and the structures it holds (heap, plus the access methods of its indexes)"""
-    pages, vis = one(s, "SELECT relpages, relallvisible FROM pg_class WHERE oid = '%s'::regclass" % table)
+    """(allvisible_pct, heap_corr, structures) of a table, measured: pages all-visible (over the leaves of a partitioned table; none while a page count is unknown), the correlation of KEY with the heap,
+    and the structures it holds (heap, plus the access methods of its indexes)"""
+    counts = [[float(x) for x in one(s, "SELECT relpages, relallvisible, reltuples FROM pg_class WHERE oid = '%s'::regclass" % leaf)] for leaf in leaf_tables(s, table)]
+    pages, vis = (sum(c[i] for c in counts) for i in (0, 1))
+    known = bool(counts) and all(c[0] >= 0 and c[2] >= 0 for c in counts) and pages > 0   # a table no VACUUM or ANALYZE has counted has reltuples -1 (a partitioned one, relpages -1): unknown, not a share of 0
     corr = one(s, "SELECT correlation FROM pg_stats WHERE schemaname || '.' || tablename IN ('%s', 'public.%s') AND attname = '%s'" % (table, table, key))[0:1] if key else []
     ams = {kind_of(r) for r in s.run("SELECT am.amname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '%s'::regclass" % table)[1] if r}
     structures = ','.join(sorted({'heap'} | {k for k in ams if k != 'other'}))
-    return (100.0 * int(vis) / int(pages) if int(pages) else None, float(corr[0]) if corr and corr[0] else None, structures)
+    return (100.0 * vis / pages if known else None, float(corr[0]) if corr and corr[0] else None, structures)
+
+
+def table_structures(s, table):
+    """the structures TABLE holds as the records say them, measured: heap, the access method of each index that is not a constraint's, and `constraint` when an index backs a primary key,
+    a unique or an exclusion constraint of the table (its definition: every write pays for it, and so it does in every arm of a comparison). None when TABLE names no relation"""
+    if one(s, "SELECT to_regclass('%s') IS NOT NULL" % table)[0] != 't':
+        return None
+    rows = all_rows(s, "SELECT am.amname, EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid AND k.conrelid = i.indrelid AND k.contype IN ('p', 'u', 'x')) "
+                       "FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam WHERE i.indrelid = to_regclass('%s')" % table)
+    return ','.join(sorted({'heap'} | {kind_of(am) for am, backs in rows if backs != 't'} - {'other'} | ({'constraint'} if any(backs == 't' for _, backs in rows) else set())))
 
 
 def statio(s):
@@ -253,31 +288,53 @@ def apply_churn(s, table, column, upd=0.0, ins=0.0, dele=0.0, rounds=1, insert_s
     return 'upd=%g;ins=%g;del=%g;rounds=%d' % (upd, ins, dele, rounds)
 
 
-def churn_facts(s, table, declared=None):
-    """the state of TABLE the arms start from, measured: {churn_history, vacuums, autovacuums, settled_s, dead_pct, tombstone_pct} from pg_stat_all_tables, the maintenance status of its sift
-    index and the dead rows of that index's segments. The history is DECLARED (apply_churn) or, for a table churned by a script, the tuples its statistics counted"""
-    s.run('SELECT pg_stat_clear_snapshot()')
+def leaf_tables(s, table):
+    """[TABLE], or its leaf partitions when it is partitioned: a partitioned table has no pages, statistics, storage or access method of its own, its leaves hold the data (none for a
+    partitioned table with no partition). A name that is no relation raises"""
+    if one(s, "SELECT relkind FROM pg_class WHERE oid = '%s'::regclass" % table)[0] != 'p':
+        return [table]
+    return [r[0] for r in all_rows(s, "SELECT relid::regclass::text FROM pg_partition_tree('%s') WHERE isleaf" % table)]
+
+
+def table_facts_of(s, table):
+    """the statistics of the plain table TABLE, with the dead rows of its sift structure: {ins, upd, del, live, dead, vacuums, autovacuums, since, passed, dead_rows, rows}, or None when it
+    has none of its own (a view). since is the seconds from its last vacuum, passed from the last pass of its sift index; dead_rows and rows are those of the sift structure, None without one"""
     row = one(s, "SELECT n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, vacuum_count, autovacuum_count, "
-                                                          "extract(epoch FROM now() - greatest(last_vacuum, last_autovacuum)) FROM pg_stat_all_tables WHERE relid = '%s'::regclass" % table)
+                 "extract(epoch FROM now() - greatest(last_vacuum, last_autovacuum)) FROM pg_stat_all_tables WHERE relid = '%s'::regclass" % table)
     if not row:
-        return {}   # a partitioned table or a view has no statistics of its own
-    ins, upd, dele, live, dead, vac, auto, since = row
-    out = dict(churn_history=declared or 'ins=%s;upd=%s;del=%s' % (ins, upd, dele), vacuums=int(vac), autovacuums=int(auto), settled_s=float(since) if since else None,
-               dead_pct=100.0 * int(dead) / max(1, int(live) + int(dead)), tombstone_pct=None)
+        return None
+    ints = [int(x) for x in row[:7]]
+    out = dict(zip(('ins', 'upd', 'del', 'live', 'dead', 'vacuums', 'autovacuums'), ints), since=float(row[7]) if row[7] else None, passed=None, dead_rows=None, rows=None)
     try:
         if one(s, "SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.oid = '%s'::regclass" % table)[0] == 'sift_table':
-            dead_rows, rows = one(s, "SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.table_segments('%s') WHERE kind = 'columns'" % table)
-            out['tombstone_pct'] = 100.0 * int(dead_rows) / int(rows) if int(rows) else None
+            out['dead_rows'], out['rows'] = (int(x) for x in one(s, "SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.table_segments('%s') WHERE kind = 'columns'" % table))
         index = one(s, "SELECT i.indexrelid::regclass FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '%s'::regclass AND am.amname = 'sift_col' LIMIT 1" % table)
         if index:
-            dead_rows, rows = one(s, 'SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.col_segments(%s)' % ("'%s'" % index[0]))
-            out['tombstone_pct'] = 100.0 * int(dead_rows) / int(rows) if int(rows) else None
+            out['dead_rows'], out['rows'] = (int(x) for x in one(s, "SELECT coalesce(sum(dead_rows), 0), coalesce(sum(rows), 0) FROM sift.col_segments('%s')" % index[0]))
             passed = one(s, "SELECT extract(epoch FROM now() - last_vacuum) FROM sift.col_maintenance_status('%s')" % index[0])
-            if passed and passed[0]:
-                out['settled_s'] = min(float(passed[0]), out['settled_s'] if out['settled_s'] is not None else float(passed[0]))
+            out['passed'] = float(passed[0]) if passed and passed[0] else None
     except RuntimeError:
         pass   # the sift functions are not in this database: no tombstones to count
     return out
+
+
+def churn_facts(s, table, declared=None):
+    """the state of TABLE the arms start from, measured: {churn_history, vacuums, autovacuums, settled_s, dead_pct, tombstone_pct} from pg_stat_all_tables, the maintenance status of its sift
+    index and the dead rows of that index's segments. The history is DECLARED (apply_churn) or, for a table churned by a script, the tuples its statistics counted.
+    A partitioned table has no statistics, storage or access method of its own: its facts are those of its leaf partitions together. The tuples and dead tuples are summed; vacuums and
+    autovacuums are the fewest of any leaf (every leaf had at least that many); settled_s is the time since the most recent pass of any leaf, none while a leaf has had no pass;
+    tombstone_pct is over the leaves that have a sift structure. A view, or a partitioned table with no leaf, has none: {}"""
+    s.run('SELECT pg_stat_clear_snapshot()')
+    parts = [table_facts_of(s, leaf) for leaf in leaf_tables(s, table)]
+    if not parts or None in parts:
+        return {}
+    total = lambda k: sum(p[k] for p in parts)  # noqa: E731
+    since = [min((x for x in (p['since'], p['passed']) if x is not None), default=None) for p in parts]   # the last pass of each leaf
+    dead_rows, indexed = (sum(p[k] or 0 for p in parts) for k in ('dead_rows', 'rows'))
+    return dict(churn_history=declared or 'ins=%s;upd=%s;del=%s' % (total('ins'), total('upd'), total('del')), vacuums=min(p['vacuums'] for p in parts),
+                autovacuums=min(p['autovacuums'] for p in parts), settled_s=None if None in since else min(since),
+                dead_pct=100.0 * total('dead') / max(1, total('live') + total('dead')),
+                tombstone_pct=100.0 * dead_rows / indexed if indexed else None)
 
 
 def start_state(s, subject):
@@ -288,17 +345,17 @@ def start_state(s, subject):
 
 
 def structure_bytes(s, table, arm):
-    """(table_bytes, index_bytes) after a run: pg_table_size of TABLE (a load names the schema that holds its tables: their sum) and the pg_relation_size of the indexes of ARM's structure,
-    None for the heap arm"""
-    tables = ("SELECT c.oid FROM pg_class c WHERE c.oid = to_regclass('%s') UNION ALL SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-              "WHERE n.nspname = '%s' AND c.relkind IN ('r', 'p', 'm')" % (table, table))
+    """(table_bytes, index_bytes) after a run: pg_table_size of TABLE (a load names the schema that holds its tables: their sum; a partitioned table has no storage, its leaf partitions
+    are summed) and the pg_relation_size of the indexes of ARM's structure, None for the heap arm, for a mixed plan and when the table has no index of that structure"""
+    tables = ("(SELECT relid AS oid FROM pg_partition_tree(to_regclass('%s')) WHERE isleaf UNION SELECT c.oid FROM pg_class c WHERE c.oid = to_regclass('%s') AND c.relkind <> 'p') "
+              "UNION ALL SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '%s' AND c.relkind IN ('r', 'p', 'm')" % (table, table, table))
     size = int(one(s, 'SELECT coalesce(sum(pg_table_size(oid)), 0) FROM (%s) t' % tables)[0])
-    if arm == 'heap':
+    if arm in ('heap', 'mixed'):   # no index is the plan's: a mixed plan names none
         return size, None
     match = "am.amname LIKE 'sift%'" if arm == 'sift' else "am.amname = '%s'" % arm
-    index = one(s, 'SELECT coalesce(sum(pg_relation_size(i.indexrelid)), 0) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam '
+    index = one(s, 'SELECT count(*), coalesce(sum(pg_relation_size(i.indexrelid)), 0) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam '
                    'WHERE i.indrelid IN (%s) AND %s' % (tables, match))
-    return size, int(index[0])
+    return size, int(index[1]) if int(index[0]) else None   # no index of that structure (a sift_table keeps its structure in the table): unknown, not 0 bytes
 
 
 def wal_lsn(s):
@@ -456,7 +513,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     check_perf_free()
     pid = backend_pid(s)
     post = postmaster_pid(pid)
-    catalog = (index_methods(s), subject.table, index_tables(s))
+    catalog = catalog_of(s, subject.table)
     srv = server_env(s)
     pairs = settings_of(s)
     restore = session_base(s)
@@ -581,6 +638,11 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                     ms = run_all(t, sql)
             b1, lsn1 = statio(s), wal_lsn(s)
             table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
+            declared = arm.structures or subject.structures
+            if not read and declared:   # a harness that says what its table holds is held to it: a CREATE INDEX that failed, or an index nobody listed, is no measurement
+                held = table_structures(s, subject.table)
+                if held is not None and set(held.split(',')) != set(declared.split(',')):
+                    raise RuntimeError('%s holds %s after the statement, the harness declared %s' % (subject.table, held, declared))
             p1 = pressure()
             plan_ms = exec_ms = None
             if read:

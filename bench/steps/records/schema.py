@@ -46,7 +46,7 @@ FIELDS = [
     ('settled_s', 'f', False, 'seconds from the last VACUUM, autovacuum or sift maintenance pass of the table to the start of the arms'),
     ('dead_pct', 'f', False, 'dead tuples in percent of live and dead (pg_stat_user_tables) at the start'),
     ('tombstone_pct', 'f', False, 'dead rows in percent of the rows of the segments of the sift index (sift.col_segments) at the start, when the table has one'),
-    ('structures', 's', True, 'the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used'),
+    ('structures', 's', True, 'the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used; `constraint` stands for the indexes of a primary key or unique constraint, the table\'s definition, which a write pays for in every arm'),
     ('statement', 's', True, 'the name of the statement'),
     ('sql_hash', 's', True, 'hash of the statement text without its white space: one name is one text'),
     ('variant', 's', True, 'the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant'),

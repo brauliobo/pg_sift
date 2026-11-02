@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # cluster.py: `python3 -I` leaves the script's directory out
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
 import check  # noqa: E402
 import claims  # noqa: E402
@@ -156,6 +157,23 @@ class Collect(unittest.TestCase):
         parts = {'Node Type': 'Append', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'p1'}, {'Node Type': 'Seq Scan', 'Relation Name': 'p2'}]}
         self.assertEqual(collect.plan_structure(parts, AM, table='parent'), 'heap')   # no scan of the table itself: the plan as a whole
 
+    def test_the_scans_of_the_partitions_of_the_subject_name_its_structure(self):
+        leaf = lambda n: {'Node Type': 'Index Only Scan', 'Relation Name': 'lp_ev_%02d' % n, 'Index Name': 'lp_ev_%02d_ix' % n}   # noqa: E731
+        lateral = {'Node Type': 'Nested Loop', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'lp_dim'},
+                                                         {'Node Type': 'Limit', 'Plans': [{'Node Type': 'Append', 'Plans': [leaf(1), leaf(2), leaf(3)]}]}]}
+        am = {'lp_ev_%02d_ix' % n: 'btree' for n in (1, 2, 3)}
+        # a plan of a partitioned table names its partitions, never the parent: its name alone finds no scan and the probe table's heap makes the plan mixed
+        self.assertEqual(collect.plan_structure(lateral, am, 'twin.lp_ev'), 'mixed')
+        names = ['twin.lp_ev', 'twin.lp_ev_01', 'twin.lp_ev_02', 'twin.lp_ev_03']
+        self.assertEqual(collect.plan_structure(lateral, am, names), 'btree')
+        self.assertEqual(collect.plan_structure(lateral, am, names + ['twin.lp_dim']), 'mixed')   # the probe table as a subject too: the plan is both
+        self.assertEqual(collect.plan_structure(lateral, am, ['twin.lp_dim']), 'heap')
+        # a plan with the schemas (VERBOSE): the heap scan of a table of the same name in another schema is not the subject's
+        other = {'Node Type': 'Seq Scan', 'Relation Name': 'lp_ev_01', 'Schema': 'other'}
+        mine = dict(leaf(2), Schema='twin')
+        self.assertEqual(collect.plan_structure({'Node Type': 'Append', 'Plans': [other, mine]}, am, names), 'btree')
+        self.assertEqual(collect.plan_structure({'Node Type': 'Append', 'Plans': [dict(other, Schema='twin'), mine]}, am, names), 'mixed')
+
     def test_a_perf_stat_that_outlived_its_count_is_found_by_its_pids(self):
         with tempfile.TemporaryDirectory() as proc:
             def process(pid, args, started_ticks):
@@ -189,6 +207,8 @@ class Collect(unittest.TestCase):
                 return (0, [], '')
 
         def answer(session, sql):
+            if 'relkind' in sql:
+                return ('r',)
             if 'pg_stat_all_tables' in sql:
                 return (100, 5, 0, 100, 0, 1, 0, 42)
             if 'SELECT am.amname' in sql:
@@ -205,6 +225,17 @@ class Collect(unittest.TestCase):
         self.assertEqual(facts['tombstone_pct'], 5.0)
         self.assertEqual(facts['dead_pct'], 0.0)
         self.assertEqual(facts['vacuums'], 1)
+
+    def test_a_failed_query_for_the_leaves_of_a_partitioned_table_is_an_error_not_no_facts(self):
+        class Server:
+            def run(self, sql):
+                if 'relkind' in sql:
+                    return (0.1, ['p'], '', '')
+                if 'pg_partition_tree' in sql:
+                    return (0.1, [], 'permission denied for function pg_partition_tree', '')
+                return (0.1, [], '', '')
+        with self.assertRaisesRegex(RuntimeError, 'permission denied'):
+            collect.churn_facts(Server(), 'p')
 
     def test_a_short_statement_is_counted_over_a_window_of_runs(self):
         # (ms of one run, runs in the window)
@@ -250,6 +281,178 @@ class Collect(unittest.TestCase):
         self.assertEqual(collect.cpu_quota('', 4), 4.0)
         self.assertEqual([collect.pg_bytes_mb(x) for x in ('256MB', '4096kB', '1GB')], [256.0, 4.0, 1024.0])
         self.assertEqual([collect.cache_dropped(x) for x in ('evict+fadvise', 'evict (tmpfs)', 'warm: no eviction')], [1, 0, None])
+
+
+class Partitioned(unittest.TestCase):
+    """a partitioned table has no statistics, storage or access method of its own: churn_facts and structure_bytes read its leaf partitions (a plain cluster, no extension needed)"""
+
+    @classmethod
+    def setUpClass(cls):
+        import cluster
+        from duckdb import Session
+        cls.dir, _, cls.port = cluster.start(cls, 'records-partitioned.', '-c autovacuum=off -c shared_buffers=32MB')
+        cls.s = s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
+        for q in ("CREATE TABLE p (id int, k int, v int) PARTITION BY HASH (k)",
+                  *("CREATE TABLE p_%d PARTITION OF p FOR VALUES WITH (MODULUS 3, REMAINDER %d)" % (i, i) for i in range(3)),
+                  "INSERT INTO p SELECT g, g, g FROM generate_series(1, 30000) g", "CREATE INDEX p_k ON p (k)", "VACUUM p",
+                  "UPDATE p SET v = v + 1 WHERE id % 10 = 0", "DELETE FROM p WHERE id % 20 = 1", "VACUUM p_0", "ANALYZE p_1",
+                  "CREATE TABLE never (id int, k int) PARTITION BY HASH (k)",
+                  *("CREATE TABLE never_%d PARTITION OF never FOR VALUES WITH (MODULUS 2, REMAINDER %d)" % (i, i) for i in range(2)),
+                  "INSERT INTO never SELECT g, g FROM generate_series(1, 1000) g", "VACUUM never_0",
+                  "CREATE TABLE empty (k int) PARTITION BY HASH (k)",
+                  "CREATE TABLE tree (k int, v int) PARTITION BY RANGE (k)", "CREATE TABLE tree_a PARTITION OF tree FOR VALUES FROM (0) TO (100) PARTITION BY HASH (v)",
+                  "CREATE TABLE tree_a0 PARTITION OF tree_a FOR VALUES WITH (MODULUS 2, REMAINDER 0)", "CREATE TABLE tree_a1 PARTITION OF tree_a FOR VALUES WITH (MODULUS 2, REMAINDER 1)",
+                  "CREATE TABLE tree_b PARTITION OF tree FOR VALUES FROM (100) TO (200)", "INSERT INTO tree SELECT g % 200, g FROM generate_series(1, 4000) g",
+                  "CREATE VIEW vw AS SELECT * FROM p", "CREATE TABLE raw AS SELECT g FROM generate_series(1, 2000) g",
+                  "CREATE SCHEMA twin", "CREATE TABLE twin.lp_dim (id int PRIMARY KEY)", "INSERT INTO twin.lp_dim SELECT g FROM generate_series(1, 100) g",
+                  "CREATE TABLE twin.lp_ev (id bigint NOT NULL, dim_a_id int NOT NULL, created_at timestamp NOT NULL) PARTITION BY RANGE (created_at)",
+                  *("CREATE TABLE twin.lp_ev_%02d PARTITION OF twin.lp_ev FOR VALUES FROM ('2025-%02d-01') TO ('2025-%02d-01')" % (m, m, m + 1) for m in (1, 2, 3)),
+                  "INSERT INTO twin.lp_ev SELECT i, 1 + i % 100, timestamp '2025-01-01' + (i % 90) * interval '1 day' FROM generate_series(1, 30000) i",
+                  "CREATE INDEX lp_bt ON twin.lp_ev (dim_a_id, created_at)", "VACUUM (FREEZE, ANALYZE) twin.lp_dim, twin.lp_ev"):
+            if s.run(q)[2]:
+                raise RuntimeError(q + ': ' + s.run(q)[2])
+        s.run('SELECT pg_stat_force_next_flush()')
+        s.run('SELECT 1')
+
+    def values(self, sql):
+        return [r.split('|') for r in self.s.run(sql)[1]]
+
+    def test_the_facts_of_a_partitioned_table_are_those_of_its_leaves_together(self):
+        facts = collect.churn_facts(self.s, 'p')
+        stats = self.values("SELECT sum(n_tup_ins), sum(n_tup_upd), sum(n_tup_del), sum(n_dead_tup), sum(n_live_tup), min(vacuum_count), max(vacuum_count), "
+                            "min(extract(epoch FROM now() - last_vacuum)) FROM pg_stat_all_tables WHERE relname LIKE 'p\\_%'")[0]
+        ins, upd, dele, dead, live, fewest, most, since = stats
+        self.assertEqual(facts['churn_history'], 'ins=%s;upd=%s;del=%s' % (ins, upd, dele))
+        self.assertEqual((ins, upd, dele), ('30000', '3000', '1500'))
+        self.assertEqual((facts['vacuums'], facts['autovacuums']), (1, 0))   # the leaf that was vacuumed twice is not the table: every leaf had one
+        self.assertEqual((fewest, most), ('1', '2'))
+        self.assertAlmostEqual(facts['dead_pct'], 100.0 * int(dead) / (int(live) + int(dead)))
+        self.assertGreater(int(dead), 0)
+        self.assertAlmostEqual(facts['settled_s'], float(since), delta=5)
+        self.assertIsNone(facts['tombstone_pct'])
+        self.assertEqual(collect.churn_facts(self.s, 'p', 'upd=10;ins=0;del=5;rounds=1')['churn_history'], 'upd=10;ins=0;del=5;rounds=1')
+
+    def test_a_leaf_without_a_pass_leaves_the_table_unsettled(self):
+        facts = collect.churn_facts(self.s, 'never')
+        self.assertEqual((facts['vacuums'], facts['autovacuums'], facts['settled_s']), (0, 0, None))
+        rs = [dict(r, table_state='churned_vacuumed', settled=1, **facts) for r in clean()]
+        self.assertTrue(any('SETTLED WITHOUT A VACUUM' in x for x in problems(rs)))
+
+    def test_leaves_at_every_level_count_once(self):
+        self.assertEqual(collect.churn_facts(self.s, 'tree')['churn_history'], 'ins=4000;upd=0;del=0')
+        self.assertEqual(collect.churn_facts(self.s, 'tree_a')['churn_history'], 'ins=%s;upd=0;del=0' % self.values("SELECT count(*) FROM tree_a")[0][0])
+
+    def test_what_has_no_statistics_has_no_facts_and_what_is_missing_is_an_error(self):
+        self.assertEqual(collect.churn_facts(self.s, 'empty'), {})
+        self.assertEqual(collect.churn_facts(self.s, 'vw'), {})
+        with self.assertRaisesRegex(RuntimeError, 'does not exist'):
+            collect.churn_facts(self.s, 'nosuch')
+
+    LATERAL = 'SELECT d.id, x.created_at FROM twin.lp_dim d LEFT JOIN LATERAL (SELECT created_at FROM twin.lp_ev e WHERE e.dim_a_id = d.id ORDER BY created_at DESC LIMIT 1) x ON true'
+
+    def test_the_plan_of_a_partitioned_btree_twin_names_btree(self):
+        _, rows, err, *_ = self.s.run('EXPLAIN (FORMAT JSON) ' + self.LATERAL)
+        self.assertFalse(err)
+        plan = json.loads('\n'.join(rows))[0]['Plan']
+        am, tables = collect.index_methods(self.s), collect.index_tables(self.s)
+        self.assertEqual(collect.plan_structure(plan, am, 'twin.lp_ev', tables), 'mixed')   # the parent's name alone: the plan names its partitions
+        self.assertEqual(collect.plan_structure(plan, *collect.catalog_of(self.s, 'twin.lp_ev')), 'btree')
+        arm, named = collect.forceable(self.s, collect.Arm('btree'), self.LATERAL, collect.catalog_of(self.s, 'twin.lp_ev'), [])
+        self.assertEqual((arm.arm, named), ('btree', None))
+
+    def test_the_bytes_of_a_partitioned_twin_are_the_sums_over_its_leaves(self):
+        table = int(self.values("SELECT sum(pg_table_size(relid)) FROM pg_partition_tree('twin.lp_ev') WHERE isleaf")[0][0])
+        index = int(self.values("SELECT sum(pg_relation_size(i.indexrelid)) FROM pg_index i JOIN pg_partition_tree('twin.lp_ev') t ON t.relid = i.indrelid WHERE t.isleaf")[0][0])
+        self.assertEqual(collect.structure_bytes(self.s, 'twin.lp_ev', 'btree'), (table, index))
+        self.assertEqual(self.values("SELECT count(*) FROM pg_partition_tree('twin.lp_ev') WHERE isleaf")[0][0], '3')
+        self.assertGreater(index, 0)
+        self.assertEqual(collect.structure_bytes(self.s, 'twin.lp_ev', 'mixed'), (table, None))   # no index is a mixed plan's: not 0 bytes
+
+    def test_the_visible_share_of_a_partitioned_table_is_over_its_leaves_and_unknown_until_counted(self):
+        share = lambda t: self.values("SELECT 100.0 * sum(relallvisible) / sum(relpages) FROM pg_class c JOIN pg_partition_tree('%s') p ON p.relid = c.oid WHERE p.isleaf" % t)[0][0]   # noqa: E731
+        vis = lambda t: collect.table_facts(self.s, t)[0]   # noqa: E731
+        self.assertAlmostEqual(vis('twin.lp_ev'), 100.0)
+        self.assertAlmostEqual(vis('p'), float(share('p')), places=6)   # one leaf vacuumed after the churn: the share of the leaves together, between 0 and 100
+        self.assertTrue(0 < vis('p') < 100)
+        self.assertIsNone(vis('never'))   # a leaf that no VACUUM counted: the table's share is not known
+        self.assertIsNone(vis('raw'))
+        self.assertIsNone(vis('empty'))
+
+    def test_the_bytes_of_a_partitioned_table_are_those_of_its_leaves(self):
+        table = int(self.values("SELECT sum(pg_table_size(relid)) FROM pg_partition_tree('p') WHERE isleaf")[0][0])
+        index = int(self.values("SELECT sum(pg_relation_size(i.indexrelid)) FROM pg_index i JOIN pg_partition_tree('p') t ON t.relid = i.indrelid WHERE t.isleaf")[0][0])
+        self.assertGreater(table, 0)
+        self.assertGreater(index, 0)
+        self.assertEqual(collect.structure_bytes(self.s, 'p', 'heap'), (table, None))
+        self.assertEqual(collect.structure_bytes(self.s, 'p', 'btree'), (table, index))
+        self.assertEqual(collect.structure_bytes(self.s, 'empty', 'btree'), (0, None))   # no leaf, no index: no bytes of storage, and no index to size
+        self.assertEqual(collect.structure_bytes(self.s, 'raw', 'btree')[1], None)   # a table with no b-tree: not a b-tree of 0 bytes
+        plain = int(self.values("SELECT pg_table_size('p_0')")[0][0])
+        self.assertEqual(collect.structure_bytes(self.s, 'p_0', 'heap'), (plain, None))
+
+
+class WriteInventory(unittest.TestCase):
+    """what a table holds, measured, and the harness that declares it held to it (a plain cluster; the instruction count is stubbed: these are about the structures, not the count)"""
+
+    @classmethod
+    def setUpClass(cls):
+        import cluster
+        from duckdb import Session
+        cls.dir, _, cls.port = cluster.start(cls, 'records-inventory.', '-c autovacuum=off -c shared_buffers=32MB')
+        cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
+
+    def run_sql(self, *statements):
+        for q in statements:
+            r = self.s.run(q)
+            self.assertFalse(r[2], (q, r[2]))
+
+    def test_the_structures_of_a_table_are_measured_and_a_constraint_index_is_the_definition(self):
+        self.run_sql('CREATE TABLE inv1 (id int PRIMARY KEY, k int, label text)', 'CREATE TABLE inv0 (id int, k int)',
+                     'CREATE TABLE inv_ref (r int REFERENCES inv1 (id))')   # a foreign key names the primary key's index, it does not add one
+        st = lambda t: collect.table_structures(self.s, t)   # noqa: E731
+        self.assertEqual((st('inv0'), st('inv1'), st('inv_ref')), ('heap', 'constraint,heap', 'heap'))
+        self.run_sql('CREATE INDEX inv1_k ON inv1 (k)')
+        self.assertEqual(st('inv1'), 'btree,constraint,heap')   # an index of its own is a structure
+        self.run_sql('CREATE UNIQUE INDEX inv0_u ON inv0 (id)')
+        self.assertEqual(st('inv0'), 'btree,heap')   # unique, but no constraint: nothing the table needs
+        self.run_sql('CREATE TABLE inv_ref2 (r int REFERENCES inv0 (id))')   # a foreign key can name a unique index that is no constraint: still an index of its own
+        self.assertEqual(st('inv0'), 'btree,heap')
+        self.run_sql('CREATE TABLE inv_self (id int, p int)', 'CREATE UNIQUE INDEX inv_self_u ON inv_self (id)', 'ALTER TABLE inv_self ADD FOREIGN KEY (p) REFERENCES inv_self (id)')
+        self.assertEqual(st('inv_self'), 'btree,heap')   # a foreign key of the table itself names that unique index: it is no constraint's
+        self.run_sql('ALTER TABLE inv0 ADD CONSTRAINT inv0_unique UNIQUE (k)')
+        self.assertEqual(st('inv0'), 'btree,constraint,heap')
+        self.run_sql('CREATE TABLE inv_part (id int PRIMARY KEY, k int) PARTITION BY HASH (id)')
+        self.assertEqual(st('inv_part'), 'constraint,heap')
+        self.assertIsNone(st('no_such_table'))
+        self.assertIsNone(st('a_schema_name_of_a_load'))
+
+    def measure(self, index_sql, structures, arm='heap'):
+        """the records of an INSERT into a table built with a primary key, INDEX_SQL and the structures the harness DECLARES; the table is rebuilt before each repetition"""
+        env = collect.Env('0e767cbf3944', 'test inventory', schema.run_id('0e767cbf3944'), 4.0, reps=3, cool=None, maintenance='disabled')
+
+        def prepare():
+            self.run_sql('DROP TABLE IF EXISTS w', 'CREATE TABLE w (id int PRIMARY KEY, k int, label text)', 'INSERT INTO w SELECT g, g % 10, g::text FROM generate_series(1, 1000) g')
+            self.run_sql(*index_sql)
+        subject = collect.Subject('write', 1000, 'arrival', 'fresh_vacuumed', 'w', kind='load', key='k', keys=10, structures=structures)
+        with patch.object(collect, 'count_instructions', return_value=(1.0, 1.0)), patch.object(collect, 'check_perf_free'):
+            return collect.measure_statement(self.s, 'insert', 'INSERT INTO w SELECT g + 10000, g % 10, g::text FROM generate_series(1, 100) g', subject,
+                                             [collect.Arm(arm, 'plain', settings=[], prepare=prepare, structures=structures)], env, temps=('warm',))
+
+    def test_a_harness_is_held_to_the_structures_it_declares(self):
+        records = self.measure([], 'constraint,heap')
+        self.assertEqual(len(records), 3)
+        self.assertEqual({r['structures'] for r in records}, {'constraint,heap'})
+        self.assertEqual(problems(records), [])
+        # an index nobody listed: the figure is of another table than the one the file says
+        with self.assertRaisesRegex(RuntimeError, 'holds btree,constraint,heap after the statement, the harness declared constraint,heap'):
+            self.measure(['CREATE INDEX w_k ON w (k)'], 'constraint,heap')
+        # an index that was never built (a CREATE INDEX that failed): declared, absent
+        with self.assertRaisesRegex(RuntimeError, 'holds constraint,heap after the statement, the harness declared btree,constraint,heap'):
+            self.measure([], 'btree,constraint,heap', arm='btree')
+
+    def test_an_unrelated_index_the_harness_does_declare_is_still_refused_by_the_checker(self):
+        records = self.measure(['CREATE INDEX w_k ON w (k)'], 'btree,constraint,heap', arm='heap')
+        self.assertTrue(any('OTHER STRUCTURES' in p and 'btree' in p for p in problems(records)), problems(records))
 
 
 @unittest.skipUnless(os.environ.get('RECORDS_HOST'), 'RECORDS_HOST (a socket directory) and RECORDS_PORT name a server with a table t(id, k) with an index on k')
@@ -497,6 +700,24 @@ class Checker(unittest.TestCase):
         self.assertEqual(problems(rs), [])
         rs[0]['picked'] = 1
         self.assertTrue(any('PICKED FLAG' in p and 'no plan the planner chooses' in p for p in problems(rs)), problems(rs))
+
+    def test_the_constraint_index_of_a_table_is_its_definition_and_any_other_index_is_a_structure(self):
+        def writes(own, **kw):
+            return [dict(r, kind='load', picked=0, plan_ms=None, exec_ms=None, structures=own(r['arm']), **kw) for r in clean() if r['mode'] == 'forced']
+        companion = lambda arm: 'constraint,heap' + ('' if arm == 'heap' else ',' + arm)   # noqa: E731
+        self.assertEqual(problems(writes(companion)), [])
+        # an index that nobody needs is a structure of the figure, the b-tree of a primary key or not
+        self.assertTrue(any('OTHER STRUCTURES' in p and 'gin' in p for p in problems(writes(lambda arm: companion(arm) + ',gin'))))
+        self.assertTrue(any('OTHER STRUCTURES' in p and 'btree' in p for p in problems(writes(lambda arm: 'btree,heap' + ('' if arm == 'heap' else ',' + arm) if arm != 'btree' else 'btree,heap'))))
+        # the arms of a comparison hold the same companions: a figure with the primary key beside one without is not a comparison of structures
+        self.assertTrue(any('COMPANION DIFFERS' in p for p in problems(writes(lambda arm: 'heap' if arm == 'heap' else companion(arm)))))
+
+    def test_a_revision_that_is_not_a_commit_is_refused_once(self):
+        rs = [dict(r, tip='unknown') for r in clean()]
+        found = [p for p in problems(rs) if 'TIP UNKNOWN' in p]
+        self.assertEqual(len(found), 1)
+        self.assertIn('"unknown"', found[0])
+        self.assertEqual(problems([dict(r, tip='0e767cbf3944') for r in clean()]), [])
 
     def test_variants_are_tables_with_their_own_heap_order_and_picked_flag(self):
         rs = clean() + [dict(r, variant='sorted', heap_order='sorted', heap_corr=0.99) for r in clean()]

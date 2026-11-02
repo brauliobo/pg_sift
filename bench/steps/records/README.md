@@ -52,7 +52,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `settled_s` | number |  | seconds from the last VACUUM, autovacuum or sift maintenance pass of the table to the start of the arms |
 | `dead_pct` | number |  | dead tuples in percent of live and dead (pg_stat_user_tables) at the start |
 | `tombstone_pct` | number |  | dead rows in percent of the rows of the segments of the sift index (sift.col_segments) at the start, when the table has one |
-| `structures` | text | yes | the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used |
+| `structures` | text | yes | the structures on the table, comma separated and sorted (btree,heap,sift): what was built, not what the arm used; `constraint` stands for the indexes of a primary key or unique constraint, the table's definition, which a write pays for in every arm |
 | `statement` | text | yes | the name of the statement |
 | `sql_hash` | text | yes | hash of the statement text without its white space: one name is one text |
 | `variant` | text | yes | the table the arm ran on when a comparison has several (a heap in arrival order and one sorted by the key, an index built with other options): `main` when there is one; the planner picks within a variant |
@@ -104,6 +104,10 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `maintenance` | text | yes | default, or disabled when a switch that turns the maintenance off is set (autovacuum, sift.col_auto_merge, sift.async_maintenance, a sift.test_* setting) |
 <!-- /columns -->
 
+A harness that declares what the table of a write or a maintenance holds (`Subject.structures`, `Arm.structures`) is held to it: after the statement the library reads the table's indexes, and a run whose table holds something else (a CREATE INDEX that failed, an index nobody listed) raises. An index that backs a primary key or a unique constraint is listed as `constraint`, whatever its access method: it is the table's definition, every write pays for it, and the checker accepts it beside the arm's structure when every write figure of the comparison has it (COMPANION DIFFERS). Any other index, a b-tree too, is a structure of the figure and refuses it (OTHER STRUCTURES). The `tip` of a record is a commit: a tree that is no work tree of its revision names it by hand.
+
+The subject table of a partitioned table has no statistics, storage or access method of its own, so its facts are those of its leaf partitions together: tuples and dead tuples summed, `vacuums` and `autovacuums` the fewest of any leaf, `settled_s` the time since the latest pass of any leaf (empty while a leaf has had none), `tombstone_pct` over the leaves with a sift structure, `table_bytes` and `index_bytes` summed over the leaves. A view, or a partitioned table with no leaf, has no facts.
+
 ## Versions of the schema
 
 A file starts with `#records-schema N` (files before the mark are known by their header). Every version's columns are frozen in `history.py`; columns are only added. A reader upgrades an older file
@@ -133,7 +137,9 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | COLD WITHOUT os_cache_dropped | a cold row says what was emptied |
 | TOO FEW RUNS / DUPLICATE REPETITIONS | at least 3 repetitions of each arm and temperature |
 | (not a refusal) noisy host | a run above 10 points of host pressure carries `noise` = 1 and a cell above it or with a CV over 10% is marked noisy; the report warns when the arms of a comparison were measured under pressure more than 10 points apart. The load of the host is a fact about the run, so it never refuses a file; different data, table state or settings do |
-| OTHER STRUCTURES | a maintenance or load figure is of a table that holds the arm's structure alone |
+| OTHER STRUCTURES | a maintenance or load figure is of a table that holds the arm's structure alone (and `constraint`: the indexes a primary key or unique constraint needs, part of the table's definition) |
+| COMPANION DIFFERS | the write figures of a comparison are not all of a table with a constraint index, or all of one without: the arms would differ in more than their structure |
+| TIP UNKNOWN | the `tip` of a record is not a commit (12 hexadecimal digits) |
 | NO RECORDS | an empty set proves nothing |
 
 ## The imprecisions this prevents
@@ -153,6 +159,8 @@ Each row is a way a reported number was wrong or had to be revised, and the colu
 | the plan the planner picks quoted for an arm it did not run, or two arms that were the same plan | `mode`, `picked`, `structure`: WRONG ARM, PICKED FLAG |
 | a heap meant to be in no order that was clustered by the key | `heap_corr` measured: HEAP ORDER NOT AS DECLARED |
 | a maintenance figure of an arm whose table also kept another index | `structures`: OTHER STRUCTURES |
+| a write cost with the primary key of the table in it, beside one without | `structures`: `constraint`, COMPANION DIFFERS |
+| a record of code nobody can find again | `tip`: TIP UNKNOWN |
 | a baseline file of an older harness compared with a new run | `harness` with the library version and one `run_id` |
 | a number that held for one setting of a structure stated for all | `arm_option` carries the options that changed the structure |
 | one round quoted as the average of twelve | `protocol` |

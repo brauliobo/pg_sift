@@ -74,7 +74,7 @@ def native_arm(session, case, sql, table):
         session.run(st)
     try:
         _, rows, err, *_ = session.run('EXPLAIN (FORMAT JSON) ' + native.rstrip().rstrip(';'))
-        got = 'mixed' if err else collect.plan_structure(json.loads('\n'.join(rows))[0]['Plan'], collect.index_methods(session), table, collect.index_tables(session))
+        got = 'mixed' if err else collect.plan_structure(json.loads('\n'.join(rows))[0]['Plan'], *collect.catalog_of(session, table))
     finally:
         session.run('RESET ALL')
         for st in restore:
