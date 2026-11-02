@@ -331,7 +331,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 
 		LockTuple(rel, tid, ExclusiveLock);
 		sift_tbl_refresh(rel, st);
-		sift_tbl_tomb_sync(rel, st);
+		sift_tomb_sync(rel, &st->tomb);
 		if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 		{
 			UnlockTuple(rel, tid, ExclusiveLock);
@@ -434,8 +434,8 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		ItemPointerSetMovedPartitions(&mp);
 		moved = sift_key_from_tid(&mp);
-		sift_tbl_tomb_append(rel, st, key, GetCurrentTransactionId(), cid,
-							 changingPart ? SIFT_TBL_TOMB_UPDATE : SIFT_TBL_TOMB_DELETE, 0, changingPart ? moved : 0);
+		sift_tomb_append(rel, &st->tomb, key, GetCurrentTransactionId(), cid,
+							 changingPart ? SIFT_TOMB_UPDATE : SIFT_TOMB_DELETE, 0, changingPart ? moved : 0);
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_DELETE, tid, NULL);
 		pgstat_count_heap_delete(rel);
@@ -522,8 +522,8 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, otid, mtup);
 		heap_free_minimal_tuple(mtup);
-		sift_tbl_tomb_append(rel, st, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_UPDATE,
-							 hot ? SIFT_TBL_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
+		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
+							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
 		if (hot)
 			*update_indexes = TU_None;
 		pgstat_count_heap_update(rel, hot, false);
@@ -565,7 +565,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 		if (result != TM_Ok)
 			return result;
 		if (!del.self_locked)
-			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0, 0);
+			sift_tomb_append(rel, &st->tomb, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TOMB_LOCK, 0, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
 			ereport(ERROR,

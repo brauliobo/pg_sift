@@ -25,7 +25,7 @@ static void
 vis_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
 	VisArg	   *v = arg;
-	bool		plain = !sift_tbl_tomb_any(v->st, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
+	bool		plain = !sift_tomb_any(&v->st->tomb, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
 		sift_tbl_vers_sb(v->rel, v->snapshot, v->vers, sb) == SIFT_TBL_VER_ALL;
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
@@ -173,7 +173,7 @@ unit_start(SiftTblGroupScan *g)
 	g->ord = palloc((g->n + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&g->sel, g->ord);
 	MemoryContextSwitchTo(old);
-	g->plain = !sift_tbl_tomb_any(g->st, lo, lo + SB_KEYS - 1) && state == SIFT_TBL_VER_ALL;
+	g->plain = !sift_tomb_any(&g->st->tomb, lo, lo + SB_KEYS - 1) && state == SIFT_TBL_VER_ALL;
 }
 
 /* The version of the row i of the selection: a unit with unfrozen rows that a snapshot does not see whole reads its vectors on the first ask */

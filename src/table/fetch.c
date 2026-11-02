@@ -46,7 +46,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 	f->st = sift_tbl_rel(rel);
 	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
-	sift_tbl_tomb_sync(rel, f->st);
+	sift_tomb_sync(rel, &f->st->tomb);
 	f->fresh = true;
 	return &f->base;
 }
@@ -74,7 +74,7 @@ fetch_version(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	*all_dead = false;
 	PredicateLockRelation(rel, snapshot);
 	if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
-		sift_tbl_tomb_sync(rel, st);
+		sift_tomb_sync(rel, &st->tomb);
 	if (sift_tbl_deleted_by_self(st, snapshot, sift_key_from_tid(tid)))
 		return false;
 	if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
@@ -168,7 +168,7 @@ chain_visible(VblockTest *t, uint64 key)
 {
 	uint64		succ;
 
-	while (t->chain && t->st->hotm != NULL && sift_tbl_hot_next(t->st, key, &succ))
+	while (t->chain && t->st->tomb.hotm != NULL && sift_tbl_hot_next(t->st, key, &succ))
 	{
 		ItemPointerData tid;
 		SiftTblRowVer rv;
@@ -247,7 +247,7 @@ sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, Bl
 				want = 0;
 				for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 					want += sift_pc64(offmask[wd]);
-				if (sift_tbl_deleted_offsets(t.st, snapshot, vblock, 3 * want, deleted))
+				if (sift_tomb_deleted_offsets(&t.st->tomb, snapshot, vblock, 3 * want, deleted))
 				{
 					for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 					{
@@ -285,8 +285,8 @@ sift_tbl_has_chains(Relation rel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
-	sift_tbl_tomb_sync(rel, st);
-	return st->hotm != NULL;
+	sift_tomb_sync(rel, &st->tomb);
+	return st->tomb.hotm != NULL;
 }
 
 void
@@ -295,7 +295,7 @@ sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 
 	SiftTblRel *st = sift_tbl_rel(rel);
 	uint64		roots[SIFT_OFFMASK_WORDS] = {0};
 
-	sift_tbl_hot_offsets(st, blk, pos, roots);
+	sift_tomb_hot_offsets(&st->tomb, blk, pos, roots);
 	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 		for (uint64 m = roots[wd] & offmask[wd]; m; m &= m - 1)
 		{
@@ -316,7 +316,7 @@ sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapsho
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true, false);
 }
 
@@ -335,19 +335,19 @@ sift_tbl_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
 	SiftTblRowVer rv;
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	for (;;)
 	{
-		const SiftTblTomb *e;
+		const SiftTomb *e;
 		int			n;
 		uint64		succ = 0;
 
 		if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 			return;
 		sift_tbl_free_row(&rv);
-		if ((e = sift_tbl_tomb_find(st, rv.key, &n)) != NULL)
+		if ((e = sift_tomb_find(&st->tomb, rv.key, &n)) != NULL)
 			for (int i = 0; i < n; i++)
-				if (e[i].kind == SIFT_TBL_TOMB_UPDATE &&
+				if (e[i].kind == SIFT_TOMB_UPDATE &&
 					(TransactionIdIsCurrentTransactionId(e[i].xid) ||
 					 (!XidInMVCCSnapshot(e[i].xid, scan->rs_snapshot) && TransactionIdDidCommit(e[i].xid))))
 					succ = e[i].succ;
@@ -365,7 +365,7 @@ sift_tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot s
 	bool		ok;
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	if (!sift_tbl_fetch_lazy(rel, st, &slot->tts_tid, &rv))
 		return false;
 	ok = sift_tbl_visible(rel, st, snapshot, &rv);
@@ -415,7 +415,7 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 				freed = 0;
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	if (!delstate->bottomup)
 		qsort(delstate->deltids, delstate->ndeltids, sizeof(TM_IndexDelete), deltid_cmp);
 	for (int i = 0; i < delstate->ndeltids; i++)
@@ -477,7 +477,7 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
 
 	if (n < 0)
 	{
-		sift_tbl_hot_offsets(s->st, vblock, NULL, roots);
+		sift_tomb_hot_offsets(&s->st->tomb, vblock, NULL, roots);
 		cnt = SIFT_TBL_MAX_OFF;
 	}
 	for (int i = 0; i < cnt; i++)
@@ -486,7 +486,7 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
 		uint64		key = ((uint64) vblock << 16) | off;
 		uint64		succ;
 
-		if ((n < 0 && !sift_col_bit_test(roots, off - 1)) || sift_col_bit_test(emitted, off - 1) || sift_tbl_hot_member(s->st, key))
+		if ((n < 0 && !sift_col_bit_test(roots, off - 1)) || sift_col_bit_test(emitted, off - 1) || sift_tomb_hot_member(&s->st->tomb, key))
 			continue;
 		while (sift_tbl_hot_next(s->st, key, &succ))
 		{
@@ -529,7 +529,7 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 	{
 		SiftTblRowVer rv = {.key = sift_key_from_tid(&row[i]->t_self),.wbuf = false,.xmin = xmin[i],.cmin = cmin[i]};
 
-		if ((!chain || !sift_tbl_hot_member(s->st, rv.key)) && sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+		if ((!chain || !sift_tomb_hot_member(&s->st->tomb, rv.key)) && sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 		{
 			bitmap_add(s, row[i]);
 			sift_col_bit_set(emitted, ItemPointerGetOffsetNumberNoCheck(&row[i]->t_self) - 1);
@@ -568,7 +568,7 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 			continue;
 		ItemPointerSet(&tid, vblock, off);
 		sift_tbl_rowver(&rv, &tid, rec);
-		if ((chain && sift_tbl_hot_member(s->st, rv.key)) || !sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
+		if ((chain && sift_tomb_hot_member(&s->st->tomb, rv.key)) || !sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))
 			continue;
 		sift_tbl_rowver_tuple(rel, &rv, rec, gen, &tid);
 		bitmap_add(s, rv.tuple);

@@ -105,13 +105,13 @@ chain_dead(const SiftTblRel *st, const VacState *v, uint64 *key)
  * a frozen xid (a log entry is read as the update of a transaction every snapshot sees, and holds no xid back)
  */
 static bool
-tomb_keep(SiftTblTomb *e, void *arg)
+tomb_keep(SiftTomb *e, void *arg)
 {
 	VacState   *v = arg;
 
 	if (sift_tbl_xid_aborted(e->xid))
 		return false;
-	if (e->kind == SIFT_TBL_TOMB_LOCK)
+	if (e->kind == SIFT_TOMB_LOCK)
 	{
 		if (TransactionIdIsInProgress(e->xid) || TransactionIdIsCurrentTransactionId(e->xid))
 		{
@@ -124,7 +124,7 @@ tomb_keep(SiftTblTomb *e, void *arg)
 	{
 		uint64		next = e->succ;
 
-		if (e->kind != SIFT_TBL_TOMB_UPDATE || !(e->flags & SIFT_TBL_TOMB_HOT) || sift_tbl_hot_member(v->st, e->key) || chain_dead(v->st, v, &next))
+		if (e->kind != SIFT_TOMB_UPDATE || !(e->flags & SIFT_TOMB_HOT) || sift_tomb_hot_member(&v->st->tomb, e->key) || chain_dead(v->st, v, &next))
 			return false;
 		e->succ = next;
 		e->xid = FrozenTransactionId;
@@ -213,14 +213,14 @@ in_wbuf(const SiftTblRel *st, uint64 vblock)
  * superblocks. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
  */
 static void
-group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, uint32 *lo, uint32 *hi)
+group_dead(const SiftTblRel *st, VacState *v, const SiftTomb *a, uint32 n, uint32 *lo, uint32 *hi)
 {
 	for (uint32 i = 0; i < n; i++)
 	{
-		const SiftTblTomb *e = &a[i];
+		const SiftTomb *e = &a[i];
 		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
 
-		if (e->kind == SIFT_TBL_TOMB_LOCK || in_wbuf(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
+		if (e->kind == SIFT_TOMB_LOCK || in_wbuf(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
 			continue;
 		if (!TransactionIdPrecedes(e->xid, v->oldest))
 		{
@@ -229,7 +229,7 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 			continue;
 		}
 		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
-		if (e->kind == SIFT_TBL_TOMB_UPDATE && (e->flags & SIFT_TBL_TOMB_HOT))
+		if (e->kind == SIFT_TOMB_UPDATE && (e->flags & SIFT_TOMB_HOT))
 		{
 			uint64		next = e->succ;
 
@@ -281,7 +281,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	uint32		sb_lo = PG_UINT32_MAX,
 				sb_hi = 0;
 
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	for (int i = 0; i < st->nwbuf; i++)
 	{
 		SiftTblSeg	seg = st->wbuf[i];
@@ -294,8 +294,8 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 			pass_delay();
 		}
 	}
-	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
-	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
+	group_dead(st, v, st->tomb.ents, st->tomb.nents, &sb_lo, &sb_hi);
+	group_dead(st, v, st->tomb.recent, st->tomb.nrecent, &sb_lo, &sb_hi);
 	v->dead_runs.mcxt = CurrentMemoryContext;
 	sift_tbl_aborted_runs(rel, st, &v->dead_runs, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);
@@ -339,17 +339,17 @@ tomb_changes(SiftTblRel *st, VacState *v)
 {
 	bool		changes = false;
 
-	for (uint32 i = 0; i < st->nents; i++)
+	for (uint32 i = 0; i < st->tomb.nents; i++)
 	{
-		TransactionId xid = st->ents[i].xid;
+		TransactionId xid = st->tomb.ents[i].xid;
 
-		changes |= !tomb_keep(&st->ents[i], v) || st->ents[i].xid != xid;
+		changes |= !tomb_keep(&st->tomb.ents[i], v) || st->tomb.ents[i].xid != xid;
 	}
-	for (uint32 i = 0; i < st->nrecent; i++)
+	for (uint32 i = 0; i < st->tomb.nrecent; i++)
 	{
-		TransactionId xid = st->recent[i].xid;
+		TransactionId xid = st->tomb.recent[i].xid;
 
-		changes |= !tomb_keep(&st->recent[i], v) || st->recent[i].xid != xid;
+		changes |= !tomb_keep(&st->tomb.recent[i], v) || st->tomb.recent[i].xid != xid;
 	}
 	return changes;
 }
@@ -416,7 +416,10 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) merge_steps(rel, st, v->oldest);
 	sift_tbl_net_refresh(rel, st);
 	if (tomb_changes(st, v))
-		(void) sift_tbl_tomb_rewrite(rel, st, tomb_keep, v);
+	{
+		(void) sift_tomb_rewrite(rel, &st->tomb, tomb_keep, v);
+		sift_tbl_refresh(rel, st);
+	}
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
 	if (truncate)
@@ -526,9 +529,9 @@ clear_removable(Relation rel, SiftTblRel *st, VacState *v)
 				sb_hi = 0;
 	int64		removed = 0;
 
-	sift_tbl_tomb_sync(rel, st);
-	group_dead(st, v, st->ents, st->nents, &sb_lo, &sb_hi);
-	group_dead(st, v, st->recent, st->nrecent, &sb_lo, &sb_hi);
+	sift_tomb_sync(rel, &st->tomb);
+	group_dead(st, v, st->tomb.ents, st->tomb.nents, &sb_lo, &sb_hi);
+	group_dead(st, v, st->tomb.recent, st->tomb.nrecent, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);
 	if (sb_lo <= sb_hi)
 	{

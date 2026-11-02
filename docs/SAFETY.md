@@ -116,7 +116,7 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P2-3 | bm25/rank.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
 | P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream. The pre-aggregate sums and cubes of col/seg/seg.c are compared without a wrapping sum; every read is bounded by `sift_sr_get` |
 | P2-5 | core/live.c:sift_live_clear | page index and write unchecked (Assert only) |
-| P2-6 | table/tomb.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
+| P2-6 | core/tomb.c:sift_tomb_sync | `nent` unchecked; `next` chain can cycle |
 | P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in. Done: `sift_cc_open_rows` |
 | P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
 | P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed. Done for the count and the raw form (`sift_cc_decode_strs` takes the expected n); `total` of a compressed list stays bounded by 2^31 and the allocation limit |

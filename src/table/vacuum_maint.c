@@ -72,12 +72,12 @@ removable_tombs(Relation rel, SiftTblRel *st)
 	TransactionId horizon = GetOldestNonRemovableTransactionId(rel);
 	uint64		n = 0;
 
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
-	for (uint32 i = 0; i < st->nents; i++)
-		n += st->ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->ents[i].xid, horizon);
-	for (uint32 i = 0; i < st->nrecent; i++)
-		n += st->recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->recent[i].xid, horizon);
+	for (uint32 i = 0; i < st->tomb.nents; i++)
+		n += st->tomb.ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.ents[i].xid, horizon);
+	for (uint32 i = 0; i < st->tomb.nrecent; i++)
+		n += st->tomb.recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.recent[i].xid, horizon);
 	return n;
 }
 
@@ -154,7 +154,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	if (!st->initialized)
 		return;
 	scans = table_scans(rel);
-	entries = sift_tbl_tomb_entries(rel, st);
+	entries = sift_tomb_entries(rel, &st->dir);
 	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it */
 	if (dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
 		tombs = removable_tombs(rel, st);
@@ -283,7 +283,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 					sift_tbl_maintain(rel, true, true, r);
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
-				sift_tbl_tomb_sync(rel, st);
+				sift_tomb_sync(rel, &st->tomb);
 				worker_tombs = removable_tombs(rel, st);
 				worker_scans = table_scans(rel);
 			}

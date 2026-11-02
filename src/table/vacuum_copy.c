@@ -116,7 +116,7 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 	sift_tbl_layout_adopt(NewTable, new_st, OldTable);
 	sift_tbl_ensure_init(NewTable);
 	sift_tbl_refresh(OldTable, c.st);
-	sift_tbl_tomb_sync(OldTable, c.st);
+	sift_tomb_sync(OldTable, &c.st->tomb);
 	bulk = sift_tbl_bulk_begin(NewTable, new_st);
 	if (OldIndex != NULL && OldIndex->rd_rel->relam == BTREE_AM_OID)
 		copy_sorted(OldTable, OldIndex, bulk, &c);
@@ -162,7 +162,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 		CHECK_FOR_INTERRUPTS();
 		state->htups += 1;
 		/* the entries of a chain are at its root, where the other indexes have them */
-		while (sift_tbl_hot_pred(st, key, &pred))
+		while (sift_tomb_hot_pred(&st->tomb, key, &pred))
 			key = pred;
 		sift_key_to_tid(key, &tid);
 		if (tid_has(&tid, &have))

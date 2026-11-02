@@ -107,7 +107,7 @@ scan_open_state(Relation rel, SiftTblScan *s)
 	SiftTblRel *st = s->st;
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	if (s->par)
 		s->dir = &s->par->dir;
 	else

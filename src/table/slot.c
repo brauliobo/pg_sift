@@ -129,14 +129,14 @@ sift_slot_getsomeattrs(TupleTableSlot *slot, int natts)
 }
 
 /* The last tombstone of the row (a deleter, an updater or a locker, aborted or not, as the heap keeps the xmax of an aborted deleter) */
-static const SiftTblTomb *
+static const SiftTomb *
 row_tomb(Relation rel, SiftTblRel *st, ItemPointer tid)
 {
 	int			n;
-	const SiftTblTomb *e;
+	const SiftTomb *e;
 
-	sift_tbl_tomb_sync(rel, st);
-	e = sift_tbl_tomb_find(st, sift_key_from_tid(tid), &n);
+	sift_tomb_sync(rel, &st->tomb);
+	e = sift_tomb_find(&st->tomb, sift_key_from_tid(tid), &n);
 	return e ? &e[n - 1] : NULL;
 }
 
@@ -151,7 +151,7 @@ sift_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	Relation	rel;
 	SiftTblRel *st;
 	SiftTblRowVer rv;
-	const SiftTblTomb *tomb;
+	const SiftTomb *tomb;
 	Datum		result;
 
 	if (attnum > MinTransactionIdAttributeNumber || attnum < MaxCommandIdAttributeNumber)
