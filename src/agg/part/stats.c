@@ -47,6 +47,10 @@ sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves)
 		p->leaf[i].ndistinct = s->ndistinct[i];
 		p->leaf[i].min = s->min[i];
 		p->leaf[i].max = s->max[i];
+		p->leaf[i].gord_cover = s->gord_cover[i];
+		p->leaf[i].gord_coll = s->gord_coll[i];
+		p->leaf[i].gord_group = s->gord_group[i];
+		p->leaf[i].gord_bygroup = s->gord_bygroup[i];
 		p->leaf[i].ovf = s->ovf[i];
 		p->leaf[i].nokinds = s->nokinds[i];
 		p->leaf[i].jnull = s->jnull[i];
@@ -59,6 +63,7 @@ void
 sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 {
 	double		w = tot->nrows + s->nrows;
+	bool		first = tot->nrows == 0;
 
 	if (w > 0)
 	{
@@ -85,6 +90,14 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 		{
 			tot->min[i] = Min(tot->min[i], s->leaf[i].min);
 			tot->max[i] = Max(tot->max[i], s->leaf[i].max);
+		}
+		/* the order arrays of the partitions that hold rows, together: the share of the values they keep, the collation and the group they share (UINT32_MAX and -1 when they differ), and whether all of them list the rows group after group (gord_bygroup) */
+		if (s->nrows > 0)
+		{
+			tot->gord_cover[i] = (tot->gord_cover[i] * tot->nrows + s->leaf[i].gord_cover * s->nrows) / w;
+			tot->gord_coll[i] = first || tot->gord_coll[i] == s->leaf[i].gord_coll ? s->leaf[i].gord_coll : UINT32_MAX;
+			tot->gord_group[i] = first || tot->gord_group[i] == s->leaf[i].gord_group ? s->leaf[i].gord_group : -1;
+			tot->gord_bygroup[i] = (first || tot->gord_bygroup[i]) && s->leaf[i].gord_bygroup;
 		}
 		tot->ndistinct[i] = Max(tot->ndistinct[i], s->leaf[i].ndistinct);
 		tot->ovf[i] |= s->leaf[i].ovf;

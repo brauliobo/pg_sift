@@ -149,6 +149,14 @@ mark_level_params(Node *n, LevelParams *lp)
 	return expression_tree_mutator(n, mark_level_params, lp);
 }
 
+Node *
+agg_mark_level_params(PlannerInfo *root, Node *n)
+{
+	LevelParams lp = {root, NIL};
+
+	return mark_level_params(n, &lp);
+}
+
 /* topn_key for a key after the first, whose failure is not the plan's: the Sort above takes it */
 static bool
 topn_probe(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs)
@@ -381,7 +389,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	}
 	/* the scan starts over for each value of the parameters: its other inputs (joined plans, partitions, window functions, expressions) are read once */
 	if (c->level_params != NIL &&
-		(c->joins != NIL || c->nparts > 0 || parse->hasWindowFuncs || s->naggs > 0 || has_exec_param_walker((Node *) root->processed_tlist, NULL)))
+		(c->joins != NIL || !topn_one_leaf(c) || parse->hasWindowFuncs || s->naggs > 0 || has_exec_param_walker((Node *) root->processed_tlist, NULL)))
 	{
 		agg_refused_on(TOPN_SHAPE, "a condition reads a parameter that an enclosing query sets, and the scan has joins, partitions, window functions or expressions of it");
 		return;

@@ -466,6 +466,19 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	/* past the cap of the heap only a walk that throws the OFFSET away unread gives the rows */
 	if (!t->gok || t->nogord || (t->all && (t->skip == 0 || t->nkey > 1 || t->gwant == 0)))
 		return false;
+	/* a partitioned scan that reads one partition walks that partition's array and fetches from its heap; more than one has no array to walk */
+	if (t->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		t->gpart = sift_aggpart_only(src);
+		if (t->gpart < 0)
+		{
+			t->gpart = 0;
+			return false;
+		}
+		src = sift_aggpart_source(src, t->gpart);
+		if (t->pf[t->gpart].fetch == NULL)
+			fetch_begin(t, t->gpart);
+	}
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
 	if (cond != NULL && t->gtext)
 	{
@@ -510,13 +523,13 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	t->gtried = t->gpass = 0;
 	if (loose)
 	{
-		Relation	rel = t->pf[0].fetch->rel;
+		Relation	rel = t->pf[t->gpart].fetch->rel;
 		BlockNumber allvis;
 
-		t->gbudget = Max(4 * (int64) t->limit, t->pf[0].nblocks / GORD_BUDGET_DIV);
+		t->gbudget = Max(4 * (int64) t->limit, t->pf[t->gpart].nblocks / GORD_BUDGET_DIV);
 		visibilitymap_count(rel, &allvis, NULL);
-		t->gdirty = Max((int64) t->pf[0].nblocks - allvis, 0);
-		t->grpp = rel->rd_rel->reltuples > 0 && t->pf[0].nblocks > 0 ? rel->rd_rel->reltuples / t->pf[0].nblocks : 100;
+		t->gdirty = Max((int64) t->pf[t->gpart].nblocks - allvis, 0);
+		t->grpp = rel->rd_rel->reltuples > 0 && t->pf[t->gpart].nblocks > 0 ? rel->rd_rel->reltuples / t->pf[t->gpart].nblocks : 100;
 		if (sift_topn_gbudget > 0)
 			t->gbudget = sift_topn_gbudget, t->gdirty = 0;
 	}

@@ -89,10 +89,17 @@ part_next(void *impl, SiftSrcUnit *unit)
 const SiftSrcDict *
 presented(PartSource *ps, int slot, const SiftSrcDict *d)
 {
-	PartId	   *m = &ps->id[slot];
+	PartId	   *m;
 
 	if (d == NULL)
 		return NULL;
+	/* 14 kB of slots for the dictionaries of the leaves, histograms and rollups, made by the first read of one: a top-N that walks an order array reads none */
+	if (ps->id == NULL)
+	{
+		ps->id = MemoryContextAllocZero(ps->mcxt, NSLOTS(ps->nleaves) * sizeof(PartId));
+		ps->dict = MemoryContextAllocZero(ps->mcxt, NSLOTS(ps->nleaves) * sizeof(SiftSrcDict));
+	}
+	m = &ps->id[slot];
 	if (m->child != ps->cur + 1 || m->in != d->id)
 	{
 		m->child = ps->cur + 1;
@@ -227,6 +234,55 @@ sift_aggpart_heap(SiftSrcSource *src, int i)
 	if (ps->heap[i] == NULL)
 		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
 	return ps->heap[i];
+}
+
+/* every live column of a keeps its name at its attribute number in b: what a test built on the attribute numbers of a reads in b too */
+static bool
+same_attnos(Relation a, Relation b)
+{
+	TupleDesc	da = RelationGetDescr(a),
+				db = RelationGetDescr(b);
+
+	if (db->natts < da->natts)
+		return false;
+	for (int i = 0; i < da->natts; i++)
+	{
+		Form_pg_attribute x = TupleDescAttr(da, i),
+					y = TupleDescAttr(db, i);
+
+		if (!x->attisdropped && (y->attisdropped || strcmp(NameStr(x->attname), NameStr(y->attname)) != 0))
+			return false;
+	}
+	return true;
+}
+
+int
+sift_aggpart_only(SiftSrcSource *src)
+{
+	PartSource *ps = src->impl;
+	int			only = -1;
+
+	for (int i = 0; i < ps->n; i++)
+	{
+		if (ps->skip != NULL && ps->skip[i])
+			continue;
+		if (only >= 0)
+			return -1;
+		only = i;
+	}
+	if (only <= 0)
+		return only;
+	open_part(ps, only);
+	return same_attnos(ps->heap[0], ps->heap[only]) ? only : -1;
+}
+
+SiftSrcSource *
+sift_aggpart_source(SiftSrcSource *src, int i)
+{
+	PartSource *ps = src->impl;
+
+	open_part(ps, i);
+	return ps->src[i];
 }
 
 /*

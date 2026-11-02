@@ -22,7 +22,7 @@
 static uint32
 gord_pending(SiftTopN *t)
 {
-	TopFetch   *f = &t->pf[0];
+	TopFetch   *f = &t->pf[t->gpart];
 	uint32		n,
 				rows = 0;
 	const SiftGPend *pend = sift_gord_pending(t->go, &n);
@@ -75,7 +75,7 @@ gord_skip(SiftTopN *t)
 static bool
 gord_next(SiftTopN *t, TupleTableSlot *slot)
 {
-	TopFetch   *f = &t->pf[0];
+	TopFetch   *f = &t->pf[t->gpart];
 	int64		key;
 	bool		isnull;
 	ItemPointerData tid;

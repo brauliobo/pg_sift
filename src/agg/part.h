@@ -49,6 +49,14 @@ extern int	sift_aggpart_count(SiftSrcSource *src);
 extern int	sift_aggpart_current(SiftSrcSource *src);
 extern Relation sift_aggpart_heap(SiftSrcSource *src, int i);
 
+/*
+ * The one partition the scan reads (pruning dropped the others), whose own source then answers what the partitioned one cannot (the global order of a key):
+ * its number, or -1 when the scan reads none or several, or the partition has other attribute numbers than the first for the columns of the table (the top-N
+ * builds its tests from the first's; the planner has seen that the partitions share a layout). The source of partition i is opened here.
+ */
+extern int	sift_aggpart_only(SiftSrcSource *src);
+extern SiftSrcSource *sift_aggpart_source(SiftSrcSource *src, int i);
+
 /* Planner: do two layouts read the same leaves of the same columns (a column of a partition has the attribute number the caller translated to)? */
 extern bool sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b);
 
@@ -71,8 +79,12 @@ typedef struct SiftPartStats
 					roll_miss,
 					ndistinct,
 					min,
-					max;
-		bool		ovf,
+					max,
+					gord_cover;
+		uint32		gord_coll;
+		int			gord_group;
+		bool		gord_bygroup,
+					ovf,
 					nokinds,
 					jnull;
 	}			leaf[FLEXIBLE_ARRAY_MEMBER];

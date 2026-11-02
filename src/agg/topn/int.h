@@ -261,6 +261,7 @@ struct SiftTopN
 	Relation	rel;			/* the table the rows are fetched from: partitioned, or the heap */
 	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
+	int			gpart;			/* the partition whose heap the walk of the global order fetches from: the only one a partitioned scan reads (sift_aggpart_only), else 0 */
 	int64		skipped;
 	bool		skip_tried;		/* the global order was asked to take the OFFSET off its front (sift_gord_skip) */
 	int64		bulk;			/* ... and the rows it took, which go out as the rows the Limit throws away, with no entry read */

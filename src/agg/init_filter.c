@@ -242,7 +242,7 @@ part_fold(Node *n, AggExec *ex)
 		return n;
 	if (contain_var_clause(n))
 		return expression_tree_mutator(n, part_fold, ex);
-	e = ExecInitExpr((Expr *) n, EXPR_PARENT(ex));
+	e = operand_state(ex, n);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	get_typlenbyval(exprType(n), &len, &byval);
 	return (Node *) makeConst(exprType(n), exprTypmod(n), exprCollation(n), len, isnull ? (Datum) 0 : datumCopy(d, byval, len), isnull, byval);

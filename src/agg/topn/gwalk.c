@@ -147,7 +147,7 @@ gord_keys_read(const SiftTopN *t, GRow *r, const int64 *val, const uint8 *st, in
 static bool
 gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 {
-	TopFetch   *f = &t->pf[0];
+	TopFetch   *f = &t->pf[t->gpart];
 	int			gstart = t->gqn;
 	bool		thrown = t->gbulk + t->gqn + g->n <= t->skip;
 	int64	   *val = NULL;
@@ -457,7 +457,7 @@ gord_prep(SiftTopN *t)
 bool
 gord_probe(SiftTopN *t)
 {
-	TopFetch   *f = &t->pf[0];
+	TopFetch   *f = &t->pf[t->gpart];
 	uint32		n = 0;
 	bool		cut;
 	int64		key;

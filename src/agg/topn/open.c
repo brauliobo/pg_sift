@@ -320,7 +320,7 @@ numeric_gkey(int scale, Datum d)
 static bool
 order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 {
-	if (t->nkey > TOP_GKEYS || lay->is_table || heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	if (t->nkey > TOP_GKEYS || lay->is_table)
 		return false;
 	for (int j = 0; j < t->nkey; j++)
 	{

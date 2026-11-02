@@ -1,8 +1,8 @@
 -- The newest row of each tenant (LATERAL .. ORDER BY ts DESC LIMIT 1) over a table partitioned by month: PostgreSQL read every partition and sorted for each tenant, 154,301 buffers
 -- for 100 tenants of 100,000 rows in 12 partitions (0.36 s). The query is planned as one top-N for each partition, the partitions in the order of the sort when the first
 -- ORDER BY column is the key of a range partitioning (the later ones are never executed once the first answers), merged by a Merge Append for another order, and chosen by cost.
--- Over a hash partitioning that the query pins to the value of the outer row (e.tenant_id = d.id) each partition's top-N sits under a one-time filter that tests the value is in the
--- partition, so one runs for a row; a b-tree on the partitions keeps PostgreSQL's pruned Merge Append.
+-- Over a hash partitioning that the query pins to the value of the outer row (e.tenant_id = d.id) there is no order to merge: one scan of the table keeps the partition the value belongs
+-- to and walks its order array (agg_topn_part_leaf); a b-tree on the partitions keeps PostgreSQL's pruned Merge Append.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

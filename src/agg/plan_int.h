@@ -316,6 +316,8 @@ extern bool null_input_param(Node *n);
 extern bool level_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
+/* n with the Params an enclosing query level sets for each row it passes down marked as constants the scan reads when it starts (SIFT_AGG_LEVEL_LOC) */
+extern Node *agg_mark_level_params(PlannerInfo *root, Node *n);
 extern bool pseudo_const(Node *n);
 
 extern Node *strip_relabel(Node *n);
