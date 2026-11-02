@@ -1,7 +1,7 @@
 -- The write buffer of a text column is sorted for the global order like a segment's entries, whatever its size (here 6,000 rows): under a collation that
 -- orders by bytes its rows are cut into ranges by their first 8 bytes and only the ranges a read reaches are sorted. The strings share their first 8 bytes ('customer-...'), are shorter than 8,
 -- hold accents (bytes past 0x7f), repeat, are empty or NULL. The answers are the heap's, in both directions, NULLS FIRST and LAST, with OFFSET and bounds, after rows of the buffer are deleted,
--- updated and rolled back, and after a promotion. A column under a locale (en-x-icu) sorts its buffer whole, up to the old limit: its answers are the heap's too.
+-- updated and rolled back, and after a promotion. A column under a locale (en-x-icu) sorts its buffer whole up to 16,384 rows (more reads the units): its answers are the heap's too.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
@@ -50,6 +50,11 @@ SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
 INSERT INTO tx SELECT 50000 + i, tx_str(i * 13), tx_str(i * 17), 0 FROM generate_series(1, 5000) i;
 ANALYZE tx;
+SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+-- a buffer past the limit of a locale column: the units answer, the answers are the heap's
+INSERT INTO tx SELECT 100000 + i, tx_str(i * 19), tx_str(i * 23), 0 FROM generate_series(1, 17000) i;
+ANALYZE tx;
+SELECT sum(rows) > 16384 AS buffer_over_the_locale_limit FROM sift.col_segments('tx_i') WHERE kind = 'buffer';
 SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT sift.col_verify('tx_i');
 

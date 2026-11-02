@@ -1,7 +1,7 @@
 -- The write buffer of a text column is sorted for the global order like a segment's entries, whatever its size (here 6,000 rows): under a collation that
 -- orders by bytes its rows are cut into ranges by their first 8 bytes and only the ranges a read reaches are sorted. The strings share their first 8 bytes ('customer-...'), are shorter than 8,
 -- hold accents (bytes past 0x7f), repeat, are empty or NULL. The answers are the heap's, in both directions, NULLS FIRST and LAST, with OFFSET and bounds, after rows of the buffer are deleted,
--- updated and rolled back, and after a promotion. A column under a locale (en-x-icu) sorts its buffer whole, up to the old limit: its answers are the heap's too.
+-- updated and rolled back, and after a promotion. A column under a locale (en-x-icu) sorts its buffer whole up to 16,384 rows (more reads the units): its answers are the heap's too.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET sift.async_maintenance = off;
@@ -42,8 +42,8 @@ SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
  c   | global order |   160
- l   | global order |    16
- l   | units        |   144
+ l   | global order |    68
+ l   | units        |    92
 (3 rows)
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
@@ -65,8 +65,8 @@ SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
 -----+--------------+-------
  c   | global order |   150
  c   | units        |    10
- l   | global order |    16
- l   | units        |   144
+ l   | global order |    66
+ l   | units        |    94
 (4 rows)
 
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
@@ -82,9 +82,26 @@ SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
 -----+--------------+-------
  c   | global order |   150
  c   | units        |    10
- l   | global order |    16
- l   | units        |   144
+ l   | global order |    67
+ l   | units        |    93
 (4 rows)
+
+-- a buffer past the limit of a locale column: the units answer, the answers are the heap's
+INSERT INTO tx SELECT 100000 + i, tx_str(i * 19), tx_str(i * 23), 0 FROM generate_series(1, 17000) i;
+ANALYZE tx;
+SELECT sum(rows) > 16384 AS buffer_over_the_locale_limit FROM sift.col_segments('tx_i') WHERE kind = 'buffer';
+ buffer_over_the_locale_limit 
+------------------------------
+ t
+(1 row)
+
+SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+ col |    result    | count 
+-----+--------------+-------
+ c   | global order |   150
+ c   | units        |    10
+ l   | units        |   160
+(3 rows)
 
 SELECT sift.col_verify('tx_i');
  col_verify 
