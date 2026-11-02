@@ -187,7 +187,7 @@ SELECT sift_count('news', 'power AND plant');
 
 ## Operations and limits
 
-- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `merge_fanin` defaults to 4 (8 before 3.8): an index that takes batches keeps 4.6 segments on average instead of 6.5 and reads 4 to 10% fewer instructions and 13% fewer cold MB, for 37% more merge time and 11% more WAL while it ingests (`ALTER INDEX .. SET (merge_fanin = 8)` keeps the old policy); `sift_table` is tuned with settings (`sift.table_*`), not per table.
+- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `merge_fanin` defaults to 4 (8 before 4.0): an index that takes batches keeps 4.6 segments on average instead of 6.5 and reads 4 to 10% fewer instructions and 13% fewer cold MB, for 37% more merge time and 11% more WAL while it ingests (`ALTER INDEX .. SET (merge_fanin = 8)` keeps the old policy); `sift_table` is tuned with settings (`sift.table_*`), not per table.
 - **Maintenance** is on by default: a background worker (`sift.async_maintenance`) promotes write buffers and merges segments, `sift.col_auto_merge` vacuums and merges a `sift_col` index after churn, `sift.table_auto_defrag` clears the dead rows of a `sift_table`; VACUUM clears dead rows as usual.
 - **Large `work_mem` and unusual planner costs:** a `seq_page_cost` above `random_page_cost` moves the planner's choice between the scan and the normal plan most; the results are the same as the normal plan's either way.
 - **Inspection:** `sift.index_info`, `sift.segments` and `sift.verify`.
@@ -200,7 +200,6 @@ SELECT sift_count('news', 'power AND plant');
 [^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).
 
 <!-- sift-reference:start -->
-
 ## SQL reference
 
 Schema `sift` has 55 functions, 5 views, 1 table, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.

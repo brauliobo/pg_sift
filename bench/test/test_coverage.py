@@ -26,7 +26,7 @@ class Tree:
         self.git('init', '-q', '-b', 'main')
         self.git('config', 'user.email', 't@example.org')
         self.git('config', 'user.name', 't')
-        self.write('pg_sift.control', "default_version = '3.8'\n")
+        self.write('pg_sift.control', "default_version = '4.0'\n")
         self.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n## 3.7.0\n')
         self.write('bench/cases.tsv', '# registry\n')
         self.write('bench/results/cases.tsv', '# results\n' + RESULT_HEAD)
@@ -58,7 +58,7 @@ class Tree:
         self.append('bench/cases.tsv', '\t'.join([cid, phrase, 'orders', 'default', 'Top-N', 'native', '-', 'ms', block, 'no', peers]) + '\n')
         self.write('bench/cases/%s.sql' % cid, '-- ' + cid + '\n--@ pg\nSELECT 1;\n')
 
-    def rows(self, cid, arms, version='3.8', file='cases', value='4.0'):
+    def rows(self, cid, arms, version='4.0', file='cases', value='4.0'):
         for arm in arms:
             self.append('bench/results/%s.tsv' % file, '\t'.join([version, cid, arm, 'ms', value, '', '', '3', '', '']) + '\n')
 

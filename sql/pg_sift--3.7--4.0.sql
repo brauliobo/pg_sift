@@ -1,4 +1,4 @@
-\echo Use "ALTER EXTENSION pg_sift UPDATE TO '3.8'" to load this file. \quit
+\echo Use "ALTER EXTENSION pg_sift UPDATE TO '4.0'" to load this file. \quit
 
 -- Where every run of blocks of the file of a sift_col index lies: the segments (their extents, header page and liveness run), the write buffers, the free list and the free extents.
 -- pending: a free extent that a snapshot may still read (a standby with hot_standby_feedback holds it), not reusable yet. Order by first_block to read the file from its start.

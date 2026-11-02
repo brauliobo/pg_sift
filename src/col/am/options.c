@@ -470,7 +470,7 @@ sift_col_init(void)
 						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "row_key",
-						 "the column that identifies a row (off, auto = the primary key, or a column with a unique index of its own, NOT NULL): when a row is updated the index finds the older entry of the same key and records that it stopped being live (a tombstone log; column format minor 43, which only 3.8 and later read); it adds the column to point_tid_columns (default off)",
+						 "the column that identifies a row (off, auto = the primary key, or a column with a unique index of its own, NOT NULL): when a row is updated the index finds the older entry of the same key and records that it stopped being live (a tombstone log; column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns (default off)",
 						 "", sift_col_validate_row_key, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",

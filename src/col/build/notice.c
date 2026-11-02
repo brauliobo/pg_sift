@@ -74,11 +74,11 @@ colb_notice_key_order(Relation index)
 			 errhint("To build the index without it, run ALTER INDEX %s RESET (key_order) and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 }
 
-/* The first release that reads a column format minor, as scripts/upgrade_check.sql lists it: the segments of 3.8 are minor 40 and up, the others of 3.7 are 33 to 39 */
+/* The first release that reads a column format minor, as scripts/upgrade_check.sql lists it: the segments of 4.0 are minor 40 and up, the others of 3.7 are 33 to 39 */
 static const char *
 minor_lib(int minor)
 {
-	return minor >= SIFT_COL_FORMAT_ENDORD ? "3.8" : "3.7";
+	return minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
 }
 
 /* The option takes a longer build for the heap addresses it lists, and its segments are column format minor 33 or more (a build of 3.7 writes 37), which a library before 3.7 refuses: said once, where it is used */

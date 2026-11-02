@@ -1,4 +1,4 @@
--- sift.table_auto_defrag_dead_pct has had no effect since 3.8 (the background pass of a sift_table is asked for by the reads of the table) and is kept so a configuration that sets it loads:
+-- sift.table_auto_defrag_dead_pct has had no effect since 4.0 (the background pass of a sift_table is asked for by the reads of the table) and is kept so a configuration that sets it loads:
 -- SET, RESET and the range are accepted, and a table deleted from by 2% (below any value of it) answers the same with the setting at 1 and at 100.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

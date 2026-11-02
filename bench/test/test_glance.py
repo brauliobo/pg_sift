@@ -16,9 +16,9 @@ TABLE = [('page', 'p_big', 'native', 'no'), ('page', 'p_small', 'btree', 'no'), 
 
 def write(path, rows, results):
     with open(path, 'w') as f:
-        f.write('# orders: %d\n# postgresql: 18.6\n# pg_sift: 3.8\nversion\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n' % rows)
+        f.write('# orders: %d\n# postgresql: 18.6\n# pg_sift: 4.0\nversion\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n' % rows)
         for case, arm, metric, value in results:
-            f.write('3.8\t%s\t%s\t%s\t%s\t\t\t3\t\t\n' % (case, arm, metric, value))
+            f.write('4.0\t%s\t%s\t%s\t%s\t\t\t3\t\t\n' % (case, arm, metric, value))
 
 
 class Glance(unittest.TestCase):

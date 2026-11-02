@@ -131,7 +131,7 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	check "an index of order_layout auto whose keys are scattered keeps compact chunks: column format 41" grep -q -E '^ok +gord_auto +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
 	check "and one whose keys tie much keeps the whole order: column format 38 to 40" grep -q -E '^ok +gord_auto_ties +index +format 1\.[0-9]+, column format (3[89]|40)' <<<"$(uc clean)"
 	check "to 3.7: the compact order is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_compact .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_compact" <<<"$(uc --to 3.7 clean)"
-	check "to 3.8: the compact order is ok" test -z "$(row "$(uc --to 3.8 clean)" blocker gord_compact)"
+	check "to 4.0: the compact order is ok" test -z "$(row "$(uc --to 4.0 clean)" blocker gord_compact)"
 	q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_compact" >/dev/null
 	check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_compact)"
 	q clean "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
