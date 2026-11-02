@@ -521,7 +521,7 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
  * by its TID: 10,000 instructions a row against 2,900 for a row of g, which pays about 3 M instructions to read the TIDs of the superblock once, so g is cheaper from about 400 selected rows of a superblock
  * (records on 300,000 and 1,000,000 rows)
  */
-#define BITMAP_BULK_ROWS	400
+#define BITMAP_BULK_ROWS	400		/* and the default of sift.test_bitmap_bulk_rows (core/handler_test.c) */
 
 #ifdef SIFT_TESTING
 int			sift_test_bitmap_bulk_rows = BITMAP_BULK_ROWS;
