@@ -15,6 +15,9 @@ sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE po
 
 vacuums() { sql rd "SELECT vacuum_count FROM pg_stat_user_tables WHERE relname = 'facts'"; }
 asked() { for _ in $(seq 100); do [[ $(vacuums) -gt $1 ]] && return 0; sleep 0.3; done; return 1; }
+# A table is left alone for a few naptimes, or ten times the average VACUUM, after its last one (table_state, col/vacreq.c): a look of the reads inside that window asks for nothing, and the
+# few reads of the second stage end before a slow VACUUM of the first has left it. The same few reads run again, each in a session of its own as the first, until one is asked
+asked_by_reads() { for _ in $(seq 12); do reads 3; for _ in $(seq 10); do [[ $(vacuums) -gt $1 ]] && return 0; sleep 0.3; done; done; return 1; }
 # $1 batches of 10 grouped reads of the whole table in one session, a naptime apart: the look of the tick is once per naptime
 reads() { sql rd "SET sift.enable_agg = on" "SET max_parallel_workers_per_gather = 0" \
 	"DO \$\$ BEGIN FOR b IN 1..$1 LOOP FOR i IN 1..10 LOOP PERFORM key, count(*), sum(v) FROM facts GROUP BY key; END LOOP; PERFORM pg_sleep(0.25); END LOOP; END \$\$" >/dev/null; }
@@ -34,7 +37,6 @@ check "the answers are the table's" test "$(sql rd "SELECT sum(v) FROM facts WHE
 sql rd "ALTER DATABASE postgres SET sift.eval_methods = ''" >/dev/null
 base=$(vacuums)
 churn 1
-reads 3
-check "with the list empty the same few reads ask for it, by the rule of a thousand rows" asked "$base"
+check "with the list empty the same few reads ask for it, by the rule of a thousand rows" asked_by_reads "$base"
 check "the counters of the read penalty are in sift.stats" test "$(sql rd "SELECT count(*) FROM sift.stats() WHERE name IN ('rows_dirty_units', 'read_penalty_kinstr', 'maintenance_asks')")" == 3
 finish
