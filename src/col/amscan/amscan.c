@@ -295,7 +295,7 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
  * ones VACUUM dropped since are of addresses whose row no snapshot of this age sees (the heap gives a freed address to rows inserted after it).
  */
 static void
-col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, const SiftColRel *r)
+col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, bool rowkey)
 {
 	SiftTombLog *log;
 
@@ -304,7 +304,7 @@ col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, const SiftColRel *r)
 	if (sift_test_no_log_hide)
 		return;
 #endif
-	if (!r->rowkey || scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_MVCC)
+	if (!rowkey || scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_MVCC)
 		return;
 	log = sift_col_log(scan->indexRelation);
 	if (log != NULL && log->nents + log->nrecent > 0)
@@ -352,12 +352,14 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	ColKeys		keys;
 	const SiftKey *tids;
-	bool		sat;
+	bool		sat,
+				rowkey;
 	int			wl = -1;
 
 	so->first = palloc((r->natts + 1) * sizeof(int));
 	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
 	so->natts = r->natts;
+	rowkey = r->rowkey;	/* r is the cache's: opening the heap below reloads the entry */
 	so->defs = palloc(r->meta.ncols * sizeof(SiftColDef));
 	memcpy(so->defs, r->meta.cols, r->meta.ncols * sizeof(SiftColDef));
 	so->preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
@@ -372,7 +374,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys; i++)
 		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
-	col_tomb_open(scan, so, r);
+	col_tomb_open(scan, so, rowkey);
 	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
 	if (sat)
 	{
