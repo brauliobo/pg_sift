@@ -53,6 +53,7 @@ CHECKS=(
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
 	'affected-untracked	scripts/test-affected-untracked.sh'
+	'affected-wide	scripts/test-affected-wide.sh'
 	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps README.md -- scripts/test-gen-docs-skip.sh'
 	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'

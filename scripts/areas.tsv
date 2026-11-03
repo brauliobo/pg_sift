@@ -91,7 +91,7 @@
 ^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/(build/run|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
 ^src/core/visibility\.c$	^tap-shell-sb_mask_small$
 ^scripts/upgrade[-_]check\.(sh|sql)$	^tap-shell-upgrade_check$
-^scripts/(static\.baseline|build-bench\.sql|lint\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-ci-stop\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-expected-oracle\.py|expected-oracle\.allow|test-gen-docs-skip\.sh|format-literals\.tsv)	-
+^scripts/(static\.baseline|build-bench\.sql|lint\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-expected-oracle\.py|expected-oracle\.allow|test-gen-docs-skip\.sh|format-literals\.tsv)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 # the focus table and its generator: read by `scripts/ci.sh affected --focus` only (a local shortcut; CI runs the jobs of the map above)
