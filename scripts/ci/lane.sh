@@ -17,7 +17,8 @@ lane() {
 		case $rc in 1) break ;; 2) sleep 0.5; continue ;; esac
 		id=$CLAIMED
 		if [[ ${J_CLUSTER[$id]} == 1 && -z $started ]]; then started=1; "$S/pgtest.sh" start >"$LOG/$LANE.start.log" 2>&1; fi
-		run_job "$id" && tidy "$id"
+		# a job that crashed the cluster leaves it in recovery, and the next job would fail on that, not on its own: wait, and drop what the failed one left
+		if run_job "$id"; then tidy "$id"; elif [[ ${J_CLUSTER[$id]} == 1 && -n $started ]]; then "$S/pgtest.sh" clean >/dev/null 2>&1; fi
 		rm -f "$BASE/running/$id"
 	done
 	[[ -z $started ]] || "$S/pgtest.sh" stop

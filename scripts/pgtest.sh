@@ -15,7 +15,8 @@
 #                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
-#   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database)
+#   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
+#   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database), once it is ready
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
@@ -152,9 +153,22 @@ stop() {
 	return $rc
 }
 
+# ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300). A backend that dies (a sanitizer that halts it, a PANIC test) makes the postmaster
+# recover every other session; under ASan that takes a minute, and a job that starts in it fails at once with "the database system is not yet accepting connections"
+ready() {
+	local i
+	for ((i = 0; i < ${SIFT_READY_SECS:-300} * 2; i++)); do
+		pg_isready -q -h "$SOCK" -p "$PORT" && return 0
+		sleep 0.5
+	done
+	echo "pgtest: the cluster at $SOCK does not accept connections after ${SIFT_READY_SECS:-300} s" >&2
+	return 1
+}
+
 # clean: drops every database but the template ones, postgres and the test database: what a job created
 clean() {
 	local d
+	ready || return 1
 	for d in $(psql -U postgres -d postgres -X -qAt -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1', '$DB')"); do
 		dropdb -U postgres --force "$d"
 	done
@@ -241,6 +255,7 @@ case ${1:-} in
 	initdb-template) initdb_template "$2" ;;
 	new-data) new_data "$2" "${3:-}" ;;
 	tap) tap "${2:-}" ;;
+	ready) ready ;;
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;

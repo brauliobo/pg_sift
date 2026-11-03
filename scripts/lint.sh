@@ -43,6 +43,7 @@ CHECKS=(
 	'port-isa-check	sh scripts/port-isa-check.sh --selftest'
 	'ci-claim	scripts/test-ci-claim.sh'
 	'ci-stop	scripts/test-ci-stop.sh'
+	'ci-ready	scripts/test-ci-ready.sh'
 	'scaling-triggers	scripts/check-scaling-triggers.sh'
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
 	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
