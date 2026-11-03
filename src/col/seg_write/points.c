@@ -132,7 +132,9 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 #ifdef SIFT_TESTING
 			pa->tperm = pa->tperm && !sift_test_col_gorder_strings;
 #endif
-			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, false, &ob->tab);
+			uint32	   *sorted = sift_cgord_text_order(w->dict[c], w->pagg.gorder_coll[c]);
+
+			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], sorted, dense, false, &ob->tab);
 			/*
 			 * The codes replace the strings of the array where that saves a fifth of the bytes: the dictionary then goes in blocks, which can cost more than the compact form
 			 * (strings that share long prefixes compress better whole), and the strings of a sorted array are front-coded, which can cost less than the dictionary they repeat.
@@ -148,7 +150,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 							extra = w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN) ? sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact) : 0;
 
 				initStringInfo(&codes);
-				sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], dense, true, &codes);
+				sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], sorted, dense, true, &codes);
 				if ((uint64) (codes.len + extra) * 5 <= (uint64) ob->tab.len * 4)
 				{
 					pfree(ob->tab.data);
@@ -160,6 +162,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 					pa->tperm = false;
 				}
 			}
+			pfree(sorted);
 			w->anytextperm = pa->tperm || w->anytextperm;
 		}
 		else

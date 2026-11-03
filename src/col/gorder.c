@@ -701,19 +701,40 @@ sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 
 	return c != 0 ? c : str_cmp_bytes(a, la, b, lb, 0);
 }
 
-static const SiftCDict *rank_dict;
+typedef struct RankEnt
+{
+	const char *s;
+	uint32		len;
+	uint32		code;
+} RankEnt;
+
 static uint32 rank_coll;
 
 /* the codes in the order of their strings */
 static int
 rank_cmp(const void *pa, const void *pb)
 {
-	uint32		la,
-				lb;
-	const char *a = sift_cdict_str(rank_dict, *(const uint32 *) pa, &la),
-			   *b = sift_cdict_str(rank_dict, *(const uint32 *) pb, &lb);
+	const RankEnt *a = pa,
+			   *b = pb;
 
-	return sift_cgord_str_order(a, la, b, lb, rank_coll);
+	return sift_cgord_str_order(a->s, a->len, b->s, b->len, rank_coll);
+}
+
+/* The strings of d ranked: ent[r] is the r-th, by the collation, then the bytes; the strings are decoded once, not at each comparison */
+static RankEnt *
+rank_strings(const SiftCDict *d, uint32 collid)
+{
+	uint32		nstr = d->n;
+	RankEnt    *ent = palloc((nstr + 1) * sizeof(RankEnt));
+
+	for (uint32 i = 0; i < nstr; i++)
+	{
+		ent[i].code = i;
+		ent[i].s = sift_cdict_str(d, i, &ent[i].len);
+	}
+	rank_coll = collid;
+	qsort(ent, nstr, sizeof(RankEnt), rank_cmp);
+	return ent;
 }
 
 static void
@@ -727,13 +748,24 @@ put_varint(StringInfo out, uint32 v)
 	appendStringInfoChar(out, (char) v);
 }
 
+uint32 *
+sift_cgord_text_order(const SiftCDict *d, uint32 collid)
+{
+	RankEnt    *re = rank_strings(d, collid);
+	uint32	   *order = palloc((d->n + 1) * sizeof(uint32));
+
+	for (uint32 r = 0; r < d->n; r++)
+		order[r] = re[r].code;
+	pfree(re);
+	return order;
+}
+
 void
-sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, bool perm, StringInfo out)
+sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, const uint32 *order, bool dense, bool perm, StringInfo out)
 {
 	uint32		nstr = d->n,
 				nblk = (nstr + SIFT_CGORD_STR_BLK - 1) / SIFT_CGORD_STR_BLK;
-	uint32	   *order = palloc((nstr + 1) * sizeof(uint32)),
-			   *rank = palloc((nstr + 1) * sizeof(uint32)),
+	uint32	   *rank = palloc((nstr + 1) * sizeof(uint32)),
 			   *boff = palloc((nblk + 1) * sizeof(uint32));
 	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
 	StringInfoData body,
@@ -742,11 +774,6 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 	const char *prev = NULL;
 	uint32		plen = 0;
 
-	for (uint32 i = 0; i < nstr; i++)
-		order[i] = i;
-	rank_dict = d;
-	rank_coll = collid;
-	qsort(order, nstr, sizeof(uint32), rank_cmp);
 	for (uint32 r = 0; r < nstr; r++)
 		rank[order[r]] = r;
 	initStringInfo(&strs);
@@ -800,7 +827,6 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(ntid[i])};
 	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, perm ? SIFT_CGORD_VERSION_TEXTPERM : SIFT_CGORD_VERSION_TEXT, 0, 0, SIFT_CGORD_L_WHOLE);
-	pfree(order);
 	pfree(rank);
 	pfree(boff);
 	pfree(ent);

@@ -178,7 +178,9 @@ extern SiftCStrCmp sift_cgord_strcmp;
 extern char *sift_cgord_prefix_end(const char *s, uint32 len, uint32 *olen);
 extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 /* perm: the block names the strings by their dictionary codes (version 5) instead of holding them (version 3) */
-extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, bool dense, bool perm, StringInfo out);
+/* The codes of the strings of d in the order of the collation, then the bytes (palloc'd, d->n of them); a block of both forms takes the same */
+extern uint32 *sift_cgord_text_order(const SiftCDict *d, uint32 collid);
+extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, const uint32 *order, bool dense, bool perm, StringInfo out);
 /* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
 typedef struct SiftCStrPos
 {
