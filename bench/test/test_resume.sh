@@ -69,7 +69,11 @@ echo "ok: a run with another key measures again"
 # a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
 d=$T/runs/run-orphan$$   # unique: the run id is in the environment of its processes, and a second copy of this test (another lint) must not find or stop these
 CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
-sleep 0.6; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+# the run is at its first cell when its `sleep 30` runs (on a slow host the start takes longer than any fixed wait)
+at_cell() { local e; for e in /proc/[0-9]*/environ; do grep -qaxz "BENCH_RUN_ID=orphan$$" "$e" 2>/dev/null && [[ $(tr '\0' ' ' <"${e%environ}cmdline" 2>/dev/null) == 'sleep 30 ' ]] && return 0; done; return 1; }
+for _ in $(seq 300); do at_cell && break; sleep 0.1; done
+at_cell || fail "the run did not reach its first cell"
+kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 ( . "$LIBSH"; run_procs orphan$$ ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
 ( . "$LIBSH"; run_procs orphan$$ ) | grep -q . && fail "the orphan of the killed run is still running" || true
