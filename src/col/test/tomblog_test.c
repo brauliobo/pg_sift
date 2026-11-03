@@ -69,8 +69,11 @@ sift_test_col_log_entries(PG_FUNCTION_ARGS)
 	{
 		n = log->nents + log->nrecent;
 		all = palloc(Max(n, 1) * sizeof(SiftTomb));
-		memcpy(all, log->ents, log->nents * sizeof(SiftTomb));
-		memcpy(all + log->nents, log->recent, log->nrecent * sizeof(SiftTomb));
+		/* ents and recent are NULL while empty: memcpy takes no NULL source, not even for zero bytes */
+		if (log->nents > 0)
+			memcpy(all, log->ents, log->nents * sizeof(SiftTomb));
+		if (log->nrecent > 0)
+			memcpy(all + log->nents, log->recent, log->nrecent * sizeof(SiftTomb));
 		/* log order: the position a backend stamps when it reads an entry */
 		for (uint32 i = 0; i < n; i++)
 			for (uint32 j = i; j > 0 && all[j - 1].seq > all[j].seq; j--)
