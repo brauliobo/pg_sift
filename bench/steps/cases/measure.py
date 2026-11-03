@@ -136,6 +136,15 @@ class PerfFailed(Exception):
     """perf did not give the instructions of a statement in any of its attempts; the message is the reason of each"""
 
 
+def perf_paranoid():
+    """the perf_event_paranoid setting for a message about a perf that failed; where the host has none (not Linux) the message says so"""
+    try:
+        with open('/proc/sys/kernel/perf_event_paranoid') as f:
+            return f.read().strip()
+    except OSError:
+        return 'not readable here'
+
+
 def count_once(session, sql, pid):
     """(millions of user instructions of one run of SQL by the backend PID, None) or (None, why): steps/perf.sh, perf stat on the backend with no parallel workers"""
     p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
@@ -150,8 +159,7 @@ def count_once(session, sql, pid):
     fields = out.split()
     if len(fields) == 3 and fields[1].isdigit():
         return int(fields[1]) / 1e6, None
-    with open('/proc/sys/kernel/perf_event_paranoid') as f:
-        return None, 'perf counted "%s" (perf_event_paranoid %s, exit %s): %s' % (' '.join(fields), f.read().strip(), p.returncode, err.strip()[-200:] or 'no message')
+    return None, 'perf counted "%s" (perf_event_paranoid %s, exit %s): %s' % (' '.join(fields), perf_paranoid(), p.returncode, err.strip()[-200:] or 'no message')
 
 
 def minstr(session, sql, runs=3, tries=3):
@@ -225,7 +233,7 @@ def record_stop(proc, path, perf='perf', top=30):
         os.killpg(proc.pid, signal.SIGKILL)
         die('perf record did not end 60 s after the SIGTERM (%s)' % path)
     if proc.returncode not in (0, -signal.SIGTERM) or not os.path.exists(path):   # perf finishes its file, then raises the signal again
-        die('perf record failed (exit %s, perf_event_paranoid %s): %s' % (proc.returncode, open('/proc/sys/kernel/perf_event_paranoid').read().strip(), err.strip()[-300:] or 'no message'))
+        die('perf record failed (exit %s, perf_event_paranoid %s): %s' % (proc.returncode, perf_paranoid(), err.strip()[-300:] or 'no message'))
     report = subprocess.run([perf, 'report', '-i', path, '--no-children', '--stdio'], capture_output=True, text=True).stdout
     with open(path + '.txt', 'w') as f:
         f.write('\n'.join([l for l in report.split('\n') if l.strip() and not l.startswith('#')][:top]) + '\n')

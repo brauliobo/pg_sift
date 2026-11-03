@@ -311,6 +311,12 @@ class Profile(unittest.TestCase):
                 self.run_record('echo "Permission denied" >&2; exit 1', tmp)
         self.assertIn('Permission denied', die.call_args.args[0])
 
+    def test_a_host_without_the_perf_setting_says_so_instead_of_failing_the_message(self):
+        from unittest import mock
+        from cases import measure
+        with mock.patch('builtins.open', side_effect=FileNotFoundError('/proc/sys/kernel/perf_event_paranoid')):
+            self.assertEqual(measure.perf_paranoid(), 'not readable here')
+
 
 class Param(unittest.TestCase):
     def test_a_list_parameter_is_a_psql_variable_the_session_sends_once(self):
