@@ -4,6 +4,7 @@
 -- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SET sift.async_maintenance = off;
 SET sift.test_col_gorder_ends = 64;
 SET max_parallel_workers_per_gather = 0;
 SELECT setseed(0.42);

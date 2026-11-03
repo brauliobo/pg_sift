@@ -3,6 +3,7 @@
 -- or reads the units; the rows are the heap's either way. The choice between the ends and the whole order is the zones' (sift_cgord_pay): the testing setting sift.test_col_gorder_choice forces it for the 768 shapes, the last part leaves it to the rule.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SET sift.async_maintenance = off;
 SELECT setseed(0.42);
  setseed 
 ---------

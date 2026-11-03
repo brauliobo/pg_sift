@@ -2,6 +2,7 @@
 -- from end to end, a timestamp with -infinity and infinity, NULLs and a write buffer. Every ordered read (ASC and DESC, LIMIT, OFFSET, bounds at the extremes) answers what a copy without the index does.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SET sift.async_maintenance = off;
 SET sift.test_col_gorder_ends = 64;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
