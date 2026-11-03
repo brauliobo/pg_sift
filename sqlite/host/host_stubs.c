@@ -5,9 +5,26 @@
  */
 #include "core/host.h"
 
+#include "bm25/analyze.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "col/seg_int.h"
+
+/* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
+
+SiftTsStem *
+sift_ts_open(const char *config, MemoryContext mcxt)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("unknown sift stemmer \"%s\"", config),
+					errhint("Valid stemmers are \"en\" and \"none\".")));
+	return NULL;
+}
+
+int
+sift_ts_stem(SiftTsStem *ts, char *w, int len)
+{
+	return len;
+}
 
 /* ---------- INCLUDE columns (bm25/attr.c): the hosts keep none ---------- */
 

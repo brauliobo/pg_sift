@@ -22,21 +22,6 @@ sift_options_stemmer(const SiftOptions *opts)
 	return ((const SqOptions *) opts)->stemmer;
 }
 
-/* A text search configuration is a PostgreSQL catalog object */
-SiftTsStem *
-sift_ts_open(const char *config, MemoryContext mcxt)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("unknown sift stemmer \"%s\"", config),
-					errhint("Valid stemmers are \"en\" and \"none\".")));
-	return NULL;
-}
-
-int
-sift_ts_stem(SiftTsStem *ts, char *w, int len)
-{
-	return len;
-}
-
 const char *
 sift_options_fields(const SiftOptions *opts)
 {
