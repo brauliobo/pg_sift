@@ -91,3 +91,22 @@ the latest 20 of one tenant 0.3 M instead of 0.8 M	tenant_skew_latest_20	300000	
 `OFFSET 10,000` 6.2 M instead of 51.9 M	off10k	300000	sift	key_order=off	instr_m	51.9	25	run 4281a82244c9-20261103T031126Z-2add
 the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	default	instr_m	0.3	25	run 4281a82244c9-20261103T031126Z-2add
 the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	key_order=off	instr_m	6.3	25	run 4281a82244c9-20261103T031126Z-2add
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	picked	default	wall_ms	51	25	run efd3b66c2e19-20261103T103832Z-5148 (aggscan-as3i-ordgk_1000000_g1000-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	picked	default	instr_m	893	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	heap	default	wall_ms	272	25	sift.enable_agg = off, sift.enable_col_scan = off
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	heap	default	instr_m	3811	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000b	1000000	btree	default	wall_ms	49	25	the b-tree twin, own statement name
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000b	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	picked	default	wall_ms	78	25	run efd3b66c2e19-20261103T103922Z-8707 (aggscan-as3i-ordgk_1000000_g100000-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	picked	default	instr_m	1290	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	heap	default	wall_ms	164	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	heap	default	instr_m	2473	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000b	1000000	btree	default	wall_ms	47	25	the b-tree twin
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000b	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	picked	default	wall_ms	51	25	run efd3b66c2e19-20261103T104011Z-9c20 (aggscan-as3i-ordgk_1000000_g10opt-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	picked	default	instr_m	891	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	heap	default	wall_ms	324	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	heap	default	instr_m	4442	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	wall_ms	48	25	the b-tree twin
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10	1000000	heap	default	wall_ms	318	25	run efd3b66c2e19-20261103T103741Z-6d39 (aggscan-as3i-ordgk_1000000_g10-20261103.rec), the default build: no order grouped by g, the sort stays
