@@ -119,7 +119,8 @@ SELECT kr_option('kr_i') AS option, kr_units('SELECT count(*), sum(val) FROM kr 
 (1 row)
 
 -- a table in heap order without a key cut: the ids of a unit are one run in the zone, and nothing is listed
-CREATE INDEX kr_o ON kr USING sift_col (id, grp, val) WITH (write_buffer_limit = 4096);
+-- order_array_columns is off here and below: the default chooses the arrays by the statistics of the table, which PostgreSQL 17 and 18 do not give alike, and the test is about key runs
+CREATE INDEX kr_o ON kr USING sift_col (id, grp, val) WITH (write_buffer_limit = 4096, order_array_columns = 'off');
 SELECT kr_option('kr_o') AS option;
  option  
 ---------
@@ -236,7 +237,7 @@ FROM sift._test_col_set_damage('kt_i', 5);
 DROP TABLE kt;
 -- 'off' writes none
 DROP INDEX kr_i;
-CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id', key_columns = 'off');
+CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id', key_columns = 'off', order_array_columns = 'off');
 SELECT array_agg(DISTINCT format ORDER BY format)::text AS minors, kr_units('SELECT count(*), sum(val) FROM kr WHERE id = 45050') >= 8 AS reads_every_unit FROM sift._test_col_formats('kr_off');
  minors | reads_every_unit 
 --------+------------------
