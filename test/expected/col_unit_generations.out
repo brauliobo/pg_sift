@@ -38,6 +38,15 @@ SELECT count(*)=(SELECT count(*) FROM closed_roots) AS reused_tid_not_a_new_owne
  t
 (1 row)
 
+UPDATE events SET counter_a=counter_a+1 WHERE id=7250;
+VACUUM (INDEX_CLEANUP ON) events;
+SELECT count(*)=(SELECT count(*) FROM closed_roots) AS sparse_owned_change_below_price
+ FROM closed_roots JOIN sift.col_segments('events_c') USING(gen);
+ sparse_owned_change_below_price 
+---------------------------------
+ t
+(1 row)
+
 SELECT bool_and(stamp::text::bigint > 3) AS inherited_committed_stamp FROM sift.col_stamps('events_c');
  inherited_committed_stamp 
 ---------------------------

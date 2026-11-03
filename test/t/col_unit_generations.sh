@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/lib.bash"
-plan 15
+plan 16
 node_init p 31 "wal_level = replica
 max_wal_senders = 4
 max_replication_slots = 4
@@ -23,10 +23,11 @@ oracle() { sql "$1" "SET sift.enable_agg=off; SET enable_indexscan=off; SET enab
 check "independently owned units" test "$(sql p "SELECT bool_and(units=1) FROM sift.col_segments('events_c') WHERE kind='immutable'")" == t
 D=$(dir p)
 DS=$(dir s)
-{ echo 'BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;'; echo "\\! touch '$DS/death.held'; while [ ! -e '$DS/death.release' ]; do sleep 0.05; done"; echo "$A; COMMIT;"; } | sql s >"$DS/death.out" 2>"$DS/death.err" &
+sql p "UPDATE events SET counter_a=counter_a+1 WHERE id=7500" "SELECT pg_log_standby_snapshot()" >/dev/null
+catchup p s || bail "pre-update horizon replay failed"
+{ echo 'BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT pg_backend_pid();'; echo "\\! touch '$DS/death.held'; while [ ! -e '$DS/death.release' ]; do sleep 0.05; done"; echo "$A; COMMIT;"; } | sql s >"$DS/death.out" 2>"$DS/death.err" &
 dp=$!
 until [[ -e $DS/death.held ]]; do sleep 0.05; done
-sql p "UPDATE events SET counter_a=counter_a+1 WHERE id=7500" >/dev/null
 # The earlier dead version makes VACUUM call the index while the held snapshot still needs other tombstoned entries.
 # An old primary snapshot prevents VACUUM from declaring its versions removable.
 { echo "BEGIN ISOLATION LEVEL REPEATABLE READ; $A;"; echo "\\! touch '$D/held'; while [ ! -e '$D/release' ]; do sleep 0.05; done"; echo "$A; COMMIT;"; } | sql p >"$D/old.out" &
@@ -35,6 +36,7 @@ until [[ -e $D/held ]]; do sleep 0.05; done
 sql p "CREATE TABLE before AS SELECT gen FROM sift.col_segments('events_c') WHERE kind='immutable'" \
  "CREATE TABLE prior_tids AS SELECT ctid AS tid FROM events WHERE id<=400" "UPDATE events SET counter_a=counter_a+1 WHERE id<=400" "SET sift.eval_methods='unit_rewrite'" "VACUUM (INDEX_CLEANUP ON) events" >/dev/null
 check "held snapshot forbids early replacement" test "$(sql p "SELECT count(*)=(SELECT count(*) FROM before) FROM before JOIN sift.col_segments('events_c') USING(gen)")" == t
+check "pre-update standby snapshot survives the unrelated older heap death" test "$(sql s "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid=$(head -1 "$DS/death.out"))")" == t
 touch "$D/release"; wait "$hp"
 check "old snapshot sees its original rows" test "$(sed -n '1,10p' "$D/old.out")" == "$(sed -n '11,20p' "$D/old.out")"
 # The standby snapshot has never opened this index. Directory publication must not bypass the heap conflict horizon.

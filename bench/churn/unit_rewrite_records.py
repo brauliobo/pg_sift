@@ -39,6 +39,9 @@ def main():
     pins = ['SET enable_seqscan=off', 'SET enable_indexscan=off', 'SET enable_indexonlyscan=off', 'SET enable_bitmapscan=off']
     reset_pins = ';'.join('RESET ' + q.split()[1].split('=')[0] for q in pins)
     oracle_sql = 'SELECT tenant_id,count(*),sum(counter_a),sum(id) FROM w GROUP BY tenant_id ORDER BY tenant_id'
+    queries = [('group-all', 'SELECT tenant_id,count(*),sum(counter_a) FROM w GROUP BY tenant_id'),
+               ('range-key', 'SELECT tenant_id,count(*),sum(counter_a) FROM w WHERE id<=%d GROUP BY tenant_id' % (a.rows // 100)),
+               ('filter-group', 'SELECT count(*),sum(counter_a) FROM w WHERE tenant_id=1')]
 
     def save():
         schema.write(a.out, out)
@@ -67,20 +70,21 @@ def main():
         run('VACUUM (FREEZE,ANALYZE) w')
 
     def verify(label):
-        run(collect.FORCING['heap'] + ['SET enable_seqscan=on'])
-        heap = s.run(oracle_sql)[1]
-        run(['RESET sift.enable_agg', 'RESET sift.enable_col_scan'] + pins)
-        plan = json.loads('\n'.join(s.run('EXPLAIN (FORMAT JSON) ' + oracle_sql)[1]))[0]['Plan']
-        if collect.plan_structure(plan, *collect.catalog_of(s, 'w')) != 'sift':
-            raise RuntimeError('oracle did not exercise sift')
-        if s.run(oracle_sql)[1] != heap:
-            raise RuntimeError('sift/heap mismatch: ' + label)
-        run("SET sift.eval_methods=''")
-        if s.run(oracle_sql)[1] != heap:
-            raise RuntimeError('method-off/heap mismatch: ' + label)
-        run("SET sift.eval_methods='%s'" % method_value)
+        for name, query in [('all-values', oracle_sql)] + queries:
+            run(collect.FORCING['heap'] + ['SET enable_seqscan=on'])
+            heap = sorted(s.run(query)[1])
+            run(['RESET sift.enable_agg', 'RESET sift.enable_col_scan'] + pins)
+            plan = json.loads('\n'.join(s.run('EXPLAIN (FORMAT JSON) ' + query)[1]))[0]['Plan']
+            if collect.plan_structure(plan, *collect.catalog_of(s, 'w')) != 'sift':
+                raise RuntimeError('oracle did not exercise sift: ' + name)
+            if sorted(s.run(query)[1]) != heap:
+                raise RuntimeError('sift/heap mismatch: ' + label + ':' + name)
+            run("SET sift.eval_methods=''")
+            if sorted(s.run(query)[1]) != heap:
+                raise RuntimeError('method-off/heap mismatch: ' + label + ':' + name)
+            run("SET sift.eval_methods='%s'" % method_value)
         run(reset_pins)
-        print('oracle ' + label + ' passed', flush=True)
+        print('oracle ' + label + ' passed all-values,group-all,range-key,filter-group', flush=True)
 
     def subject(cell, state, kind='read'):
         dataset = '%s-%s-%s' % (*cell.rsplit('-',1)[:1], state, cell.rsplit('-',1)[1]) if kind == 'read' else cell
@@ -91,9 +95,7 @@ def main():
     def reads(cell, state):
         verify(cell + ':' + state)
         run(pins)
-        for name, query in [('group-all', 'SELECT tenant_id,count(*),sum(counter_a) FROM w GROUP BY tenant_id'),
-                            ('range-key', 'SELECT tenant_id,count(*),sum(counter_a) FROM w WHERE id<=%d GROUP BY tenant_id' % (a.rows // 100)),
-                            ('filter-group', 'SELECT count(*),sum(counter_a) FROM w WHERE tenant_id=1')]:
+        for name, query in queries:
             out.extend(collect.measure_statement(s, name, query, subject(cell, state), [collect.Arm('sift', method, settings=pins), collect.Arm('heap')] + ([collect.Arm('btree', settings=collect.FORCING['btree'] + ['SET enable_indexscan=on', 'SET enable_indexonlyscan=on', 'SET enable_bitmapscan=on'])] if name == 'range-key' else []), env, temps=('warm','cold')))
         save()
         run(reset_pins)

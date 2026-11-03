@@ -157,7 +157,7 @@ maint_unit_bulkdelete(Relation index, SiftColSegment *seg, IndexBulkDeleteCallba
 	live = sift_cseg_live_rows(seg);
 	row_cost = SIFT_COL_REWRITE_ROW + SIFT_COL_REWRITE_BYTE * seg->entry.bytes / Max(seg->entry.ndocs, 1);
 	scan = Min((uint64) owned * SIFT_COL_DEAD_ROW, (uint64) n * SIFT_COL_DEAD_SCAN_ROW);
-	if (live * 2 > n && scan * SIFT_COL_DEAD_SCANS < live * row_cost)
+	if (scan * SIFT_COL_DEAD_SCANS < live * row_cost)
 		return;
 	mi = sift_maint_inputs(index, &seg->entry, 1);
 	written = write_unit(index, seg, 0, &out);
