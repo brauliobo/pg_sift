@@ -65,6 +65,11 @@ class Sources(unittest.TestCase):
         self.assertEqual(hostio.proc_counters([100, 101, 999], self.f.root), dict(rchar=2 * (4096 + 8192), syscr=12, read_bytes=12288, write_bytes=0))
         self.assertIsNone(hostio.proc_counters([999], self.f.root))
 
+    def test_a_host_without_proc_has_no_process_counters_and_no_error(self):
+        nowhere = os.path.join(self.f.root, 'nowhere')
+        self.assertEqual(hostio.tree(100, nowhere), [100])
+        self.assertIsNone(hostio.snapshot([100], None, nowhere)['proc'])
+
     def test_the_cgroup_adds_every_device(self):
         self.f.proc(100, 1, 1, 1)
         self.f.cgroup(rios=9, rbytes=1000)
@@ -116,8 +121,8 @@ class Figures(unittest.TestCase):
     def test_a_path_is_mapped_to_its_block_device_and_a_file_system_with_no_device_to_none(self):
         os.makedirs(os.path.join(self.f.root, 'sys/devices/pci/nvme0n1'))
         os.makedirs(os.path.join(self.f.root, 'sys/dev/block'))
-        os.symlink('../../devices/pci/nvme0n1', os.path.join(self.f.root, 'sys/dev/block/259:0'))
-        with mock.patch.object(hostio.os, 'stat', return_value=SimpleNamespace(st_dev=os.makedev(259, 0))):
+        os.symlink('../../devices/pci/nvme0n1', os.path.join(self.f.root, 'sys/dev/block/8:0'))
+        with mock.patch.object(hostio.os, 'stat', return_value=SimpleNamespace(st_dev=os.makedev(8, 0))):
             self.assertEqual(hostio.device_of('/data', self.f.root), ('disk', 'nvme0n1'))
         self.f.put('/proc/mounts', 'tank/db /srv/db zfs rw 0 0\ntmpfs /dev/shm tmpfs rw 0 0\n')
         with mock.patch.object(hostio.os, 'stat', return_value=SimpleNamespace(st_dev=os.makedev(0, 55))):

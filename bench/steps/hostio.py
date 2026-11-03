@@ -78,7 +78,11 @@ def ppid(pid, root='/'):
 def tree(pid, root='/'):
     """PID and every descendant (the postmaster and its backends, a JVM and its threads' processes)"""
     kids, out = {}, [pid]
-    for p in os.listdir(os.path.join(root, 'proc')):
+    try:
+        names = os.listdir(os.path.join(root, 'proc'))
+    except OSError:   # no /proc (macOS): the process has no counters, and the figure is absent
+        names = []
+    for p in names:
         if p.isdigit() and ppid(p, root) is not None:
             kids.setdefault(ppid(p, root), []).append(int(p))
     for p in out:
