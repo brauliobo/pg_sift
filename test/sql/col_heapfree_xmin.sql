@@ -149,6 +149,9 @@ VACUUM events;
 INSERT INTO events SELECT i, i % 10, i, 'v' FROM generate_series(50001, 51500) i;
 SELECT * FROM chk('after vacuum, new rows at the old addresses');
 SELECT sift.col_promote('events_c') >= 0 AS promoted;
+-- PostgreSQL 19 sets a page all-visible in the visibility map while a read prunes it, so the reads above left the new rows' pages marked and the checking read would skip them: a HOT update of
+-- a column the index does not cover (as in 'hot update') clears the marks on every version, and the heap checks the pages again
+UPDATE events SET label = 'w' WHERE id BETWEEN 50001 AND 51500;
 SELECT * FROM chk('promoted');
 DELETE FROM events WHERE id BETWEEN 50001 AND 50500;
 SELECT * FROM chk('the new rows deleted');

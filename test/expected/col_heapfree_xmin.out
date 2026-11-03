@@ -336,6 +336,9 @@ SELECT sift.col_promote('events_c') >= 0 AS promoted;
  t
 (1 row)
 
+-- PostgreSQL 19 sets a page all-visible in the visibility map while a read prunes it, so the reads above left the new rows' pages marked and the checking read would skip them: a HOT update of
+-- a column the index does not cover (as in 'hot update') clears the marks on every version, and the heap checks the pages again
+UPDATE events SET label = 'w' WHERE id BETWEEN 50001 AND 51500;
 SELECT * FROM chk('promoted');
    test   | same_as_heap_check | same_as_no_sift | free_reads_heap | checked_reads_heap 
 ----------+--------------------+-----------------+-----------------+--------------------
