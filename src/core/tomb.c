@@ -651,41 +651,58 @@ sift_tomb_find(const SiftTombLog *t, uint64 key, int *n)
 }
 
 void
-sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, CommandId cid, SiftTombKind kind,
-					 uint16 flags, uint64 succ)
+sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *ents, int n)
 {
 	const SiftSegEntry *e;
-	SiftTomb ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind,.flags = flags};
 	SiftWbufHeaderData hdr;
-	Buffer		cur,
-				hbuf;
-	SiftPageEdit ed[2];
-	Page		tp;
-	int			lane;
-	bool		crossed;
 
 	/* VACUUM replaces the segment under the exclusive form of this lock: the current one is read inside it */
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
 	sift_dir_read(rel, t->dir);
 	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
-	sift_lane_read_header(rel, e, &hdr);
-	if (!BufferIsValid(cur = sift_lane_lock_tail(rel, e->gen, &hdr.lanes[0].tail, 1, &lane)))
-		corrupt(rel, "The tombstone segment is sealed.");
-	if (SIFT_TOMB_PAGE(BufferGetPage(cur))->nent >= SIFT_TOMB_CAP)
-		cur = sift_lane_grow(rel, e->gen, e->header_blk, lane, cur, SIFT_TOMB_PAGE_INIT, PG_UINT32_MAX, NULL, NULL, &crossed);
-	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-	sift_page_edit_begin(&ed[0], hbuf, SIFT_PAGE_DATA_OFFSET);
-	sift_page_edit_extra(&ed[0], (char *) &SIFT_TOMB_HDR(ed[0].page)->nentries - (char *) ed[0].page, sizeof(uint64));
-	sift_page_edit_begin(&ed[1], cur, SIFT_PAGE_DATA_OFFSET + SIFT_TOMB_PAGE_INIT);
-	tp = ed[1].page;
-	SIFT_TOMB_ENTS(tp)[SIFT_TOMB_PAGE(tp)->nent++] = ent;
-	SiftPageSetUsed(tp, SIFT_TOMB_PAGE_INIT + SIFT_TOMB_PAGE(tp)->nent * sizeof(SiftTomb));
-	SIFT_TOMB_HDR(ed[0].page)->nentries++;
-	sift_page_edit_end(rel, ed, 2);
-	UnlockReleaseBuffer(hbuf);
-	UnlockReleaseBuffer(cur);
+	while (n > 0)
+	{
+		Buffer		cur,
+					hbuf;
+		SiftPageEdit ed[2];
+		Page		tp;
+		int			lane,
+					k;
+		bool		crossed;
+
+		sift_lane_read_header(rel, e, &hdr);
+		if (!BufferIsValid(cur = sift_lane_lock_tail(rel, e->gen, &hdr.lanes[0].tail, 1, &lane)))
+			corrupt(rel, "The tombstone segment is sealed.");
+		if (SIFT_TOMB_PAGE(BufferGetPage(cur))->nent >= SIFT_TOMB_CAP)
+			cur = sift_lane_grow(rel, e->gen, e->header_blk, lane, cur, SIFT_TOMB_PAGE_INIT, PG_UINT32_MAX, NULL, NULL, &crossed);
+		hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
+		sift_page_edit_begin(&ed[0], hbuf, SIFT_PAGE_DATA_OFFSET);
+		sift_page_edit_extra(&ed[0], (char *) &SIFT_TOMB_HDR(ed[0].page)->nentries - (char *) ed[0].page, sizeof(uint64));
+		sift_page_edit_begin(&ed[1], cur, SIFT_PAGE_DATA_OFFSET + SIFT_TOMB_PAGE_INIT);
+		tp = ed[1].page;
+		/* as many as the tail page holds: one record for the page and one for the header, not one for each entry */
+		k = Min((int) (SIFT_TOMB_CAP - SIFT_TOMB_PAGE(tp)->nent), n);
+		memcpy(&SIFT_TOMB_ENTS(tp)[SIFT_TOMB_PAGE(tp)->nent], ents, k * sizeof(SiftTomb));
+		SIFT_TOMB_PAGE(tp)->nent += k;
+		SiftPageSetUsed(tp, SIFT_TOMB_PAGE_INIT + SIFT_TOMB_PAGE(tp)->nent * sizeof(SiftTomb));
+		SIFT_TOMB_HDR(ed[0].page)->nentries += k;
+		sift_page_edit_end(rel, ed, 2);
+		UnlockReleaseBuffer(hbuf);
+		UnlockReleaseBuffer(cur);
+		ents += k;
+		n -= k;
+	}
 	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
+}
+
+void
+sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, CommandId cid, SiftTombKind kind,
+					 uint16 flags, uint64 succ)
+{
+	SiftTomb	ent = {.key = key,.xid = xid,.cid = cid,.succ = succ,.kind = kind,.flags = flags};
+
+	sift_tomb_append_many(rel, t, &ent, 1);
 }
 
 void

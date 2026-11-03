@@ -121,6 +121,8 @@ extern uint64 sift_tomb_entries(Relation rel, const SiftDirSnapshot *dir);
 /* Writes the completeness record of the header */
 extern void sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c);
 extern void sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, CommandId cid, SiftTombKind kind, uint16 flags, uint64 succ);
+/* The same for n entries: written by the page, in one pass over the segment */
+extern void sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *ents, int n);
 /*
  * Rewrites the tombstone segment without the entries keep() refuses, under the lock that keeps appenders out, and switches the
  * new segment in (the old pages are released with a safexid). Returns the entries kept.

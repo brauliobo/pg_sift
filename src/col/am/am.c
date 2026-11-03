@@ -83,6 +83,7 @@ batch_flush_all(void)
 {
 	Oid			oid;
 
+	sift_col_tombs_flush();
 	while (sift_cwbuf_pending(&oid))
 	{
 		Relation	index = relation_open(oid, RowExclusiveLock);
@@ -99,7 +100,10 @@ batch_xact(XactEvent event, void *arg)
 	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE)
 		batch_flush_all();
 	else if (event == XACT_EVENT_ABORT)
+	{
 		sift_cwbuf_discard(InvalidOid);
+		sift_col_tombs_discard();
+	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 		batch_seen = false;
 }
@@ -110,7 +114,10 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 	if (event == SUBXACT_EVENT_START_SUB)
 		batch_flush_all();
 	else if (event == SUBXACT_EVENT_ABORT_SUB)
+	{
 		sift_cwbuf_discard(InvalidOid);
+		sift_col_tombs_discard();
+	}
 }
 
 #define STMT_SPECULATIVE	1
@@ -192,7 +199,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 		batch_hooked = true;
 	}
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && !supersede && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
+	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
 		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);

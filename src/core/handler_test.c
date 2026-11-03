@@ -74,6 +74,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_supersede",
 							 "Testing: an index with track_updates writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
 							 NULL, &sift_test_no_supersede, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_tombs_at_once",
+							 "Testing: the tombstones of the entries an UPDATE replaces are written one at a time as they are found, not held back to the end of the statement's transaction.",
+							 NULL, &sift_test_tombs_at_once, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_log_reap",
 							 "Testing: a backend keeps the tombstone log cache of an index that is gone (a mutant of the reclaim).",
 							 NULL, &sift_test_no_log_reap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -54,7 +54,8 @@ SELECT log_matches() AS matches;
  t
 (1 row)
 
--- a rolled back update: its entries are in the log, voided by the transaction
+-- a rolled back update: its entries are in the log, voided by the transaction (written as they are found: held back, a statement that aborts leaves none, below)
+SET sift.test_tombs_at_once = on;
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
 BEGIN;
@@ -88,10 +89,36 @@ SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::
             10 | t
 (1 row)
 
+RESET sift.test_tombs_at_once;
+-- the same two cases with the tombstones held back, as they are: what aborts leaves none in the log, and what commits is the same
+BEGIN;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 821 AND 830;
+SELECT txid_current() AS aborted_tx2 \gset
+ROLLBACK;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_tx2) AS entries_of_it, log_matches() AS matches;
+ entries_of_it | matches 
+---------------+---------
+             0 | t
+(1 row)
+
+BEGIN;
+SAVEPOINT s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 931 AND 940;
+SELECT xmin::text::bigint AS aborted_sub2 FROM t WHERE id = 931 \gset
+ROLLBACK TO s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 941 AND 950;
+COMMIT;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 941 AND 950;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_sub2) AS entries_of_it, log_matches() AS matches;
+ entries_of_it | matches 
+---------------+---------
+             0 | t
+(1 row)
+
 -- ON CONFLICT: the existing row's old address; a new key, and a conflict that does nothing, write none
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
-INSERT INTO t VALUES (1001, 1, 1, 1), (1002, 2, 2, 2), (5000, 3, 3, 3) ON CONFLICT (id) DO UPDATE SET v = excluded.v + 1000;
+INSERT INTO t VALUES (1001, 1, 1, 1), (1002, 2, 2, 2), (5000, 3, 3, 3) ON CONFLICT (id) DO UPDATE SET v = excluded.v + 1500;
 INSERT INTO t VALUES (1003, 1, 1, 1) ON CONFLICT (id) DO NOTHING;
 INSERT INTO expected SELECT old FROM before WHERE id IN (1001, 1002);
 SELECT log_matches() AS matches;

@@ -67,6 +67,11 @@ struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
 extern void sift_col_log_cache_stats(int64 *entries, int64 *bytes);
 extern void sift_col_log_create(Relation index);
+/* The log to append to (made when the index has none): no read of the directory, for the writer of many tombstones */
+extern struct SiftTombLog *sift_col_log_appender(Relation index);
+/* The tombstones of the replaced entries that a statement holds back (col/supersede.c): written before the log is read, before commit and before a savepoint starts, dropped when the transaction or the savepoint aborts */
+extern void sift_col_tombs_flush(void);
+extern void sift_col_tombs_discard(void);
 /* The option track_updates (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
 extern void sift_col_row_key_check(Relation index);
@@ -85,6 +90,7 @@ extern bool sift_col_updates_supersede(void);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;
+extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
 extern PGDLLIMPORT bool sift_test_no_log_reap;

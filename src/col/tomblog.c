@@ -24,6 +24,7 @@ typedef struct LogEnt
 	Oid			relid;			/* hash key */
 	bool		stale;			/* a relcache invalidation named the index: has it been dropped? (reap_stale) */
 	RelFileNumber relnumber;
+	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
 	SiftDirSnapshot dir;
 	SiftTombLog log;
@@ -111,6 +112,7 @@ log_ent(Relation index)
 	{
 		e->relnumber = index->rd_locator.relNumber;
 		e->stale = false;
+		e->has_seg = false;
 		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);
 		memset(&e->dir, 0, sizeof(e->dir));
 		memset(&e->log, 0, sizeof(e->log));
@@ -123,8 +125,13 @@ log_ent(Relation index)
 SiftTombLog *
 sift_col_log(Relation index)
 {
-	LogEnt	   *e = log_ent(index);
-	const SiftSegEntry *seg = sift_tomb_find_seg(&e->dir);
+	LogEnt	   *e;
+	const SiftSegEntry *seg;
+
+	/* the tombstones this backend holds back reach the log before it is read (supersede.c) */
+	sift_col_tombs_flush();
+	e = log_ent(index);
+	seg = sift_tomb_find_seg(&e->dir);
 
 	if (seg == NULL)
 		return NULL;
@@ -136,6 +143,28 @@ sift_col_log(Relation index)
 	if (e->log.gen != 0 && e->log.gen != seg->gen)
 		sift_tomb_forget(&e->log);
 	sift_tomb_sync(index, &e->log);
+	return &e->log;
+}
+
+/*
+ * The log to append to: the cache entry of the index with no read of the directory, which the append makes again under the lock that keeps VACUUM from replacing the segment.
+ * The segment is looked for (and made) once for the file of the index.
+ */
+SiftTombLog *
+sift_col_log_appender(Relation index)
+{
+	Oid			relid = RelationGetRelid(index);
+	LogEnt	   *e = log_tab != NULL ? hash_search(log_tab, &relid, HASH_FIND, NULL) : NULL;
+
+	if (e != NULL && e->has_seg && !e->stale && e->relnumber == index->rd_locator.relNumber)
+		return &e->log;
+	if (sift_col_log(index) == NULL)
+	{
+		sift_col_log_create(index);
+		(void) sift_col_log(index);
+	}
+	e = hash_search(log_tab, &relid, HASH_FIND, NULL);
+	e->has_seg = true;
 	return &e->log;
 }
 

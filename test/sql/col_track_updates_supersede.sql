@@ -34,7 +34,8 @@ INSERT INTO expected SELECT b.old FROM before b JOIN t USING (id)
 SELECT count(*) > 0 AS some_moved, count(*) < 500 AS some_hot FROM before b JOIN t USING (id) WHERE id BETWEEN 101 AND 600 AND (b.old::text::point)[0] <> (t.ctid::text::point)[0];
 SELECT log_matches() AS matches;
 
--- a rolled back update: its entries are in the log, voided by the transaction
+-- a rolled back update: its entries are in the log, voided by the transaction (written as they are found: held back, a statement that aborts leaves none, below)
+SET sift.test_tombs_at_once = on;
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
 BEGIN;
@@ -54,11 +55,28 @@ UPDATE t SET v = v + 1 WHERE id BETWEEN 911 AND 920;
 COMMIT;
 INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 911 AND 920;
 SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_sub) AS entries_of_it, log_matches() AS matches;
+RESET sift.test_tombs_at_once;
+
+-- the same two cases with the tombstones held back, as they are: what aborts leaves none in the log, and what commits is the same
+BEGIN;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 821 AND 830;
+SELECT txid_current() AS aborted_tx2 \gset
+ROLLBACK;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_tx2) AS entries_of_it, log_matches() AS matches;
+BEGIN;
+SAVEPOINT s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 931 AND 940;
+SELECT xmin::text::bigint AS aborted_sub2 FROM t WHERE id = 931 \gset
+ROLLBACK TO s;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 941 AND 950;
+COMMIT;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 941 AND 950;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('t_c') WHERE xid::text::bigint = :aborted_sub2) AS entries_of_it, log_matches() AS matches;
 
 -- ON CONFLICT: the existing row's old address; a new key, and a conflict that does nothing, write none
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
-INSERT INTO t VALUES (1001, 1, 1, 1), (1002, 2, 2, 2), (5000, 3, 3, 3) ON CONFLICT (id) DO UPDATE SET v = excluded.v + 1000;
+INSERT INTO t VALUES (1001, 1, 1, 1), (1002, 2, 2, 2), (5000, 3, 3, 3) ON CONFLICT (id) DO UPDATE SET v = excluded.v + 1500;
 INSERT INTO t VALUES (1003, 1, 1, 1) ON CONFLICT (id) DO NOTHING;
 INSERT INTO expected SELECT old FROM before WHERE id IN (1001, 1002);
 SELECT log_matches() AS matches;
