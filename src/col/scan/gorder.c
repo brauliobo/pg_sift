@@ -437,7 +437,7 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 		return -1;
 	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, vals, &nv, collid)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, vals, &nv, collid))
 	{
-		int			a = npin == 0 && collid == 0 && (want == NULL || !(want->has_lo || want->has_hi)) ? gorder_by_group(src, col) : -1;
+		int			a = npin == 0 && collid == 0 && want != NULL && want->bygroup && !(want->has_lo || want->has_hi) ? gorder_by_group(src, col) : -1;
 
 		if (a < 0)
 			return -1;

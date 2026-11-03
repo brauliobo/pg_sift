@@ -214,7 +214,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 {
 	int			grouped,
 				n;
-	SiftCGOrdWant want = {rows, desc, nulls_first, b != NULL && collid == 0 && b->has_lo, b != NULL && collid == 0 && b->has_hi, b != NULL ? b->lo : 0, b != NULL ? b->hi : 0};
+	SiftCGOrdWant want = {rows, desc, nulls_first, b != NULL && collid == 0 && b->has_lo, b != NULL && collid == 0 && b->has_hi, b != NULL ? b->lo : 0, b != NULL ? b->hi : 0, b == NULL};
 	SiftGOrd   *g;
 
 	/* a string bound is of ranks that differ from segment to segment: the ends of a text order are not read (they are not written) */

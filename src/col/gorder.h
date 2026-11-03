@@ -126,6 +126,7 @@ typedef struct SiftCGOrdWant
 	bool		has_hi;
 	int64		lo;
 	int64		hi;
+	bool		bygroup;		/* the scan has no condition at all: a leaf with no order of its own may be read through the second order of another leaf (gorder_by_group), which lists every row and tests nothing */
 } SiftCGOrdWant;
 
 /* Where the entries of a source that is an end of a block stop being the segment's (sift_col_gorder_cuts): the values [lo, hi) it offers, and which of the sides is not the segment's own end */
