@@ -10,8 +10,11 @@ line states (a design note, a page): its note says where it is made, and it is c
 
     phrase  statement  rows  arm  option  metric  value  tolerance(optional)  note(optional)
 
+statement is the name of the statement, and may be narrowed to one table state and one mode of the records, `name@dataset#variant` (either part optional): a statement measured on
+several table states or under several index options has a claim for each.
+
 arm is heap, btree, gin, sift or picked (the plan the planner chose); metric is exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks (warm hit + read of every kind) or cold_blocks
-(blocks read after the eviction).
+(blocks read after the eviction), heap_blocks (warm hit + read of the heap alone).
 """
 import os
 import statistics
@@ -22,7 +25,7 @@ import check  # noqa: E402
 import schema  # noqa: E402
 
 KINDS = ('heap', 'btree', 'gin', 'sift', 'other')
-METRICS = ('exec_ms', 'plan_ms', 'wall_ms', 'instr_m', 'est_cost', 'blocks', 'cold_blocks', 'instr_leader_m', 'instr_workers_m', 'index_bytes', 'wal_bytes', 'segments', 'immutable_segments', 'buffer_segments')
+METRICS = ('exec_ms', 'plan_ms', 'wall_ms', 'instr_m', 'est_cost', 'blocks', 'heap_blocks', 'cold_blocks', 'instr_leader_m', 'instr_workers_m', 'index_bytes', 'wal_bytes', 'segments', 'immutable_segments', 'buffer_segments')
 NO_LINE = '-'   # the phrase of a claim that no CHANGELOG line states (a page, a design note, a patch description): it is checked against the records alone
 
 
@@ -31,13 +34,17 @@ def metric(r, name):
         return sum(r.get('%s_%s' % (k, p)) or 0 for k in KINDS for p in ('hit', 'read'))
     if name == 'cold_blocks':
         return sum(r.get('%s_read' % k) or 0 for k in KINDS)
+    if name == 'heap_blocks':
+        return (r.get('heap_hit') or 0) + (r.get('heap_read') or 0)
     return r.get(name)
 
 
 def measured(records, statement, rows, arm, option, name):
     """(median, the rows it comes from) of a metric for the arm of the statement at ROWS; arm `picked` is the default plan"""
     temp = 'cold' if name == 'cold_blocks' else 'warm'
-    rs = [r for r in records if r['statement'] == statement and r['rows'] == rows and r['temp'] == temp and
+    statement, _, variant = statement.partition('#')
+    statement, _, dataset = statement.partition('@')
+    rs = [r for r in records if r['statement'] == statement and (not dataset or r['dataset'] == dataset) and (not variant or r['variant'] == variant) and r['rows'] == rows and r['temp'] == temp and
           ((arm == 'picked' and r['mode'] == 'default') or (arm != 'picked' and r['mode'] == 'forced' and r['arm'] == arm and r['arm_option'] == option))]
     vals = [metric(r, name) for r in rs if metric(r, name) is not None]
     return (statistics.median(vals) if vals else None), rs
@@ -62,7 +69,9 @@ def read_claims(path):
 
 def verify(claims, records, changelog, tolerance=25.0, claims_file='claims.tsv'):
     """the problems of the claims: a stale phrase, a claim with no record, a value off by more than its tolerance"""
-    problems = check.check(records)
+    # a claim names the run it reads by its statement, dataset and variant, so the records are checked run by run: the arms of one run were measured together, and runs of
+    # several index options (one table each) are not arms of one comparison
+    problems = [p for run in sorted({r['run_id'] for r in records}) for p in check.check([r for r in records if r['run_id'] == run])]
     if problems:
         return ['the records are refused (check.py): ' + problems[0]] + problems[1:5]
     lines = [l for l in changelog.split('\n') if l.startswith('- ')]

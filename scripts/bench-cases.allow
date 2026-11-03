@@ -72,7 +72,6 @@ commit 6f3edd674	CHANGELOG line written after the commit; cases group_latest_ent
 a join that looks up a `sift_col` index with one equality for each row of the outer side	case join_eq_nl_probe: the nested loop of 1,000 outer keys against the index, with a b-tree as the native variant; held by test/sql/col_join_is_probe.sql
 commit 0df9bb51c	a test-only setting (sift.test_direct_max) that shortens a regression test from 41.5 s to 0.7 s; no code path of a release build changes
 commit 4c1f89e29	a test-only setting of the table load that lets the tests of the ring and the workers use smaller units; the time is the test run, not a statement
-
 figure Improved: pg_sift: a join that looks up a `sift_col` index with one eq	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: a `LATERAL` top-N (or a correlated sub-select) over a table partitioned by r	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: `count(*)`, `GROUP BY` and `IN` on a `key_columns` 	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
@@ -198,4 +197,3 @@ commit dcad963f	the shortcut is in the read of the log of track_deletes, measure
 commit a95a8829	the delete trigger of track_deletes, measured by bench/churn/heapfree_records.py --write (DELETE of 2% +73.9 to +38.0 M instructions over a plain index)
 commit ad95c2c1	the read of the tombstone log by page, measured by bench/churn/heapfree_churn_reads.py (the count of one tenant under track_deletes, recent 20% updated)
 commit 1dfdbe18	the read of the tombstone log under track_deletes, measured by bench/churn/heapfree_churn_reads.py (the point read, recent 20% updated: 3.73 to 3.37 M instructions warm, callgrind)
-figure Added: pg_sift: `track_updates` and `track_deletes` of a `sift_col` index on a heap table	the records library selects a claim by statement and size, and these figures come from one statement measured on several table states (recent or random, 1, 5 and 20% updated, unvacuumed or vacuumed) and three index options: records-0014 to 0017 of the heap-free lane (bench/churn/heapfree_churn_reads.py, heapfree_records.py --write), whose per-class table is in docs/COL-HEAPFREE.md
