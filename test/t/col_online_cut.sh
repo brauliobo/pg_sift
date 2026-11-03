@@ -82,13 +82,19 @@ hold() {
 release() { touch "$D/unhold"; wait "$HOLDER"; }
 answer() { sql "$1" "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
 table_answer() { sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
-replayed_while_held() { # the standby has replayed what the primary wrote within $1 seconds, while its query still holds the table: a stall lasts as long as the query
+# the standby has replayed what the primary wrote within $1 seconds, while its query still holds the table: a stall lasts as long as the query (45 s), so the window is a little
+# shorter than the hold, and a standby slowed by the load of a runner (a restartpoint of 12 s) is not taken for one
+replayed_while_held() {
 	local lsn i
 	lsn=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 	for ((i = 0; i < $1 * 5; i++)); do
-		[[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && kill -0 "$HOLDER" 2>/dev/null && return 0
+		if [[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && kill -0 "$HOLDER" 2>/dev/null; then
+			echo "# replay caught up after $((i / 5)).$((i % 5 * 2)) s, $(sql standby "SELECT pg_size_pretty(pg_wal_lsn_diff('$lsn', '0/0'))") of WAL in all" >&2
+			return 0
+		fi
 		sleep 0.2
 	done
+	echo "# replay behind after $1 s: it is at $(sql standby "SELECT pg_last_wal_replay_lsn()") of $lsn, the holder is $(kill -0 "$HOLDER" 2>/dev/null && echo alive || echo gone)" >&2
 	return 1
 }
 held_answer_ok() { test "$(grep after "$D/hold.out" | tr -d ' ')" == "after|$(answer primary)"; }
@@ -97,21 +103,22 @@ no_failure() { ! grep -q -E 'ERROR|pgbench: error|failed transactions: [1-9]' "$
 # 1. a standby query on the table: the free end is cut, the replay does not wait, the query reads the same
 bloat
 check "the free end stays behind the live segments (the file is over 1.9 times the live bytes)" loose
-hold 20
+hold 45
 vacuum_until_cut
 check "a standby query holds the table: the free end is cut (at most 1.1 times the live bytes)" tight
-check "... and the replay does not stall behind the query" replayed_while_held 10
+check "... and the replay does not stall behind the query" replayed_while_held 40
 release
 check "... the query reads the same rows after the cut as the primary" held_answer_ok
 
 # 2. the gate: blocks released after the standby snapshot stay held (not reusable, so no cut takes them) until the snapshot ends
 pending() { sql primary "SELECT coalesce(sum(nblocks), 0) FROM sift._test_freelist('t_idx') WHERE pending"; }
-hold 16
+hold 45
+wal0=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 sql primary "UPDATE t SET amount = amount + 1 WHERE id % 3 = 0" >/dev/null
 vacuum
-echo "# gate: during the snapshot file $(size) live $(live) $(lay)" >&2
+echo "# gate: during the snapshot file $(size) live $(live) $(lay), WAL of the update and the VACUUM $(sql primary "SELECT pg_size_pretty(pg_current_wal_insert_lsn() - '$wal0')")" >&2
 check "blocks released after a standby snapshot are held by the horizon" test "$(pending)" -gt 0
-check "... and the replay does not stall behind the query" replayed_while_held 10
+check "... and the replay does not stall behind the query" replayed_while_held 40
 release
 for _ in $(seq 10); do past; vacuum; [[ $(pending) -eq 0 ]] && break; done
 echo "# gate: after the snapshot ended file $(size) live $(live) $(lay)" >&2
