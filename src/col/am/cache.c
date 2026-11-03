@@ -86,7 +86,7 @@ zones_shrink(SiftColZones *zs)
 static LeafEntry *
 leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 {
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	const int	ncols = sift_col_index_defs(index)->ncols;	/* the cached state is freed by a reload: nothing of it is held across a read of the directory or a segment */
 	SiftDirSnapshot own;
 	const SiftDirSnapshot *dir = snap;
 	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
@@ -96,7 +96,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (am_leaf_plan != 0 && dir == NULL && leaf_cache != NULL)
 	{
 		e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
-		if (e != NULL && e->checked == am_leaf_plan && e->ncols == d->ncols)
+		if (e != NULL && e->checked == am_leaf_plan && e->ncols == ncols)
 			return e;
 	}
 	sift_stat_add(SIFT_STAT_LEAF_CHECKED, 1);
@@ -115,7 +115,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		leaf_cache = hash_create("sift_col leaf statistics", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
-	if (e != NULL && e->stamp == stamp && e->ncols == d->ncols)
+	if (e != NULL && e->stamp == stamp && e->ncols == ncols)
 	{
 		e->checked = am_leaf_plan;
 		return e;
@@ -142,19 +142,21 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	}
 	{
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
-		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+		const SiftColRel *rel = sift_col_rel_private(index, cx);	/* the loops open segments, which read catalogs and reload the cached state */
+		const SiftColIndexMeta *d = &rel->meta;
+		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
 		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
-		const SiftCPaggSpec *spec = &sift_col_rel(index)->pagg;
+		const SiftCPaggSpec *spec = &rel->pagg;
 		SiftColZones *zs = zones_new(d);
 		uint64		nunits = sift_cseg_dir_units(dir),
 					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS),
 					shared_stamp;
 
-		for (int c = 0; c < d->ncols; c++)
+		for (int c = 0; c < ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
 		/* the statistics of the segments are folded once for the server: the first backend that plans keeps them for the others (col/leafshm.c) */
 		shared_stamp = stamp * 31 + census_units;
-		if (sift_col_leafshm_read(index->rd_locator.relNumber, shared_stamp, d->ncols, st, pre, zs))
+		if (sift_col_leafshm_read(index->rd_locator.relNumber, shared_stamp, ncols, st, pre, zs))
 			sift_stat_add(SIFT_STAT_LEAF_SHARED, 1);
 		else
 		{
@@ -167,7 +169,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 					continue;
 				seg = sift_cseg_open(index, &dir->segs[i], cx);
-				for (int c = 0; c < d->ncols; c++)
+				for (int c = 0; c < ncols; c++)
 					sift_cseg_leaf_stats(seg, c, &st[c]);
 				sift_cseg_zone_sample(seg, zs);
 				sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
@@ -188,17 +190,17 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 			}
 			for (int i = 0; i < dir->nsegs; i++)
 				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].kind != SIFT_SEG_TOMB && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
-					for (int c = 0; c < d->ncols; c++)
+					for (int c = 0; c < ncols; c++)
 						st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
 			sift_stat_add(SIFT_STAT_LEAF_BUILT, 1);
-			sift_col_leafshm_write(index->rd_locator.relNumber, shared_stamp, d->ncols, st, pre, zs);
+			sift_col_leafshm_write(index->rd_locator.relNumber, shared_stamp, ncols, st, pre, zs);
 		}
 		MemoryContextDelete(cx);
 		zones_shrink(zs);
 		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 		e->stamp = stamp;
 		e->checked = am_leaf_plan;
-		e->ncols = d->ncols;
+		e->ncols = ncols;
 		e->st = st;
 		e->zones = zs;
 		e->pre = pre;
