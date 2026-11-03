@@ -36,6 +36,8 @@ def main():
     out = []
     index_sql = "CREATE INDEX w_c ON w USING sift_col(id,tenant_id,counter_a) WITH(track_updates='id')"
     settle = "DO $$ BEGIN LOOP EXIT WHEN sift.col_maintenance_due('w_c',true) IS NULL; PERFORM sift.col_maintain('w_c'); PERFORM pg_sleep(0.01); END LOOP; PERFORM pg_sleep(0.05); LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN NOT EXISTS (SELECT FROM pg_stat_activity WHERE backend_type='sift maintenance' OR backend_type='autovacuum worker'); PERFORM pg_sleep(0.01); END LOOP; END $$"
+    pins = ['SET enable_seqscan=off', 'SET enable_indexscan=off', 'SET enable_indexonlyscan=off', 'SET enable_bitmapscan=off']
+    reset_pins = ';'.join('RESET ' + q.split()[1].split('=')[0] for q in pins)
     oracle_sql = 'SELECT tenant_id,count(*),sum(counter_a),sum(id) FROM w GROUP BY tenant_id ORDER BY tenant_id'
 
     def save():
@@ -65,9 +67,9 @@ def main():
         run('VACUUM (FREEZE,ANALYZE) w')
 
     def verify(label):
-        run('SET sift.enable_agg=off; SET enable_indexscan=off; SET enable_indexonlyscan=off; SET enable_bitmapscan=off')
+        run(collect.FORCING['heap'] + ['SET enable_seqscan=on'])
         heap = s.run(oracle_sql)[1]
-        run('RESET sift.enable_agg; RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan; SET enable_seqscan=off')
+        run(['RESET sift.enable_agg', 'RESET sift.enable_col_scan'] + pins)
         plan = json.loads('\n'.join(s.run('EXPLAIN (FORMAT JSON) ' + oracle_sql)[1]))[0]['Plan']
         if collect.plan_structure(plan, *collect.catalog_of(s, 'w')) != 'sift':
             raise RuntimeError('oracle did not exercise sift')
@@ -77,22 +79,24 @@ def main():
         if s.run(oracle_sql)[1] != heap:
             raise RuntimeError('method-off/heap mismatch: ' + label)
         run("SET sift.eval_methods='%s'" % method_value)
-        run('RESET enable_seqscan')
+        run(reset_pins)
         print('oracle ' + label + ' passed', flush=True)
 
     def subject(cell, state, kind='read'):
         dataset = '%s-%s-%s' % (*cell.rsplit('-',1)[:1], state, cell.rsplit('-',1)[1]) if kind == 'read' else cell
         return collect.Subject(dataset, a.rows, 'sorted', state, 'w', key='id', keys=a.rows, kind=kind,
-                               structures='constraint,heap,sift', churn=churn if state != 'fresh_vacuumed' else None,
+                               structures='constraint,heap,sift', default_option=cell.rsplit('-',1)[1], churn=churn if state != 'fresh_vacuumed' else None,
                                settled=state == 'churned_vacuumed')
 
     def reads(cell, state):
         verify(cell + ':' + state)
+        run(pins)
         for name, query in [('group-all', 'SELECT tenant_id,count(*),sum(counter_a) FROM w GROUP BY tenant_id'),
                             ('range-key', 'SELECT tenant_id,count(*),sum(counter_a) FROM w WHERE id<=%d GROUP BY tenant_id' % (a.rows // 100)),
                             ('filter-group', 'SELECT count(*),sum(counter_a) FROM w WHERE tenant_id=1')]:
-            out.extend(collect.measure_statement(s, name, query, subject(cell, state), [collect.Arm('sift', method), collect.Arm('heap')] + ([collect.Arm('btree')] if name == 'range-key' else []), env, temps=('warm','cold')))
+            out.extend(collect.measure_statement(s, name, query, subject(cell, state), [collect.Arm('sift', method, settings=pins), collect.Arm('heap')] + ([collect.Arm('btree', settings=collect.FORCING['btree'] + ['SET enable_indexscan=on', 'SET enable_indexonlyscan=on', 'SET enable_bitmapscan=on'])] if name == 'range-key' else []), env, temps=('warm','cold')))
         save()
+        run(reset_pins)
 
     churn = None
     for method in ('off','on'):

@@ -158,6 +158,40 @@ class Collect(unittest.TestCase):
             collect.arm_rows(s, 'SELECT 1', subject, None, {}, 'forced', arm, 1, 1, catalog, None, None, ('warm',))
         self.assertEqual(caught.exception.structure, 'mixed')
 
+    def changed_plan_rows(self, first, final, mode):
+        plans = {'sift': {'Node Type': 'Custom Scan', 'Custom Plan Provider': 'SiftAgg'},
+                 'btree': {'Node Type': 'Index Scan', 'Index Name': 'ix'}, 'heap': {'Node Type': 'Seq Scan'}}
+
+        class Planner:
+            def __init__(self):
+                self.plans = iter((first, final))
+
+            def run(self, sql):
+                if sql.startswith('EXPLAIN'):
+                    return (1.0, [json.dumps([{'Plan': plans[next(self.plans)]}])], '')
+                return (1.0, [], '')
+
+        def sizes(s, table, structure):
+            return (100, {'sift': 1000, 'btree': 200, 'heap': None}[structure])
+        facts = dict(segments=2, immutable_segments=1, buffer_segments=1, index_options='default')
+        env = collect.Env('abc123456789', 'test', BASE['run_id'], 1, reps=1)
+        with patch.object(collect, 'pressure', return_value=(0., 0.)), patch.object(collect, 'statio', return_value={}), \
+             patch.object(collect, 'wal_lsn', return_value=0), patch.object(collect, 'structure_bytes', side_effect=sizes), \
+             patch.object(collect, 'index_facts', return_value=facts), patch.object(collect, 'count_instructions', return_value=(1., 1.)):
+            return collect.arm_rows(Planner(), 'SELECT 1', collect.Subject('t', 1, 'arrival', 'fresh_vacuumed', 't'), env, {}, mode,
+                                    collect.Arm('sift'), 1, 1, (AM, None, {}), None, None, ('warm',))[0]
+
+    def test_read_inventory_follows_the_executed_plan(self):
+        for first, final, size, segments in [('btree', 'sift', 1000, 2), ('sift', 'btree', 200, None)]:
+            with self.subTest(first=first, final=final):
+                row = self.changed_plan_rows(first, final, 'default')
+                self.assertEqual((row['structure'], row['index_bytes'], row.get('segments')), (final, size, segments))
+
+    def test_a_forced_arm_cannot_change_structure_during_repetitions(self):
+        with self.assertRaises(collect.NotForced) as caught:
+            self.changed_plan_rows('sift', 'heap', 'forced')
+        self.assertEqual(caught.exception.structure, 'heap')
+
     def test_only_the_scans_of_the_subject_table_name_the_structure(self):
         lateral = {'Node Type': 'Nested Loop', 'Plans': [{'Node Type': 'Seq Scan', 'Relation Name': 'probe'},
                                                          {'Node Type': 'Index Scan', 'Index Name': 'ix', 'Relation Name': 'events'}]}

@@ -661,8 +661,6 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                 else:
                     ms = run_all(t, sql)
             b1, lsn1 = statio(s), wal_lsn(s)
-            table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
-            facts = index_facts(s, subject.table) if index_bytes is not None and (structure if mode == 'default' else arm.arm) == 'sift' else {}
             declared = arm.structures or subject.structures
             if not read and declared:   # a harness that says what its table holds is held to it: a CREATE INDEX that failed, or an index nobody listed, is no measurement
                 held = table_structures(s, subject.table)
@@ -677,6 +675,10 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                     raise RuntimeError('EXPLAIN: %s' % err)
                 plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
                 cost = cost2 if cost2 is not None else cost
+                if mode == 'forced' and structure != arm.arm:
+                    raise NotForced(structure)
+            table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
+            facts = index_facts(s, subject.table) if index_bytes is not None and (structure if mode == 'default' else arm.arm) == 'sift' else {}
             instr = cycles = leader = workers_m = None
             if temp == 'warm':
                 if prepare and not read:
