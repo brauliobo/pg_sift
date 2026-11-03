@@ -144,7 +144,7 @@ order_choice_lines(Relation index, const SiftColLeafStats *ls, StringInfo out)
 		{
 			SiftCGOrdPay pay;
 			bool		ends = ls[c].gord_ends_rows > 0;
-			const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
+			const char *name = sift_col_leaf_name(index, &r->schema->cols[c]);
 
 			if ((ls[c].gord_rows > 0 || ends) && ls[c].gord_grp_rows < ls[c].gord_rows + ls[c].gord_ends_rows && sift_cseg_gorder_pay(seg, c, &pay))
 			{
@@ -209,7 +209,7 @@ colb_notice_order_array(Relation index)
 	initStringInfo(&names);
 	for (int c = 0; c < d->ncols; c++)
 	{
-		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
+		const char *name = sift_col_leaf_name(index, &d->cols[c]);
 
 		if (ls[c].gord_rows > 0)
 		{
@@ -283,7 +283,7 @@ colb_notice_order_layout(Relation index)
 	initStringInfo(&ties);
 	for (int c = 0; c < d->ncols; c++)
 	{
-		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname);
+		const char *name = sift_col_leaf_name(index, &d->cols[c]);
 
 		if (ls[c].gord_rows <= 0)
 			continue;

@@ -61,6 +61,7 @@ extern uint32 sift_col_pagg_hash(Relation index);
 
 /* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
 extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
+extern const char *sift_col_leaf_name(Relation index, const SiftColDef *def);
 
 /*
  * The expression of index attribute attno (1-based): a Var with varno 1 for a plain column, else the index expression as stored

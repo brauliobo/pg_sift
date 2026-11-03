@@ -33,12 +33,6 @@ put_row(SectionRows *r, const char *section, const char *leaf, int64 bytes)
 	r->total += bytes;
 }
 
-static const char *
-leaf_name(Relation rel, const SiftColDef *def)
-{
-	return def->path[0] ? def->path : NameStr(TupleDescAttr(RelationGetDescr(rel), def->attno - 1)->attname);
-}
-
 /* The per-segment sums of the sections that are not per leaf */
 typedef struct SegSums
 {
@@ -149,9 +143,9 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	}
 	for (int c = 0; sc && c < sc->ncols; c++)
 	{
-		put_row(&r, "chunks", leaf_name(rel, &sc->cols[c]), chunks[c]);
+		put_row(&r, "chunks", sift_col_leaf_name(rel, &sc->cols[c]), chunks[c]);
 		if (dicts[c] > 0)
-			put_row(&r, "dict", leaf_name(rel, &sc->cols[c]), dicts[c]);
+			put_row(&r, "dict", sift_col_leaf_name(rel, &sc->cols[c]), dicts[c]);
 	}
 	put_row(&r, "unit_dir", NULL, s.unit_dir);
 	put_row(&r, "dict_other", NULL, s.dict_other);

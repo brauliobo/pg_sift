@@ -338,6 +338,13 @@ sift_col_index_defs(Relation index)
 	return &r->meta;
 }
 
+/* The name of a leaf: its path (a jsonb path, a lane), else the column it comes from; leaves are not index attributes, there are more of them than columns */
+const char *
+sift_col_leaf_name(Relation index, const SiftColDef *def)
+{
+	return def->path[0] ? def->path : NameStr(TupleDescAttr(RelationGetDescr(index), def->attno - 1)->attname);
+}
+
 Node *
 sift_col_att_expr(Relation index, int attno)
 {

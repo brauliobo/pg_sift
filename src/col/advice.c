@@ -190,12 +190,6 @@ has_rollup(const SiftCPaggSpec *spec, int a, int b)
 	return false;
 }
 
-static const char *
-leaf_label(Relation index, const SiftColDef *d)
-{
-	return d->path[0] ? d->path : NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
-}
-
 Datum
 sift_col_index_advice(PG_FUNCTION_ARGS)
 {
@@ -374,7 +368,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 			appendStringInfo(&advice, "key_columns = 'auto' keeps a key list or bitmap of it for count(DISTINCT)");
 		else if (sift_col_volatile_name(NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname)))
 			appendStringInfo(&advice, "an UPDATE of it is not a HOT update while the index covers it: leave it out if it is rewritten far more often than it is aggregated");
-		v[0] = CStringGetTextDatum(leaf_label(index, d));
+		v[0] = CStringGetTextDatum(sift_col_leaf_name(index, d));
 		v[1] = CStringGetTextDatum(kind);
 		v[2] = held ? CStringGetTextDatum(held) : (Datum) 0;
 		isnull[2] = held == NULL;
@@ -391,8 +385,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		bool		isnull[6] = {false};
 		double		growth = pairs[p].seen && units ? pairs[p].cells / Max(pairs[p].fit, 1) * (double) units * CELL_BYTES * 100.0 / Max((double) bytes, 1.0) : 0.0;
 		bool		pass = pairs[p].seen > 0 && pairs[p].fit * 100 >= (uint64) pairs[p].seen * AGREE_PCT && growth <= GROWTH_PCT;
-		const char *na = leaf_label(index, &sc->cols[dims[pairs[p].a]]),
-				   *nb = leaf_label(index, &sc->cols[dims[pairs[p].b]]);
+		const char *na = sift_col_leaf_name(index, &sc->cols[dims[pairs[p].a]]),
+				   *nb = sift_col_leaf_name(index, &sc->cols[dims[pairs[p].b]]);
 
 		v[0] = CStringGetTextDatum(psprintf("%s, %s", na, nb));
 		v[1] = CStringGetTextDatum("pair");
