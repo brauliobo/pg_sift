@@ -60,3 +60,10 @@ and of 1,000,000 rows 0.63 M instructions	one_parent_narrow	1000000	btree	bitmap
 (95 M and 988 before)	ten_days_before	1000000	btree	bitmap	instr_m	95	25	run fb58eea1679c-20261103T013105Z-1286, records in program-scale/records/table-bitmap-pre-1m-20261103.rec
 4,110 rows of 300,000 take 12.8 M instructions	ten_days	300000	btree	bitmap	instr_m	12.8	25	run 7799abcf2bbb-20261103T013304Z-8ca8, records in program-scale/records/table-bitmap-density-300k-20261103.rec
 (18.5 M before)	ten_days_before	300000	btree	bitmap	instr_m	18.5	25	run fb58eea1679c-20261103T000221Z-6618, records in program-scale/records/table-bitmap-pre-300k-20261103.rec
+`bulk_copy_wal` of 10,000,000 rows, the COPY and the `sift.table_maintain` that followed, 24,534	bulk_copy_wal_before	10000000	sift	default	wall_ms	24534	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+to 13,836 ms	bulk_copy_wal	10000000	sift	default	wall_ms	13836	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+and 255,160 to 167,908 M instructions	bulk_copy_wal_before	10000000	sift	default	instr_m	255160	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+167,908 M instructions	bulk_copy_wal	10000000	sift	default	instr_m	167908	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+(a heap table 8,050 ms and 106,902 M)	bulk_copy_wal	10000000	heap	default	wall_ms	8050	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+of 1,000,000 rows 18,772 to 17,068 M instructions	bulk_copy_wal_before	1000000	sift	default	instr_m	18772	25	run 4281a82244c9-20261103T031407Z-4466, records in program-scale/records/copy-load-before-1m-20261103.rec
+to 17,068 M instructions	bulk_copy_wal	1000000	sift	default	instr_m	17068	25	run f98140da39b3-20261103T094631Z-f13c, records in program-scale/records/copy-load-after-1m-20261103.rec
