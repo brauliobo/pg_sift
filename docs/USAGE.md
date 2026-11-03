@@ -901,7 +901,7 @@ asked for are the ones to name); `units` counts the units scanned for lack of th
 
 Between an UPDATE or DELETE and the VACUUM that follows, a `sift_col` index still holds the entries of the old versions, and a read asks the heap which are live. With `track_updates = 'id'`
 (a column with a unique index of its own) and `track_deletes = on` the index keeps a log of the entries that stopped being live, and a read of an MVCC snapshot takes the log for the whole truth: the
-pages of the heap it would have visited are not read. [docs/COL-HEAPFREE.md](COL-HEAPFREE.md) has the design; `sift.col_tracking(index)` says whether the log can be taken for complete.
+pages of the heap it would have visited are not read. `sift.col_tracking(index)` says whether the log can be taken for complete.
 
 Both are off by default. Numbers (300,000 rows, 1, 5 and 20% of them updated and not vacuumed, instructions of one backend, warm; in `EXPLAIN` the `Heap Pages` of the plan):
 
