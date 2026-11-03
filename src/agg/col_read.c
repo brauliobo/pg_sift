@@ -275,9 +275,9 @@ col_gorder_clean(void *impl, int i)
 }
 
 bool
-col_gorder_group_values(void *impl, int gleaf, int kleaf, int64 **vals, uint32 *n)
+col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
 {
-	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, vals, n);
+	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, only, vals, n);
 }
 
 bool

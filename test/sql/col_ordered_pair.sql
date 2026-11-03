@@ -28,7 +28,25 @@ CREATE INDEX pn_i ON pn USING sift_col (g, k, id) WITH (count_columns = 'off', o
 CREATE TABLE po (id int, g int4 NOT NULL, h int4 NOT NULL, k int4);
 INSERT INTO po SELECT i, i % 40, i % 7, (i * 7919) % 301 FROM generate_series(1, 6000) i;
 CREATE INDEX po_i ON po USING sift_col (g, k, h) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'h', order_layout = 'whole');
+-- a second table of the same shape, for a merge join on both columns (it marks the position at the start of a run of equal (g, k) and goes back to it)
+CREATE TABLE pe (id int, g int4 NOT NULL, k int4);
+INSERT INTO pe SELECT i, (i * 3) % 40, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729) % 301 - 150 END FROM generate_series(1, 9000) i;
+CREATE INDEX pe_i ON pe USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+VACUUM (ANALYZE) pe;
+-- every (g, k) three times, in 10 groups: the run of equal keys of a merge join ends at the first row of the next group, and the rows it marked are given again with their own g
+CREATE TABLE pf (id int, g int4 NOT NULL, k int4);
+INSERT INTO pf SELECT i, i / 600, (i / 3) % 200 FROM generate_series(0, 5999) i;
+CREATE INDEX pf_i ON pf USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+VACUUM (ANALYZE) pf;
+-- partitions: a Merge Append of the pair scans of the partitions
+CREATE TABLE pt (id int, g int4 NOT NULL, k int4) PARTITION BY HASH (id);
+CREATE TABLE pt0 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 0);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 1);
+CREATE TABLE pt2 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 2);
+INSERT INTO pt SELECT i, i % 90, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 5003 END FROM generate_series(1, 18000) i;
+CREATE INDEX pt_i ON pt USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 VACUUM (ANALYZE) pa;
+VACUUM (ANALYZE) pt;
 VACUUM (ANALYZE) pb;
 VACUUM (ANALYZE) pc;
 VACUUM (ANALYZE) pd;
@@ -46,10 +64,13 @@ BEGIN
 	PERFORM set_config('enable_sort', (NOT ios)::text, true);
 	PERFORM set_config('enable_bitmapscan', 'false', true);
 	PERFORM set_config('enable_hashagg', 'false', true);
+	PERFORM set_config('enable_hashjoin', 'false', true);
+	PERFORM set_config('enable_nestloop', 'false', true);
+	PERFORM set_config('enable_material', 'false', true);
 	scans := 0;
 	sorts := 0;
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF line ~ 'Index Only Scan (Backward )?using p._i' THEN scans := scans + 1; END IF;
+		IF line ~ 'Index Only Scan (Backward )?using p[a-z0-9]*_(i|g_k_id_idx)' THEN scans := scans + 1; END IF;
 		IF line ~ '^ *(->  )?(Incremental )?Sort$' THEN sorts := sorts + 1; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(g::text || '':'' || coalesce(k::text, ''null''), ''|'')) FROM (' || q || ') w' INTO n, md5;
@@ -67,7 +88,8 @@ BEGIN
 END $$;
 
 -- sorts is 0 where the scan gives the order: queries 1 to 3, 5 to 7 and 9. Query 4 asks k the other way round than g: the scan gives g and the sort is incremental, by group. Queries 8 and
--- 10 to 12 have no whole order of the pair (a compact order, a g that may be NULL, an order grouped by another column) and sort the rows of the plain scan; 13 reads a third column
+-- 10 to 12 have no whole order of the pair (a compact order, a g that may be NULL, an order grouped by another column) and sort the rows of the plain scan; 13 reads a third column. Queries 14 to 18 have
+-- g = value (the scan reads that group alone; 17 is three rows, which the heap plan reads cheaper), 19 and 20 are the Merge Append of the scans of 3 partitions, 21 and 22 a merge join of the scans of two tables (no Materialize)
 CREATE TABLE pa_q (n int, q text);
 INSERT INTO pa_q VALUES
  (1, 'SELECT g, k FROM pa ORDER BY g, k'),
@@ -82,7 +104,16 @@ INSERT INTO pa_q VALUES
  (10, 'SELECT g, k FROM pn ORDER BY g, k'),
  (11, 'SELECT g, k FROM po ORDER BY g, k'),
  (12, 'SELECT g, k FROM pc ORDER BY g DESC, k DESC'),
- (13, 'SELECT g, k, id FROM pa ORDER BY g, k');
+ (13, 'SELECT g, k, id FROM pa ORDER BY g, k'),
+ (14, 'SELECT g, k FROM pa WHERE g = 17 ORDER BY k'),
+ (15, 'SELECT g, k FROM pa WHERE g = 17 ORDER BY k DESC'),
+ (16, 'SELECT g, k FROM pa WHERE g = 500 ORDER BY k'),
+ (17, 'SELECT g, k FROM pb WHERE g = -1000 ORDER BY g, k'),
+ (18, 'SELECT g, k FROM pa WHERE g = 41 ORDER BY k'),
+ (19, 'SELECT g, k FROM pt ORDER BY g, k'),
+ (20, 'SELECT g, k FROM pt ORDER BY g DESC, k DESC'),
+ (21, 'SELECT a.g, a.k FROM pa a JOIN pe b ON a.g = b.g AND a.k = b.k ORDER BY a.g, a.k'),
+ (22, 'SELECT a.g, a.k FROM pf a JOIN pf b ON a.g = b.g AND a.k = b.k ORDER BY a.g, a.k');
 SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
 
 -- rows deleted, updated (k, and g: the row goes to another group, or to a group of its own) and inserted (the write buffer: groups that have rows in the segments, and one that has not)
@@ -126,5 +157,5 @@ INSERT INTO pa (id, g, k) SELECT id + 60000, CASE WHEN id % 2 = 0 THEN (g + 1) %
 SELECT n, q, (pa_check(q)).* FROM pa_q WHERE n <= 4 ORDER BY n;
 
 DROP FUNCTION pa_check(text), pa_run(text, bool);
-DROP TABLE pa_q, pa, pb, pc, pd, pn, po;
+DROP TABLE pa_q, pa, pb, pc, pd, pn, po, pt, pe, pf;
 DROP EXTENSION pg_sift CASCADE;

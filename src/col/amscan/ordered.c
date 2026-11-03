@@ -379,10 +379,26 @@ static void
 ord_pair_open(IndexScanDesc scan, ColScanOpaque *so)
 {
 	ColOrd	   *o = so->ord;
+	int64		only = 0;
+	const int64 *onlyp = NULL;
 
 	o->gcxt[0] = AllocSetContextCreate(o->cxt, "sift_col ordered groups", ALLOCSET_DEFAULT_SIZES);
 	o->gcxt[1] = AllocSetContextCreate(o->cxt, "sift_col ordered groups", ALLOCSET_DEFAULT_SIZES);
-	if (sift_colsrc_gorder_group_values(o->src, o->gleaf, o->kleaf, &o->groups, &o->ngroups))
+	/* g = value (a scan key of the planner's, ordpath.c): the one group, none if the value is NULL */
+	if (scan->numberOfKeys > 0)
+	{
+		const ScanKeyData *sk = &scan->keyData[0];
+
+		SIFT_INVARIANT(scan->numberOfKeys == 1 && sk->sk_attno == 1 && sk->sk_strategy == BTEqualStrategyNumber && !(sk->sk_flags & ~SK_ISNULL), "an ordered pair scan with a condition that is not g = value");
+		if (!(sk->sk_flags & SK_ISNULL))
+		{
+			only = key_of(o->gtype, sk->sk_argument);
+			onlyp = &only;
+		}
+	}
+	if (scan->numberOfKeys > 0 && onlyp == NULL)
+		o->groups = palloc(sizeof(int64));
+	else if (sift_colsrc_gorder_group_values(o->src, o->gleaf, o->kleaf, onlyp, &o->groups, &o->ngroups))
 	{
 		o->gi = o->desc ? o->ngroups : 0;
 		ord_next_group(o);
@@ -477,7 +493,7 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 	if (o == NULL)
 	{
 		/* the planner offers the path for a plan that reads the first column alone, with no index condition (ordpath.c) */
-		SIFT_INVARIANT(scan->numberOfKeys == 0 && sift_col_ordered_type(TupleDescAttr(scan->xs_itupdesc, 0)->atttypid), "an ordered scan with an index condition or a column it cannot order");
+		SIFT_INVARIANT((scan->numberOfKeys == 0 || (so->ordpair && scan->numberOfKeys == 1)) && sift_col_ordered_type(TupleDescAttr(scan->xs_itupdesc, 0)->atttypid), "an ordered scan with an index condition or a column it cannot order");
 		ord_open(scan, so, dir);
 		o = so->ord;
 		if (o->g == NULL && !o->pair)

@@ -121,7 +121,7 @@ extern bool sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint3
 extern int	sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid);
 extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid);
 extern bool sift_colsrc_gorder_clean(SiftSrcSource *src, int i);
-extern bool sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, int64 **vals, uint32 *n);
+extern bool sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);
 extern void sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern bool sift_colsrc_gorder_groups(SiftSrcSource *src, int i, int leaf, uint32 *ngroups);

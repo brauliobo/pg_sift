@@ -79,6 +79,27 @@ sift_col_ordered_pair_mode(Oid indexoid, double tuples)
 	return mode;
 }
 
+/* The clause g = value of the restrictions of the relation, the value free of the relation's columns and of volatile functions (a constant, a parameter): the pair scan reads the one group */
+static RestrictInfo *
+group_equality(RelOptInfo *rel, Var *gvar, Oid gfam)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	{
+		OpExpr	   *op;
+		Node	   *other;
+
+		if (!IsA(ri->clause, OpExpr) || ri->pseudoconstant || !bms_equal(ri->required_relids, rel->relids))
+			continue;
+		op = (OpExpr *) ri->clause;
+		if (list_length(op->args) != 2 || !equal(linitial(op->args), gvar) || op->opno != get_opfamily_member(gfam, gvar->vartype, gvar->vartype, BTEqualStrategyNumber))
+			continue;
+		other = lsecond(op->args);
+		if (exprType(other) == gvar->vartype && !contain_vars_of_level(other, 0) && !contain_volatile_functions(other))
+			return ri;
+	}
+	return NULL;
+}
+
 static void
 add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, Bitmapset *used, List **added)
 {
@@ -88,6 +109,8 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 				gcls,
 				kcls;
 	IndexOptInfo *oi;
+	RestrictInfo *eq;
+	List	   *clauses = NIL;
 
 	if (ii->nkeycolumns < 2 || ii->indexkeys[1] <= 0 || !ii->canreturn[1] || ii->indexkeys[1] == ii->indexkeys[0])
 		return;
@@ -116,6 +139,19 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 			te->resname = pstrdup(COL_ORDERED_PAIR_MARK);
 		oi->indextlist = lappend(oi->indextlist, te);
 	}
+	/* WHERE g = x: the one group is read, in the order of k (g is the same in every row, so the order asked is k alone) */
+	eq = group_equality(rel, gvar, gfam);
+	if (eq != NULL)
+	{
+		IndexClause *ic = makeNode(IndexClause);
+
+		ic->rinfo = eq;
+		ic->indexquals = list_make1(eq);
+		ic->lossy = false;
+		ic->indexcol = 0;
+		ic->indexcols = NIL;
+		clauses = list_make1(ic);
+	}
 	for (int d = 0; d < 2; d++)
 	{
 		ScanDirection dir = d == 0 ? ForwardScanDirection : BackwardScanDirection;
@@ -126,13 +162,18 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 
 		if (!OidIsValid(gop) || !OidIsValid(kop))
 			continue;
-		pathkeys = EXPR_PATHKEY(root, (Expr *) gvar, gop, rel->relids);
-		if (pathkeys != NIL)
-			pathkeys = list_concat(pathkeys, EXPR_PATHKEY(root, (Expr *) kvar, kop, rel->relids));
+		if (eq != NULL)
+			pathkeys = EXPR_PATHKEY(root, (Expr *) kvar, kop, rel->relids);
+		else
+		{
+			pathkeys = EXPR_PATHKEY(root, (Expr *) gvar, gop, rel->relids);
+			if (pathkeys != NIL)
+				pathkeys = list_concat(pathkeys, EXPR_PATHKEY(root, (Expr *) kvar, kop, rel->relids));
+		}
 		pathkeys = truncate_useless_pathkeys(root, rel, pathkeys);
 		if (pathkeys == NIL)
 			continue;
-		*added = lappend(*added, create_index_path(root, oi, NIL, NIL, NIL, pathkeys, dir, true, NULL, 1.0, false));
+		*added = lappend(*added, create_index_path(root, oi, clauses, NIL, NIL, pathkeys, dir, true, NULL, 1.0, false));
 	}
 }
 

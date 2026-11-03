@@ -225,8 +225,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		bool		pair = index->indextlist != NIL && ((TargetEntry *) linitial(index->indextlist))->resname != NULL && strcmp(((TargetEntry *) linitial(index->indextlist))->resname, COL_ORDERED_PAIR_MARK) == 0;
 		bool		whole = pair || sift_col_ordered_whole(index->indexoid);
 		double		walk = costs.numIndexTuples * scale;
-		/* a pair opens the merge of each group of the first column */
-		double		groups = pair ? Min(estimate_num_groups(root, list_make1(((TargetEntry *) linitial(index->indextlist))->expr), Max(index->rel->tuples, 1.0), NULL, NULL), costs.numIndexTuples) : 0.0;
+		/* a pair opens the merge of each group of the first column (g = value: that one) */
+		double		groups = pair && path->indexclauses != NIL ? 1.0 : pair ? Min(estimate_num_groups(root, list_make1(((TargetEntry *) linitial(index->indextlist))->expr), Max(index->rel->tuples, 1.0), NULL, NULL), costs.numIndexTuples) : 0.0;
 
 		*indexStartupCost = scale * COL_SCAN_FIXED + (whole ? 0.0 : walk * COL_SCAN_ORDERED_SORT);
 		*indexTotalCost = scale * COL_SCAN_FIXED + (whole ? walk * COL_SCAN_ORDERED : walk * COL_SCAN_ORDERED_SORT) + groups * scale * COL_SCAN_ORDERED_GROUP + costs.numIndexTuples * cpu_index_tuple_cost;

@@ -440,9 +440,9 @@ sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
 }
 
 bool
-sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, int64 **vals, uint32 *n)
+sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
 {
-	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, vals, n);
+	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, only, vals, n);
 }
 
 bool
