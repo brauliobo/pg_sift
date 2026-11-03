@@ -128,6 +128,11 @@ take_range(SiftBuildShared *shared, int gen)
 	SiftBuildRanges *rg = &shared->ranges;
 	int			i = -1;
 
+#ifdef SIFT_TESTING
+	/* sift.test_fail_who = 1 aims at the leader: it alone writes ranges, so that it has one to fail in however the workers are scheduled */
+	if (sift_test_fail_who == 1 && ParallelWorkerNumber >= 0)
+		return -1;
+#endif
 	SpinLockAcquire(&shared->mutex);
 	if (rg->gen == gen && rg->next < rg->nranges)
 		i = rg->next++;
