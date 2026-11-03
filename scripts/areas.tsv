@@ -45,6 +45,9 @@
 ^src/col/	fast:{col}|{agg}|{cheap}
 ^src/agg/	fast:{agg}|{cheap}
 ^src/table/	fast:{tbl}|{cheap}
+# the cost model: a constant or a scale of the planner's prices moves plans of every area (the unit scale of the scan turned agg_topn_plan_keys red), so a change of these files runs every regression test and the plan gates, in the fast tier too
+^src/(col/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	fast:^installcheck|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$
+^src/(col/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	^installcheck|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$
 # the source areas
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
 ^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
