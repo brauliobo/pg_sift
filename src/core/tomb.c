@@ -536,6 +536,15 @@ verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo, VerdictRu
 	return run->verdict = r;
 }
 
+/* The entries of a transaction are together in the log by address (a statement writes them as one run): the verdict of the one before answers the next without the call */
+static inline SiftTombVerdict
+verdict_next(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo, VerdictRun *run)
+{
+	if (e->xid == run->xid && TransactionIdIsValid(run->xid))
+		return run->verdict;
+	return verdict_memo(snapshot, e, memo, run);
+}
+
 static bool
 deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, SiftTombMemo *memo, VerdictRun *run)
 {
@@ -545,7 +554,7 @@ deleted_offsets(const SiftTomb *f, uint32 n, Snapshot snapshot, uint64 *mask, Si
 
 		if (f->kind == SIFT_TOMB_LOCK)
 			continue;
-		v = verdict_memo(snapshot, f, memo, run);
+		v = verdict_next(snapshot, f, memo, run);
 		if (v == SIFT_TOMB_UNKNOWN)
 			return false;
 		if (v == SIFT_TOMB_DELETES)
@@ -577,7 +586,7 @@ deleted_blocks(const SiftTomb *f, uint32 n, Snapshot snapshot, BlockNumber first
 
 	for (; n > 0; f++, n--)
 	{
-		if (f->kind == SIFT_TOMB_LOCK || verdict_memo(snapshot, f, memo, run) == SIFT_TOMB_KEEPS)
+		if (f->kind == SIFT_TOMB_LOCK || verdict_next(snapshot, f, memo, run) == SIFT_TOMB_KEEPS)
 			continue;
 		if (mask == NULL)
 			return true;
