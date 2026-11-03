@@ -22,6 +22,7 @@ bool		sift_tbl_load_from_copy = false;
 #ifdef SIFT_TESTING
 int			sift_test_load_publish = 0;
 int			sift_test_load_unit_bytes = 0;
+int			sift_test_load_segment_kb = 0;
 #endif
 static List *loads = NIL;
 static bool callbacks_registered = false;
@@ -160,12 +161,93 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 }
 
+/* The segment the writer holds is closed: its blocks are in no directory until load_publish_all */
+static void
+stream_end_segment(Load *ld)
+{
+	MemoryContext old = MemoryContextSwitchTo(ld->sw.cxt);
+
+	if (ld->nsegs == ld->maxsegs)
+		ld->segs = repalloc(ld->segs, (ld->maxsegs *= 2) * sizeof(SiftSegEntry));
+	sift_colw_finish(ld->sw.w, &ld->segs[ld->nsegs++]);
+	sift_wt_finish(ld->sw.wt);
+	ld->sw.w = NULL;
+	MemoryContextSwitchTo(old);
+}
+
+/* The current unit is full (or the load ends): it is encoded into the open segment, which ends at the memory budget or when the next unit is not the superblock after it */
+static void
+stream_end_unit(Load *ld)
+{
+	seal_flush(&ld->sw);
+	ld->run.units++;
+	ld->n = 0;
+	ld->bytes = 0;
+	ld->seg_next = ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB;
+	if (ld->run.units == ld->maxunits)
+		ld->open = false;
+	if (ld->sw.w && sift_colw_memory(ld->sw.w) > ld->budget)
+		stream_end_segment(ld);
+}
+
+static void
+stream_row(Load *ld, Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid)
+{
+	MemoryContext old;
+	SiftColRow	row;
+
+	if (ld->open && (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes()))
+		stream_end_unit(ld);
+	if (!ld->open)
+	{
+		reserve_run(ld, rel, st);
+		if (ld->sw.w && ld->run.first != ld->seg_next)
+			stream_end_segment(ld);
+	}
+	ItemPointerSet(tid, ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
+	ld->sw.rel = rel;
+	if (ld->n == 0)
+		sift_cbatch_reset(ld->sw.batch, ItemPointerGetBlockNumber(tid) / SIFT_SB_PAGES);
+	old = MemoryContextSwitchTo(ld->rowcx);
+	row_in(ld->sw.l, ld->desc, tid, values, isnull, &row);
+	if (ld->run.vers)
+		sift_cbatch_add_ver(ld->sw.batch, &row, GetCurrentTransactionId(), cid);
+	else
+		sift_cbatch_add(ld->sw.batch, &row);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(ld->rowcx);
+}
+
+/* The rows of the open unit and the segment are written, and the segments published (they are all in the directory when the lock that kept the orphan sweep from them goes) */
+static void
+stream_flush(Load *ld, Relation rel, SiftTblRel *st)
+{
+	Published	pub;
+
+	ld->sw.rel = rel;
+	if (ld->n > 0)
+		stream_end_unit(ld);
+	if (ld->sw.w)
+		stream_end_segment(ld);
+	ld->open = false;
+	pub = (Published) {ld->segs, ld->nsegs};
+	if (pub.n > 0)
+		load_publish_all(rel, st, &pub);
+	ld->nsegs = 0;
+	UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
+}
+
 /* Writes what the load holds: the rows of the current unit, and the run they end */
 static void
 flush_load(Load *ld, Relation rel, bool parallel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
+	if (ld->stream)
+	{
+		stream_flush(ld, rel, st);
+		return;
+	}
 	if (ld->rl)
 	{
 		load_ring_stop(ld, rel, st);
@@ -230,6 +312,24 @@ load_subxact_event(SubXactEvent event, SubTransactionId mysubid, SubTransactionI
 	}
 }
 
+/* A load without workers keeps its segments' writer between rows; the lock keeps the orphan sweep of a VACUUM from the blocks it writes before they are published (the ring's, ring.c) */
+static void
+stream_begin(Load *ld, Relation rel, SiftTblRel *st)
+{
+	const SiftTblLayout *l = layout_of(rel, st);
+	MemoryContext cx;
+
+	if (load_groups(rel) > 1 || !ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
+		return;
+	cx = AllocSetContextCreate(ld->cxt, "sift_table load stream", ALLOCSET_DEFAULT_SIZES);
+	ld->stream = true;
+	ld->sw = (SealWriter) {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, 0, tbl_col_format(ld->run.vers)};
+	ld->rowcx = AllocSetContextCreate(cx, "sift_table load row", ALLOCSET_SMALL_SIZES);
+	ld->budget = load_budget();
+	ld->maxsegs = 8;
+	ld->segs = palloc(ld->maxsegs * sizeof(SiftSegEntry));
+}
+
 bool
 sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 {
@@ -264,6 +364,7 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 		ld->desc = RelationGetDescr(rel);
 		ld->flat = palloc(ld->desc->natts * sizeof(Datum));
 		initStringInfo(&ld->rows);
+		stream_begin(ld, rel, st);
 	}
 	MemoryContextSwitchTo(old);
 	return !ld->refused;
@@ -326,35 +427,40 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool 
 	Size		hoff = offsetof(MinimalTupleData, t_bits);
 	Size		datasize = heap_compute_data_size(ld->desc, (Datum *) values, (bool *) isnull);
 
-	for (;;)
+	if (ld->stream)
+		stream_row(ld, rel, st, values, isnull, cid, tid);
+	else
 	{
-		if (!ld->open)
-			reserve_run(ld, rel, st);
-		else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes())
+		for (;;)
 		{
-			load_end_unit(ld);
-			if (ld->run.units == ld->maxunits)
-			{
-				end_run(ld, rel, st, true, true);
+			if (!ld->open)
 				reserve_run(ld, rel, st);
+			else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes())
+			{
+				load_end_unit(ld);
+				if (ld->run.units == ld->maxunits)
+				{
+					end_run(ld, rel, st, true, true);
+					reserve_run(ld, rel, st);
+				}
+			}
+			if (put_row(ld, values, isnull, cid, datasize))
+				break;
+			/* the slot of the ring is full: the group is handed over with the units it has, and a row that no slot holds goes the way of a load without workers */
+			if (ld->n == 0 && ld->run.units == 0)
+			{
+				ld->noring = true;
+				load_ring_stop(ld, rel, st);
+			}
+			else
+			{
+				if (ld->n > 0)
+					load_end_unit(ld);
+				end_run(ld, rel, st, true, true);
 			}
 		}
-		if (put_row(ld, values, isnull, cid, datasize))
-			break;
-		/* the slot of the ring is full: the group is handed over with the units it has, and a row that no slot holds goes the way of a load without workers */
-		if (ld->n == 0 && ld->run.units == 0)
-		{
-			ld->noring = true;
-			load_ring_stop(ld, rel, st);
-		}
-		else
-		{
-			if (ld->n > 0)
-				load_end_unit(ld);
-			end_run(ld, rel, st, true, true);
-		}
+		ItemPointerSet(tid, ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
 	}
-	ItemPointerSet(tid, ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
 	ld->n++;
 	/* the bytes the row has as a minimal tuple (the write buffer limit counts them) */
 	for (int a = 0; a < ld->desc->natts; a++)

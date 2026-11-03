@@ -1,5 +1,5 @@
 -- The groups of a bulk load are written by the workers of a parallel context when the load has more than one: a group is 8 units of 2 MB write
--- buffers (6500 rows of about 330 bytes each), the backend and its workers take a group each, and the segments, the rows and the TIDs are those of a load alone
+-- buffers (6500 rows of about 330 bytes each), the backend and its workers take a group each, and the rows and the TIDs are those of a load alone (which keeps one segment writer for all its units, so it leaves no more segments)
 CREATE EXTENSION pg_sift;
 SET sift.table_write_buffer_limit = 2048;
 
@@ -18,13 +18,13 @@ SELECT current_setting('sift.test_par_workers')::int AS workers;
 SELECT count(*) AS segments FROM sift.table_segments('par') WHERE kind = 'columns';
 SELECT same_rows('par', 'twin');
 
--- alone: the same segments, the same rows at the same TIDs
+-- alone: the same rows at the same TIDs, in no more segments
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_par_workers = 0;
 CREATE TABLE alone USING sift_table AS SELECT * FROM twin;
 SELECT current_setting('sift.test_par_workers')::int AS workers;
 SELECT (SELECT array_agg(ctid ORDER BY id) FROM par) = (SELECT array_agg(ctid ORDER BY id) FROM alone) AS same_tids;
-SELECT (SELECT count(*) FROM sift.table_segments('par') WHERE kind = 'columns') = (SELECT count(*) FROM sift.table_segments('alone') WHERE kind = 'columns') AS same_segments;
+SELECT (SELECT count(*) FROM sift.table_segments('par') WHERE kind = 'columns') >= (SELECT count(*) FROM sift.table_segments('alone') WHERE kind = 'columns') AS no_more_segments;
 
 -- a load that rolls back leaves nothing, and the refresh of a materialized view takes the same path
 SET max_parallel_maintenance_workers = 2;

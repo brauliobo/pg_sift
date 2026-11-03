@@ -14,7 +14,7 @@
 =col	^(installcheck-(roles_|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|instr_budget_lib|leaf_stats_shared|compat_matrix|sb_mask_small)|tap-01[56]_space|soak-col$|difftest-col)
 =layout	^tap-shell-scaling_slope$
 =agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate|plan-budget|exec-budget)
-=tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_load_workers|tbl_load_ring)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
+=tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_load_workers|tbl_load_ring|tbl_load_stream)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
 =dec	^(fuzz|hardened|tools-build)$
 =any	^(release-library-regress|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call

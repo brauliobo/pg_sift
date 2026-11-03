@@ -18,6 +18,10 @@
  * groups at the same time: the transposition of the rows and the encoding are most of what a load costs besides the parse of its input.
  * The rows past the last full run are written when the command ends (finish_bulk_insert), or at the latest before the transaction commits,
  * so a row never outlives its transaction in memory.
+ * A load that has no workers to give a run to (stream) buffers no rows: a unit is encoded into the writer of the open segment when it is full, the
+ * segment goes on over the runs while their superblocks follow each other and ends at a memory budget, and the segments are published when the
+ * command ends. It leaves the few large segments that the merge of the many small ones of the runs would make, and that merge costs about as
+ * many instructions as writing the segments did.
  */
 #define LOAD_SBS		8
 #define LOAD_RING_UNITS	4
@@ -40,9 +44,11 @@
 #define LOAD_MIN_UNITS	2
 /* sift.test_load_unit_bytes (a testing build) takes the place of the write buffer limit as the bytes of a unit and sets the parallel start at its multiples, so that a small load reaches the ring */
 #ifdef SIFT_TESTING
+#define load_budget()	(sift_test_load_segment_kb > 0 ? (Size) sift_test_load_segment_kb * 1024 : Max((Size) maintenance_work_mem * 1024 / 2, (Size) 64 << 20))
 #define load_unit_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 : (Size) sift_tbl_write_buffer_limit * 1024)
 #define load_parallel_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 * LOAD_SBS : LOAD_PARALLEL_BYTES)
 #else
+#define load_budget()	Max((Size) maintenance_work_mem * 1024 / 2, (Size) 64 << 20)
 #define load_unit_bytes()	((Size) sift_tbl_write_buffer_limit * 1024)
 #define load_parallel_bytes()	LOAD_PARALLEL_BYTES
 #endif
@@ -84,6 +90,14 @@ typedef struct Load
 	bool		ring_ok;		/* the rows come from COPY: the workers may outlive a run */
 	bool		noring;
 	struct LoadRingLeader *rl;	/* the ring of the workers that write the groups while the command reads on */
+	bool		stream;			/* no workers: a unit is encoded into the open segment as it fills, no buffer of rows, a segment ends at the memory budget (load.c) */
+	SealWriter	sw;
+	MemoryContext rowcx;
+	Size		budget;			/* memory the writer of a segment may hold */
+	uint64		seg_next;		/* the vblock after the last unit of the open segment */
+	SiftSegEntry *segs;			/* the segments written and not yet in the directory */
+	int			nsegs;
+	int			maxsegs;
 } Load;
 
 /* The segments of the groups of a run, in the order of their superblocks */
