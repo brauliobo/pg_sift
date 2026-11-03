@@ -335,7 +335,7 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 	{"b", RELOPT_TYPE_REAL, offsetof(SiftOptions, b)},
 	{"stemmer", RELOPT_TYPE_STRING, offsetof(SiftOptions, stemmer)},
 	{"case_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, case_folding)},
-	{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding), offsetof(SiftOptions, accent_folding_set)},
+	{"accent_folding", RELOPT_TYPE_BOOL, offsetof(SiftOptions, accent_folding)},
 	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, write_buffer_limit)},
 	{"mutable_limit", RELOPT_TYPE_INT, offsetof(SiftOptions, mutable_limit)},	/* DEPRECATED ALIAS */
 	{"vacuum_segments", RELOPT_TYPE_INT, offsetof(SiftOptions, vacuum_segments)},
@@ -355,6 +355,10 @@ sift_amoptions(Datum reloptions, bool validate)
 	SiftOptions *o = (SiftOptions *) build_reloptions(reloptions, validate, sift_relopt_kind,
 													  sizeof(SiftOptions), sift_relopt_tab, lengthof(sift_relopt_tab));
 
+	/* given, even as its default: relopt_parse_elt has no isset_offset in PostgreSQL 19, so the list says it on every version */
+	if (o != NULL)
+		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+			o->accent_folding_set |= strcmp(def->defname, "accent_folding") == 0;
 	/* the alias counts when write_buffer_limit is left at its default */
 	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
@@ -412,6 +416,8 @@ sift_test_reloptions(PG_FUNCTION_ARGS)
 				case RELOPT_TYPE_STRING:
 					type = "string";
 					dflt = *(const int *) p ? base[a] + *(const int *) p : "";
+					break;
+				default:		/* PostgreSQL 19 has RELOPT_TYPE_TERNARY: none of ours is one */
 					break;
 			}
 			vals[0] = CStringGetTextDatum(ams[a]);

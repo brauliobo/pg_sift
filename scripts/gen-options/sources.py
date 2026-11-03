@@ -127,6 +127,9 @@ def collect(srcs):
     for p, text in texts.items():       # the table of build_reloptions() of every access method names the options it parses
         for m in re.finditer(r'relopt_parse_elt\s+\w*tab\[\]\s*=\s*\{(.*?)\};', text, re.S):
             am = {'col/am/options.c': 'sift_col', 'core/handler.c': 'sift'}.get(p)
+            for e in re.findall(r'\{\s*"\w+"[^{}]*\}', m.group(1)):
+                if e.count('offsetof(') > 1:
+                    errors.append('src/%s: %s has a member after the offset: relopt_parse_elt of PostgreSQL 19 has none (isset_offset is gone)' % (p, e))
             parsed = set(re.findall(r'\{\s*"(\w+)"\s*,\s*RELOPT_TYPE', m.group(1)))
             for n in sorted(parsed ^ {o['name'] for o in opts if o['kind'] == 'rel' and o['am'] == am}) if am else ():
                 errors.append('src/%s: the reloption %s of %s is %s' % (p, n, am, 'parsed but not registered' if n in parsed else 'registered but not parsed (relopt_parse_elt)'))

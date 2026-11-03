@@ -32,6 +32,8 @@ def selftest():
          'sift_col(zz_new) has no row'),
         ('a reloption that is not parsed', dict(srcs={**srcs, 'col/am/options.c': srcs['col/am/options.c'].replace('{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},', '')}),
          'superunit of sift_col is registered but not parsed'),
+        ('an isset member in a relopt_parse_elt', dict(srcs={**srcs, 'core/handler.c': srcs['core/handler.c'].replace('offsetof(SiftOptions, accent_folding)}', 'offsetof(SiftOptions, accent_folding), offsetof(SiftOptions, accent_folding_set)}')}),
+         'has a member after the offset'),
         ('a class that does not exist', dict(notes_text=text.replace(victim_row, set_cell(victim_row, 'class', 'bogus'))), 'class `bogus`'),
         ('an opt-in that passes the formula', dict(notes_text=text.replace(victim_row, set_cell(set_cell(set_cell(set_cell(set_cell(set_cell(set_cell(victim_row, 'class', 'opt-in'), 'why', 'risk'), 's', '2'), 'save', '500'), 'g', '1'), 'w', '0'), 'r', '1'))), 'passes the default formula'),
         ('an opt-in whose why misses the term it fails', dict(notes_text=text.replace(victim_row, set_cell(set_cell(set_cell(set_cell(set_cell(set_cell(set_cell(victim_row, 'class', 'opt-in'), 'why', 'risk'), 's', '1.01'), 'save', '10'), 'g', '1'), 'w', '0'), 'r', '1'))), 'why must name'),
