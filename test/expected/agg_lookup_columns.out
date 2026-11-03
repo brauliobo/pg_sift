@@ -10,6 +10,8 @@ SET sift.agg_lookup_shared_kb = 0;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 3200, i % 11 FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+NOTICE:  sift_col index "ev_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE dm (k int PRIMARY KEY, t text, vc varchar(20), d date, ts timestamp, tz timestamptz, i2 int2, i8 bigint, b bool, n numeric(12,2), grp int) WITH (autovacuum_enabled = false);
 INSERT INTO dm SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'kind' || i % 9 END, CASE WHEN i % 13 = 0 THEN NULL ELSE 'v' || i % 5 END,
 	date '2026-01-01' + i % 200, timestamp '2026-01-01 00:00' + (i % 500) * interval '1 hour', timestamptz '2026-01-01 00:00+00' + (i % 400) * interval '1 hour',

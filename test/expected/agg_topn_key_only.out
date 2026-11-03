@@ -105,7 +105,7 @@ SELECT * FROM ko_all();
 
 SELECT sift.col_merge('ko_i'::regclass, true) >= 0 AS merged;
 NOTICE:  sift_col index "ko_i": point_tid_columns = 'auto' chooses "b" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +26%, 4 bytes a row, benefit 11 against cost 8)
-NOTICE:  sift_col index "ko_i": the rewrite chooses again from the data: point_tid_columns = 'auto: b' (was '')
+NOTICE:  sift_col index "ko_i": the rewrite chooses again from the data: point_tid_columns = 'auto: b, id' (was 'auto: id')
  merged 
 --------
  t

@@ -21,7 +21,7 @@ SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['po_i'
 ------------+-------------------
  po_few_i   | -
  po_i       | auto: id
- po_pk_i    | -
+ po_pk_i    | auto: id
  po_small_i | -
 (4 rows)
 

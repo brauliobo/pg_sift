@@ -293,6 +293,8 @@ CREATE INDEX tn_col ON tn USING sift_col (id, g, v, w, u);
 NOTICE:  sift_col index "tn_col": rollup_dims = 'auto' writes a rollup of the rows by g, w
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 260 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX tn_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "tn_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) tn;
 -- a total order by the id, and a sort that ties (v repeats in every group), a NULL sort value that repeats, a condition on the sort column
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$);
@@ -386,6 +388,8 @@ CREATE TABLE tp1 PARTITION OF tp FOR VALUES FROM ('2024-01-01') TO ('2024-02-01'
 CREATE TABLE tp2 PARTITION OF tp FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
 INSERT INTO tp SELECT i, date '2024-01-01' + i % 58, i % 9, (i * 7) % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, d, g, v);
+NOTICE:  sift_col index "tp1_id_d_g_v_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) tp;
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC, d, id$$);
   plan   | result_rows | vs_normal_plan 

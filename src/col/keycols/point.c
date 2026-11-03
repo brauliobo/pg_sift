@@ -265,6 +265,9 @@ sift_col_auto_point(Relation heap, Relation index)
 						G, dir_bytes, B, C),
 				 errhint("To keep the index without it, run ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX.", RelationGetRelationName(index))));
 	}
+	/* the key of track_updates stays in the directory: the supersede finds the older entry of a key by it */
+	if (sift_col_row_key_on(index) && !sift_col_list_has(list.data, sift_col_options_row_key(index)))
+		keycols_append_name(&list, sift_col_options_row_key(index));
 	if (list.len == 0)
 	{
 		if (opt[0] != '\0')

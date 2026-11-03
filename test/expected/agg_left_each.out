@@ -9,6 +9,8 @@ SELECT i, i % 40,
                   ELSE jsonb_build_object('m_total', i % 10, 'other', i % 3) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
+NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
 \ir test/agg_helpers.sql

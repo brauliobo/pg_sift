@@ -14,11 +14,15 @@ FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minut
 INSERT INTO st VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
 	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
 CREATE INDEX st_col ON st USING sift_col (id, ts, tz);
+NOTICE:  sift_col index "st_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) st;
 -- the same with infinite timestamps: there is no number of a step for them, the expression is tested for each value
 CREATE TABLE si AS SELECT * FROM st WHERE id <= 2000;
 INSERT INTO si VALUES (200001, 'infinity', 'infinity'), (200002, '-infinity', '-infinity');
 CREATE INDEX si_col ON si USING sift_col (id, ts, tz);
+NOTICE:  sift_col index "si_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) si;
 CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 -- does the scan evaluate the filter for each step?

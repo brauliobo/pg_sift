@@ -1,5 +1,6 @@
 -- The index option track_updates names the column that identifies a row across updates: it must be a column of the index that a unique index of its own covers and that cannot be NULL.
--- Off by default (no log segment, no option written); named, or auto on a primary key, it creates the tombstone log with the index and turns the point directory of the column on.
+-- On by default (auto: the primary key when the index holds it, else off with a NOTICE); named, or auto, it creates the tombstone log with the index and turns the point directory of the column on;
+-- 'off' keeps the index as it was before 4.0 (no log segment, no option written).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, u int NOT NULL UNIQUE, p int NOT NULL, d int NOT NULL) WITH (autovacuum_enabled = false);
@@ -7,8 +8,13 @@ CREATE UNIQUE INDEX t_partial ON t (p) WHERE p > 0;
 ALTER TABLE t ADD CONSTRAINT t_d_key UNIQUE (d) DEFERRABLE;
 INSERT INTO t SELECT i, i % 10, i, i, i, i FROM generate_series(1, 2000) i;
 
--- default: nothing kept, nothing written
-CREATE INDEX t_off ON t USING sift_col (id, g, v);
+-- default: the primary key is kept, the option is written
+CREATE INDEX t_dflt ON t USING sift_col (id, g, v);
+SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstones';
+SELECT reloptions::text ~ 'track_updates=id' AS has_option FROM pg_class WHERE relname = 't_dflt';
+DROP INDEX t_dflt;
+-- off: nothing kept, nothing written
+CREATE INDEX t_off ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
 SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones';
 SELECT reloptions::text ~ 'track_updates' AS has_option FROM pg_class WHERE relname = 't_off';
 DROP INDEX t_off;

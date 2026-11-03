@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The tombstone log of a heap sift_col index with track_updates in the reads of an index scan, an index-only scan and a bitmap scan. The log only ever hides an
 # entry that a transaction visible to the snapshot ended; every entry returned is still checked by the heap. Three tables get the same statements: a (track_updates), b (track_updates and
-# track_deletes) and c (no track_updates, the control). Every read is compared with a sequential scan of the same table and with the other tables; the hidden-entry counter says the log
+# track_deletes) and c (track_updates = off, the control: the default is auto). Every read is compared with a sequential scan of the same table and with the other tables; the hidden-entry counter says the log
 # was used (a, b), not used (c), and not used for what is not committed before the snapshot: an older snapshot, a transaction in progress (prepared), a rolled back transaction
 # and a subtransaction. Also on a hot standby that replays the log, after VACUUM gave the addresses to new rows, with the triggers of track_deletes disabled, enabled again and
 # recreated, and on the subscriber of a real logical replication, which is no place for track_deletes: the apply worker fires no statement trigger.
@@ -28,7 +28,7 @@ done
 sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE INDEX a_c ON a USING sift_col (id, g, v) WITH (track_updates = 'id')" \
 	"CREATE INDEX b_c ON b USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on)" \
-	"CREATE INDEX c_c ON c USING sift_col (id, g, v)" "VACUUM (FREEZE, ANALYZE) a, b, c" >/dev/null || bail "index failed"
+	"CREATE INDEX c_c ON c USING sift_col (id, g, v) WITH (track_updates = 'off')" "VACUUM (FREEZE, ANALYZE) a, b, c" >/dev/null || bail "index failed"
 node_clone p s 27 "max_prepared_transactions = 5
 max_worker_processes = 16"
 node_start s || bail "standby start failed"

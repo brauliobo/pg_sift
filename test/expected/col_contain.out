@@ -77,7 +77,7 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('nt_col') ORDER BY leaf;
 SELECT DISTINCT format FROM sift.col_segments('rt_col') WHERE kind = 'immutable';
  format 
 --------
-     26
+     37
 (1 row)
 
 -- the count of a query with the pushdown (and the lanes' filter in the plan) and without it; rows: the ids the same filter returns through the index scan (the plain

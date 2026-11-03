@@ -272,6 +272,8 @@ CREATE TABLE ip_a PARTITION OF ip FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE ip_b PARTITION OF ip FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ip (id, g, a, w) SELECT id, g, a, w FROM iv WHERE id <= 5000;
 CREATE INDEX ip_col ON ip USING sift_col (id, g, a, w);
+NOTICE:  sift_col index "ip_a_id_g_a_w_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (ANALYZE) ip;
 SELECT tag, iv_check(replace(q, 'FROM iv ', 'FROM ip ')) FROM iv_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
    tag    |   iv_check   

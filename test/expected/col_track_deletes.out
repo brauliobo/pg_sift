@@ -37,13 +37,13 @@ SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
        0
 (1 row)
 
--- refused, with what to do: no track_updates, a partition, a table with children
-CREATE INDEX t_plain ON t USING sift_col (id, g, v);
+-- refused, with what to do: track_updates off, a partition, a table with children
+CREATE INDEX t_plain ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
 ALTER INDEX t_plain SET (track_deletes = on);
 ERROR:  track_deletes needs track_updates
 HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
 DROP INDEX t_plain;
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_deletes = on);
+CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_updates = 'off', track_deletes = on);
 ERROR:  track_deletes needs track_updates
 HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
 CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);

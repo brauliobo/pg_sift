@@ -13,6 +13,8 @@ SELECT i, i % 5,
        CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 40)::float4 / 4 END
 FROM generate_series(1, 30000) i;
 CREATE INDEX fk_col ON fk USING sift_col (id, g, d, r);
+NOTICE:  sift_col index "fk_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) fk;
 CREATE FUNCTION scan_same(q text) RETURNS TABLE (scan bool, same bool) LANGUAGE plpgsql AS $$
 DECLARE l text; got text; want text;

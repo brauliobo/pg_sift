@@ -25,9 +25,13 @@ SELECT g, timestamp '2024-01-01' + ((hashint4(g) & 2147483647) % 1051200) * inte
 FROM generate_series(1, 40000) g;
 CREATE INDEX rw_col ON rw USING sift_col (id, ts, tsa, tsd, kn, n, neg, d, tz)
 	WITH (order_columns = 'ts, tsa, tsd, kn, n, neg, d, tz', cube_minmax = false, superunit = 0, calendar_columns = 'off', point_tid_columns = 'off');
+NOTICE:  sift_col index "rw_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 -- a table of one unit of 600 rows
 CREATE TABLE rs AS SELECT id, ts, kn FROM rw WHERE id <= 600;
 CREATE INDEX rs_col ON rs USING sift_col (id, ts, kn) WITH (order_columns = 'ts, kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+NOTICE:  sift_col index "rs_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (ANALYZE, FREEZE) rw;
 VACUUM (ANALYZE, FREEZE) rs;
 SET sift.enable_col_scan = on;

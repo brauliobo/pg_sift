@@ -45,6 +45,8 @@ SELECT count(*) AS toasted FROM cvt WHERE pg_column_toast_chunk_id(t) IS NOT NUL
 (1 row)
 
 CREATE INDEX cvt_col ON cvt USING sift_col (id, t);
+NOTICE:  sift_col index "cvt_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 \if :discard
 SET debug_discard_caches = 1;
 \endif

@@ -29,6 +29,8 @@ SELECT i,
 	   CASE WHEN i % 61 = 0 THEN NULL ELSE 'v' || (i * 31) % 1700 END
 FROM generate_series(1, 20000) i;
 CREATE INDEX dl_idx ON dl USING sift_col (s sift.col_text_ops, t sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index "dl_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (ANALYZE) dl;
 SELECT sift.col_verify('dl_idx', true);
  col_verify 
@@ -226,6 +228,8 @@ CREATE TABLE dl_p (id int, s text);
 INSERT INTO dl_p SELECT i, repeat('ab', 20 + i % 3) || CASE WHEN i % 4 = 0 THEN '' ELSE lpad(to_hex(i), 1 + i % 9, '0') END FROM generate_series(1, 6000) i;
 INSERT INTO dl_p SELECT 6000 + i, repeat('a', i % 40) || 'b' FROM generate_series(1, 2000) i;
 CREATE INDEX dl_p_idx ON dl_p USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = 'on');
+NOTICE:  sift_col index "dl_p_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT sift.col_verify('dl_p_idx', true);
  col_verify 
 ------------

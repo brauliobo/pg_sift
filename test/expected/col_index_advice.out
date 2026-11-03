@@ -50,7 +50,11 @@ SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE k
 -- the advice is what the build then finds: the advised pair is written in every unit, a pair with a column the advice leaves out (300 values in a unit) is not
 SET client_min_messages = notice;
 CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off', point_tid_columns = 'off');
+NOTICE:  sift_col index "ad_pair" does not track updates: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off', point_tid_columns = 'off');
+NOTICE:  sift_col index "ad_over" does not track updates: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "ad_over": rollup_dims writes no rollup of "source, region" in 10% or more of the units, which hold more combinations of them than a unit may keep
 DETAIL:  The share of the 8 units: "source, region" 100%. A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.

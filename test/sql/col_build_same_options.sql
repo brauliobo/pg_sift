@@ -17,7 +17,7 @@ BEGIN
 	PERFORM set_config('max_parallel_maintenance_workers', workers::text, true);
 	DROP INDEX IF EXISTS sc_i;
 	CREATE INDEX sc_i ON sc USING sift_col (id, grp, amount, ts, note);
-	RETURN QUERY SELECT current_setting('sift.test_col_workers')::int, count(*), (SELECT reloptions FROM pg_class WHERE oid = 'sc_i'::regclass) FROM sift.col_segments('sc_i');
+	RETURN QUERY SELECT current_setting('sift.test_col_workers')::int, count(*), (SELECT reloptions FROM pg_class WHERE oid = 'sc_i'::regclass) FROM sift.col_segments('sc_i') WHERE kind <> 'tombstones';
 END $$;
 
 CREATE TABLE sc_runs AS SELECT w AS asked, b.* FROM unnest(ARRAY[0, 2, 4]) w, LATERAL sc_build(w) b;

@@ -12,6 +12,8 @@ CREATE INDEX sp_facts_col ON sp_facts USING sift_col (id, parent_id, ts, wk, dow
 NOTICE:  sift_col index "sp_facts_col": rollup_dims = 'auto' writes a rollup of the rows by dow, quarter
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 7 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX sp_facts_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "sp_facts_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) sp_facts;
 CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE
@@ -79,6 +81,8 @@ SELECT * FROM same_rows('SELECT parent_id, id, ts, wk, count(*) AS n, sum(amount
 CREATE TABLE sp_nulls (a int, b int, c text, v int) WITH (autovacuum_enabled = false);
 INSERT INTO sp_nulls SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i END, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 9000 END, CASE WHEN i % 13 = 0 THEN NULL ELSE 'k' || i % 5000 END, i % 100 FROM generate_series(1, 30000) i;
 CREATE INDEX sp_nulls_col ON sp_nulls USING sift_col (a, b, c, v);
+NOTICE:  sift_col index "sp_nulls_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) sp_nulls;
 SELECT * FROM same_rows('SELECT a, b, c, count(*) AS n, sum(v) AS s FROM sp_nulls GROUP BY a, b, c');
   scan   | rows_pushed | differences 

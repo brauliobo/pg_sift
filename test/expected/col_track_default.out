@@ -1,0 +1,171 @@
+-- track_updates = 'auto' is the default: a new or reindexed sift_col index that holds the primary key of its table (one column) keeps the key and the tombstone log; any other index is built as it was
+-- before 4.0 with one NOTICE that says why. 'off' keeps the old index; an index whose options were written by an earlier release (none) stays inert until a REINDEX. track_deletes stays off.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = notice;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
+-- the default: the primary key, the log segment, the key in the point directory beside what the formula chooses; track_deletes is not on (no trigger)
+CREATE INDEX t_dflt ON t USING sift_col (id, g, v);
+SELECT split_part(o, '=', 1) AS opt, split_part(o, '=', 2) AS val FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^(track_updates|point_tid_columns|track_deletes)' ORDER BY 1;
+        opt        |   val    
+-------------------+----------
+ point_tid_columns | auto: id
+ track_updates     | id
+(2 rows)
+
+SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstones';
+ logs 
+------
+    1
+(1 row)
+
+SELECT count(*) AS triggers FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
+ triggers 
+----------
+        0
+(1 row)
+
+-- REINDEX keeps it
+REINDEX INDEX t_dflt;
+SELECT o AS after_reindex FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^track_updates';
+  after_reindex   
+------------------
+ track_updates=id
+(1 row)
+
+DROP INDEX t_dflt;
+-- the reasons for no key, each said once
+CREATE TABLE nk (a int, b int);
+INSERT INTO nk SELECT i, i FROM generate_series(1, 100) i;
+CREATE INDEX nk_c ON nk USING sift_col (a, b);
+NOTICE:  sift_col index "nk_c" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+SELECT count(*) AS logs, (SELECT coalesce(reloptions::text ~ 'track_updates', false) FROM pg_class WHERE relname = 'nk_c') AS has_option FROM sift.col_segments('nk_c') WHERE kind = 'tombstones';
+ logs | has_option 
+------+------------
+    0 | f
+(1 row)
+
+DROP TABLE nk;
+CREATE INDEX t_notheld ON t USING sift_col (g, v);
+NOTICE:  sift_col index "t_notheld" does not track updates: the index does not hold the primary key column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+DROP INDEX t_notheld;
+CREATE INDEX t_pt_off ON t USING sift_col (id, g, v) WITH (point_tid_columns = 'off');
+NOTICE:  sift_col index "t_pt_off" does not track updates: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+DROP INDEX t_pt_off;
+-- explicit off and a named key say nothing
+CREATE INDEX t_off ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
+SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones';
+ logs 
+------
+    0
+(1 row)
+
+DROP INDEX t_off;
+-- track_deletes on a table with no key to track is an error that says what to do
+CREATE TABLE nk (a int, b int);
+CREATE INDEX nk_d ON nk USING sift_col (a, b) WITH (track_deletes = on);
+ERROR:  track_deletes needs track_updates, which has no key here: the table has no primary key of one column
+HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
+DROP TABLE nk;
+-- a partitioned table: one NOTICE for the partitions of a statement
+CREATE TABLE p (a int, b int) PARTITION BY HASH (a);
+CREATE TABLE p0 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE p2 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 2);
+CREATE INDEX p_c ON p USING sift_col (a, b);
+NOTICE:  sift_col index "p0_a_b_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+DROP TABLE p;
+-- an index of an earlier release has no option: it is inert (no tombstone), then a REINDEX gives it the key
+CREATE INDEX t_old ON t USING sift_col (id, g, v);
+ALTER INDEX t_old RESET (track_updates);
+ALTER INDEX t_old RESET (point_tid_columns);
+UPDATE t SET v = v + 1 WHERE id <= 100;
+SELECT coalesce((SELECT rows FROM sift.col_segments('t_old') WHERE kind = 'tombstones'), 0) AS tombstones_inert;
+ tombstones_inert 
+------------------
+                0
+(1 row)
+
+REINDEX INDEX t_old;
+UPDATE t SET v = v + 1 WHERE id <= 100;
+SELECT (SELECT rows FROM sift.col_segments('t_old') WHERE kind = 'tombstones') AS tombstones_after_reindex;
+ tombstones_after_reindex 
+--------------------------
+                      100
+(1 row)
+
+DROP INDEX t_old;
+-- three indexes on one table: every one gets a tombstone for each superseded entry, and the reads are the heap's
+CREATE INDEX t_1 ON t USING sift_col (id, g, v);
+CREATE INDEX t_2 ON t USING sift_col (id, v, pad);
+CREATE INDEX t_3 ON t USING sift_col (id, g);
+VACUUM (ANALYZE) t;
+CREATE TEMP TABLE olds AS SELECT id, ctid AS old FROM t WHERE id % 7 = 0;
+UPDATE t SET v = v + 1000 WHERE id % 7 = 0;
+SELECT i AS index,
+       (SELECT count(*) FROM sift._test_col_log_entries(i::regclass) e JOIN olds o ON o.old = e.tid) AS tombstones_of_the_old_versions,
+       (SELECT count(*) FROM sift._test_col_log_entries(i::regclass)) AS entries
+  FROM (VALUES ('t_1'), ('t_2'), ('t_3')) x(i) ORDER BY 1;
+ index | tombstones_of_the_old_versions | entries 
+-------+--------------------------------+---------
+ t_1   |                            428 |     428
+ t_2   |                            428 |     428
+ t_3   |                            428 |     428
+(3 rows)
+
+-- a row updated twice in a transaction that is rolled back: no tombstone stays
+BEGIN; UPDATE t SET v = v + 1 WHERE id = 7; UPDATE t SET v = v + 1 WHERE id = 7; ROLLBACK;
+SELECT i AS index, (SELECT count(*) FROM sift._test_col_log_entries(i::regclass)) AS entries_after_rollback FROM (VALUES ('t_1'), ('t_2'), ('t_3')) x(i) ORDER BY 1;
+ index | entries_after_rollback 
+-------+------------------------
+ t_1   |                    428
+ t_2   |                    428
+ t_3   |                    428
+(3 rows)
+
+SET sift.enable_agg = on;
+SET seq_page_cost = 10000;
+SELECT g, count(*), sum(v) FROM t GROUP BY g ORDER BY g LIMIT 3;
+ g | count |  sum   
+---+-------+--------
+ 0 |   300 | 493520
+ 1 |   300 | 491820
+ 2 |   300 | 492120
+(3 rows)
+
+SET sift.enable_agg = off;
+RESET seq_page_cost;
+SELECT g, count(*), sum(v) FROM t GROUP BY g ORDER BY g LIMIT 3;
+ g | count |  sum   
+---+-------+--------
+ 0 |   300 | 493520
+ 1 |   300 | 491820
+ 2 |   300 | 492120
+(3 rows)
+
+SELECT sift.col_verify('t_1'), sift.col_verify('t_2'), sift.col_verify('t_3');
+ col_verify | col_verify | col_verify 
+------------+------------+------------
+            |            | 
+(1 row)
+
+-- VACUUM drops the log with the rows it removes
+VACUUM t;
+SELECT i AS index, (SELECT count(*) FROM sift._test_col_log_entries(i::regclass)) AS entries_after_vacuum FROM (VALUES ('t_1'), ('t_2'), ('t_3')) x(i) ORDER BY 1;
+ index | entries_after_vacuum 
+-------+----------------------
+ t_1   |                    0
+ t_2   |                    0
+ t_3   |                    0
+(3 rows)
+
+DROP TABLE t CASCADE;
+DROP TABLE olds;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

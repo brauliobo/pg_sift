@@ -32,6 +32,8 @@ CREATE INDEX ph_col ON ph USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "ph_0_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ph_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "ph_0_id_grp_kind_ts_amount_val_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "ph_1_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ph_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
@@ -45,6 +47,8 @@ CREATE INDEX pr_col ON pr USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "pr_0_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX pr_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "pr_0_id_grp_kind_ts_amount_val_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "pr_1_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX pr_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
@@ -58,6 +62,8 @@ CREATE INDEX pl_col ON pl USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "pl_0_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX pl_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "pl_0_id_grp_kind_ts_amount_val_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "pl_1_id_grp_kind_ts_amount_val_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX pl_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.

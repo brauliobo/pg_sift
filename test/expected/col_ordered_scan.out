@@ -9,6 +9,8 @@ ALTER TABLE os ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO os (id, k, d) SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 3001 - 1500 END, CASE WHEN i % 17 = 0 THEN NULL ELSE date '2020-01-01' + (i * 31) % 700 END
 FROM generate_series(1, 9000) i;
 CREATE INDEX os_i ON os USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_columns = 'k', order_array_columns = 'k', order_layout = 'whole');
+NOTICE:  sift_col index "os_i" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "os_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 DETAIL:  1.6 bytes a row for each column, 0.0 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
@@ -19,12 +21,18 @@ CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
 CREATE INDEX ot_i ON ot USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_layout = 'whole');
+NOTICE:  sift_col index "ot_i" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE oa (k int4, id int4, b int8);
 INSERT INTO oa SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE i % 700 END, i, i FROM generate_series(1, 3000) i;
 CREATE INDEX oa_i ON oa USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, b sift.col_int8_ops);
+NOTICE:  sift_col index "oa_i" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE oc (id int, k int4);
 INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
 CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+NOTICE:  sift_col index "oc_i" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "oc_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 DETAIL:  2.8 bytes a row for each column, 0.1 MB together; the segments are column format minor 41, which a library before 4.0 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.

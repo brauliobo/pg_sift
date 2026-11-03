@@ -297,6 +297,8 @@ CREATE TABLE ep_a PARTITION OF ep FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE ep_b PARTITION OF ep FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ep (id, g, s, w, b) SELECT id, g, s, w, b FROM ev WHERE id <= 5000;
 CREATE INDEX ep_col ON ep USING sift_col (id, g, s, w, b);
+NOTICE:  sift_col index "ep_a_id_g_s_w_b_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (ANALYZE) ep;
 SELECT tag, ev_check(replace(q, 'FROM ev ', 'FROM ep ')) FROM ev_q WHERE tag IN ('s_asc', 's_desc', 's_filter', 's_then_w', 'b_asc') ORDER BY tag COLLATE "C";
    tag    |   ev_check   

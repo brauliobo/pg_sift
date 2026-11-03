@@ -5,6 +5,8 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE k_t (id int, m jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO k_t SELECT i, jsonb_build_object('k1', 'v' || i % 10, 'k2', 'w' || i % 5) FROM generate_series(1, 6000) i;
 CREATE INDEX k_col ON k_t USING sift_col (id, m) WITH (paths = 'm.* text');
+NOTICE:  sift_col index "k_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM ANALYZE k_t;
 CREATE FUNCTION k_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 CREATE TABLE k_q (n serial, q text);

@@ -17,6 +17,8 @@ INSERT INTO events VALUES (10001, 'a', '{"entries":[]}', ''), (10002, NULL, NULL
  (10005, 'c', '{"entries":[{"bucket":null,"value":6}]}', '');
 CREATE INDEX events_col ON events USING sift_col (id, kind, document)
  WITH (paths = 'document.flag astext, document.entries[]{bucket text,value float8}');
+NOTICE:  sift_col index "events_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE lookup_values (kind text, bucket text, label text);
 INSERT INTO lookup_values VALUES ('a', 'x', 'first'), ('a', 'x', 'second'), ('a', 'x', 'third'), ('b', 'x', 'other');
 VACUUM (FREEZE, ANALYZE) events;
@@ -175,6 +177,8 @@ INSERT INTO wide_events
 SELECT i, 'a', jsonb_build_object('entries', jsonb_build_array(jsonb_build_object('bucket', 'free text ' || i, 'value', i % 10))), repeat('payload', 50)
 FROM generate_series(1, 6000) i;
 CREATE INDEX wide_events_col ON wide_events USING sift_col (id, kind, document) WITH (paths = 'document.entries[]{bucket text,value float8}');
+NOTICE:  sift_col index "wide_events_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE wide_lookup AS SELECT 'a' AS kind, 'free text ' || i AS bucket, 'label ' || (i % 7) AS label FROM generate_series(1, 6000, 3) i;
 VACUUM (FREEZE, ANALYZE) wide_events;
 ANALYZE wide_lookup;

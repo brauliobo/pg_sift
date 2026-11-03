@@ -10,6 +10,8 @@ CREATE TABLE ev (id int, day date, k int, amount numeric(10, 2)) WITH (autovacuu
 INSERT INTO ev SELECT i, date '2023-06-01' + (i * 7) % 900, i % 40, (i % 1000) / 10.0 FROM generate_series(1, 60000) i;
 INSERT INTO ev VALUES (60001, NULL, 1, 5), (60002, date '2031-01-01', 2, 7);
 CREATE INDEX ev_col ON ev USING sift_col (id, day, k, amount);
+NOTICE:  sift_col index "ev_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_or_normal(q) $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$

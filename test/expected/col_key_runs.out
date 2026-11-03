@@ -39,7 +39,7 @@ HINT:  To turn it off, run ALTER INDEX kr_i SET (key_columns = 'off') and REINDE
 SELECT kr_option('kr_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr_i');
         option        | minors 
 ----------------------+--------
- key_columns=auto: id | {34}
+ key_columns=auto: id | {37}
 (1 row)
 
 SELECT sift.col_verify('kr_i', true);
@@ -139,7 +139,7 @@ HINT:  To turn it off, run ALTER INDEX kr8_i SET (key_columns = 'off') and REIND
 SELECT kr_option('kr8_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr8_i');
         option        | minors 
 ----------------------+--------
- key_columns=auto: id | {34}
+ key_columns=auto: id | {37}
 (1 row)
 
 SELECT sift.col_verify('kr8_i', true);
@@ -173,6 +173,8 @@ ALTER TABLE kf ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, hashint4(g + 1) / 7.0, hashint4(g + 2) / 11.0, repeat('x', 150) FROM generate_series(1, 90000) g ORDER BY g;
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id', point_tid_columns = 'off');
+NOTICE:  sift_col index "kf_i" does not track updates: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col index "kf_i": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 90160 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (3 to 10 bits a key, within 5% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large). Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  To turn it off, run ALTER INDEX kf_i SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -216,6 +218,8 @@ DROP TABLE kf;
 CREATE TABLE kt (tenant_id int, a float8, b float8, c float8, d float8);
 INSERT INTO kt SELECT n * 100003, hashint4(n) / 7.0, hashint4(n + 1) / 7.0, hashint4(n + 2) / 7.0, hashint4(n + 3) / 7.0 FROM generate_series(1, 14) n;
 CREATE INDEX kt_i ON kt USING sift_col (tenant_id, a, b, c, d) WITH (key_columns = 'auto: tenant_id');
+NOTICE:  sift_col index "kt_i" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT sift.col_verify('kt_i', true);
  col_verify 
 ------------
@@ -236,7 +240,7 @@ CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buff
 SELECT array_agg(DISTINCT format ORDER BY format)::text AS minors, kr_units('SELECT count(*), sum(val) FROM kr WHERE id = 45050') >= 8 AS reads_every_unit FROM sift._test_col_formats('kr_off');
  minors | reads_every_unit 
 --------+------------------
- {34}   | t
+ {37}   | f
 (1 row)
 
 DROP TABLE kr;

@@ -9,6 +9,8 @@ INSERT INTO s SELECT i, i % 7, i % 2 = 0, 'v' || (i % 5), i / 3.0,
 FROM generate_series(1, 5000) i;
 UPDATE s SET t = NULL WHERE id % 10 = 0;
 CREATE INDEX s_col ON s USING sift_col (id, k, flag, t, f, items) WITH (paths = 'items[]{c text, q int4}');
+NOTICE:  sift_col index "s_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 -- leaf, path, distinct values, range, elements per row
 SELECT l.leaf, l.path, round(st.ndistinct) AS ndistinct, st.min, st.max, st.elems_per_row
 FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING (leaf) ORDER BY leaf;

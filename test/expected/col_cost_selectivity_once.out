@@ -9,6 +9,8 @@ CREATE TABLE sel_dim (id int PRIMARY KEY, n int);
 INSERT INTO sel_dim SELECT i, i FROM generate_series(0, 6) i;
 -- the point directory of k is what the estimate reads for an equality
 CREATE INDEX sel_fact_col ON sel_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_dims = 'off');
+NOTICE:  sift_col index "sel_fact_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 ANALYZE sel_fact;
 ANALYZE sel_dim;
 SET sift.enable_agg = off;

@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_test;
 CREATE TABLE dc (id int, c0 text, c1 text, c2 text, c3 text, c4 text, c5 text);
 INSERT INTO dc SELECT g, v, v, v, v, v, v FROM (SELECT g, 'label ' || (g % 500) AS v FROM generate_series(1, 20000) g) s;
 CREATE INDEX dc_idx ON dc USING sift_col (c0, c1, c2, c3, c4, c5);
+NOTICE:  sift_col index "dc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT count(*) > 0 AS has_segment FROM sift.col_segments('dc_idx'::regclass) WHERE kind = 'immutable';
  has_segment 
 -------------
@@ -71,6 +73,8 @@ SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._
 RESET sift.test_limits;
 -- one dictionary may take up to a half of the cache: a third of it is kept, one over a half is parsed for every scan, the answers do not change
 REINDEX INDEX dc_idx;
+NOTICE:  sift_col index "dc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 3 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
  sized 
 -------
@@ -128,6 +132,8 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
 RESET sift.test_limits;
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
+NOTICE:  sift_col index "dc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
  rows 
 ------
@@ -167,6 +173,8 @@ SELECT loads > 0 AS parsed, hits = 0 AS none_found FROM sift._test_col_dict_cach
 
 -- a segment written again (REINDEX) is another segment: its dictionary is parsed, the answers are the same
 REINDEX INDEX dc_idx;
+NOTICE:  sift_col index "dc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
  rows 
 ------
@@ -218,6 +226,8 @@ DROP TABLE dc;
 CREATE TABLE dl (id int, s text);
 INSERT INTO dl SELECT g, 'key ' || g FROM generate_series(1, 20000) g;
 CREATE INDEX dl_idx ON dl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's');
+NOTICE:  sift_col index "dl_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SET sift.test_limits = 'dict_cache_kb=1';
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
@@ -243,6 +253,8 @@ DROP TABLE dl;
 CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO lc SELECT g, 1 + g % 50, jsonb_build_array(jsonb_build_object('qty', g % 7, 'price', g % 11), jsonb_build_object('qty', (g + 1) % 7, 'price', (g + 3) % 11)) FROM generate_series(1, 20000) g;
 CREATE INDEX lc_idx ON lc USING sift_col (id, parent_id, parts) WITH (paths = 'parts[]{qty int4, price int4}');
+NOTICE:  sift_col index "lc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) lc;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000; SET random_page_cost = 1000;
@@ -273,6 +285,8 @@ SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE 
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
 SET sift.test_limits = 'dict_cache_kb=1';
 REINDEX INDEX lc_idx;
+NOTICE:  sift_col index "lc_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
 -------

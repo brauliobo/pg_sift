@@ -24,11 +24,11 @@ CREATE TEMP TABLE b_deleted AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 1 
 DELETE FROM t WHERE id BETWEEN 1 AND 10;
 SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
 
--- refused, with what to do: no track_updates, a partition, a table with children
-CREATE INDEX t_plain ON t USING sift_col (id, g, v);
+-- refused, with what to do: track_updates off, a partition, a table with children
+CREATE INDEX t_plain ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
 ALTER INDEX t_plain SET (track_deletes = on);
 DROP INDEX t_plain;
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_deletes = on);
+CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_updates = 'off', track_deletes = on);
 CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100);
 ALTER TABLE p1 ADD PRIMARY KEY (id);

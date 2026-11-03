@@ -17,6 +17,8 @@ INSERT INTO cf VALUES (100000, 'infinity', 'infinity'), (100001, '-infinity', '-
 	(100004, '9899-12-31 23:59:59.999999', '9899-12-31 23:59:59.999999+00'), (100005, '9900-01-01', '9900-01-01 00:00+00'), (100006, '2024-01-01', '2024-01-01 00:00+00'),
 	(100007, '2023-12-31 23:59:59.999999', '2023-12-31 23:59:59.999999+00');
 CREATE INDEX cf_col ON cf USING sift_col (id, ts, tz);
+NOTICE:  sift_col index "cf_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) cf;
 CREATE TABLE cf_zone (zone text, edge timestamptz);
 INSERT INTO cf_zone VALUES ('America/New_York', '2024-03-10 07:00+00'), ('America/New_York', '2024-11-03 06:00+00'), ('America/Sao_Paulo', '2018-11-04 03:00+00'),

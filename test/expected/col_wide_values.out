@@ -16,6 +16,8 @@ FROM generate_series(1, 3000) i;
 -- the build: three string leaves pass 64 kB in the one unit of 3000 rows (192, 320 and 128 bytes a row)
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX wv_col ON wv USING sift_col (id, grp, payload, note, bin);
+NOTICE:  sift_col index "wv_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col: the strings of leaf 2 (attribute 3) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
 NOTICE:  sift_col: the strings of leaf 4 (attribute 5) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
@@ -55,6 +57,8 @@ SELECT q, pushed(q) AS scanned, same(q) FROM queries ORDER BY q;
 CREATE TABLE wm (id int, grp int, payload text, bin bytea) WITH (autovacuum_enabled = false);
 INSERT INTO wm SELECT i, i % 7, repeat(md5(i::text), 6), decode(repeat(md5(i::text), 8), 'hex') FROM generate_series(1, 1500) i;
 CREATE INDEX wm_col ON wm USING sift_col (id, grp, payload, bin) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "wm_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 INSERT INTO wm SELECT i, i % 7, repeat(md5(i::text), 6), decode(repeat(md5(i::text), 8), 'hex') FROM generate_series(1501, 3000) i;
 SELECT pushed('SELECT grp, count(*), count(DISTINCT payload) FROM wm GROUP BY grp') AS scanned_before;
  scanned_before 
@@ -107,6 +111,8 @@ CREATE TABLE ws (id int, payload text) WITH (autovacuum_enabled = false);
 INSERT INTO ws SELECT i, repeat(md5(i::text), 6) FROM generate_series(1, 200) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX ws_col ON ws USING sift_col (id, payload);
+NOTICE:  sift_col index "ws_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 RESET sift.test_limits;
 SELECT pushed('SELECT count(DISTINCT payload) FROM ws') AS scanned, same('SELECT count(DISTINCT payload) FROM ws');
  scanned | same 
@@ -125,6 +131,8 @@ SELECT pg_relation_size('wsb') / 8192 / 256 >= 2 AS spans_superblocks;
 
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX wsb_col ON wsb USING sift_col (id, payload);
+NOTICE:  sift_col index "wsb_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
 RESET sift.test_limits;

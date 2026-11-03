@@ -7,6 +7,8 @@ SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrit
 CREATE TABLE fz_ref (id int, grp int, v bigint, note text) WITH (autovacuum_enabled = off);
 CREATE TABLE fz_col (LIKE fz_ref) WITH (autovacuum_enabled = off);
 CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp, order_array_columns = 'note');
+NOTICE:  sift_col index "fz_col_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE fz_tbl (LIKE fz_ref) USING sift_table WITH (autovacuum_enabled = off);
 CREATE TABLE fz_step (n serial, sql text);
 CREATE TABLE fz_bad (n int, what text);

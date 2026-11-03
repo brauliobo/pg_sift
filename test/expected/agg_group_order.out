@@ -18,6 +18,8 @@ CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
 NOTICE:  sift_col index "o_col": rollup_dims = 'auto' writes a rollup of the rows by c, e
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 5 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX o_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM ANALYZE o;
 -- jsonb keys (a dimension built from columns): many distinct values, so the ranks come from the byte keys (gorder.c) and the check of the comparator; numbers that are one double
 -- (9007199254740992 and 9007199254740993), integers and fractions, strings of both cases, with accents and empty, true, false and null elements, nested arrays and objects
@@ -32,6 +34,8 @@ CREATE INDEX oj_col ON oj USING sift_col (id, a, b, c, d, e);
 NOTICE:  sift_col index "oj_col": rollup_dims = 'auto' writes a rollup of the rows by d, e
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 5 sampled stretches of about a unit, about 3 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX oj_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "oj_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM ANALYZE oj;
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
 CREATE FUNCTION o_keys(q text, k int, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
@@ -216,6 +220,8 @@ CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
 NOTICE:  sift_col index "o2_col": rollup_dims = 'auto' writes a rollup of the rows by b, g
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 7 sampled stretches of about a unit, about 8 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX o2_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o2_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM ANALYZE o2;
 -- a collation that is not the byte order, when the server has one
 SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') AS coll \gset
@@ -317,6 +323,8 @@ CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
 NOTICE:  sift_col index "o3_col": rollup_dims = 'auto' writes a rollup of the rows by s, g
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 21 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX o3_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o3_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM ANALYZE o3;
 CREATE FUNCTION o3_check(col text, canon text, dir text) RETURNS TABLE (plan text, same_groups bool) LANGUAGE plpgsql AS $$
 DECLARE q text; a text; b text;

@@ -318,6 +318,8 @@ CREATE TABLE np_a PARTITION OF np FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE np_b PARTITION OF np FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO np (id, g, a, b, c, d) SELECT id, g, a, b, c, d FROM nm WHERE id <= 5000;
 CREATE INDEX np_col ON np USING sift_col (id, g, a, b, c, d);
+NOTICE:  sift_col index "np_a_id_g_a_b_c_d_idx" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 VACUUM (ANALYZE) np;
 SELECT tag, nm_check(replace(q, 'FROM nm ', 'FROM np ')) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'b_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
    tag    |   nm_check   

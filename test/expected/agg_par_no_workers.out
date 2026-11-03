@@ -13,6 +13,8 @@ SET max_parallel_workers_per_gather = 3;
 CREATE TABLE fl (id int, g int, h int, v float8) WITH (fillfactor = 10);
 INSERT INTO fl SELECT i, i % 6000, i % 7, (i % 97) * 0.5 FROM generate_series(1, 20000) i;
 CREATE INDEX fl_col ON fl USING sift_col (id, g, h, v);
+NOTICE:  sift_col index "fl_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 CREATE TABLE l_d (h int, tag text);
 INSERT INTO l_d SELECT i % 7, 't' || i FROM generate_series(1, 40) i;
 VACUUM ANALYZE fl;

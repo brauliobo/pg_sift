@@ -328,6 +328,8 @@ RESET sift.enable_topn;
 -- more than 8,192 rows on a value of the first key (two values over 20,000 rows) keep the normal plan: the keys that follow are read from the heap for every row of the tie
 CREATE TABLE tt_big AS SELECT i AS id, i % 2 AS k, (i * 7919) % 1000 AS w FROM generate_series(1, 20000) i;
 CREATE INDEX tt_big_col ON tt_big USING sift_col (id, k);
+NOTICE:  sift_col index "tt_big_col" does not track updates: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
 ANALYZE tt_big;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt_big ORDER BY k, w, id LIMIT 10;
            QUERY PLAN           
