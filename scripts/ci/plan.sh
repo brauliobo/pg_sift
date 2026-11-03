@@ -53,11 +53,11 @@ if [[ $MODE == full ]]; then
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
-	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
-	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 0
-	# the bands of the tuned lanes (also the table lane) are recorded at 30000 events, the default: at 50000 the ratios of 45 and 46 of the shapes fall under their bands (hosted and local, PostgreSQL 18, 2026-11-03)
+	# the plan the planner picks, the cost ratios and the results of 106 shapes at 30000 events, the size the bands of test/plan are recorded at (a run at 50000 puts 40 to 46 shapes of each of
+	# the four lanes under their bands: hosted and local, PostgreSQL 18, 2026-11-03); no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
+	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
