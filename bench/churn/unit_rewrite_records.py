@@ -34,7 +34,7 @@ def main():
     env = collect.Env(tip, 'unit generation updates', schema.run_id(tip), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))),
                       reps=a.reps, cool=iolib.cool, maintenance='default')
     out = []
-    index_sql = "CREATE INDEX w_c ON w USING sift_col(id,tenant_id,counter_a) WITH(track_updates='id')"
+    index_sql = "CREATE INDEX w_c ON w USING sift_col(id,tenant_id,counter_a) WITH(track_updates='id',key_cut='id')"
     settle = "DO $$ BEGIN LOOP EXIT WHEN sift.col_maintenance_due('w_c',true) IS NULL; PERFORM sift.col_maintain('w_c'); PERFORM pg_sleep(0.01); END LOOP; PERFORM pg_sleep(0.05); LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN NOT EXISTS (SELECT FROM pg_stat_activity WHERE backend_type='sift maintenance' OR backend_type='autovacuum worker'); PERFORM pg_sleep(0.01); END LOOP; END $$"
     pins = ['SET enable_seqscan=off', 'SET enable_indexscan=off', 'SET enable_indexonlyscan=off', 'SET enable_bitmapscan=off']
     reset_pins = ';'.join('RESET ' + q.split()[1].split('=')[0] for q in pins)
