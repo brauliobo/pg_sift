@@ -66,6 +66,9 @@ grep -q '"key": "k2"' "$T/runs/run-kill1/a-1.json" || fail "a result of another 
 (( $(grep -c . "$T/runs/run-kill1/table/cells.tsv") == 10 )) || fail "the table of another key was not started over"
 echo "ok: a run with another key measures again"
 
+# the processes of a run are found by the run id in their environment, which only Linux says (/proc/PID/environ): without it there is none to find, and the checks below that
+# need an orphan to find are replaced by the one that says so
+if [[ -r /proc/self/environ ]]; then
 # a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
 d=$T/runs/run-orphan$$   # unique: the run id is in the environment of its processes, and a second copy of this test (another lint) must not find or stop these
 CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
@@ -88,6 +91,10 @@ for _ in $(seq 200); do [[ -s $f ]] && break; sleep 0.05; done
 left=$( . "$LIBSH"; run_procs "$id" )
 [[ -z $left ]] || { kill -KILL $left 2>/dev/null; fail "run_stop returned with the process of the run still running (the KILL had not taken effect)"; }
 echo "ok: run_stop waits for a late KILL"
+else
+	( . "$LIBSH"; [[ -z $(run_procs "orphan$$") ]] ) || fail "run_procs found a process on a host without /proc"
+	echo "ok: no /proc/PID/environ on this host: no process is found by its run id, so none is stopped"
+fi
 
 started() { local n; for n in $(seq 200); do [[ -s $1/.run/state ]] && return; sleep 0.05; done; }   # the run has its manifest, so its traps are set: a signal sent before that (a loaded host) kills it with the default action
 d=$T/runs/run-crash
