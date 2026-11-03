@@ -84,7 +84,7 @@ def main():
 
     def subject(cell, state, kind='read'):
         dataset = '%s-%s-%s' % (*cell.rsplit('-',1)[:1], state, cell.rsplit('-',1)[1]) if kind == 'read' else cell
-        return collect.Subject(dataset, a.rows, 'sorted', state, 'w', key='id', keys=a.rows, kind=kind,
+        return collect.Subject(dataset, a.rows, 'sorted' if kind == 'read' and state == 'fresh_vacuumed' else 'other', state, 'w', key='id', keys=a.rows, kind=kind,
                                structures='constraint,heap,sift', default_option=cell.rsplit('-',1)[1], churn=churn if state != 'fresh_vacuumed' else None,
                                settled=state == 'churned_vacuumed')
 
