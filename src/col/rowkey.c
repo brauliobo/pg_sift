@@ -1,5 +1,5 @@
 /*
- * col/rowkey.c - the option track_updates of a heap column index: the column that identifies a row, the rule that makes the index able to say which older entry
+ * col/rowkey.c - the option track_changes of a heap column index: the column that identifies a row, the rule that makes the index able to say which older entry
  * an updated row replaces. The checks run at CREATE INDEX and at ALTER INDEX; 'auto' is the primary key and is written back as the column.
  */
 #include "postgres.h"
@@ -94,19 +94,19 @@ check_column(Relation heap, Relation index, const char *name)
 	bool		covered = false;
 
 	if (att == InvalidAttrNumber)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("track_updates: table \"%s\" has no column \"%s\"", RelationGetRelationName(heap), name)));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("track_changes: table \"%s\" has no column \"%s\"", RelationGetRelationName(heap), name)));
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 		covered |= index->rd_index->indkey.values[i] == att;
 	if (!covered)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" is not a plain column of the index", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_changes: column \"%s\" is not a plain column of the index", name),
 						errhint("Name a column the index holds, or add it to the column list of the index.")));
 	if (repack_copy(heap))
 		return;
 	if (!TupleDescAttr(RelationGetDescr(heap), att - 1)->attnotnull)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" can be NULL", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_changes: column \"%s\" can be NULL", name),
 						errhint("A row is found by its key: declare the column NOT NULL, or use its primary key.")));
 	if (!OidIsValid(unique_on(heap, att, false, NULL)))
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_updates: column \"%s\" has no unique index of its own", name),
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_changes: column \"%s\" has no unique index of its own", name),
 						errdetail("The index replaces the older entries of a key when the row is updated, which is exact only when no two live rows share the key."),
 						errhint("Create a UNIQUE or PRIMARY KEY constraint on the column alone: not deferrable, not partial, not on an expression, not on several columns.")));
 }
@@ -138,8 +138,8 @@ quiet_partition(Relation index, const char *why)
 }
 
 /*
- * Before a build: 'auto' (the default) becomes the primary key, or off with a NOTICE that says why when there is none of one column or the index does not hold it (an index the user asked
- * track_deletes for has no such way out: that is an error). The column is checked, and the point directory of heap addresses that finds its entries lists it (the option
+ * Before a build: 'auto' (the default) becomes the primary key, or off with a NOTICE that says why when there is none of one column, the index does not hold it, or a statement trigger
+ * cannot hear the table (a column the user named has no such way out: a table the triggers cannot hear is an error, in sift_col_track_check). The column is checked, and the point directory of heap addresses that finds its entries lists it (the option
  * point_tid_columns gets the column when it does not name it, and keeps its automatic choice).
  */
 void
@@ -170,6 +170,8 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 				why = "the index does not hold the primary key column";
 			else if (strcmp(sift_col_options_point_tid_columns(index), "off") == 0)
 				why = "point_tid_columns is 'off', and the key is found through its directory";
+			else
+				why = sift_col_track_deaf(heap);
 		}
 	}
 	/* the log is a directory kind that a library before 4.0 refuses: a rewrite at a lowered minor (the rollback of docs/UPGRADING.md) drops what an earlier build chose */
@@ -177,19 +179,16 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 		why = "sift.col_format_minor is below 15, so that an older library can read the index";
 	if (why != NULL)
 	{
-		if (sift_col_options(index)->track_deletes)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_deletes needs track_updates, which has no key here: %s", why),
-							errhint("Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).")));
 		if (!quiet_partition(index, why))
-			ereport(NOTICE, (errmsg("sift_col index \"%s\" does not track updates: %s", RelationGetRelationName(index), why),
-							 errhint("Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.")));
+			ereport(NOTICE, (errmsg("sift_col index \"%s\" does not track changes: %s", RelationGetRelationName(index), why),
+							 errhint("Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.")));
 		if (!autokey)
-			sift_col_set_option(index, "track_updates", "off");
+			sift_col_set_option(index, "track_changes", "off");
 		return;
 	}
 	if (autokey)
 	{
-		sift_col_set_option(index, "track_updates", get_attname(RelationGetRelid(heap), pk, false));
+		sift_col_set_option(index, "track_changes", get_attname(RelationGetRelid(heap), pk, false));
 		rk = sift_col_options_row_key(index);
 	}
 	check_column(heap, index, rk);

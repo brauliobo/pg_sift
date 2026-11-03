@@ -25,9 +25,9 @@ CREATE FUNCTION t_q(where_ text) RETURNS text[] LANGUAGE sql AS $f$
 CREATE TABLE t (id int PRIMARY KEY, grp int, n int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 5, i, jsonb_build_object('k', (ARRAY['a', 'b', 'c1', 'd'])[i % 4 + 1], 'o', i % 3) FROM generate_series(1, 3000) i;
 CREATE INDEX t_col ON t USING sift_col (id, grp, n, doc) WITH (paths = 'doc.k astext, doc.o astext');
-NOTICE:  sift_col index "t_col" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "t_col" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM ANALYZE t;
 -- clean documents: the scan has the paths
 SELECT i, pushed(q) AS pushed, same(q) AS clean FROM unnest(t_q('true')) WITH ORDINALITY u(q, i) ORDER BY i;

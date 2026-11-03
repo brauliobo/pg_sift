@@ -49,9 +49,9 @@ CREATE INDEX wkp_id ON wkp USING sift_col (id, tenant_id, a1, a2, a3, a4, a5, a6
 NOTICE:  sift_col index "wkp_id": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +19.2%, benefit 18 against cost 10)
 DETAIL:  A sample of 31 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table but "id", whose zones the cut widens and whose lookups a unique b-tree of the table answers. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  To keep the units by block range, run ALTER INDEX wkp_id SET (key_cut = 'off') and REINDEX.
-NOTICE:  sift_col index "wkp_id" installed a statement trigger on table "wkp"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "wkp_id" installed two statement triggers on table "wkp" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 SET client_min_messages = warning;
 SELECT kopt('wkp_id') ~ 'key_cut=auto: tenant_id' AS cut_by_tenant;
  cut_by_tenant 

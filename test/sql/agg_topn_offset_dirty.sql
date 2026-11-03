@@ -13,7 +13,7 @@ INSERT INTO od (id, n, s) SELECT i, (i * 7919) % 1000, 'k' || lpad(((i::bigint *
 -- pages with gaps (the rows of a page are then a bitmap of its offsets in the unit)
 DELETE FROM od WHERE id % 5 = 2;
 VACUUM od;
-CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s');
+CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s', track_changes = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
 SET sift.test_topn_heads = off;
 

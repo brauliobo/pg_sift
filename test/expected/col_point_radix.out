@@ -10,8 +10,8 @@ ALTER TABLE prx ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO prx (id, small, neg, wide, same, v)
 SELECT i, i % 7000, (i * 7919 % 1000003) - 500000, (i % 9000)::bigint << 40, 42, i % 7 FROM generate_series(1, 40000) i;
 CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_columns = 'small, neg, wide, same', rollup_dims = 'off');
-NOTICE:  sift_col index "prx_ix" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "prx_ix" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) prx;
 SELECT sift.col_verify('prx_ix', true);
  col_verify 

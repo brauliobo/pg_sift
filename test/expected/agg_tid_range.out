@@ -8,8 +8,8 @@ SET enable_tidscan = off;
 CREATE TABLE th (id int, g int, v int, pad text) WITH (autovacuum_enabled = false, fillfactor = 60);
 INSERT INTO th SELECT i, i % 7, i % 100, repeat('x', 500) FROM generate_series(1, 6000) i;
 CREATE INDEX th_col ON th USING sift_col (id, g, v);
-NOTICE:  sift_col index "th_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "th_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) th;
 SELECT max(ctid) AS last_tid, count(DISTINCT (ctid::text::point)[0]::int / 256) AS superblocks FROM th;
  last_tid | superblocks 
@@ -324,8 +324,8 @@ CREATE TABLE tp_a PARTITION OF tp FOR VALUES FROM (0) TO (1000) WITH (autovacuum
 CREATE TABLE tp_b PARTITION OF tp FOR VALUES FROM (1000) TO (2000) WITH (autovacuum_enabled = false);
 INSERT INTO tp SELECT i, i % 5 FROM generate_series(0, 1999) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, g);
-NOTICE:  sift_col index "tp_a_id_g_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "tp_a_id_g_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT plan_of('SELECT g, count(*) FROM tp GROUP BY g') AS no_range, plan_of('SELECT g, count(*) FROM tp WHERE ctid >= ''(1,1)'' GROUP BY g') AS with_range;
  no_range | with_range 
 ----------+------------

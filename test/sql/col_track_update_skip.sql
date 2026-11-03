@@ -1,4 +1,4 @@
--- The statement trigger of track_deletes does not look at the rows of an UPDATE that leaves the key column alone: the replacement of the new version covers the old one. What about the
+-- The statement trigger of track_changes does not look at the rows of an UPDATE that leaves the key column alone: the replacement of the new version covers the old one. What about the
 -- other ways an UPDATE ends an entry? A partial index gets no entry for a version outside its predicate; an expression, a covered column, an equal value (HOT), a row inserted and
 -- updated in one transaction, several updates of a row in one transaction, an upsert, a change of the key itself and a row that moves to another partition. Every case: the
 -- heap-free read, the read that checks every page and no sift plan give one answer.
@@ -14,9 +14,9 @@ CREATE TABLE t_expr (LIKE t_plain INCLUDING ALL) WITH (autovacuum_enabled = fals
 INSERT INTO t_plain SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
 INSERT INTO t_part SELECT * FROM t_plain;
 INSERT INTO t_expr SELECT * FROM t_plain;
-CREATE INDEX t_plain_c ON t_plain USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on);
-CREATE INDEX t_part_c ON t_part USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on) WHERE counter_a > 500;
-CREATE INDEX t_expr_c ON t_expr USING sift_col (id, (tenant_id + 1), counter_a) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX t_plain_c ON t_plain USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
+CREATE INDEX t_part_c ON t_part USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id') WHERE counter_a > 500;
+CREATE INDEX t_expr_c ON t_expr USING sift_col (id, (tenant_id + 1), counter_a) WITH (track_changes = 'id');
 VACUUM (FREEZE, ANALYZE) t_plain, t_part, t_expr;
 
 -- the question asked of a table: the aggregate its index answers (the partial index only for a query inside its predicate), three ways
@@ -100,17 +100,17 @@ SELECT * FROM chk('vacuumed', 't_plain');
 SELECT * FROM chk('vacuumed', 't_part');
 SELECT * FROM chk('vacuumed', 't_expr');
 
--- a row that moves to another partition: track_deletes is refused on a partition (an UPDATE through the parent fires no statement trigger of a partition), the key alone is not
--- refused and the reads of such an index check the heap, whatever the rows did
+-- a row that moves to another partition: a statement trigger of a partition does not fire for an UPDATE through the parent, so the option is off there (by default with a NOTICE, an error for a named column)
+-- and the reads of such an index check the heap, whatever the rows did
 CREATE TABLE hp (id int NOT NULL, tenant_id int NOT NULL, counter_a int, label text) PARTITION BY RANGE (tenant_id);
 CREATE TABLE hp0 PARTITION OF hp FOR VALUES FROM (0) TO (5) WITH (autovacuum_enabled = false);
 CREATE TABLE hp1 PARTITION OF hp FOR VALUES FROM (5) TO (10) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX hp0_id ON hp0 (id);
 CREATE UNIQUE INDEX hp1_id ON hp1 (id);
 INSERT INTO hp SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
-CREATE INDEX hp0_h ON hp0 USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on);
-CREATE INDEX hp0_c ON hp0 USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id');
-CREATE INDEX hp1_c ON hp1 USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id');
+CREATE INDEX hp0_h ON hp0 USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'off');
+CREATE INDEX hp0_c ON hp0 USING sift_col (id, tenant_id, counter_a);
+CREATE INDEX hp1_c ON hp1 USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'off');
 VACUUM (FREEZE, ANALYZE) hp0, hp1;
 UPDATE hp SET tenant_id = (tenant_id + 5) % 10 WHERE id % 9 = 0;
 SELECT * FROM chk('partition moves', 'hp0');

@@ -25,8 +25,8 @@ CREATE INDEX im_col ON im USING sift_col (id, u, b, i, c, m, m8, bt, vb, ar);
 NOTICE:  sift_col index "im_col": array_lengths = 'auto' keeps the lengths of the arrays ar
 DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
 HINT:  To drop them, run ALTER INDEX im_col SET (array_lengths = 'off') and REINDEX.
-NOTICE:  sift_col index "im_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "im_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) im;
 INSERT INTO im SELECT 5000 + n, md5((n % 3)::text)::uuid, '\x01'::bytea, '203.0.113.1'::inet, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) n;
 CREATE TABLE im_q (name text, q text);

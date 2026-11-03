@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE sk (id int, ent_id int NOT NULL, ts timestamptz NOT NULL, amount float8);
 INSERT INTO sk SELECT i, 1 + i % 10, timestamptz '2026-01-01' + (i * 7 % 100000) * interval '1 second', i % 97 FROM generate_series(1, 100000) i ORDER BY random();
-CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_updates = 'off');
+CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_changes = 'off');
 NOTICE:  sift_col index "sk_col": key_order = 'ent_id, ts' sets order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent_id'
 DETAIL:  The options you wrote stay. The rows of each unit are kept in the order of the key and the order arrays are built on it, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. On a table in arrival order an ordered LIMIT costs what it does without the option; with 'group, key' the latest rows of each group cost b-tree-class instructions and key_cut is left to the build.
 HINT:  To build the index without it, run ALTER INDEX sk_col RESET (key_order) and REINDEX.

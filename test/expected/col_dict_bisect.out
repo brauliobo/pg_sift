@@ -7,8 +7,8 @@ CREATE EXTENSION pg_sift_test;
 CREATE TABLE bs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO bs SELECT g, 'key ' || md5(g::text) FROM generate_series(1, 30000) g;
 CREATE INDEX bs_idx ON bs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
-NOTICE:  sift_col index "bs_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "bs_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT count(*) > 0 AS has_segment FROM sift.col_segments('bs_idx'::regclass) WHERE kind = 'immutable';
  has_segment 
 -------------
@@ -115,8 +115,8 @@ SELECT bs_check('promoted again', 1);
 (1 row)
 
 REINDEX INDEX bs_idx;
-NOTICE:  sift_col index "bs_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "bs_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT bs_check('reindexed', 1);
              bs_check             
 ----------------------------------

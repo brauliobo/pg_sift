@@ -29,9 +29,9 @@ SELECT nm_rows(1, 6000);
 (1 row)
 
 CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
-NOTICE:  sift_col index "nm_col" installed a statement trigger on table "nm"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "nm_col" installed two statement triggers on table "nm" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (ANALYZE) nm;
 CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -321,8 +321,8 @@ CREATE TABLE np_a PARTITION OF np FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE np_b PARTITION OF np FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO np (id, g, a, b, c, d) SELECT id, g, a, b, c, d FROM nm WHERE id <= 5000;
 CREATE INDEX np_col ON np USING sift_col (id, g, a, b, c, d);
-NOTICE:  sift_col index "np_a_id_g_a_b_c_d_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "np_a_id_g_a_b_c_d_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) np;
 SELECT tag, nm_check(replace(q, 'FROM nm ', 'FROM np ')) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'b_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
    tag    |   nm_check   
@@ -353,9 +353,9 @@ CREATE TABLE nv (id int PRIMARY KEY, a numeric(30,4));
 INSERT INTO nv SELECT i, (hashint4(i) % 5000)::numeric * 100000000000000 FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX nv_col ON nv USING sift_col (id, a);
-NOTICE:  sift_col index "nv_col" installed a statement trigger on table "nv"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "nv_col" installed two statement triggers on table "nv" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 ANALYZE nv;
 SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lanes_overflow;

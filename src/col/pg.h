@@ -146,7 +146,7 @@ typedef struct SiftColOptions
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
-	int			track_updates;		/* offset of the "track_updates" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
+	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
@@ -163,7 +163,6 @@ typedef struct SiftColOptions
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment, 0: by the bytes of a row (maintenance only, not part of the format) */
 	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
-	bool		track_deletes;	/* statement triggers tell the log of the deletes and key changes the entries cannot track (needs track_updates; off by default) */
 	bool		cluster_advice;	/* sift.cluster_advice() may recommend an order for the table (advice only, not part of the format) */
 } SiftColOptions;
 

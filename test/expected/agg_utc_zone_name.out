@@ -8,8 +8,8 @@ CREATE TABLE uz (id int, ts timestamptz, v int) WITH (fillfactor = 20, autovacuu
 INSERT INTO uz SELECT i, timestamptz '2024-01-01 00:00+00' + i * interval '97 minutes 13 seconds', i % 13 FROM generate_series(1, 6000) i;
 INSERT INTO uz VALUES (7001, 'infinity', 1), (7002, '-infinity', 2), (7003, NULL, 3), (7004, '2024-05-01 02:30+00', 4), (7005, '2024-05-01 21:30+00', 5);
 CREATE INDEX uz_col ON uz USING sift_col (id, ts, v);
-NOTICE:  sift_col index "uz_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "uz_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE uz;
 CREATE TABLE zones (z text);
 INSERT INTO zones VALUES ('UTC'), ('America/New_York'), ('Asia/Kolkata'), ('UTC+3'), ('UTC-5'), ('GMT+3'), ('GMT-11'), ('utc+1');

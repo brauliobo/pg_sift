@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The aggregate that reads without the heap on a real physical standby that streams the churn of the primary, on that standby once it is promoted, and on the
-# subscriber of a logical replication, which is no place for track_deletes (the apply worker fires no statement trigger and writes no replacement). On every node the answer of the
+# subscriber of a logical replication, which is no place for track_changes (the apply worker fires no statement trigger and writes no replacement). On every node the answer of the
 # heap-free read is the oracle's (no sift plan); on the primary and the standby it reads fewer heap pages than the read that checks every page, on the subscriber it does not use the log.
 . "$(dirname "$0")/lib.bash"
 
@@ -18,7 +18,7 @@ node_start p || bail "start failed"
 D=$(dir p)
 
 DDL="CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)"
-IDX="CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on)"
+IDX="CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id')"
 sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "$DDL" \
 	"INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, $ROWS) i" "$IDX" "CREATE PUBLICATION pb FOR TABLE events" \
 	"VACUUM (FREEZE, ANALYZE) events" >/dev/null || bail "setup failed"

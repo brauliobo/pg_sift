@@ -264,7 +264,7 @@ sift_test_tomb_header(PG_FUNCTION_ARGS)
 	sift_dir_read(rel, dir);
 	if ((e = sift_tomb_find_seg(dir)) == NULL)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("relation \"%s\" has no tombstone log", RelationGetRelationName(rel)),
-						errhint("Delete a row of a sift_table, or give a column index track_updates.")));
+						errhint("Delete a row of a sift_table, or give a column index track_changes.")));
 	if (PG_GETARG_BOOL(1))
 	{
 		/* in place and not logged (GenericXLog zeroes the bytes past pd_lower): a test on a node nobody replays, to see the guard of the reader */

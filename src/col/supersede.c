@@ -1,5 +1,5 @@
 /*
- * col/supersede.c - the entries a new row version replaces, for an index with track_updates.
+ * col/supersede.c - the entries a new row version replaces, for an index with track_changes.
  *
  * An UPDATE that moves a row to a new heap address writes a new entry; the entry of the version it replaced stays in the index until VACUUM. Under the unique index
  * the option requires, the row the key names has one live version, so the entry of the key that the new version does not own is the old one: it gets a tombstone

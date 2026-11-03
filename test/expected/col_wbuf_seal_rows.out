@@ -3,8 +3,8 @@
 CREATE EXTENSION pg_sift;
 CREATE TABLE sr (k int) WITH (autovacuum_enabled = off);
 CREATE INDEX sr_idx ON sr USING sift_col (k) WITH (write_buffer_limit = 65536);
-NOTICE:  sift_col index "sr_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "sr_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE FUNCTION buffered(t regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce(sum(rows), 0) FROM sift.col_segments(t) WHERE kind <> 'immutable' $$;
 INSERT INTO sr SELECT g % 100 FROM generate_series(1, 5000) g;
 VACUUM sr;

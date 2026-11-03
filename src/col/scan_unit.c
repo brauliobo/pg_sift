@@ -147,12 +147,9 @@ segments_current(SiftColSource *src)
 }
 
 #ifdef SIFT_TESTING
-#define trust_updates()	sift_test_trust_updates
 bool		sift_test_no_heapfree = false;
 bool		sift_test_hf_ignore_tombs = false;
 bool		sift_test_hf_ignore_stamp = false;
-#else
-#define trust_updates()	false
 #endif
 
 /* The masks, ranges and blocks the log made all-visible where the map said no (tests, sift._test_hf_taken) */
@@ -174,7 +171,7 @@ col_hf_open(SiftColSource *src)
 		return;
 #endif
 	if ((src->flags & COLO_TABLE) || IsolationIsSerializable() || src->snap->snapshot_type != SNAPSHOT_MVCC || !TransactionIdIsNormal(src->snap->xmin) ||
-		!sift_col_row_key_on(src->index) || !(sift_col_options(src->index)->track_deletes || trust_updates()))
+		!sift_col_row_key_on(src->index))
 		return;
 	src->hflog = sift_col_log(src->index);
 	if (src->hflog != NULL)

@@ -137,7 +137,7 @@ static Oid	vacuum_heap_of(Oid indexoid);
 
 /*
  * What a read pays for a row that maintenance would spare it, in instructions (records on 300,000 rows, 5% of them updated in a covered column, the heap table with its index, no VACUUM since):
- * a row checked in the heap 250 (the aggregate scan 120 to 250, an index-only scan 600), a row decided by the tombstone log nothing measurable (the same reads cost the same with track_updates on), a row of a unit read as a unit because it holds a dead row
+ * a row checked in the heap 250 (the aggregate scan 120 to 250, an index-only scan 600), a row decided by the tombstone log nothing measurable (the same reads cost the same with track_changes on), a row of a unit read as a unit because it holds a dead row
  * 30 (a point read of 60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it, until the rewrite). The scans report the rows, the tick keeps the sum for the index in this backend
  * (sift.stats read_penalty_kinstr).
  */

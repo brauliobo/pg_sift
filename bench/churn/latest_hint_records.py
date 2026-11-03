@@ -65,7 +65,7 @@ def main():
         run('CREATE TABLE w (LIKE seed INCLUDING ALL)')
         run('INSERT INTO w SELECT * FROM seed ORDER BY id')
         if index:
-            run("CREATE INDEX w_c ON w USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id')")
+            run("CREATE INDEX w_c ON w USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id')")
         run('VACUUM (FREEZE, ANALYZE) w')
 
     def verify(updates):
@@ -97,7 +97,7 @@ def main():
             run("SET sift.eval_methods = '%s'" % ('latest_hint' if method == 'on' else ''))
             subject = collect.Subject('latest-hint-build-' + method, a.rows, 'sorted', 'fresh_vacuumed', 'w', key='id', keys=a.rows,
                                       kind='maintenance', structures='constraint,heap,sift')
-            out.extend(collect.measure_statement(s, 'build-index', "CREATE INDEX w_c ON w USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id')", subject,
+            out.extend(collect.measure_statement(s, 'build-index', "CREATE INDEX w_c ON w USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id')", subject,
                        [collect.Arm('sift', method, settings=[], prepare=lambda: fresh(False), structures=subject.structures)], env, temps=('warm',)))
             save()
         run('DROP TABLE w, seed')

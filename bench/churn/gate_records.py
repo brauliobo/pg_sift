@@ -35,7 +35,7 @@ def build(s, n, row_key, autovac=False):
     s.run('DROP TABLE IF EXISTS t')
     s.run('CREATE TABLE t (id int PRIMARY KEY, k int, v int, pad text) WITH (autovacuum_enabled = %s)' % ('true' if autovac else 'false'))
     s.run('INSERT INTO t SELECT g, (g::bigint * 7919 %% 3000)::int, g %% 1000, md5(g::text) FROM generate_series(1, %d) g' % n)
-    s.run("CREATE INDEX t_c ON t USING sift_col (id, k, v)%s" % (" WITH (track_updates = 'id')" if row_key else ''))
+    s.run("CREATE INDEX t_c ON t USING sift_col (id, k, v)%s" % (" WITH (track_changes = 'id')" if row_key else ''))
     s.run('VACUUM (ANALYZE, FREEZE) t')
     s.run('CHECKPOINT')
 

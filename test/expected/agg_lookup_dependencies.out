@@ -4,8 +4,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, dim_a_id int, amount int, payload text);
 INSERT INTO events SELECT i, i % 100, i % 11, repeat('payload', 50) FROM generate_series(1, 50000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, amount);
-NOTICE:  sift_col index "events_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "events_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "events_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +30%, 3 bytes a row, benefit 28 against cost 7)
 HINT:  To keep the index without it, run ALTER INDEX events_col SET (point_tid_columns = 'off') and REINDEX.
 CREATE TABLE dim_a (id int, code text, kind text);

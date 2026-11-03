@@ -9,8 +9,8 @@ CREATE TABLE sp_o AS SELECT g id, g % 11 a, g % 11 b, g % 11 c, g % 11 e FROM ge
 CREATE TABLE sp_d AS SELECT g d, g / 90 y FROM generate_series(0, 1799) g;
 CREATE TABLE sp_f AS SELECT g id, (g * 7919 % 20000) + 1 cust, g % 1800 d, g % 97 q, (g % 5000)::numeric(7,2) p, g % 31 w FROM generate_series(1::bigint, 60000) g;
 CREATE INDEX sp_f_col ON sp_f USING sift_col (id, cust, d, q, p, w) WITH (point_columns = 'cust');
-NOTICE:  sift_col index "sp_f_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "sp_f_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) sp_o, sp_d, sp_f;
 CREATE FUNCTION sp_plan(q text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
 DECLARE r text = '';

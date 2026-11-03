@@ -16,7 +16,7 @@ CREATE INDEX pv_idx ON pv USING sift_col (id, set_id, v);
 SELECT pv_opt('pv_idx') AS built;
                             built                             
 --------------------------------------------------------------
- track_updates=id,point_tid_columns=auto: id,key_columns=auto
+ track_changes=id,point_tid_columns=auto: id,key_columns=auto
 (1 row)
 
 -- two rounds of non-HOT updates that scatter the owners, each promoted into its own segment
@@ -44,7 +44,7 @@ VACUUM (PARALLEL 2) pv;
 SELECT pv_opt('pv_idx') AS after_parallel_vacuum;
                     after_parallel_vacuum                     
 --------------------------------------------------------------
- track_updates=id,point_tid_columns=auto: id,key_columns=auto
+ track_changes=id,point_tid_columns=auto: id,key_columns=auto
 (1 row)
 
 -- outside parallel mode the merge decides
@@ -58,7 +58,7 @@ SELECT sift.col_merge('pv_idx', true) >= 0 AS merged;
 SELECT pv_opt('pv_idx') AS after_merge;
                              after_merge                              
 ----------------------------------------------------------------------
- track_updates=id,key_columns=auto: set_id,point_tid_columns=auto: id
+ track_changes=id,key_columns=auto: set_id,point_tid_columns=auto: id
 (1 row)
 
 DROP TABLE pv;

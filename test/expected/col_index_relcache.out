@@ -30,8 +30,8 @@ SET min_parallel_table_scan_size = 0;
 SET sift.test_col_rel_inval = on;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX rb_ser ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.parts[]{c text, score float8}');
-NOTICE:  sift_col index "rb_ser" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "rb_ser" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT current_setting('sift.test_col_workers') AS workers, sum(rows) = (SELECT count(*) FROM rb) AS all_rows, col_verified('rb_ser') AS verified
 FROM sift.col_segments('rb_ser');
  workers | all_rows | verified 
@@ -41,8 +41,8 @@ FROM sift.col_segments('rb_ser');
 
 SET max_parallel_maintenance_workers = 2;
 CREATE INDEX rb_par ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.parts[]{c text, score float8}');
-NOTICE:  sift_col index "rb_par" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "rb_par" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT current_setting('sift.test_col_workers')::int > 0 AS parallel, sum(rows) = (SELECT count(*) FROM rb) AS all_rows, col_verified('rb_par') AS verified
 FROM sift.col_segments('rb_par');
  parallel | all_rows | verified 
@@ -57,8 +57,8 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 CREATE INDEX rb_col ON rb USING sift_col (id, g, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
-NOTICE:  sift_col index "rb_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "rb_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE rb;
 CREATE FUNCTION rb_q(agg bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -102,8 +102,8 @@ RESET sift.test_col_rel_inval;
 -- the insert went on to read and write the hint it kept there. The rows are all in the index afterwards
 CREATE TABLE rw (id int, doc jsonb) WITH (autovacuum_enabled = off);
 CREATE INDEX rw_col ON rw USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
-NOTICE:  sift_col index "rw_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "rw_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SET sift.test_col_rel_inval = on;
 INSERT INTO rw SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', CASE WHEN i % 5 = 0 THEN to_jsonb('8.5'::text) ELSE to_jsonb(i) END)))
 FROM generate_series(1, 50) i;
@@ -120,8 +120,8 @@ DROP TABLE rw;
 CREATE TABLE rm (id int, grp int, v int) WITH (autovacuum_enabled = off);
 INSERT INTO rm SELECT i, i % 7, i FROM generate_series(1, 20000) i;
 CREATE INDEX rm_col ON rm USING sift_col (grp, v, id) WITH (key_cut = grp);
-NOTICE:  sift_col index "rm_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "rm_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 INSERT INTO rm SELECT i, i % 7, i FROM generate_series(20001, 30000) i;
 SELECT sift.col_promote('rm_col') > 0 AS promoted;
  promoted 

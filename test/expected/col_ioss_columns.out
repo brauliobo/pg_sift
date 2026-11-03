@@ -12,8 +12,8 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7919) % 10007 END, CASE WHEN 
 FROM generate_series(1, 20000) i;
 CREATE INDEX io_i ON io USING sift_col (id sift.col_int4_ops, a sift.col_int4_ops, n sift.col_numeric_ops, s sift.col_text_ops, u sift.col_uuid_ops, d sift.col_date_ops)
 	WITH (return_columns = 's, u', count_columns = 'off', write_buffer_limit = 256);
-NOTICE:  sift_col index "io_i" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "io_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) io;
 CREATE FUNCTION io_mode(ios bool) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

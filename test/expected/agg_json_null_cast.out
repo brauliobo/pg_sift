@@ -8,12 +8,12 @@ INSERT INTO docs
 SELECT i, CASE i % 5 WHEN 0 THEN '{"k": null, "c": 1}'::jsonb WHEN 1 THEN '{"k": 2.5, "c": 2}'::jsonb WHEN 2 THEN '{"c": 3}'::jsonb ELSE jsonb_build_object('k', i % 7, 'c', i % 4) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, doc) WITH (paths = 'doc.k float8, doc.c float8');
-NOTICE:  sift_col index "docs_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "docs_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE dim_b AS TABLE docs;
 CREATE INDEX members_col ON dim_b USING sift_col (id, doc) WITH (paths = 'doc.* float8');
-NOTICE:  sift_col index "members_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "members_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) docs;
 VACUUM (FREEZE, ANALYZE) dim_b;
 -- The result, or the SQLSTATE, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
@@ -81,8 +81,8 @@ SELECT * FROM check_query('integer cast, leaf without one', $q$SELECT id % 3 AS 
 CREATE TABLE late (id int, doc jsonb);
 INSERT INTO late SELECT i, jsonb_build_object('c', i % 4) FROM generate_series(1, 20000) i;
 CREATE INDEX late_col ON late USING sift_col (id, doc) WITH (paths = 'doc.c float8');
-NOTICE:  sift_col index "late_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "late_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) late;
 SELECT * FROM check_query('segments only', $q$SELECT count(*) AS n, sum((doc -> 'c')::float8) AS total FROM late$q$, false);
      label     | scan | same | raises 

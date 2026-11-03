@@ -1,12 +1,11 @@
 /*
- * col/track.c - the statement triggers of an index with track_updates (AFTER UPDATE) and track_deletes (AFTER DELETE), and the completeness of its tombstone log.
+ * col/track.c - the statement triggers of an index with track_changes (AFTER UPDATE and AFTER DELETE), and the completeness of its tombstone log.
  *
  * A DELETE, and an UPDATE that changes the key, end a row version without writing a new entry, so the index cannot tell. The triggers (statement, with a transition table of
- * the old rows) hand the old keys to sift.col_track_old_rows, which writes a tombstone for each entry of those keys that no version is live for. track_updates installs the UPDATE
- * trigger (the key changes), track_deletes the DELETE trigger. The log is complete only with both (the testing switch sift.test_trust_updates takes the UPDATE trigger for enough, as
- * an owner's promise of no hard DELETE would): before the triggers the deletes were not heard, so the transaction that installs them first writes a tombstone for every row version of
- * the table that is dead now (the baseline), under a lock that holds the writers out. The triggers are the channel: the log keeps the xmin of their catalog rows, and one that is dropped,
- * disabled, enabled again or recreated is another row, which ends the completeness until a new baseline. A read never takes the log for complete on its own word.
+ * the old rows) hand the old keys to sift.col_track_old_rows, which writes a tombstone for each entry of those keys that no version is live for. The log is complete only with both:
+ * before the triggers the deletes were not heard, so the transaction that installs them first writes a tombstone for every row version of the table that is dead now (the
+ * baseline), under a lock that holds the writers out. The triggers are the channel: the log keeps the xmin of their catalog rows, and one that is dropped, disabled, enabled again
+ * or recreated is another row, which ends the completeness until a new baseline. A read never takes the log for complete on its own word.
  */
 #include "postgres.h"
 
@@ -50,10 +49,6 @@ PG_FUNCTION_INFO_V1(sift_col_stamps);
 
 #ifdef SIFT_TESTING
 bool		sift_test_no_track = false;
-bool		sift_test_trust_updates = false;
-#define trusting_updates()	sift_test_trust_updates
-#else
-#define trusting_updates()	false
 #endif
 
 /*
@@ -152,43 +147,29 @@ channel_read(Relation heap, Relation index, bool present[2], bool ok[2], uint32 
 	}
 }
 
-/* Does a statement trigger of the table hear what happens to its rows: not a partition or a parent (a statement on the parent fires no trigger of the child), not a subscription target */
 static bool subscribed(Oid heapoid);
 
-static bool
-table_hears(Relation heap)
+/* Why a statement trigger of the table cannot hear what happens to its rows, NULL when it can (a statement on the parent fires no trigger of a child; the apply worker of a subscription fires none) */
+const char *
+sift_col_track_deaf(Relation heap)
 {
-	return !(heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL) &&
-		!subscribed(RelationGetRelid(heap));
+	if (heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL)
+		return "the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent";
+	if (subscribed(RelationGetRelid(heap)))
+		return "the table is the target of a logical replication subscription, and the apply worker fires no statement trigger";
+	return NULL;
 }
 
-/* The triggers the options ask for: need[0] the DELETE trigger (track_deletes), need[1] the UPDATE trigger (track_updates, on a table that hears) */
-static void
-channel_need(Relation heap, Relation index, bool need[2])
-{
-	need[0] = sift_col_options(index)->track_deletes;
-	need[1] = sift_col_row_key_on(index) && (need[0] || table_hears(heap));
-}
-
-/* Is the channel as the options ask, and the log's own word on its completeness the one the channel gives (witnesses of the triggers it names; complete exactly when a baseline was asked for) */
+/* Are both triggers there as the option made them, and the log's own word on its completeness the one the channel gives (complete, with the witnesses of the triggers) */
 static bool
 channel_as_asked(Relation heap, Relation index, SiftTombLog *log)
 {
-	bool		need[2],
-				present[2],
+	bool		present[2],
 				ok[2];
 	uint32		witness[2];
-	bool		base;
 
-	channel_need(heap, index, need);
 	channel_read(heap, index, present, ok, witness);
-	for (int i = 0; i < 2; i++)
-		if (need[i] ? !ok[i] : present[i])
-			return false;
-	base = need[0] || (need[1] && trusting_updates());
-	if (!base)
-		return log == NULL || log->chan.flags == 0;
-	return log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE && log->chan.witness[0] == witness[0] && log->chan.witness[1] == witness[1];
+	return ok[0] && ok[1] && log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE && log->chan.witness[0] == witness[0] && log->chan.witness[1] == witness[1];
 }
 
 static void
@@ -300,40 +281,30 @@ subscribed(Oid heapoid)
 	return found;
 }
 
-/* track_deletes is set on this index: it has a key, and the table is one a statement trigger hears */
+/* track_changes names a column on this index: the table must be one a statement trigger hears (the default off, with a NOTICE, is decided before the build, in sift_col_row_key_prepare) */
 void
 sift_col_track_check(Relation heap, Relation index)
 {
-	if (!sift_col_options(index)->track_deletes)
+	const char *why;
+
+	if (!sift_col_row_key_on(index) || (why = sift_col_track_deaf(heap)) == NULL)
 		return;
-	if (!sift_col_row_key_on(index))
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_deletes needs track_updates"),
-						errhint("Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).")));
-	if (heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("track_deletes: table \"%s\" is a partition or has inheritance children", RelationGetRelationName(heap)),
-						errdetail("A statement trigger does not fire for a statement on the parent, so the deletes would not be heard."),
-						errhint("Leave track_deletes off: reads of the index check the heap.")));
-	if (subscribed(RelationGetRelid(heap)))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("track_deletes: table \"%s\" is the target of a logical replication subscription", RelationGetRelationName(heap)),
-						errdetail("The apply worker fires no statement trigger, so the deletes it applies would not be heard."),
-						errhint("Leave track_deletes off: reads of the index check the heap.")));
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("track_changes: table \"%s\" cannot be tracked", RelationGetRelationName(heap)),
+					errdetail("%s.", why),
+					errhint("WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.")));
 }
 
 /*
- * Installs the triggers the options ask for and, when the deletes are heard (or the testing switch trusts the updates), makes the log complete: unless all is in place already (a new
- * baseline whenever a trigger is new or another row). say: CREATE INDEX or REINDEX says in a NOTICE that it installed the UPDATE trigger.
+ * Installs the two triggers and makes the log complete: unless all is in place already (a new baseline whenever a trigger is new or another row). A NOTICE says it.
  */
 void
-sift_col_track_install(Relation heap, Relation index, bool concurrent, bool say)
+sift_col_track_install(Relation heap, Relation index, bool concurrent)
 {
-	bool		need[2];
 	SiftTombLog *log = sift_col_log(index);
 	SiftTombChan chan = {.flags = SIFT_TOMB_COMPLETE};
-	bool		base;
+	bool		present[2],
+				ok[2];
 
-	channel_need(heap, index, need);
-	if (!need[0] && !need[1])
-		return;
 	if (log == NULL)
 	{
 		sift_col_log_create(index);
@@ -342,42 +313,28 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent, bool say)
 	if (channel_as_asked(heap, index, log))
 		return;
 	drop_triggers(heap, index);
-	for (int i = 0; i < 2; i++)
-		if (need[i])
-			create_trigger(heap, index, i == 1);
+	create_trigger(heap, index, false);
+	create_trigger(heap, index, true);
 	CommandCounterIncrement();
-	if (say && need[1] && !need[0])
-		ereport(NOTICE, (errmsg("sift_col index \"%s\" installed a statement trigger on table \"%s\"", RelationGetRelationName(index), RelationGetRelationName(heap)),
-						 errdetail("track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index."),
-						 errhint("WITH (track_updates = 'off') builds the index without it.")));
-	base = need[0] || trusting_updates();
-	if (!base)
-	{
-		if (log->chan.flags != 0)
-			sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
-		return;
-	}
+	ereport(NOTICE, (errmsg("sift_col index \"%s\" installed two statement triggers on table \"%s\" and tracks its changes", RelationGetRelationName(index), RelationGetRelationName(heap)),
+					 errdetail("track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index."),
+					 errhint("WITH (track_changes = 'off') builds the index without them.")));
 	/* writers run beside a concurrent build: what they ended before the triggers is not known, so the log is not complete */
 	if (concurrent)
 	{
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_deletes tracks the deletes from now on, but the log is not complete after a concurrent build", RelationGetRelationName(index)),
-						 errhint("To make it complete, run ALTER INDEX %s RESET (track_deletes) and then ALTER INDEX %s SET (track_deletes = on), or REINDEX.",
-								 RelationGetRelationName(index), RelationGetRelationName(index))));
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes tracks the changes from now on, but the log is not complete after a concurrent build", RelationGetRelationName(index)),
+						 errhint("To make it complete, run ALTER INDEX %s SET (track_changes = 'off') and then ALTER INDEX %s SET (track_changes = '%s'), or REINDEX.",
+								 RelationGetRelationName(index), RelationGetRelationName(index), sift_col_options_row_key(index))));
 		return;
 	}
 	baseline(index, heap, log);
-	{
-		bool		present[2],
-					ok[2];
-
-		channel_read(heap, index, present, ok, chan.witness);
-		SIFT_INVARIANT((!need[0] || ok[0]) && (!need[1] || ok[1]), "the triggers of index %u were not created", RelationGetRelid(index));
-	}
+	channel_read(heap, index, present, ok, chan.witness);
+	SIFT_INVARIANT(ok[0] && ok[1], "the triggers of index %u were not created", RelationGetRelid(index));
 	chan.base_xid = GetCurrentTransactionId();
 	sift_tomb_set_chan(index, log, &chan);
 }
 
-/* No option asks for a trigger: no trigger and no completeness */
+/* The option is off: no trigger and no completeness */
 void
 sift_col_track_remove(Relation heap, Relation index)
 {
@@ -388,12 +345,11 @@ sift_col_track_remove(Relation heap, Relation index)
 		sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
 }
 
-/* After ALTER INDEX: the triggers follow the options */
+/* After ALTER INDEX: the triggers follow the option */
 void
 sift_col_track_reconcile(Relation index)
 {
-	bool		need[2],
-				present[2],
+	bool		present[2],
 				ok[2];
 	uint32		witness[2];
 	Relation	heap;
@@ -401,8 +357,7 @@ sift_col_track_reconcile(Relation index)
 
 	/* an ALTER INDEX of any other option must not hold the writers of the table out: lock it only to install or to drop */
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	channel_need(heap, index, need);
-	if (need[0] || need[1])
+	if (sift_col_row_key_on(index))
 	{
 		done = channel_as_asked(heap, index, sift_col_log(index));
 		table_close(heap, AccessShareLock);
@@ -410,12 +365,12 @@ sift_col_track_reconcile(Relation index)
 			return;
 		heap = table_open(index->rd_index->indrelid, ShareRowExclusiveLock);
 		sift_col_track_check(heap, index);
-		sift_col_track_install(heap, index, false, false);
+		sift_col_track_install(heap, index, false);
 		table_close(heap, NoLock);
 		return;
 	}
 	channel_read(heap, index, present, ok, witness);
-	done = !present[0] && !present[1] && !(sift_col_row_key_on(index) && sift_col_log(index) != NULL && sift_col_log(index)->chan.flags != 0);
+	done = !present[0] && !present[1];
 	table_close(heap, AccessShareLock);
 	if (done)
 		return;
@@ -425,8 +380,7 @@ sift_col_track_reconcile(Relation index)
 }
 
 /*
- * May a read take the log for the whole truth about which entries are live: the log was made complete, the triggers are the ones that did it (the DELETE trigger too, unless the testing
- * switch trusts the updates), and the table still has its unique index on the key. With a snapshot, also that it is an MVCC one that sees the transaction that made the log complete.
+ * May a read take the log for the whole truth about which entries are live: the log was made complete, the triggers are the ones that did it, and the table still has its unique index on the key. With a snapshot, also that it is an MVCC one that sees the transaction that made the log complete.
  */
 bool
 sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
@@ -445,9 +399,7 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_COMPLETE)
 		return false;
 	channel_read(heap, index, present, ok, witness);
-	if (!ok[1] || witness[1] != log->chan.witness[1])
-		return false;
-	if (!trusting_updates() && (!ok[0] || witness[0] != log->chan.witness[0]))
+	if (!ok[0] || !ok[1] || witness[0] != log->chan.witness[0] || witness[1] != log->chan.witness[1])
 		return false;
 	if (snap == NULL)
 		return true;
@@ -516,7 +468,7 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
-	v[0] = BoolGetDatum(sift_col_options(index)->track_deletes);
+	v[0] = BoolGetDatum(sift_col_row_key_on(index));
 	v[1] = BoolGetDatum(log != NULL && channel_as_asked(heap, index, log));
 	v[2] = BoolGetDatum(log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE);
 	v[3] = BoolGetDatum(sift_col_track_ok(index, heap, NULL));

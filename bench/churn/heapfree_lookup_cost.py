@@ -3,7 +3,7 @@
 
     python3 -I bench/churn/heapfree_churn_reads.py --host DIR --port N --out FILE [--rows 300000] [--shares 1,5,20] [--patterns recent,random] [--reps 3]
 
-For each (which rows, share) a table `w` with a sift_col index (`track_updates` with track_deletes, or without, --track off) and a table `wb` with the same rows and b-trees (the twin) are loaded, updated in
+For each (which rows, share) a table `w` with a sift_col index (`track_changes` on, or `off` with --track off) and a table `wb` with the same rows and b-trees (the twin) are loaded, updated in
 a covered column (a new entry and a tombstone for each row) and read in four states: fresh (VACUUM FREEZE), updated and promoted, merged, vacuumed. Records of the records library; the update is
 declared in `churn` and the state in `variant`. Warm only: a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
 """
@@ -70,7 +70,7 @@ def main():
                 run('DROP TABLE IF EXISTS w')
                 run(LOAD.format(t='w'))
                 run(FILL.format(t='w', rows=rows))
-                run("CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on, key_cut = 'off')")
+                run("CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (track_changes = 'id', key_cut = 'off')")
                 run('VACUUM (FREEZE, ANALYZE) w')
                 run('UPDATE w SET counter_a = counter_a + 1 WHERE %s' % pred.format(rows=rows, share=share))
                 run("SELECT sift.col_promote('w_c')")

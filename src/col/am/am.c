@@ -76,7 +76,7 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
-static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_updates supersedes the entries of the old versions */
+static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
 
 static void
 batch_flush_all(void)
@@ -166,7 +166,7 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	}
 }
 
-/* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_updates)? */
+/* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_changes)? */
 bool
 sift_col_updates_supersede(void)
 {

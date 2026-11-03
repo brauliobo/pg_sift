@@ -11,7 +11,7 @@ sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
  "SET sift.eval_methods = 'unit_rewrite'" \
  "CREATE TABLE events(id int PRIMARY KEY, tenant_id int, counter_a int) WITH (autovacuum_enabled=false)" \
  "INSERT INTO events SELECT i,i%10,i FROM generate_series(1,8000) i" \
- "CREATE INDEX events_c ON events USING sift_col(id,tenant_id,counter_a) WITH(track_updates='id',key_cut='id',key_cut_rows=1024,vacuum_truncate=false)" \
+ "CREATE INDEX events_c ON events USING sift_col(id,tenant_id,counter_a) WITH(track_changes='id',key_cut='id',key_cut_rows=1024,vacuum_truncate=false)" \
  "VACUUM (FREEZE,ANALYZE) events" >/dev/null || bail "setup failed"
 node_clone p s 32 "hot_standby_feedback = off
 max_standby_streaming_delay = 0"

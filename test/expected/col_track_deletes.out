@@ -1,4 +1,4 @@
--- track_deletes (needs track_updates; off by default) adds the AFTER DELETE statement trigger to the AFTER UPDATE one of track_updates: they tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
+-- track_changes (default auto, a key) installs two internal statement triggers, AFTER UPDATE and AFTER DELETE: they tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
 -- transaction that installs them first writes a tombstone for every version of the table that is dead then (the baseline). The log can be taken for complete (heap_free of
 -- sift.col_tracking) only while the triggers are the ones that made it so. The oracle is the heap: the address each row had before the statement.
 CREATE EXTENSION pg_sift;
@@ -15,18 +15,18 @@ CREATE FUNCTION log_matches(idx regclass) RETURNS bool LANGUAGE sql AS $$
 CREATE FUNCTION sift_triggers() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(regexp_replace(tgname, '_[0-9]+$', '') || ':' || tgenabled::text || ':' || tgisinternal::text, ' ' ORDER BY tgname), 'none')
     FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%' $$;
--- off by default, and with track_updates alone: the UPDATE trigger only, nothing complete, a delete is not heard
-CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_updates = 'id');
+-- built by the default: both triggers and a complete log, and a delete is heard
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_c');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
- f             | t        | f        | f
+ t             | t        | t        | t
 (1 row)
 
 SELECT sift_triggers();
-        sift_triggers         
-------------------------------
- sift_track_update_t_c:A:true
+                       sift_triggers                       
+-----------------------------------------------------------
+ sift_track_delete_t_c:A:true sift_track_update_t_c:A:true
 (1 row)
 
 CREATE TEMP TABLE b_deleted AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 1 AND 10;
@@ -34,49 +34,42 @@ DELETE FROM t WHERE id BETWEEN 1 AND 10;
 SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
  entries 
 ---------
-       0
+      10
 (1 row)
 
--- refused, with what to do: track_updates off, a partition, a table with children
-CREATE INDEX t_plain ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
-ALTER INDEX t_plain SET (track_deletes = on);
-ERROR:  track_deletes needs track_updates
-HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
-DROP INDEX t_plain;
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_updates = 'off', track_deletes = on);
-ERROR:  track_deletes needs track_updates
-HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
+-- refused, with what to do: a partition, a table with children, whose statements a trigger does not hear
 CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100);
 ALTER TABLE p1 ADD PRIMARY KEY (id);
-CREATE INDEX p1_c ON p1 USING sift_col (id, g) WITH (track_updates = 'id', track_deletes = on);
-ERROR:  track_deletes: table "p1" is a partition or has inheritance children
-DETAIL:  A statement trigger does not fire for a statement on the parent, so the deletes would not be heard.
-HINT:  Leave track_deletes off: reads of the index check the heap.
+CREATE INDEX p1_c ON p1 USING sift_col (id, g) WITH (track_changes = 'id');
+ERROR:  track_changes: table "p1" cannot be tracked
+DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 DROP TABLE p;
 CREATE TABLE child () INHERITS (t);
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on);
-ERROR:  track_deletes: table "t" is a partition or has inheritance children
-DETAIL:  A statement trigger does not fire for a statement on the parent, so the deletes would not be heard.
-HINT:  Leave track_deletes off: reads of the index check the heap.
-ALTER INDEX t_c SET (track_deletes = on);
-ERROR:  track_deletes: table "t" is a partition or has inheritance children
-DETAIL:  A statement trigger does not fire for a statement on the parent, so the deletes would not be heard.
-HINT:  Leave track_deletes off: reads of the index check the heap.
+CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
+ERROR:  track_changes: table "t" cannot be tracked
+DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
+ALTER INDEX t_c SET (track_changes = 'off');
+ALTER INDEX t_c SET (track_changes = 'id');
+ERROR:  track_changes: table "t" cannot be tracked
+DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 SELECT sift_triggers();
-        sift_triggers         
-------------------------------
- sift_track_update_t_c:A:true
+ sift_triggers 
+---------------
+ none
 (1 row)
 
 DROP TABLE child;
--- turned on later: the baseline writes a tombstone for every dead version the table holds then (rows deleted before and since the index, old versions of updated rows)
+-- turned off, and on later: the baseline writes a tombstone for every dead version the table holds then (rows deleted before and since, old versions of updated rows)
 CREATE TEMP TABLE b_later AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 11 AND 30 OR id BETWEEN 71 AND 80;
 UPDATE t SET v = v + 1 WHERE id BETWEEN 11 AND 30;
 DELETE FROM t WHERE id BETWEEN 71 AND 80;
-ALTER INDEX t_c SET (track_deletes = on);
+ALTER INDEX t_c SET (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_c');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
  t             | t        | t        | t
 (1 row)
@@ -104,27 +97,27 @@ SELECT count(*) AS table_locks_above_row_exclusive FROM pg_locks WHERE relation 
 (1 row)
 
 ROLLBACK;
--- turned off: the UPDATE trigger only, nothing complete, the log stays
-ALTER INDEX t_c RESET (track_deletes);
+-- turned off: no trigger, nothing complete, the log stays
+ALTER INDEX t_c SET (track_changes = 'off');
 SELECT sift_triggers();
-        sift_triggers         
-------------------------------
- sift_track_update_t_c:A:true
+ sift_triggers 
+---------------
+ none
 (1 row)
 
 SELECT * FROM sift.col_tracking('t_c');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
- f             | t        | f        | f
+ f             | f        | f        | f
 (1 row)
 
 DROP INDEX t_c;
 -- built with it
 CREATE TEMP TABLE b_built AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 81 AND 90;
 DELETE FROM t WHERE id BETWEEN 81 AND 90;
-CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_c');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
  t             | t        | t        | t
 (1 row)
@@ -212,7 +205,7 @@ SELECT log_matches('t_c') AS matches_after_savepoint;
 (1 row)
 
 SELECT * FROM sift.col_tracking('t_c');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
  t             | t        | t        | t
 (1 row)
@@ -279,10 +272,10 @@ SELECT sift_triggers();
  sift_track_delete_t_c:A:true sift_track_update_t_c:A:true
 (1 row)
 
-ALTER INDEX t_c RESET (track_deletes);
-ALTER INDEX t_c SET (track_deletes = on);
+ALTER INDEX t_c SET (track_changes = 'off');
+ALTER INDEX t_c SET (track_changes = 'id');
 SELECT 'new baseline' AS step, * FROM sift.col_tracking('t_c');
-     step     | track_deletes | triggers | complete | heap_free 
+     step     | track_changes | triggers | complete | heap_free 
 --------------+---------------+----------+----------+-----------
  new baseline | t             | t        | t        | t
 (1 row)
@@ -296,7 +289,7 @@ SELECT 'trigger dropped' AS step, triggers, heap_free FROM sift.col_tracking('t_
 
 REINDEX INDEX t_c;
 SELECT 'reindex' AS step, * FROM sift.col_tracking('t_c');
-  step   | track_deletes | triggers | complete | heap_free 
+  step   | track_changes | triggers | complete | heap_free 
 ---------+---------------+----------+----------+-----------
  reindex | t             | t        | t        | t
 (1 row)
@@ -318,9 +311,9 @@ SELECT 'primary key again' AS step, heap_free FROM sift.col_tracking('t_c');
 
 -- a concurrent build tracks from now on, and says what makes the log complete
 DROP INDEX t_c;
-CREATE INDEX CONCURRENTLY t_cic ON t USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX CONCURRENTLY t_cic ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_cic');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
  t             | f        | f        | f
 (1 row)
@@ -331,10 +324,10 @@ SELECT sift_triggers();
  sift_track_delete_t_cic:A:true sift_track_update_t_cic:A:true
 (1 row)
 
-ALTER INDEX t_cic RESET (track_deletes);
-ALTER INDEX t_cic SET (track_deletes = on);
+ALTER INDEX t_cic SET (track_changes = 'off');
+ALTER INDEX t_cic SET (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_cic');
- track_deletes | triggers | complete | heap_free 
+ track_changes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
  t             | t        | t        | t
 (1 row)
@@ -348,7 +341,7 @@ SELECT sift_triggers();
 
 -- the target of a subscription: the apply worker fires no statement trigger (the catalog row is what ALTER SUBSCRIPTION .. REFRESH PUBLICATION writes)
 CREATE TABLE sub_t (id int PRIMARY KEY, g int NOT NULL);
-CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_changes = 'id');
 SELECT heap_free FROM sift.col_tracking('sub_c');
  heap_free 
 -----------
@@ -361,26 +354,26 @@ SET client_min_messages = warning;
 SET allow_system_table_mods = on;
 INSERT INTO pg_subscription_rel SELECT oid, 'sub_t'::regclass, 'r', NULL FROM pg_subscription WHERE subname = 'sub_s';
 RESET allow_system_table_mods;
-SELECT 'subscribed' AS step, track_deletes, heap_free FROM sift.col_tracking('sub_c');
-    step    | track_deletes | heap_free 
+SELECT 'subscribed' AS step, track_changes, heap_free FROM sift.col_tracking('sub_c');
+    step    | track_changes | heap_free 
 ------------+---------------+-----------
  subscribed | t             | f
 (1 row)
 
 DROP INDEX sub_c;
-CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_updates = 'id', track_deletes = on);
-ERROR:  track_deletes: table "sub_t" is the target of a logical replication subscription
-DETAIL:  The apply worker fires no statement trigger, so the deletes it applies would not be heard.
-HINT:  Leave track_deletes off: reads of the index check the heap.
+CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_changes = 'id');
+ERROR:  track_changes: table "sub_t" cannot be tracked
+DETAIL:  the table is the target of a logical replication subscription, and the apply worker fires no statement trigger.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 DROP SUBSCRIPTION sub_s;
 DROP TABLE sub_t;
 -- TRUNCATE rebuilds the index: the channel and the baseline are made again on the empty table
 CREATE TABLE tr (id int PRIMARY KEY, g int NOT NULL);
 INSERT INTO tr SELECT i, i FROM generate_series(1, 100) i;
-CREATE INDEX tr_c ON tr USING sift_col (id, g) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX tr_c ON tr USING sift_col (id, g) WITH (track_changes = 'id');
 TRUNCATE tr;
 SELECT 'truncate' AS step, * FROM sift.col_tracking('tr_c');
-   step   | track_deletes | triggers | complete | heap_free 
+   step   | track_changes | triggers | complete | heap_free 
 ----------+---------------+----------+----------+-----------
  truncate | t             | t        | t        | t
 (1 row)
@@ -399,9 +392,9 @@ CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enab
 INSERT INTO h SELECT i, i % 10, 0 FROM generate_series(1, 200) i;
 CREATE TEMP TABLE h_root AS SELECT id, ctid AS root FROM h;
 UPDATE h SET w = w + 1 WHERE id <= 100;
-CREATE INDEX h_c ON h USING sift_col (id, g) WITH (track_updates = 'id');
+CREATE INDEX h_c ON h USING sift_col (id, g) WITH (track_changes = 'id');
 UPDATE h SET w = w + 1 WHERE id <= 100;
-ALTER INDEX h_c SET (track_deletes = on);
+ALTER INDEX h_c SET (track_changes = 'id');
 CREATE TEMP TABLE h_log AS SELECT DISTINCT tid FROM sift._test_col_log_entries('h_c');
 SELECT count(*) FILTER (WHERE (r.root::text::point)[0] = (h.ctid::text::point)[0]) > 0 AS some_chains_stay,
        count(*) FILTER (WHERE (r.root::text::point)[0] <> (h.ctid::text::point)[0]) > 0 AS some_chains_moved,
@@ -417,7 +410,7 @@ DROP TABLE h;
 -- a delete, and a change of the key, of more rows than one look-up of the trigger takes (8192 keys), with a key of a type passed by reference: every dead address has its tombstone, once
 CREATE TABLE big (k text PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
 INSERT INTO big SELECT 'key' || lpad(i::text, 6, '0'), i % 10, 0 FROM generate_series(1, 30000) i;
-CREATE INDEX big_c ON big USING sift_col (k, g) WITH (track_updates = 'k', track_deletes = on);
+CREATE INDEX big_c ON big USING sift_col (k, g) WITH (track_changes = 'k');
 TRUNCATE expected;
 INSERT INTO expected SELECT ctid FROM big WHERE g <> 3;
 DELETE FROM big WHERE g <> 3;

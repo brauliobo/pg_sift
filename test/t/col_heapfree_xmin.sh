@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reads of a heap sift_col index with track_updates and track_deletes that do without the heap: the rows of a segment whose inserters the stamp says committed
+# Reads of a heap sift_col index with track_changes that do without the heap: the rows of a segment whose inserters the stamp says committed
 # before the snapshot's xmin and of a write buffer whose records say the same, with the tombstone log for what was deleted. What the single-session test (col_heapfree_xmin)
 # cannot: a snapshot older than the commits, a transaction in doubt (prepared), a backend that keeps its cache of the log while VACUUM gives the addresses to new rows, and a
 # hot standby. Every answer is compared with the same aggregate with the heap checking every page and with no sift plan at all; the stamp mutant must be wrong where a stamp is needed.
@@ -17,7 +17,7 @@ D=$(dir p)
 sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)" \
 	"INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, $ROWS) i" \
-	"CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on)" \
+	"CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id')" \
 	"VACUUM (FREEZE, ANALYZE) events" >/dev/null || bail "setup failed"
 node_clone p s 29 "max_prepared_transactions = 5"
 node_start s || bail "standby start failed"
@@ -130,12 +130,12 @@ check "standby: free, checked and oracle agree, and the answer is the primary's"
 check "standby: the answer is the primary's" test "$(ans s free)" == "$(ans p oracle)"
 check "standby: the heap is not read for what the primary's log settles" test "$(pages s free)" -lt "$(pages s checked)"
 
-# the control: track_deletes off, the answers are the same and the heap is read again
-sql p "ALTER INDEX events_c RESET (track_deletes)" "DELETE FROM events WHERE id % 41 = 0" >/dev/null
-check "track_deletes off: free equals the oracle, the heap is read" agree p
-check "track_deletes off: pages are read" test "$(pages p free)" -gt 0
-sql p "ALTER INDEX events_c SET (track_deletes = on)" >/dev/null
-check "track_deletes on again: free equals the oracle and the heap pages go away" agree p
-check "track_deletes on again: no heap page is read" test "$(pages p free)" == 0
+# the control: track_changes off, the answers are the same and the heap is read again
+sql p "ALTER INDEX events_c SET (track_changes = 'off')" "DELETE FROM events WHERE id % 41 = 0" >/dev/null
+check "track_changes off: free equals the oracle, the heap is read" agree p
+check "track_changes off: pages are read" test "$(pages p free)" -gt 0
+sql p "ALTER INDEX events_c SET (track_changes = 'id')" >/dev/null
+check "track_changes on again: free equals the oracle and the heap pages go away" agree p
+check "track_changes on again: no heap page is read" test "$(pages p free)" == 0
 
 finish

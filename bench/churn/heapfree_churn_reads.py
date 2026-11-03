@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""The reads a sift index answers without the heap, on a table whose rows were updated and not yet vacuumed, for one configuration of the index: no tracking, track_updates alone (the
-UPDATE trigger; the reader is strict: it needs the delete coverage), track_updates alone with the testing switch sift.test_trust_updates (the reader trusts the log with the UPDATE trigger,
-as a promise of no hard DELETE would), or track_updates with track_deletes (both triggers: the log is complete for the strict reader).
+"""The reads a sift index answers without the heap, on a table whose rows were updated and not yet vacuumed, for one configuration of the index: no tracking (track_changes = 'off') or
+track_changes (both statement triggers: the log is complete for the strict reader).
 
-    python3 -I bench/churn/heapfree_churn_reads.py --host DIR --port N --out FILE --track off|updates|trust|on [--rows 300000] [--shares 1,5,20] [--patterns recent,random] [--reps 3] [--reference]
+    python3 -I bench/churn/heapfree_churn_reads.py --host DIR --port N --out FILE --track off|on [--rows 300000] [--shares 1,5,20] [--patterns recent,random] [--reps 3] [--reference]
 
-For each (which rows, share) a table `w` with a sift_col index is loaded, updated in a covered column (a new entry, and with track_updates a tombstone for the old one) and read in four states:
+For each (which rows, share) a table `w` with a sift_col index is loaded, updated in a covered column (a new entry, and with track_changes a tombstone for the old one) and read in four states:
 fresh (VACUUM FREEZE), updated and promoted, merged, vacuumed. Every class is a read that the index answers by itself when the table is clean (aggregates and top-N of SiftAgg, an Index Only
 Scan); the plan of each (state, class) is written to FILE.plans.tsv and compared with the shape the class has (`plan_ok`), so a mode that changes the plan says so in the sidecar and in the summary.
 Every (state, class) also compares the rows of the arm with those of the heap plan (rows_equal in the sidecar). Records of the records library; the update is declared in `churn` and the mode in `variant`. --temps cold,warm adds the run after the table was emptied from shared buffers; a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
@@ -52,7 +51,7 @@ def main():
     ap.add_argument('--shares', default='1,5,20')
     ap.add_argument('--patterns', default='recent,random')
     ap.add_argument('--reps', type=int, default=3)
-    ap.add_argument('--track', choices=('on', 'updates', 'trust', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone; trust: that with the testing switch on; off: no tracking
+    ap.add_argument('--track', choices=('on', 'off'), default='on')   # on: track_changes; off: no tracking
     ap.add_argument('--reference', action='store_true', help='with --track on: also the heap-checked and the heap-only arms')
     ap.add_argument('--twin', action='store_true', help='with --track on: the b-tree twin')
     ap.add_argument('--temps', default='warm', help='warm, or cold,warm (cold empties the table from shared buffers first: blocks hit/read and MB are in every row)')
@@ -68,8 +67,8 @@ def main():
     t = tip(a)
     harness = 'heapfree churn reads' + (' (%s)' % a.note if a.note else '')
     env = collect.Env(t, harness, schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='disabled')
-    opts = {'on': "track_updates = 'id', track_deletes = on, ", 'updates': "track_updates = 'id', ", 'trust': "track_updates = 'id', ", 'off': "track_updates = 'off', "}[a.track]
-    arm_name = {'on': 'heap_free', 'updates': 'track_updates', 'trust': 'track_updates_trust', 'off': 'track_off'}[a.track]
+    opts = {'on': "track_changes = 'id', ", 'off': "track_changes = 'off', "}[a.track]
+    arm_name = {'on': 'heap_free', 'off': 'track_off'}[a.track]
     twin = a.twin and a.track == 'on'
     out, plans = [], []
 
@@ -80,7 +79,7 @@ def main():
 
     def settings_of(forcing):
         base = BASE if forcing is None else ['SET max_parallel_workers_per_gather = 0'] + forcing
-        return base + (['SET sift.test_no_heapfree = off'] if a.track == 'on' else []) + (['SET sift.test_trust_updates = on'] if a.track == 'trust' else [])
+        return base + (['SET sift.test_no_heapfree = off'] if a.track == 'on' else [])
 
     def arms(forcing):
         out_ = [collect.Arm('sift', arm_name, settings=settings_of(forcing))]
@@ -129,10 +128,7 @@ def main():
                 run('DROP TABLE IF EXISTS %s' % t_)
                 run(LOAD.format(t=t_))
                 run(FILL.format(t=t_, rows=a.rows))
-            if a.track == 'trust':   # the baseline of the log is written by the build with the switch on
-                run('SET sift.test_trust_updates = on')
             run('CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (%skey_cut = \'off\')' % opts)
-            run('RESET sift.test_trust_updates')
             if twin:
                 run('CREATE INDEX wb_ts ON wb (ts)')
                 run('CREATE INDEX wb_tc ON wb (tenant_id, counter_a)')

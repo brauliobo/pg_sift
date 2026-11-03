@@ -25,7 +25,7 @@
 
 #define SIFT_COLR_CONT		0x0002	/* more payload of the preceding row: not counted */
 
-#define SIFT_COLR_XMIN		0x0004	/* the payload starts with the xid (4 bytes) of the transaction that inserted the row, ahead of the values; first piece only. A row of an index without track_updates, one a speculative insertion wrote and one of a buffer written before this flag have none: nothing is claimed of their inserter */
+#define SIFT_COLR_XMIN		0x0004	/* the payload starts with the xid (4 bytes) of the transaction that inserted the row, ahead of the values; first piece only. A row of an index without track_changes, one a speculative insertion wrote and one of a buffer written before this flag have none: nothing is claimed of their inserter */
 
 #define COLV_NULL			0x01
 

@@ -12,8 +12,8 @@ FROM (VALUES (0), (0.00), (1), (-1), (0.5), (-0.5), (12345678.9012), (-12345678.
 	(1e-1000), (1.5e200), (0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001),
 	('NaN'), ('Infinity'), ('-Infinity')) a(v), generate_series(1, 20) i;
 CREATE INDEX shapes_col ON shapes USING sift_col (g, x);
-NOTICE:  sift_col index "shapes_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "shapes_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) shapes;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE d bigint;

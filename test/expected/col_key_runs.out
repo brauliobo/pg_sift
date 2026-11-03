@@ -33,9 +33,9 @@ CREATE FUNCTION kr_queries() RETURNS SETOF text LANGUAGE sql AS $$ VALUES
 	('SELECT count(*), sum(val) FROM kr WHERE id = 100000'), ('SELECT count(*), sum(val) FROM kr WHERE grp = 3 AND id < 2000') $$;
 -- the default: id is chosen with the key cut (the NOTICE names it), the segments are minor 23
 CREATE INDEX kr_i ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
-NOTICE:  sift_col index "kr_i" installed a statement trigger on table "kr"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "kr_i" installed two statement triggers on table "kr" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 NOTICE:  sift_col index "kr_i": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  To turn it off, run ALTER INDEX kr_i SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -101,6 +101,9 @@ SELECT kr_option('kr_i') AS option, kr_units('SELECT count(*), sum(val) FROM kr 
 (1 row)
 
 REINDEX INDEX kr_i;
+NOTICE:  sift_col index "kr_i" installed two statement triggers on table "kr" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 NOTICE:  sift_col index "kr_i": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 6036 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  To turn it off, run ALTER INDEX kr_i SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -124,9 +127,9 @@ SELECT kr_option('kr_i') AS option, kr_units('SELECT count(*), sum(val) FROM kr 
 -- a table in heap order without a key cut: the ids of a unit are one run in the zone, and nothing is listed
 -- order_array_columns is off here and below: the default chooses the arrays by the statistics of the table, which PostgreSQL 17 and 18 do not give alike, and the test is about key runs
 CREATE INDEX kr_o ON kr USING sift_col (id, grp, val) WITH (write_buffer_limit = 4096, order_array_columns = 'off');
-NOTICE:  sift_col index "kr_o" installed a statement trigger on table "kr"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "kr_o" installed two statement triggers on table "kr" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 SELECT kr_option('kr_o') AS option;
  option  
 ---------
@@ -140,9 +143,9 @@ ALTER TABLE kr8 ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kr8 SELECT g + 5000000000, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, repeat('x', 150) FROM generate_series(1, 90000) g;
 VACUUM (FREEZE, ANALYZE) kr8;
 CREATE INDEX kr8_i ON kr8 USING sift_col (id, set_id, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
-NOTICE:  sift_col index "kr8_i" installed a statement trigger on table "kr8"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "kr8_i" installed two statement triggers on table "kr8" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 NOTICE:  sift_col index "kr8_i": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  To turn it off, run ALTER INDEX kr8_i SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -183,8 +186,8 @@ ALTER TABLE kf ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, hashint4(g + 1) / 7.0, hashint4(g + 2) / 11.0, repeat('x', 150) FROM generate_series(1, 90000) g ORDER BY g;
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id', point_tid_columns = 'off');
-NOTICE:  sift_col index "kf_i" does not track updates: point_tid_columns is 'off', and the key is found through its directory
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "kf_i" does not track changes: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "kf_i": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 90160 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (3 to 10 bits a key, within 5% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large). Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  To turn it off, run ALTER INDEX kf_i SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -228,8 +231,8 @@ DROP TABLE kf;
 CREATE TABLE kt (tenant_id int, a float8, b float8, c float8, d float8);
 INSERT INTO kt SELECT n * 100003, hashint4(n) / 7.0, hashint4(n + 1) / 7.0, hashint4(n + 2) / 7.0, hashint4(n + 3) / 7.0 FROM generate_series(1, 14) n;
 CREATE INDEX kt_i ON kt USING sift_col (tenant_id, a, b, c, d) WITH (key_columns = 'auto: tenant_id');
-NOTICE:  sift_col index "kt_i" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "kt_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift.col_verify('kt_i', true);
  col_verify 
 ------------
@@ -247,9 +250,9 @@ DROP TABLE kt;
 -- 'off' writes none
 DROP INDEX kr_i;
 CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id', key_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "kr_off" installed a statement trigger on table "kr"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "kr_off" installed two statement triggers on table "kr" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 SELECT array_agg(DISTINCT format ORDER BY format)::text AS minors, kr_units('SELECT count(*), sum(val) FROM kr WHERE id = 45050') >= 8 AS reads_every_unit FROM sift._test_col_formats('kr_off');
  minors | reads_every_unit 
 --------+------------------

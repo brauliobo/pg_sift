@@ -10,8 +10,8 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('m_total', i % 10), CASE WHEN i % 101 = 0 THEN 'none' ELSE (i % 10)::text END, repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +27%, 3 bytes a row, benefit 28 against cost 7)
 HINT:  To keep the index without it, run ALTER INDEX facts_col SET (point_tid_columns = 'off') and REINDEX.
 VACUUM (FREEZE, ANALYZE) facts;

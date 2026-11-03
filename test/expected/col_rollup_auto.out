@@ -41,8 +41,8 @@ BEGIN
 END $$;
 -- off: the cube holds one column at a time, so a GROUP BY of two scans the units
 CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'off');
-NOTICE:  sift_col index "ra_none" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_none" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT ra_option('ra_none');
     ra_option    
 -----------------
@@ -63,8 +63,8 @@ CREATE INDEX ra_default ON ra USING sift_col (id, v, a, b, c, e, h);
 NOTICE:  sift_col index "ra_default": rollup_dims = 'auto' writes a rollup of the rows by a, b
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 35 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ra_default SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ra_default" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_default" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT ra_option('ra_default');
        ra_option        
 ------------------------
@@ -84,8 +84,8 @@ CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_di
 NOTICE:  sift_col index "ra_auto": rollup_dims = 'auto' writes a rollup of the rows by a, b
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 35 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ra_auto SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ra_auto" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_auto" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT ra_option('ra_auto');
        ra_option        
 ------------------------
@@ -110,8 +110,8 @@ SELECT * FROM ra_check();
 UPDATE ra SET a = id % 400;
 VACUUM (FREEZE, ANALYZE) ra;
 REINDEX INDEX ra_auto;
-NOTICE:  sift_col index "ra_auto" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_auto" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "ra_auto": rollup_dims writes no rollup of "a, b" in 10% or more of the units, which hold more combinations of them than a unit may keep
 DETAIL:  The share of the 5 units: "a, b" 100%. A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
@@ -126,8 +126,8 @@ REINDEX INDEX ra_auto;
 NOTICE:  sift_col index "ra_auto": rollup_dims = 'auto' writes a rollup of the rows by b, c
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 38 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ra_auto SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ra_auto" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_auto" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "ra_auto": rollup_dims writes no rollup of "b, c" in 10% or more of the units, which hold more combinations of them than a unit may keep
 DETAIL:  The share of the 5 units: "b, c" 20%. A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
 HINT:  Name fewer columns, or columns with fewer values per unit.
@@ -155,8 +155,8 @@ SELECT * FROM ra_check();
 CREATE TABLE ra_few (id int, x int, y int) WITH (autovacuum_enabled = off);
 INSERT INTO ra_few SELECT i, i, i % 3 FROM generate_series(1, 2000) i;
 CREATE INDEX ra_few_col ON ra_few USING sift_col (id, x, y) WITH (rollup_dims = 'auto');
-NOTICE:  sift_col index "ra_few_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ra_few_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT ra_option('ra_few_col');
     ra_option     
 ------------------

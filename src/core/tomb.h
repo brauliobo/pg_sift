@@ -2,7 +2,7 @@
  * core/tomb.h - the tombstone log of a relation: an append-only segment of 32-byte entries (the key of a row version, the transaction and command
  * that ended it) with the sorted copy a backend keeps, the lookups a reader makes and the rewrite VACUUM does.
  *
- * A sift_table keeps the log of its deleted, updated and locked row versions (docs/COL-TAM.md section 2.4); a heap sift_col index with track_updates
+ * A sift_table keeps the log of its deleted, updated and locked row versions (docs/COL-TAM.md section 2.4); a heap sift_col index with track_changes
  * keeps the log of the entries that stopped being live. Both read it through the same cache and the same visibility rule.
  */
 #ifndef SIFT_CORE_TOMB_H
@@ -23,7 +23,7 @@ StaticAssertDecl(SIFT_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TOMB_LOC
 				 "the lock targets of a relation are distinct");
 
 /*
- * What an index log says of its own completeness (a heap sift_col index with track_deletes; zero for a table, whose log is complete by construction): flags, the
+ * What an index log says of its own completeness (a heap sift_col index with track_changes; zero for a table, whose log is complete by construction): flags, the
  * transaction from which the log is complete, and the identity (the xmin of the catalog row) of the two statement triggers that feed it.
  */
 #define SIFT_TOMB_COMPLETE		0x0001

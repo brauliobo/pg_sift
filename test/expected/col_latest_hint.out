@@ -14,7 +14,7 @@ DETAIL:  Unknown evaluation method: unknown_method
 SET sift.eval_methods = 'latest_hint';
 CREATE TABLE t (id int PRIMARY KEY, v int NOT NULL);
 INSERT INTO t SELECT i, i FROM generate_series(1, 1200) i;
-CREATE INDEX t_c ON t USING sift_col (id, v) WITH (track_updates = 'id');
+CREATE INDEX t_c ON t USING sift_col (id, v) WITH (track_changes = 'id');
 CREATE TEMP TABLE expected (tid tid);
 CREATE FUNCTION check_log() RETURNS boolean LANGUAGE sql AS $$
  SELECT coalesce((SELECT array_agg(tid ORDER BY tid) FROM expected), '{}') =

@@ -22,7 +22,7 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tt_str(i) END, CASE WHEN i % 37 = 
 FROM generate_series(1, 9000) i;
 INSERT INTO tt (id, a, b, v) VALUES (9001, '', '', ''), (9002, NULL, NULL, NULL);
 CREATE INDEX tt_i ON tt USING sift_col (id sift.col_int4_ops, a sift.col_text_ops, b sift.col_text_ops, v sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'a, b, v');
-NOTICE:  sift_col index "tt_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tt_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tt_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
 SELECT sift.col_verify('tt_i');
  col_verify 
@@ -130,7 +130,7 @@ SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
 (1 row)
 
 REINDEX INDEX tt_i;
-NOTICE:  sift_col index "tt_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tt_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tt_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
 SELECT sift.col_verify('tt_i');
  col_verify 
@@ -156,7 +156,7 @@ SELECT tt_chk('SELECT a FROM tt ORDER BY a LIMIT 10') AS big_buffer;
 CREATE TABLE tl (id int, s text);
 INSERT INTO tl SELECT i, CASE WHEN i % 500 = 0 THEN repeat('long string ', 30) || i ELSE 'k' || (i * 7919) % 3000 END FROM generate_series(1, 6000) i;
 CREATE INDEX tl_i ON tl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (order_array_columns = 's');
-NOTICE:  sift_col index "tl_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tl_i" does not track changes: the table has no primary key of one column
 SELECT sift.col_verify('tl_i');
  col_verify 
 ------------
@@ -174,7 +174,7 @@ SELECT tt_chk('SELECT s FROM tl ORDER BY s LIMIT 10') AS long_strings;
 -- several segments (ties across sources), NULLs, both directions, an OFFSET past the first chunk and the rows after a delete and an update; the answers are the heap's
 CREATE TABLE tm (id int, s text COLLATE "en-x-icu", c text COLLATE "C");
 CREATE INDEX tm_i ON tm USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, c sift.col_text_ops) WITH (order_array_columns = 's, c');
-NOTICE:  sift_col index "tm_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tm_i" does not track changes: the table has no primary key of one column
 SELECT sift.col_promote('tm_i'::regclass) >= 0 AS promoted_empty;
  promoted_empty 
 ----------------
@@ -240,7 +240,7 @@ CREATE TABLE tn (id int, s text, w text, q int);
 INSERT INTO tn SELECT i, md5(i::text), md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text), i % 100 FROM generate_series(1, 120000) i;
 ANALYZE tn;
 CREATE INDEX tn_i ON tn USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, w sift.col_text_ops, q sift.col_int4_ops);
-NOTICE:  sift_col index "tn_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tn_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tn_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "tn_i": order_array_columns = 'auto' keeps sorted arrays of s
 SELECT reloptions FROM pg_class WHERE relname = 'tn_i';
@@ -257,7 +257,7 @@ SELECT tt_chk('SELECT s FROM tn ORDER BY s LIMIT 10') AS auto_asc, tt_chk('SELEC
 
 DROP INDEX tn_i;
 CREATE INDEX tn_off ON tn USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, w sift.col_text_ops, q sift.col_int4_ops) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "tn_off" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tn_off" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tn_off": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +2%, 3 bytes a row, benefit 28 against cost 5)
 SELECT reloptions FROM pg_class WHERE relname = 'tn_off';
                        reloptions                       
@@ -278,7 +278,7 @@ CREATE TABLE tc (id int, s text COLLATE "en-x-icu", q int, a int, b int, c int);
 INSERT INTO tc SELECT i, md5(i::text), i % 7, i % 11, i % 13, i % 17 FROM generate_series(1, 120000) i;
 ANALYZE tc;
 CREATE INDEX tc_narrow ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
-NOTICE:  sift_col index "tc_narrow" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tc_narrow" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tc_narrow": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
 SELECT reloptions FROM pg_class WHERE relname = 'tc_narrow';
            reloptions           
@@ -288,7 +288,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'tc_narrow';
 
 DROP INDEX tc_narrow;
 CREATE INDEX tc_named ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (order_array_columns = 's');
-NOTICE:  sift_col index "tc_named" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tc_named" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tc_named": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +9%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "tc_named": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
@@ -300,7 +300,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
 DROP INDEX tc_named;
 CREATE INDEX tc_wide ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, q sift.col_int4_ops, a sift.col_int4_ops, b sift.col_int4_ops, c sift.col_int4_ops);
 NOTICE:  sift_col index "tc_wide": rollup_dims = 'auto' writes a rollup of the rows by q, a
-NOTICE:  sift_col index "tc_wide" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tc_wide" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tc_wide": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +6%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "tc_wide": order_array_columns = 'auto' keeps sorted arrays of s
 SELECT reloptions FROM pg_class WHERE relname = 'tc_wide';

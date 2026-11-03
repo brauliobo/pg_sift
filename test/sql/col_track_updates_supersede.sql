@@ -1,13 +1,13 @@
--- An UPDATE of a row of a table whose sift_col index has track_updates writes a tombstone for the entry of the version it replaced, in the transaction and command of the update: the log
--- holds exactly the addresses the updates of committed transactions left behind in the index. A HOT update, an insert, a delete and a change of the key itself write none (deletes
--- and key changes need track_deletes). The oracle is the heap: the address a row had before each statement.
+-- An UPDATE of a row of a table whose sift_col index has track_changes writes a tombstone for the entry of the version it replaced, in the transaction and command of the update: the log
+-- holds exactly the addresses the updates of committed transactions left behind in the index, and the statement triggers of the option add the ones a delete and a change of the key
+-- leave. A HOT update, an insert and a COPY write none. The oracle is the heap: the address a row had before each statement.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
 INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(1, 3000) i;
-CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_updates = 'id');
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
 CREATE TEMP TABLE expected (tid tid);
 
 -- the addresses of the log that no aborted transaction wrote, against the addresses the heap oracle expects
@@ -90,12 +90,17 @@ COMMIT;
 INSERT INTO expected VALUES (:'first_version');
 SELECT log_matches() AS matches;
 
--- inserts, copy and deletes write none (a delete is the DELETE trigger's, track_deletes)
+-- inserts and copy write none
 INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(8001, 8300) i;
 COPY (SELECT i, i % 10, i, 0 FROM generate_series(9001, 9100) i) TO '/dev/null';
-DELETE FROM t WHERE id BETWEEN 2001 AND 2020;
 SELECT log_matches() AS matches;
--- a change of the key is the UPDATE trigger's of track_updates: one tombstone for the address each old key had
+-- a delete is the DELETE trigger's: one tombstone for the address of each row
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 2001 AND 2020;
+DELETE FROM t WHERE id BETWEEN 2001 AND 2020;
+INSERT INTO expected SELECT old FROM before;
+SELECT log_matches() AS matches;
+-- a change of the key is the UPDATE trigger's of track_changes: one tombstone for the address each old key had
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 2021 AND 2030;
 UPDATE t SET id = id + 100000 WHERE id BETWEEN 2021 AND 2030;

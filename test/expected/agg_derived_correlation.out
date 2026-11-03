@@ -18,8 +18,8 @@ SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, document, jsonb_exists(document, 'flag_a'))
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
-NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +23%, 3 bytes a row, benefit 28 against cost 7)
 HINT:  To keep the index without it, run ALTER INDEX facts_col SET (point_tid_columns = 'off') and REINDEX.
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
@@ -30,14 +30,14 @@ SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
  repeat('payload', 50)
 FROM generate_series(1, 40000) i;
 CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, jsonb_exists(document, 'flag_a')) WITH (paths = 'document.flag_a astext');
-NOTICE:  sift_col index "odd_facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "odd_facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 -- The same table without the indexed call: the child needs the whole document, which the index does not hold.
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
-NOTICE:  sift_col index "plain_facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "plain_facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "plain_facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +37%, 3 bytes a row, benefit 28 against cost 7)
 HINT:  To keep the index without it, run ALTER INDEX plain_facts_col SET (point_tid_columns = 'off') and REINDEX.
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
@@ -47,8 +47,8 @@ SELECT id, dim_a_id, kind,
 FROM facts;
 CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, dim_a_id, kind, document, (document ? 'flag_a'), (document ->> 'tag'), jsonb_typeof(document))
  WITH (paths = 'document.parts[]{category text}');
-NOTICE:  sift_col index "ops_facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ops_facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "ops_facts_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +7%, 3 bytes a row, benefit 28 against cost 6)
 HINT:  To keep the index without it, run ALTER INDEX ops_facts_col SET (point_tid_columns = 'off') and REINDEX.
 VACUUM (FREEZE, ANALYZE) ops_facts;

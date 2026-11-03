@@ -7,7 +7,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100);
 INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
-CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
 VACUUM (FREEZE) events;
 
 CREATE FUNCTION answer(want_sift bool) RETURNS text LANGUAGE plpgsql AS $$

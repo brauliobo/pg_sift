@@ -1,4 +1,4 @@
--- A heap sift_col index with track_updates and track_deletes answers without the heap for the rows whose inserters it knows committed before the snapshot: the segments say so (the xid
+-- A heap sift_col index with track_changes answers without the heap for the rows whose inserters it knows committed before the snapshot: the segments say so (the xid
 -- stamp), the records of the write buffer carry the xid of their transaction, and the tombstone log tells what was deleted. Every case runs the same aggregate three ways: the
 -- heap-free read, the same index with sift.test_no_heapfree (the heap checks every page) and no sift plan at all (the oracle), and says whether the heap pages a read touched
 -- went away. A read must give the oracle's rows in every case, whether it reads the heap or not; a mutant that ignores the tombstones or the stamps must not.
@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100);
 INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
-CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
 VACUUM events;
 
 -- dynamic SQL: a cached plan of a SQL function would keep the plan of the first call whatever sift.enable_agg says; the plan is asserted to be a SiftAgg plan or not
@@ -121,14 +121,16 @@ SELECT count(*) AS segments, count(stamp) AS stamped FROM sift.col_stamps('event
 SELECT * FROM chk('upsert, promoted');
 REINDEX INDEX events_c;
 
--- track_deletes is off: a delete is not heard, so the log says nothing and the heap checks, with the same answers
-ALTER INDEX events_c RESET (track_deletes);
+-- the option is off: a delete is not heard, so the log says nothing and the heap checks, with the same answers
+ALTER INDEX events_c SET (track_changes = 'off');
 DELETE FROM events WHERE id % 37 = 0;
 UPDATE events SET counter_a = counter_a + 2 WHERE id % 41 = 0;
-SELECT * FROM chk('track_deletes off');
--- on again: a new baseline, heap-free again
-ALTER INDEX events_c SET (track_deletes = on);
-SELECT * FROM chk('track_deletes on again');
+SELECT * FROM chk('option off');
+-- on again: the triggers and a new baseline; the rows written while it was off have no stamps (the heap checks them) until the REINDEX, which is heap-free again
+ALTER INDEX events_c SET (track_changes = 'id');
+SELECT * FROM chk('on again, before a REINDEX');
+REINDEX INDEX events_c;
+SELECT * FROM chk('on again, reindexed');
 DELETE FROM events WHERE id % 43 = 0;
 SELECT * FROM chk('delete heard');
 -- a trigger disabled while rows are deleted: the delete is not heard, and the log is not taken for complete again until it is rebuilt
@@ -137,8 +139,7 @@ DELETE FROM events WHERE id % 47 = 0;
 DO $$ DECLARE n text; BEGIN FOR n IN SELECT tgname FROM pg_trigger WHERE tgrelid = 'events'::regclass AND tgname LIKE 'sift_track%' LOOP EXECUTE format('ALTER TABLE events ENABLE ALWAYS TRIGGER %I', n); END LOOP; END $$;
 SELECT heap_free FROM sift.col_tracking('events_c');
 SELECT * FROM chk('trigger was disabled');
-ALTER INDEX events_c RESET (track_deletes);
-ALTER INDEX events_c SET (track_deletes = on);
+REINDEX INDEX events_c;
 SELECT heap_free FROM sift.col_tracking('events_c');
 SELECT * FROM chk('log rebuilt');
 
@@ -161,7 +162,7 @@ SELECT * FROM chk('addresses reused again');
 
 -- a build that runs beside writers knows nothing of them: no stamp and no complete log, and the answers are still the heap's
 DROP INDEX events_c;
-CREATE INDEX CONCURRENTLY events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on);
+CREATE INDEX CONCURRENTLY events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
 SELECT count(*) AS segments, count(stamp) AS stamped FROM sift.col_stamps('events_c');
 SELECT heap_free FROM sift.col_tracking('events_c');
 DELETE FROM events WHERE id % 59 = 0;

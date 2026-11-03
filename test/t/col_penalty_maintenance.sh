@@ -8,9 +8,10 @@ plan 6
 node_init rd 25 "autovacuum = off
 sift.maintenance_naptime = 200"
 node_start rd || bail "start failed"
+# the index does not track changes: with track_changes (the default) the reads leave the heap out and have no checked rows to price
 sql rd "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int PRIMARY KEY, key int, v int)" \
 	"INSERT INTO facts SELECT g, g % 300, g % 1000 FROM generate_series(1, 20000) g" \
-	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, v)" "VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) facts" >/dev/null || bail "setup failed"
+	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, v) WITH (track_changes = 'off')" "VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) facts" >/dev/null || bail "setup failed"
 sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.eval_methods = 'penalty_maintenance'" >/dev/null
 
 vacuums() { sql rd "SELECT vacuum_count FROM pg_stat_user_tables WHERE relname = 'facts'"; }

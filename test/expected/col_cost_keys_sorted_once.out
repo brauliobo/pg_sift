@@ -7,8 +7,8 @@ INSERT INTO ks_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
 CREATE TABLE ks_dim (id int PRIMARY KEY, n int);
 INSERT INTO ks_dim SELECT i, i FROM generate_series(0, 6) i;
 CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_dims = 'off');
-NOTICE:  sift_col index "ks_fact_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ks_fact_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 ANALYZE ks_fact;
 ANALYZE ks_dim;
 -- one table, joins, a lateral sub-select that carries the list again, and with the aggregate planner off (the hook plans the statement once then)

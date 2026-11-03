@@ -12,8 +12,8 @@ SELECT i, i%3,
 FROM generate_series(1,10000) i;
 CREATE INDEX events_col ON events USING sift_col(id,dim_a_id,document,metrics,jsonb_exists(document,'flag'))
  WITH(paths='document.flag astext, document.entries[]{bucket text,value float8}, document.notes[]{kind text}, metrics.* float8');
-NOTICE:  sift_col index "events_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "events_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE dim_a(id int, labels text[]);
 INSERT INTO dim_a VALUES(0,ARRAY['one','one','two']), (1,ARRAY[]::text[]), (2,NULL);
 VACUUM (FREEZE, ANALYZE) events;

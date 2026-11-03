@@ -18,8 +18,8 @@ SELECT i, '2026-01-01'::date + (i % 15), 1 + i % 60, CASE WHEN i % 17 = 0 THEN n
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at, doc, notes)
   WITH (paths = 'doc.items[]{name text, tag text, score float8}, notes[]{type text}');
-NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE dim_a;

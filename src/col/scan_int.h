@@ -211,7 +211,7 @@ struct SiftColSource
 	SiftVis		vis;
 	SiftColVisibility visibility;
 	/*
-	 * Reads that do without the heap: hflog is the tombstone log of an index with track_updates and track_deletes, read at open before any liveness, and hfgen
+	 * Reads that do without the heap: hflog is the tombstone log of an index with track_changes, read at open before any liveness, and hfgen
 	 * its generation then (a log replaced since says nothing of the entries VACUUM cleared). hf: 0 not decided, 1 the log can be taken for complete for this snapshot,
 	 * -1 it cannot. A stored segment that says its inserters committed before the xmin of the snapshot (SIFT_SEG_XSTAMP) has its pages taken for all-visible unless a
 	 * tombstone deletes a row of the page for the snapshot; the others are checked against the heap as ever.

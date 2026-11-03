@@ -18,7 +18,7 @@ INSERT INTO tr (id, c, l)
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tr_str(i) END, CASE WHEN i % 37 = 0 THEN NULL ELSE tr_str(i * 3) END FROM generate_series(1, 9000) i;
 INSERT INTO tr (id, c, l) VALUES (9001, '', ''), (9002, NULL, NULL);
 CREATE INDEX tr_i ON tr USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
-NOTICE:  sift_col index "tr_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tr_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tr_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
 SELECT sift.col_verify('tr_i');
  col_verify 
@@ -142,7 +142,7 @@ SELECT * FROM tr_all(6);
 (2 rows)
 
 REINDEX INDEX tr_i;
-NOTICE:  sift_col index "tr_i" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "tr_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "tr_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
 SELECT sift.col_verify('tr_i');
  col_verify 

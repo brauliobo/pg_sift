@@ -7,8 +7,8 @@ SET statement_timeout = '30s';
 CREATE TABLE facts (id int, u int, v int, w float8);
 INSERT INTO facts SELECT i, i, i % 100, i * 0.5 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, u, v, w);
-NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 CREATE FUNCTION q(keys text) RETURNS text LANGUAGE sql AS
 $$ SELECT format('SELECT %s count(*) AS n, sum(v) AS s, avg(w) AS a, min(v) AS lo, max(w) AS hi, avg(v) AS a2, sum(w) AS s2, min(w) AS lo2, max(v) AS hi2 FROM facts %s', coalesce(keys || ',', ''), CASE WHEN keys IS NULL THEN '' ELSE 'GROUP BY ' || keys END) $$;

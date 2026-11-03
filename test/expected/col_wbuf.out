@@ -17,8 +17,8 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 CREATE TABLE t (doc int);
 CREATE INDEX t_idx ON t USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT count(*) AS segments FROM sift._test_col_wbuf_segments('t_idx');
  segments 
 ----------
@@ -273,8 +273,8 @@ SELECT sift._test_check('t_idx') AS orphans;
 -- the batches a scan keeps are the buffer as it is now: a read after VACUUM flagged records leaves them out, rows appended since are in
 CREATE TABLE t4 (doc int);
 CREATE INDEX t4_idx ON t4 USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t4_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t4_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift._test_col_wbuf_prepare('t4_idx') IS NOT NULL AS prepared;
  prepared 
 ----------
@@ -348,8 +348,8 @@ SELECT sift._test_check('t4_idx') AS orphans;
 -- first page of its lane
 CREATE TABLE t5 (doc int);
 CREATE INDEX t5_idx ON t5 USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t5_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t5_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift._test_col_wbuf_prepare('t5_idx') IS NOT NULL AS prepared;
  prepared 
 ----------
@@ -403,8 +403,8 @@ SELECT count(*) AS later_scan, count(*) FILTER (WHERE id = 0) AS flagged_kept FR
 -- would take the stamp of that read for a check
 CREATE TABLE t6 (doc int);
 CREATE INDEX t6_idx ON t6 USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t6_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t6_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift._test_col_wbuf_prepare('t6_idx') IS NOT NULL AS prepared;
  prepared 
 ----------
@@ -459,8 +459,8 @@ SELECT sift._test_check('t_idx') AS orphans;
 -- failing again on the fresh empty tail leaves one first fragment, but neither interruption leaves a complete row.
 CREATE TABLE t3 (doc int);
 CREATE INDEX t3_idx ON t3 USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t3_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t3_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift._test_col_wbuf_prepare('t3_idx') IS NOT NULL AS prepared;
  prepared 
 ----------
@@ -541,8 +541,8 @@ SELECT sift._test_check('t3_idx') AS orphans;
 -- corruption is found: a page header count, a flag byte, the length of a record
 CREATE TABLE t2 (doc text);
 CREATE INDEX t2_idx ON t2 USING sift_col (doc) WITH (write_buffer_limit = 64);
-NOTICE:  sift_col index "t2_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t2_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift._test_col_wbuf_prepare('t2_idx') IS NOT NULL AS prepared;
  prepared 
 ----------

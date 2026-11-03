@@ -21,7 +21,7 @@ typedef struct Held
 	Size		off;
 } Held;
 
-/* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_updates), committed, or not finished */
+/* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_changes), committed, or not finished */
 #define XST_NONE		0
 #define XST_COMMITTED	1
 #define XST_OPEN		2
@@ -369,7 +369,7 @@ lanes_unread(WbufLane *lane)
 
 /*
  * The xid before which the transactions that inserted the records of f all committed: one past the largest xmin; InvalidTransactionId when a record has no xmin
- * (the row of a speculative insertion, of an index without track_updates, of a buffer written before the xmin was kept) or its transaction had not finished (it may still
+ * (the row of a speculative insertion, of an index without track_changes, of a buffer written before the xmin was kept) or its transaction had not finished (it may still
  * commit). A segment made of these rows says so with SIFT_SEG_XSTAMP.
  */
 static TransactionId

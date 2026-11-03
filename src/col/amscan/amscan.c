@@ -288,9 +288,9 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
 }
 
 /*
- * The tombstone log of an index with track_updates, read for a scan with an MVCC snapshot. An entry the log says a transaction visible to the snapshot ended is not a row of this
+ * The tombstone log of an index with track_changes, read for a scan with an MVCC snapshot. An entry the log says a transaction visible to the snapshot ended is not a row of this
  * snapshot, whatever the heap would say of the address: it is not returned (the heap fetch of a dead row, between the UPDATE or DELETE and VACUUM, is saved). The log
- * only ever hides: no tombstone says nothing, and the heap decides for every entry that is returned, so an incomplete log (track_deletes off, a trigger disabled, a
+ * only ever hides: no tombstone says nothing, and the heap decides for every entry that is returned, so an incomplete log (track_changes off, a trigger disabled, a
  * concurrent build) costs nothing in correctness. It is read after the snapshot was taken, so it holds every tombstone that could hide a row for the snapshot, and the
  * ones VACUUM dropped since are of addresses whose row no snapshot of this age sees (the heap gives a freed address to rows inserted after it).
  */

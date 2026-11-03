@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A tombstone, and the transaction that made the log of track_deletes complete, name transactions; the commit log is truncated up to what the tables are frozen up to, and neither is
+# A tombstone, and the transaction that made the log of track_changes complete, name transactions; the commit log is truncated up to what the tables are frozen up to, and neither is
 # counted in that. With the real truncation (about two million transactions, VACUUM FREEZE of every database): a read does not ask the log about a transaction it no longer keeps (no error),
 # it goes to the heap for the pages the tombstone is on, or for all of them when the transaction that made the log complete is gone, and every answer is the oracle's.
 . "$(dirname "$0")/lib.bash"
@@ -27,7 +27,7 @@ sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || b
 for t in ev_a ev_b; do
 	sql p "CREATE TABLE $t (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)" \
 		"INSERT INTO $t SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i" \
-		"CREATE INDEX ${t}_c ON $t USING sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on)" >/dev/null || bail "setup $t"
+		"CREATE INDEX ${t}_c ON $t USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id')" >/dev/null || bail "setup $t"
 done
 sql p "VACUUM (FREEZE, ANALYZE) ev_a" "VACUUM (FREEZE, INDEX_CLEANUP off, ANALYZE) ev_b" >/dev/null
 # two rows are deleted, two deletes are rolled back: few dead rows, so a VACUUM leaves the entries and their tombstones
@@ -72,7 +72,7 @@ sql p "VACUUM ev_a" >/dev/null
 check "VACUUM does not ask the commit log about the tombstones that are beyond it, and keeps them" test "$(entries ev_a_c)" -ge 2 -a "$(frozen ev_a_c)" == 0
 check "ev_a after that VACUUM: the oracle's answers" agree ev_a
 # the log made complete again: the option off and on writes a baseline of the present
-sql p "ALTER INDEX ev_b_c RESET (track_deletes)" "ALTER INDEX ev_b_c SET (track_deletes = on)" >/dev/null
+sql p "ALTER INDEX ev_b_c SET (track_changes = 'off')" "ALTER INDEX ev_b_c SET (track_changes = 'id')" >/dev/null
 check "ev_b rebuilt log: complete again, a hundredth of the heap pages the checked read needs, and the answers agree" test "$(tracking ev_b_c)" == t -a "$(( $(pages p free ev_b) * 50 ))" -lt "$(pages p checked ev_b)" -a "$(ans p free ev_b)" == "$(ans p oracle ev_b)"
 sql p "REINDEX INDEX ev_a_c" >/dev/null
 check "ev_a REINDEX: no tombstone, no heap page, the oracle's answers" test "$(entries ev_a_c)" == 0 -a "$(pages p free ev_a)" == 0 -a "$(ans p free ev_a)" == "$(ans p oracle ev_a)"

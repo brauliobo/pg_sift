@@ -25,7 +25,7 @@
 
 #define PEND_HEAD		(sizeof(ItemPointerData) + sizeof(uint32))
 
-/* the top bit of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN). The head keeps its size, so a buffer flushes at the same rows with or without track_updates */
+/* the top bit of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
 #define PEND_XMIN		0x80000000u
 
 typedef struct PendIndex

@@ -6,8 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, amount float8);
 INSERT INTO facts SELECT i, i, i FROM generate_series(1, 100) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount);
-NOTICE:  sift_col index "facts_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE items (dim_a_id int, v int);
 INSERT INTO items SELECT 1 + i % 100, i FROM generate_series(1, 20000) i;
 CREATE INDEX ON items (dim_a_id);

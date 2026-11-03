@@ -11,9 +11,9 @@ SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', 
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 5000) i;
 CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
-NOTICE:  sift_col index "b_t_col" installed a statement trigger on table "b_t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "b_t_col" installed two statement triggers on table "b_t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) b_t;
 \ir test/agg_helpers.sql
 \set ECHO none

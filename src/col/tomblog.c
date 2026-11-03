@@ -1,5 +1,5 @@
 /*
- * col/tomblog.c - the tombstone log of a heap column index with track_updates (docs/COL-TAM.md section 2.4 holds the log; core/tomb.h is its code):
+ * col/tomblog.c - the tombstone log of a heap column index with track_changes (docs/COL-TAM.md section 2.4 holds the log; core/tomb.h is its code):
  * the entry of a heap address that stopped being live, with the transaction and command that said so. The cache of the log a backend reads
  * is kept apart from the cached state of the index (SiftColRel): a relcache invalidation frees that, and the log is read incrementally.
  */

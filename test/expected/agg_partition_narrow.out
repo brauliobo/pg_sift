@@ -12,8 +12,8 @@ CREATE TABLE pn_2 PARTITION OF pn FOR VALUES WITH (MODULUS 3, REMAINDER 2) WITH 
 INSERT INTO pn SELECT i, i % 40, date '2024-01-01' + (i * 7) % 1500, (i * 13) % 1000,
                       jsonb_build_object('a', i % 9, 'b', (i * 3) % 11) FROM generate_series(1, 60000) i;
 CREATE INDEX pn_col ON pn USING sift_col (id, grp, ts, amount, tags) WITH (paths = 'tags.* int4');
-NOTICE:  sift_col index "pn_0_id_grp_ts_amount_tags_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "pn_0_id_grp_ts_amount_tags_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pn;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE d bigint;

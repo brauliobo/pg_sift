@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# The tombstone log of a heap sift_col index with track_updates in the reads of an index scan, an index-only scan and a bitmap scan. The log only ever hides an
-# entry that a transaction visible to the snapshot ended; every entry returned is still checked by the heap. Three tables get the same statements: a (track_updates), b (track_updates and
-# track_deletes) and c (track_updates = off, the control: the default is auto). Every read is compared with a sequential scan of the same table and with the other tables; the hidden-entry counter says the log
+# The tombstone log of a heap sift_col index with track_changes in the reads of an index scan, an index-only scan and a bitmap scan. The log only ever hides an
+# entry that a transaction visible to the snapshot ended; every entry returned is still checked by the heap. Three tables get the same statements: a and b (track_changes; b is the one whose triggers the test tampers with) and c (track_changes = off, the control). Every read is compared with a sequential scan of the same table and with the other tables; the hidden-entry counter says the log
 # was used (a, b), not used (c), and not used for what is not committed before the snapshot: an older snapshot, a transaction in progress (prepared), a rolled back transaction
-# and a subtransaction. Also on a hot standby that replays the log, after VACUUM gave the addresses to new rows, with the triggers of track_deletes disabled, enabled again and
-# recreated, and on the subscriber of a real logical replication, which is no place for track_deletes: the apply worker fires no statement trigger.
+# and a subtransaction. Also on a hot standby that replays the log, after VACUUM gave the addresses to new rows, with the triggers of b disabled, enabled again and
+# recreated, and on the subscriber of a real logical replication, which is no place for track_changes: the apply worker fires no statement trigger.
 . "$(dirname "$0")/lib.bash"
 
 plan 35
@@ -26,9 +25,9 @@ for t in a b c; do
 		"INSERT INTO $t SELECT i, i % 10, i, 0 FROM generate_series(1, $ROWS) i" >/dev/null || bail "setup $t failed"
 done
 sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
-	"CREATE INDEX a_c ON a USING sift_col (id, g, v) WITH (track_updates = 'id')" \
-	"CREATE INDEX b_c ON b USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on)" \
-	"CREATE INDEX c_c ON c USING sift_col (id, g, v) WITH (track_updates = 'off')" "VACUUM (FREEZE, ANALYZE) a, b, c" >/dev/null || bail "index failed"
+	"CREATE INDEX a_c ON a USING sift_col (id, g, v) WITH (track_changes = 'id')" \
+	"CREATE INDEX b_c ON b USING sift_col (id, g, v) WITH (track_changes = 'id')" \
+	"CREATE INDEX c_c ON c USING sift_col (id, g, v) WITH (track_changes = 'off')" "VACUUM (FREEZE, ANALYZE) a, b, c" >/dev/null || bail "index failed"
 node_clone p s 27 "max_prepared_transactions = 5
 max_worker_processes = 16"
 node_start s || bail "standby start failed"
@@ -100,12 +99,12 @@ check "a snapshot older than the commits: the log hides nothing (no entry of it)
 	test "$(grep -c "^0$" "$D/held.out")" == 3 -a "$(grep -c "$BASE_A" "$D/held.out")" == 3
 check "the same snapshot, covered columns, are the old ones too" test "$(grep -c "$BASE_AI" "$D/held.out")" == 1
 
-check "after the statements every scan of every table is the heap's (a: updates in the log only; b: deletes and key changes too; c: none)" sameall p
+check "after the statements every scan of every table is the heap's (a, b: updates, key changes and deletes in the log; c: none)" sameall p
 check "the three tables hold the same rows" agree
 HA=$(hid p a idx QF); HB=$(hid p b idx QF); HC=$(hid p c idx QF)
 check "the control table hides nothing" test "${HC##* }" == 0
 check "a hides the entries its updates replaced" test "${HA##* }" -gt 0
-check "b hides more: the deletes it heard (a hears the key changes too)" test "${HB##* }" -gt "${HA##* }"
+check "a and b hide the same: both hear the deletes and the key changes" test "${HB##* }" == "${HA##* }"
 check "the index-only and the bitmap scans hide too" test "$(hid p a bmp QF | awk '{print $NF}')" -gt 0 -a "$(hid p a idx QI | awk '{print $NF}')" -gt 0
 check "the hiding is the log's: switched off, nothing is hidden and the answer is the same" \
 	test "$(sql p "SET sift.test_no_log_hide = on" "SELECT sift._test_col_log_hidden(true)" "$MODE_idx" "$(QF a)" "SELECT sift._test_col_log_hidden()" | tail -2 | tr '\n' ' ' | sed 's/ $//')" == "$(rd p a heap QF) 0"
@@ -115,7 +114,7 @@ sql p "ALTER TABLE b DISABLE TRIGGER ALL" "DELETE FROM b WHERE id % 41 = 0" "UPD
 for t in a c; do sql p "DELETE FROM $t WHERE id % 41 = 0" "UPDATE $t SET id = id + 200000 WHERE id % 43 = 0" >/dev/null; done
 check "the triggers of b were disabled for deletes: not complete any more, and the reads are the heap's" test "$(sql p "SELECT heap_free FROM sift.col_tracking('b_c')")" == f
 check "b reads as the control table" test "$(rd p b idx QF)" == "$(rd p c heap QF)"
-sql p "ALTER INDEX b_c RESET (track_deletes)" "ALTER INDEX b_c SET (track_deletes = on)" >/dev/null
+sql p "ALTER INDEX b_c SET (track_changes = 'off')" "ALTER INDEX b_c SET (track_changes = 'id')" >/dev/null
 check "recreated triggers, new baseline: complete again, and the reads are the heap's" test "$(sql p "SELECT heap_free FROM sift.col_tracking('b_c')")" == t -a "$(rd p b bmp QF)" == "$(rd p c heap QF)"
 
 # a transaction in progress hides nothing; committed, it does
@@ -152,7 +151,7 @@ agree && ok "a, b, c alike after VACUUM and new rows" || not_ok "a, b, c alike a
 catchup p s || bail "standby catchup failed"
 check "standby after VACUUM and new rows: the heap's" sameall s
 
-# a table without track_updates: the setting does nothing and no log exists
+# a table without track_changes: the setting does nothing and no log exists
 check "c has no log" test "$(sql p "SELECT count(*) FROM sift.col_segments('c_c') WHERE kind = 'tombstones'")" == 0
 
 # logical replication: the subscriber table is written by the apply worker, which fires no statement trigger
@@ -167,20 +166,20 @@ sql pub "CREATE TABLE r (id int PRIMARY KEY, g int NOT NULL, v int, w int)" "CRE
 	"INSERT INTO r SELECT i, i % 10, i, 0 FROM generate_series(1, $ROWS) i" "INSERT INTO r2 SELECT i, i % 10, i, 0 FROM generate_series(1, $ROWS) i" \
 	"CREATE PUBLICATION pb FOR TABLE r, r2" >/dev/null || bail "pub setup failed"
 sql sub "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE TABLE r (id int PRIMARY KEY, g int NOT NULL, v int, w int)" "CREATE TABLE r2 (id int PRIMARY KEY, g int NOT NULL, v int, w int)" \
-	"CREATE INDEX r_c ON r USING sift_col (id, g, v) WITH (track_updates = 'id')" \
-	"CREATE INDEX r2_c ON r2 USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on)" >/dev/null || bail "sub setup failed"
-check "before the subscription b-like table with track_deletes is complete" test "$(sql sub "SELECT heap_free FROM sift.col_tracking('r2_c')")" == t
+	"CREATE INDEX r_c ON r USING sift_col (id, g, v) WITH (track_changes = 'id')" \
+	"CREATE INDEX r2_c ON r2 USING sift_col (id, g, v) WITH (track_changes = 'id')" >/dev/null || bail "sub setup failed"
+check "before the subscription the table with track_changes is complete" test "$(sql sub "SELECT heap_free FROM sift.col_tracking('r2_c')")" == t
 sql sub "CREATE SUBSCRIPTION sb CONNECTION '$(conninfo pub)' PUBLICATION pb" >/dev/null || bail "subscription failed"
 synced() { for _ in $(seq 300); do [[ $(sql sub "SELECT count(*) FROM pg_subscription_rel WHERE srsubstate <> 'r'") == 0 && $(sql sub "SELECT count(*) FROM r") == $(sql pub "SELECT count(*) FROM r") && $(sql sub "SELECT count(*) FROM r2") == $(sql pub "SELECT count(*) FROM r2") ]] && return 0; sleep 0.1; done; return 1; }
 synced || bail "initial sync failed"
-check "once subscribed, track_deletes is not trusted: heap_free is false" test "$(sql sub "SELECT heap_free FROM sift.col_tracking('r2_c')")" == f
-check "and CREATE INDEX .. track_deletes on a subscribed table is refused" \
-	test "$(sql sub "CREATE INDEX r_c2 ON r USING sift_col (id, g, v) WITH (track_updates = 'id', track_deletes = on)" 2>&1 | grep -c 'target of a logical replication subscription')" == 1
+check "once subscribed, track_changes is not trusted: heap_free is false" test "$(sql sub "SELECT heap_free FROM sift.col_tracking('r2_c')")" == f
+check "and CREATE INDEX .. track_changes on a subscribed table is refused" \
+	test "$(sql sub "CREATE INDEX r_c2 ON r USING sift_col (id, g, v) WITH (track_changes = 'id')" 2>&1 | grep -c 'target of a logical replication subscription')" == 1
 sql pub "UPDATE r SET v = v + 1 WHERE id % 7 = 0" "DELETE FROM r WHERE id % 13 = 0" "UPDATE r SET id = id + 100000 WHERE id % 17 = 0" \
 	"UPDATE r2 SET v = v + 1 WHERE id % 7 = 0" "DELETE FROM r2 WHERE id % 13 = 0" "UPDATE r2 SET id = id + 100000 WHERE id % 17 = 0" >/dev/null
 synced || bail "replication of the changes failed"
 check "subscriber: the apply worker's updates, deletes and key changes read as the heap" same sub r
-check "subscriber with track_deletes configured: the unheard deletes read as the heap" same sub r2
+check "subscriber with track_changes configured: the unheard deletes read as the heap" same sub r2
 check "subscriber answers as the publisher" test "$(rd sub r idx QF | tr -d ' ')" == "$(sql pub "$(QF r)")"
 
 finish

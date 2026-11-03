@@ -7,7 +7,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, v int) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 10 FROM generate_series(1, 2000) i;
-CREATE INDEX t_c ON t USING sift_col (id, v) WITH (track_updates = 'off');
+CREATE INDEX t_c ON t USING sift_col (id, v) WITH (track_changes = 'off');
 VACUUM (ANALYZE) t;
 
 -- no log until it is asked for; one segment of its own kind after

@@ -140,7 +140,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (sift_col_row_key_on(index))
 	{
 		sift_col_log_create(index);
-		sift_col_track_install(heap, index, info->ii_Concurrent, true);
+		sift_col_track_install(heap, index, info->ii_Concurrent);
 	}
 	else
 		sift_col_track_reconcile(index);

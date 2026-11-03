@@ -41,7 +41,7 @@ extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
  * busy), one generic WAL record per page touched. Returns true when the segment reached write_buffer_limit pages (the caller asks maintenance to
  * seal: sift_col_maint_after_seal). schema_hash is checked against meta->analyzer_hash when the hint is refreshed (REINDEX needed error).
  * A row whose record exceeds a page is split in pieces (SIFT_COLR_CONT). xmin: the transaction that inserted the heap tuple of the row, kept in the record
- * (InvalidTransactionId: none, as for the rows of an index without track_updates and of a speculative insertion).
+ * (InvalidTransactionId: none, as for the rows of an index without track_changes and of a speculative insertion).
  */
 extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin);
 

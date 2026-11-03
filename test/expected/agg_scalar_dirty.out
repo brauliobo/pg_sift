@@ -29,9 +29,9 @@ UPDATE s_t SET doc = '"text"' WHERE id % 100 = 2;
 UPDATE s_t SET doc = '7' WHERE id % 100 = 3;
 UPDATE s_t SET doc = jsonb_set(doc, '{v}', 'null') WHERE id % 100 = 4;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.ok bool, doc.t text, doc.w int8');
-NOTICE:  sift_col index "s_t_col" installed a statement trigger on table "s_t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "s_t_col" installed two statement triggers on table "s_t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM ANALYZE s_t;
 -- the leaves hold no value they cannot store but the documents that are no object: those rows are read again
 CREATE TABLE s_q (n text PRIMARY KEY, q text);

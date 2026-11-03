@@ -19,12 +19,12 @@ CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'nop
 ERROR:  invalid key_order option: column "nope" is not a column of the index
 SET client_min_messages = notice;
 CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts');
-NOTICE:  sift_col index "ko_one" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "ko_one" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "ko_one": key_order = 'ts' sets key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'ts'
 NOTICE:  sift_col index "ko_one": point_tid_columns lists the rows of the segment on a key-cut index
 NOTICE:  sift_col index "ko_one": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent , ts');
-NOTICE:  sift_col index "ko_two" does not track updates: the table has no primary key of one column
+NOTICE:  sift_col index "ko_two" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "ko_two": key_order = 'ent , ts' sets order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent'
 NOTICE:  sift_col index "ko_two": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SET client_min_messages = warning;

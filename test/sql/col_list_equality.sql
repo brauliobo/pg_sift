@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 CREATE TABLE ev (id int PRIMARY KEY, k int NOT NULL, ts date NOT NULL, note text, pad text DEFAULT repeat('x', 100));
 INSERT INTO ev (id, k, ts, note) SELECT g, 1 + (g * 7919) % 2000, date '2025-01-01' + g % 300, CASE WHEN g % 5 = 0 THEN NULL ELSE 'n' || g % 50 END FROM generate_series(1, 100000) g;
-CREATE INDEX ev_i ON ev USING sift_col (id, k, ts, note) WITH (key_cut = 'k');
+CREATE INDEX ev_i ON ev USING sift_col (id, k, ts, note) WITH (key_cut = 'k', track_changes = 'off');
 VACUUM (FREEZE, ANALYZE) ev;
 -- rows that are only in the write buffer
 INSERT INTO ev (id, k, ts, note) SELECT g, 1 + (g * 7919) % 2000, date '2025-01-01' + g % 300, 'n' || g % 50 FROM generate_series(100001, 110000) g;

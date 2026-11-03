@@ -19,9 +19,9 @@ NOTICE:  sift_col index "ow_col": point_tid_columns = 'auto' chooses "k_band" by
 HINT:  To keep the index without it, run ALTER INDEX ow_col SET (point_tid_columns = 'off') and REINDEX.
 NOTICE:  sift_col index "ow_col": point_tid_columns = 'auto' chooses "k_rand" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.3 M instructions against 0.2 M with the directory; predicted index size +15%, 3 bytes a row, benefit 10 against cost 9)
 HINT:  To keep the index without it, run ALTER INDEX ow_col SET (point_tid_columns = 'off') and REINDEX.
-NOTICE:  sift_col index "ow_col" installed a statement trigger on table "ow"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "ow_col" installed two statement triggers on table "ow" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (ANALYZE) ow;
 CREATE FUNCTION ow_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- one query in both plans: the md5 of its rows in order, and whether the pushed plan is the top-N scan

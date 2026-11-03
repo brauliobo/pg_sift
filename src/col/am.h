@@ -57,12 +57,12 @@ typedef struct SiftColRel
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
 	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
-	bool		rowkey;			/* the option track_updates names a column of the index: its attribute */
+	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	int			rowkey_attno;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
-/* The tombstone log of a heap index with track_updates, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
+/* The tombstone log of a heap index with track_changes, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
 struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
 extern void sift_col_log_cache_stats(int64 *entries, int64 *bytes);
@@ -72,16 +72,17 @@ extern struct SiftTombLog *sift_col_log_appender(Relation index);
 /* The tombstones of the replaced entries that a statement holds back (col/supersede.c): written before the log is read, before commit and before a savepoint starts, dropped when the transaction or the savepoint aborts */
 extern void sift_col_tombs_flush(void);
 extern void sift_col_tombs_discard(void);
-/* The option track_updates (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
+/* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
 extern void sift_col_row_key_check(Relation index);
 extern void sift_col_row_key_prepare(Relation heap, Relation index);
 extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 /* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
-/* The options track_updates and track_deletes (col/track.c): the check of the table, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+/* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+extern const char *sift_col_track_deaf(Relation heap);
 extern void sift_col_track_check(Relation heap, Relation index);
-extern void sift_col_track_install(Relation heap, Relation index, bool concurrent, bool say);
+extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
 extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
@@ -93,7 +94,6 @@ extern PGDLLIMPORT bool sift_test_no_supersede;
 extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
-extern PGDLLIMPORT bool sift_test_trust_updates;
 extern PGDLLIMPORT bool sift_test_no_log_reap;
 extern PGDLLIMPORT bool sift_test_no_log_hide;
 extern PGDLLIMPORT uint64 sift_test_col_log_hidden_count;
@@ -194,7 +194,7 @@ extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
-extern void sift_col_validate_track_updates(const char *value);
+extern void sift_col_validate_track_changes(const char *value);
 extern void sift_col_validate_key_order(const char *value);
 extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);

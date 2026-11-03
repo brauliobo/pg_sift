@@ -14,7 +14,7 @@ SELECT n, CASE WHEN n % 29 = 0 THEN NULL ELSE (n * 7919) % 5003 - 2000 END, CASE
 	   CASE WHEN n % 37 = 0 THEN NULL ELSE DATE '2000-01-01' + (n * 7) % 9000 END, CASE WHEN n % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((n * 7919) % 900000) * interval '1 second' END
 FROM generate_series(1, 12000) n;
 CREATE INDEX ko_i ON ko USING sift_col (id sift.col_int4_ops, i sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops)
-	WITH (order_columns = 'id, i, b, d, t', order_array_columns = 'id, i, b, d, t', order_layout = 'whole');
+	WITH (order_columns = 'id, i, b, d, t', order_array_columns = 'id, i, b, d, t', order_layout = 'whole', track_changes = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ko;
 SET sift.test_topn_heads = off;
 

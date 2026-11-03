@@ -16,8 +16,8 @@ INSERT INTO cs VALUES (100000, 'infinity', 'infinity'), (100001, '-infinity', '-
 	(100003, '0001-01-01', '0001-01-01+00'), (100004, '0099-12-31 23:59:59', '0099-12-31 23:59:59+00'), (100005, '0100-01-01', '0100-01-01+00'), (100006, '9900-01-01', '9900-01-01+00'),
 	(100007, '9901-01-01', '9901-01-01+00'), (100008, '3000-01-01 BC', '3000-01-01 BC+00'), (100009, '200000-06-15', '200000-06-15+00');
 CREATE INDEX cs_col ON cs USING sift_col (id, ts, tz);
-NOTICE:  sift_col index "cs_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "cs_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) cs;
 CREATE TABLE cs_shape (name text, cond text);
 INSERT INTO cs_shape VALUES

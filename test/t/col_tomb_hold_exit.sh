@@ -14,7 +14,7 @@ LOG=$D/postgres.log
 sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE th (id int PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enabled = false, fillfactor = 100)" \
 	"INSERT INTO th SELECT i, i % 10, 0 FROM generate_series(1, 3000) i" \
-	"CREATE INDEX th_c ON th USING sift_col (id, g, w) WITH (track_updates = 'id', track_deletes = on)" \
+	"CREATE INDEX th_c ON th USING sift_col (id, g, w) WITH (track_changes = 'id')" \
 	"VACUUM (FREEZE, ANALYZE) th" >/dev/null || bail "setup failed"
 
 # the same as sql, but a failing statement does not stop the session
@@ -54,7 +54,7 @@ check "a client that disconnects in the transaction leaves nothing in the log" [
 
 # 6: one transaction that holds the tombstones of two indexes (1201-1300 and 50 rows of another table)
 sql p "CREATE TABLE th2 (id int PRIMARY KEY, g int NOT NULL, w int)" "INSERT INTO th2 SELECT i, i % 10, 0 FROM generate_series(1, 300) i" \
-	"CREATE INDEX th2_c ON th2 USING sift_col (id, g, w) WITH (track_updates = 'id', track_deletes = on)" >/dev/null || bail "second table failed"
+	"CREATE INDEX th2_c ON th2 USING sift_col (id, g, w) WITH (track_changes = 'id')" >/dev/null || bail "second table failed"
 sql p "BEGIN" "$(upd 1201)" "UPDATE th2 SET w = w + 1 WHERE id <= 50" "COMMIT" >/dev/null
 check "the tombstones of two indexes held by one transaction both reach their logs" [ "$(sql p "SELECT count(*) FROM sift._test_col_log_entries('th2_c')")" == 50 ]
 

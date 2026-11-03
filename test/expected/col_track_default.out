@@ -1,21 +1,26 @@
--- track_updates = 'auto' is the default: a new or reindexed sift_col index that holds the primary key of its table (one column) keeps the key and the tombstone log; any other index is built as it was
--- before 4.0 with one NOTICE that says why. 'off' keeps the old index; an index whose options were written by an earlier release (none) stays inert until a REINDEX. track_deletes stays off.
+-- track_changes = 'auto' is the default: a new or reindexed sift_col index that holds the primary key of its table (one column) keeps the key and the tombstone log, installs the AFTER UPDATE and the
+-- AFTER DELETE statement triggers on the table (one NOTICE says so) and writes the baseline; any other index is built as it was before 4.0 with one NOTICE that says why. 'off' keeps the old index;
+-- an index whose options were written by an earlier release (none) stays inert until a REINDEX. The lifecycle of the triggers: made by CREATE INDEX, REINDEX and ALTER INDEX .. SET, dropped by DROP INDEX
+-- and by turning the option off. Their names are sift_track_update_<index> and sift_track_delete_<index> with the oid of the trigger itself appended (PostgreSQL does it for an internal trigger; the oid
+-- of the index is the trigger's argument), so a recreated trigger has another name.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
--- the default: the primary key, the log segment, the key in the point directory beside what the formula chooses; track_deletes is not on (the UPDATE trigger only, one NOTICE)
+CREATE FUNCTION triggers_of(tbl regclass) RETURNS text LANGUAGE sql AS
+$$ SELECT coalesce(string_agg(regexp_replace(tgname, '_[0-9]+$', ''), ' ' ORDER BY tgname), 'none') FROM pg_trigger WHERE tgrelid = tbl AND tgname LIKE 'sift%' $$;
+-- the default: the primary key, the log segment, the key in the point directory beside what the formula chooses; both triggers, one NOTICE
 CREATE INDEX t_dflt ON t USING sift_col (id, g, v);
-NOTICE:  sift_col index "t_dflt" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
-SELECT split_part(o, '=', 1) AS opt, split_part(o, '=', 2) AS val FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^(track_updates|point_tid_columns|track_deletes)' ORDER BY 1;
+NOTICE:  sift_col index "t_dflt" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+SELECT split_part(o, '=', 1) AS opt, split_part(o, '=', 2) AS val FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^(track_changes|point_tid_columns)' ORDER BY 1;
         opt        |   val    
 -------------------+----------
  point_tid_columns | auto: id
- track_updates     | id
+ track_changes     | id
 (2 rows)
 
 SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstones';
@@ -24,28 +29,80 @@ SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstone
     1
 (1 row)
 
-SELECT count(*) AS triggers FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
- triggers 
-----------
-        1
+SELECT triggers_of('t') AS triggers, complete, heap_free FROM sift.col_tracking('t_dflt');
+                     triggers                      | complete | heap_free 
+---------------------------------------------------+----------+-----------
+ sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
 (1 row)
 
--- REINDEX keeps it
+-- REINDEX keeps the option and makes the triggers and the baseline again (other oids, so other names)
+CREATE TEMP TABLE before_reindex AS SELECT tgname FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
 REINDEX INDEX t_dflt;
-SELECT o AS after_reindex FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^track_updates';
+NOTICE:  sift_col index "t_dflt" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+SELECT o AS after_reindex FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^track_changes';
   after_reindex   
 ------------------
- track_updates=id
+ track_changes=id
 (1 row)
 
+SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname IN (SELECT tgname FROM before_reindex)) AS kept_by_reindex, triggers_of('t') AS triggers, complete, heap_free FROM sift.col_tracking('t_dflt');
+ kept_by_reindex |                     triggers                      | complete | heap_free 
+-----------------+---------------------------------------------------+----------+-----------
+               0 | sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
+(1 row)
+
+-- turned off by ALTER INDEX: the triggers go, and nothing is complete; turned on again by ALTER INDEX .. SET (a NOTICE, the baseline) and by RESET and REINDEX
+ALTER INDEX t_dflt SET (track_changes = 'off');
+SELECT triggers_of('t') AS after_off, complete, heap_free FROM sift.col_tracking('t_dflt');
+ after_off | complete | heap_free 
+-----------+----------+-----------
+ none      | f        | f
+(1 row)
+
+ALTER INDEX t_dflt SET (track_changes = 'id');
+NOTICE:  sift_col index "t_dflt" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+SELECT triggers_of('t') AS after_set, complete, heap_free FROM sift.col_tracking('t_dflt');
+                     after_set                     | complete | heap_free 
+---------------------------------------------------+----------+-----------
+ sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
+(1 row)
+
+ALTER INDEX t_dflt RESET (track_changes);
+SELECT triggers_of('t') AS after_reset;
+ after_reset 
+-------------
+ none
+(1 row)
+
+REINDEX INDEX t_dflt;
+NOTICE:  sift_col index "t_dflt" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+SELECT triggers_of('t') AS after_reindex_again;
+                after_reindex_again                
+---------------------------------------------------
+ sift_track_delete_t_dflt sift_track_update_t_dflt
+(1 row)
+
+-- DROP INDEX drops them with the index
 DROP INDEX t_dflt;
+SELECT triggers_of('t') AS after_drop;
+ after_drop 
+------------
+ none
+(1 row)
+
 -- the reasons for no key, each said once
 CREATE TABLE nk (a int, b int);
 INSERT INTO nk SELECT i, i FROM generate_series(1, 100) i;
 CREATE INDEX nk_c ON nk USING sift_col (a, b);
-NOTICE:  sift_col index "nk_c" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
-SELECT count(*) AS logs, (SELECT coalesce(reloptions::text ~ 'track_updates', false) FROM pg_class WHERE relname = 'nk_c') AS has_option FROM sift.col_segments('nk_c') WHERE kind = 'tombstones';
+NOTICE:  sift_col index "nk_c" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+SELECT count(*) AS logs, (SELECT coalesce(reloptions::text ~ 'track_changes', false) FROM pg_class WHERE relname = 'nk_c') AS has_option FROM sift.col_segments('nk_c') WHERE kind = 'tombstones';
  logs | has_option 
 ------+------------
     0 | f
@@ -53,15 +110,15 @@ SELECT count(*) AS logs, (SELECT coalesce(reloptions::text ~ 'track_updates', fa
 
 DROP TABLE nk;
 CREATE INDEX t_notheld ON t USING sift_col (g, v);
-NOTICE:  sift_col index "t_notheld" does not track updates: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t_notheld" does not track changes: the index does not hold the primary key column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP INDEX t_notheld;
 CREATE INDEX t_pt_off ON t USING sift_col (id, g, v) WITH (point_tid_columns = 'off');
-NOTICE:  sift_col index "t_pt_off" does not track updates: point_tid_columns is 'off', and the key is found through its directory
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "t_pt_off" does not track changes: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP INDEX t_pt_off;
 -- explicit off and a named key say nothing
-CREATE INDEX t_off ON t USING sift_col (id, g, v) WITH (track_updates = 'off');
+CREATE INDEX t_off ON t USING sift_col (id, g, v) WITH (track_changes = 'off');
 SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones';
  logs 
 ------
@@ -69,11 +126,12 @@ SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones
 (1 row)
 
 DROP INDEX t_off;
--- track_deletes on a table with no key to track is an error that says what to do
-CREATE TABLE nk (a int, b int);
-CREATE INDEX nk_d ON nk USING sift_col (a, b) WITH (track_deletes = on);
-ERROR:  track_deletes needs track_updates, which has no key here: the table has no primary key of one column
-HINT:  Name the column that identifies a row: WITH (track_updates = 'id', track_deletes = on).
+-- a column named for a table with no unique index on it is an error that says what to do
+CREATE TABLE nk (a int NOT NULL, b int);
+CREATE INDEX nk_d ON nk USING sift_col (a, b) WITH (track_changes = 'a');
+ERROR:  track_changes: column "a" has no unique index of its own
+DETAIL:  The index replaces the older entries of a key when the row is updated, which is exact only when no two live rows share the key.
+HINT:  Create a UNIQUE or PRIMARY KEY constraint on the column alone: not deferrable, not partial, not on an expression, not on several columns.
 DROP TABLE nk;
 -- a partitioned table: one NOTICE for the partitions of a statement
 CREATE TABLE p (a int, b int) PARTITION BY HASH (a);
@@ -81,15 +139,32 @@ CREATE TABLE p0 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 0);
 CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 1);
 CREATE TABLE p2 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 2);
 CREATE INDEX p_c ON p USING sift_col (a, b);
-NOTICE:  sift_col index "p0_a_b_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "p0_a_b_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP TABLE p;
+-- a table a statement trigger cannot hear (a partition: a statement on the parent fires no trigger of a child): the default is off with a NOTICE, a column named is an error
+CREATE TABLE pk (id int PRIMARY KEY, g int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE pk0 PARTITION OF pk FOR VALUES FROM (0) TO (100);
+CREATE INDEX pk_auto ON pk USING sift_col (id, g);
+NOTICE:  sift_col index "pk0_id_g_idx" does not track changes: the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+CREATE INDEX pk_named ON pk USING sift_col (id, g) WITH (track_changes = 'id');
+ERROR:  track_changes: table "pk0" cannot be tracked
+DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
+SELECT triggers_of('pk0') AS partition_triggers;
+ partition_triggers 
+--------------------
+ none
+(1 row)
+
+DROP TABLE pk;
 -- an index of an earlier release has no option: it is inert (no tombstone), then a REINDEX gives it the key
 CREATE INDEX t_old ON t USING sift_col (id, g, v);
-NOTICE:  sift_col index "t_old" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
-ALTER INDEX t_old RESET (track_updates);
+NOTICE:  sift_col index "t_old" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+ALTER INDEX t_old RESET (track_changes);
 ALTER INDEX t_old RESET (point_tid_columns);
 UPDATE t SET v = v + 1 WHERE id <= 100;
 SELECT coalesce((SELECT rows FROM sift.col_segments('t_old') WHERE kind = 'tombstones'), 0) AS tombstones_inert;
@@ -99,30 +174,30 @@ SELECT coalesce((SELECT rows FROM sift.col_segments('t_old') WHERE kind = 'tombs
 (1 row)
 
 REINDEX INDEX t_old;
-NOTICE:  sift_col index "t_old" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "t_old" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 UPDATE t SET v = v + 1 WHERE id <= 100;
 SELECT (SELECT rows FROM sift.col_segments('t_old') WHERE kind = 'tombstones') AS tombstones_after_reindex;
  tombstones_after_reindex 
 --------------------------
-                      100
+                      200
 (1 row)
 
 DROP INDEX t_old;
 -- three indexes on one table: every one gets a tombstone for each superseded entry, and the reads are the heap's
 CREATE INDEX t_1 ON t USING sift_col (id, g, v);
-NOTICE:  sift_col index "t_1" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "t_1" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 CREATE INDEX t_2 ON t USING sift_col (id, v, pad);
-NOTICE:  sift_col index "t_2" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "t_2" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 CREATE INDEX t_3 ON t USING sift_col (id, g);
-NOTICE:  sift_col index "t_3" installed a statement trigger on table "t"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "t_3" installed two statement triggers on table "t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (ANALYZE) t;
 CREATE TEMP TABLE olds AS SELECT id, ctid AS old FROM t WHERE id % 7 = 0;
 UPDATE t SET v = v + 1000 WHERE id % 7 = 0;
@@ -184,6 +259,7 @@ SELECT i AS index, (SELECT count(*) FROM sift._test_col_log_entries(i::regclass)
 (3 rows)
 
 DROP TABLE t CASCADE;
+DROP FUNCTION triggers_of(regclass);
 DROP TABLE olds;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

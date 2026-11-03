@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Where the tombstones of an index with track_updates land: in the units of the index and the pages of the heap, and what the index weighs in each state of its life.
+"""Where the tombstones of an index with track_changes land: in the units of the index and the pages of the heap, and what the index weighs in each state of its life.
 
     python3 -I bench/churn/heapfree_locality.py --host DIR --port N --out FILE --mode locality|size [--rows 300000,1000000]
 
 locality: one table per (rows, heap order of the key, layout of the index, which rows are updated, share): a covered column of the rows is updated (a new entry, a tombstone for the
 old one) and the units are counted (sift._test_col_unit_tombs): units with a tombstone of a row of theirs, tombstones per such unit, units whose pages carry no tombstone at all (the
 scan takes them with no work), the pages of the heap with a tombstone, and how far the new version of a row is from the old one (in pages and in superblocks of 256 pages).
-size: one table per (rows, track_updates, which rows, share): the index and its log in each state (fresh, after the update, promoted, merged, vacuumed).
+size: one table per (rows, track_changes, which rows, share): the index and its log in each state (fresh, after the update, promoted, merged, vacuumed).
 No timing: the numbers are counts of a deterministic run.
 """
 import argparse
@@ -25,7 +25,7 @@ INSERT INTO w SELECT i, ts, i % 10, i % 1000, md5(i::text) FROM (SELECT i, {ts} 
 TS = {'sorted': 'i', 'scattered': '(row_number() OVER (ORDER BY md5(i::text)))::int'}   # the heap is in the order of i either way
 
 LOCALITY = """
-CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on, {opts});
+CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (track_changes = 'id', {opts});
 VACUUM (FREEZE, ANALYZE) w;
 CREATE TEMP TABLE bef AS SELECT id, (ctid::text::point)[0]::int AS ob FROM w WHERE {pred};
 UPDATE w SET counter_a = counter_a + 1 WHERE {pred};
@@ -70,7 +70,7 @@ VACUUM w;
 SELECT pg_temp.snap('vacuumed');
 SELECT '{rows}', '{track}', '{pattern}', {share}, state, index_bytes, log_entries, segments FROM r;
 """
-SIZE_COLUMNS = ('rows', 'track_updates', 'updated', 'share_pct', 'state', 'index_bytes', 'log_entries', 'segments')
+SIZE_COLUMNS = ('rows', 'track_changes', 'updated', 'share_pct', 'state', 'index_bytes', 'log_entries', 'segments')
 
 
 def psql(a, sql):
@@ -106,7 +106,7 @@ def main():
                 for track in ('off', 'on'):
                     for pattern, pred in PATTERNS.items():
                         for share in (1, 5, 20):
-                            opts = "track_updates = 'id', track_deletes = on, " if track == 'on' else ''
+                            opts = "track_changes = 'id', " if track == 'on' else ''
                             sql = (TABLE + SIZE).format(rows=rows, ts=TS['sorted'], opts=opts, on='true' if track == 'on' else 'false', track=track, pattern=pattern, share=share,
                                                         pred=pred.format(rows=rows, share=share))
                             for line in psql(a, sql):

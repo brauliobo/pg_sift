@@ -72,7 +72,7 @@ sift_handler_test_gucs(void)
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_supersede",
-							 "Testing: an index with track_updates writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
+							 "Testing: an index with track_changes writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
 							 NULL, &sift_test_no_supersede, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_tombs_at_once",
 							 "Testing: the tombstones of the entries an UPDATE replaces are written one at a time as they are found, not held back to the end of the statement's transaction.",
@@ -81,10 +81,10 @@ sift_handler_test_gucs(void)
 							 "Testing: a backend keeps the tombstone log cache of an index that is gone (a mutant of the reclaim).",
 							 NULL, &sift_test_no_log_reap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_log_hide",
-							 "Testing: the scans of an index with track_updates do not read its tombstone log (the log hides no entry).",
+							 "Testing: the scans of an index with track_changes do not read its tombstone log (the log hides no entry).",
 							 NULL, &sift_test_no_log_hide, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_heapfree",
-							 "Testing: the scans of an index with track_deletes check the heap for every page, as without the option.",
+							 "Testing: the scans of an index with track_changes check the heap for every page, as without the option.",
 							 NULL, &sift_test_no_heapfree, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_hf_ignore_tombs",
 							 "Testing: a mutant of the heap-free read that takes every page of a stamped segment for visible, tombstones or not.",
@@ -99,11 +99,8 @@ sift_handler_test_gucs(void)
 							 "Testing: the entries a new row version replaces are found by a scan of the index itself, as when the table has no unique index on the key.",
 							 NULL, &sift_test_supersede_scan, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_track",
-							 "Testing: the statement triggers of track_deletes write no tombstone (a mutant of the tracking).",
+							 "Testing: the statement triggers of track_changes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_trust_updates",
-							 "Testing: a heap-free read takes the log for complete with the UPDATE trigger alone, as if the owner promised no hard DELETE (a DELETE then gives wrong rows: why the DELETE trigger is required); a build or ALTER INDEX with it on writes the baseline.",
-							 NULL, &sift_test_trust_updates, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

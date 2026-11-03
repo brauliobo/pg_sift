@@ -8,8 +8,8 @@ INSERT INTO ev
 SELECT i, i % 61, CASE WHEN i % 61 IN (5, 6) OR i % 9 = 0 THEN NULL ELSE (hashint4(i) & 32767)::bigint * 1000003 END, 'p'
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_col ON ev USING sift_col (grp, uid);
-NOTICE:  sift_col index "ev_col" does not track updates: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "ev_col" does not track changes: the index does not hold the primary key column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) ev;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;

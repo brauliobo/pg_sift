@@ -17,8 +17,8 @@ END $$;
 CREATE TABLE db (id int, s text, u uuid);
 INSERT INTO db SELECT i, 'k' || md5(i::text), md5((i % 4000)::text)::uuid FROM generate_series(1, 6000) i;
 CREATE INDEX db_idx ON db USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 2000);
-NOTICE:  sift_col index "db_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "db_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 INSERT INTO db SELECT i, 'k' || md5(i::text), md5((i % 4000)::text)::uuid FROM generate_series(6001, 9000) i;
 SELECT sift.col_promote('db_idx') > 0 AS promoted;
  promoted 
@@ -116,8 +116,8 @@ SELECT sift.col_verify('db_idx', true);
 (1 row)
 
 REINDEX INDEX db_idx;
-NOTICE:  sift_col index "db_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "db_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT min(format) AS format FROM sift.col_segments('db_idx') WHERE kind = 'immutable';
  format 
 --------
@@ -139,8 +139,8 @@ SELECT db_round(5);
 -- dict_lookup = off keeps the blocks as before, with no hash, and answers the same
 ALTER INDEX db_idx SET (dict_lookup = 'off');
 REINDEX INDEX db_idx;
-NOTICE:  sift_col index "db_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "db_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT min(format) AS format FROM sift.col_segments('db_idx') WHERE kind = 'immutable';
  format 
 --------

@@ -14,9 +14,9 @@ CREATE INDEX ev_col ON ev USING sift_col (id, tenant_id, kind, day, ts, amount, 
 NOTICE:  sift_col index "ev_col": rollup_dims = 'auto' writes a rollup of the rows by tenant_id, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX ev_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ev_col" installed a statement trigger on table "ev"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "ev_col" installed two statement triggers on table "ev" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE tenants (id int PRIMARY KEY, kind text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3] FROM generate_series(1, 60) i;
@@ -296,8 +296,8 @@ CREATE INDEX tn_col ON tn USING sift_col (id, g, v, w, u);
 NOTICE:  sift_col index "tn_col": rollup_dims = 'auto' writes a rollup of the rows by g, w
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 260 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX tn_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "tn_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "tn_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) tn;
 -- a total order by the id, and a sort that ties (v repeats in every group), a NULL sort value that repeats, a condition on the sort column
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$);
@@ -391,8 +391,8 @@ CREATE TABLE tp1 PARTITION OF tp FOR VALUES FROM ('2024-01-01') TO ('2024-02-01'
 CREATE TABLE tp2 PARTITION OF tp FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
 INSERT INTO tp SELECT i, date '2024-01-01' + i % 58, i % 9, (i * 7) % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, d, g, v);
-NOTICE:  sift_col index "tp1_id_d_g_v_idx" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "tp1_id_d_g_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) tp;
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC, d, id$$);
   plan   | result_rows | vs_normal_plan 
@@ -466,9 +466,9 @@ ROLLBACK;
 CREATE TABLE evn (id int PRIMARY KEY, g int, k int, up int, ts timestamp) WITH (autovacuum_enabled = false);
 INSERT INTO evn SELECT i, 1 + (i * 7919) % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE i / 40 % 150 END, i, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
 CREATE INDEX evn_col ON evn USING sift_col (id, g, k, up, ts);
-NOTICE:  sift_col index "evn_col" installed a statement trigger on table "evn"
-DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
-HINT:  WITH (track_updates = 'off') builds the index without it.
+NOTICE:  sift_col index "evn_col" installed two statement triggers on table "evn" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) evn;
 SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k$$, 'g, k', 'evn');
   plan   | result_rows | pairs_vs_normal_plan | rows_not_in_table 

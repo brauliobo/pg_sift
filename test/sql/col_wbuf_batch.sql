@@ -42,7 +42,7 @@ BEGIN
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		bad := bad || CASE WHEN a IS DISTINCT FROM c THEN ' pushdown' ELSE '' END || CASE WHEN b IS DISTINCT FROM c THEN ' scan' ELSE '' END;
 	END LOOP;
-	SELECT sum(rows) INTO idxrows FROM sift.col_segments(idx::regclass);
+	SELECT sum(rows) INTO idxrows FROM sift.col_segments(idx::regclass) WHERE kind <> 'tombstones';
 	SELECT count(*) INTO heaprows FROM w;
 	RETURN tag || ': ' || CASE WHEN bad = '' THEN 'agree' ELSE 'DIFFER:' || bad END || ', index lists ' || CASE WHEN idxrows = heaprows THEN 'all' WHEN idxrows > heaprows AND NOT exact THEN 'all' WHEN idxrows > heaprows THEN 'too many' ELSE 'too few' END || ' rows, ' || heaprows || ' rows';
 END $$;

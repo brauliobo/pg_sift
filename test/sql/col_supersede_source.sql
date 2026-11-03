@@ -1,5 +1,5 @@
--- The entries a new row version replaces get a tombstone when the UPDATE writes it (track_updates). The addresses of the key come from the table's unique index (a b-tree probe), or from a scan
--- of the sift index when the table has none, and the statement trigger of track_deletes does not look at the rows of an UPDATE that leaves the key alone, since the replacement has
+-- The entries a new row version replaces get a tombstone when the UPDATE writes it (track_changes). The addresses of the key come from the table's unique index (a b-tree probe), or from a scan
+-- of the sift index when the table has none, and the statement trigger of track_changes does not look at the rows of an UPDATE that leaves the key alone, since the replacement has
 -- covered them. The same operations on three tables, one for each way (the scan of the index, the unique index with the trigger looking at every UPDATE, the unique index with the trigger
 -- skipping the UPDATEs that leave the key), must leave the same tombstones and the same answers as the heap.
 CREATE EXTENSION pg_sift;
@@ -11,7 +11,7 @@ CREATE FUNCTION mk(t text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	EXECUTE format('CREATE TABLE %I (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)', t);
 	EXECUTE format('INSERT INTO %I SELECT i, i %% 10, i, ''x'' FROM generate_series(1, 20000) i', t);
-	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, tenant_id, counter_a) WITH (track_updates = ''id'', track_deletes = on)', t || '_c', t);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, tenant_id, counter_a) WITH (track_changes = ''id'')', t || '_c', t);
 END $$;
 
 -- one list of operations, each a statement of its own (a command of its own) in one transaction, the failing ones in a subtransaction that is rolled back

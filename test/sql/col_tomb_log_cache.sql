@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 CREATE TABLE live (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
 INSERT INTO live SELECT i, i % 10, i FROM generate_series(1, 500) i;
-CREATE INDEX live_c ON live USING sift_col (id, g, v) WITH (track_updates = 'id');
+CREATE INDEX live_c ON live USING sift_col (id, g, v) WITH (track_changes = 'id');
 UPDATE live SET v = v + 1 WHERE id <= 10;
 SELECT entries = 1 AS one_index FROM sift._test_col_log_cache();
 
@@ -15,7 +15,7 @@ BEGIN
   FOR i IN 1..60 LOOP
     EXECUTE format('CREATE TABLE tmp_%s (id int PRIMARY KEY, g int NOT NULL, v int)', i);
     EXECUTE format('INSERT INTO tmp_%s SELECT x, x %% 10, x FROM generate_series(1, 50) x', i);
-    EXECUTE format('CREATE INDEX tmp_%s_c ON tmp_%s USING sift_col (id, g, v) WITH (track_updates = ''id'')', i, i);
+    EXECUTE format('CREATE INDEX tmp_%s_c ON tmp_%s USING sift_col (id, g, v) WITH (track_changes = ''id'')', i, i);
     EXECUTE format('UPDATE tmp_%s SET v = v + 1 WHERE id <= 5', i);
     EXECUTE format('DROP TABLE tmp_%s', i);
   END LOOP;
@@ -26,11 +26,11 @@ SELECT entries <= 2 AS bounded_one_transaction, bytes < 1000000 AS small FROM si
 -- one transaction each, and a rolled back build
 CREATE TABLE loop_t (id int PRIMARY KEY, g int NOT NULL, v int);
 INSERT INTO loop_t SELECT x, x % 10, x FROM generate_series(1, 50) x;
-SELECT s FROM generate_series(1, 40) i, unnest(ARRAY['CREATE INDEX loop_c ON loop_t USING sift_col (id, g, v) WITH (track_updates = ''id'')',
+SELECT s FROM generate_series(1, 40) i, unnest(ARRAY['CREATE INDEX loop_c ON loop_t USING sift_col (id, g, v) WITH (track_changes = ''id'')',
                                                      'UPDATE loop_t SET v = v + 1 WHERE id <= 5', 'DROP INDEX loop_c']) WITH ORDINALITY u(s, n) ORDER BY i, n
 \gexec
 BEGIN;
-CREATE INDEX loop_c ON loop_t USING sift_col (id, g, v) WITH (track_updates = 'id');
+CREATE INDEX loop_c ON loop_t USING sift_col (id, g, v) WITH (track_changes = 'id');
 UPDATE loop_t SET v = v + 1 WHERE id <= 5;
 ROLLBACK;
 DROP TABLE loop_t;
@@ -48,7 +48,7 @@ DO $$
 BEGIN
   FOR i IN 1..20 LOOP
     EXECUTE format('CREATE TABLE tmp_%s (id int PRIMARY KEY, g int NOT NULL, v int)', i);
-    EXECUTE format('CREATE INDEX tmp_%s_c ON tmp_%s USING sift_col (id, g, v) WITH (track_updates = ''id'')', i, i);
+    EXECUTE format('CREATE INDEX tmp_%s_c ON tmp_%s USING sift_col (id, g, v) WITH (track_changes = ''id'')', i, i);
     EXECUTE format('DROP TABLE tmp_%s', i);
   END LOOP;
 END $$;

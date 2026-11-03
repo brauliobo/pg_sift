@@ -1,4 +1,4 @@
--- The header page of a tombstone log has a completeness record since 4.0 (used by a column index with track_deletes; a sift_table has none). A log written before it has a header with fewer
+-- The header page of a tombstone log has a completeness record since 4.0 (used by a column index with track_changes; a sift_table has none). A log written before it has a header with fewer
 -- used bytes, and the bytes past them are whatever the page held: the record is read only where the used bytes cover it. The log of a sift_table whose header is such a page keeps hiding
 -- its deleted rows, and the log VACUUM writes in its place has a header of the new length with an empty record.
 CREATE EXTENSION pg_sift;

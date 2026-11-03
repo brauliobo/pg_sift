@@ -9,12 +9,15 @@ SET sift.eval_methods = 'unit_rewrite';
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int, counter_a int, label text) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, i % 10, i, repeat('x', 64) FROM generate_series(1,8000) i ORDER BY hashint4(i), i;
 CREATE INDEX events_c ON events USING sift_col (id,tenant_id,counter_a,label)
- WITH (track_updates = 'id', key_cut = 'id', key_cut_rows = 1024, dead_rewrite_pct = 100, vacuum_truncate = false);
+ WITH (track_changes = 'id', key_cut = 'id', key_cut_rows = 1024, dead_rewrite_pct = 100, vacuum_truncate = false);
 VACUUM (FREEZE, ANALYZE) events;
 -- A different unit is already mostly dead, without any owned tombstones.
 CREATE TEMP TABLE closed_roots AS SELECT gen FROM sift.col_segments('events_c') WHERE kind = 'immutable';
 CREATE TEMP TABLE closed_tids AS SELECT ctid AS tid FROM events WHERE id >= 7300;
+-- the DELETE trigger of the option is silenced for this statement: the unit must be dead by what VACUUM finds, with no tombstone of the log owned by it
+SET sift.test_no_track = on;
 DELETE FROM events WHERE id >= 7300;
+RESET sift.test_no_track;
 VACUUM (INDEX_CLEANUP ON) events;
 SELECT bool_and(units = 1) AND count(*) > 2 AS independently_owned FROM sift.col_segments('events_c') WHERE kind = 'immutable';
  independently_owned 

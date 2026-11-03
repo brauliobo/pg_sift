@@ -278,7 +278,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			if (strcmp(names[i], rk) == 0)
 				id = i;
 		if (id < 0)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_updates option: \"%s\" is not a column of the index", rk)));
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_changes option: \"%s\" is not a column of the index", rk)));
 		for (int a = 1; a <= natts; a++)
 			if (r->first[a] == id)
 				r->rowkey_attno = a;

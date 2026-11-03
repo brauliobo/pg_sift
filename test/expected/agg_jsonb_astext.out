@@ -19,8 +19,8 @@ SELECT i, i % 7,
                   FROM generate_series(1, (i * 5) % 6) k) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX a_col ON a_t USING sift_col (id, grp, doc, metrics_a, items) WITH (paths = 'doc->label astext, metrics_a.* astext, items[]{kind text, score astext}');
-NOTICE:  sift_col index "a_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "a_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE a_t;
 CREATE FUNCTION a_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 CREATE FUNCTION a_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_agg_scan(q) $$;
@@ -96,8 +96,8 @@ SELECT query, same, pushed FROM a_compare();
 CREATE TABLE a_bad (id int, doc jsonb);
 INSERT INTO a_bad SELECT i, CASE i % 3 WHEN 0 THEN '{"label": 1}' WHEN 1 THEN '{"label": "a"}' ELSE '{"label": [1]}' END::jsonb FROM generate_series(1, 90) i;
 CREATE INDEX a_bad_col ON a_bad USING sift_col (id, doc) WITH (paths = 'doc->label astext');
-NOTICE:  sift_col index "a_bad_col" does not track updates: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_updates = 'id'); WITH (track_updates = 'off') silences this.
+NOTICE:  sift_col index "a_bad_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM a_bad;
 SET sift.enable_agg = on;
 SELECT doc->>'label', count(*) FROM a_bad GROUP BY 1 ORDER BY 1;

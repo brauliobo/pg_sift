@@ -12,7 +12,7 @@ CREATE TABLE ok (id int PRIMARY KEY, c int, n int, s text COLLATE "C", pad text 
 ALTER TABLE ok ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ok (id, c, n, s) SELECT i, (i * 7919) % 37, (i * 104729) % 100003, 'k' || lpad(((i::bigint * 7919) % 100003)::text, 6, '0') FROM generate_series(1, 12000) i;
 CREATE INDEX ok_i ON ok USING sift_col (id sift.col_int4_ops, c sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops)
-	WITH (key_cut = 'c', order_columns = 'id, n', order_array_columns = 'id, n, s');
+	WITH (key_cut = 'c', order_columns = 'id, n', order_array_columns = 'id, n, s', track_changes = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ok;
 SET sift.test_topn_heads = off;
 

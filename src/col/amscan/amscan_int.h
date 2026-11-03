@@ -66,7 +66,7 @@ typedef struct ColScanOpaque
 	SiftColVec	fvec[INDEX_MAX_KEYS];
 	bool		funit;			/* the unit being returned is in fvec (no NULL-valued overflow in it) */
 	struct ColOrd *ord;			/* an index-only scan in the order of the first column (ordered.c) */
-	struct SiftTombLog *log;	/* the tombstone log of an index with track_updates, as of the start of the scan, when the snapshot is an MVCC one and the log has entries (amscan.c, col_tomb_hides) */
+	struct SiftTombLog *log;	/* the tombstone log of an index with track_changes, as of the start of the scan, when the snapshot is an MVCC one and the log has entries (amscan.c, col_tomb_hides) */
 } ColScanOpaque;
 
 

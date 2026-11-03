@@ -154,7 +154,7 @@ row_key_syntax(const char *value)
 	return NULL;
 }
 
-SYNTAX_VALIDATOR(track_updates, row_key_syntax(value))
+SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
 
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
@@ -413,9 +413,6 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
-	add_bool_reloption(col_relopt_kind, "track_deletes",
-					   "Needs track_updates. An internal AFTER DELETE statement trigger on the table (transition table of the old rows) writes a tombstone for the entries of deleted rows, so that the log is complete with the AFTER UPDATE trigger of track_updates (default off; the trigger is the object this option creates, the index drops it)",
-					   false, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
 					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
@@ -475,9 +472,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
 						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
-	add_string_reloption(col_relopt_kind, "track_updates",
-						 "the column that identifies a row (off, auto = the primary key, or a column with a unique index of its own, NOT NULL): when a row is updated the index finds the older entry of the same key and records that it stopped being live (a tombstone log; column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns (default auto: the primary key when the index holds it, else off with a NOTICE)",
-						 "auto", sift_col_validate_track_updates, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "track_changes",
+						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
+						 "auto", sift_col_validate_track_changes, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -500,7 +497,6 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
 	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
-	{"track_deletes", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, track_deletes)},
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	{"key_table", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, key_table)},
@@ -520,7 +516,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
-	{"track_updates", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_updates)},
+	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
 };
 
 /*
@@ -674,7 +670,7 @@ sift_col_options_key_order_auto(Relation index)
 	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
 }
 
-COL_OPT_STR(sift_col_options_row_key, track_updates, "auto")
+COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
 
 /* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool
