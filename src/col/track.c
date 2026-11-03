@@ -64,9 +64,9 @@ typedef struct HearTrig
 } HearTrig;
 
 static Oid
-track_function(void)
+track_function(bool missing_ok)
 {
-	return LookupFuncName(list_make2(makeString("sift"), makeString(HEAR_FUNCTION)), 0, NULL, false);
+	return LookupFuncName(list_make2(makeString("sift"), makeString(HEAR_FUNCTION)), 0, NULL, missing_ok);
 }
 
 static void
@@ -100,13 +100,17 @@ read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2])
 static void
 find_triggers(Oid heapoid, Relation index, HearTrig t[2])
 {
-	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	Relation	drel;
 	ScanKeyData key[2];
 	SysScanDesc scan;
 	HeapTuple	tup;
-	Oid			funcoid = track_function();
+	Oid			funcoid = track_function(true);
 
 	memset(t, 0, 2 * sizeof(HearTrig));
+	/* the extension is not updated to the release that has the function yet (the library is: ALTER INDEX of any option asks): no trigger can be its own */
+	if (!OidIsValid(funcoid))
+		return;
+	drel = table_open(DependRelationId, AccessShareLock);
 	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
 	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
 	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
@@ -138,7 +142,7 @@ create_trigger(Relation heap, Relation index, bool update)
 {
 	CreateTrigStmt *stmt = makeNode(CreateTrigStmt);
 	TriggerTransition *tt = makeNode(TriggerTransition);
-	Oid			funcoid = track_function();
+	Oid			funcoid = track_function(false);
 	ObjectAddress trig,
 				idx;
 
