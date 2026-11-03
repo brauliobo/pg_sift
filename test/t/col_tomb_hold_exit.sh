@@ -22,7 +22,7 @@ sqlc() { PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -h "$D/sock" 
 aborted() { sql p "SELECT count(*) FROM sift._test_col_log_entries('th_c') WHERE txid_status(xid::text::bigint) = 'aborted'"; }
 entries() { sql p "SELECT count(*) FROM sift._test_col_log_entries('th_c')"; }
 upd() { echo "UPDATE th SET w = w + 1 WHERE id BETWEEN $1 AND $(($1 + 99))"; }
-no_backends() { until [[ $(sql p "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") == 0 ]]; do sleep 0.1; done; }
+no_backends() { for _ in $(seq 600); do [[ $(sql p "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") == 0 ]] && return 0; sleep 0.1; done; bail "the backends did not end (or the server is gone)"; }
 
 # 1: a rollback, then a committed statement of the same backend (100 rows: 101-200)
 sqlc "BEGIN" "$(upd 1)" "ROLLBACK" "$(upd 101)"

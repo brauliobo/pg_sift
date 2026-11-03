@@ -280,6 +280,8 @@ jobs:
           SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
+          # a job that hangs is stopped with the end of its log after 45 minutes: the limit of the workflow (90) ends the whole shard, and its logs are lost
+          CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '2700' || '' }}
 
       # the first hosted run says whether the compiler wrappers took: a cache of 0 hits on a warm key means the build did not go through them
       - name: Compiler cache statistics
