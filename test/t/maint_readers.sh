@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Searches while inserters, deleters and VACUUM run side by side: every search of rows that never change returns exactly them. A lazy
-# VACUUM is left out of snapshots and of the xid horizon, its own xid included, so the extents it released with that xid must wait
-# for the next xid (store_update, P4): a reader that began after the xid was assigned holds the directory as it was before the
-# release and must find its segments as it left them. Runs on the release build too (no test functions).
+# Searches while inserters, deleters and VACUUM run side by side: every search of rows that never change returns exactly them. A smoke
+# of the whole, a few seconds long, that runs on the release build too (no test functions); the release of extents that a reader of
+# the old directory still reads (store_update, P4) is pinned without timing by maint_p4.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 30 6)
+SECS=$(knob SIFT_CHURN_SECS 6 3)
 STABLE=3000
 plan 4
 node_init rd 12 "autovacuum = off
@@ -24,7 +23,7 @@ D=$(dir rd)
 printf '%s\n' "INSERT INTO t (body) SELECT 'zzvolatile ' || string_agg('w' || (random() * 2000)::int, ' ') FROM generate_series(1, 40);" >"$D/insert.sql"
 printf '%s\n' "\\set did random($((STABLE + 1)), 200000)" 'DELETE FROM t WHERE id = :did;' >"$D/delete.sql"
 printf '%s\n' "\\set k random(1, $STABLE)" 'SELECT chk(:k);' >"$D/read.sql"
-PGOPTIONS="-c enable_seqscan=off" pgbench_bg rd 24 "$SECS" -f "$D/insert.sql@8" -f "$D/delete.sql@2" -f "$D/read.sql@40"
+PGOPTIONS="-c enable_seqscan=off" pgbench_bg rd 8 "$SECS" -f "$D/insert.sql@8" -f "$D/delete.sql@2" -f "$D/read.sql@40"
 
 : >"$D/maint.out"
 while kill -0 "$PGBENCH_PID" 2>/dev/null; do
