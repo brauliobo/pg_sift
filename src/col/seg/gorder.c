@@ -508,13 +508,8 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	 * starts over for each of its rows) reads the table whole, once, and searches it in memory: the search was 12 pins of the buffers for each probe. The segment does not
 	 * change while the source is open, so the copy cannot go stale.
 	 */
-	if (g->grps == NULL && ++g->gprobes > 1 && g->hdr.ngroups > 0 && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
-	{
-		SiftCGOrdGrp *all = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
-
-		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, all);
-		g->grps = all;
-	}
+	if (g->grps == NULL && ++g->gprobes > 1 && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
+		sift_cseg_gorder_group_table(seg, col);
 	if (g->grps != NULL)
 		for (int64 c = (int64) g->ghint + 1; c >= (int64) g->ghint - 1; c--)
 			if (c >= 0 && c < hi && g->grps[c].group == group)
@@ -594,13 +589,8 @@ sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group,
 
 	if (g == NULL || g->hdr.gcol < 0 || gi >= g->hdr.ngroups)
 		corrupt(seg, "The global order of leaf %d has no group %u.", col, gi);
-	if (g->grps == NULL && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
-	{
-		SiftCGOrdGrp *all = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
-
-		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, all);
-		g->grps = all;
-	}
+	if ((uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
+		sift_cseg_gorder_group_table(seg, col);
 	if (g->grps != NULL)
 		e = g->grps[gi];
 	else

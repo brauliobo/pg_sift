@@ -202,6 +202,11 @@ build_rel(Relation index, MemoryContext mcxt)
 			if (ng != 1)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
 		}
+		/* the second order of the second key column grouped by the first is what an ordered index-only scan of (g, k) reads group after group, and it gives exact keys (amscan/ordered.c): whole chunks unless order_layout says otherwise */
+		if (r->pagg.gorder_group > 0 && defs[r->pagg.gorder_group - 1].attno == 1)
+			for (int i = 0; i < n; i++)
+				if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
+					r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
 				;
