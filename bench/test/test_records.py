@@ -502,7 +502,7 @@ class WriteInventory(unittest.TestCase):
 
 
 class SiftIndexFacts(unittest.TestCase):
-    """the segments of a sift index and the leader of a build, from stand-ins for the extension on a plain cluster: access methods that are the b-tree under the names sift and sift_col, and the two
+    """the segments of a sift index and the leader of a build, from stand-ins for the extension on a plain cluster: access methods that are the hash index under the names sift and sift_col (the b-tree handler refuses a build under another access method on PostgreSQL 16 and 17), and the two
     directory functions over a table of rows; the instruction count is stubbed"""
 
     @classmethod
@@ -513,8 +513,8 @@ class SiftIndexFacts(unittest.TestCase):
         cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
         cls.run_sql(cls, 'CREATE SCHEMA sift', 'CREATE TABLE fake_segments (idx text, kind text)')
         for am, fn in (('sift_col', 'col_segments'), ('sift', 'segments')):
-            cls.run_sql(cls, 'CREATE ACCESS METHOD %s TYPE INDEX HANDLER bthandler' % am,
-                        'CREATE OPERATOR CLASS int4_%s DEFAULT FOR TYPE int4 USING %s AS OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >, FUNCTION 1 btint4cmp(int4, int4)' % (am, am),
+            cls.run_sql(cls, 'CREATE ACCESS METHOD %s TYPE INDEX HANDLER hashhandler' % am,
+                        'CREATE OPERATOR CLASS int4_%s DEFAULT FOR TYPE int4 USING %s AS OPERATOR 1 =, FUNCTION 1 hashint4(int4)' % (am, am),
                         'CREATE FUNCTION sift.%s(index regclass) RETURNS TABLE (gen int8, kind text) LANGUAGE sql AS $$ SELECT row_number() OVER (), kind FROM fake_segments WHERE idx = index::text $$' % fn)
 
     def run_sql(self, *statements):
