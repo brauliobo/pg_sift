@@ -587,6 +587,8 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 	if (tok)
 		*tok = (SiftCWbufToken) {s->serial, s->fills};
 	out = MemoryContextAlloc(mcxt, Max(s->n, 1) * sizeof(SiftColBatch *));
-	memcpy(out, s->b, s->n * sizeof(SiftColBatch *));
+	/* b is NULL until the first batch is added: memcpy takes no NULL source, not even for zero bytes */
+	if (s->n > 0)
+		memcpy(out, s->b, s->n * sizeof(SiftColBatch *));
 	return out;
 }
