@@ -5,6 +5,7 @@
 -- Before PostgreSQL 18 the cast of a JSON null score raises an error in the normal plan too, so the scan refuses the statements that read one (error_parity) and
 -- the groups with such entries answer with the error in both runs (agg_flat_key_lookup_diff_1.out).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources SELECT i, i <> 7 FROM generate_series(1, 20) i;
