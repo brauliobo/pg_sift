@@ -45,6 +45,7 @@ typedef struct ColGOrdMem
 	bool		bytes;			/* the range of a string is that of its 8 bytes after the first plen, which all the strings share: the collation orders by bytes */
 	uint32		plen;
 	const char *pre;			/* the first plen bytes of every string */
+	MemoryContext own;			/* the context of an order made for one group of a scan that reads the groups one after the other, deleted when the next group replaces it (else NULL) */
 } ColGOrdMem;
 
 /* by key, then address */

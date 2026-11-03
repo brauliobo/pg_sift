@@ -51,6 +51,7 @@ typedef struct ColScanOpaque
 	bool		project;		/* an index-only scan forms its tuples from the columns of want (the attribute numbers of the index the plan reads) only (sift_col_ioss_want) */
 	Bitmapset  *want;
 	bool		ordered;		/* the plan wants the rows in the order of the first column, in the direction of the scan (ordered.c) */
+	bool		ordpair;		/* ... in the order of the first and the second column (ordered: set as well) */
 	IndexFetchTableData *fetch;	/* the heap, for a string the index could not keep (an overflow value) */
 	TupleTableSlot *slot;
 	/*
@@ -90,6 +91,8 @@ typedef struct ColKeys
 /* ordered.c: the scan in the order of the first column, told by the direction of the scan; ordpath.c offers it to the planner */
 /* the name of the first entry of the indextlist of an ordered index-only scan's plan node: the path's copy of the index says so, the node says it to the scan (sift_col_ioss_want); a plain scan has the name of the column */
 #define COL_ORDERED_MARK "sift_ordered_scan"
+#define COL_ORDERED_PAIR_MARK "sift_ordered_pair_scan"
+extern int	sift_col_ordered_pair_mode(Oid indexoid, double tuples);
 extern bool sift_col_ordered_whole(Oid indexoid);
 extern bool sift_col_ordered_type(Oid type);
 extern bool sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir);
@@ -98,7 +101,7 @@ extern void sift_col_ordered_mark(ColScanOpaque *so);
 extern void sift_col_ordered_restore(ColScanOpaque *so);
 extern void sift_col_ioss_sample(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid);
 extern bool sift_col_unordered_next(IndexScanDesc scan);
-extern bool sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls);
+extern bool sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls, const int64 **vals2, const uint64 **nulls2);
 extern void sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel);
 
 extern bool	xtime_pair(Oid coltype, Oid argtype);

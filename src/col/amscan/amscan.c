@@ -30,6 +30,7 @@ typedef struct IossWant
 	Bitmapset  *want;
 	bool		project;
 	bool		ordered;		/* the plan asked the order of the scan: the name of the first entry of its indextlist is COL_ORDERED_MARK (ordpath.c) */
+	bool		ordpair;		/* ... of the first two columns: COL_ORDERED_PAIR_MARK */
 	bool		taken;
 } IossWant;
 
@@ -117,8 +118,10 @@ ioss_walk(PlanState *ps, void *context)
 			w = palloc0(sizeof(IossWant));
 			w->ps = ps;
 			w->project = true;
-			w->ordered = plan->indextlist != NIL && ((TargetEntry *) linitial(plan->indextlist))->resname != NULL &&
-				strcmp(((TargetEntry *) linitial(plan->indextlist))->resname, COL_ORDERED_MARK) == 0;
+			w->ordpair = plan->indextlist != NIL && ((TargetEntry *) linitial(plan->indextlist))->resname != NULL &&
+				strcmp(((TargetEntry *) linitial(plan->indextlist))->resname, COL_ORDERED_PAIR_MARK) == 0;
+			w->ordered = w->ordpair || (plan->indextlist != NIL && ((TargetEntry *) linitial(plan->indextlist))->resname != NULL &&
+										strcmp(((TargetEntry *) linitial(plan->indextlist))->resname, COL_ORDERED_MARK) == 0);
 			pull_varattnos((Node *) plan->scan.plan.targetlist, INDEX_VAR, &attrs);
 			pull_varattnos((Node *) plan->scan.plan.qual, INDEX_VAR, &attrs);
 			pull_varattnos((Node *) plan->recheckqual, INDEX_VAR, &attrs);
@@ -138,6 +141,8 @@ ioss_walk(PlanState *ps, void *context)
 				 */
 				bms_free(w->want);
 				w->want = bms_make_singleton(1);
+				if (w->ordpair)
+					w->want = bms_add_member(w->want, 2);
 				w->project = true;
 			}
 			ioss_pending = lappend(ioss_pending, w);
@@ -172,6 +177,7 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 		ioss_cur->taken = true;
 		so->project = ioss_cur->project;
 		so->ordered = ioss_cur->ordered;
+		so->ordpair = ioss_cur->ordpair;
 		so->want = bms_copy(ioss_cur->want);
 	}
 	return scan;
@@ -845,10 +851,10 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 
 /*
  * The next unit of an index-only scan that reads one fixed-size integer column, as arrays instead of tuples: the addresses of its rows, the values (n of them, the key domain
- * of the column) and the bits of those that are NULL (NULL: none). False at the end. For the scan that collects every row before it gives the first (ordered.c).
+ * of the column) and the bits of those that are NULL (NULL: none), and the same for the second column when vals2 is given (a pair). False at the end. For the scan that collects every row before it gives the first (ordered.c).
  */
 bool
-sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls)
+sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **tids, const int64 **vals, const uint64 **nulls, const int64 **vals2, const uint64 **nulls2)
 {
 	ColScanOpaque *so = scan->opaque;
 
@@ -856,11 +862,16 @@ sift_col_unordered_batch(IndexScanDesc scan, uint32 *n, const ItemPointerData **
 		col_scan_begin(scan, true);
 	if (!col_fill_batch(scan))
 		return false;
-	SIFT_INVARIANT(so->funit && so->nfast == 1, "an ordered scan reads a unit of the first column alone, in a form the batch gives");
+	SIFT_INVARIANT(so->funit && so->nfast == (vals2 != NULL ? 2 : 1), "an ordered scan reads a unit of the column it orders by (and the second of a pair) alone, in a form the batch gives");
 	*n = so->n;
 	*tids = so->tids;
 	*vals = so->fvec[0].i;
 	*nulls = so->fvec[0].nulls;
+	if (vals2 != NULL)
+	{
+		*vals2 = so->fvec[1].i;
+		*nulls2 = so->fvec[1].nulls;
+	}
 	so->pos = so->n;
 	return true;
 }

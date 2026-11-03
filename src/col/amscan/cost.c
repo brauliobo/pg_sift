@@ -52,6 +52,7 @@
 
 #define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
 #define COL_SCAN_ORDERED	0.045	/* a row of an ordered index-only scan (ordpath.c) of a whole order array: the merge of the segments and the write buffers, no unit read. 1,000,000 rows of a random key, summed: 1,019 Minstr and 133 ms where Seq Scan and Sort take 1,266 and 211 (run b5080144b211-20261102T020207Z-39fc); the heap plan is 1.75 us a cost unit */
+#define COL_SCAN_ORDERED_GROUP	0.23	/* ... the open of the merge of one group of an ordered pair (ordered.c): the group looked up in each segment, a cursor made, the chunk the last group decoded kept. 300,000 rows of random keys in 1,000, 30,000 and 100,000 groups: 276, 410 and 730 Minstr, so 4.6 k instructions a group, at the 920 an entry of 0.045 */
 #define COL_SCAN_ORDERED_SORT	0.042	/* ... of an order with compact chunks or the ends only (the default build): the units are read in batches and the rows sorted by key and address, 913 Minstr and 109 ms in the same run */
 
 #define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
@@ -221,11 +222,14 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	if (path->indexscandir != NoMovementScanDirection && path->path.pathkeys != NIL)
 	{
 		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c); a compact order is sorted by the first row, so its work is the startup */
-		bool		whole = sift_col_ordered_whole(index->indexoid);
+		bool		pair = index->indextlist != NIL && ((TargetEntry *) linitial(index->indextlist))->resname != NULL && strcmp(((TargetEntry *) linitial(index->indextlist))->resname, COL_ORDERED_PAIR_MARK) == 0;
+		bool		whole = pair || sift_col_ordered_whole(index->indexoid);
 		double		walk = costs.numIndexTuples * scale;
+		/* a pair opens the merge of each group of the first column */
+		double		groups = pair ? Min(estimate_num_groups(root, list_make1(((TargetEntry *) linitial(index->indextlist))->expr), Max(index->rel->tuples, 1.0), NULL, NULL), costs.numIndexTuples) : 0.0;
 
 		*indexStartupCost = scale * COL_SCAN_FIXED + (whole ? 0.0 : walk * COL_SCAN_ORDERED_SORT);
-		*indexTotalCost = scale * COL_SCAN_FIXED + (whole ? walk * COL_SCAN_ORDERED : walk * COL_SCAN_ORDERED_SORT) + costs.numIndexTuples * cpu_index_tuple_cost;
+		*indexTotalCost = scale * COL_SCAN_FIXED + (whole ? walk * COL_SCAN_ORDERED : walk * COL_SCAN_ORDERED_SORT) + groups * scale * COL_SCAN_ORDERED_GROUP + costs.numIndexTuples * cpu_index_tuple_cost;
 		*indexSelectivity = costs.indexSelectivity;
 		*indexCorrelation = 0.0;
 		*indexPages = Max(1.0, (double) index->pages);

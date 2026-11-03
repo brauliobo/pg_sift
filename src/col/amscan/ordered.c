@@ -3,6 +3,10 @@
  * The planner offers it (ordpath.c) for a query that reads that column alone and wants it sorted (ORDER BY, a merge join): the entries of the global order of the
  * column over the segments and the write buffers, merged (agg/gord.h), are the rows in order, where the units give them in the order of the heap and a Sort follows.
  * The plan says it wants the order: the node of its path is marked (COL_ORDERED_MARK), and sift_col_ioss_want hands that to the scan.
+ *
+ * A pair (COL_ORDERED_PAIR_MARK) is the order of the first two columns, g and k: the second order of k grouped by g (a block of every row, exact keys) lists the rows of a group by k, so
+ * the groups, ascending (descending: from the last, each group backwards), are read one after the other, each as the order of k with g pinned (agg/gord.h). A group costs its open, so a
+ * table of many small groups is priced for it (cost.c); a table whose second order is not there, or compact, has its rows read from the units and sorted here.
  */
 #include "postgres.h"
 #include "access/relscan.h"
@@ -49,10 +53,35 @@ typedef struct ColOrd
 	uint32		cmark;
 	uint32		replay;			/* the next of them to give again; nmark: the scan goes on */
 	bool		marked;
+	bool		pair;			/* the order of (g, k): the type above is k's, g is attribute 1 */
+	Oid			gtype;
+	Size		goff;			/* g in the tuple of a row with a key, and in the one without */
+	Size		goffn;
+	int			gleaf;
+	int			kleaf;
+	int64		gcur;			/* the group being read */
+	int64	   *groups;			/* the values of g in the order of the scan; NULL: the rows were sorted here (rows) */
+	uint32		ngroups;
+	uint32		gi;
+	uint32		grows;			/* the rows to expect from a group */
+	MemoryContext gcxt[2];		/* the merge of the group being read and of the one before: the next one starts from the chunks the last decoded, then the older context is reset */
+	int			gsel;
+	struct OrdRow *rows;
+	uint32		nrows;
+	bool		bad;
 } ColOrd;
+
+typedef struct OrdRow
+{
+	int64		g;
+	int64		k;
+	uint64		tid;
+	bool		knull;
+} OrdRow;
 
 typedef struct OrdMark
 {
+	int64		g;
 	int64		key;
 	bool		isnull;
 	ItemPointerData tid;
@@ -104,23 +133,50 @@ sift_col_ordered_type(Oid type)
 	return type == INT2OID || type == INT4OID || type == INT8OID || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID;
 }
 
-/* The tuples of the scan: attribute 1 with a value, and none; every other attribute NULL (the plan reads the first alone). The place of the value is checked against index_form_tuple. */
+/*
+ * The tuples of the scan: attribute 1 with a value, and none; every other attribute NULL (the plan reads the first alone). A pair has g in the first and k in the second, which is
+ * NULL in the tuple of a row without a key. The place of the values is checked against index_form_tuple.
+ */
 static void
 ord_tuples(IndexScanDesc scan, ColOrd *o)
 {
 	TupleDesc	desc = scan->xs_itupdesc;
-	Form_pg_attribute att = TupleDescAttr(desc, 0);
+	Form_pg_attribute att = TupleDescAttr(desc, o->pair ? 1 : 0);
 	Datum		vals[INDEX_MAX_KEYS] = {0};
 	bool		nulls[INDEX_MAX_KEYS];
-	int64		probe = INT64CONST(0x0102030405060708);
+	int64		probe = INT64CONST(0x0102030405060708),
+				gprobe = INT64CONST(0x1112131415161718);
 	IndexTuple	chk;
 	Datum		d;
 
 	memset(nulls, true, sizeof(nulls));
 	o->type = att->atttypid;
+	d = o->type == INT2OID ? Int16GetDatum((int16) probe) : o->type == INT4OID || o->type == DATEOID ? Int32GetDatum((int32) probe) : Int64GetDatum(probe);
+	if (o->pair)
+	{
+		Form_pg_attribute gatt = TupleDescAttr(desc, 0);
+
+		o->gtype = gatt->atttypid;
+		nulls[0] = false;
+		vals[0] = o->gtype == INT2OID ? Int16GetDatum((int16) gprobe) : o->gtype == INT4OID || o->gtype == DATEOID ? Int32GetDatum((int32) gprobe) : Int64GetDatum(gprobe);
+		o->ntup = index_form_tuple(desc, vals, nulls);
+		o->goffn = IndexInfoFindDataOffset(o->ntup->t_info);
+		nulls[1] = false;
+		vals[1] = d;
+		o->ktup = index_form_tuple(desc, vals, nulls);
+		o->goff = IndexInfoFindDataOffset(o->ktup->t_info);
+		o->koff = att_align_nominal(o->goff + gatt->attlen, att->attalign);
+		chk = palloc(IndexTupleSize(o->ktup));
+		memcpy(chk, o->ktup, IndexTupleSize(o->ktup));
+		memset((char *) chk + o->goff, 0, o->koff - o->goff + att->attlen);
+		key_put(o->gtype, (char *) chk + o->goff, gprobe);
+		key_put(o->type, (char *) chk + o->koff, probe);
+		SIFT_INVARIANT(memcmp(chk, o->ktup, IndexTupleSize(o->ktup)) == 0, "the index tuple of an ordered pair scan has its values elsewhere");
+		pfree(chk);
+		return;
+	}
 	o->ntup = index_form_tuple(desc, vals, nulls);
 	nulls[0] = false;
-	d = o->type == INT2OID ? Int16GetDatum((int16) probe) : o->type == INT4OID || o->type == DATEOID ? Int32GetDatum((int32) probe) : Int64GetDatum(probe);
 	vals[0] = d;
 	o->ktup = index_form_tuple(desc, vals, nulls);
 	o->koff = IndexInfoFindDataOffset(o->ktup->t_info);
@@ -131,6 +187,8 @@ ord_tuples(IndexScanDesc scan, ColOrd *o)
 	SIFT_INVARIANT(memcmp(chk, o->ktup, IndexTupleSize(o->ktup)) == 0, "the index tuple of an ordered scan has its first value elsewhere");
 	pfree(chk);
 }
+
+static void ord_pair_open(IndexScanDesc scan, ColScanOpaque *so);
 
 static void
 ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
@@ -143,6 +201,7 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 	o = MemoryContextAllocZero(so->cxt, sizeof(ColOrd));
 	o->cxt = AllocSetContextCreate(so->cxt, "sift_col ordered scan", ALLOCSET_DEFAULT_SIZES);
 	o->desc = ScanDirectionIsBackward(dir);
+	o->pair = so->ordpair;
 	old = MemoryContextSwitchTo(o->cxt);
 	ord_tuples(scan, o);
 	o->src = sift_colsrc_open(so->heap, scan->indexRelation, scan->xs_snapshot, o->cxt);
@@ -153,22 +212,32 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 		so->first = palloc(n * sizeof(int));
 		memcpy(so->first, sift_col_rel(scan->indexRelation)->first, n * sizeof(int));
 	}
+	so->ord = o;
+	if (o->pair)
+	{
+		o->gleaf = so->first[1];
+		o->kleaf = so->first[2];
+		ord_pair_open(scan, so);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	/* a descending scan has the NULL rows first, as the b-tree's default does */
 	o->g = sift_gord_open(o->src, so->first[1], ORD_ROWS, o->desc, o->desc, 0, NULL, o->cxt);
 	/* the order of a segment that keeps its ends only, or its keys rounded, is not read whole: the units give the rows faster than the heap the keys */
 	if (o->g != NULL && (sift_gord_ends(o->g) || sift_gord_compact(o->g)))
 		o->g = NULL;
 	MemoryContextSwitchTo(old);
-	so->ord = o;
 }
 
-/* The key of the row at tid for the snapshot and whether it has one, read from the heap; false if no version is visible */
+/* The key of the row at tid for the snapshot and whether it has one, read from the heap; false if no version is visible (a pair: or the group of that version is not the one being read) */
 static bool
 ord_heap_key(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid, int64 *key, bool *isnull)
 {
 	bool		call_again = false,
 				all_dead = false;
 	Datum		v;
+	ColOrd	   *o = so->ord;
+	AttrNumber *atts = scan->indexRelation->rd_index->indkey.values;
 
 	if (so->fetch == NULL)
 	{
@@ -180,8 +249,16 @@ ord_heap_key(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid, int64 *key,
 	}
 	if (!table_index_fetch_tuple(so->fetch, tid, scan->xs_snapshot, so->slot, &call_again, &all_dead))
 		return false;
-	v = slot_getattr(so->slot, scan->indexRelation->rd_index->indkey.values[0], isnull);
-	*key = *isnull ? 0 : key_of(so->ord->type, v);
+	if (o->pair)
+	{
+		bool		gnull;
+
+		v = slot_getattr(so->slot, atts[0], &gnull);
+		if (gnull || key_of(o->gtype, v) != o->gcur)
+			return false;
+	}
+	v = slot_getattr(so->slot, atts[o->pair ? 1 : 0], isnull);
+	*key = *isnull ? 0 : key_of(o->type, v);
 	return true;
 }
 
@@ -202,7 +279,7 @@ ord_sort(IndexScanDesc scan, ColScanOpaque *so)
 		const int64 *vals;
 		const uint64 *isnull;
 
-		while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull))
+		while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, NULL, NULL))
 		{
 			if (o->npairs + n > cap)
 				o->pairs = repalloc(o->pairs, (cap = Max(cap * 2, o->npairs + n)) * sizeof(GOrdPair));
@@ -223,13 +300,110 @@ ord_sort(IndexScanDesc scan, ColScanOpaque *so)
 	MemoryContextSwitchTo(old);
 }
 
+static int
+ord_row_cmp(const void *a, const void *b)
+{
+	const OrdRow *x = a,
+			   *y = b;
+
+	if (x->g != y->g)
+		return x->g < y->g ? -1 : 1;
+	if (x->knull != y->knull)
+		return x->knull ? 1 : -1;
+	if (x->k != y->k)
+		return x->k < y->k ? -1 : 1;
+	return x->tid < y->tid ? -1 : x->tid > y->tid;
+}
+
+/* The rows are read from the units, in the order of the heap, and sorted by (g, k) here: the pair has no order to read */
 static void
-ord_fill(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
+ord_pair_sort(IndexScanDesc scan, ColOrd *o)
+{
+	uint32		cap = 1024,
+				n;
+	const ItemPointerData *tids;
+	const int64 *vals,
+			   *vals2;
+	const uint64 *isnull,
+			   *isnull2;
+
+	o->rows = palloc(cap * sizeof(OrdRow));
+	while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, &vals2, &isnull2))
+	{
+		if (o->nrows + n > cap)
+			o->rows = repalloc(o->rows, (cap = Max(cap * 2, o->nrows + n)) * sizeof(OrdRow));
+		for (uint32 r = 0; r < n; r++)
+			o->rows[o->nrows++] = (OrdRow) {vals[r], vals2[r], ((uint64) ItemPointerGetBlockNumber(&tids[r]) << 16) | ItemPointerGetOffsetNumber(&tids[r]),
+											isnull2 != NULL && (isnull2[r >> 6] >> (r & 63) & 1)};
+	}
+	qsort(o->rows, o->nrows, sizeof(OrdRow), ord_row_cmp);
+	o->left = o->nrows;
+	o->step = o->desc ? -1 : 1;
+	o->idx = o->desc ? (int64) o->nrows - 1 : 0;
+}
+
+/*
+ * The scan of the next group: the order of k with g pinned to its value (the groups ascending, descending for a backward scan). False after the last. A group whose order is not whole
+ * (the ends of it, or compact chunks) sets bad: which the segments decide, so it is found at the first group.
+ */
+static bool
+ord_next_group(ColOrd *o)
+{
+	SiftGBound	b = {0};
+	SiftGOrd   *prev = o->g;
+
+	o->g = NULL;
+	o->ahead = false;
+	if (o->desc ? o->gi == 0 : o->gi >= o->ngroups)
+	{
+		MemoryContextReset(o->gcxt[o->gsel]);
+		return false;
+	}
+	o->gcur = o->groups[o->desc ? --o->gi : o->gi++];
+	b.npin = 1;
+	b.pinleaf[0] = o->gleaf;
+	b.pinval[0] = o->gcur;
+	o->gsel ^= 1;
+	o->g = sift_gord_open_from(prev, o->src, o->kleaf, ORD_ROWS, o->desc, o->desc, 0, &b, o->gcxt[o->gsel]);
+	MemoryContextReset(o->gcxt[o->gsel ^ 1]);
+	if (o->g == NULL || sift_gord_group(o->g) != o->gleaf || sift_gord_ends(o->g) || sift_gord_compact(o->g))
+	{
+		o->bad = true;
+		o->g = NULL;
+		return false;
+	}
+	return true;
+}
+
+static void
+ord_pair_open(IndexScanDesc scan, ColScanOpaque *so)
+{
+	ColOrd	   *o = so->ord;
+
+	o->gcxt[0] = AllocSetContextCreate(o->cxt, "sift_col ordered groups", ALLOCSET_DEFAULT_SIZES);
+	o->gcxt[1] = AllocSetContextCreate(o->cxt, "sift_col ordered groups", ALLOCSET_DEFAULT_SIZES);
+	if (sift_colsrc_gorder_group_values(o->src, o->gleaf, o->kleaf, &o->groups, &o->ngroups))
+	{
+		o->gi = o->desc ? o->ngroups : 0;
+		ord_next_group(o);
+		if (!o->bad)
+			return;
+		pfree(o->groups);
+		o->groups = NULL;
+		o->bad = false;
+	}
+	ord_pair_sort(scan, o);
+}
+
+static void
+ord_fill(IndexScanDesc scan, ColOrd *o, int64 g, int64 key, bool isnull, ItemPointer tid)
 {
 	IndexTuple	t = isnull ? o->ntup : o->ktup;
 
 	if (!isnull)
 		key_put(o->type, (char *) t + o->koff, key);
+	if (o->pair)
+		key_put(o->gtype, (char *) t + (isnull ? o->goffn : o->goff), g);
 	t->t_tid = *tid;
 	scan->xs_heaptid = *tid;
 	scan->xs_itup = t;
@@ -251,6 +425,7 @@ ord_remember(ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 		MemoryContextSwitchTo(old);
 	}
 	m = &o->mark[o->nmark++];
+	m->g = o->gcur;
 	m->key = key;
 	m->isnull = isnull;
 	m->tid = *tid;
@@ -262,7 +437,7 @@ ord_give(IndexScanDesc scan, ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 {
 	if (unlikely(o->marked))
 		ord_remember(o, key, isnull, tid);
-	ord_fill(scan, o, key, isnull, tid);
+	ord_fill(scan, o, o->gcur, key, isnull, tid);
 	sift_col_ioss_sample(scan, scan->opaque, tid);
 }
 
@@ -296,7 +471,7 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 	{
 		OrdMark    *m = &o->mark[o->replay++];
 
-		ord_fill(scan, o, m->key, m->isnull, &m->tid);
+		ord_fill(scan, o, m->g, m->key, m->isnull, &m->tid);
 		return true;
 	}
 	if (o == NULL)
@@ -305,10 +480,25 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		SIFT_INVARIANT(scan->numberOfKeys == 0 && sift_col_ordered_type(TupleDescAttr(scan->xs_itupdesc, 0)->atttypid), "an ordered scan with an index condition or a column it cannot order");
 		ord_open(scan, so, dir);
 		o = so->ord;
-		if (o->g == NULL)
+		if (o->g == NULL && !o->pair)
 			ord_sort(scan, so);
 	}
-	if (o->g == NULL)
+	if (o->pair && o->groups == NULL)
+	{
+		const OrdRow *r;
+		ItemPointerData tid;
+
+		if (o->left == 0)
+			return false;
+		o->left--;
+		r = &o->rows[o->idx];
+		o->idx += o->step;
+		o->gcur = r->g;
+		ItemPointerSet(&tid, (BlockNumber) (r->tid >> 16), (OffsetNumber) (r->tid & 0xFFFF));
+		ord_give(scan, o, r->k, r->knull, &tid);
+		return true;
+	}
+	if (!o->pair && o->g == NULL)
 	{
 		/* the sequence: the rows with a key then those without, each run reversed for desc, which has the rows without a key first */
 		ItemPointerData tid;
@@ -360,8 +550,14 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		}
 		else
 		{
-			if (!sift_gord_next(o->g, &key, &isnull, &tid))
-				return false;
+			while (o->g == NULL || !sift_gord_next(o->g, &key, &isnull, &tid))
+			{
+				if (!o->pair || !ord_next_group(o))
+				{
+					SIFT_INVARIANT(!o->bad, "a group of an ordered pair scan has no whole order, though the first had");
+					return false;
+				}
+			}
 			st = sift_gord_state(o->g, &tid);
 		}
 		/*

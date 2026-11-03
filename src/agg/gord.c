@@ -46,6 +46,7 @@ gbuf_get(void)
 	b->at = UINT32_MAX;
 	b->cm = b->rows = b->kfrom = b->kn = 0;
 	b->compact = false;
+	b->stored = false;
 	return b;
 }
 
@@ -55,7 +56,8 @@ gord_release(void *arg)
 	SiftGOrd   *g = arg;
 
 	for (int i = 0; i < g->ncur; i++)
-		gbuf_put(g->cur[i]->buf);
+		if (g->cur[i]->buf != NULL)
+			gbuf_put(g->cur[i]->buf);
 }
 
 /* the chunk of the entry p is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
@@ -212,6 +214,12 @@ cur_start(SiftGOrd *g, GCur *c)
 SiftGOrd *
 sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *b, MemoryContext cxt)
 {
+	return sift_gord_open_from(NULL, src, leaf, rows, desc, nulls_first, collid, b, cxt);
+}
+
+SiftGOrd *
+sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *b, MemoryContext cxt)
+{
 	int			grouped,
 				n;
 	SiftCGOrdWant want = {rows, desc, nulls_first, b != NULL && collid == 0 && b->has_lo, b != NULL && collid == 0 && b->has_hi, b != NULL ? b->lo : 0, b != NULL ? b->hi : 0, b == NULL};
@@ -277,6 +285,21 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 			gbuf_put(c->buf);
 			continue;
 		}
+		/* the chunk the last merge decoded of this segment (the next group is often in it): the buffer is passed on, and a write buffer's, which each open builds again, is dropped */
+		for (int j = 0; prev != NULL && j < prev->ncur; j++)
+			if (prev->cur[j]->src == i && prev->cur[j]->buf != NULL)
+			{
+				gbuf_put(c->buf);
+				c->buf = prev->cur[j]->buf;
+				prev->cur[j]->buf = NULL;
+				if (!c->buf->stored)
+				{
+					c->buf->at = UINT32_MAX;
+					c->buf->cm = c->buf->rows = c->buf->kfrom = c->buf->kn = 0;
+					c->buf->compact = false;
+				}
+				break;
+			}
 		c->slot = g->ncur;
 		g->cur[g->ncur++] = c;
 	}

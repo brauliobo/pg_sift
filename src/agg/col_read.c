@@ -275,6 +275,12 @@ col_gorder_clean(void *impl, int i)
 }
 
 bool
+col_gorder_group_values(void *impl, int gleaf, int kleaf, int64 **vals, uint32 *n)
+{
+	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, vals, n);
+}
+
+bool
 col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups)
 {
 	return sift_col_gorder_groups(((ColSource *) impl)->cs, i, leaf, ngroups);

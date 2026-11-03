@@ -4,20 +4,29 @@
  * unordered scan of the index, or of a merge join's side, is what the path replaces. The path has the pathkey of the first column only (never the order of the
  * index's other columns), the direction of the scan says to the access method that it is to give the order, and the plan asks no index condition: a condition on the
  * column is the node's own qual.
+ *
+ * An index whose second column is ordered too and has the second order grouped by the first (order_array_group, whole chunks) gives the pair: the rows in the order of (first, second),
+ * what a b-tree on the two columns gives to ORDER BY g, k and to a merge of partitions on both. The plan reads those two columns alone, and the first has no NULL (a row with no group
+ * is not in the second order). The path has both pathkeys; its node is marked COL_ORDERED_PAIR_MARK.
  */
 #include "postgres.h"
 #include "access/sdir.h"
 #include "access/genam.h"
 #include "access/stratnum.h"
+#include "access/htup_details.h"
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_attribute.h"
+#include "utils/syscache.h"
 #include "commands/defrem.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "nodes/makefuncs.h"
+#include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "col/am.h"
+#include "col/pg.h"
 #include "col/amscan/amscan_int.h"
 
 #if PG_VERSION_NUM < 170000
@@ -36,6 +45,95 @@ sift_col_ordered_whole(Oid indexoid)
 
 	index_close(irel, NoLock);
 	return whole;
+}
+
+/* Does the table of the index declare the column NOT NULL: the second order grouped by it holds the rows with a group only */
+static bool
+column_not_null(Oid relid, AttrNumber attno)
+{
+	HeapTuple	tp = SearchSysCache2(ATTNUM, ObjectIdGetDatum(relid), Int16GetDatum(attno));
+	bool		notnull;
+
+	if (!HeapTupleIsValid(tp))
+		return false;
+	notnull = ((Form_pg_attribute) GETSTRUCT(tp))->attnotnull;
+	ReleaseSysCache(tp);
+	return notnull;
+}
+
+/*
+ * The second order of the second column of the index grouped by its first, from the statistics of the leaves: its entries are all the rows, and its chunks hold the exact keys (a
+ * compact chunk holds a bucket of the key, which an index-only scan cannot give). 1: the scan reads it group after group; 0: the scan would have to sort the rows.
+ */
+int
+sift_col_ordered_pair_mode(Oid indexoid, double tuples)
+{
+	Relation	irel = index_open(indexoid, NoLock);
+	const int  *first = sift_col_rel(irel)->first;
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	int			mode = 0;
+
+	if (ls != NULL && first[1] >= 0 && first[2] >= 0 && ls[first[2]].gord_gcol == first[1] && ls[first[2]].gord_grp_rows >= Max(tuples, 1.0) * 0.95 && ls[first[2]].gord_compact_chunks <= 0)
+		mode = 1;
+	index_close(irel, NoLock);
+	return mode;
+}
+
+static void
+add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, Bitmapset *used, List **added)
+{
+	Var		   *kvar;
+	Oid			gfam,
+				kfam,
+				gcls,
+				kcls;
+	IndexOptInfo *oi;
+
+	if (ii->nkeycolumns < 2 || ii->indexkeys[1] <= 0 || !ii->canreturn[1] || ii->indexkeys[1] == ii->indexkeys[0])
+		return;
+	kvar = (Var *) ((TargetEntry *) lsecond(ii->indextlist))->expr;
+	if (!IsA(kvar, Var) || !sift_col_ordered_type(kvar->vartype))
+		return;
+	used = bms_del_member(bms_del_member(bms_copy(used), ii->indexkeys[0] - FirstLowInvalidHeapAttributeNumber), ii->indexkeys[1] - FirstLowInvalidHeapAttributeNumber);
+	if (!bms_is_empty(used))
+		return;
+	if (!column_not_null(planner_rt_fetch(rel->relid, root)->relid, ii->indexkeys[0]) || sift_col_ordered_pair_mode(ii->indexoid, rel->tuples) == 0)
+		return;
+	gcls = GetDefaultOpClass(gvar->vartype, BTREE_AM_OID);
+	kcls = GetDefaultOpClass(kvar->vartype, BTREE_AM_OID);
+	if (!OidIsValid(gcls) || !OidIsValid(kcls))
+		return;
+	gfam = get_opclass_family(gcls);
+	kfam = get_opclass_family(kcls);
+	oi = makeNode(IndexOptInfo);
+	memcpy(oi, ii, sizeof(IndexOptInfo));
+	oi->amhasgettuple = true;
+	oi->indextlist = NIL;
+	foreach_node(TargetEntry, te, ii->indextlist)
+	{
+		te = flatCopyTargetEntry(te);
+		if (oi->indextlist == NIL)
+			te->resname = pstrdup(COL_ORDERED_PAIR_MARK);
+		oi->indextlist = lappend(oi->indextlist, te);
+	}
+	for (int d = 0; d < 2; d++)
+	{
+		ScanDirection dir = d == 0 ? ForwardScanDirection : BackwardScanDirection;
+		int			strat = d == 0 ? BTLessStrategyNumber : BTGreaterStrategyNumber;
+		Oid			gop = get_opfamily_member(gfam, gvar->vartype, gvar->vartype, strat),
+					kop = get_opfamily_member(kfam, kvar->vartype, kvar->vartype, strat);
+		List	   *pathkeys;
+
+		if (!OidIsValid(gop) || !OidIsValid(kop))
+			continue;
+		pathkeys = EXPR_PATHKEY(root, (Expr *) gvar, gop, rel->relids);
+		if (pathkeys != NIL)
+			pathkeys = list_concat(pathkeys, EXPR_PATHKEY(root, (Expr *) kvar, kop, rel->relids));
+		pathkeys = truncate_useless_pathkeys(root, rel, pathkeys);
+		if (pathkeys == NIL)
+			continue;
+		*added = lappend(*added, create_index_path(root, oi, NIL, NIL, NIL, pathkeys, dir, true, NULL, 1.0, false));
+	}
 }
 
 void
@@ -66,8 +164,11 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 		pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &used);
 		foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 			pull_varattnos((Node *) ri->clause, rel->relid, &used);
-		if (!bms_is_empty(bms_del_member(used, ii->indexkeys[0] - FirstLowInvalidHeapAttributeNumber)))
+		if (!bms_is_empty(bms_del_member(bms_copy(used), ii->indexkeys[0] - FirstLowInvalidHeapAttributeNumber)))
+		{
+			add_pair_paths(root, rel, ii, var, used, &added);
 			continue;
+		}
 		opclass = GetDefaultOpClass(type, BTREE_AM_OID);
 		if (!OidIsValid(opclass))
 			continue;

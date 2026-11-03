@@ -91,6 +91,7 @@ typedef struct SiftCGOrdBuf
 	uint32		rows;			/* the entries of the chunk */
 	uint32		kfrom;			/* the exact keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (a chunk that is not compact: the first cm) */
 	uint32		kn;
+	bool		stored;			/* the chunk is of a stored segment: it stays as it is for the next merge over the same segments (a write buffer's is rebuilt by each) */
 	bool		compact;		/* the chunk is compact: kmin[] holds the first key of the bucket of each entry (if kmin_ok), sh the bucket's bits, key[] the keys read from the heap so far (the bits of exact) */
 	bool		kmin_ok;
 	uint32		sh;

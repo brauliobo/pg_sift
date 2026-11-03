@@ -1,0 +1,130 @@
+-- An index-only scan of a sift_col index on its first two columns (g, k) gives the rows ordered by both when the plan reads those alone and g is NOT NULL: the second order of k
+-- grouped by g, read group after group (the groups ascending, descending for ORDER BY g DESC, k DESC; NULL k last, first for DESC). The rows must be the heap's, in order, after deletes,
+-- updates (of k, and of g: the row changes group), rows in the write buffer (a group it alone has too), a transaction's own changes and a vacuum; a table with no such order sorts.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+
+CREATE TABLE pa (id int, g int4 NOT NULL, k int4, pad text DEFAULT repeat('x', 100));
+ALTER TABLE pa ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pa (id, g, k) SELECT i, i % 40, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 301 - 150 END FROM generate_series(1, 12000) i;
+CREATE INDEX pa_i ON pa USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+-- many small groups, int8 keys, a negative group, a date group
+CREATE TABLE pb (id int, g int8 NOT NULL, k int8, pad text DEFAULT repeat('x', 100));
+ALTER TABLE pb ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pb (id, g, k) SELECT i, (i % 3000) - 1000, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 9000) i;
+CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE TABLE pd (id int, g date NOT NULL, k timestamp, pad text DEFAULT repeat('x', 100));
+ALTER TABLE pd ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pd (id, g, k) SELECT i, date '2024-01-01' + i % 30, CASE WHEN i % 9 = 0 THEN NULL ELSE timestamp '2024-01-01' + ((i * 7919) % 100000) * interval '1 minute' END FROM generate_series(1, 6000) i;
+CREATE INDEX pd_i ON pd USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+-- no order of the pair to read: compact chunks, a nullable g, and a second order grouped by another column
+CREATE TABLE pc (id int, g int4 NOT NULL, k int4);
+INSERT INTO pc SELECT i, i % 40, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
+CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
+CREATE TABLE pn (id int, g int4, k int4);
+INSERT INTO pn SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 40 END, (i * 7919) % 301 FROM generate_series(1, 6000) i;
+CREATE INDEX pn_i ON pn USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE TABLE po (id int, g int4 NOT NULL, h int4 NOT NULL, k int4);
+INSERT INTO po SELECT i, i % 40, i % 7, (i * 7919) % 301 FROM generate_series(1, 6000) i;
+CREATE INDEX po_i ON po USING sift_col (g, k, h) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'h', order_layout = 'whole');
+VACUUM (ANALYZE) pa;
+VACUUM (ANALYZE) pb;
+VACUUM (ANALYZE) pc;
+VACUUM (ANALYZE) pd;
+VACUUM (ANALYZE) pn;
+VACUUM (ANALYZE) po;
+
+-- the rows of q as the plan gives them, in the order it gives them (the ordered scan, or the heap and a Sort with sift off); the digest covers both columns
+CREATE FUNCTION pa_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int, OUT sorts int) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_col_scan', ios::text, true);
+	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
+	PERFORM set_config('enable_sort', (NOT ios)::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	PERFORM set_config('enable_hashagg', 'false', true);
+	scans := 0;
+	sorts := 0;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'Index Only Scan (Backward )?using p._i' THEN scans := scans + 1; END IF;
+		IF line ~ '^ *(->  )?(Incremental )?Sort$' THEN sorts := sorts + 1; END IF;
+	END LOOP;
+	EXECUTE 'SELECT count(*), md5(string_agg(g::text || '':'' || coalesce(k::text, ''null''), ''|'')) FROM (' || q || ') w' INTO n, md5;
+END $$;
+
+CREATE FUNCTION pa_check(q text, OUT rows bigint, OUT agree bool, OUT ordered_scans int, OUT sorts int) LANGUAGE plpgsql AS $$
+DECLARE a record; h record;
+BEGIN
+	SELECT * INTO a FROM pa_run(q, true);
+	SELECT * INTO h FROM pa_run(q, false);
+	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; ordered_scans := a.scans; sorts := a.sorts;
+	IF NOT agree THEN
+		RAISE EXCEPTION 'the ordered pair scan gives other rows than the heap: % (% against % rows)', q, a.n, h.n;
+	END IF;
+END $$;
+
+-- sorts is 0 where the scan gives the order: queries 1 to 3, 5 to 7 and 9. Query 4 asks k the other way round than g: the scan gives g and the sort is incremental, by group. Queries 8 and
+-- 10 to 12 have no whole order of the pair (a compact order, a g that may be NULL, an order grouped by another column) and sort the rows of the plain scan; 13 reads a third column
+CREATE TABLE pa_q (n int, q text);
+INSERT INTO pa_q VALUES
+ (1, 'SELECT g, k FROM pa ORDER BY g, k'),
+ (2, 'SELECT g, k FROM pa ORDER BY g DESC, k DESC'),
+ (3, 'SELECT g, k FROM pa WHERE g BETWEEN 10 AND 30 ORDER BY g, k'),
+ (4, 'SELECT g, k FROM pa ORDER BY g, k DESC'),
+ (5, 'SELECT g, k FROM pb ORDER BY g, k'),
+ (6, 'SELECT g, k FROM pb ORDER BY g DESC, k DESC'),
+ (7, 'SELECT g, k FROM pd ORDER BY g, k'),
+ (8, 'SELECT g, k FROM pc ORDER BY g, k'),
+ (9, 'SELECT k, g FROM pd ORDER BY g DESC, k DESC'),
+ (10, 'SELECT g, k FROM pn ORDER BY g, k'),
+ (11, 'SELECT g, k FROM po ORDER BY g, k'),
+ (12, 'SELECT g, k FROM pc ORDER BY g DESC, k DESC'),
+ (13, 'SELECT g, k, id FROM pa ORDER BY g, k');
+SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
+
+-- rows deleted, updated (k, and g: the row goes to another group, or to a group of its own) and inserted (the write buffer: groups that have rows in the segments, and one that has not)
+DELETE FROM pa WHERE id % 40 = 3;
+UPDATE pa SET k = k + 400 WHERE id % 40 = 4;
+UPDATE pa SET k = NULL WHERE id % 40 = 5;
+UPDATE pa SET g = g + 1 WHERE id % 97 = 6;
+UPDATE pa SET g = 500 WHERE id % 1999 = 7;
+INSERT INTO pa (id, g, k) SELECT 20000 + i, (i * 3) % 45, (i * 37) % 400 - 200 FROM generate_series(1, 100) i;
+DELETE FROM pb WHERE id % 50 = 2;
+UPDATE pb SET g = -g WHERE id % 61 = 4;
+UPDATE pb SET k = NULL WHERE id % 101 = 5;
+INSERT INTO pb (id, g, k) SELECT 20000 + i, (i % 100) - 1100, i FROM generate_series(1, 80) i;
+UPDATE pd SET g = g + 1 WHERE id % 53 = 3;
+DELETE FROM pd WHERE id % 71 = 4;
+INSERT INTO pd (id, g, k) SELECT 20000 + i, date '2024-01-01' + i % 33, timestamp '2024-03-01' + i * interval '1 hour' FROM generate_series(1, 90) i;
+SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
+
+-- a transaction's own changes (the pages are not all-visible, the snapshot sees them), rolled back after
+BEGIN;
+DELETE FROM pa WHERE id % 70 = 1;
+UPDATE pa SET k = 1000 - id % 500, g = g + 3 WHERE id % 70 = 2;
+INSERT INTO pa (id, g, k) SELECT 30000 + i, i % 41, i FROM generate_series(1, 50) i;
+SELECT n, q, (pa_check(q)).* FROM pa_q WHERE n IN (1, 2, 3) ORDER BY n;
+ROLLBACK;
+SELECT n, q, (pa_check(q)).* FROM pa_q WHERE n IN (1, 2, 3) ORDER BY n;
+
+-- after a vacuum (pages all-visible, the dead entries gone from the heap), and rows put at the addresses it freed
+VACUUM pa;
+VACUUM pb;
+VACUUM pd;
+SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
+INSERT INTO pa (id, g, k) SELECT 40000 + i, (i * 7) % 40, CASE WHEN i % 2 = 0 THEN (i * 7919) % 301 - 150 ELSE 900 + i END FROM generate_series(1, 150) i;
+SELECT n, q, (pa_check(q)).* FROM pa_q WHERE n <= 4 ORDER BY n;
+
+-- the same k at the addresses the vacuum freed, in another group (and the same group with another k): a row must be given once, in the group and with the k of the row that holds the address now
+CREATE TEMP TABLE pa_gone AS SELECT id, g, k FROM pa WHERE id % 97 = 5 AND id < 12000 ORDER BY id;
+DELETE FROM pa WHERE id IN (SELECT id FROM pa_gone);
+VACUUM pa;
+INSERT INTO pa (id, g, k) SELECT id + 60000, CASE WHEN id % 2 = 0 THEN (g + 1) % 40 ELSE g END, CASE WHEN id % 2 = 0 THEN k ELSE k + 1 END FROM pa_gone ORDER BY id;
+SELECT n, q, (pa_check(q)).* FROM pa_q WHERE n <= 4 ORDER BY n;
+
+DROP FUNCTION pa_check(text), pa_run(text, bool);
+DROP TABLE pa_q, pa, pb, pc, pd, pn, po;
+DROP EXTENSION pg_sift CASCADE;

@@ -639,11 +639,18 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, in
 		gkept_use(src, k, v);
 		return true;
 	}
+	if (g != NULL && g->own != NULL)
+	{
+		/* the group before it: a scan of every group would hold a context for each of them */
+		MemoryContextDelete(g->own);
+		src->gmem[v] = NULL;
+	}
 	cx = AllocSetContextCreate(gorder_cx(src), "sift cache write buffer order", ALLOCSET_DEFAULT_SIZES);
 	if (collid == 0 && gleaf >= 0 && (part = gpart_get(src, leaf, gleaf)) != NULL)
 	{
 		/* cheap to make again from the groups: not kept with the orders of whole reads, which it would push out */
 		gord_mem_part(src, part, leaf, gleaf, gval, v, cx);
+		src->gmem[v]->own = cx;
 		return true;
 	}
 	ok = collid != 0 ? gord_mem_text(src, leaf, collid, v, cx) : gord_mem_num(src, leaf, gleaf, gval, v, cx);

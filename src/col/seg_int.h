@@ -382,6 +382,7 @@ typedef struct GOrdLeaf
 	SiftKey    *dead;
 	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
 	uint32		gprobes;
+	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
 } GOrdLeaf;
 
 /* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */

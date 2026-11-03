@@ -440,6 +440,12 @@ sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
 }
 
 bool
+sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, int64 **vals, uint32 *n)
+{
+	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, vals, n);
+}
+
+bool
 sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
 {
 	return sift_colsrc_gorder_state(src, i, tid) == SIFT_GORD_EXACT;

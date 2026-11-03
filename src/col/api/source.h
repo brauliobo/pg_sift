@@ -314,6 +314,8 @@ extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *ent
 /* What is known of the entry of stored segment i at heap address tid: 1 the row is live and visible to every snapshot, 0 the unit holds it live and the heap says whether this snapshot sees it, -1 the unit has cleared it, -2 not known */
 extern int	sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid);
 extern bool sift_col_gorder_clean(SiftColSource *src, int i);
+/* The values of the leaf gcol over the rows of the scan, ascending, once each, when the second order of leaf kcol grouped by it is in every segment (palloc'ed) */
+extern bool sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, int64 **vals, uint32 *nvals);
 extern void sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern bool sift_col_gorder_groups(SiftColSource *src, int i, int col, uint32 *ngroups);
