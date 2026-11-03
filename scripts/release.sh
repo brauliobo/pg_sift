@@ -11,7 +11,8 @@
 #              dispatched when none exists), upgrade (the previous release's library writes a BM25 index, a sift_col index and a sift_table, this
 #              tree takes them over, ALTER EXTENSION UPDATE, verify, REINDEX; then the previous library reads what this one writes in the previous
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
-#   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines: one commit, after a check that every place agrees
+#   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines, and the figure waivers of Unreleased in scripts/bench-cases.allow (they go
+#              with the section): one commit, after a check that every place agrees
 #   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit, with the vocabulary required (SIFT_NEUTRAL_REQUIRED=1,
 #              which the push CI cannot do: a name it lets pass stops the release here): a red one stops the release before the tag
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
@@ -31,6 +32,9 @@ done
 # the release commit requires it. The CI of the repository has no such vocabulary and checks only the structure of the wording.
 vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} && -r $NEUTRAL_VOCAB_FILE ]]; }; }
 lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
+# The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
+# read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
+drop_figure_waivers() { sed -i '/^figure /d' "$1"; }
 selftest() {
 	local bad=0 v
 	t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT   # global: the trap runs after the function
@@ -47,8 +51,11 @@ selftest() {
 	mkdir -p "$t/tree/scripts"
 	printf '#!/usr/bin/env bash\n[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 && ${GITHUB_BASE_REF:-} == main && -n ${NEUTRAL_VOCAB_FILE:-} ]]\n' >"$t/tree/scripts/lint.sh"; chmod +x "$t/tree/scripts/lint.sh"
 	chk pass "the lint of the release commit requires the vocabulary" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
+	printf '# reasons\nfigure A line\twhy\nORDER BY offset\tcase x\nfigure B line\twhy\ncommit abc\tgate\n' >"$t/allow"
+	drop_figure_waivers "$t/allow"
+	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"
 	((! bad)) || exit 1
-	echo "release: selftest ok (the vocabulary is required for a release and its lint)"
+	echo "release: selftest ok (the vocabulary is required for a release and its lint, the bump drops the figure waivers)"
 }
 [[ -z $SELFTEST ]] || { selftest; exit; }
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
@@ -243,13 +250,14 @@ bump() {
 			inu && /[^[:space:]]/ { has = 1 }
 			{ print } END { if (inu) fill() }' "$R/$f/CHANGELOG.md" >"$W/changelog" && cp "$W/changelog" "$R/$f/CHANGELOG.md"
 	done
+	drop_figure_waivers "$R/scripts/bench-cases.allow"
 	sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" "$R/packaging/PKGBUILD"
 	sed -i "s/release-$oldre-blue/release-$VERSION-blue/" "$R/README.md"
 	sed -i "s/$oldre/$VERSION/g" "$R/packaging/pgxman.yaml" "$R/META.json"
 	sed -i "s/\([^0-9.]\)$oldre\([^0-9]\)/\1$VERSION\2/g" "$R/docs/USAGE.md"
 	sed -i "s/^V=$oldre\$/V=$VERSION/" "$R/sqlite/README.md"
 	check_versions || return 1
-	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md
+	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md scripts/bench-cases.allow
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || g add "$f/VERSION" "$f/CHANGELOG.md"; done
 	g commit -q -m "release: $VERSION"
 }
