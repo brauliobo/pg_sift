@@ -17,7 +17,7 @@ check() { # ROOT: prints a line for each breach under ROOT
 	done
 }
 if [[ ${1:-} == --selftest ]]; then
-	t=$(mktemp -d /dev/shm/check-scratch.XXXXXX) || exit 1
+	t=$(mktemp -d "$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/check-scratch.XXXXXX") || exit 1   # memory where there is a tmpfs, the temporary directory of macOS
 	trap 'rm -rf "$t"' EXIT
 	git -C "$t" init -q && mkdir -p "$t/scripts" "$t/bench" "$t/test" && : >"$t/$allow"
 	echo 'D=/var/tmp/x' >"$t/scripts/a.sh"

@@ -6,6 +6,7 @@
 # (sift_ts_stem, 2026-10-31) loads as "undefined symbol" in the server. What the libc and libm export is versioned (name@GLIBC_x) and a
 # weak one is optional; the symbols of the host process itself (the MariaDB server) are listed in HOST_SYMBOLS.
 if [ "$1" = --selftest ]; then
+	[ "$(uname)" = Linux ] || { echo "port-isa-check selftest: skipped (ELF libraries: the SQLite and MariaDB ports are Linux)"; exit 0; }
 	d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT
 	printf 'int provided_elsewhere(void);\nint missing_stub(void);\nint f(void) { return provided_elsewhere() + missing_stub(); }\n' >"$d/a.c"
 	cc -shared -fPIC -o "$d/a.so" "$d/a.c" || exit 1
