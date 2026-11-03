@@ -1,0 +1,32 @@
+-- A top-N whose first key ties over thousands of rows (10 entities of 10,000 rows) reads the second key of every row of the tie: the order-array walk of one key is cheap, of two it is not.
+-- With a deep OFFSET the (entity, ts) index-only walk (the second order, group after group) is the plan, as it is by time (0.8 against 6.5 ms for 300,000 rows over a random heap);
+-- the one-key top-N has no tie to read and stays the scan.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+CREATE TABLE sk (id int, ent_id int NOT NULL, ts timestamptz NOT NULL, amount float8);
+INSERT INTO sk SELECT i, 1 + i % 10, timestamptz '2026-01-01' + (i * 7 % 100000) * interval '1 second', i % 97 FROM generate_series(1, 100000) i ORDER BY random();
+CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_updates = 'off');
+VACUUM ANALYZE sk;
+
+CREATE FUNCTION sk_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'other';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; ELSIF l LIKE '%Index Only Scan%' THEN r := 'index only'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+SELECT n, sk_plan(format('SELECT ent_id, ts FROM sk ORDER BY ent_id, ts LIMIT 20 OFFSET %s', n)) AS two_keys, sk_plan(format('SELECT ent_id FROM sk ORDER BY ent_id LIMIT 20 OFFSET %s', n)) AS one_key
+FROM unnest(ARRAY[0, 3000, 10000]) n ORDER BY n;
+
+-- the rows are the heap's
+SELECT count(*) AS rows_same FROM (SELECT ent_id, ts FROM sk ORDER BY ent_id, ts LIMIT 20 OFFSET 10000) a
+JOIN (SELECT ent_id, ts FROM (SELECT ent_id, ts, row_number() OVER (ORDER BY ent_id, ts) rn FROM sk) w WHERE rn BETWEEN 10001 AND 10020) b USING (ent_id, ts);
+
+DROP TABLE sk;
+DROP FUNCTION sk_plan(text);
+DROP EXTENSION pg_sift;

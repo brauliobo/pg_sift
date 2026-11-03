@@ -25,6 +25,8 @@
 #include "agg/order/int.h"
 #include "agg/cost/int.h"
 
+static double topn_first_ties(AggCtx *c, PlannerInfo *root, double wanted);
+
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
 topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, double rows, int nworkers, int nordered, double wanted)
@@ -46,7 +48,16 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		return;
 	extra = matches * c->topn_xcost;
 	if (c->topn_array && nworkers == 0)
+	{
 		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * Max(rows, c->topn_walk);	/* the walk of the order array: a merge step for each entry, no heap of rows */
+		/* the keys after the first order the entries that tie on it: the ties are read whole, so the rows past the entries wanted, up to the end of the last tie, are read for the keys that follow (a tie of 30,000 rows: 2.6 ms for 20 entries, 6.4 ms for 10,020) */
+		if (nordered > 1)
+		{
+			double		ties = Max(Min(topn_first_ties(c, root, rows), matches), 1.0);
+
+			extra += (ties * ceil(rows / ties) - rows) * TOPN_TIE_READ * (nordered - 1) * cpu_operator_cost;
+		}
+	}
 	else
 		extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
 			topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
@@ -170,8 +181,9 @@ topn_probe(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo tx
 	return ok;
 }
 
-static bool
-topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTopXform *xf, double wanted, int *slack)
+/* The rows that tie on the first sort key, by its statistics (the NULLs that come first tie with each other, and they are the rows the n-th is among when there are more than the n) */
+static double
+topn_first_ties(AggCtx *c, PlannerInfo *root, double wanted)
 {
 	SortGroupClause *first = linitial_node(SortGroupClause, root->parse->sortClause);
 	Node	   *x = strip_relabel((Node *) get_sortgroupclause_expr(first, root->processed_tlist));
@@ -180,15 +192,6 @@ topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTo
 				ties;
 	HeapTuple	tp;
 
-	if (list_length(root->sort_pathkeys) != list_length(root->parse->sortClause) || root->parse->hasWindowFuncs)
-		return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold, with a window function or a repeated sort key");
-	for (int j = 0; j < nlead; j++)
-	{
-		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
-
-		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
-			return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold follows keys that are not integers, dates or timestamps of a column");
-	}
 	if (IsA(x, Var) && (tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false))) != NULL)
 	{
 		Form_pg_statistic st = (Form_pg_statistic) GETSTRUCT(tp);
@@ -199,9 +202,26 @@ topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTo
 		ReleaseSysCache(tp);
 	}
 	ties = Max(c->rel->rows, 1.0) / Max(nd, 1.0);
-	/* the NULLs that come first tie with each other, and they are the rows the n-th is among when there are more than the n */
 	if (first->nulls_first && nulls >= wanted)
 		ties = Max(ties, nulls);
+	return ties;
+}
+
+static bool
+topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTopXform *xf, double wanted, int *slack)
+{
+	double		ties;
+
+	if (list_length(root->sort_pathkeys) != list_length(root->parse->sortClause) || root->parse->hasWindowFuncs)
+		return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold, with a window function or a repeated sort key");
+	for (int j = 0; j < nlead; j++)
+	{
+		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
+
+		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
+			return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold follows keys that are not integers, dates or timestamps of a column");
+	}
+	ties = topn_first_ties(c, root, wanted);
 	if (ties > TOPN_TIES_MAX)
 		return agg_refuse_on(TOPN_SHAPE, "the rows that tie on the first sort key, by its statistics, are too many to keep for the keys that follow");
 	*slack = Max(8, (int) ceil(2.0 * ties));

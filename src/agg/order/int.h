@@ -26,6 +26,12 @@
  */
 #define TOPN_KEY_READ	4.8
 /*
+ * The order-array walk of a first key that ties over thousands of rows reads, for the keys that follow, every row of the tie it is in, not the entries wanted: 300,000 rows
+ * of 10 entities over a random heap, 30,000 a tie, ORDER BY entity, ts LIMIT 20: 2.6 ms more than the one-key walk of the same entries (86 ns a row, 15 operators at the
+ * 2.3 us a unit of the scan), 0.5 ms for 100 entities (a tie of 3,000), 0.15 for 1,000
+ */
+#define TOPN_TIE_READ	15.0
+/*
  * A tuplesort compares through the tuple comparator, which PostgreSQL's cost_sort prices at 2 * cpu_operator_cost a step, and pays it twice,
  * forming the runs and merging them. Measured on the same rows, the sort that spills (4 keys, 4 MB) takes 172 ms more than the one in
  * memory: 37,600 units on the same scale, 32,000 of them past the writes of the runs (cost_sort's model), against the 8,800 of one operator
