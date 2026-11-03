@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
 SET statement_timeout = '240s';
 
 -- 160,000 rows in about 20 units. grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with
