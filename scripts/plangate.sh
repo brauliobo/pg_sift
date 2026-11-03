@@ -7,7 +7,10 @@
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
-#   --rows N      events (default 30000, the size the expectations are recorded at; they hold from 20000 to 50000), --seed N the generator seed (default 1)
+#   --rows N      events (default 30000, the size the expectations are recorded at), --seed N the generator seed (default 1). The cost ratio of the scan over the normal plan falls with the
+#                 rows (the scan costs its start and its units, the plan its rows: the median over the shapes is 0.134, 0.082 and 0.067 at 30000, 100000 and 250000 rows, the time ratio
+#                 0.109, 0.061 and 0.051), so the bands hold at 30000 only (40 of 106 shapes leave them at 50000). Another size has bands of its own, the rows `LANE@N` of test/plan/bands.tsv
+#                 (`--update --rows N` records them, as `stock@250000`, `table@250000` ...); a size with none is checked for the results and the loses only
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
@@ -180,6 +183,7 @@ case $LANE in
 esac
 # the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned or tabletuned
 LK=${TABLE:+table}$([[ $LANE != tuned ]] || echo tuned)
+[[ $ROWS == 30000 ]] || LK=${LK:-stock}@$ROWS
 [[ -z $LK ]] || settings+=("plangate.lane=$LK")
 [[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null

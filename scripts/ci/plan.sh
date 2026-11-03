@@ -126,10 +126,11 @@ else
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
-	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# each lane at 30000 rows and at 250000, the two sizes whose bands are recorded (the ratio falls with the rows: scripts/plangate.sh --rows; half a minute for the second)
+	job plan-gate plan-gate 1 bash -c '"$0" --runs 0 && "$0" --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-tuned plan-gate-tuned 1 bash -c '"$0" --lane tuned --runs 0 && "$0" --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-table plan-gate-table 1 bash -c '"$0" --table --runs 0 && "$0" --table --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-table-tuned plan-gate-table-tuned 1 bash -c '"$0" --table --lane tuned --runs 0 && "$0" --table --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
 	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000

@@ -14,7 +14,7 @@ CREATE TABLE plangate.results (
 	verdict text,               -- the scan against native: win, tie, lose (more than 1 ms and 20% slower); miss: not chosen, but wins on both counts
 	problems text[] NOT NULL DEFAULT '{}');
 -- the expectation of a shape in a lane other than stock (test/plan/bands.tsv, the lane in the setting plangate.lane): its plan and band replace the tag of the shape.
--- A band is a factor of 2 around the ratio at 30000 rows; where the ratio moves with the rows (20000 to 50000, the size of the full CI tier), the smallest and largest of the three divided and multiplied by 1.3
+-- A band is a factor of 2 around the ratio at 30000 rows, the size of the full CI tier: the ratio falls with the rows (plangate.sh --rows), so another size has bands of its own, the lane `LANE@ROWS`
 CREATE TABLE plangate.bands (lane text, name text, plan text, lo text, hi text);
 
 CREATE FUNCTION plangate.path(p text) RETURNS void LANGUAGE sql AS $$
@@ -53,6 +53,8 @@ BEGIN
 	IF FOUND THEN
 		anyband := lane_band.lo = 'any';	-- a scan path that exists at some sizes only (no band to hold, none to miss)
 		plan := lane_band.plan; band := CASE WHEN anyband THEN ARRAY['-', NULL] ELSE ARRAY[lane_band.lo, nullif(lane_band.hi, '-')] END;
+	ELSIF current_setting('plangate.lane', true) LIKE '%@%' THEN
+		anyband := true; plan := 'either';	-- a size with no bands recorded (plangate.sh --rows): the results and the loses are checked
 	END IF;
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
