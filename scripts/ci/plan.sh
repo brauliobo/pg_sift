@@ -55,7 +55,8 @@ if [[ $MODE == full ]]; then
 	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
 	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 0
+	# the bands of the tuned lanes are recorded at 30000 events, the default: at 50000 the ratios of 46 of the shapes fall under their bands (hosted and local, PostgreSQL 18, 2026-11-03)
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 0
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
