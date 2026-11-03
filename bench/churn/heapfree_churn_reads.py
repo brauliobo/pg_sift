@@ -7,7 +7,7 @@ track_updates with track_deletes (the only one whose log is complete, so the onl
 For each (which rows, share) a table `w` with a sift_col index is loaded, updated in a covered column (a new entry, and with track_updates a tombstone for the old one) and read in four states:
 fresh (VACUUM FREEZE), updated and promoted, merged, vacuumed. Every class is a read that the index answers by itself when the table is clean (aggregates and top-N of SiftAgg, an Index Only
 Scan); the plan of each (state, class) is written to FILE.plans.tsv and compared with the shape the class has (`plan_ok`), so a mode that changes the plan says so in the sidecar and in the summary.
-Records of the records library; the update is declared in `churn` and the mode in `variant`. Warm only: a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
+Records of the records library; the update is declared in `churn` and the mode in `variant`. --temps cold,warm adds the run after the table was emptied from shared buffers; a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
 --reference adds, with --track on, the arms that read the heap for every page (sift.test_no_heapfree) and no sift plan; --twin the b-tree twin.
 """
 import argparse
@@ -54,6 +54,7 @@ def main():
     ap.add_argument('--track', choices=('on', 'updates', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone; off: no tracking
     ap.add_argument('--reference', action='store_true', help='with --track on: also the heap-checked and the heap-only arms')
     ap.add_argument('--twin', action='store_true', help='with --track on: the b-tree twin')
+    ap.add_argument('--temps', default='warm', help='warm, or cold,warm (cold empties the table from shared buffers first: blocks hit/read and MB are in every row)')
     ap.add_argument('--db', default='heapfree_churn_reads')
     ap.add_argument('--tip')
     ap.add_argument('--note')
@@ -101,7 +102,7 @@ def main():
             plans.append((pattern, share, stage, name, a.track, shape in plan, plan))
             subject = collect.Subject('heapfree_%s%d_%s' % (pattern, share, stage), a.rows, 'arrival', state, 'w', key='tenant_id', keys=10, churn=churn, settled=settled, structures='constraint,heap,sift',
                                       variant='track_%s' % a.track)
-            out.extend(collect.measure_statement(s, name, text, subject, arms(forcing), env, temps=('warm',), hash_text=sql))
+            out.extend(collect.measure_statement(s, name, text, subject, arms(forcing), env, temps=tuple(a.temps.split(',')), hash_text=sql))
             if twin and forcing is None:   # the same statement on b-trees, one record set of its own
                 tw = collect.Subject('heapfree_%s%d_%s' % (pattern, share, stage), a.rows, 'arrival', state, 'wb', key='tenant_id', keys=10, churn=churn, settled=settled, structures='constraint,btree,heap',
                                      variant='btree')
