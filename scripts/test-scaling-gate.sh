@@ -22,7 +22,7 @@ wait "$pa" "$pb"
 if grep -qx '77 [ab]' "$T/rc"; then echo "scaling-gate: skipped (needs PostgreSQL 18)"; exit 0; fi
 [[ $(sort "$T/rc" | tr '\n' ' ') == "0 a 0 b " ]] || fail "a concurrent build failed: $(cat "$T/rc" | tr '\n' ' ') $(cat "$T/err.a" "$T/err.b")"
 [[ $(cat "$T/out.a") == "$T/sb/key/root" && $(cat "$T/out.b") == "$T/sb/key/root" ]] || fail "the root is not printed by both: $(cat "$T/out.a" "$T/out.b")"
-[[ $(wc -l <"$T/runs") == 2 ]] || fail "the library was built more than once (make is called twice for one build): $(wc -l <"$T/runs") calls"
+(( $(wc -l <"$T/runs") == 2 )) || fail "the library was built more than once (make is called twice for one build): $(wc -l <"$T/runs") calls"
 [[ ! -d $T/sb/key.lock ]] || fail "the lock is left behind"
 (( bad )) || echo "scaling-gate: ok"
 exit "$bad"
