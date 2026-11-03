@@ -162,10 +162,15 @@ class Engines(unittest.TestCase):
         self.assertEqual(len(sink), 3)
         self.assertEqual(sink[0]['es_read_operations'], 7)
         self.assertIsNone(sink[0]['dev_read_iops'])
-        self.assertIsNotNone(sink[0]['proc_read_ops'])
         sink[:] = [{'a': 1, 'b': 1}, {'a': 5, 'b': None}, {'a': 3, 'b': 2}]
         self.assertEqual(engine_io.medians(sink, 2), {'a': 4.0})   # the first call is the untimed one; b is absent where a timed call lacks it
         self.assertEqual(engine_io.medians([], 3), {})
+
+    @unittest.skipUnless(os.path.exists('/proc/self/io'), 'the process counters are those of the /proc of Linux')
+    def test_the_process_counters_of_the_engine_are_in_each_call(self):
+        sink = []
+        engine_io.metered(self.Fake(), lambda: (1.0, []), sink)()
+        self.assertIsNotNone(sink[0]['proc_read_ops'])
 
 
 if __name__ == '__main__':
