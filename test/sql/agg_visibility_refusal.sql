@@ -8,7 +8,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ordered (id int, k int, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ordered SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX ordered_k ON ordered (k);
-CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v);
+-- point_tid_columns is named: the default chooses id by the statistics of the table, which PostgreSQL 17 and 18 do not give alike at this point
+CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v) WITH (point_tid_columns = 'id');
 CLUSTER ordered USING ordered_k;
 -- the statistics of every row, not of a random sample: the cost of the normal plan moved by 15% from one ANALYZE to the next, and the refusals below
 -- are decided by a few percent. k < 3 sits 23% above the btree's price with the empty map (k < 4 is below it).
