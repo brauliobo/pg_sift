@@ -60,6 +60,13 @@ and of 1,000,000 rows 0.63 M instructions	one_parent_narrow	1000000	btree	bitmap
 (95 M and 988 before)	ten_days_before	1000000	btree	bitmap	instr_m	95	25	run fb58eea1679c-20261103T013105Z-1286, records in program-scale/records/table-bitmap-pre-1m-20261103.rec
 4,110 rows of 300,000 take 12.8 M instructions	ten_days	300000	btree	bitmap	instr_m	12.8	25	run 7799abcf2bbb-20261103T013304Z-8ca8, records in program-scale/records/table-bitmap-density-300k-20261103.rec
 (18.5 M before)	ten_days_before	300000	btree	bitmap	instr_m	18.5	25	run fb58eea1679c-20261103T000221Z-6618, records in program-scale/records/table-bitmap-pre-300k-20261103.rec
+`bulk_copy_wal` of 10,000,000 rows, the COPY and the `sift.table_maintain` that followed, 24,534	bulk_copy_wal_before	10000000	sift	default	wall_ms	24534	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+to 13,836 ms	bulk_copy_wal	10000000	sift	default	wall_ms	13836	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+and 255,160 to 167,908 M instructions	bulk_copy_wal_before	10000000	sift	default	instr_m	255160	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+167,908 M instructions	bulk_copy_wal	10000000	sift	default	instr_m	167908	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+(a heap table 8,050 ms and 106,902 M)	bulk_copy_wal	10000000	heap	default	wall_ms	8050	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+of 1,000,000 rows 18,772 to 17,068 M instructions	bulk_copy_wal_before	1000000	sift	default	instr_m	18772	25	run 4281a82244c9-20261103T031407Z-4466, records in program-scale/records/copy-load-before-1m-20261103.rec
+to 17,068 M instructions	bulk_copy_wal	1000000	sift	default	instr_m	17068	25	run f98140da39b3-20261103T094631Z-f13c, records in program-scale/records/copy-load-after-1m-20261103.rec
 the grouped count 32.9 to 10.7 M instructions	group_all_tenants@heapfree_recent20_updated#track_off	300000	picked		instr_m	32.9	3	index with no tracking, 1dfdbe186fd5 reads records-0017-update-only-reads-{off,on}.tsv, writes records-0016-write-delete-batched.tsv
 the grouped count 32.9 to 10.7 M instructions	group_all_tenants@heapfree_recent20_updated#track_on	300000	picked		instr_m	10.7	3	track_updates and track_deletes
 1,241 heap pages to 2	group_all_tenants@heapfree_recent20_updated#track_off	300000	picked		heap_blocks	1241	3	no tracking
@@ -74,3 +81,13 @@ An UPDATE of 5% of 200,000 rows costs 300.4 M instructions on a plain index, 423
 a DELETE of 2% 107.2 M, 107.3 M and 145.2 M	delete_2pct@heapfree_write#plain	200000	sift	plain	instr_m	107.2	3	
 a DELETE of 2% 107.2 M, 107.3 M and 145.2 M	delete_2pct@heapfree_write#track_updates	200000	sift	track_updates	instr_m	107.3	3	
 a DELETE of 2% 107.2 M, 107.3 M and 145.2 M	delete_2pct@heapfree_write#track_updates_track_deletes	200000	sift	track_updates_track_deletes	instr_m	145.2	3	
+reads 4.3 M instructions instead of 72.7 M	latest1_100	300000	sift	default	instr_m	4.3	25	run 4281a82244c9-20261103T030747Z-e587 (100 groups, rows sorted by the group, AU)
+reads 4.3 M instructions instead of 72.7 M	latest1_100	300000	sift	key_order=off	instr_m	72.7	25	run 4281a82244c9-20261103T030747Z-e587 (DN)
+`ORDER BY entity, ts OFFSET 10,000` 14.7 M instead of 51.0 M	order_group_offset	300000	sift	default	instr_m	14.7	25	run 4281a82244c9-20261103T030747Z-e587
+`ORDER BY entity, ts OFFSET 10,000` 14.7 M instead of 51.0 M	order_group_offset	300000	sift	key_order=off	instr_m	51.0	25	run 4281a82244c9-20261103T030747Z-e587
+the latest 20 of one tenant 0.3 M instead of 0.8 M	tenant_skew_latest_20	300000	sift	default	instr_m	0.3	25	run 4281a82244c9-20261103T030616Z-75d9
+the latest 20 of one tenant 0.3 M instead of 0.8 M	tenant_skew_latest_20	300000	sift	key_order=off	instr_m	0.8	25	run 4281a82244c9-20261103T030616Z-75d9
+`OFFSET 10,000` 6.2 M instead of 51.9 M	off10k	300000	sift	default	instr_m	6.2	25	timestamp cut, run 4281a82244c9-20261103T031126Z-2add
+`OFFSET 10,000` 6.2 M instead of 51.9 M	off10k	300000	sift	key_order=off	instr_m	51.9	25	run 4281a82244c9-20261103T031126Z-2add
+the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	default	instr_m	0.3	25	run 4281a82244c9-20261103T031126Z-2add
+the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	key_order=off	instr_m	6.3	25	run 4281a82244c9-20261103T031126Z-2add

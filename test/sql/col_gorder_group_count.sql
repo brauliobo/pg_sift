@@ -14,7 +14,7 @@ INSERT INTO gc SELECT i, abs(hashint4(i)) % 400, CASE WHEN abs(hashint4(i)) % 40
 	   abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
 FROM generate_series(1, 120000) i;
 INSERT INTO gc SELECT 200000 + i, NULL, timestamp '2024-02-01', i, 'n' FROM generate_series(1, 50) i;
-CREATE INDEX gc_i ON gc USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX gc_i ON gc USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gc;
 SELECT reloptions FROM pg_class WHERE relname = 'gc_i';
 

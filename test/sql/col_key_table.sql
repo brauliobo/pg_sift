@@ -131,7 +131,7 @@ CREATE TABLE ka (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) 
 ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2024-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 60000) g;
 SET sift.col_format_minor = 14;
-CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096);
+CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, key_order = 'off');
 RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'grp_id');

@@ -155,6 +155,7 @@ typedef struct SiftColOptions
 	int			ko_lead;		/* what key_order stands for (am_col_amoptions), offsets of its columns: the first ... */
 	int			ko_last;		/* ... the last (order_columns, order_array_columns) ... */
 	int			ko_group;		/* ... the first of 'group, key' (order_array_group; a cut by the group and its point directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) ... */
+	bool		ko_auto;		/* ... all of it chosen by the build with key_cut ('auto: a[, b]'): the directory and key_cut are the build's, not key_order's */
 	int			ko_key;			/* ... the column of a key_order of one column (key_cut and point_tid_columns); all 0 while key_order is not set */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */

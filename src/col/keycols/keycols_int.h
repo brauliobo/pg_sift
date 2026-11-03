@@ -28,6 +28,7 @@
 #define GORD_AUTO_ROWS		100000
 #define GORD_AUTO_DISTINCT	1000
 #define GORD_AUTO_CORR		0.99
+#define GORD_KEYORDER_ENTITIES	10	/* the fewest entities the key_order layout serves: ORDER BY entity, ts OFFSET 10,000 costs 2.3 to 2.8 times the wall time of the plain choice with 5, 1.96 with 10 */
 #define GORD_AUTO_MAX		2
 #define GORD_TEXT_SPEEDUP	300.0	/* S of ORDER BY txt LIMIT 10 on a table at the 100,000-row floor: 82.8 M to 0.27 M instructions (3,000,000 rows 2,429 M to 0.86 M, so the floor is the least) */
 #define GORD_TEXT_WRITE_C	62.0	/* W: CREATE INDEX of (id, text, timestamp, int4) with the text array under the C collation 2.84 G to 4.62 G instructions (500,000 rows) */

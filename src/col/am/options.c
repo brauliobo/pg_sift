@@ -160,10 +160,13 @@ SYNTAX_VALIDATOR(track_updates, row_key_syntax(value))
 static const char *
 key_order_syntax(const char *value)
 {
-	const char *comma = strchr(value, ',');
+	const char *comma;
 
-	if (value[0] == '\0')
+	if (value[0] == '\0' || strcmp(value, "off") == 0)
 		return NULL;
+	if (strncmp(value, "auto:", 5) == 0)
+		value += 5 + strspn(value + 5, " ");
+	comma = strchr(value, ',');
 	if (value[0] == ' ' || value[0] == ',')
 		return "a column name, or 'group, key'";
 	if (comma && (strchr(comma + 1, ',') != NULL || comma[1 + strspn(comma + 1, " ")] == '\0'))
@@ -529,11 +532,19 @@ static void
 key_order_expand(SiftColOptions **op)
 {
 	SiftColOptions *o = *op;
-	char	   *first = pstrdup((const char *) o + o->key_order),
-			   *last = first,
-			   *comma = strchr(first, ',');
+	const char *spec = (const char *) o + o->key_order;
+	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
+	char	   *first,
+			   *last,
+			   *comma;
 	size_t		base = VARSIZE(o);
 	char	   *dst;
+
+	if (strcmp(spec, "off") == 0)
+		return;
+	first = pstrdup(autochosen ? spec + 5 + strspn(spec + 5, " ") : spec);
+	last = first;
+	comma = strchr(first, ',');
 
 	if (comma)
 	{
@@ -554,7 +565,8 @@ key_order_expand(SiftColOptions **op)
 	else
 		o->ko_last = base;
 	o->ko_group = comma ? o->ko_lead : 0;
-	o->ko_key = comma ? 0 : o->ko_lead;
+	o->ko_key = comma || autochosen ? 0 : o->ko_lead;
+	o->ko_auto = autochosen;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
 }
@@ -655,7 +667,23 @@ COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
 
 COL_OPT_STR(sift_col_options_key_order, key_order, "")
 
+/* whether the key_order is what a build chose ('auto: ...'), decided again by the next one (keycols/gorder.c) */
+bool
+sift_col_options_key_order_auto(Relation index)
+{
+	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
+}
+
 COL_OPT_STR(sift_col_options_row_key, track_updates, "")
+
+/* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
+bool
+sift_col_options_order_columns_set(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return (o->order_columns && *((const char *) o + o->order_columns)) || (o->ko_last && !o->ko_auto);
+}
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *

@@ -122,16 +122,24 @@ sift_col_gorder_lines(Relation index)
 	return out.data;
 }
 
+/*
+ * layout: a build (CREATE INDEX, REINDEX) decides key_order too, with the arrays; a merge that chooses again (sift_col_auto_redecide) leaves it as the build chose, its
+ * segments hold the rows in the order they were written in, which a merge does not sort by a key the build did not use.
+ */
 void
-sift_col_auto_gorder(Relation heap, Relation index)
+sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 {
 	const char *opt = sift_col_options_order_array_columns(index);
 	const char *gopt = sift_col_options_order_array_group(index);
 	const SiftColRel *rel;
 	bool		autolist,
 				gauto,
+				keyorder,
 				timepick = false;
-	int			grp = -1;
+	int			grp = -1,
+				egrp = -1,
+				oldgrp = -1,
+				tkey = -1;
 	double		gdist = 0,
 				gdepth = 0;
 	GordCand   *cand;
@@ -148,6 +156,19 @@ sift_col_auto_gorder(Relation heap, Relation index)
 
 	gord_notes.index = RelationGetRelid(index);
 	gord_notes.n = 0;
+	/* the key_order an earlier build chose is decided again below, with the rest of the layout */
+	if (layout && sift_col_options_key_order_auto(index))
+	{
+		sift_col_set_option(index, "key_order", NULL);
+		opt = sift_col_options_order_array_columns(index);
+		gopt = sift_col_options_order_array_group(index);
+	}
+	/* the options below are written while these are read: copies, the relcache rebuilds the options a write touches */
+	opt = opt ? pstrdup(opt) : NULL;
+	gopt = pstrdup(gopt);
+	/* a key_cut of the user's shapes the units, as the user chose: only a build's own choice or 'off' takes the layout along */
+	keyorder = layout && sift_col_options_key_order(index)[0] == '\0' && !sift_col_options_order_columns_set(index) && strcmp(gopt, "off") != 0 &&
+		(sift_col_options_key_cut_auto(index) || strcmp(sift_col_options_key_cut(index), "off") == 0);
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt != NULL && !autolist)
 		return;
@@ -310,6 +331,106 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			}
 		if (ngrouped == 0)
 			grp = -1;
+	}
+	/*
+	 * key_order: the rows of a unit kept in the order of a time column and the order arrays of that column alone, grouped by the entity where there is one ('group, key': the
+	 * latest rows of each group read their entries, 2 to 6 times fewer instructions than the arrays grouped by the column of most values that the plain choice below takes, whose
+	 * other arrays go: ORDER BY another column LIMIT n over many rows costs more, see docs/OPTIONS.md); with no entity, a key_cut by a time column takes it for a key alone (a time
+	 * column is what ORDER BY .. LIMIT and OFFSET are read by). The key of the cut, or else the first time column the arrays below would take.
+	 */
+	if (keyorder)
+	{
+		int			ctime = -1;
+		double		best = 0;
+		bool		ecut = false,
+					eclus = false,
+					timecut;
+		double		cnd = 0;
+
+		oldgrp = grp;
+		egrp = -1;
+		for (int c = 0; c < rel->schema->ncols; c++)
+		{
+			const SiftColDef *d = &rel->schema->cols[c];
+			AttrNumber	hatt = keycols_heap_attno(index, d);
+			double		nd,
+						cr,
+						score;
+			int32		width;
+			bool		cut = false;
+
+			if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d))
+				continue;
+			for (int k = 0; sift_col_key_cut(rel) && k < rel->ncut; k++)
+				cut |= rel->cut[k] == c;
+			if (cut && sift_cgord_leaf_time(d))
+			{
+				double		ccr;
+				int32		cwidth;
+
+				ctime = c;
+				if (!keycols_col_stats(heap, hatt, &cnd, &ccr, &cwidth))
+					cnd = 0;
+			}
+			if (sift_cgord_leaf_time(d) || !(keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d))) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
+				nd < GORD_KEYORDER_ENTITIES || keycols_heap_rows(heap) / nd < GORD_GROUP_DEPTH)
+				continue;
+			/* the entity is the key the cut chose, else the foreign key or *_id column of most values, in the order of the heap or not */
+			score = nd + (cut ? 1e12 : 0.0);
+			if (score > best)
+			{
+				best = score;
+				egrp = c;
+				ecut = cut;
+				eclus = cr >= GORD_AUTO_CORR;
+				gdepth = keycols_heap_rows(heap) / nd;
+			}
+		}
+		timecut = ctime >= 0;
+		for (int i = 0; ctime < 0 && egrp >= 0 && i < ncand; i++)
+			if (cand[i].time && cand[i].grouped)
+				ctime = cand[i].leaf;
+		tkey = ctime;
+		/*
+		 * The layout replaces a second order the plain choice builds (by this entity or another column), or serves the entity the units are cut by or the heap follows; where the plain choice builds
+		 * none it would add one: 100 to 500 entities in a heap that does not follow them, +24 to +46% of the index for fewer instructions than it costs on average (B - C -3 to -13), so the plain choice stays;
+		 * under a cut by a date it would replace a group by another column (20 and 40 entities, random order: B - C of +0.8, -0.4, 0.0, +6.8 and +1.7, -0.8, +1.6, -2.2 in four builds, index +2 to +22%): nothing gained beyond the noise
+		 */
+		if (egrp >= 0 && !ecut && !eclus && (oldgrp < 0 || (timecut && oldgrp != egrp)))
+			tkey = -1;
+		/*
+		 * A key alone (no entity) needs keys that tell the rows apart: the dates of a table (730 values over 300,000 rows) are runs of equal keys, and a top-N that filters another column reads
+		 * the order of the key and fetches the rows to test the filter (441 heap fetches, 0.15 ms against 12 blocks and 0.05 ms in the units the cut keeps); a timestamp of distinct values has none of that
+		 */
+		if (egrp < 0 && cnd < GORD_AUTO_DISTINCT)
+			tkey = -1;
+		/*
+		 * With an entity the weighted formula decides, as for the second order above: B of the latest rows of each entity against C of the key's array grouped by it, less the plain
+		 * arrays of the columns, the key's too, which the layout does not build (a key alone is not weighed: a cut by a time column has paid for itself)
+		 */
+		if (tkey >= 0 && egrp >= 0)
+		{
+			double		bytes = GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+
+			for (int i = 0; i < ncand; i++)
+				if (fit[i] && !cand[i].text)
+					bytes -= GORD_ENDS_BYTES;
+			if (log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
+				tkey = -1;
+		}
+	}
+	if (tkey >= 0)
+	{
+		grp = egrp;
+		initStringInfo(&v);
+		appendStringInfo(&v, "auto: %s%s%s", grp >= 0 ? keycols_leaf_name(index, &rel->schema->cols[grp]) : "", grp >= 0 ? ", " : "",
+						 keycols_leaf_name(index, &rel->schema->cols[tkey]));
+		if (opt != NULL)
+			sift_col_set_option(index, "order_array_columns", NULL);
+		if (gopt[0] != '\0')
+			sift_col_set_option(index, "order_array_group", NULL);
+		sift_col_set_option(index, "key_order", v.data);
+		return;
 	}
 	for (int i = 0; i < ncand; i++)
 		if ((fit[i] || (grp >= 0 && cand[i].time && cand[i].grouped && gsel[i])) && cand[i].leaf != grp && (cand[i].text ? ntext < GORD_AUTO_MAX : nends < SIFT_CGORD_ENDS_LEAVES))

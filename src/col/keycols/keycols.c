@@ -70,7 +70,7 @@ keycols_ends_in_id(const char *name)
 	return n > 3 && strcmp(name + n - 3, "_id") == 0;
 }
 
-/* The option name of index set to value; visible to the relcache entry at once */
+/* The option name of index set to value (NULL: reset); visible to the relcache entry at once */
 void
 sift_col_set_option(Relation index, const char *name, const char *value)
 {
@@ -83,7 +83,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	bool		isnull,
 				nulls[Natts_pg_class] = {false},
 				repl[Natts_pg_class] = {false};
-	List	   *def = list_make1(makeDefElem((char *) name, (Node *) makeString(pstrdup(value)), -1));
+	List	   *def = list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1));
 
 	/* the lock an update of an index's pg_class row expects on its table (checked in assert builds); the ShareLock of the build already excludes every other holder of it */
 	LockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
@@ -91,7 +91,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: no pg_class row for index %u", RelationGetRelid(index));
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
-	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, false);
+	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
 	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
 	values[Anum_pg_class_reloptions - 1] = newopts;
 	nulls[Anum_pg_class_reloptions - 1] = newopts == (Datum) 0;
@@ -290,7 +290,7 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	arr = pstrdup(o ? o : "");
 	pt = pstrdup(sift_col_options_point_tid_columns(index));
 	changed = sift_col_auto_cut_again(heap, index, loaded <= (uint64) maintenance_work_mem * 1024);
-	sift_col_auto_gorder(heap, index);
+	sift_col_auto_gorder(heap, index, false);
 	sift_col_auto_point(heap, index);
 	if (pushed)
 		PopActiveSnapshot();

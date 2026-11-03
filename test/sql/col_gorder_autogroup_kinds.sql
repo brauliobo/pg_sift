@@ -26,7 +26,7 @@ INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint
 	   md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
 FROM generate_series(1, 120000) i;
 ANALYZE ak;
-CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off');
+CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
 SELECT sift.col_verify('ak_i');
 SELECT col, result, count(*) FROM (
@@ -53,25 +53,25 @@ SELECT sift.col_verify('ak_i');
 CREATE TABLE ak1 (id int, score int, pad text);
 INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generate_series(1, 120000) i;
 ANALYZE ak1;
-CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
 CREATE TABLE ak2 (ent_id int, d date);
 INSERT INTO ak2 SELECT abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint4(i + 3)) % 365 FROM generate_series(1, 120000) i;
 ANALYZE ak2;
-CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off');
+CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
 
 -- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
 CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;
-CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
 CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak4;
-CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
 
 -- a timestamp the units are cut by has no plain array to build, and the second order by the entity is the only one that serves WHERE ent_id = x ORDER BY created

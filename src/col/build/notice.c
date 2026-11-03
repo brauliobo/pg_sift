@@ -67,6 +67,14 @@ colb_notice_key_order(Relation index)
 	if (what.len == 0)
 		return;
 	what.data[what.len - 2] = '\0';
+	if (o->ko_auto)
+	{
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": key_order = 'auto' chooses '%s' and sets %s", RelationGetRelationName(index), sift_col_options_key_order(index) + 5 + strspn(sift_col_options_key_order(index) + 5, " "), what.data),
+				 errdetail("The rows of each unit are kept in the order of the time column and the order arrays are built on it, grouped by the entity with 'group, key': ORDER BY .. LIMIT and OFFSET over the time column and the latest rows of each group read entries, not units. The plain order arrays of other columns are not built."),
+				 errhint("To build the index with the order arrays the default chooses without it, run ALTER INDEX %s SET (key_order = 'off') and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
+		return;
+	}
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": key_order = '%s' sets %s", RelationGetRelationName(index), sift_col_options_key_order(index), what.data),
 			 errdetail("The options you wrote stay. The rows of each unit are kept in the order of the key and the order arrays are built on it, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. "

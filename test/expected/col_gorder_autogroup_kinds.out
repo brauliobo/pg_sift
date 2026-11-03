@@ -25,15 +25,15 @@ INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint
 	   md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
 FROM generate_series(1, 120000) i;
 ANALYZE ak;
-CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off');
+CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ak_i": order_array_columns = 'auto' keeps sorted arrays of d, created, score, amt
 NOTICE:  sift_col index "ak_i": order_layout: d: rounded keys in 49.8% of 470 chunks, exact in the rest, 2.5 bytes a row; created: rounded keys in 100.0% of 235 chunks, exact in the rest, 3.2 bytes a row; score: rounded keys in 50.0% of 470 chunks, exact in the rest, 2.8 bytes a row; amt: exact keys, 3.0 bytes a row
 NOTICE:  sift_col index "ak_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
-                                                                                  reloptions                                                                                  
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; d, score","order_array_columns=auto: d, created, score, amt","point_tid_columns=auto: id"}
+                                                                                         reloptions                                                                                         
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; d, score","order_array_columns=auto: d, created, score, amt","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT sift.col_verify('ak_i');
@@ -101,39 +101,39 @@ SELECT sift.col_verify('ak_i');
 CREATE TABLE ak1 (id int, score int, pad text);
 INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generate_series(1, 120000) i;
 ANALYZE ak1;
-CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak1_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +8%, 3 bytes a row, benefit 28 against cost 6)
 NOTICE:  sift_col index "ak1_i": order_array_columns = 'auto' keeps sorted arrays of score, pad
 SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
-                                    reloptions                                     
------------------------------------------------------------------------------------
- {key_cut=off,"order_array_columns=auto: score, pad","point_tid_columns=auto: id"}
+                                           reloptions                                            
+-------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"order_array_columns=auto: score, pad","point_tid_columns=auto: id"}
 (1 row)
 
 CREATE TABLE ak2 (ent_id int, d date);
 INSERT INTO ak2 SELECT abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint4(i + 3)) % 365 FROM generate_series(1, 120000) i;
 ANALYZE ak2;
-CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off');
+CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak2_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
-                reloptions                
-------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id"}
+                       reloptions                       
+--------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id"}
 (1 row)
 
 -- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
 CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;
-CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak3_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ak3_i": order_array_columns = 'auto' keeps sorted arrays of created, score
 NOTICE:  sift_col index "ak3_i": order_layout: created: rounded keys in 100.0% of 235 chunks, exact in the rest, 4.7 bytes a row; score: rounded keys in 0.2% of 470 chunks, exact in the rest, 4.0 bytes a row
 NOTICE:  sift_col index "ak3_i": key_columns = 'auto' keeps the keys of ent_id in every unit
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
-                                                                            reloptions                                                                             
--------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
+                                                                                   reloptions                                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
@@ -145,14 +145,14 @@ SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DES
 CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak4;
-CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak4_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
 NOTICE:  sift_col index "ak4_i": order_array_columns = 'auto' keeps sorted arrays of ent_id, created
 NOTICE:  sift_col index "ak4_i": order_layout: ent_id: rounded keys in 50.0% of 470 chunks, exact in the rest, 3.6 bytes a row; created: rounded keys in 100.0% of 235 chunks, exact in the rest, 4.4 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
-                                                                        reloptions                                                                        
-----------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"order_array_group=auto: score, created; ent_id","order_array_columns=auto: ent_id, created","point_tid_columns=auto: id",key_columns=auto}
+                                                                               reloptions                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"order_array_group=auto: score, created; ent_id","order_array_columns=auto: ent_id, created","point_tid_columns=auto: id",key_columns=auto}
 (1 row)
 
 -- a timestamp the units are cut by has no plain array to build, and the second order by the entity is the only one that serves WHERE ent_id = x ORDER BY created

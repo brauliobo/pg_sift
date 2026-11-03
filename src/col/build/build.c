@@ -129,7 +129,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
 	autocut = sift_col_auto_cut(heap, index);
-	sift_col_auto_gorder(heap, index);
+	sift_col_auto_gorder(heap, index, true);
 	sift_col_row_key_prepare(heap, index);
 	sift_col_track_check(heap, index);
 	sift_col_auto_point(heap, index);

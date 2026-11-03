@@ -14,12 +14,12 @@ INSERT INTO gc SELECT i, abs(hashint4(i)) % 400, CASE WHEN abs(hashint4(i)) % 40
 	   abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
 FROM generate_series(1, 120000) i;
 INSERT INTO gc SELECT 200000 + i, NULL, timestamp '2024-02-01', i, 'n' FROM generate_series(1, 50) i;
-CREATE INDEX gc_i ON gc USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off');
+CREATE INDEX gc_i ON gc USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gc;
 SELECT reloptions FROM pg_class WHERE relname = 'gc_i';
-                                                                            reloptions                                                                             
--------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id; created, score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
+                                                                                   reloptions                                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id; created, score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
 (1 row)
 
 -- the count is the heap's; 'counted' says the scan read no unit but the rows of a write buffer (fewer than 5,000)

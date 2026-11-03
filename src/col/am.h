@@ -130,6 +130,8 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
+extern bool sift_col_options_order_columns_set(Relation index);
+extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 /* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
 extern void sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail);
@@ -151,7 +153,7 @@ extern void sift_col_auto_rows(Relation heap, Relation index);
 /* array_lengths = auto (col/keycols/keycols.c): written as on for an index with an array column, before the build */
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
-extern void sift_col_auto_gorder(Relation heap, Relation index);
+extern void sift_col_auto_gorder(Relation heap, Relation index, bool layout);
 extern char *sift_col_gorder_lines(Relation index);	/* what the last choice for the index said about the columns it weighed by the default formula (for the NOTICE of the build), or NULL */
 extern void sift_col_auto_point(Relation heap, Relation index);
 extern bool sift_col_list_has(const char *list, const char *name);	/* an option list of column names ('a, b' or 'auto: a, b') names the column */

@@ -162,7 +162,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "key_cut is set";
 	else if (point_tid_set(index))
 		v->reason = "point_tid_columns is set";
-	else if (sift_col_options_order_columns(index)[0] != '\0')
+	else if (sift_col_options_order_columns_set(index))
 		v->reason = "order_columns is set";
 	else if (!ActiveSnapshotSet())
 		v->reason = "no snapshot";
