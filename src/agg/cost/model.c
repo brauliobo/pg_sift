@@ -13,6 +13,7 @@
 #include "utils/syscache.h"
 #include "access/htup_details.h"
 
+#include "col/pg.h"
 #include "agg/cost/int.h"
 
 double
@@ -189,7 +190,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				key_ops,
 				ids,
 				mask_cost;
-	Cost		startup;
+	Cost		startup,
+				native;
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
@@ -271,11 +273,13 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 			(AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}
-	p->startup_cost = startup + k.scan_cost;
+	/* the price of the scan is in the operators of the model: its share against the native plan (SIFT_COST_AGG_SHARE); the plans PostgreSQL makes for the child and the sub-plans are its own prices */
+	native = k.child_cost + c->subplan_cost;
+	p->startup_cost = native + (startup + k.scan_cost - native) * SIFT_COST_AGG_SHARE;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each; those the order array or a sorted run gives come in the order of the key (the entries a walk tests too), a page in the buffers, the cache or the disk */
 	if (s->topn)
-		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost :
+		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE :
 			c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);

@@ -28,8 +28,8 @@
  */
 
 /*
- * The cost of a scan, in microseconds of an ordinary run (cost units are about that on the default settings: a cached b-tree lookup of 8 units takes 6-8 us and a
- * bitmap heap scan of 1,700 units about 1.7 ms; the figures below are measured, docs/COL-SCAN.md, and scale with cpu_operator_cost like the rest of the planner's costs).
+ * The cost of a scan, in microseconds of a warm run (the figures below are measured, docs/COL-SCAN.md), turned into the planner's units by SIFT_COST_COL_US_PER_UNIT (col/pg.h)
+ * in sift_col_amcostestimate, and scaled with cpu_operator_cost like the rest of the planner's costs.
  */
 #define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
 
@@ -192,7 +192,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				rescan,
 				repeat,
 				row_cost,
-				scale = cpu_operator_cost / 0.0025;
+				scale = cpu_operator_cost / 0.0025 / SIFT_COST_COL_US_PER_UNIT;
 	Bitmapset  *cols = NULL,
 			   *slow = NULL,
 			   *narrowed = NULL;

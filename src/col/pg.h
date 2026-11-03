@@ -12,6 +12,20 @@
 
 #include "col/col.h"
 
+/*
+ * The prices of the scans of sift are written in microseconds of a warm run, and the planner's unit is not one length of time: a unit is 1.75 us in the joins over the heap
+ * (a hash join of 100k to 1M rows costs 493 to 553 units a millisecond) and 3.2 us in its scans that aggregate (median of 106 plans of test/plan, 250,000 rows, TIMING OFF,
+ * p25 2.2, p75 4.2). Each model of sift has its own factor, fitted from records (planner-pl15-arms-*, planner-pl16-units-*):
+ * the scan of a sift_col index is divided by the microseconds per unit of the joins it is nested in (the nested loop of probes crossed the hash join at 0.44 to 0.63 of the
+ * probes it was measured at before, 0.65 to 0.95 after); SiftAgg keeps the share of its price against the native plan of the same statement. That share fitted over 102 plans is
+ * 0.66 (p25 0.49, p75 1.23), but three plans of a sift_table, priced too low already, are slower than the native plan they lose to (top_rows_per_kind_unindexed_column 27.0 against
+ * 22.5 ms, spine_range_join 30.6 against 22.6 ms, spine_expression_key 107 against 17 ms) and change to the scan below 0.9, 0.8 and 0.7: the share stays at 0.93 until the price of the
+ * scan of a sift_table is raised, and the fitted 0.66 follows. At 0.98 and above the nested loop of agg_topn_plan_keys (885) is priced below SiftAgg's top-N (907) again.
+ * The prices of BM25 are made of PostgreSQL's own costs (pages, cpu_operator_cost): factor 1.
+ */
+#define SIFT_COST_COL_US_PER_UNIT	1.75
+#define SIFT_COST_AGG_SHARE			0.93
+
 /* Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read */
 extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */

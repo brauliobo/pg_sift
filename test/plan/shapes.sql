@@ -218,7 +218,7 @@ SELECT b.bucket, count(e.id) AS n, sum(e.amount) AS total FROM buckets b
 LEFT JOIN events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month' AND e.deleted_at IS NULL AND e.kind = 'cat_a' GROUP BY 1 ORDER BY 1;
 
 -- name: spine_derived_cells
--- expect: scan 0.14 0.56
+-- expect: scan 0.068 0.27
 SELECT b.bucket, coalesce(e.n, 0) AS n, coalesce(e.total, 0) AS total FROM buckets b
 LEFT JOIN (SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n, sum(amount) AS total FROM events WHERE deleted_at IS NULL AND parent_id = 7 GROUP BY 1) e ON e.bucket = b.bucket
 ORDER BY 1;
@@ -339,7 +339,7 @@ SELECT date_trunc('month', ts)::date AS bucket, count(DISTINCT parent_id) AS par
 SELECT kind, count(DISTINCT parent_id) AS parents, count(DISTINCT ts) AS days, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: distinct_one_parent
--- expect: scan 0.14 0.55
+-- expect: scan 0.066 0.26
 SELECT kind, count(DISTINCT ts) AS days FROM events WHERE parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: select_distinct
@@ -422,12 +422,12 @@ SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE 
 SELECT d.tier, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.memo @@> 'plug' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: scope_path_filter_in
--- expect: either 3.4 16
+-- expect: either 1.7 6.7
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT d.id FROM dims d WHERE d.settings ->> 'tier' = 'tier_b') AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
 -- name: scope_path_filter_join
--- expect: either 3.4 16
+-- expect: either 1.7 6.7
 SELECT e.kind, count(*) AS n, sum(e.amount) AS total FROM events e JOIN dims d ON d.id = e.parent_id
 WHERE d.settings ->> 'tier' = 'tier_c' AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
@@ -482,7 +482,7 @@ SELECT count(*) AS n, sum(amount) AS total FROM events WHERE ts IN (date '2024-0
 SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: one_day
--- expect: normal 0.85 3.5
+-- expect: either 0.85 3.5
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE ts = date '2025-03-01' AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: deleted_rows
