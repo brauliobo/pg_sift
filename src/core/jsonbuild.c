@@ -215,6 +215,24 @@ swap_call(Node *n, void *context)
 	return n;
 }
 
+static bool
+calls_json_build_object(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	SIFT_SKIP_CONST_LIST(n, false);
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, calls_json_build_object, context, 0);
+	return (IsA(n, FuncExpr) && ((FuncExpr *) n)->funcid == F_JSON_BUILD_OBJECT_ANY) || expression_tree_walker(n, calls_json_build_object, context);
+}
+
+/* does the query tree call json_build_object? Asked before the tree is copied for the swap: a walk that builds nothing */
+bool
+sift_json_build_object_calls(Query *q)
+{
+	return OidIsValid(sift_catalog()->json_build_object_func) && calls_json_build_object((Node *) q, NULL);
+}
+
 /* the same text, so a query that builds an object per row does not ask the type cache for every argument of every row: the call sites of the query take sift's function */
 void
 sift_json_build_object_swap(Query *q)

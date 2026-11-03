@@ -14,6 +14,7 @@ export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPL
 reap_stale "$TMPBASE"
 [[ -n ${CI:-} ]] || "$S/pressure.sh" --wait || echo "ci: the box is still under pressure after the wait, starting anyway" >&2   # a shared box: the lanes would stall the others
 rm -rf "$BASE" && mkdir -p "$LOG" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"
+proc_id "$MAIN" >"$BASE/run.pid"   # scripts/ci.sh stop DIR ends this run by this pid, never by a name
 t0=$SECONDS
 
 watchdog() { # stops every postmaster under $BASE once the scratch directory passes the cap

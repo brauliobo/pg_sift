@@ -1,0 +1,138 @@
+-- Tests on the INCLUDE columns of a sift index reach the ranker, which drops the docs that fail them before it scores: the top k of a search with
+-- such tests (and of its join with a small table) must be the top k of the same search on a copy of the table whose index has no INCLUDE
+-- columns (the post-filter plan): the same scores, the same docs wherever the scores differ. NULLs, docs of the write buffer, deleted and
+-- updated rows, a VACUUM, a merge and a REINDEX are in the data.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT setseed(0.42);
+
+CREATE TABLE docs (id int PRIMARY KEY, body text, category_id int, created_at date, active bool, counter_a int8, label text, tier smallint);
+INSERT INTO docs
+SELECT g, 'common dim_a' || (random() * 6)::int || ' w' || (random() * 30)::int || ' x' || (random() * 4)::int,
+	CASE WHEN random() < 0.1 THEN NULL ELSE (random() * 99)::int END, CASE WHEN random() < 0.05 THEN NULL ELSE DATE '2026-01-01' + (random() * 199)::int END,
+	CASE WHEN random() < 0.1 THEN NULL ELSE random() < 0.5 END, CASE WHEN random() < 0.05 THEN NULL ELSE (random() * 1000000)::int8 END, 'label_a' || (random() * 4)::int,
+	CASE WHEN random() < 0.1 THEN NULL ELSE (random() * 3)::int END
+FROM generate_series(1, 40000) g;
+CREATE TABLE docs_plain AS SELECT * FROM docs ORDER BY ctid;
+CREATE TABLE categories (id int PRIMARY KEY, region int);
+INSERT INTO categories SELECT g, g % 5 FROM generate_series(0, 99) g;
+CREATE INDEX docs_idx ON docs USING sift (body) INCLUDE (category_id, created_at, active, counter_a, tier);
+CREATE INDEX docs_plain_idx ON docs_plain USING sift (body);
+-- an UPDATE of these columns is not HOT in either table (they are INCLUDE columns of the one), so both indexes get the same entries
+CREATE INDEX docs_plain_cols ON docs_plain (category_id, created_at, active, counter_a, tier);
+CREATE INDEX docs_cols ON docs (category_id, created_at, active, counter_a, tier);
+VACUUM ANALYZE docs, docs_plain, categories;
+
+\ir test/sift_plan.sql
+CREATE FUNCTION top_of(tbl regclass, q text, flt text, k int, OUT metrics_a real[], OUT ids int[]) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('WITH r AS (SELECT id, sift.score(ctid) AS s FROM %s WHERE body @@> %L AND (%s) ORDER BY sift.score(ctid) DESC LIMIT %s)
+		SELECT array_agg(s ORDER BY s DESC, id), array_agg(id ORDER BY id) FILTER (WHERE s > (SELECT min(s) FROM r)) FROM r', tbl, q, flt, k) INTO metrics_a, ids;
+END $$;
+CREATE FUNCTION top_join(tbl regclass, q text, flt text, k int, OUT metrics_a real[], OUT ids int[]) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('WITH r AS (SELECT d.id, sift.score(d.ctid) AS s FROM %s d JOIN categories c ON c.id = d.category_id WHERE d.body @@> %L AND (%s)
+		ORDER BY sift.score(d.ctid) DESC LIMIT %s)
+		SELECT array_agg(s ORDER BY s DESC, id), array_agg(id ORDER BY id) FILTER (WHERE s > (SELECT min(s) FROM r)) FROM r', tbl, q, flt, k) INTO metrics_a, ids;
+END $$;
+
+CREATE TABLE preds (n serial, flt text, pushed boolean);
+INSERT INTO preds (flt, pushed) VALUES
+	('category_id = 7', true), ('category_id <> 7', true), ('category_id IN (3, 5, 8, 13)', true), ('category_id >= 90', true),
+	('category_id < 5', true), ('7 < category_id', true), ('category_id BETWEEN 10 AND 20', true), ('category_id = 1000', true),
+	('created_at >= ''2026-06-01''', true), ('created_at < ''2026-02-01''', true), ('created_at = ''2026-03-03''', true),
+	('active', true), ('NOT active', true), ('active IS NULL', true), ('counter_a IS NULL', true), ('counter_a IS NOT NULL', true),
+	('counter_a > 500000', true), ('counter_a <= 1000', true), ('counter_a > 5000000', true),
+	('created_at >= ''2026-06-01'' AND category_id IN (1, 2, 3) AND active', true),
+	('category_id = 7 AND label = ''label_a2''', true),
+	('tier = 1', true), ('tier <> 1', true), ('1 < tier', true), ('tier <= 1', true), ('tier >= 2', true), ('2 > tier', true), ('tier IN (0, 3)', true), ('tier IS NULL', true),
+	('active <> true', true), ('category_id = -1', true), ('category_id < 0', true), ('category_id <= -1', true), ('category_id > 99', true),
+	('created_at = ''2025-01-01''', true), ('counter_a = -5', true), ('tier < 1 AND active', true), ('category_id NOT IN (1, 2, 3)', false), ('category_id = 7 OR category_id = 8', false),
+	('category_id + 1 = 8', false), ('label = ''label_a2''', false);
+CREATE TABLE joins (n serial, flt text);
+INSERT INTO joins (flt) VALUES ('c.region = 3'), ('c.region IN (1, 2)'), ('c.region = 3 AND d.created_at >= ''2026-06-01''');
+
+-- the answers that differ from the plain copy, and the searches whose plan has tests of INCLUDE columns where it should and not elsewhere
+CREATE FUNCTION answer_diffs(q text) RETURNS TABLE (flt text, k int) LANGUAGE sql AS $$
+	SELECT p.flt, k.k FROM preds p, (VALUES (10), (100)) k(k) WHERE top_of('docs', q, p.flt, k.k) IS DISTINCT FROM top_of('docs_plain', q, p.flt, k.k)
+	UNION ALL
+	SELECT j.flt, k.k FROM joins j, (VALUES (10), (100)) k(k) WHERE top_join('docs', q, j.flt, k.k) IS DISTINCT FROM top_join('docs_plain', q, j.flt, k.k)
+	ORDER BY 1, 2
+$$;
+CREATE FUNCTION plan_diffs(q text) RETURNS TABLE (flt text, tests boolean) LANGUAGE sql AS $$
+	SELECT p.flt, sift_plan(format('SELECT id FROM docs WHERE body @@> %L AND (%s) ORDER BY sift.score(ctid) DESC LIMIT 10', q, p.flt)) LIKE '%Include Tests%'
+	FROM preds p WHERE (sift_plan(format('SELECT id FROM docs WHERE body @@> %L AND (%s) ORDER BY sift.score(ctid) DESC LIMIT 10', q, p.flt)) LIKE '%Include Tests%') IS DISTINCT FROM p.pushed
+	UNION ALL
+	SELECT j.flt, sift_plan(format('SELECT d.id FROM docs d JOIN categories c ON c.id = d.category_id WHERE d.body @@> %L AND (%s) ORDER BY sift.score(d.ctid) DESC LIMIT 10', q, j.flt)) LIKE '%Include Tests%'
+	FROM joins j WHERE sift_plan(format('SELECT d.id FROM docs d JOIN categories c ON c.id = d.category_id WHERE d.body @@> %L AND (%s) ORDER BY sift.score(d.ctid) DESC LIMIT 10', q, j.flt)) NOT LIKE '%Include Tests%'
+	ORDER BY 1
+$$;
+
+-- the ranker passes the documents that satisfy the tests and no other: a mistake that lets more through is not seen in the answers (the recheck on the
+-- heap row drops them) but in the candidates the scan hands out when no LIMIT cuts it, which are the rows that satisfy the quals (the test data has no
+-- unknown value and, while these run, no document in the write buffer)
+CREATE FUNCTION candidates_of(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT (n ->> 'Candidates')::bigint FROM jsonb_path_query(j, 'strict $.**') n WHERE n ->> 'Custom Plan Provider' = 'SiftScan' LIMIT 1);
+END $$;
+CREATE FUNCTION candidate_gaps(q text) RETURNS TABLE (flt text, candidates bigint, matching bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	p record;
+	got bigint;
+	want bigint;
+BEGIN
+	FOR p IN SELECT preds.flt AS f FROM preds WHERE preds.pushed AND preds.flt NOT LIKE '%label%' ORDER BY preds.n LOOP
+		got := candidates_of(format('SELECT id FROM docs WHERE body @@> %L AND (%s) ORDER BY sift.score(ctid) DESC LIMIT 1000000', q, p.f));
+		EXECUTE format('SELECT count(*) FROM docs WHERE body @@> %L AND (%s)', q, p.f) INTO want;
+		IF got IS DISTINCT FROM want THEN flt := p.f; candidates := got; matching := want; RETURN NEXT; END IF;
+	END LOOP;
+	FOR p IN SELECT joins.flt AS f FROM joins ORDER BY joins.n LOOP
+		got := candidates_of(format('SELECT d.id FROM docs d JOIN categories c ON c.id = d.category_id WHERE d.body @@> %L AND (%s) ORDER BY sift.score(d.ctid) DESC LIMIT 1000000', q, p.f));
+		EXECUTE format('SELECT count(*) FROM docs d JOIN categories c ON c.id = d.category_id WHERE d.body @@> %L AND (%s)', q, p.f) INTO want;
+		IF got IS DISTINCT FROM want THEN flt := p.f; candidates := got; matching := want; RETURN NEXT; END IF;
+	END LOOP;
+END $$;
+
+-- after the build; a query of a common term (every block is scored) and of a rare one (few docs)
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT * FROM answer_diffs('dim_a3 AND w7 AND x1');
+SELECT * FROM plan_diffs('common OR dim_a3');
+SELECT * FROM candidate_gaps('common OR dim_a3');
+
+-- rows in the write buffer, then promoted
+INSERT INTO docs SELECT 40000 + g, 'common dim_a' || (random() * 6)::int || ' w' || (random() * 30)::int || ' x' || (random() * 4)::int,
+	CASE WHEN random() < 0.1 THEN NULL ELSE (random() * 99)::int END, DATE '2026-03-01' + (random() * 199)::int, random() < 0.5, (random() * 1000000)::int8, 'label_a1', (random() * 3)::int
+FROM generate_series(1, 5000) g;
+INSERT INTO docs_plain SELECT * FROM docs WHERE id > 40000 ORDER BY ctid;
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT sift.promote('docs_idx') >= 0 AND sift.promote('docs_plain_idx') >= 0 AS promoted;
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT * FROM answer_diffs('dim_a3 AND w7 AND x1');
+
+-- deleted and updated rows (an update of an INCLUDE column writes a new row version), VACUUM, merge; both indexes are in the same state at each step, so the
+-- statistics that the scores come from are the same
+DELETE FROM docs WHERE id % 5 = 0;
+DELETE FROM docs_plain WHERE id % 5 = 0;
+UPDATE docs SET category_id = category_id + 1, created_at = created_at + 30, active = NOT active, tier = 3 - tier WHERE id % 7 = 0;
+UPDATE docs_plain SET category_id = category_id + 1, created_at = created_at + 30, active = NOT active, tier = 3 - tier WHERE id % 7 = 0;
+SELECT * FROM answer_diffs('common OR dim_a3');
+VACUUM docs, docs_plain;
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT sift.merge('docs_idx') >= 0 AND sift.merge('docs_plain_idx') >= 0 AS merged;
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT * FROM answer_diffs('dim_a3 AND w7 AND x1');
+SELECT * FROM plan_diffs('common OR dim_a3');
+
+REINDEX INDEX docs_idx;
+REINDEX INDEX docs_plain_idx;
+SELECT * FROM candidate_gaps('common OR dim_a3');
+SELECT * FROM answer_diffs('common OR dim_a3');
+SELECT * FROM answer_diffs('dim_a3 AND w7 AND x1');
+
+DROP FUNCTION top_of(regclass, text, text, int), top_join(regclass, text, text, int), answer_diffs(text), plan_diffs(text), candidates_of(text), candidate_gaps(text), sift_plan(text);
+DROP TABLE docs, docs_plain, categories, preds, joins;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

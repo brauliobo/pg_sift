@@ -383,13 +383,32 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 	return Min(1.0, (8.0 + 2.0 * nsb * (double) limit / Max(matches, 1.0)) / nsb);
 }
 
+/* column v of a joined table among the columns of the lookups, once; false when the table holds no room for it */
+static bool
+lookup_add(JoinCtx *jc, Var *v, List **lookups)
+{
+	TopLookup  *l;
+
+	foreach_ptr(TopLookup, x, *lookups)
+		if (equal(x->var, v))
+			return true;
+	l = palloc(sizeof(TopLookup));
+	l->jc = jc;
+	l->var = v;
+	if ((l->col = join_col(jc, v)) < 0)
+		return false;
+	*lookups = lappend(*lookups, l);
+	return true;
+}
+
 /*
  * The scan tuple of the top-N is the heap columns the output reads, in custom_scan_tlist: their attribute numbers go in the spec, and
  * the node's tlist (PostgreSQL's projection) computes the rest from them. *funcs: the window functions of the output, each once; they are
- * not columns of the heap (topn_windows).
+ * not columns of the heap (topn_windows). *lookups: the columns of the joined tables, each once; the rows of the page take them from the
+ * table the scan loaded (topn_lookups).
  */
 bool
-topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs)
+topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs, List **lookups)
 {
 	List	   *vars;
 
@@ -399,6 +418,7 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List 
 	foreach_ptr(Node, n, vars)
 	{
 		Var		   *v;
+		JoinCtx    *jc;
 
 		if (IsA(n, WindowFunc))
 		{
@@ -407,8 +427,14 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List 
 			continue;
 		}
 		v = castNode(Var, n);
+		if (v->varno != c->relid && (jc = join_of_var(c, n)) != NULL && jc->kind == SJ_INNER && jc->cpath == NULL)
+		{
+			if (!lookup_add(jc, v, lookups))
+				return agg_refuse_on(TOPN_SHAPE, "the select list reads more columns of the joined tables than a scan passes on");
+			continue;
+		}
 		if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0)
-			return agg_refuse_on(TOPN_SHAPE, "the select list reads a column that is not of the scanned table");
+			return agg_refuse_on(TOPN_SHAPE, "the select list reads a column that is not of the scanned table or of a table joined by its unique key");
 		if (list_member(*scan_tlist, v) || tlist_member((Expr *) v, *scan_tlist))
 			continue;
 		if (list_length(*scan_tlist) >= MaxHeapAttributeNumber)

@@ -28,6 +28,7 @@
 #include "agg/pre.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
+#include "agg/agg.h"
 #include "col/col.h"
 #include "col/am.h"
 #include "col/ktab.h"
@@ -408,6 +409,16 @@ tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
 	TblPart    *p = unit->priv;
 
 	return sift_col_unit_whole(&p->unit, &seg) || sift_col_unit_preagg_ok(&p->unit);
+}
+
+int
+tbl_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
+{
+	TblPart    *p = unit->priv;
+
+	if (mode == SSD_NET)
+		return sift_col_unit_net(&p->unit);
+	return sift_col_unit_dead(&p->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
 }
 
 /* The key table of a segment answers for the key leaf and the measures: each source asks for them as its own columns, and one that lacks any reads its units */

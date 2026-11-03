@@ -3,6 +3,8 @@
 -- not its units. Written where the table takes at most 3% of the segment and sift.table_key_table is on; a segment is answered whole only while no tombstone, write
 -- buffer row or uncommitted row touches its superblocks and none of its rows is dead, else its units are read; the answers are the heap's; recomputed by
 -- sift._test_tbl_verify; kept by VACUUM, promotion and merge.
+-- About 10 s: 22 shapes, each run on the key table, on the units and on a heap copy, after each of 10 states of the table (built, with workers, buffer rows, open transaction,
+-- updates and deletes, rolled back, VACUUM, maintenance); the table has 160,000 rows because the checks of the budget read more than 100,000 of them.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;

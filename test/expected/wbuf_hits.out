@@ -1,0 +1,73 @@
+-- The docs of a write buffer are matched and scored from their records (bm25/wbind.c): the same docs in a promoted segment must give the same ids and the same
+-- scores, for a plain term, AND, OR, NOT, a phrase, a prefix, a wildcard and a fuzzy term, with docs that repeat a term; with deleted docs the ids are the same (a buffer
+-- counts the docs it holds deleted in its statistics, so the scores differ)
+CREATE EXTENSION pg_sift;
+CREATE TABLE docs_buf (id int PRIMARY KEY, body text);
+INSERT INTO docs_buf
+SELECT g, 'alpha' || g % 7 || ' beta' || g % 11 || ' gamma ' || repeat('delta ', g % 4) || CASE WHEN g % 5 = 0 THEN 'epsilon zeta ' ELSE '' END ||
+	'tail' || g % 13 || ' common' || CASE WHEN g % 3 = 0 THEN ' alphabet' ELSE '' END
+FROM generate_series(1, 3000) g;
+CREATE TABLE docs_seg AS SELECT * FROM docs_buf;
+ALTER TABLE docs_seg ADD PRIMARY KEY (id);
+CREATE INDEX docs_buf_idx ON docs_buf USING sift (body);
+CREATE INDEX docs_seg_idx ON docs_seg USING sift (body);
+-- the index of docs_buf keeps its rows in the buffer: they were added after the (empty) build
+TRUNCATE docs_buf;
+INSERT INTO docs_buf SELECT * FROM docs_seg;
+SELECT sift.promote('docs_seg_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT count(*) AS buffers FROM sift.segments('docs_buf_idx') WHERE kind <> 'immutable';
+ buffers 
+---------
+       1
+(1 row)
+
+SELECT count(*) AS segments FROM sift.segments('docs_seg_idx') WHERE kind <> 'immutable';
+ segments 
+----------
+        0
+(1 row)
+
+CREATE TABLE q (n serial, q text);
+INSERT INTO q (q) VALUES ('alpha1'), ('gamma'), ('delta'), ('alpha1 beta3'), ('alpha1 OR beta3'), ('alpha1 OR beta3 OR tail5'), ('gamma AND NOT delta'), ('alpha2 AND (beta1 OR beta2)'),
+	('epsilon zeta'), ('"epsilon zeta"'), ('alph*'), ('alpha*'), ('*pha1'), ('t?il5'), ('alpha1~1'), ('alphabet'), ('common AND NOT alphabet'), ('nothing'),
+	('alpha3 OR nothing'), ('alph* beta4'), ('epsilon OR delta OR alpha6 OR tail0');
+CREATE FUNCTION answer(tbl text, qq text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || '':'' || coalesce(string_agg(id || ''/'' || round(s::numeric, 3), '','' ORDER BY s DESC, id) FILTER (WHERE rn <= 25), '''')
+		FROM (SELECT id, sift.score(ctid) AS s, row_number() OVER (ORDER BY sift.score(ctid) DESC, id) AS rn FROM %s WHERE body @@> %L) t', tbl, qq) INTO r;
+	RETURN r;
+END $$;
+SELECT q, left(answer('docs_buf', q), 60) AS buffer_answer FROM q WHERE answer('docs_buf', q) IS DISTINCT FROM answer('docs_seg', q) ORDER BY n;
+ q | buffer_answer 
+---+---------------
+(0 rows)
+
+SELECT count(*) AS queries, count(*) FILTER (WHERE answer('docs_buf', q) NOT LIKE '0:%') AS with_matches FROM q;
+ queries | with_matches 
+---------+--------------
+      21 |           20
+(1 row)
+
+DELETE FROM docs_buf WHERE id % 10 = 3;
+DELETE FROM docs_seg WHERE id % 10 = 3;
+VACUUM docs_seg;
+CREATE FUNCTION ids(tbl text, qq text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || '':'' || coalesce(md5(string_agg(id::text, '','' ORDER BY id)), '''') FROM %s WHERE body @@> %L', tbl, qq) INTO r;
+	RETURN r;
+END $$;
+SELECT q FROM q WHERE ids('docs_buf', q) IS DISTINCT FROM ids('docs_seg', q) ORDER BY n;
+ q 
+---
+(0 rows)
+
+DROP FUNCTION answer(text, text), ids(text, text);
+DROP TABLE q, docs_buf, docs_seg;
+DROP EXTENSION pg_sift;

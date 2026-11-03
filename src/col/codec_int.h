@@ -1,5 +1,5 @@
 /*
- * col/codec_int.h - shared between col/codec.c and the per-level kernel files (the vertical bit-packing layout and the tables), and between
+ * col/codec_int.h - shared between col/codec/codec.c and the per-level kernel files (the vertical bit-packing layout and the tables), and between
  * the files of the codec itself: codec.c (decode, filters), codec_parse.c, codec_write.c, codec_policy.c, codec_blob.c.
  */
 #ifndef SIFT_COLCODEC_INT_H

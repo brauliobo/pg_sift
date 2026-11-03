@@ -6,6 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int, kind text, amount numeric(10,2)) WITH (autovacuum_enabled = false);
 INSERT INTO items SELECT g, 'cat_' || (g % 4), g % 997 FROM generate_series(1, 20000) g;
 CREATE INDEX items_col ON items USING sift_col (id, kind, amount) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "items_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM items;
 -- rows written after the build sit in the open write buffer, below the limit that would seal it
 INSERT INTO items SELECT g, 'cat_' || (g % 4), g % 997 FROM generate_series(20001, 20500) g;

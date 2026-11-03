@@ -78,9 +78,10 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
 	SiftCPaggSpec rewrite = r->pagg;
+	TransactionId xstamp = InvalidTransactionId;
 
 	sift_cwbuf_flag_sealed(index, sealed);
-	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb);
+	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xstamp);
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
@@ -110,12 +111,12 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		if (sift_col_key_cut(r))
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
-			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index), r->ncut > 0 ? r->cut[0] : -1);
 			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx);
 		}
 		else if (maint_unit_floor_applies(unit, nbrows, nb))
 		{
-			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index), -1);
 			sift_colk_write(w, batches, nb, schema, NULL, 0, unit, cx);
 		}
 		else
@@ -123,10 +124,13 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
+		if (r->rowkey)
+			sift_seg_set_xstamp(&neu, xstamp);
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
 	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
+	maint_unit_layout(index, false);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

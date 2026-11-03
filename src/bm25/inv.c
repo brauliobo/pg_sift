@@ -524,10 +524,13 @@ sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRe
 	MemoryContext cxt = AllocSetContextCreate(b->parent, "sift segment write", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt, b->positions);
+	SiftAttrSrc *as = sift_attr_src(wt, cxt);
 	SortTerm   *order = sorted_terms(b);
 	Batch	   *bt = palloc0(sizeof(Batch));
 	PosChunk   *pc = palloc0(sizeof(PosChunk));
 
+	if (as)
+		sift_segw_attrs(sw, as);
 	add_docs(sw, b->docs, b->ndocs);
 	for (uint32 i = 0; i < b->nterms; i++)
 	{
@@ -576,6 +579,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 				maxdf = 0;
 
 	run->ndocs = b->ndocs;
+	run->sum_dl = b->sum_dl;
 	io_varint(&io, b->ndocs);
 	io_varint(&io, b->positions);
 	for (uint32 i = 0; i < b->ndocs; prev = DOC_KEY(b->docs[i++]))
@@ -591,6 +595,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 		uint8		tf[CHUNK];
 		uint64		posbytes = 0;
 
+		run_sample(&io, b->tbytes + t->term_off, t->len);
 		io_varint(&io, t->len);
 		io_put(&io, b->tbytes + t->term_off, t->len);
 		io_varint(&io, t->df);
@@ -623,8 +628,7 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 		if (i % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
-	io_varint(&io, 0);
-	io_flush(&io);
+	run_finish(run, &io);
 	run->maxdf = maxdf;
 	run->maxblob = maxblob;
 	run->dict = b->tlen + (uint64) b->nterms * DICT_ENTRY_BYTES;

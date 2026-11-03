@@ -14,11 +14,14 @@
 #include "port/pg_bitutils.h"
 #include "utils/jsonb.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/sortsupport.h"
 
+#include "core/cmp.h"
 #include "agg/agg.h"
 #include "agg/spec.h"
 #include "agg/agg_int.h"
@@ -33,6 +36,30 @@ static int
 idval_cmp(const void *a, const void *b, void *arg)
 {
 	return ApplySortComparator(((const IdVal *) a)->val, false, ((const IdVal *) b)->val, false, (SortSupport) arg);
+}
+
+/* the distinct values of a key that is an integer by the sort support of its type are sorted by the value itself, with no call for a compare: 1,000,000 hour buckets took 2% of a scan */
+#define IDVAL_LESS_I64(x, y) ((int64) (x)->val < (int64) (y)->val)
+#define IDVAL_LESS_I32(x, y) (DatumGetInt32((x)->val) < DatumGetInt32((y)->val))
+#define IDVAL_LESS_I64_DESC(x, y) ((int64) (x)->val > (int64) (y)->val)
+#define IDVAL_LESS_I32_DESC(x, y) (DatumGetInt32((x)->val) > DatumGetInt32((y)->val))
+SIFT_DEFINE_SORT(idval_sort_i64, IdVal, IDVAL_LESS_I64)
+SIFT_DEFINE_SORT(idval_sort_i32, IdVal, IDVAL_LESS_I32)
+SIFT_DEFINE_SORT(idval_sort_i64_desc, IdVal, IDVAL_LESS_I64_DESC)
+SIFT_DEFINE_SORT(idval_sort_i32_desc, IdVal, IDVAL_LESS_I32_DESC)
+
+static bool
+idval_sort_int(IdVal *vals, uint32 nd, const SortSupportData *ssup)
+{
+	bool		desc = ssup->ssup_reverse;
+
+	if (ssup->comparator == ssup_datum_signed_cmp)
+		desc ? idval_sort_i64_desc(vals, nd) : idval_sort_i64(vals, nd);
+	else if (ssup->comparator == ssup_datum_int32_cmp)
+		desc ? idval_sort_i32_desc(vals, nd) : idval_sort_i32(vals, nd);
+	else
+		return false;
+	return true;
 }
 
 
@@ -195,16 +222,20 @@ typedef struct PackedGroup
 	uint32		group;
 } PackedGroup;
 
-static int
-packed_cmp(const void *a, const void *b)
-{
-	const PackedGroup *x = a,
-			   *y = b;
+#define PACKED_LESS(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->group < (y)->group)
+SIFT_DEFINE_SORT(packed_cmp, PackedGroup, PACKED_LESS)
 
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return x->group < y->group ? -1 : x->group > y->group;
+static void *
+packed_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
 }
+
+/* the groups come in the order of their number, which the radix sort keeps among equal keys; the unsigned key is moved to the signed order the sort works in */
+#define PACKED_KEY(x) ((int64) ((x)->key ^ UINT64CONST(0x8000000000000000)))
+#define PACKED_ZERO(x) ((int64) 0)
+#define PACKED_GROUP(x) ((x)->group)
+SIFT_DEFINE_RADIX_SORT(packed_sort, PackedGroup, PACKED_KEY, PACKED_ZERO, PACKED_GROUP, packed_copy, pfree, packed_cmp)
 
 static int
 tuple_cmp(const void *a, const void *b, void *arg)
@@ -233,7 +264,10 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 	IdVal	   *vals;
 	SortSupportData ssup = {0};
 	uint32		r = 0;
+	FmgrInfo	eqfn;
 
+	if (o->eq != NULL)
+		fmgr_info(get_opcode(o->eqop), &eqfn);
 	for (uint32 i = 0; i < n; i++)
 		maxid = Max(maxid, ids[(Size) i * nord + col]);
 	rank = palloc0((maxid + 1) * sizeof(uint32));
@@ -265,11 +299,14 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 				break;
 			}
 	}
+	/* (key = constant): the sort value is the boolean */
+	for (uint32 i = 0; o->eq != NULL && i < nd; i++)
+		vals[i].val = FunctionCall2Coll(&eqfn, o->eqcoll, vals[i].val, o->eq->constvalue);
 	ssup.ssup_cxt = CurrentMemoryContext;
 	ssup.ssup_collation = o->collation;
 	ssup.ssup_nulls_first = o->nulls_first;
 	PrepareSortSupportFromOrderingOp(o->sortop, &ssup);
-	if (!(ex->spec->key[o->key].typid == JSONBOID && nd > 64 && jsonb_presort(vals, nd, &ssup)))
+	if (!(o->eq == NULL && ex->spec->key[o->key].typid == JSONBOID && nd > 64 && jsonb_presort(vals, nd, &ssup)) && !idval_sort_int(vals, nd, &ssup))
 		qsort_arg(vals, nd, sizeof(IdVal), idval_cmp, &ssup);
 	/* NULLs rank before every value or after all of them; the values from 1 */
 	for (uint32 i = 0; i < nd; i++)
@@ -291,7 +328,7 @@ groups_order(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	uint32		n = ex->nglist,
-				nord = s->nord;
+				nord = s->nord + (s->nsets > 0);
 	MemoryContext tmp,
 				old;
 	uint32	   *ids,
@@ -307,10 +344,13 @@ groups_order(AggExec *ex)
 	old = MemoryContextSwitchTo(tmp);
 	ids = palloc((Size) n * nord * sizeof(uint32));
 	tup = palloc((Size) n * nord * sizeof(uint32));
-	for (uint32 o = 0; o < nord; o++)
+	for (uint32 o = 0; o < s->nord; o++)
 		for (uint32 i = 0; i < n; i++)
 			ids[(Size) i * nord + o] = key_id(ex, s->ord[o].key, ex->glist[i]);
-	for (uint32 o = 0; o < nord; o++)
+	/* groups of equal keys (a NULL a set leaves out, and a NULL the data has): the set with more keys first, as the rows of a rollup reach PostgreSQL's sort */
+	for (uint32 i = 0; s->nsets > 0 && i < n; i++)
+		tup[(Size) i * nord + nord - 1] = 32 - pg_popcount32(s->setmask[key_id(ex, s->nkeys - 1, ex->glist[i]) - 1]);
+	for (uint32 o = 0; o < s->nord; o++)
 	{
 		uint32		maxid;
 		uint32	   *rank = key_ranks(ex, &s->ord[o], ids, n, nord, o, &maxid);
@@ -347,7 +387,7 @@ groups_order(AggExec *ex)
 				pk[i].key = k;
 				pk[i].group = i;
 			}
-			qsort(pk, n, sizeof(PackedGroup), packed_cmp);
+			packed_sort(pk, n);
 			for (uint32 i = 0; i < n; i++)
 				perm[i] = pk[i].group;
 			pfree(pk);

@@ -1,4 +1,4 @@
-# The constants of the plan that other parts read: the release smoke list, the column slices and the job weights that cut the shards.
+# The constants of the plan that other parts read: the release-library smoke list, the column slices and the job weights that cut the shards.
 # weight_of sets WEIGHT from JOB_WEIGHT or scripts/weights-deep.tsv. Sourced by scripts/ci.sh; not a script of its own.
 STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
 COL_SLICES_LEAN=4 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
@@ -14,7 +14,7 @@ declare -A JOB_WEIGHT=(
 	[installcheck-tbl_key_table]=153 [tap-shell-pg_upgrade]=152 [installcheck-col_preagg_elem]=136 [tap-shell-index_random_crash]=135 [isolation]=126
 	[installcheck-col_lazy_filter]=123 [soak-col]=123 [installcheck-col_sorted_run]=118 [installcheck-agg_preagg_elem]=115
 	[tap-shell-col_run_heads_crash]=114 [tap-006_truncate]=113 [installcheck-agg_trunc_zone]=112 [installcheck-tbl_preagg]=112
-	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [plan-gate-calibrate]=374 [plan-gate-calibrate-tuned]=355 [plan-gate-planning]=90 [plan-budget]=90 [exec-budget]=240 [installcheck-parallel_pushdown]=108
+	[tap-shell-col_wbuf_crash]=110 [tap-shell-col_order_layout_crash]=57 [tap-shell-col_order_layout_replica]=30 [installcheck-col_gorder_layout]=48 [installcheck-col_gorder_buffer]=26 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [plan-gate-calibrate]=374 [plan-gate-calibrate-tuned]=355 [plan-gate-planning]=90 [plan-budget]=90 [exec-budget]=240 [installcheck-parallel_pushdown]=108
 	[installcheck-index_build_postings]=107 [difftest-col-selftest]=107 [installcheck-agg_preagg_dimfilter]=104 [installcheck-agg_par_arms]=100
 	[tap-shell-pg_upgrade_31]=97 [tap-shell-sb_mask_small]=94 [tap-shell-maint_fanin]=90
 )

@@ -55,6 +55,12 @@ class Engine(Server):
         err = next((l for l in lines if ERROR.match(l)), '')
         return ms, [l for l in lines if not ERROR.match(l)], err
 
+    def pids(self):
+        return [self.p.pid]
+
+    def datadir(self):
+        return self.ctx.work
+
     def load(self, suite, work):
         for table, cols in json.load(open(os.path.join(work, suite, 'schema.json'))).items():
             for sql in ('CREATE TABLE %s (%s)' % (table, ', '.join(' '.join(c) for c in cols)),

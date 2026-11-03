@@ -9,13 +9,17 @@ SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 3000 END, CASE WHEN i % 11 = 0
 	   date '2020-01-01' + i % 800, timestamp '2024-01-01' + i * interval '1 minute'
 FROM generate_series(1, 20000) i;
 CREATE INDEX sh_i ON sh USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
+NOTICE:  sift_col index "sh_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) sh;
 CREATE TABLE sh_small (id int, k int, b bigint, d date, ts timestamp);
 INSERT INTO sh_small SELECT i, i % 50, i, date '2020-01-01', timestamp '2024-01-01' FROM generate_series(1, 40) i;
 CREATE INDEX sh_small_i ON sh_small USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
-NOTICE:  sift_col index sh_small_i writes a rollup of the rows by d, ts
+NOTICE:  sift_col index "sh_small_i": rollup_dims = 'auto' writes a rollup of the rows by d, ts
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX sh_small_i SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX sh_small_i SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "sh_small_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE FUNCTION sh_idx(tbl text, w text) RETURNS bigint[] LANGUAGE plpgsql
 	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE r bigint[];

@@ -80,17 +80,23 @@ if [[ $MODE == affected ]]; then
 		fi
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
-		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
-		RE=$(areas_regex "${FILES[@]}") || exit $?
-		FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
-		if [[ -n $FOCUS ]]; then
+		# an untracked path no row of the map covers is another lane's scratch (a worktree or a log in a shared tree), not a change of this branch; a tracked file with no row stays an error
+		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard | while IFS= read -r f; do [[ -z $(areas_unmatched "$f") ]] && echo "$f"; done; } | sort -u)
+		# a diff of more than SIFT_CI_WIDE_DIFF files (a pull request of a whole release line: 1,841 files) picks every job: the regex of its files is tens of kB and matching it against the
+		# names of the jobs, the tests and the fast tier took 146 s on a quiet machine, over the 5 minutes of the `changes` job on a runner
+		if (( ${#FILES[@]} > ${SIFT_CI_WIDE_DIFF:-300} )); then RE=. FASTRE=.
+		else
+			RE=$(areas_regex "${FILES[@]}") || exit $?
+			FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
+		fi
+		if [[ -n $FOCUS && $RE != . ]]; then
 			# the functions of the changed files of src/ from the diff (a file with no tokens is new: its callers are the other tokens), the other files as themselves
 			mapfile -t TOK < <({ printf '%s\n' "${FILES[@]}" | grep -v '^src/'; focus_tokens "$MB"; } | sort -u)
 			RE=$(focus_regex ${TOK[@]+"${TOK[@]}"}) || exit $?
 			FASTRE=$RE
 		fi
 	fi
-	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
+	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_AFFECTED="$RE" SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
 	for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done

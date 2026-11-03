@@ -98,7 +98,7 @@ if [[ $MODE == --selftest ]]; then
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
 	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
-	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
+	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par/worker.c" || { echo "FAIL: src/agg/par/worker.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
 	fast_agg=$(areas_fast_regex src/agg/exec/run.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	plan_of quick 18
@@ -248,6 +248,12 @@ if [[ $MODE == --selftest ]]; then
 	for f in "docs/USAGE.md false" "docs/COL-PLAN.md false" "src/agg/update/upd.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
 		fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
+	done
+	# the scaling gate is a job of the full tier, and of the quick tier only for the files of the geometry (scripts/areas.tsv); a col change alone does not pick it
+	[[ -z $(SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep scaling_slope) && -n $(SIFT_CI_PG_MAJOR=18 "$0" --plan full | grep scaling_slope) ]] || { echo "FAIL: tap-shell-scaling_slope is not in the full plan only"; bad=1; }
+	for f in "src/core/sift.h 1" "src/col/scan/gorder.c 0"; do
+		n=$("$0" affected --list --files ${f% *} | grep -c 'tap-shell-scaling_slope')
+		[[ $n == "${f#* }" ]] || { echo "FAIL: affected for ${f% *} picks the scaling gate $n times, not ${f#* }"; bad=1; }
 	done
 	# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
 	t=$ST/reaper; mkdir "$t"; ( exit 0 ) & dead=$!; wait "$dead"

@@ -116,14 +116,14 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P2-3 | bm25/rank.c:score_block | offsets not ANDed with `present`: `knorm` reads past the row |
 | P2-4 | bm25/segment.c:sift_seg_open; bm25/dict.c:sift_dict_open; col/seg/seg.c:sift_cseg_open | u64 `off+len` can wrap; section ends not checked against the stream. The pre-aggregate sums and cubes of col/seg/seg.c are compared without a wrapping sum; every read is bounded by `sift_sr_get` |
 | P2-5 | core/live.c:sift_live_clear | page index and write unchecked (Assert only) |
-| P2-6 | table/tomb.c:sift_tbl_tomb_sync | `nent` unchecked; `next` chain can cycle |
+| P2-6 | core/tomb.c:sift_tomb_sync | `nent` unchecked; `next` chain can cycle |
 | P2-7 | col/codec_parse.c:sift_cc_open, parse_node | row count compared after the whole tree is built: pass expected n in. Done: `sift_cc_open_rows` |
 | P2-8 | col/codec_parse.c:parse_node WRAP | decompression total not capped: per-open byte budget |
 | P2-9 | col/codec_blob.c:sift_cc_decode_strs | `total` allocated before the lengths are summed. Done for the count and the raw form (`sift_cc_decode_strs` takes the expected n); `total` of a compressed list stays bounded by 2^31 and the allocation limit |
 | P2-10 | col/seg/seg.c:sift_cseg_unit, sift_cseg_unit_head | unit buffer lacks `SIFT_COL_PAD`; `unpack` reads 31 bytes past |
 | P2-11 | col/enc.c:sift_cchunk_zone, col/ctest.c:chunk_scalar | `palloc((n+8)*8)` with header n up to 2^28 |
 | P3-1 | col/codec_parse.c:parse_node, parse_child, sift_cc_open, col/codec_blob.c:sift_cc_decode_bits | hand-written `need()` checks: move to take/sub/read_u32le |
-| P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
+| P3-2 | col/chunk.c:sift_cchunk_parse, col/unit.c:unit_parse, col/dict/dict.c:sift_cdict_parse, col/schema.c:sift_cschema_parse | `nulls`/`ovf`/`nbytes` set before the check; plain memcpy |
 | P3-3 | col/seg/seg.c:sift_cseg_open, sift_cseg_dict, zone_arrays | manual arithmetic; one 7-byte over-read at 429/441 |
 | P3-4 | col/compress.c:sift_colz_decompress | `(int)` truncation of clen/rawlen: reject above INT_MAX |
 | P3-5 | core/reader.c:sift_sr_get, sr_bytes, sift_sr_init | correct; return a SiftSpan so callers inherit the bound |

@@ -6,6 +6,10 @@ SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 CREATE TABLE pd AS SELECT g AS id, timestamp '2024-01-01' + g * interval '13 minutes' AS ts FROM generate_series(1, 150000) g;
 CREATE INDEX pd_col ON pd USING sift_col (id, ts);
+NOTICE:  sift_col index "pd_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pd_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +94%, 3 bytes a row, benefit 28 against cost 8)
+HINT:  To keep the index without it, run ALTER INDEX pd_col SET (point_tid_columns = 'off') and REINDEX.
 VACUUM (FREEZE, ANALYZE) pd;
 INSERT INTO pd SELECT 100000 + g, timestamp '2024-03-01' + g * interval '1 hour' FROM generate_series(1, 2000) g;
 INSERT INTO pd VALUES (200000, NULL);

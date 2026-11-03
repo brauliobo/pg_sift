@@ -2,6 +2,7 @@
 -- rows: counts and integer or numeric sums exact, NULLs counted; a minimum, a maximum, a distinct count, a float sum and a unit with a page that is not all-visible are scanned.
 -- The answers never change: with the setting on, off and with the scan planner off they are the same.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.col_auto_merge = off;
@@ -14,7 +15,7 @@ INSERT INTO dd SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHE
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
 FROM generate_series(1, 40000) g;
 CREATE INDEX dd_col ON dd USING sift_col (id, grp, kind, amount, qty, big, f, ts)
-	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts');
+	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts', dead_rewrite_pct = 50);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) dd;
 
 -- the units that answer net of dead rows, as EXPLAIN ANALYZE counts them

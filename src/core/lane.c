@@ -213,8 +213,8 @@ sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry)
 	flag_chains(index, entry, true);
 }
 
-uint64
-sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
+static uint64
+seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *act;
@@ -229,7 +229,7 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 l
 		SiftWbufHeaderData hdr;
 
 		sift_lane_read_header(index, act, &hdr);
-		if (force ? has_records(index, act) : sift_lane_npages(&hdr) >= limit)
+		if (rotate || (force ? has_records(index, act) : sift_lane_npages(&hdr) >= limit))
 		{
 			if (snap->nsegs < DIR_CAP())
 			{
@@ -243,10 +243,10 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 l
 				/* no entry is free for the buffer that would follow: this one stays open and takes the writes, as it does when the size alone asks for a seal */
 				const char *why = last_failure(snap);
 
-				ereport(NOTICE,
-						(errmsg("sift index \"%s\" has %d segments: its write buffer stays open", RelationGetRelationName(index), snap->nsegs),
+				ereport(WARNING,
+						(errmsg("sift index \"%s\": it has %d segments and its write buffer stays open", RelationGetRelationName(index), snap->nsegs),
 						 why ? errdetail("The last maintenance step failed: %s", why) : 0,
-						 errhint("Run sift.merge() on the index; sift.workers shows what the background did.")));
+						 errhint("Run sift.merge() on the index, and read sift.workers for what the background did.")));
 			}
 		}
 	}
@@ -255,6 +255,18 @@ sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 l
 		sift_lane_flag_sealed(index, &sealed);
 	pfree(snap);
 	return arg.sealed;
+}
+
+uint64
+sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
+{
+	return seal_open(index, false, force, hdrsize, format, limit, has_records);
+}
+
+uint64
+sift_lane_rotate(Relation index, Size hdrsize, uint16 format)
+{
+	return seal_open(index, true, true, hdrsize, format, 0, NULL);
 }
 
 void

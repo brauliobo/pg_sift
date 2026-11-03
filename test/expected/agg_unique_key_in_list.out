@@ -1,0 +1,34 @@
+-- An IN list of a column with a unique b-tree is answered by the b-tree, one probe a key, where the scan reads every unit that the keys spread over: PostgreSQL prices
+-- its own plan by cold pages (60 keys of 100,000 rows: 428, where the plan runs 0.36 ms warm and the scan, priced 335, 0.82), so the prices alone chose the scan for a
+-- list of 60 keys. The scan is the plan when the probes cost more than the scan (500 keys: 1.34 ms against 0.84), not for the lists below that.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE keyed (id bigint PRIMARY KEY, tenant_id int NOT NULL, kind text NOT NULL, amount numeric(10,2) NOT NULL, created_at timestamp NOT NULL) WITH (autovacuum_enabled = false);
+-- the keys are scattered over the heap
+INSERT INTO keyed SELECT 1 + (i::bigint * 7919) % 100000, 1 + (hashint4(i) & 1023) % 700, 'kind_' || (hashint4(i + 1) & 7), (hashint4(i + 2) & 65535) / 100.0,
+       timestamp '2024-01-01' + (hashint4(i + 3) & 16777215) * interval '1 second' FROM generate_series(1, 100000) i;
+CREATE INDEX keyed_col ON keyed USING sift_col (id, tenant_id, kind, amount, created_at);
+VACUUM (FREEZE, ANALYZE) keyed;
+CREATE FUNCTION list_plan(k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text;
+	q text = format($q$SELECT kind, count(*), sum(amount) FROM keyed WHERE id IN (%s) GROUP BY 1$q$,
+	                (SELECT string_agg((1 + (j * (100000 / k + 13) * 7) % 100000)::text, ',') FROM generate_series(0, k - 1) j));
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'SiftAgg' THEN RETURN 'scan'; END IF;
+	END LOOP;
+	RETURN 'normal';
+END $$;
+SELECT k AS keys, list_plan(k) AS plan FROM unnest(ARRAY[1, 10, 60, 500]) k ORDER BY k;
+ keys |  plan  
+------+--------
+    1 | normal
+   10 | normal
+   60 | normal
+  500 | scan
+(4 rows)
+
+DROP FUNCTION list_plan(int);
+DROP TABLE keyed;
+DROP EXTENSION pg_sift;

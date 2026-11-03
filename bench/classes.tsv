@@ -1,0 +1,36 @@
+# The statement classes of the README benchmark section (bench/steps/glance.py): class<TAB>case<TAB>baseline<TAB>analytic.
+# A class is shown by ONE case, the candidate with the largest absolute gap in milliseconds (either way: a case where the baseline is ahead can be the one) at the largest size measured.
+# baseline: the lane pg_sift is compared with: `native` (the heap plan of PostgreSQL) or `btree` (the b-tree variant of the case, which a LIMIT or a lookup is compared with).
+# analytic: yes puts pg_duckdb and DuckDB beside the class (the analytic classes only).
+# An analytic class lists only cases that bench/steps/generic.py (suite orders) runs on pg_duckdb and DuckDB, so the engines can stand beside the representative.
+ordered page (top-N)	topn_page_totals	native	no
+ordered page (top-N)	topn_coalesce	native	no
+ordered page (top-N)	order_layout_topn	btree	no
+ordered page (top-N)	wbuf_layout_topn	btree	no
+OFFSET, early	order_layout_offset_early	btree	no
+OFFSET, early	topn_offset_exact	btree	no
+OFFSET, deep	order_layout_offset_mid	btree	no
+OFFSET, deep	order_layout_offset_deep	btree	no
+OFFSET, deep	topn_offset_deep	btree	no
+point and IN lookup	point_scattered_1	btree	no
+point and IN lookup	point_scattered_10	btree	no
+point and IN lookup	point_scattered_60	btree	no
+point and IN lookup	point_scattered_500	btree	no
+point and IN lookup	key_table_point	native	no
+point and IN lookup	few_keys_lookup	native	no
+range count	order_layout_count	btree	no
+range count	order_layout_ties_count	btree	no
+range count	wbuf_layout_count	btree	no
+range count	wbuf_layout_text_count	btree	no
+group-by aggregates	grouping_sets_report	native	yes
+group-by aggregates	keycut_customer_agg	native	yes
+count distinct	count_distinct_unique	native	yes
+count distinct	key_presence_distinct	native	yes
+window	window_json_report	native	yes
+join and lookup	semi_exists_self	native	yes
+join and lookup	two_level_spend	native	yes
+text search (BM25)	search_top_20	native	no
+text search (BM25)	search_top_20_and	native	no
+text search (BM25)	search_and_count	native	no
+window	ranked_top_per_group	native	yes
+join and lookup	anti_not_in_self	native	yes

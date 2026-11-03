@@ -30,6 +30,8 @@ typedef struct SharedCteWalk
 
 extern bool shared_cte_walker(Node *n, SharedCteWalk *w);
 extern bool has_shared_cte(Query *parse);
+extern bool query_nests(Query *q);
+extern void sift_key_first_init(void);
 
 typedef struct ScanArms
 {

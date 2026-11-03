@@ -15,7 +15,7 @@ engine ids. Writes to OUTDIR:
                 or p95_ms (single client, median over the rounds).
                 both: class = variant = - and metric = index_mib | build_s | setup_s | heap_growth_mib (one
                 build per engine; build_s is CREATE INDEX, setup_s the work before it, heap_growth_mib the
-                table growth of that setup) and load_1m (host load average of the cells; engine -). The extra
+                table growth of that setup). The extra
                 columns and indexes of an emulated workload (places: rum boost, pg_textsearch ranked prefixes)
                 are the same metrics with variant = emulation.
                 host rows (engine -): corpus = documents of the dataset (corpus.txt of the directory), wall_s = seconds of a phase of the
@@ -39,7 +39,7 @@ directory (engine, class, variant, metric) replace the same cells of the file: e
 session rows too), the way to add classes measured in a later run of a tier.
 Engine ids, order and labels: bench/engines.tsv.
 """
-import collections, math, os, re, statistics as st, sys
+import math, os, re, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import number as num, sem  # noqa: E402  (steps/stats.py)
@@ -126,7 +126,7 @@ def cold_rows(dataset, tier, cells):
 
 def articles(tier, path):
     if tier.endswith('-cold'):   # workload class engine p50_ms max_ms
-        return cold_rows('articles', tier, [tuple(r[:5]) for r in rows_of(path + '/cold.tsv')]), [], []
+        return cold_rows('articles', tier, [tuple(r[:5]) for r in rows_of(path + '/cold.tsv')]), []
     out, builds = [], []
     cells = rows_of(path + '/cells.tsv')   # round load class engine metric value [se n secs]
     engines = list(dict.fromkeys(c[3] for c in cells))
@@ -139,12 +139,12 @@ def articles(tier, path):
             out.append(('articles', tier, e, c, '-', m, *t[:3], UNIT[m], *t[3:]))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # tier engine docs setup_s build_s index_bytes heap_growth [variant]
         builds.append(('articles', tier, b[1], b[3], b[4], b[5], b[6], b[7] if len(b) > 7 else '-'))
-    return out, builds, [float(c[1]) for c in cells]
+    return out, builds
 
 
 def places(tier, path):
     if tier.endswith('-cold'):   # workload class engine p50_ms max_ms
-        return cold_rows('places', tier, [(r[0], r[1], r[2], r[3], r[4]) for r in rows_of(path + '/cold.tsv')]), [], []
+        return cold_rows('places', tier, [(r[0], r[1], r[2], r[3], r[4]) for r in rows_of(path + '/cold.tsv')]), []
     out, builds = [], []
     cells = rows_of(path + '/cells.tsv')
     for wl, c, e in dict.fromkeys((c[2], c[3], c[4]) for c in cells):
@@ -157,7 +157,7 @@ def places(tier, path):
             out.append(('places', tier, e, c, wl, metric, *t[:3], UNIT[metric], *t[3:]))
     for b in rows_of(path + '/builds.tsv', skip_header=False):   # engine build_s index_bytes heap_growth setup_s variant
         builds.append(('places', tier, b[0], b[4], b[1], b[2], b[3], b[5]))
-    return out, builds, [float(c[1]) for c in cells]
+    return out, builds
 
 
 def build_rows(builds):
@@ -192,9 +192,8 @@ def host_rows(dataset, tier, path):
     except OSError:
         return out
     grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
-    cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
     quota = re.sub(r' \(.*', '', grab('cpu quota'))
-    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('version', grab('engines', r'sift (\S+)')), ('sift', grab('sift commit')),
+    words = [('date', grab('date')[:10]), ('cpu', grab('cpu')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('version', grab('engines', r'sift (\S+)')), ('sift', grab('sift commit')),
              ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
     out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))
     return out
@@ -299,11 +298,6 @@ def place_classes(rows):
     return sorted(dict.fromkeys(r[3] for r in rows), key=PLACE_CLASSES.index)
 
 
-def late_load_note(r):
-    """the sentence for the load row of a later run merged into the tier (--merge): the classes it measured and the load of its cells"""
-    return 'The classes %s were measured in a later run on the same build and corpus (host load average %s-%s, median %s).' % (r[4].replace(',', ', '), r[7], r[8], r[6])
-
-
 def md_places(rows, tier):
     engines = [e for e in ORDER if any(r[:3] == ('places', tier, e) and r[5] == 'p50_ms' for r in rows)]
     sel = [r for r in rows if r[:2] == ('places', tier) and r[5] == 'p50_ms']
@@ -313,8 +307,7 @@ def md_places(rows, tier):
     show = lambda r, d=2: pm(r, d)
     head = ['engine', 'index (MiB)', 'build (s)'] + ['%s' % c for c in classes]
     body = [[NAME[e]] + build_cols(rows, 'places', tier, e) + [show(p50(e, c, first)) for c in classes] for e in engines]
-    out = [x for r in rows if r[:2] == ('places', tier) and r[5] == 'load_1m' and r[4] != '-' for x in (late_load_note(r), '')]
-    out += ['Index size, CREATE INDEX time and p50 latency in ms ± standard error of the `%s` workload per query class (single client):' % first, ''] + md_table(head, body)
+    out = ['Index size, CREATE INDEX time and p50 latency in ms ± standard error of the `%s` workload per query class (single client):' % first, ''] + md_table(head, body)
     emu = [e for e in engines if get(rows, 'places', tier, e, '-', 'emulation', 'index_mib')]
     if emu:
         metrics = ('index_mib', 'build_s', 'setup_s', 'heap_growth_mib')
@@ -335,7 +328,7 @@ def md_cold(rows, dataset, tier):
     cell = lambda e, k: sel[(e,) + k + ('cold_p50_ms',)] + ' / ' + sel[(e,) + k + ('cold_max_ms',)] if (e,) + k + ('cold_p50_ms',) in sel else 'NA'
     places = dataset == 'places'
     body = [([k[0]] if places else []) + [k[1]] + [cell(e, k) for e in engines] for k in keys]
-    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count); ' + method(session_quota(rows, dataset, tier.replace('-cold', ''))), '']
+    return (['Cold cache (index, heap and TOAST evicted before every query), p50 / maximum execution time in ms of up to 12 queries per cell (at least 5: a cell that takes seconds stops early, cold.tsv has the count; the Postgres engines are measured in turn, statement by statement, so that they see the same device load, which moves a cold time by a factor of two or more between two runs); ' + method(session_quota(rows, dataset, tier.replace('-cold', ''))), '']
             + md_table((['workload'] if places else []) + ['class'] + [NAME[e] for e in engines], body, 2 if places else 1))
 
 
@@ -351,19 +344,15 @@ def main(argv):
             merge = True
         else:
             specs.append(a)
-    rows, builds, loads, tiers = [], [], collections.defaultdict(list), []
+    rows, builds, tiers = [], [], []
     for spec in specs:
         dataset, tier, path = spec.split(':', 2)
-        r, b, load = (articles if dataset == 'articles' else places)(tier, path)
+        r, b = (articles if dataset == 'articles' else places)(tier, path)
         rows += [x for x in r if keep is None or x[2] in keep]
         builds += [x for x in b if keep is None or x[2] in keep]
         rows += host_rows(dataset, tier, path)
-        loads[dataset, tier] += load
         tiers.append((dataset, tier))
     rows += build_rows(builds)
-    for (dataset, tier), v in loads.items():
-        if v:
-            rows.append((dataset, tier, '-', '-', '-', 'load_1m', '%.1f' % st.median(v), '%.1f' % min(v), '%.1f' % max(v), 'load average', *single('%.1f' % st.median(v))))
     os.makedirs(outdir, exist_ok=True)
 
     def write(path, selected):
@@ -377,9 +366,8 @@ def main(argv):
         for d in dict.fromkeys(r[0] for r in rows):
             path = '%s/%s.tsv' % (per, d)
             old = [tuple(r) + ('NA',) * (WIDTH - len(r)) for r in rows_of(path, skip_header=False)[2:]] if os.path.exists(path) else []
-            if merge:   # the cells of the directory win, every other row stays; the load of the run is kept next to them, its variant the classes it measured
+            if merge:   # the cells of the directory win, every other row stays
                 new = [r for r in rows if r[0] == d and r[3] != '-']
-                new += [r[:4] + (','.join(dict.fromkeys(n[3] for n in new)),) + r[5:] for r in rows if r[0] == d and r[5] == 'load_1m']
                 kept = [r for r in old if r[:6] not in {n[:6] for n in new}]
                 write(path, [r for r in kept + new if r[0] == d])
             else:
@@ -395,9 +383,7 @@ def main(argv):
         if tier.endswith('-cold'):
             md += md_cold(rows, dataset, tier) + ['']
             continue
-        load = get(rows, dataset, tier, '-', '-', '-', 'load_1m')
-        md += [method(session_quota(rows, dataset, tier)),
-               'Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6]), '']
+        md += [method(session_quota(rows, dataset, tier)), '']
         md += (md_articles if dataset == 'articles' else md_places)(rows, tier) + ['']
     open(outdir + '/tables.md', 'w').write('\n'.join(md))
     print('\n'.join(md))

@@ -365,7 +365,7 @@ keyed_indexes(PlannerInfo *root, Node *expr)
 	{
 		Relation	index = index_open(indexoid, AccessShareLock);
 
-		if (index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid && index->rd_index->indnatts == 1 &&
+		if (index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid && index->rd_index->indnkeyatts == 1 &&
 			heap_attisnull(index->rd_indextuple, Anum_pg_index_indpred, NULL) && index_key_is(index, relid, expr))
 			found = lappend_oid(found, indexoid);
 		index_close(index, AccessShareLock);
@@ -406,7 +406,7 @@ index_serves(SupportRequestIndexCondition *req)
 	const SiftCatalog *cat = sift_catalog();
 	List	   *args = ((FuncExpr *) req->node)->args;
 
-	if (req->index->relam != cat->am || req->index->ncolumns != 1 || req->indexarg != 0)
+	if (req->index->relam != cat->am || req->index->nkeycolumns != 1 || req->indexarg != 0)
 		return false;
 	if (req->funcid == cat->match_idx_func)
 		return IsA(lthird(args), Const) && sift_index_serves(req->index->indexoid, DatumGetObjectId(((Const *) lthird(args))->constvalue));

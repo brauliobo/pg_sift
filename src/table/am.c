@@ -77,6 +77,9 @@ compression_check_hook(char **newval, void **extra, GucSource source)
 	return true;
 }
 
+/* sift.table_auto_defrag_dead_pct, released in 3.3, only keeps a configuration that sets it loading */
+static int	auto_defrag_dead_pct_unused = 5;
+
 void
 sift_tbl_define_gucs(void)
 {
@@ -120,7 +123,7 @@ sift_tbl_define_gucs(void)
 							 &sift_tbl_bulk_groups, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
 							 "A backend that closes a write buffer of a sift_table, or deletes, updates or reads it, asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
-							 "Needs sift.async_maintenance. With sift.table_auto_defrag_indexes the worker runs a whole VACUUM when the dead rows reach sift.table_auto_defrag_dead_pct; without it the worker clears no index entry and VACUUM still has to run for those.",
+							 "Needs sift.async_maintenance. With sift.table_auto_defrag_indexes the worker runs a whole VACUUM when the reads of the table since the last pass have cost as much as the pass; without it the worker clears no index entry and VACUUM still has to run for those.",
 							 &sift_tbl_auto_defrag, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_free_pct",
 							"Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them.",
@@ -131,9 +134,8 @@ sift_tbl_define_gucs(void)
 							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
 							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
-							"Percent of the rows of a sift_table that are tombstones from which the background pass is asked for.",
-							"The pass rewrites the segments that are more than sift.table_dead_rewrite_pct percent dead; 100 never asks for dead rows.",
-							&sift_tbl_auto_defrag_dead_pct, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
+							"Deprecated, no effect: the background pass is asked for when the reads of the table have cost as much as the pass would.",
+							NULL, &auto_defrag_dead_pct_unused, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_budget",
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",
@@ -158,7 +160,7 @@ sift_tbl_define_gucs(void)
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
-							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 16, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
+							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 8, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write buffer of a sift_table may take.", NULL,
 							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_init_gate", "Test only: the first write of a sift_table waits for the advisory lock of this number before it creates the tombstone segment (0 = no gate).", NULL,
@@ -306,9 +308,11 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 static void
 tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
+	sift_tbl_load_from_copy = true;
 	for (int i = 0; i < nslots; i++)
 		if (!insert_bulk(rel, slots[i], cid, options, bistate))
 			insert_one(rel, slots[i], cid, options, 0);
+	sift_tbl_load_from_copy = false;
 }
 
 /*
@@ -327,7 +331,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 
 		LockTuple(rel, tid, ExclusiveLock);
 		sift_tbl_refresh(rel, st);
-		sift_tbl_tomb_sync(rel, st);
+		sift_tomb_sync(rel, &st->tomb);
 		if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 		{
 			UnlockTuple(rel, tid, ExclusiveLock);
@@ -430,8 +434,8 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		ItemPointerSetMovedPartitions(&mp);
 		moved = sift_key_from_tid(&mp);
-		sift_tbl_tomb_append(rel, st, key, GetCurrentTransactionId(), cid,
-							 changingPart ? SIFT_TBL_TOMB_UPDATE : SIFT_TBL_TOMB_DELETE, 0, changingPart ? moved : 0);
+		sift_tomb_append(rel, &st->tomb, key, GetCurrentTransactionId(), cid,
+							 changingPart ? SIFT_TOMB_UPDATE : SIFT_TOMB_DELETE, 0, changingPart ? moved : 0);
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_DELETE, tid, NULL);
 		pgstat_count_heap_delete(rel);
@@ -518,8 +522,8 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, otid, mtup);
 		heap_free_minimal_tuple(mtup);
-		sift_tbl_tomb_append(rel, st, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_UPDATE,
-							 hot ? SIFT_TBL_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
+		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
+							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
 		if (hot)
 			*update_indexes = TU_None;
 		pgstat_count_heap_update(rel, hot, false);
@@ -561,7 +565,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 		if (result != TM_Ok)
 			return result;
 		if (!del.self_locked)
-			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0, 0);
+			sift_tomb_append(rel, &st->tomb, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TOMB_LOCK, 0, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
 			ereport(ERROR,

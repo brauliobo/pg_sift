@@ -1,4 +1,4 @@
--- merge_fanin: segments of a tier that trigger a merge (default 8, 2 to 32), read at merge time: ALTER INDEX, no REINDEX.
+-- merge_fanin: segments of a tier that trigger a merge (default 4, 2 to 32), read at merge time: ALTER INDEX, no REINDEX.
 CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 CREATE TABLE mf (id serial, body text) WITH (autovacuum_enabled = off);
@@ -13,7 +13,7 @@ ALTER INDEX mf_idx SET (merge_fanin = 2);
 ALTER INDEX mf_idx SET (merge_fanin = 32);
 ALTER INDEX mf_idx RESET (merge_fanin);
 
--- the default (8) merges 24 segments of a tier in two steps; 32 waits for 32 of a tier; 2 merges down to one
+-- the default (4) merges 24 segments of a tier in three steps of 8 and leaves 3; 32 waits for 32 of a tier; 2 merges down to one
 SELECT count(*) AS built FROM sift.segments('mf_idx');
 SELECT sift.merge('mf_idx') AS merges_default;
 SELECT count(*) AS segments FROM sift.segments('mf_idx');

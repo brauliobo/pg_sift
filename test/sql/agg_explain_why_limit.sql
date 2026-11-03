@@ -1,6 +1,7 @@
 -- sift.explain_why for ORDER BY .. LIMIT: a b-tree that delivers the order reads only the rows asked for, so its plan beats the scan's top-N path after the LIMIT
 -- is costed; the reason names the two costs (before, the row said the scan was used while the plan was the b-tree's).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE readings AS
 SELECT i % 20 AS device, TIMESTAMP '2025-01-01' + (i / 20) * interval '1 minute' AS ts, (i * 7919 % 10007) AS value

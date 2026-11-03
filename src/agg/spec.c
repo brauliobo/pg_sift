@@ -759,12 +759,39 @@ agg_serial(const SiftAggAgg *a)
 	return "its partial state is not one the leader can merge";
 }
 
+/*
+ * Can a spilled scan give its groups in the order of ord? Its partitions are then ranges of the first order key, which come one after the other in that
+ * order and each sorted by itself: the key is a type whose value is an integer, sorted as it is.
+ */
+bool
+sift_aggspec_ord_range(const SiftAggSpec *s)
+{
+	const SiftAggOrd *o;
+
+	if (s->nord == 0)
+		return false;
+	o = &s->ord[0];
+	if (o->eq != NULL || o->subst != NULL)
+		return false;
+	switch (s->key[o->key].typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return true;
+	}
+	return false;
+}
+
 /* does the group table go to partitions on disk when it outgrows hash memory (agg/spill.c)? It must travel as a blob, one pass, one table */
 bool
 sift_aggspec_spillable(const SiftAggSpec *s)
 {
-	/* an ordered scan holds its groups to the end: the partitions of a spilled scan come one after the other */
-	if (s->topn || s->nord > 0 || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+	/* an ordered scan holds its groups to the end, unless the partitions of a spilled one are ranges of its first key */
+	if (s->topn || (s->nord > 0 && !sift_aggspec_ord_range(s)) || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (s->key[j].kind == SAK_SET)
@@ -774,6 +801,32 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
 			return false;
 	return true;
+}
+
+/*
+ * Can a scan give its groups in the order of the ORDER BY as the superblocks it reads are done (agg/spill.c gstream_begin)? The groups of a spilled scan, with the
+ * superblocks read in the order of the zones of the first order key, which is the leaf's value or the calendar step date_trunc of a timestamp (a key that grows with
+ * the leaf: the groups below the zone of the next superblock are final). The rows are read in an order of their own, so what a join, an arm, a match set, a
+ * partition or a float sum would do with the order is not to be had, and a DISTINCT set is not a state that is dumped and loaded between two superblocks.
+ */
+bool
+sift_aggspec_gstream(const SiftAggSpec *s)
+{
+	const SiftAggKey *k;
+
+	if (!sift_aggspec_spillable(s) || !sift_aggspec_ord_range(s) || sift_aggspec_float_sums(s) || s->search || s->spine || s->njoin > 0 || s->ncombo > 0 ||
+		s->nparts > 0 || s->group >= 0 || s->nvleaf > 0)
+		return false;
+	for (int j = 0; j < s->nkeys; j++)
+		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_COMBO)
+			return false;
+	for (int i = 0; i < s->naggs; i++)
+		if (s->agg[i].kind == SAA_COUNT_DISTINCT)
+			return false;
+	k = &s->key[s->ord[0].key];
+	if (k->kind == SAK_LEAF)
+		return true;
+	return k->kind == SAK_LUT && k->zoned == 0 && k->expr != NULL && IsA(k->expr, FuncExpr) && ((FuncExpr *) k->expr)->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP;
 }
 
 /*

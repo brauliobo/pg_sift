@@ -7,7 +7,7 @@
 # engine is told the same thread budget N (PostgreSQL and Citus: a leader and N-1 parallel workers; ClickHouse max_threads and its background pool N;
 # Elasticsearch node.processors and the JVM's processor count N). The timed questions run at each point of --cpus-list (1 and 3), each a result set.
 #   all       for each size: plan, containers, data, load, warm and cold runs, updates, containers removed; then store.json (and, with --docs, bench/results,
-#             the generated blocks of README.md and docs/BENCHMARKS.md)
+#             the generated blocks of README.md and bench/out/BENCHMARKS.md)
 #   plan      one size: which servers this pass measures and which it reads from the cache of cells (plan-SIZE.json); PostgreSQL stays as the reference of the result checks
 #   setup     one size: containers up (they stay), data generated and loaded (or taken from the volume that holds it)    run, cold, updates: measure that size (updates changes the data)
 #             the load and the updates run at the largest budget (S_CPUS); run and cold at every point of S_CPUS_LIST, the engines reconfigured between them
@@ -319,7 +319,7 @@ docs() {
   cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
   report
 }
-report() { py render --readme "$REPO/README.md" --benchmarks "$REPO/docs/BENCHMARKS.md" --img "$REPO/docs/img"; }
+report() { py render --readme "$REPO/bench/out/README-blocks.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --img "$REPO/bench/out/img"; }
 finish() {
   merge
   cache_save

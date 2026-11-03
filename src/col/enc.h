@@ -228,8 +228,17 @@ typedef struct SiftCVals
 	uint32	   *voff;			/* n + 1 entries once a value was added */
 	char	   *vb;
 	Size		vcap;
-	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised */
+	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised for this batch */
 } SiftCVals;
+
+/* A batch of the write buffer as a scan reads it, encoded as a unit, kept with the batch until it changes (col/wbuf/batches.c) */
+typedef struct SiftColImage
+{
+	char	   *buf;			/* the allocation; the unit starts at off */
+	Size		off,
+				len;
+	struct SiftCZone *zones;
+} SiftColImage;
 
 typedef struct SiftColBatch
 {
@@ -246,6 +255,7 @@ typedef struct SiftColBatch
 	uint32	   *cmin;
 	SiftCVals  *col;			/* [ncols] */
 	SiftCDict **dict;			/* [ncols]: batch dictionary of each STR leaf, NULL for the others */
+	SiftColImage *image;		/* the batch of a write buffer kept by a backend: what a scan made of it, NULL until one does */
 } SiftColBatch;
 
 /* Legacy write-buffer values carry UNSURE in memory; a writer must not certify them as complete kinds. */
@@ -470,7 +480,10 @@ typedef struct SiftCUnitView
 	uint8		page[SIFT_SB_PAGES];	/* page within the superblock of the p-th page of the unit: the set bits of pagemask, in order */
 	bool		keyed;			/* explicit TIDs: blocks[p] is the heap block of the p-th page, koff[r] the offset of row r (pagemask, page, maxoff, sparse unused) */
 	const BlockNumber *blocks;	/* [npages] ascending; NULL until sift_cunit_keyed_load (a scan that needs no TID never decodes the directory) */
-	const uint16 *koff;			/* [nrows] */
+	uint16	   *koff;			/* [nrows]: the offsets of the rows of the pages whose kdone is set (keyed_page_offsets) */
+	bool	   *kdone;			/* [npages] */
+	const uint8 *koff_bits;		/* the packed offsets of all rows, and the bytes from there to the end of the record */
+	uint64		koff_left;
 	const uint8 *kdir;			/* the packed directory (keyed) */
 	uint32		kwidths;		/* bit widths of the block distances, the rows of a page and the offsets */
 	uint32		kblk0;			/* the first block */
@@ -576,6 +589,8 @@ extern bool sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c);
 
 /* Keys (blk << 16 | off) of rows [0, nrows) of the unit for superblock sb */
 extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
+extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs);
+extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
@@ -595,5 +610,7 @@ extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *cons
 
 /* The zone recomputed from a chunk (for verification: C4). set is meaningful for STR leaves only. */
 extern void sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z);
+/* ... of keys that are not in a chunk (the live rows of a unit) */
+extern void sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z);
 
 #endif							/* SIFT_COL_ENC_H */

@@ -88,7 +88,7 @@ join_var(JoinCtx *jc, Var *v)
 }
 
 /* the index of column v of the joined table among the columns the expressions read; -1 when there are too many */
-static int
+int
 join_col(JoinCtx *jc, Var *v)
 {
 	SiftAggJoin *j = &jc->j;

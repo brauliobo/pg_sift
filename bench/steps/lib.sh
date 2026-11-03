@@ -43,7 +43,7 @@ EXT_LIB=$(engine_paths '*.so' | paste -sd: -)
 
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }
-loadavg() { cut -d' ' -f1 /proc/loadavg; }   # only the `load` column of the result tables, kept for the older runs; noise is judged by quiet_report
+host_label() { echo "one $(uname -m | sed 's/_/-/; s/aarch64/arm64/') host"; }   # all that a result file says about the machine; the details go to machine.sh's private copy
 # The noise of a timed batch is judged by what others did in its window, not by waiting for a quiet host: the pressure stall information cannot tell the
 # run's own servers and clients from other users, and waiting for it idled the run. A window is the time from one `batch` call to the next: the CPU the host
 # spent (/proc/stat) less what the cgroup of this run used (the scope it was started in: servers, clients, the Elasticsearch process) is the work of somebody
@@ -214,16 +214,38 @@ rse_cells() {
           if ((between > rse || within > rse) && sqrt(rel2[k] / n[k] / maxr) <= rse) print k } }' "$1"
 }
 
+# vm_settle TABLE: VACUUM (FREEZE) TABLE once more and die unless relallvisible = relpages: the planner prices an index-only scan from that ratio, so a partial map moves the native lane's plan
+# choice even when no scan reads the pages outside it. The pages of commits not flushed yet (`synchronous_commit = off`) are set by the second VACUUM; the pages a rewrite of every row emptied
+# in the middle of the heap are removed by VACUUM FULL and a VACUUM (FREEZE, ANALYZE)
+vm_settle() {
+  local sql="SELECT relallvisible < relpages FROM pg_class WHERE oid = '$1'::regclass"
+  q -c "VACUUM (FREEZE) $1"
+  if [[ $(q -c "$sql") == t ]]; then
+    log "visibility map of $1: VACUUM FULL"
+    q -c "VACUUM FULL $1" -c "VACUUM (FREEZE, ANALYZE) $1"
+  fi
+  [[ $(q -c "$sql") != t ]] || die "the visibility map of $1 is partial after VACUUM FULL ($(q -c "SELECT relallvisible || ' of ' || relpages || ' pages' FROM pg_class WHERE oid = '$1'::regclass")): the native plans are priced on it; load with synchronous_commit = on or wait for the flush"
+}
+
 # --- cold cache: empty the relations of a table from shared buffers and the OS page cache, then time one statement
 # cold_table TABLE: the table the cold statements read; its heap, TOAST table and indexes are evicted before each one. A data
 # directory in memory (tmpfs) has no page cache apart from the shared buffers (a file there is the page cache): nothing else to evict.
 cold_table() {
+  vm_settle "$1"
   COLD_RELS="SELECT oid FROM pg_class WHERE oid = '$1'::regclass OR oid = (SELECT reltoastrelid FROM pg_class WHERE oid = '$1'::regclass)
              UNION SELECT indexrelid FROM pg_index WHERE indrelid = '$1'::regclass"
   COLD_FILES=''
   [[ $(stat -f -c %T "$PGDATA") == tmpfs ]] || COLD_FILES=$(q -c "SELECT pg_relation_filepath(c) FROM ($COLD_RELS) x(c)")
 }
-cold_ms() { # STATEMENT [psql args]: execution time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
+cold_ms() { # STATEMENT [psql args]: cold_ms of one statement; with HOSTIO_OUT=FILE also the host's IO of it (steps/hostio.py: device iops, process and cgroup counters of the postmaster's tree), appended to FILE as `# STATEMENT` and name<TAB>value lines
+  [[ -n ${HOSTIO_OUT:-} ]] || { _cold_ms "$@"; return; }
+  local before; before=$(mktemp)
+  python3 -I "$STEPS/hostio.py" snap --pgdata "$PGDATA" >"$before"
+  _cold_ms "$@"
+  { printf '# %s\n' "$1"; python3 -I "$STEPS/hostio.py" delta "$before" --pgdata "$PGDATA"; } >>"$HOSTIO_OUT"
+  rm -f "$before"
+}
+_cold_ms() { # the time in ms of the statement (EXPLAIN ANALYZE) right after the eviction of cold_table's relations
   local explain="EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON, COSTS OFF) $1" evict="SELECT pg_buffercache_evict_relation(c) FROM ($COLD_RELS) x(c)"
   if [[ -z $COLD_FILES ]]; then
     printf '%s;\n%s;\n' "$evict" "$explain" | psql -X -qAt "${@:2}" | sed -n 's/^Execution Time: \([0-9.]*\) ms/\1/p'   # on stdin: psql variables are not interpolated in -c
@@ -333,10 +355,10 @@ run_begin() { # ARGV...: the manifest of this run; the command line is what `ben
   printf '%q ' "$@" | atomic_write "$(run_dir)/argv"
   echo $$ | atomic_write "$(run_dir)/pid"
   fingerprint | atomic_write "$(run_dir)/fingerprint"
-  run_state running
-  trap 'run_exit $?' EXIT
+  trap 'run_exit $?' EXIT   # before the state says running: a signal that comes once it does must find the traps (a loaded host failed the resume test with exit 143)
   trap 'run_signal INT' INT
   trap 'run_signal TERM' TERM
+  run_state running
 }
 kill_tree() { local p; for p in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$p"; done; kill -TERM "$1" 2>/dev/null || true; }   # PID and everything below it
 run_signal() { # the stage's processes stop, the state is recorded, the exit status says resumable
@@ -363,11 +385,14 @@ run_procs() { # RUN-ID: the processes that carry the run's id in their environme
   done
   return 0
 }
-run_stop() { # RUN-ID: the run's processes (not this one) stop: TERM, then KILL after 3 s
+run_stop() { # RUN-ID: the run's processes (not this one) stop: TERM, then KILL after 3 s; it returns when none is left (a loaded host delivers a KILL late)
   local p left
   for p in $(run_procs "$1"); do kill -TERM "$p" 2>/dev/null || true; done
   for _ in 1 2 3 4 5 6; do left=$(run_procs "$1"); [[ -z $left ]] && return 0; sleep 0.5; done
-  for p in $left; do kill -KILL "$p" 2>/dev/null || true; done
+  for _ in $(seq 40); do
+    for p in $left; do kill -KILL "$p" 2>/dev/null || true; done
+    sleep 0.25; left=$(run_procs "$1"); [[ -z $left ]] && return 0
+  done
 }
 run_alive() { # RUN-DIR: the process of a run that says it is running is there (a bench, by its command line)
   local pid; [[ -s $1/pid ]] || return 1

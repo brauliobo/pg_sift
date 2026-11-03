@@ -545,7 +545,12 @@ key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, doub
 		if (lf->wide)
 			*ops += entries * AGG_KEY_WIDE * pow(Min(entries, nd) / 30000.0, 0.42);
 		else
-			*ops += entries * AGG_KEY_ENTRY * (pow(Max(Min(entries, nd) / AGG_KEY_IDS, 1.0), 0.35) - 1.0);
+		{
+			/* the table grows by the ids it gains: an entry of an id it holds is a lookup in a table that is in the caches (a key of 30,000 groups costs the scan what the integer key does) */
+			double		gained = Min(entries, nd);
+
+			*ops += gained * AGG_KEY_ENTRY * (pow(Max(gained / AGG_KEY_IDS, 1.0), 0.35) - 1.0);
+		}
 		*ids = Max(*ids, Min(entries, nd));
 	}
 	return total;

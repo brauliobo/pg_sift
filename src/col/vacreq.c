@@ -16,6 +16,8 @@
 #include "postgres.h"
 #include "access/relation.h"
 #include "access/xact.h"
+#include "access/table.h"
+#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
@@ -33,7 +35,9 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
+#include "agg/stats.h"
 #include "col/am.h"
+#include "core/eval.h"
 #include "bm25/maint.h"
 
 /*
@@ -132,19 +136,76 @@ worker_at(Oid heapoid)
 static Oid	vacuum_heap_of(Oid indexoid);
 
 /*
- * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (vetted 0) or read the rows of the
+ * What a read pays for a row that maintenance would spare it, in instructions (records on 300,000 rows, 5% of them updated in a covered column, the heap table with its index, no VACUUM since):
+ * a row checked in the heap 250 (the aggregate scan 120 to 250, an index-only scan 600), a row decided by the tombstone log nothing measurable (the same reads cost the same with track_changes on), a row of a unit read as a unit because it holds a dead row
+ * 30 (a point read of 60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it, until the rewrite). The scans report the rows, the tick keeps the sum for the index in this backend
+ * (sift.stats read_penalty_kinstr).
+ */
+#define PEN_VET_ROW		250
+#define PEN_DIRTY_ROW	30
+
+/*
+ * The price of the VACUUM a read would ask for, in instructions: 340 for each row of the table (its index and its map, whatever the churn), 41,000 for each page that is not all-visible,
+ * and the WAL of the page, 10.5 kB measured (5% of the rows updated, 2,943 pages: 31 MB; clustered, 281 pages: 2.8 MB) at 0.6 G instructions a MB. A maintenance step counts at half (the weighted formula), so the worker is asked when the reads owe half of this.
+ */
+#define VAC_ROW			340
+#define VAC_PAGE		41000
+#define VAC_WAL_PAGE	6.3e6
+#define MAINT_HALF		0.5
+
+/* unclean: false when every page is all-visible: a VACUUM spares no read anything then (the rows of the write buffer are checked in the heap whatever the map says, the merge spares those) */
+static double
+vacuum_cost(Oid heapoid, bool *unclean)
+{
+	Relation	heap = table_open(heapoid, AccessShareLock);
+	BlockNumber nblocks = RelationGetNumberOfBlocks(heap),
+				allvisible;
+	double		rows = Max(heap->rd_rel->reltuples, 0);
+
+	visibilitymap_count(heap, &allvisible, NULL);
+	table_close(heap, AccessShareLock);
+	allvisible = Min(allvisible, nblocks);
+	*unclean = nblocks > allvisible;
+	return rows * VAC_ROW + (double) (nblocks - allvisible) * (VAC_PAGE + VAC_WAL_PAGE);
+}
+
+/*
+ * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (everything 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
+ *
+ * The scans also report the rows of units with a dead row that they read as units, which a rewrite would have spared them (a unit with a dead row is not served from the
+ * point directory, and a table that is not deleted from enough to hold 30% of the units dirty is not rewritten by the rule of VACUUM). The look adds them up for the index in this
+ * backend, and the worker is asked when they come to half of what the rewrite costs (maint_read_due): the fixed 30% of the units and the WAL budget of the changes stand for reads no one made.
+ *
+ * With the method penalty_maintenance (sift.eval_methods, core/eval.h) the VACUUM is asked for the same way: when the rows the reads checked in the heap come to half of what that VACUUM costs, and not when a fixed share of the rows has changed or one scan checked a thousand rows.
+ * The worker vacuums once for the request. A table that churns and is not read is left to autovacuum; the reads stay correct either way.
  */
 void
-sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
+sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 {
 	static Oid	looked = InvalidOid;
 	static TimestampTz looked_at = 0;
+	static Oid	owing = InvalidOid;
+	static double owed_vacuum = 0,
+				owed_rewrite = 0;
+	bool		priced = sift_eval_on(SIFT_EVAL_PENALTY_MAINTENANCE);
+	const char *worker = NULL;
 	TimestampTz now;
 	Relation	index;
 
-	if (!sift_col_auto_merge || (vetted > 0 && vetted < MIN_VETTED) || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() ||
-		RecoveryInProgress())
+	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
+	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
+	sift_stat_add(SIFT_STAT_READ_PENALTY_KINSTR, (vetted * PEN_VET_ROW + dirty_rows * PEN_DIRTY_ROW) / 1000);
+	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
+		return;
+	if (owing != indexoid)
+	{
+		owing = indexoid;
+		owed_vacuum = owed_rewrite = 0;
+	}
+	owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
+	owed_vacuum += (double) vetted * PEN_VET_ROW;
+	if (!priced && vetted > 0 && vetted < MIN_VETTED)
 		return;
 	now = GetCurrentTimestamp();
 	if (looked == indexoid && now - looked_at < (int64) sift_maintenance_naptime * 1000)
@@ -152,13 +213,34 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 	looked = indexoid;
 	looked_at = now;
 	index = index_open(indexoid, AccessShareLock);
-	if (table_state(heapoid, vetted > 0) == TABLE_DUE && !worker_at(heapoid))
+	if (priced)
+	{
+		bool		unclean;
+
+		if (owed_vacuum > 0 && OidIsValid(vacuum_heap_of(indexoid)))
+		{
+			double		cost = vacuum_cost(heapoid, &unclean);
+
+			if (!unclean)
+				owed_vacuum = 0;
+			else if (owed_vacuum >= MAINT_HALF * cost && table_state(heapoid, true) == TABLE_DUE)
+				worker = "sift_col_vacuum_once_worker_main";
+		}
+	}
+	else if (table_state(heapoid, vetted > 0) == TABLE_DUE)
+		worker = vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main";
+	if (worker != NULL && !worker_at(heapoid))
 	{
 		if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
-			sift_maint_register_worker(index, vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main");
+			sift_maint_register_worker(index, worker);
+		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
+		owed_vacuum = 0;
 	}
-	else if (OidIsValid(vacuum_heap_of(indexoid)))
-		sift_col_rewrite_tick(index);
+	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed_rewrite))
+	{
+		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
+		owed_rewrite = 0;
+	}
 	index_close(index, AccessShareLock);
 }
 
@@ -169,7 +251,7 @@ sift_col_autovacuum_enabled(Relation heap)
 	return heap->rd_options == NULL || ((StdRdOptions *) heap->rd_options)->autovacuum.enabled;
 }
 
-/* CREATE INDEX and REINDEX say what sift.col_auto_merge does with the index, and that it does nothing for a table that opted out of autovacuum */
+/* CREATE INDEX and REINDEX say that sift.col_auto_merge does nothing for a table that opted out of autovacuum: with autovacuum on, the default needs no word */
 void
 sift_col_vacuum_notice(Relation heap, Relation index)
 {
@@ -181,12 +263,6 @@ sift_col_vacuum_notice(Relation heap, Relation index)
 						RelationGetRelationName(index), RelationGetRelationName(heap)),
 				 errdetail("The units answer from their pre-aggregates again only after a VACUUM of the table, and the merge of the index follows that VACUUM."),
 				 errhint("Run VACUUM on it from a job, or RESET autovacuum_enabled.")));
-	else
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": sift.col_auto_merge keeps it answerable after churn", RelationGetRelationName(index)),
-				 errdetail("A background worker vacuums \"%s\" when a thousandth of its rows changed and rewrites the index after the VACUUM, within sift.col_auto_merge_wal_pct of the WAL the server writes.",
-						   RelationGetRelationName(heap)),
-				 errhint("SET sift.col_auto_merge = off for the server or the database to stop it; sift.col_maintenance_status(index) shows where it stands.")));
 }
 
 /* The heap of the index when it is one to vacuum, else InvalidOid: not another table AM's, and not one that opted out of vacuum */
@@ -245,9 +321,9 @@ vacuum_heap(Oid heapoid)
 	MemoryContextDelete(cx);
 }
 
-/* asked: a scan started the worker, which takes its first look as a scan would (table_state) */
+/* asked: a scan started the worker, which takes its first look as a scan would (table_state); once: it leaves after the first VACUUM */
 static void
-vacuum_worker(Datum main_arg, bool asked)
+vacuum_worker(Datum main_arg, bool asked, bool once)
 {
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
@@ -276,6 +352,8 @@ vacuum_worker(Datum main_arg, bool asked)
 			vacuum_heap(heapoid);
 		}
 		CommitTransactionCommand();
+		if (once)
+			break;
 		if (state != TABLE_DUE)
 		{
 			sift_nap(sift_maintenance_naptime);
@@ -286,11 +364,18 @@ vacuum_worker(Datum main_arg, bool asked)
 void
 sift_col_vacuum_worker_main(Datum main_arg)
 {
-	vacuum_worker(main_arg, false);
+	vacuum_worker(main_arg, false, false);
 }
 
 void
 sift_col_vacuum_scan_worker_main(Datum main_arg)
 {
-	vacuum_worker(main_arg, true);
+	vacuum_worker(main_arg, true, false);
+}
+
+/* The VACUUM a request of penalty_maintenance asks for: one, then the worker leaves */
+void
+sift_col_vacuum_once_worker_main(Datum main_arg)
+{
+	vacuum_worker(main_arg, true, true);
 }

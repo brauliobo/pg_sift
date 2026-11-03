@@ -81,7 +81,10 @@ typedef struct SiftTopXform
 } SiftTopXform;
 
 /* exprs: the sort expressions of the TXK_EXPR keys (Vars of varno 1, varattno the leaf + 1), each a list member in the order of the keys; nout the number of output attributes */
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset);
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, List *lookups, Node *count, Node *offset);
+
+/* The columns of the joined tables the rows of the page read: for each, the combination of its table, its column there, and the position and the type of the key in the row (sift_topn_spec) */
+extern List *sift_topn_lookups(Node *spec);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
@@ -109,7 +112,9 @@ typedef enum SiftTopGKind
 	STG_OR,
 	STG_CMP,
 	STG_NOTNULL,				/* the column is not NULL (op, val unused) */
-	STG_STR						/* the first sort key, a text column, against a constant string: sop, str, collid (op, val unused) */
+	STG_ISNULL,					/* the column is NULL (op, val unused) */
+	STG_STR,					/* the first sort key, a text column, against a constant string: sop, str, collid (op, val unused) */
+	STG_BOOL					/* a boolean column other than the key, through any expression of it: tab (op, val unused) */
 } SiftTopGKind;
 
 typedef struct SiftTopGPred
@@ -126,6 +131,7 @@ typedef struct SiftTopGPred
 	const char *str;
 	uint32		slen;
 	Oid			collid;			/* ... and the collation it compares under */
+	bool		tab[3];			/* STG_BOOL: whether the row passes for false, for true and for NULL */
 	int			nchild;
 	struct SiftTopGPred **child;
 } SiftTopGPred;
@@ -140,8 +146,11 @@ extern bool sift_topn_gordered(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 /* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
 extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
+/* the bytes of a row a walk of the order array queues before the first goes out (gord_prep): a page longer than work_mem holds reads the units */
+#define SIFT_TOPN_GROW_BYTES	56
 /* ... and of a text or varchar one, which the global order of a text key orders */
 extern int	sift_topn_text_attno(const SiftSrcLayout *lay, int leaf);
+extern int	sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf);
 extern bool sift_topn_same_scale(Oid a, Oid b);
 
 /*
@@ -173,6 +182,7 @@ extern PGDLLIMPORT bool sift_topn_heads;	/* sift.test_topn_heads: answer a unit 
 #define sift_topn_heads true
 #endif
 extern PGDLLIMPORT bool sift_topn_gorder_on;	/* sift.test_topn_gorder */
+extern PGDLLIMPORT int sift_topn_gbudget;	/* sift.test_topn_gbudget */
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
 extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
@@ -194,7 +204,7 @@ extern bool sift_topn_unit_lazy(SiftTopN *t, SiftSrcSource *src, const SiftSrcUn
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
 /*
- * Parallel scan (agg/par.c): the participants take windows of superblocks in the leader's visit order from a shared counter, each keeps the
+ * Parallel scan (agg/par/items.c): the participants take windows of superblocks in the leader's visit order from a shared counter, each keeps the
  * heap of its rows and publishes the first-key rank of its n-th row, so that every participant leaves out the units and rows that rank
  * excludes; the leader merges the heaps (keys and TIDs, ties by TID as in one process) and fetches the rows. A top-N that sorts is serial.
  */

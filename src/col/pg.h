@@ -12,6 +12,20 @@
 
 #include "col/col.h"
 
+/*
+ * The prices of the scans of sift are written in microseconds of a warm run, and the planner's unit is not one length of time: a unit is 1.75 us in the joins over the heap
+ * (a hash join of 100k to 1M rows costs 493 to 553 units a millisecond) and 3.2 us in its scans that aggregate (median of 106 plans of test/plan, 250,000 rows, TIMING OFF,
+ * p25 2.2, p75 4.2). Each model of sift has its own factor, fitted from records (planner-pl15-arms-*, planner-pl16-units-*):
+ * the scan of a sift_col index is divided by the microseconds per unit of the joins it is nested in (the nested loop of probes crossed the hash join at 0.44 to 0.63 of the
+ * probes it was measured at before, 0.65 to 0.95 after); SiftAgg keeps the share of its price against the native plan of the same statement. That share fitted over 102 plans is
+ * 0.66 (p25 0.49, p75 1.23), but three plans of a sift_table, priced too low already, are slower than the native plan they lose to (top_rows_per_kind_unindexed_column 27.0 against
+ * 22.5 ms, spine_range_join 30.6 against 22.6 ms, spine_expression_key 107 against 17 ms) and change to the scan below 0.9, 0.8 and 0.7: the share stays at 0.93 until the price of the
+ * scan of a sift_table is raised, and the fitted 0.66 follows. At 0.98 and above the nested loop of agg_topn_plan_keys (885) is priced below SiftAgg's top-N (907) again.
+ * The prices of BM25 are made of PostgreSQL's own costs (pages, cpu_operator_cost): factor 1.
+ */
+#define SIFT_COST_COL_US_PER_UNIT	1.75
+#define SIFT_COST_AGG_SHARE			0.93
+
 /* Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read */
 extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
@@ -47,6 +61,7 @@ extern uint32 sift_col_pagg_hash(Relation index);
 
 /* Just the leaf list (cached in the relcache entry: no I/O), same struct with zero stats */
 extern const SiftColIndexMeta *sift_col_index_defs(Relation index);
+extern const char *sift_col_leaf_name(Relation index, const SiftColDef *def);
 
 /*
  * The expression of index attribute attno (1-based): a Var with varno 1 for a plain column, else the index expression as stored
@@ -131,10 +146,18 @@ typedef struct SiftColOptions
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
+	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
+	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
+	int			key_order;		/* offset of the "key_order" string, 0 = none */
+	int			ko_lead;		/* what key_order stands for (am_col_amoptions), offsets of its columns: the first ... */
+	int			ko_last;		/* ... the last (order_columns, order_array_columns) ... */
+	int			ko_group;		/* ... the first of 'group, key' (order_array_group; a cut by the group and its point directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) ... */
+	bool		ko_auto;		/* ... all of it chosen by the build with key_cut ('auto: a[, b]'): the directory and key_cut are the build's, not key_order's */
+	int			ko_key;			/* ... the column of a key_order of one column (key_cut and point_tid_columns); all 0 while key_order is not set */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
@@ -146,9 +169,12 @@ typedef struct SiftColOptions
 /* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/maint/maint.c) */
 #define SIFT_COL_DEAD_AUTO	0
 /* Instructions a scan pays for each dead row of a unit (the unit answers net of them), for each row of a unit more than a tenth dead, and the scans expected between two VACUUMs */
-#define SIFT_COL_DEAD_ROW	430
-#define SIFT_COL_DEAD_SCAN_ROW	45
+#define SIFT_COL_DEAD_ROW	700
+#define SIFT_COL_DEAD_SCAN_ROW	58
 #define SIFT_COL_DEAD_SCANS	100
+/* Instructions the rewrite takes a live row, and for each byte of it: measured on 6 to 17 bytes a row, with and without order arrays, 300,000 and 1,000,000 rows */
+#define SIFT_COL_REWRITE_ROW	800
+#define SIFT_COL_REWRITE_BYTE	230
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
@@ -160,16 +186,21 @@ extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_row_key(Relation index);	/* "" when off, "auto" before the build has chosen the primary key */
 extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_array_columns(Relation index);	/* NULL when not set: the build chooses */
+extern const char *sift_col_options_order_layout(Relation index);	/* "" when not set (auto) */
 extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_order(Relation index);	/* "" when none */
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
+extern PGDLLEXPORT Datum sift_col_extents(PG_FUNCTION_ARGS);	/* (index regclass): where every run of blocks of the file lies */
+extern PGDLLEXPORT Datum sift_col_space(PG_FUNCTION_ARGS);	/* (index regclass): the free space of the file and what the shrink still has to move */
 extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);

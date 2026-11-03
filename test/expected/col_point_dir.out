@@ -4,6 +4,7 @@
 -- inline string) gets no table, and an index written without the option is read as before.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 CREATE TABLE pd (id int, k int, s text, u uuid, v bigint, pad text DEFAULT repeat('x', 400));
 ALTER TABLE pd ALTER COLUMN pad SET STORAGE PLAIN;
@@ -47,7 +48,7 @@ BEGIN
 	RETURN r;
 END $$;
 CREATE FUNCTION pd_plan(w text) RETURNS text LANGUAGE plpgsql
-	SET sift.enable_col_scan = on SET enable_seqscan = off SET max_parallel_workers_per_gather = 0 AS $$
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM pd WHERE %s', w) LOOP
@@ -106,7 +107,11 @@ INSERT INTO pd_qk (preds, heapwhere) VALUES
 -- the directory: the segment is minor 14 because of it (no dictionary of 1,024 strings is in the index), verify lists every row under its key, and a
 -- point query reads the units that hold its rows only
 CREATE INDEX pd_k ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 'k, v');
+NOTICE:  sift_col index "pd_k" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX pd_n ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index "pd_n" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) pd;
 SELECT sift.col_verify('pd_k', true), sift.col_verify('pd_n', true);
  col_verify | col_verify 
@@ -175,6 +180,8 @@ DROP INDEX pd_n;
 -- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
 CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
 	WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 'k, s, u, v');
+NOTICE:  sift_col index "pd_all" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift.col_verify('pd_all', true);
  col_verify 
 ------------
@@ -239,6 +246,8 @@ FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849
 
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 's, u, k');
+NOTICE:  sift_col index "pd_one" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET max_parallel_maintenance_workers;
 SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
  col_verify | segments 
@@ -585,6 +594,8 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
 -- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
 SET sift.col_format_minor = 13;
 CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_columns = 'k, v');
+NOTICE:  sift_col index "pd_13" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
  no_directory 
@@ -619,6 +630,8 @@ SELECT sift.col_verify('pd_13', true);
 DROP INDEX pd_13, pd_k;
 ALTER INDEX pd_all SET (point_columns = 'k');
 REINDEX INDEX pd_all;
+NOTICE:  sift_col index "pd_all" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
  n  | pd_cmp 
 ----+--------
@@ -661,6 +674,8 @@ SELECT sift.col_verify('pd_all', true);
 
 ALTER INDEX pd_all RESET (point_columns);
 REINDEX INDEX pd_all;
+NOTICE:  sift_col index "pd_all" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
  n  | pd_cmp 
 ----+--------
@@ -699,7 +714,11 @@ SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 CREATE TABLE ph (id int, k int, s text, pad text DEFAULT repeat('x', 100));
 INSERT INTO ph SELECT i, CASE WHEN i % 10 = 0 THEN i ELSE 1 END, CASE WHEN i = 2500 THEN repeat('long', 3000) ELSE 's' || i % 700 END FROM generate_series(1, 9000) i;
 CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+NOTICE:  sift_col index "ph_k" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's');
+NOTICE:  sift_col index "ph_s" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') >= 14 AS hot_key_has_a_directory,
 	   (SELECT min(format) FROM sift.col_segments('ph_s') WHERE kind = 'immutable') < 14 AS inline_string_has_no_directory;
  hot_key_has_a_directory | inline_string_has_no_directory 
@@ -726,6 +745,8 @@ DROP TABLE ph;
 CREATE TABLE phb (id int, k int, pad text DEFAULT repeat('x', 20));
 INSERT INTO phb SELECT i, CASE WHEN i % 100 = 0 THEN i ELSE 1 END FROM generate_series(1, 70000) i;
 CREATE INDEX phb_k ON phb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+NOTICE:  sift_col index "phb_k" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift.col_verify('phb_k', true);
  col_verify 
 ------------
@@ -753,6 +774,8 @@ SELECT i AS id, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -92233720
 	   CASE i % 7 WHEN 0 THEN 'infinity'::timestamp WHEN 1 THEN '-infinity' ELSE timestamp '2024-01-01' + i * interval '1 minute' END AS ts
 FROM generate_series(1, 3000) i;
 CREATE INDEX px_i ON px USING sift_col (id sift.col_int4_ops, v sift.col_int8_ops, ts sift.col_timestamp_ops) WITH (point_columns = 'v, ts');
+NOTICE:  sift_col index "px_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift.col_verify('px_i', true);
  col_verify 
 ------------
@@ -777,7 +800,11 @@ CREATE TABLE pw (id int, k int, pad text) WITH (fillfactor = 10);
 INSERT INTO pw SELECT i, CASE i / 256 WHEN 0 THEN 1 WHEN 63 THEN 2 WHEN 64 THEN 3 ELSE 100 + i / 256 END, repeat('x', 600) FROM generate_series(0, 65 * 256 - 1) i;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX pw_k ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+NOTICE:  sift_col index "pw_k" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
+NOTICE:  sift_col index "pw_n" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET max_parallel_maintenance_workers;
 SELECT units FROM sift.col_segments('pw_k') WHERE kind = 'immutable';
  units 
@@ -818,6 +845,8 @@ SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 997 END, CASE WHEN g % 37 = 0 
 FROM generate_series(1, 20000) g;
 CREATE INDEX pt_i ON pt USING sift_col (i2 sift.col_int2_ops, d sift.col_date_ops, t sift.col_timestamp_ops, tz sift.col_timestamptz_ops, n sift.col_numeric_ops, b sift.col_bool_ops, id sift.col_int4_ops)
 	WITH (point_columns = 'i2, d, t, tz, n, b', write_buffer_limit = 256);
+NOTICE:  sift_col index "pt_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sift.col_verify('pt_i', true);
  col_verify 
 ------------
@@ -883,6 +912,8 @@ ERROR:  invalid point_columns option: not a plain integer, text or uuid column o
 CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_columns = 'nope');
 ERROR:  invalid point_columns option: unknown column
 CREATE INDEX pe_s ON pe USING sift_col (id sift.col_int4_ops, d sift.col_date_ops) WITH (point_columns = 'id, d');
+NOTICE:  sift_col index "pe_s" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP TABLE pe;
 ALTER INDEX pd_all SET (point_columns = 'k,');
 ERROR:  invalid point_columns option "k,": empty column name

@@ -1,17 +1,26 @@
 -- CREATE INDEX on a table of large documents in one heap page: the text of a page was copied into one string
 -- of 1 GB at most, so three documents of 360 MB (out of line, compressed in the heap) failed the build.
--- Each document is analyzed on its own.
+-- Each document larger than what a build buffers (a quarter of its memory, at most 256 MB; sift.test_page_text
+-- lowers it to 1 MB) is analyzed on its own: three documents of 3.7 MB take less memory than their text.
 CREATE EXTENSION pg_sift;
 SET max_parallel_maintenance_workers = 0;
+SET sift.test_page_text = 1048576;
 CREATE TABLE ld (id int, body text);
-INSERT INTO ld SELECT i, repeat('internationalization localization ' || 'w' || i || ' ', 10000000) FROM generate_series(1, 3) i;
-SELECT sum(length(body)) > 1073741823 AS over_a_gigabyte, count(DISTINCT (ctid::text::point)[0]) AS pages FROM ld;
- over_a_gigabyte | pages 
------------------+-------
- t               |     1
+INSERT INTO ld SELECT i, repeat('internationalization localization ' || 'w' || i || ' ', 100000) FROM generate_series(1, 3) i;
+SELECT sum(length(body)) > 3 * 1048576 AS over_the_limit, min(length(body)) > 1048576 AS each_over_it, count(DISTINCT (ctid::text::point)[0]) AS pages FROM ld;
+ over_the_limit | each_over_it | pages 
+----------------+--------------+-------
+ t              | t            |     1
 (1 row)
 
+SET sift.test_build_peak = 0;
 CREATE INDEX ld_idx ON ld USING sift (body);
+SELECT pg_size_bytes(current_setting('sift.test_build_peak')) < (SELECT sum(length(body)) FROM ld) AS peak_below_the_text;
+ peak_below_the_text 
+---------------------
+ t
+(1 row)
+
 SELECT sift.verify('ld_idx', true);
  verify 
 --------

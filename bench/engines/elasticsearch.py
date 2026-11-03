@@ -25,6 +25,7 @@ def dialect(sql):
 
 class Engine(Server):
     section = 'es'
+    data_path = '/usr/share/elasticsearch/data'
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -59,6 +60,14 @@ class Engine(Server):
                 self.conn = None
                 if attempt:
                     raise RuntimeError(str(e))
+
+    def native_io(self):
+        """the node's cumulative file system IO (Linux: _nodes/stats/fs io_stats.total): read and write operations and kilobytes"""
+        total = {}
+        for node in json.loads(self.request('GET', '/_nodes/stats/fs'))['nodes'].values():
+            for k, v in node.get('fs', {}).get('io_stats', {}).get('total', {}).items():
+                total['es_' + k] = total.get('es_' + k, 0) + v
+        return total
 
     def load(self, suite, work):
         schema = json.load(open(os.path.join(work, suite, 'schema.json')))

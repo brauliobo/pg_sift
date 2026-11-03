@@ -18,6 +18,9 @@ SELECT i, i % 7,
 	repeat(chr(97 + i % 5), 300 + i % 200) || i
 FROM generate_series(1, 30000) i;
 CREATE INDEX tx_col ON tx USING sift_col (id, g, s, v, u, b, ip, w);
+NOTICE:  sift_col index "tx_col" installed two statement triggers on table "tx" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (ANALYZE) tx;
 CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
@@ -70,7 +73,7 @@ NOTICE:  table "tx_b" does not exist, skipping
  all_rows         | same+topn+sorted 30000
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn 20
+ deep_page        | same+topn+sorted 20
  five_keys        | same+topn 30
  inet_asc         | same+topn 25
  inet_desc        | same+topn 25
@@ -125,11 +128,11 @@ FROM generate_series(1, 700) i;
 UPDATE tx SET s = 'Aaa' || id, b = NULL, ip = '1.2.3.4'::inet WHERE id % 97 = 0;
 DELETE FROM tx WHERE id % 89 = 0;
 SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'text_nulls_first', 'text_c', 'text_locale', 'uuid_asc', 'bytea_asc', 'bytea_desc', 'inet_asc', 'mixed_keys', 'deep_page') ORDER BY tag COLLATE "C";
-       tag        |   tx_check   
-------------------+--------------
+       tag        |      tx_check       
+------------------+---------------------
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn 20
+ deep_page        | same+topn+sorted 20
  inet_asc         | same+topn 25
  mixed_keys       | same+topn 30
  text_asc         | same+topn 25
@@ -164,9 +167,12 @@ CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministi
 CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
 INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
 CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
-NOTICE:  sift_col index tr_col writes a rollup of the rows by c, nm
+NOTICE:  sift_col index "tr_col": rollup_dims = 'auto' writes a rollup of the rows by c, nm
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 20 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX tr_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX tr_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "tr_col" installed two statement triggers on table "tr" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 ANALYZE tr;
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
@@ -201,8 +207,11 @@ CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
-NOTICE:  sift_col: the strings of leaf 1 (attribute 2) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+NOTICE:  sift_col index "tv_col" installed two statement triggers on table "tv" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS overflow_key;

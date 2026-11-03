@@ -5,7 +5,7 @@
 DO $do$ BEGIN
 	IF to_regclass('ks_facts') IS NULL THEN
 		CREATE TABLE ks_facts AS SELECT g AS id, 1 + (g::bigint * 7919 % 12)::int AS dim_b_id, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int AS day, (g % 100)::float8 AS v
-			FROM generate_series(1, 1200000) g;
+			FROM generate_series(1, {rows} * 6 / 5) g;
 		CREATE INDEX ks_facts_col ON ks_facts USING sift_col (dim_b_id, day, v) WITH (key_cut = 'dim_b_id, day');
 	END IF;
 END $do$;

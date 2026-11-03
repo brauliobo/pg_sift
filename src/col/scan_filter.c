@@ -668,21 +668,97 @@ paranoid_report(SiftColSource *src, const ColUnit *cu, BlockNumber blk, OffsetNu
 }
 #endif
 
+int64		sift_col_vet_offsets;
+
+/* The first selected row at or after from; sel->nwords * 64 when there is none */
+static uint32
+sel_next(const SiftColSel *sel, uint32 from)
+{
+	uint32		w = from / 64;
+	uint64		m;
+
+	if (w >= sel->nwords)
+		return sel->nwords * 64;
+	m = sel->bits[w] & (~UINT64CONST(0) << (from % 64));
+	while (m == 0 && ++w < sel->nwords)
+		m = sel->bits[w];
+	return m == 0 ? sel->nwords * 64 : w * 64 + pg_rightmost_one_pos64(m);
+}
+
+/* The walk over the pages of a unit that hold a selected row: r is the next selected row, lo .. hi the rows of the page found, blk its heap block */
+typedef struct VetCursor
+{
+	const ColUnit *cu;
+	const SiftColSel *sel;
+	const uint64 *av;
+	uint32		r;
+	uint32		p;
+	uint32		lo;
+	uint32		hi;
+	BlockNumber blk;
+} VetCursor;
+
+/* The next page that holds a selected row and is not all-visible */
+static bool
+vet_next(VetCursor *c)
+{
+	const ColUnit *cu = c->cu;
+
+	while (c->r < c->sel->nwords * 64)
+	{
+		bool		allvis;
+
+		/* the page of the row: the same or the next one where the selection is dense */
+		if (c->r >= cu->v.rowstart[c->p + 1])
+			c->p = c->p + 1 < cu->v.npages && c->r < cu->v.rowstart[c->p + 2] ? c->p + 1 : sift_cunit_row_page(&cu->v, c->r);
+		c->lo = cu->v.rowstart[c->p];
+		c->hi = cu->v.rowstart[c->p + 1];
+		c->blk = sift_cunit_page_block(&cu->v, cu->sb, c->p);
+		allvis = c->av != NULL && sift_col_bit_test(c->av, cu->v.keyed ? c->p : c->blk & (SIFT_SB_PAGES - 1));
+		c->r = sel_next(c->sel, c->hi);
+#ifdef SIFT_TESTING
+		if (allvis && sift_test_col_paranoid)
+			allvis = false;		/* checked like the others, and reported below */
+#endif
+		if (!allvis)
+			return true;
+	}
+	return false;
+}
+
+static BlockNumber
+vet_stream_next(void *arg)
+{
+	VetCursor  *c = arg;
+
+	return vet_next(c) ? c->blk : InvalidBlockNumber;
+}
+
+/* The pages a vet reads on its own before it asks the heap for the others through a stream */
+#define VET_STREAM_AFTER	8
+
+/* A selection of this many rows or fewer is vetted page by page against the log, not by the mask of the superblock (unit_allvisible_vm) */
+#define VET_FEW_ROWS		32
+
 bool
 sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 {
 	ColUnit    *cu = unit->priv;
 	SiftColSource *src = cu->src;
 	const SiftColVisibility *vis = &src->visibility;
-	const uint64 *av = unit_allvisible(cu);
-	const SiftKey *keys = NULL;		/* only a page that is not all-visible needs the row offsets */
-	PageWalk	pw;
+	VetCursor	cur,
+				ahead;
+	int			npages = 0;
+	bool		streamed = false;
+	bool		hf = col_hf_unit(src, cu);
+	bool		few = hf && !cu->lane && !cu->v.keyed && !cu->av_ready && sift_col_sel_count(sel) <= VET_FEW_ROWS;
+	const uint64 *av = few ? unit_allvisible_vm(cu) : unit_allvisible(cu);
 
 	SIFT_COL_JITTER();
 #ifdef SIFT_TESTING
 	if (!sift_test_col_paranoid)	/* the paranoid check reads the heap under every all-visible page */
 #endif
-	if (sift_col_unit_allvisible(unit))
+	if (!few && sift_col_unit_allvisible(unit))
 		return sift_col_sel_count(sel) > 0;
 	/* no mask for a key-cut unit means every page of its block range is all-visible, dead rows or not */
 	if (cu->v.keyed && av == NULL)
@@ -691,74 +767,77 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 #endif
 			return sift_col_sel_count(sel) > 0;
 	sift_cunit_keyed_load(&cu->v);
-	pw_init(&pw, &cu->v);
-	for (uint32 p = 0; p < cu->v.npages; p++)
+	if (sift_col_sel_count(sel) >= cu->v.nrows / 16)
+		sift_cunit_page_offsets_all(&cu->v);
+	/* the pages that hold a selected row, found from the rows: a unit lists thousands of pages and the selection a few dozen rows */
+	cur = (VetCursor) {cu, sel, av, sel_next(sel, 0)};
+	for (;;)
 	{
-		BlockNumber blk;
-
-		/* a key-cut unit lists thousands of pages and few of them are not all-visible: go to the next one that is not */
-		if (cu->v.keyed && av != NULL
-#ifdef SIFT_TESTING
-			&& !sift_test_col_paranoid
-#endif
-			)
-		{
-			uint32		w = p / 64,
-						nw = (cu->v.npages + 63) / 64;
-			uint64		m = ~av[w] & (~UINT64CONST(0) << (p % 64));
-
-			while (m == 0 && ++w < nw)
-				m = ~av[w];
-			if (m == 0)
-				break;
-			p = w * 64 + pg_rightmost_one_pos64(m);
-			if (p >= cu->v.npages)
-				break;
-		}
-		blk = cu->v.keyed ? cu->v.blocks[p] : cu->sb * SIFT_SB_PAGES + pw_next(&pw);
-		uint32		lo = cu->v.rowstart[p],
-					hi = cu->v.rowstart[p + 1],
+		uint32		lo,
+					hi,
+					p,
 					n = 0;
+
+		BlockNumber blk;
 		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
-		bool		allvis = av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1));
+		uint16		offs[MaxHeapTuplesPerPage];		/* the offsets of the rows of the page: only a page that is not all-visible and holds a selected row has them decoded */
+		bool		dense;
 
-#ifdef SIFT_TESTING
-		if (allvis && sift_test_col_paranoid)
-			allvis = false;		/* checked like the others, and reported below */
-		else
-#endif
-		if (allvis)
-			continue;
-		if (!range_any(sel->bits, lo, hi))
-			continue;
-		if (keys == NULL)
-			keys = unit_keys(cu);
-		for (uint32 r = lo; r < hi; r++)
-			if (sift_col_bit_test(sel->bits, r))
-			{
-				uint32		off = (keys[r] & 0xFFFF) - 1;
+		if (!streamed)
+			ahead = cur;
+		if (!vet_next(&cur))
+			break;
+		lo = cur.lo;
+		hi = cur.hi;
+		p = cur.p;
+		blk = cur.blk;
 
-				sift_col_bit_set(offmask, off);
-				n++;
-			}
-		if (n == 0)
-			continue;
+		/* a vet of many pages reads them through a stream from here on (the first few are read as they come: a point query vets one) */
+		if (++npages == VET_STREAM_AFTER && vis->stream != NULL && !hf)
+		{
+			vis->stream(vis->arg, vet_stream_next, &ahead, cu->v.keyed);
+			streamed = true;
+		}
+		/* a dense page (no row gone when the unit was built) has the offsets 1 .. n in the order of the rows: only the others decode them */
+		dense = !cu->v.keyed && sift_cunit_page_sparse_len(&cu->v, p) == 0;
+		if (!dense)
+		{
+			sift_cunit_page_offsets(&cu->v, p, offs);
+			sift_col_vet_offsets += hi - lo;
+		}
+		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
+		{
+			sift_col_bit_set(offmask, (dense ? q - lo + 1 : offs[q - lo]) - 1);
+			n++;
+		}
 		src->cnt.rows_vetted += n;
-		vis->filter_page(vis->arg, blk, offmask);
-		for (uint32 r = lo; r < hi; r++)
-			if (sift_col_bit_test(sel->bits, r) && !sift_col_bit_test(offmask, (keys[r] & 0xFFFF) - 1))
-			{
+		/* a stamped segment's rows are all inserted for the snapshot: the log says which of them were deleted, and the heap page is not read */
+		if (hf && col_hf_filter_page(src, blk, offmask, &(int) {0}))
+		{
+			src->cnt.rows_log += n;
+			sift_col_hf_taken += n;
+		}
+		else
+			vis->filter_page(vis->arg, blk, offmask);
+		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
+		{
+			OffsetNumber off = dense ? q - lo + 1 : offs[q - lo];
+
+			if (sift_col_bit_test(offmask, off - 1))
+				continue;
 #ifdef SIFT_TESTING
-				if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
-				{
-					/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
-					paranoid_report(src, cu, blk, (OffsetNumber) (keys[r] & 0xFFFF));
-					continue;
-				}
-#endif
-				sift_col_bit_clear(sel->bits, r);
+			if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
+			{
+				/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
+				paranoid_report(src, cu, blk, off);
+				continue;
 			}
+#endif
+			sift_col_bit_clear(sel->bits, q);
+		}
 	}
+	if (streamed)
+		vis->stream(vis->arg, NULL, NULL, false);
 	if (vis->counters)
 	{
 		int64		pages = 0;

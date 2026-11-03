@@ -230,11 +230,12 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
  *, whatever point_tid_columns says, and a lookup reads the unit of each row.
  */
 void
-sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
 {
 	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
 	w->keyed = true;
 	w->aim_rows = aim_rows;
+	w->keycol = keycol;
 	if (w->pt)
 		for (int c = 0; c < w->schema->ncols; c++)
 			w->pt[c].tids = false;
@@ -252,18 +253,19 @@ segw_elem_point(const SiftColSegWriter *w, int c)
 		s->cols[d->parent].kind == SIFT_COLK_GROUP && strstr(s->cols[d->parent].path, ".*") == NULL && strstr(d->path, "#key") == NULL;
 }
 
-/* The leaf c of the segment gets a global order block sorted by (group, key) as well (the group of order_array_group: the build's own choice groups a time column only, and keeps the plain order beside it in the second slot; a group of the user's groups every block and replaces the plain order) */
+/* The leaf c of the segment gets a global order block sorted by (group, key) as well (the group of order_array_group: the build's own choice groups the date, timestamp and integer arrays it names ('auto: g, a, b; c', every one without the ';'), and keeps the plain order beside it in the second slot; a group of the user's groups every block and replaces the plain order) */
 bool
 segw_gorder_grouped(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group > 0 && !sift_cgord_leaf_text(&w->schema->cols[c]) && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_time(&w->schema->cols[c])));
+	return w->pagg.gorder_group > 0 && !sift_cgord_leaf_text(&w->schema->cols[c]) && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_ok(w->schema, &w->schema->cols[c]) &&
+											  (!w->pagg.gorder_listed || w->pagg.gorder_only[c] || w->pagg.gorder_with[c])));
 }
 
 /* ... and the plain order too */
 bool
 segw_gorder_plain(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto || sift_cgord_leaf_text(&w->schema->cols[c]);
+	return w->pagg.gorder_group == 0 || (w->pagg.gorder_group_auto && !w->pagg.gorder_only[c]) || sift_cgord_leaf_text(&w->schema->cols[c]);
 }
 
 void
@@ -403,6 +405,12 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
 	if (w->anytextord)
 		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
+	if (w->anytextperm)
+		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTPERM);
+	if (w->anyends)
+		w->format = Max(w->format, SIFT_COL_FORMAT_ENDORD);
+	if (w->anycompact)
+		w->format = Max(w->format, SIFT_COL_FORMAT_ORDLAYOUT);
 	if (w->keyed)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
@@ -445,6 +453,10 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 					w->format = Max(w->format, SIFT_COL_FORMAT_COUNT);
 				}
 			}
+		/* the order of a text leaf finds its strings by code: a dictionary of many strings is in blocks, or every first string would parse the whole of it */
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (w->pt != NULL && w->pt[c].tperm && w->dict[c] != NULL && w->dform[c] == 0 && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+				w->dform[c] = DICT_BLOCKS;
 	}
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	segw_write_dicts(w, &h.sections[SIFT_SEC_DICT]);

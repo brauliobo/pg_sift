@@ -114,7 +114,7 @@ SELECT agree('a', 'runs'), agree('a', 'run');
 (1 row)
 
 ALTER INDEX a_idx SET (stemmer = 'english_stem');
-WARNING:  index "a_idx" was built with other analyzer options
+WARNING:  sift index "a_idx": it was built with other analyzer options
 DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
 HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT ids('a', 'run');
@@ -161,7 +161,7 @@ SELECT sift.verify('a_idx', true);
 (1 row)
 
 ALTER INDEX a_idx RESET (k1, stemmer);
-WARNING:  index "a_idx" was built with other analyzer options
+WARNING:  sift index "a_idx": it was built with other analyzer options
 DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
 HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
 SELECT ids('a', 'run');
@@ -209,13 +209,13 @@ ERROR:  access method "sift" does not support multicolumn indexes
 CREATE INDEX a_bad ON a USING sift (id);
 ERROR:  data type integer has no default operator class for access method "sift"
 HINT:  You must specify an operator class for the index or define a default operator class for the data type.
-CREATE INDEX a_bad ON a USING sift (body) INCLUDE (id);
-ERROR:  access method "sift" does not support included columns
+CREATE INDEX a_incl ON a USING sift (body) INCLUDE (id);
+DROP INDEX a_incl;
 CREATE UNIQUE INDEX a_bad ON a USING sift (body);
 ERROR:  access method "sift" does not support unique indexes
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
 ERROR:  unknown sift stemmer "klingon"
-HINT:  Valid stemmers are "en" and "none".
+HINT:  Valid stemmers are "en", "none" and the names of text search configurations (with their schema unless they are in pg_catalog).
 CREATE INDEX a_bad ON a USING sift (body) WITH (write_buffer_limit = 0);
 ERROR:  value 0 out of bounds for option "write_buffer_limit"
 DETAIL:  Valid values are between "64" and "1048576".

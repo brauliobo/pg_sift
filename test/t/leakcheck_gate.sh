@@ -9,7 +9,7 @@
 D=$(dir gate)
 asan=
 [[ -z ${SIFT_PRELOAD:-} ]] || asan=1
-plan 13
+plan 14
 # the sanitizer reports of this node stay in its directory, away from the scans of the whole run
 [[ -z $asan ]] || export ASAN_OPTIONS=${ASAN_OPTIONS%log_path=*}log_path=$D/asan
 node_init gate 1
@@ -44,6 +44,16 @@ off=$(logsize)
 sql gate "SELECT sift._test_leak('context')" >/dev/null
 for _ in $(seq 100); do grep -q 'sift leak: memory context' "$LOG" && break; sleep 0.1; done
 check "the gate fails on a sift memory context that outlives its backend" gate_fails "$off" 'sift leak: memory context "sift leaked"'
+
+# the caches a backend keeps for its life are named "sift cache ...": a backend that read the tombstone log of a column index leaves nothing else behind
+off=$(logsize)
+sql gate "CREATE TABLE tl (id int PRIMARY KEY, g int)" "INSERT INTO tl SELECT i, i % 7 FROM generate_series(1, 2000) i" \
+	"CREATE INDEX tl_c ON tl USING sift_col (id, g) WITH (track_changes = 'id')" "UPDATE tl SET g = g + 1 WHERE id % 5 = 0" \
+	"SELECT count(*) FROM sift._test_col_log_entries('tl_c')" "DROP TABLE tl" >/dev/null || bail "tombstone log setup failed"
+backends() { sql gate "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()"; }
+until [[ $(backends) == 0 ]]; do sleep 0.1; done
+slice "$off"
+check "a backend that read a tombstone log leaves only cache contexts behind" leak_scan "$D/slice.out"
 
 sql gate "SELECT sift._test_leak('malloc')" >/dev/null
 if [[ -n $asan ]]; then

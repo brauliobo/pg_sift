@@ -13,6 +13,8 @@ SET cpu_tuple_cost = 0.5;
 -- below (units answered from the pre-aggregates, segments of an index) follow the layout: every build is serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE ae (id int, grp int, items jsonb, tags jsonb, pad text) WITH (autovacuum_enabled = off);
+-- a wide row: a superblock is 256 pages, so that 4,000 rows are eight of them
+ALTER TABLE ae ALTER COLUMN pad SET STORAGE PLAIN;
 \ir test/agg_preagg_helpers.sql
 \set ECHO none
 -- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
@@ -20,6 +22,9 @@ CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LA
 DECLARE l text; c text := '';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
+	-- a unit that lacks its rollup asks for one (the request queue) and a background worker replaces the segment that holds it; a statement that began on the old segment
+	-- then scans all its units (segments_current), so the counts of a statement that follows would depend on the worker's timing. The statements counted here make no request.
+	PERFORM set_config('sift.col_rollup_on_demand', 'off', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
@@ -44,8 +49,8 @@ INSERT INTO pa_q VALUES
 	(9, 'text prefix',       'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind LIKE ''k1%%'' GROUP BY 1'),
 	(10, 'int compare',      'SELECT e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n > 3 GROUP BY 1'),
 	(11, 'zone covers all',  'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id >= 1 GROUP BY 1'),
-	(12, 'zone covers some', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 15000 GROUP BY 1'),
-	(13, 'zone and test',    'SELECT e.kind, sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 15000 AND e.kind <> ''k0'' GROUP BY 1'),
+	(12, 'zone covers some', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 2000 GROUP BY 1'),
+	(13, 'zone and test',    'SELECT e.kind, sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 2000 AND e.kind <> ''k0'' GROUP BY 1'),
 	(14, 'row test: scan',   'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.grp = 3 GROUP BY 1'),
 	(15, 'other leaf', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n = 2 GROUP BY 1'),
 	(16, 'two keys',   'SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
@@ -87,7 +92,7 @@ END $$;
 -- Function-local settings also restore the changes made by pa_rows on return.
 CREATE FUNCTION pa_contract(idx regclass, q text, two_keys bool)
 RETURNS TABLE (inventory bool, visible bool, used bool, same bool) LANGUAGE plpgsql
-SET sift.agg_preagg = on SET sift.enable_agg = on SET enable_seqscan = off AS $$
+SET sift.agg_preagg = on SET sift.enable_agg = on SET sift.col_rollup_on_demand = off SET enable_seqscan = off AS $$
 DECLARE
 	stored bigint; eligible bigint; planned int; answered int; l text; siftagg bool := false;
 	a text; b text; c text;
@@ -118,30 +123,30 @@ BEGIN
 	RETURN NEXT;
 END $$;
 -- absent, null and empty arrays, objects with missing and null members; in fixed id ranges what a unit cannot hold: floats too large for the sum of
--- their squares (3000..3003), more than 256 distinct kinds in a unit (20000..20400)
+-- their squares (1000..1003), more than 256 distinct kinds in a unit (3500..3900)
 INSERT INTO ae
 SELECT g, g % 7,
        CASE WHEN g % 10 = 0 THEN NULL
             WHEN g % 10 = 1 THEN '[]'
-            WHEN g BETWEEN 3000 AND 3003 THEN '[{"kind": "huge", "n": 1, "score": 1e120}]'
+            WHEN g BETWEEN 1000 AND 1003 THEN '[{"kind": "huge", "n": 1, "score": 1e120}]'
             ELSE (SELECT jsonb_agg(CASE WHEN (g + e) % 13 = 0 THEN jsonb_build_object('n', e)
-                                        WHEN g BETWEEN 20000 AND 20400 THEN jsonb_build_object('kind', 'u' || g || '_' || e, 'n', e, 'score', e * 0.25)
+                                        WHEN g BETWEEN 3500 AND 3900 THEN jsonb_build_object('kind', 'u' || g || '_' || e, 'n', e, 'score', e * 0.25)
                                         ELSE CASE WHEN (g + e) % 2 = 0 THEN jsonb_strip_nulls(o) ELSE o END END ORDER BY e)
                   FROM generate_series(1, g % 4 + 1) e,
                        LATERAL (SELECT jsonb_build_object('kind', CASE WHEN (g + e) % 11 = 0 THEN NULL ELSE 'k' || (g + e) % 5 END,
                                                           'n', CASE WHEN (g * e) % 17 = 0 THEN NULL ELSE (g * e) % 9 END,
                                                           'score', CASE WHEN (g + e) % 7 = 0 THEN NULL ELSE ((g * e) % 40) * 0.25 END) AS o) l) END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END,
-       repeat('p', 200)
-FROM generate_series(1, 30000) g;
+       repeat('p', 3000)
+FROM generate_series(1, 4000) g;
 -- the default cube; an explicit cube; no cube; an index of the format before the element cubes (minor 3)
-CREATE TABLE ac (LIKE ae) WITH (autovacuum_enabled = off);
-CREATE TABLE ao (LIKE ae) WITH (autovacuum_enabled = off);
-CREATE TABLE a3 (LIKE ae) WITH (autovacuum_enabled = off);
--- a string in an int path (ids 12000..12003): a unit that holds one has no histogram of n, the one of kind stays, and a scan of n is refused
-CREATE TABLE ab (LIKE ae) WITH (autovacuum_enabled = off);
-INSERT INTO ab SELECT id, grp, CASE WHEN id BETWEEN 12000 AND 12003 THEN '[{"kind": "k1", "n": "7", "score": 2}, {"kind": "k2", "n": 2, "score": 3}]'::jsonb ELSE items END, tags, pad
-FROM ae WHERE id <= 14000;
+CREATE TABLE ac (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE ao (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE a3 (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+-- a string in an int path (ids 1600..1603): a unit that holds one has no histogram of n, the one of kind stays, and a scan of n is refused
+CREATE TABLE ab (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO ab SELECT id, grp, CASE WHEN id BETWEEN 1600 AND 1603 THEN '[{"kind": "k1", "n": "7", "score": 2}, {"kind": "k2", "n": 2, "score": 3}]'::jsonb ELSE items END, tags, pad
+FROM ae WHERE id <= 1900;
 INSERT INTO ac SELECT * FROM ae;
 INSERT INTO ao SELECT * FROM ae;
 INSERT INTO a3 SELECT * FROM ae;
@@ -212,7 +217,7 @@ SELECT * FROM pa_check('ae') WHERE n <> 16;
   7 | key in list      | some | t
   8 | null key         | some | t
   9 | text prefix      | some | t
- 10 | int compare      | some | t
+ 10 | int compare      | all  | t
  11 | zone covers all  | some | t
  12 | zone covers some | some | t
  13 | zone and test    | some | t
@@ -259,7 +264,7 @@ SELECT count(DISTINCT sb) FILTER (WHERE nn IS NULL) AS units_without_n, count(DI
 FROM sift.col_unit_hist('ab_col', 'items[].kind', 'items[].n');
  units_without_n | units_with_n 
 -----------------+--------------
-               1 |            2
+               1 |            3
 (1 row)
 
 CALL pa_settle();
@@ -334,9 +339,9 @@ DROP TABLE ap;
 RESET sift.col_rollup_on_demand;
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
-DELETE FROM ac WHERE id BETWEEN 18000 AND 18100;
+DELETE FROM ac WHERE id BETWEEN 2500 AND 2600;
 UPDATE ae SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
-DELETE FROM ae WHERE id BETWEEN 18000 AND 18100;
+DELETE FROM ae WHERE id BETWEEN 2500 AND 2600;
 UPDATE a3 SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
 SELECT * FROM pa_check('ac');
  n  |      shape       | pre  | same 
@@ -371,7 +376,7 @@ SELECT * FROM pa_check('ac');
 SELECT * FROM pa_sum('ae');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       0 |       18 |      5
+      25 |      0 |       0 |       22 |      1
 (1 row)
 
 SELECT * FROM pa_sum('a3');
@@ -415,7 +420,7 @@ SELECT * FROM pa_check('ac');
 
 -- 4. rows in the write buffer, then sealed
 INSERT INTO ac SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25), jsonb_build_object('kind', 'w' || g % 3, 'n', 1)),
-       '["t1", null]', repeat('p', 200) FROM generate_series(300001, 301500) g;
+       '["t1", null]', repeat('p', 3000) FROM generate_series(300001, 300400) g;
 SELECT * FROM pa_check('ac');
  n  |      shape       | pre  | same 
 ----+------------------+------+------
@@ -580,7 +585,7 @@ SELECT * FROM pa_check('ac');
 SET max_parallel_maintenance_workers = 0;
 -- 7. a minor 3 index that gets default segments (minor 15 or more, shown as 15) (rows inserted and sealed after the format changed): the units of each answer by what they hold
 SET sift.col_format_minor = 3;
-INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(400001, 405000) g;
+INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(400001, 400500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
  promoted 
 ----------
@@ -588,7 +593,7 @@ SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 (1 row)
 
 RESET sift.col_format_minor;
-INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 200) FROM generate_series(410001, 415000) g;
+INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(410001, 410500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
  promoted 
 ----------
@@ -627,7 +632,7 @@ SELECT string_agg(least(format, 15)::text, ',' ORDER BY gen) AS formats FROM sif
 SELECT * FROM pa_sum('a3');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      25 |      0 |       3 |       19 |      1
+      25 |      0 |       4 |       18 |      1
 (1 row)
 
 -- 8. the index without cubes: every unit is scanned

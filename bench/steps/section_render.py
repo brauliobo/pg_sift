@@ -1,4 +1,4 @@
-"""The update, delete and VACUUM section of README.md and docs/BENCHMARKS.md and its chart, from bench/results/updates.json (store.py section, store.py render).
+"""The update, delete and VACUUM section of README.md and bench/out/BENCHMARKS.md and its chart, from bench/results/updates.json (store.py section, store.py render).
 Every number is a row of the results; the sentences only choose which rows to state."""
 import json
 import os
@@ -73,14 +73,13 @@ def line(S, size, key, f, best):
 
 def header(S):
     sv = S.run0['servers']
-    loads = [float(r['loadavg'][0]) for r in S.meta['runs'].values()]
     noisy = sum(len(r.get('noisy') or []) for r in S.meta['runs'].values())
     churn = [r['churn_seconds'] for r in S.meta['runs'].values() if r['churn_seconds']]
     reps = ', '.join(f'{s:,} orders: ' + (f'median of {S.reps(s)} runs [min-max]' if S.reps(s) > 1 else 'one run') for s in S.sizes)
     setting = lambda e: f'`{sv[e + "_maintenance"]}`' if sv.get(e + '_maintenance') else 'the settings of the server'
     sha = f' ({S.meta["sha"]})' if S.meta.get('sha') else ''
-    return [f'Measured at pg_sift {sv.get("sift_sift", "?")}{sha} on {S.meta["date"]}, {S.meta["host"].get("cpu", "?")} ({S.meta["host"].get("threads", "?")} threads), PostgreSQL {sv.get("pg", "?")}, '
-            f'one container of {S.meta["cpus"]} CPUs; load average {min(loads):.1f}-{max(loads):.1f} at the start of the runs, {noisy} NOISY window{"s" * (noisy != 1)}. {reps}.',
+    return [f'Measured at pg_sift {sv.get("sift_sift", "?")}{sha} on {S.meta["date"]}, {S.meta["host"].get("cpu", "?")}, PostgreSQL {sv.get("pg", "?")}, '
+            f'one container of {S.meta["cpus"]} CPUs; {noisy} NOISY window{"s" * (noisy != 1)}. {reps}.',
             f'`sift_col` and `sift_table` run the defaults of that build ({setting("sift")}); the opt-in column is the `sift_col` layout in a database with {setting("sift_maint")} (all read back from the server). '
             'In bold: the best median of a row and the medians inside the range of its runs.']
 
@@ -124,7 +123,7 @@ def tables(S, detail):
         emit(f'**The read around a churn**, {s:,} orders (the monthly revenue query' + (' and the average shipped order' if detail else '') + ': p50 milliseconds, CPU and MB read of a request; lower is better)', s,
              [(f'{label}: {name}' if detail else name, (q, v, 'latency_ms', 'cpu_ms', 'read_mb')) for q, label in qs for v, name in STATES]
              + [('a single-row change seen by the next query', ('-', 'commit', 'visible_ms', PROBE, PROBE))])
-    for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of docs/BENCHMARKS.md every size
+    for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of bench/out/BENCHMARKS.md every size
         emit(f'**VACUUM (ANALYZE)**, {s:,} orders (milliseconds, CPU, MB of WAL)', s, [('VACUUM', ('-', 'maintenance', ('maintain_s', SECONDS), 'maintain_cpu_ms', 'wal_mib'))])
     cs = S.churn_size()
     if cs:
@@ -168,20 +167,20 @@ def losses(S):
 
 
 def readme_block(S):
-    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](docs/img/updates-reads.svg)', '']
+    out = header(S) + [''] + tables(S, False) + ['![The monthly revenue read around a churn](img/updates-reads.svg)', '']
     ls = losses(S)
     out += ['**What is slower, and why**', ''] + ['- ' + x for x in ls] if ls else ['No cell of this pass is slower than PostgreSQL, and no read is slowed more than tenfold by the changes.']
     out += ['']
-    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes).']
+    out += ['- Method, the steps, every run and the comparison with Elasticsearch and ClickHouse: [BENCHMARKS.md](BENCHMARKS.md#updates-and-deletes).']
     return out
 
 
 def benchmarks_block(S):
     out = header(S) + ['', 'Steps (`bench/steps/store_updates.py`, `bench/steps/store_section.py`): update 1% (`id % 100 = 0`), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`) in statements of 1,000 ids over one connection, '
                        'the reads before, right after and after `VACUUM (ANALYZE)`, then the steady churn and the inserts only on a freshly loaded table of each lane.', '']
-    noise = [[t, r['loadavg'][0], f'{r["churn_seconds"]} s' if r['churn_seconds'] else 'none', ', '.join(sorted(n.split(':')[0].split(' ')[-1] for n in r.get('noisy') or [])) or 'none'] for t, r in S.meta['runs'].items()]
-    out += tables(S, True) + ['**The runs** (load average at the start; the lanes whose window was NOISY: other work of the host above its idle level)', '']
-    out += md_table(['run', 'load average', 'churn windows', 'NOISY lanes'], noise) + ['']
+    noise = [[t, f'{r["churn_seconds"]} s' if r['churn_seconds'] else 'none', ', '.join(sorted(n.split(':')[0].split(' ')[-1] for n in r.get('noisy') or [])) or 'none'] for t, r in S.meta['runs'].items()]
+    out += tables(S, True) + ['**The runs** (the lanes whose window was NOISY: other work of the host above its idle level)', '']
+    out += md_table(['run', 'churn windows', 'NOISY lanes'], noise) + ['']
     return out + ['Every run is in `bench/results/updates.json`; the cells above are the median of the runs with their range.']
 
 

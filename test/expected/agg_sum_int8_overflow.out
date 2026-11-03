@@ -12,6 +12,9 @@ SELECT i, 'k' || i % 5,
        jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'qty', 2147483647 - (i * j) % 7)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, kind, doc) WITH (paths = 'doc.parts[]{cat text, qty int4}');
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) events;
 CREATE TABLE cases (n int, shape text, q text);
 INSERT INTO cases VALUES

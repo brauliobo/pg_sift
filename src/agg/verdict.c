@@ -119,6 +119,7 @@ static bool vshm_failed;
 #ifdef SIFT_TESTING
 bool		sift_test_verdict_fail = false;
 bool		sift_test_verdict_gate = false;
+int			sift_test_direct_max = 0;
 
 /* Testing (sift.test_verdict_gate): a backend whose lookup found no verdict waits for the advisory lock (20984, 1) to be free, so that a test lets another backend plan and keep the same verdict first (test/t/verdict_shared.sh) */
 static void
@@ -263,40 +264,56 @@ verdict_new_planning(void)
 	n_memo = 0;
 }
 
-/* the settings a plan depends on: the planner's (methods, costs), the memory a plan may use and the extension's */
+/*
+ * The settings a plan depends on: the planner's (methods, costs), the memory a plan may use and the extension's. Which settings those are is decided once
+ * (get_guc_variables sorts the table of every setting: 0.5 M instructions); their values are read for each planning. A setting defined after the first planning of the
+ * backend (another module's) is not in the key.
+ */
+static char **setting_names;
+static int	n_setting_names;
+
 static uint64
 settings_hash(void)
 {
-	int			n;
-	struct config_generic **vars = get_guc_variables(&n);
 	uint64		h = 0;
 
 	if (settings_known)
 		return settings_memo;
-
-	for (int i = 0; i < n; i++)
+	if (setting_names == NULL)
 	{
-		const struct config_generic *g = vars[i];
-		bool		planner;
+		int			n;
+		struct config_generic **vars = get_guc_variables(&n);
+		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
 
-		switch (g->group)
+		setting_names = palloc(sizeof(char *) * n);
+		n_setting_names = 0;
+		for (int i = 0; i < n; i++)
 		{
-			case QUERY_TUNING_METHOD:
-			case QUERY_TUNING_COST:
-			case QUERY_TUNING_GEQO:
-			case QUERY_TUNING_OTHER:
-				planner = true;
-				break;
-			default:
-				planner = strncmp(g->name, "sift.", 5) == 0 || strcmp(g->name, "work_mem") == 0 || strcmp(g->name, "hash_mem_multiplier") == 0 ||
-					strcmp(g->name, "max_parallel_workers_per_gather") == 0;
-		}
-		if (planner)
-		{
-			const char *v = GetConfigOption(g->name, false, false);
+			const struct config_generic *g = vars[i];
+			bool		planner;
 
-			h = hash_combine64(h, hash_bytes_extended((const unsigned char *) v, strlen(v), 0));
+			switch (g->group)
+			{
+				case QUERY_TUNING_METHOD:
+				case QUERY_TUNING_COST:
+				case QUERY_TUNING_GEQO:
+				case QUERY_TUNING_OTHER:
+					planner = true;
+					break;
+				default:
+					planner = strncmp(g->name, "sift.", 5) == 0 || strcmp(g->name, "work_mem") == 0 || strcmp(g->name, "hash_mem_multiplier") == 0 ||
+						strcmp(g->name, "max_parallel_workers_per_gather") == 0;
+			}
+			if (planner)
+				setting_names[n_setting_names++] = pstrdup(g->name);
 		}
+		MemoryContextSwitchTo(old);
+	}
+	for (int i = 0; i < n_setting_names; i++)
+	{
+		const char *v = GetConfigOption(setting_names[i], false, false);
+
+		h = hash_combine64(h, hash_bytes_extended((const unsigned char *) v, strlen(v), 0));
 	}
 	settings_known = true;
 	settings_memo = h;

@@ -130,7 +130,7 @@ analyze_load_vblock(SiftTblScan *s)
 		keep = s->an_mask;
 	}
 	s->ari = 0;
-	s->narows = sift_tbl_gscan_block(s->g, vblock, keep, s->arows, s->axmin, s->acmin);
+	s->narows = sift_tbl_gscan_block(s->g, vblock, keep, s->arows, s->axmin, s->acmin, NULL);
 }
 
 bool
@@ -303,10 +303,10 @@ build_chain(Relation rel, SiftTblScan *s, const SiftTblRowVer *rv, TransactionId
 				next;
 	bool		found = false;
 
-	if (st->hotm == NULL)
+	if (st->tomb.hotm == NULL)
 		return CHAIN_NONE;
 	*root = key;
-	if (sift_tbl_hot_pred(st, key, root))
+	if (sift_tomb_hot_pred(&st->tomb, key, root))
 	{
 		ItemPointerData ptid;
 		SiftTblRowVer prv;
@@ -318,7 +318,7 @@ build_chain(Relation rel, SiftTblScan *s, const SiftTblRowVer *rv, TransactionId
 			sift_tbl_free_row(&prv);
 			return CHAIN_SKIP;
 		}
-		while (sift_tbl_hot_pred(st, *root, &pred))
+		while (sift_tomb_hot_pred(&st->tomb, *root, &pred))
 			*root = pred;
 	}
 	else if (!sift_tbl_hot_next(st, key, &next))

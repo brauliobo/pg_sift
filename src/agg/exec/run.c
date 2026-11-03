@@ -145,6 +145,8 @@ run_scan(AggExec *ex)
 	none = join_none(ex);
 	ex->ndsorder = 0;
 	ex->dsabort = false;
+	ex->pass_w = 0;
+	ex->pass_all = ex->pass_fixed = false;
 	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
 	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
 		par_launch(ex);
@@ -165,8 +167,26 @@ run_scan(AggExec *ex)
 		spine_load(ex);
 	if (ex->ndsorder > 0)
 		dist_stream_scan(ex);
+	else if (gstream_begin(ex))
+		return;					/* the superblocks are read as the groups are asked for (spill_more), the last of them ends the scan */
 	else if (ex->par == NULL || parallel_leader_participation)
-		scan_items(ex);
+	{
+		if (pass_forced(ex))
+			pass_scan(ex);
+		else
+		{
+			scan_items(ex);
+			if (ex->pass_stop)
+				pass_scan(ex);
+		}
+	}
+	scan_tail(ex);
+}
+
+/* the end of the scan: what the rows of the last item leave to do before the groups are the result */
+void
+scan_tail(AggExec *ex)
+{
 	backend_finish(ex);
 	/* the rows of a preserved side that no tuple matched, and of a spine that no cell joined: after the workers told which they matched */
 	if (ex->par && (join_preserved(ex->spec) || ex->spec->spine))
@@ -177,8 +197,7 @@ run_scan(AggExec *ex)
 		spine_tail(ex);
 	if (ex->par && ex->par->pcxt)
 		par_finish(ex);
-	if (spill_started(ex))
-		spill_finish(ex);
+	spill_finish(ex);
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
 		if (ex->acc[i].dt)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
@@ -385,6 +404,53 @@ group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 	ExecStoreVirtualTuple(slot);
 }
 
+/*
+ * The groups of an ordered result are read in the order of the sort, which is not the order they sit in: every key id and accumulator of the next group is a cache miss.
+ * They are fetched ahead in two steps (the ids of a group, then what the ids point at), a few groups before the tuple is built.
+ */
+#define GROUP_AHEAD 16
+
+static void
+group_prefetch_state(AggExec *t, uint32 g)
+{
+	if (t->hash)
+		__builtin_prefetch(&t->hkey[(Size) g * t->spec->nkeys]);
+	for (int i = 0; i < t->spec->naggs; i++)
+	{
+		const AggAcc *acc = &t->acc[i];
+
+		if (acc->n)
+			__builtin_prefetch(&acc->n[g]);
+		if (acc->i)
+			__builtin_prefetch(&acc->i[g]);
+		if (acc->w)
+			__builtin_prefetch(&acc->w[g]);
+		if (acc->d)
+			__builtin_prefetch(&acc->d[g]);
+		if (acc->nf)
+			__builtin_prefetch(&acc->nf[g]);
+	}
+}
+
+static void
+group_prefetch_keys(AggExec *t, uint32 g)
+{
+	for (int j = 0; j < t->spec->nkeys; j++)
+	{
+		const KeyState *k = &t->ks[j];
+		uint32		id = key_id(t, j, g);
+
+		if (id == 0)
+			continue;
+		if (k->numk)
+			__builtin_prefetch(&k->im.val[id - 1]);
+		else if (k->ident)
+			__builtin_prefetch(&k->idval[id - 1]);
+		else
+			__builtin_prefetch(&k->ot.val[id - 1]);
+	}
+}
+
 /* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
 static bool
 group_slot(AggExec *ex, TupleTableSlot *slot)
@@ -394,6 +460,10 @@ group_slot(AggExec *ex, TupleTableSlot *slot)
 	while (ex->gpos >= t->nglist)
 		if (!spill_more(ex))
 			return false;
+	if (ex->gpos + GROUP_AHEAD < t->nglist)
+		group_prefetch_state(t, t->glist[ex->gpos + GROUP_AHEAD]);
+	if (ex->gpos + GROUP_AHEAD / 2 < t->nglist)
+		group_prefetch_keys(t, t->glist[ex->gpos + GROUP_AHEAD / 2]);
 	group_tuple(t, t->glist[ex->gpos++], slot);
 	return true;
 }
@@ -405,6 +475,17 @@ group_slot(AggExec *ex, TupleTableSlot *slot)
 void
 part_flush(AggExec *ex)
 {
+	dist_finish_all(ex);
+	mapped_finish(ex);
+	list_groups(ex);
+	done_put(ex);
+	table_reset(ex);
+}
+
+/* the groups listed (glist) as tuples of the result, kept for agg_next */
+void
+done_put(AggExec *ex)
+{
 	TupleTableSlot *slot = ex->css.ss.ss_ScanTupleSlot;
 	MemoryContext tmp = AllocSetContextCreate(ex->cxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES),
 				old = MemoryContextSwitchTo(tmp);
@@ -412,23 +493,21 @@ part_flush(AggExec *ex)
 	if (ex->done == NULL)
 	{
 		MemoryContextSwitchTo(ex->cxt);
-		ex->done = tuplestore_begin_heap(false, false, work_mem);
+		ex->done = tuplestore_begin_heap(true, false, work_mem);
 		MemoryContextSwitchTo(tmp);
 	}
-	dist_finish_all(ex);
-	mapped_finish(ex);
-	list_groups(ex);
 	for (uint32 i = 0; i < ex->nglist; i++)
 	{
 		group_tuple(ex, ex->glist[i], slot);
 		tuplestore_puttupleslot(ex->done, slot);
 	}
 	ex->n_flushed += ex->nglist;
+	if (ex->glist)
+		pfree(ex->glist);
 	ex->glist = NULL;
 	ex->nglist = 0;
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	table_reset(ex);
 }
 
 static TupleTableSlot *
@@ -442,7 +521,8 @@ agg_next(ScanState *node)
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
-		finish_groups(ex);
+		if (ex->gs == NULL)
+			finish_groups(ex);
 		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
 		if (ex->spec->gtopn_k > 0 && !ex->done && !spill_started(ex))
 			groups_topn(ex);
@@ -488,6 +568,35 @@ engine_rels(AggExec *ex)
 	ex->heap_opened = true;
 }
 
+/* the vectors a unit is read into, one per leaf of the source */
+static void
+open_vectors(AggExec *ex)
+{
+	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+}
+
+/* what engine_open left for a walk of the global order that may answer the scan alone (open_deferred): the rest of a scan the units read */
+void
+engine_open_rest(AggExec *ex)
+{
+	MemoryContext old;
+
+	if (!ex->open_deferred)
+		return;
+	ex->open_deferred = false;
+	old = MemoryContextSwitchTo(ex->cxt);
+	open_vectors(ex);
+	register_combos(ex);
+	prune_init(ex);
+	table_init(ex);
+	MemoryContextSwitchTo(old);
+}
+
 /* The scan engine on the relations of the spec: shared by the node and by a parallel worker */
 void
 engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
@@ -496,18 +605,19 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 
 	ex->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
 	ex->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
-	ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
-		sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
+	if (ex->kept)
+		ex->src = ex->kept;
+	else if (ex->param_scan && ex->spec->topn && ex->spec->nparts == 0)
+		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES));
+	else
+		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
+			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);
 	ex->lay = sift_colsrc_source_layout(ex->src);
 	extend_layout(ex);
-	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
-	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
-	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
-	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
-	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
-	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
+	if (!ex->open_deferred)
+		open_vectors(ex);
 	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
 	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ex->lutcx = CreateStandaloneExprContext();
@@ -523,12 +633,14 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
-	register_combos(ex);
+	if (!ex->open_deferred)
+		register_combos(ex);
 	join_filters(ex, old);
 	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok) */
 	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
-	prune_init(ex);
+	if (!ex->open_deferred)
+		prune_init(ex);
 	filter_init(ex);
 	type_init(ex);
 	recheck_init(ex);
@@ -566,16 +678,20 @@ engine_close(AggExec *ex)
 		table_close(ex->heap, NoLock);
 }
 
-/* the scan's memory, and the spec in it: a scan that starts over (agg_rescan) drops both */
+/* the scan's memory, and the spec in a context of its own: a scan that starts over (agg_restart) drops the first and keeps the second */
 static void
 scan_spec(AggExec *ex, MemoryContext parent)
 {
-	MemoryContext old;
-
 	engine_contexts(ex, parent);
-	old = MemoryContextSwitchTo(ex->cxt);
-	ex->spec = sift_aggspec_unpack(ex->pack);
-	MemoryContextSwitchTo(old);
+	if (ex->unpacked == NULL)
+	{
+		MemoryContext cx = AllocSetContextCreate(parent, "sift agg spec", ALLOCSET_DEFAULT_SIZES),
+					old = MemoryContextSwitchTo(cx);
+
+		ex->unpacked = sift_aggspec_unpack(ex->pack);
+		MemoryContextSwitchTo(old);
+	}
+	ex->spec = ex->unpacked;
 }
 
 static void
@@ -617,12 +733,14 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->units_set_pruned += c->par->cc.units_set_pruned;
 		cc->units_search_pruned += c->par->cc.units_search_pruned;
 		cc->rows_vetted += c->par->cc.rows_vetted;
+		cc->rows_log += c->par->cc.rows_log;
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
 		cc->recheck_units += c->par->cc.recheck_units;
 		cc->point_units += c->par->cc.point_units;
 		cc->point_rows += c->par->cc.point_rows;
 		cc->run_windows += c->par->cc.run_windows;
+		cc->dirty_rows += c->par->cc.dirty_rows;
 	}
 }
 
@@ -648,7 +766,8 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
 	if (OidIsValid(c->spec->indexoid))
-		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted);
+		/* the rows the log decided read no heap page: a VACUUM would not spare their scan anything */
+		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted - cc.rows_log, cc.dirty_rows);
 	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
 	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
 	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);
@@ -683,7 +802,11 @@ agg_end(CustomScanState *node)
 	spill_end(ex);
 	if (ex->started && !ex->fuse)
 		stats_run(ex);
+	if (ex->kept && ex->src == NULL)
+		ex->src = ex->kept;
 	engine_close(ex);
+	if (ex->kept)
+		MemoryContextDelete(GetMemoryChunkContext(ex->kept));
 	foreach_ptr(AggExec, w, ex->retries)
 	{
 		engine_close(w);
@@ -691,6 +814,8 @@ agg_end(CustomScanState *node)
 	}
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
+	if (ex->unpacked)
+		MemoryContextDelete(GetMemoryChunkContext(ex->unpacked));
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
 }
@@ -703,19 +828,42 @@ static void
 agg_restart(AggExec *ex)
 {
 	bool		rescannable = ex->rescannable;
+	SiftAggSpec *unpacked = ex->unpacked;
+	SiftSrcSource *kept = NULL;
+	Relation	heap = ex->heap,
+				index = ex->index;
 
 	if (ex->started)
 		stats_run(ex);
+	/* the source and the relations it holds stay for the next probe when the source has read nothing but its filters; else it ends with the scan */
+	if (ex->kept && (ex->src == NULL || sift_colsrc_rescan(ex->src)))
+	{
+		kept = ex->kept;
+		ex->src = NULL;
+		ex->index = NULL;
+		ex->heap_opened = false;
+	}
 	engine_close(ex);
+	if (ex->kept && kept == NULL)
+		MemoryContextDelete(GetMemoryChunkContext(ex->kept));
 	MemoryContextDelete(ex->cxt);
 	memset((char *) ex + sizeof(CustomScanState), 0, sizeof(AggExec) - sizeof(CustomScanState));
+	ex->unpacked = unpacked;
 	ex->pack = ((CustomScan *) ex->css.ss.ps.plan)->custom_private;
 	ex->params = ex->css.ss.ps.state->es_param_list_info;
 	ex->snap = ex->css.ss.ps.state->es_snapshot;
 	ex->rescannable = rescannable;
 	ex->param_scan = true;
 	scan_spec(ex, ex->css.ss.ps.state->es_query_cxt);
-	engine_rels(ex);
+	if (kept)
+	{
+		ex->kept = kept;
+		ex->heap = heap;
+		ex->index = index;
+		ex->heap_opened = true;
+	}
+	else
+		engine_rels(ex);
 }
 
 static void
@@ -731,6 +879,11 @@ agg_rescan(CustomScanState *node)
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
 	if (spill_rescan(ex))
 		return;
+	if (ex->done)
+	{
+		tuplestore_rescan(ex->done);
+		return;
+	}
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);

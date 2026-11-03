@@ -25,6 +25,8 @@ CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing
           -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
           -Dsift_count=codec_count -Dsift_topk=codec_topk
 LIBS    = -lm -lpthread -ldl
+# what the UDFs take from the server process (isa-check: nothing else may stay undefined)
+SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
@@ -87,7 +89,7 @@ mdb-inc:
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-mariadb.sh).
 isa-check: $(OUT)/libsift_udf.so
-	@sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o
+	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o
 
 .PHONY: all mdb-inc isa-check
 

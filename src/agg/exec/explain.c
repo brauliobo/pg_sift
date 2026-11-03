@@ -288,6 +288,7 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	sift_explain_int(&ln, "Dense Chunks", NULL, "dense chunks", c->n_dense, 0);
 	sift_explain_int(&ln, "Combo Caches Restarted", NULL, "combo caches restarted", c->n_combo_trim, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Rows Vetted By Heap", NULL, "vetted by heap", cc->rows_vetted, 0);
+	sift_explain_int(&ln, "Rows Decided By The Log", NULL, "of them decided by the tombstone log", cc->rows_log, SIFT_XI_SUB | SIFT_XI_OPT);
 	sift_explain_int(&ln, "Heap Pages", NULL, "heap pages", cc->heap_pages, 0);
 	if (c->recheck)
 		sift_explain_int(&ln, "Rows Read Again From The Heap", NULL, "re-read from the heap", cc->rechecked, SIFT_XI_KEEP);
@@ -301,6 +302,9 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	sift_explain_int(&ln, "Ordered Sets Spilled", NULL, "ordered sets spilled", c->n_osa_spilled, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Table Spills", NULL, "group table spills", c->n_spills, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Group Passes", NULL, "group passes", c->n_passes, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Group Pass Restarts", NULL, "group pass restarts", c->n_pass_restarts, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Group Stream Batches", NULL, "group stream batches", c->n_gs, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Distinct Sets Spilled", NULL, "distinct sets spilled", c->n_dist_spilled, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Distinct Chunks Merged", NULL, "distinct chunks merged", c->n_dist_chunks, SIFT_XI_OPT);
 	if (c->ndsorder)
@@ -373,6 +377,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			explain_correlated(node, i, es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
+	if (s->gpart > 0)
+		ExplainPropertyText("Groups Split By", s->key[s->gpart - 1].desc, es);
 	if (s->wide_unit_rows > 0)
 		ExplainPropertyText("Workers Priced For", "the rows the scan reads", es);
 	if (es->analyze && ex->started)

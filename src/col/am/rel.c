@@ -13,11 +13,20 @@
 #include "core/limits.h"
 #include "col/am/am_int.h"
 
-COL_OPT_STR(sift_col_options_order_columns, order_columns, "")
+COL_OPT_STR_KO(sift_col_options_order_columns, order_columns, ko_last)
 
-COL_OPT_STR(sift_col_options_order_array_group, order_array_group, "")
+COL_OPT_STR_KO(sift_col_options_order_array_group, order_array_group, ko_group)
 
-COL_OPT_STR(sift_col_options_order_array_columns, order_array_columns, NULL)
+/* NULL while it is not set (the build chooses); '' is the user's none */
+const char *
+sift_col_options_order_array_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_columns ? (const char *) o + o->order_array_columns : o->ko_last ? (const char *) o + o->ko_last : NULL;
+}
+
+COL_OPT_STR(sift_col_options_order_layout, order_layout, "")
 
 COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
 
@@ -133,20 +142,52 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
 		r->pagg.super = sift_col_options(index)->superunit;
+		for (int k = 0; k < 2 && sift_col_options(index)->ko_lead; k++)
+		{
+			const SiftColOptions *ko = sift_col_options(index);
+			const char *c = (const char *) ko + (k ? ko->ko_last : ko->ko_lead);
+			int			i = 0;
+
+			while (i < n && strcmp(names[i], c) != 0)
+				i++;
+			if (i == n)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option: column \"%s\" is not a column of the index", c)));
+		}
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
-										"not an integer, date, timestamp or text column")) != NULL)
+										"not an integer, date, timestamp, numeric or text column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
 				r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
+		if ((err = sift_cgord_layout_parse(sift_col_options_order_layout(index), r->schema, (const char *const *) names, r->pagg.glayout)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_layout option: %s", err)));
 		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
 		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
 		{
 			bool		grp[SIFT_COL_MAX_COLS] = {false};
 			int			ng = 0;
+			const char *with = r->pagg.gorder_group_auto ? strchr(glist, ';') : NULL;
+			const char *only;
 
+			/* 'auto: g, a, b; c, d': the arrays that are grouped beside their plain order, after the ';' */
+			if (with != NULL)
+			{
+				if ((err = sift_cpagg_leaf_list(with + 1, r->schema, (const char *const *) names, r->pagg.gorder_with, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+				r->pagg.gorder_listed = true;
+				glist = pnstrdup(glist, with - glist);
+			}
+			only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
+
+			/* 'auto: g, a, b': the arrays after the group keep the second order only */
+			if (only != NULL)
+			{
+				if ((err = sift_cpagg_leaf_list(only + 1, r->schema, (const char *const *) names, r->pagg.gorder_only, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+				glist = pnstrdup(glist, only - glist);
+			}
 			if ((err = sift_cpagg_leaf_list(glist, r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
 											"not an integer, date or timestamp column")) != NULL)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
@@ -161,6 +202,11 @@ build_rel(Relation index, MemoryContext mcxt)
 			if (ng != 1)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
 		}
+		/* the second order of the second key column grouped by the first is what an ordered index-only scan of (g, k) reads group after group, and it gives exact keys (amscan/ordered.c): whole chunks unless order_layout says otherwise */
+		if (r->pagg.gorder_group > 0 && defs[r->pagg.gorder_group - 1].attno == 1)
+			for (int i = 0; i < n; i++)
+				if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
+					r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
 				;
@@ -223,6 +269,21 @@ build_rel(Relation index, MemoryContext mcxt)
 			r->cut_rows = sift_col_options(index)->key_cut_rows;
 		}
 	}
+	if (sift_col_row_key_on(index))
+	{
+		const char *rk = sift_col_options_row_key(index);
+		int			id = -1;
+
+		for (int i = 0; i < n && id < 0; i++)
+			if (strcmp(names[i], rk) == 0)
+				id = i;
+		if (id < 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_changes option: \"%s\" is not a column of the index", rk)));
+		for (int a = 1; a <= natts; a++)
+			if (r->first[a] == id)
+				r->rowkey_attno = a;
+		r->rowkey = true;
+	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
@@ -275,6 +336,13 @@ sift_col_index_defs(Relation index)
 	r->meta.valid = index->rd_index->indisvalid && index->rd_index->indisready && index->rd_index->indislive;
 	r->meta.partial = !heap_attisnull(index->rd_indextuple, Anum_pg_index_indpred, NULL);
 	return &r->meta;
+}
+
+/* The name of a leaf: its path (a jsonb path, a lane), else the column it comes from; leaves are not index attributes, there are more of them than columns */
+const char *
+sift_col_leaf_name(Relation index, const SiftColDef *def)
+{
+	return def->path[0] ? def->path : NameStr(TupleDescAttr(RelationGetDescr(index), def->attno - 1)->attname);
 }
 
 Node *

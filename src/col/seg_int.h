@@ -244,6 +244,7 @@ extern bool sift_lst_sampled(const SiftColDef *def);
 #define DICT_LZ4_COST		6000
 #define BISECT_MIN			2048	/* the dictionaries of fewer strings are parsed after DICT_PARSE_AFTER tests: their bisection is short */
 #define BISECT_SLOTS_MAX	8192
+#define LOOK_KEEP			32		/* compressed blocks kept per dictionary: 14,600 instructions to decompress against 200 to copy; the rank bisections of a text cut read 261 blocks, 110 of them again within 64 reads */
 #define BISECT_STR			24	/* a string up to this long is kept in its slot */
 #define BISECT_NOSTR		UINT16_MAX
 
@@ -285,6 +286,22 @@ typedef struct SiftCBisect
 	BisectSlot	slot[FLEXIBLE_ARRAY_MEMBER];
 } SiftCBisect;
 
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* the blocks look_block decompressed (sift._test_col_gdead_stats) */
+#define DICT_BLOCK_DECODED() (sift_cseg_dict_blocks++)
+#else
+#define DICT_BLOCK_DECODED() ((void) 0)
+#endif
+
+/* A block of strings that was decompressed for a string by code, kept for the next ones of the backend (look_block) */
+typedef struct LookKept
+{
+	uint32		b1;				/* block + 1, 0: empty */
+	uint32		cap;
+	uint16		off[DICT_BLOCK + 1];
+	uint8	   *raw;
+} LookKept;
+
 /* A dictionary stored plain or in blocks (DICT_PLAIN, DICT_BLOCKS, DICT_LOOKUP): where its parts lie in the stream */
 typedef struct DictLook
 {
@@ -313,12 +330,17 @@ typedef struct DictLook
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
 	bool		bc_tried;
+	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
+	uint32		kept_next;
 	/* written before they are read, so not cleared with the rest (look_alloc) */
 	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
 	uint8		blkraw[DICT_BLOCK_RAW_MAX];
 	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
+
+extern void sift_cseg_look_load(DictLook *l, uint32 b);
+extern void sift_cseg_look_block(DictLook *l, uint32 b);
 
 /* The block of a leaf's point directory (col/point.h): stream offset of its table, slots, distinct keys, rows listed, words of the lists after the table */
 typedef struct PointLeaf
@@ -348,9 +370,26 @@ typedef struct GOrdLeaf
 	uint32		nstr;			/* a text block: the number of strings (read by the first one; 0 until then), the block of them in sblk (sbno, sblen bytes; UINT32_MAX: none) */
 	uint32		sbno;
 	uint32		sblen;
+	uint32		pbits;			/* version 5: the bits of a code in the section of the strings */
+	SiftCDict  *sdict;			/* ... and the dictionary the strings are read from, once it is parsed */
 	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
 	SiftCStrPos spos;			/* the decode of the block, which goes on from the string decoded last */
+	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
+	int16		hatt;			/* ... and the heap attribute of the leaf */
+	uint32		hrel;			/* ... the heap (its Oid) */
+	bool		deadset;		/* ... and, in a segment with rows bulkdelete cleared, whether their addresses are listed in dead (ascending), which the heap no longer says anything of */
+	uint32		ndead;
+	SiftKey    *dead;
+	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
+	uint32		gprobes;
+	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
 } GOrdLeaf;
+
+/* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */
+extern bool (*sift_gprobe_ok) (SiftColSegment *seg, GOrdLeaf *g, int col);
+extern void *(*sift_gprobe_open) (SiftColSegment *seg, GOrdLeaf *g, int col);
+extern void (*sift_gprobe_close) (void *probe);
+extern bool (*sift_gprobe_key) (void *probe, uint64 addr, int64 *key);
 
 typedef struct SegPriv
 {
@@ -364,6 +403,8 @@ typedef struct SegPriv
 	bool		unit_kept;		/* unitbuf goes back to the backend's spare buffers when the segment's context ends (seg.c, unit_room) */
 	PaggHeader *pagg;			/* the sidecar's header, read on first use */
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
+	struct SegNet *net;		/* the net pre-aggregates of the dirty units (col/seg/net.c), NULL: the segment has none */
+	bool		net_read;
 	const uint8 *lst;			/* the leaf statistics block (LstHeader first), NULL: the segment has none */
 	bool		lst_read;
 	uint64	   *cubedir;		/* nsb + 1 */
@@ -389,6 +430,7 @@ typedef struct SegPriv
 	uint64    **setdir;			/* [ncols] its directory, once read */
 	uint8	   *setbuf;
 	Size		setcap;
+	struct SetsOpen **setopen;	/* [ncols] the opened summaries of the units of a leaf whose blobs are small, once found or made */
 	SetsLeaf   *hlls;			/* [ncols] the sketch record of each leaf (dir_off 0: none), read on first use */
 	uint64    **hlldir;			/* [ncols] its directory, once read */
 	uint8	   *hllbuf;
@@ -437,6 +479,9 @@ extern void sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, Memor
 /* The zone arrays of leaf col of seg from the cache (pinned for the segment's context), else NULL; keep takes the ones made in cx, a child of the segment's context */
 extern ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
 extern void sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z);
+/* ... and the opened small-set summaries of the units of leaf col (sets.c), made in cx the same way */
+extern void *sift_cseg_sets_find(SiftColSegment *seg, int col);
+extern void sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets);
 
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
 typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);
@@ -449,6 +494,8 @@ extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);
 /* A test the signatures hardly helped (spent: the cost it counts) makes the next search parse the dictionary, as the searches of the stream would have after DICT_PARSE_AFTER */
 /* The bytes of parsed dictionaries a backend keeps (dict_cache_kb), and what a dictionary of n strings of nbytes takes parsed: the strings, an offset and the lookup slots of each */
 extern Size sift_cdict_cache_budget(void);
+/* The share of that cache that the dictionaries of an index (one a segment, parsed) may take for its text order array to name strings by code: past it they are thrown out of the cache and the shared ring as fast as they are read, and each equality parses one again */
+#define CDICT_CODES_PCT		75
 extern Size sift_cdict_parsed_bytes(Size nbytes, uint32 n);
 extern void sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent);
 /* Adds add to what the checks of strings the hash of the dictionary found cost in this backend, and returns the sum: the dictionary is parsed once they cost what the parse does (DICT_PARSE_COST) */
@@ -477,6 +524,10 @@ extern const RunsLeaf *	seg_run_leaf(SiftColSegment *seg, int col);
 extern bool	seg_within(uint64 room, uint64 off, uint64 a, uint64 b);
 extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len);
 extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
+extern bool		seg_gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern uint32	seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo);
+extern uint32	seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo);
+extern void		seg_gord_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n);
 
 /* The heap addresses a table of addresses lists (column format minor 16): the payload of a slot is one address, or a list at a word offset */
 typedef struct TidAcc
@@ -507,5 +558,6 @@ extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
 extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g);
 extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c);
 extern uint64	seg_gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern uint32	seg_gord_perm(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r);
 
 #endif

@@ -1,6 +1,6 @@
 -- DISTINCT ON in the aggregate scan (docs/AGG.md, "DISTINCT ON"): a group by the ON columns that keeps, for each group, the columns of the first row by the ORDER BY.
--- The ORDER BY must be a total order of the rows (it holds the columns of a unique index of the table), else the row PostgreSQL's sort picks is its choice and
--- the plan stays. Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
+-- Rows of a group that tie in the ORDER BY have no order: SQL leaves the row DISTINCT ON keeps unspecified, so the scan keeps one of them (same_tied below compares the ON and sort
+-- columns with the normal plan and checks that the row is a row of the table). Every other statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the sort and the btree plans from looking cheap as well
@@ -40,6 +40,21 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
+-- a statement whose ORDER BY leaves ties (its select list holds the id): the pairs (ON and sort columns) are those of the normal plan, whatever row of a tie each plan keeps, and the row is a row of the table
+CREATE FUNCTION same_tied(q text, pairs text, tbl regclass) RETURNS TABLE (plan text, result_rows bigint, pairs_vs_normal_plan bigint, rows_not_in_table bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	EXECUTE 'SELECT count(*) FROM r_on' INTO result_rows;
+	EXECUTE format('SELECT count(*) FROM ((SELECT %1$s FROM r_on EXCEPT SELECT %1$s FROM r_off) UNION ALL (SELECT %1$s FROM r_off EXCEPT SELECT %1$s FROM r_on)) d', pairs) INTO pairs_vs_normal_plan;
+	EXECUTE format('SELECT count(*) FROM r_on o WHERE NOT EXISTS (SELECT 1 FROM %s e WHERE e.id = o.id AND to_jsonb(e) @> to_jsonb(o))', tbl) INTO rows_not_in_table;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
 -- the plan: the aggregates are the first row's columns by the ORDER BY
 EXPLAIN (COSTS OFF) SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount FROM ev ORDER BY tenant_id, ts DESC, id;
 
@@ -70,55 +85,73 @@ SELECT * FROM same($$SELECT DISTINCT ON (kind) kind, id, amount, note FROM ev OR
 RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;
 SET max_parallel_workers_per_gather = 0;
 
--- the normal plan stays: no unique column in the ORDER BY (a tie would be PostgreSQL's sort's choice; a select list of the sort columns only gives the same rows),
--- a volatile function in the ORDER BY, more sort columns than the scan keeps. A volatile function of the select list is evaluated by PostgreSQL after the rows are picked.
-SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts FROM ev ORDER BY tenant_id, ts DESC$$) AS no_tie_break;
+-- ties: the days of a store repeat, so the row of the latest day is one of several; a LIMIT and a filter on top, text and NULL sort keys, a select list of the sort columns only
+SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day FROM ev ORDER BY tenant_id, day DESC$$) AS no_tie_break;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount, kind, note FROM ev ORDER BY tenant_id, day DESC$$, 'tenant_id, day', 'ev');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount FROM ev WHERE kind IS NOT NULL ORDER BY tenant_id, day$$, 'tenant_id, day', 'ev');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (kind) kind, id, tenant_id, note FROM ev ORDER BY kind NULLS LAST, tenant_id DESC$$, 'kind, tenant_id', 'ev');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (kind) kind, id, amount, day FROM ev ORDER BY kind NULLS FIRST, amount DESC NULLS LAST, day$$, 'kind, amount', 'ev');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day FROM ev ORDER BY tenant_id, day DESC LIMIT 7 OFFSET 2$$, 'tenant_id, day', 'ev');
+SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, day FROM ev ORDER BY tenant_id, day DESC$$);
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, ts FROM ev ORDER BY tenant_id, ts DESC$$);
+-- random statements over tied sort keys, with and without workers: the same pairs as the normal plan, and the row is a row of the table (fixed seed)
+CREATE FUNCTION fuzz_ties(n int) RETURNS TABLE (statements int, in_scan int, pairs_differ bigint, rows_not_in_table bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	ons text[] := ARRAY['tenant_id', 'kind', 'day', 'tenant_id, kind'];
+	cols text[] := ARRAY['day', 'amount', 'kind', 'note', 'ts', 'tenant_id', 'id % 7'];
+	dirs text[] := ARRAY['', ' DESC', ' DESC NULLS LAST', ' NULLS FIRST'];
+	filters text[] := ARRAY['', 'WHERE kind IS NOT NULL', 'WHERE tenant_id < 30', 'WHERE amount IS NOT NULL', 'WHERE day >= date ''2024-02-01''', 'WHERE id % 3 = 0'];
+	c text; sorts text; pairs text; q text; r record; col text;
+BEGIN
+	PERFORM setseed(0.42);
+	statements := 0; in_scan := 0; pairs_differ := 0; rows_not_in_table := 0;
+	FOR i IN 1..n LOOP
+		c := ons[1 + floor(random() * 4)::int];
+		sorts := ''; pairs := c;
+		FOR k IN 1..1 + floor(random() * 3)::int LOOP
+			col := cols[1 + floor(random() * 7)::int];
+			sorts := sorts || ', ' || col || dirs[1 + floor(random() * 4)::int];
+			pairs := pairs || ', ' || col;
+		END LOOP;
+		q := format('SELECT DISTINCT ON (%s) * FROM ev %s ORDER BY %s%s', c, filters[1 + floor(random() * 6)::int], c, sorts);
+		PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN i % 2 = 0 THEN '2' ELSE '0' END, true);
+		PERFORM set_config('parallel_setup_cost', '0', true);
+		PERFORM set_config('parallel_tuple_cost', '0', true);
+		PERFORM set_config('min_parallel_table_scan_size', '0', true);
+		SELECT * INTO r FROM same_tied(q, pairs, 'ev');
+		statements := statements + 1;
+		in_scan := in_scan + (r.plan LIKE 'SiftAgg%')::int;
+		pairs_differ := pairs_differ + r.pairs_vs_normal_plan;
+		rows_not_in_table := rows_not_in_table + r.rows_not_in_table;
+	END LOOP;
+	RETURN NEXT;
+END $$;
+SELECT * FROM fuzz_ties(120);
+DROP FUNCTION fuzz_ties(int);
+-- with workers
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount, kind FROM ev ORDER BY tenant_id, day DESC$$, 'tenant_id, day', 'ev');
+RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;
+SET max_parallel_workers_per_gather = 0;
+-- the normal plan stays: a volatile function in the ORDER BY, more sort columns than the scan keeps. A volatile function of the select list is evaluated by PostgreSQL after the rows are picked.
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id FROM ev WHERE tenant_id < 30 ORDER BY tenant_id, 0 * random(), id$$) AS volatile_sort;
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts FROM ev ORDER BY tenant_id, ts DESC, kind, day, note, amount, id$$) AS six_sort_columns;
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, 0 * random() AS z FROM ev ORDER BY tenant_id, ts DESC, id$$);
 
-CREATE TABLE tn (id int, g int, v int, w int, u int) WITH (autovacuum_enabled = false);
-INSERT INTO tn SELECT i, i % 20, (i * 31) % 97, i % 13, CASE WHEN i = 1 THEN NULL ELSE i END FROM generate_series(1, 4000) i;
-CREATE UNIQUE INDEX tn_id ON tn (id);
+CREATE TABLE tn (id int NOT NULL, g int, v int, w int, u int) WITH (autovacuum_enabled = false);
+INSERT INTO tn SELECT i, i % 20, (i * 31) % 97, i % 13, CASE WHEN i % 7 = 1 THEN NULL ELSE i % 400 END FROM generate_series(1, 4000) i;
 CREATE INDEX tn_col ON tn USING sift_col (id, g, v, w, u);
 VACUUM (FREEZE, ANALYZE) tn;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$) AS nullable_unique;
+-- a total order by the id, and a sort that ties (v repeats in every group), a NULL sort value that repeats, a condition on the sort column
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$);
-ALTER TABLE tn ALTER COLUMN id SET NOT NULL;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$) AS not_null_unique;
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$);
--- a plan prepared with the unique index is replanned when the index is dropped
-PREPARE p AS SELECT DISTINCT ON (g) g, id, v, w FROM tn ORDER BY g, v DESC, id;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, v, w FROM tn ORDER BY g, v DESC$$, 'g, v', 'tn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, u, v FROM tn ORDER BY g, u NULLS FIRST$$, 'g, u', 'tn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, u, v FROM tn WHERE u IS NULL OR u > 5 ORDER BY g, u$$, 'g, u', 'tn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, u, v, w FROM tn WHERE u >= 0 AND w < 12 ORDER BY g, u DESC$$, 'g, u', 'tn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, u, v FROM tn WHERE u = ANY (ARRAY[3, 4, 5, 21, 22]) ORDER BY g, u$$, 'g, u', 'tn');
+-- a prepared statement
+PREPARE p AS SELECT DISTINCT ON (g) g, v FROM tn ORDER BY g, v DESC;
 EXECUTE p;
-DROP INDEX tn_id;
-EXPLAIN (COSTS OFF) EXECUTE p;
-CREATE UNIQUE INDEX tn_id_part ON tn (id) WHERE v >= 0;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$) AS partial_unique;
-DROP INDEX tn_id_part;
--- a unique index over several columns, all of which the sort must hold (and which are NOT NULL), and one that takes NULLs as equal
-CREATE UNIQUE INDEX tn_gwi ON tn (g, w, id);
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, w, id$$) AS composite_nullable;
-ALTER TABLE tn ALTER COLUMN g SET NOT NULL, ALTER COLUMN w SET NOT NULL, ALTER COLUMN id SET NOT NULL;
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, w, id$$);
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, w DESC$$) AS composite_without_id;
-DROP INDEX tn_gwi;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u$$) AS nullable_u;
-CREATE UNIQUE INDEX tn_u ON tn (u) NULLS NOT DISTINCT;
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u NULLS FIRST$$);
-DROP INDEX tn_u;
--- a unique index lets NULLs repeat: rows that tie on a NULL u are PostgreSQL's choice, unless a strict condition of the WHERE clause leaves no such row
-INSERT INTO tn VALUES (4001, 1, 5, 0, NULL), (4002, 1, 50, 0, NULL), (4003, 2, 7, 0, NULL);
-CREATE UNIQUE INDEX tn_gu ON tn (g, u);
-ANALYZE tn;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn ORDER BY g, u NULLS FIRST$$) AS ties_on_null;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u IS NULL OR u > 5 ORDER BY g, u NULLS FIRST$$) AS or_is_not_strict;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE coalesce(u, 0) >= 0 ORDER BY g, u NULLS FIRST$$) AS coalesce_is_not_strict;
-SELECT plan_of($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE g IS NOT NULL AND v >= 0 ORDER BY g, u NULLS FIRST$$) AS strict_on_other_columns;
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u IS NOT NULL ORDER BY g, u NULLS FIRST$$);
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v, w FROM tn WHERE u >= 0 AND w < 12 ORDER BY g, u DESC$$);
-SELECT * FROM same($$SELECT DISTINCT ON (g) g, u, v FROM tn WHERE u = ANY (ARRAY[3, 4, 5, 21, 22]) ORDER BY g, u$$);
-DROP INDEX tn_gu;
 DEALLOCATE p;
 
 -- groups beyond the memory a hash aggregate gets (the best row of each is kept): the normal plan stays
@@ -137,7 +170,7 @@ CREATE INDEX tp_col ON tp USING sift_col (id, d, g, v);
 VACUUM (FREEZE, ANALYZE) tp;
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC, d, id$$);
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, d, v FROM tp WHERE d >= '2024-02-01' ORDER BY g, v DESC, d, id$$);
-SELECT plan_of($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC, id$$) AS partial_key;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC$$, 'g, v', 'tp');
 
 -- a sift_table
 CREATE TABLE tt (id int PRIMARY KEY, g int, v int, s text) USING sift_table;
@@ -153,12 +186,30 @@ BEGIN; DELETE FROM ev WHERE tenant_id < 20; ROLLBACK;
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount, kind, note FROM ev ORDER BY tenant_id, ts DESC, id$$);
 VACUUM ev;
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount, kind, note FROM ev ORDER BY tenant_id, ts DESC, id$$);
+SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount, kind FROM ev ORDER BY tenant_id, day DESC$$, 'tenant_id, day', 'ev');
 -- the rows of the transaction itself
 BEGIN;
 UPDATE ev SET ts = timestamp '2040-01-01' WHERE id = 7;
 SELECT tenant_id, id, ts FROM (SELECT DISTINCT ON (tenant_id) tenant_id, id, ts FROM ev ORDER BY tenant_id, ts DESC, id) t WHERE id = 7;
 ROLLBACK;
 
+-- one sort key that is a column of a by-value type, in many chunks: the best row of each group is found within a chunk before any value of it is copied. The key ties and holds NULLs, the
+-- rows come in the order of the key and in the opposite one, in both directions and with NULLs first and last
+CREATE TABLE evn (id int PRIMARY KEY, g int, k int, up int, ts timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO evn SELECT i, 1 + (i * 7919) % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE i / 40 % 150 END, i, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
+CREATE INDEX evn_col ON evn USING sift_col (id, g, k, up, ts);
+VACUUM (FREEZE, ANALYZE) evn;
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k DESC$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k NULLS FIRST$$, 'g, k', 'evn');
+SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k DESC NULLS LAST$$, 'g, k', 'evn');
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, up FROM evn ORDER BY g, up$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, up FROM evn ORDER BY g, up DESC$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, ts FROM evn ORDER BY g, ts DESC$$);
+SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, ts FROM evn WHERE id % 3 = 0 ORDER BY g, ts$$);
+DROP TABLE evn;
+
+DROP FUNCTION same_tied(text, text, regclass);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE tt, tp, tn, tenants, ev;

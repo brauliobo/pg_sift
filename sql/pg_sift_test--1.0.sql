@@ -78,6 +78,8 @@ CREATE FUNCTION sift._test_kern_digest(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_kern_digest' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_kern_equiv(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_kern_equiv' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_kern_attr_equiv(seed int8, iters int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_kern_attr_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_kern_bm25(tf int4, dl int4, k1 float4, b float4, avgdl float4,
 									 w float4) RETURNS float4
 	AS 'MODULE_PATHNAME', 'sift_test_kern_bm25' LANGUAGE C STRICT;
@@ -111,6 +113,11 @@ CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text,
 CREATE FUNCTION sift._test_segment_parts(index regclass, OUT gen int8, OUT part text, OUT bytes int8, OUT items int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_parts' LANGUAGE C STRICT;
+
+-- The INCLUDE values every doc of the segments of format 5 holds, as the filter reads them
+CREATE FUNCTION sift._test_attr_dump(index regclass, OUT gen int8, OUT blk int8, OUT off int4, OUT col int4, OUT state text, OUT val int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_attr_dump' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kind text, OUT format int4)
 	RETURNS SETOF record
@@ -171,11 +178,18 @@ CREATE FUNCTION sift._test_col_wbuf_long(index regclass) RETURNS void
 CREATE FUNCTION sift._test_col_wbuf_rows(index regclass, seed int8, OUT gen int8, OUT id int8, OUT deleted bool)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_rows' LANGUAGE C STRICT;
--- the live rows as batches (superblock, id), checked against the generator
-CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, OUT gen int8, OUT sb int8, OUT id int8)
+-- the live rows as batches (superblock, id), checked against the generator; shared: the batches the backend keeps for a scan, read at dirver
+CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bool DEFAULT false, dirver int8 DEFAULT -1, OUT gen int8, OUT sb int8, OUT id int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_batches' LANGUAGE C STRICT;
--- VACUUM's pass: flags the rows with id % modulus = 0; returns how many
+-- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
+CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_gkept_stats(OUT hits int8, OUT extends int8, OUT builds int8, OUT drops int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_gkept_stats' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_gdead_stats(OUT hits int8, OUT builds int8, OUT cut int8, OUT blocks int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_gdead_stats' LANGUAGE C STRICT;
+-- VACUUM's pass: flags the rows with id % modulus = 0, then bumps the version; returns how many
 CREATE FUNCTION sift._test_col_wbuf_delete(index regclass, modulus int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_delete' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_wbuf_seal(index regclass, force bool DEFAULT false) RETURNS int8
@@ -346,7 +360,7 @@ CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrow
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;
 
--- Table module (src/table/load.c): why the bulk load of a sift_table keeps the write buffers (NULL: it qualifies)
+-- Table module (src/table/load/refusal.c): why the bulk load of a sift_table keeps the write buffers (NULL: it qualifies)
 CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_bulk_refusal' LANGUAGE C;
 
@@ -417,6 +431,8 @@ CREATE FUNCTION sift._test_eq_sel(internal, oid, internal, int4) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel' LANGUAGE C STABLE STRICT;
 CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel_calls' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_vet_offsets(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_vet_offsets' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_source_lookups(reset bool) RETURNS int8
@@ -437,3 +453,36 @@ CREATE FUNCTION sift._test_col_dict_shared_hold(int4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_hold' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_posblk(seed int8, n int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_posblk' LANGUAGE C STRICT;
+
+-- A dictionary that maps words to others and answers nothing for the rest (src/bm25/analyze_ts_test.c), to chain in front of a stemmer
+CREATE FUNCTION sift._test_syn_init(internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_test_syn_init' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_syn_lexize(internal, internal, internal, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_test_syn_lexize' LANGUAGE C STRICT;
+CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE = sift._test_syn_lexize);
+
+-- the tombstone log of a heap column index (col/tomblog.c): add the segment, append an entry for a heap address by the current transaction, and list the entries in log order
+CREATE FUNCTION sift._test_col_log_create(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_create' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_append' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_log_hidden(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_hidden' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_unit_tombs(index regclass, OUT segment int8, OUT unit int4, OUT keyed bool, OUT rows int4, OUT pages int4, OUT pages_any int4, OUT pages_own int4, OUT tombs int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_unit_tombs' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_xid_state(xid) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_xid_state' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_tomb_header(rel regclass, legacy bool DEFAULT false, stale bool DEFAULT false, OUT covered bool, OUT flags int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_tomb_header' LANGUAGE C STRICT;

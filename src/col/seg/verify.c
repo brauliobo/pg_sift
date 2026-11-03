@@ -24,7 +24,12 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	if (g->hdr.strbytes != 0)
 		(void) seg_gord_strs(seg, g, col);
 	seg_gord_dir_read(seg, g);
-	if (g->hdr.gcol < 0 ? g->hdr.entries != total : g->hdr.entries > total)
+	if (g->hdr.vtotal != 0)
+	{
+		if (g->hdr.vtotal > total || g->hdr.entries - g->hdr.values > total - g->hdr.vtotal)
+			corrupt(seg, "The ends of the global order of leaf %d hold %u entries and %u values of %u rows, %u with a value.", col, g->hdr.entries, g->hdr.values, total, g->hdr.vtotal);
+	}
+	else if (g->hdr.gcol < 0 ? g->hdr.entries != total : g->hdr.entries > total)
 		corrupt(seg, "The global order of leaf %d holds %u entries for %u rows.", col, g->hdr.entries, total);
 	/* the chunks follow one another, and the first keys of a block that is not grouped ascend */
 	{
@@ -39,7 +44,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 			if (d.off != next || (g->hdr.gcol < 0 && c > 0 && c < vchunks && d.first < pf))
 				corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
 			pf = d.first;
-			next = (uint64) d.off + ALIGN8((uint64) d.klen) + ALIGN8((uint64) d.alen);
+			next = (uint64) d.off + ALIGN8((uint64) d.klen) + ALIGN8((uint64) d.alen) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(d.pad));
 		}
 	}
 	/* the entries of a range ascend by (key, address), those of a NULL range by address; a block that is not grouped is two ranges, the values and the NULL rows */
@@ -79,8 +84,10 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 				have = p / g->hdr.crows;
 				(void) sift_cseg_gorder_chunk(seg, col, have, key, addr);
 			}
-			if (p != from && (isnull ? addr[p % g->hdr.crows] <= pa : key[p % g->hdr.crows] < pk || (key[p % g->hdr.crows] == pk && addr[p % g->hdr.crows] <= pa)))
+			if (p != from && (isnull ? addr[p % g->hdr.crows] <= pa : key[p % g->hdr.crows] < pk || (key[p % g->hdr.crows] == pk && g->hdr.quant == 0 && addr[p % g->hdr.crows] <= pa)))
 				corrupt(seg, "The global order of leaf %d is out of order at entry %u.", col, p);
+			if (!isnull && g->hdr.vtotal != 0 && p == g->hdr.head && p != from && key[p % g->hdr.crows] == pk)
+				corrupt(seg, "The ends of the global order of leaf %d split the run of the key %lld.", col, (long long) pk);
 			pk = key[p % g->hdr.crows];
 			pa = addr[p % g->hdr.crows];
 			if (!isnull && g->hdr.strbytes != 0 && (uint64) pk >= g->nstr)
@@ -93,13 +100,25 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	if (g->hdr.strbytes != 0)
 	{
 		uint32		len;
+		uint8	   *seen = g->hdr.strperm ? palloc0(g->nstr / 8 + 1) : NULL;
 
 		for (uint32 r = 0; r < g->nstr; r++)
 		{
 			(void) sift_cseg_gorder_str(seg, col, r, &len);
+			/* a version 5 block names every string of the dictionary once */
+			if (seen != NULL)
+			{
+				uint32		code = seg_gord_perm(seg, g, col, r);
+
+				if (seen[code / 8] >> (code % 8) & 1)
+					corrupt(seg, "The global order of leaf %d names the string %u twice.", col, code);
+				seen[code / 8] |= 1 << (code % 8);
+			}
 			if (r % 4096 == 0)
 				CHECK_FOR_INTERRUPTS();
 		}
+		if (seen != NULL)
+			pfree(seen);
 	}
 }
 

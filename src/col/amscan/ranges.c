@@ -16,6 +16,7 @@
 
 #define COL_SCAN_GORD_CHUNK	10.0	/* a chunk of the sorted keys of a segment (1,024 entries): its directory entry and its two blobs, for the bounds and each chunk between them */
 
+#define COL_SCAN_GORD_KEY	2.0		/* a key of an IN list: the seek of both bounds in one chunk of the sorted keys, 1 to 1.5 us measured on 60 to 500 keys of 100,000 to 1,000,000 rows */
 #define COL_SCAN_GORD_SORT	0.03	/* an address of a range sorted by its position in the heap */
 #ifdef SIFT_TESTING
 /* ---- the cost ---- */
@@ -185,6 +186,35 @@ range_meets(int64 lo, int64 hi, const int64 *set, int nset, int64 zlo, int64 zhi
 }
 
 /*
+ * An equality with a parameter or a column of the outer side (the probe of a nested loop) names a key the plan does not know: a key of the column's range lies in the
+ * zone of a unit with the probability of the share of the range the zone covers, so the units the probe finds are the sum of their widths over the range (one of a
+ * column the heap is sorted by, all of one the heap scatters). 1 for a clause that is not that.
+ */
+static double
+param_zones_kept(const SiftColZones *z, int leaf, Oid opfamily, Node *clause)
+{
+	OpExpr	   *op = IsA(clause, OpExpr) ? (OpExpr *) clause : NULL;
+	double		width = 0.0;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	if (op == NULL || list_length(op->args) != 2 || get_op_opfamily_strategy(op->opno, opfamily) != BTEqualStrategyNumber ||
+		IsA(linitial(op->args), Const) || IsA(lsecond(op->args), Const))
+		return 1.0;
+	for (uint32 k = 0; k < z->n; k++)
+	{
+		if (z->lo[leaf][k] > z->hi[leaf][k])
+			continue;
+		lo = Min(lo, z->lo[leaf][k]);
+		hi = Max(hi, z->hi[leaf][k]);
+		width += (double) z->hi[leaf][k] - (double) z->lo[leaf][k] + 1.0;
+	}
+	if (lo > hi)
+		return 1.0;
+	return Min(width / ((double) hi - (double) lo + 1.0) / z->n, 1.0);
+}
+
+/*
  * The share of the units the constants of the index quals leave, by the real zones of a sample of the units; 1 when the zones cannot tell (text, a parameter,
  * a column the sample does not describe). The quals are ANDed: a unit stays when every one of them may hold in it.
  */
@@ -196,6 +226,7 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	bool	   *alive;
 	bool		tested = false;
 	int			left = 0;
+	double		mean = 1.0;
 
 	if (z == NULL || z->n == 0)
 		return 1.0;
@@ -213,18 +244,23 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 			int64	   *set;
 			int			nset;
 
-			if (leaf >= z->ncols || z->lo[leaf] == NULL || !clause_range(root, index->opfamily[ic->indexcol], (Node *) ri->clause, &lo, &hi, &set, &nset))
+			if (leaf >= z->ncols || z->lo[leaf] == NULL)
 				continue;
+			if (!clause_range(root, index->opfamily[ic->indexcol], (Node *) ri->clause, &lo, &hi, &set, &nset))
+			{
+				mean *= param_zones_kept(z, leaf, index->opfamily[ic->indexcol], (Node *) ri->clause);
+				continue;
+			}
 			tested = true;
 			for (uint32 k = 0; k < z->n; k++)
 				alive[k] = alive[k] && range_meets(lo, hi, set, nset, z->lo[leaf][k], z->hi[leaf][k]);
 		}
 	}
 	if (!tested)
-		return 1.0;
+		return mean;
 	for (uint32 k = 0; k < z->n; k++)
 		left += alive[k];
-	return (double) left / z->n;
+	return (double) left / z->n * mean;
 }
 
 /*
@@ -334,12 +370,15 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			}
 		}
 	}
-	/* a range on a leaf with a global order is a seek in the sorted keys: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
+	/* a range or an equality on a leaf with a global order is a seek in the sorted keys, an IN list one seek a key: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
 	for (int col = 0; col < index->nkeycolumns; col++)
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
 		List	   *ranges = NIL;
-		bool		other = false;
+		bool		other = false,
+					eqonly = true;
+		double		keys = 0.0,
+					gcover = 0.0;
 
 		foreach_node(IndexClause, ic, path->indexclauses)
 		{
@@ -349,16 +388,30 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			{
 				int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[col]) : 0;
 
-				if (strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
+				if (strategy == BTEqualStrategyNumber || strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
+				{
 					ranges = lappend(ranges, ri);
+					eqonly &= strategy == BTEqualStrategyNumber;
+				}
+				else if (IsA(ri->clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) ri->clause)->useOr &&
+						 get_op_opfamily_strategy(((ScalarArrayOpExpr *) ri->clause)->opno, index->opfamily[col]) == BTEqualStrategyNumber &&
+						 estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args)) <= SIFT_CORDER_MAX_KEYS)
+				{
+					ranges = lappend(ranges, ri);
+					keys += estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
+				}
 				else
 					other = true;
 			}
 		}
-		if (ranges != NIL && !other && l->nunits > 0 && l->gord_rows > l->gord_grp_rows)
+		/* the leaf that is the group of second orders has no order of its own: an equality, an IN list or a range finds its rows in the table of groups of those */
+		for (int j = 0; j < sift_col_rel(irel)->schema->ncols; j++)
+			if (ls[j].gord_gcol == sift_col_rel(irel)->first[col + 1])
+				gcover = Max(gcover, Min(ls[j].gord_grp_rows / Max(index->rel->tuples, 1.0), 1.0));
+		if (ranges != NIL && !other && l->nunits > 0 && (l->gord_rows > l->gord_grp_rows || gcover > 0.0))
 		{
 			double		rows = clauselist_selectivity(root, ranges, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples,
-						cover = Min((l->gord_rows - l->gord_grp_rows) / Max(index->rel->tuples, 1.0), 1.0),
+						cover = Max(Min((l->gord_rows - l->gord_grp_rows) / Max(index->rel->tuples, 1.0), 1.0), gcover),
 						share = 1.0 - exp(-rows / units);
 
 			if (rows <= SIFT_CORDER_MAX_ROWS && (*nprobes == 0 ? 1.0 - cover + cover * share <= kept : 1.0 - cover + cover * share < kept))
@@ -366,7 +419,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				kept = 1.0 - cover + cover * share;
 				*nprobes = 1;
 				*tid = path->path.pathtype == T_IndexOnlyScan ? 0.0 : cover;
-				*extra = (2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + rows * COL_SCAN_GORD_SORT;
+				/* the two bounds of an equality lie in one chunk; a range reads the chunk of each bound and those between */
+				*extra = (eqonly && keys == 0.0 ? Max(1.0, ceil(rows / 1024.0)) : 2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + keys * COL_SCAN_GORD_KEY + rows * COL_SCAN_GORD_SORT;
 			}
 		}
 		list_free(ranges);

@@ -455,6 +455,10 @@ stub_ambuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (indexInfo->ii_Predicate != NIL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " does not support partial indexes"),
 						errhint("Create the index without a WHERE clause.")));
+	/* the source reads the pages of the heap itself */
+	if (heap->rd_tableam != GetHeapamTableAmRoutine())
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " indexes require a heap table"),
+						errhint("Index a heap table.")));
 	b.lay = sift_aggstub_layout(index);
 	table_index_build_scan(heap, index, indexInfo, true, true, stub_build_callback, &b, NULL);
 	result->heap_tuples = result->index_tuples = b.ntuples;

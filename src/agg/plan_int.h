@@ -123,6 +123,7 @@ typedef struct AggCtx
 	Oid		   *partindex;
 	List	   *partprune;		/* the conditions on the partition key that the scan evaluates when it starts (part_prune_clauses) */
 	double		part_pages;		/* ... and the pages of their heaps */
+	double		part_tuples;	/* ... and their rows (rel->tuples counts every partition of the table, the ones pruning left out too) */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
 	Index		func_rti;
@@ -181,13 +182,16 @@ typedef struct AggCtx
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
 	double		having_sel;		/* the share of the groups a HAVING clause keeps, as PostgreSQL's estimate has it (0 without one): the rows the path reports to the plan above */
+	double		par_start;		/* the cost of starting the workers the last pricing with workers charged (cost_parallel): workers_ratio keeps it out of the share it scales */
 	double		path_rows;		/* the groups of the rows the lookup lists can pass (at the geometric mean of PostgreSQL's count and all of them), 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 	PathTarget *topn_target;	/* ... the target of the path: the one PostgreSQL makes for the ordered rel, or the scan's own for a min/max (sift_agg_minmax_paths) */
+	bool		topn_resid;		/* ... with conditions on other columns, which it tests on every row of a unit before the run keeps the rows that pass */
 	bool		topn_runs;		/* ... the units are read through their sorted runs on the first key alone (agg/topn/run.c run_unit): a seek of each unit and the rows wanted, not a scan of its rows */
 	bool		topn_array;		/* ... the executor reads the order array of the first key (sift_topn_gorder): no unit is read */
 	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
 	double		topn_fetch;		/* ... the rows it reads from the heap */
+	double		topn_walk;		/* ... the heap rows a walk of the order array fetches to test a condition on another column (topn_array_ok; 0: none) */
 	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
 	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */
 	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
@@ -313,6 +317,8 @@ extern bool null_input_param(Node *n);
 extern bool level_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
+/* n with the Params an enclosing query level sets for each row it passes down marked as constants the scan reads when it starts (SIFT_AGG_LEVEL_LOC) */
+extern Node *agg_mark_level_params(PlannerInfo *root, Node *n);
 extern bool pseudo_const(Node *n);
 
 extern Node *strip_relabel(Node *n);
@@ -338,6 +344,7 @@ extern bool walk_memo_get(const void *a, const void *b, int skip, bool *r);
 extern void walk_memo_put(const void *a, const void *b, int skip, bool r);
 extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
+extern Param *initplan_param(AggCtx *c, Param *n);
 extern bool single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll);
 extern void hash_param_saop(ScalarArrayOpExpr *sa);
 /* A PARAM_EXEC placeholder of the type given */
@@ -400,6 +407,7 @@ extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
 extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
+extern int join_col(JoinCtx *jc, Var *v);
 extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
@@ -451,6 +459,8 @@ extern double in_list_test_ns(AggCtx *c, const SiftAggPred *p);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);
+extern Cost agg_group_open_cost(void);
+extern bool agg_unique_keys_first(AggCtx *c, const Path *scan);
 extern Cost agg_floor_cost(void);
 extern double hash_agg_extra(const AggPath *a);
 extern Node *topn_window_aggs(Node *n, void *context);
@@ -469,6 +479,7 @@ extern double agg_cte_lift;
 extern bool agg_stock_rows;
 extern bool agg_rows_lifted;
 extern bool has_column_source(Oid relid);
+extern bool column_source_reads(Oid relid, Bitmapset *attnos);
 extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);
@@ -481,6 +492,9 @@ extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
 extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
+extern bool agg_att_not_null(Oid relid, int att);	/* the column is declared NOT NULL */
+extern void agg_path_children(AggCtx *c, SiftAggPath *ap);
+extern void agg_force_price(Path *p);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
 						 List *scan_tlist, int nworkers, List *pathkeys);
 extern void agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,

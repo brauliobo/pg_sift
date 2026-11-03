@@ -45,6 +45,7 @@ SCENARIOS=(
 	"bm25_merge~$BM25; $(more 6001 7000); SELECT sift.promote('docs_idx'); $(more 7001 8000); SELECT sift.promote('docs_idx')~SELECT sift.merge('docs_idx', true)"
 	"col_merge~$COL; $(more 6001 7000); SELECT sift.col_promote('docs_col'); $(more 7001 8000); SELECT sift.col_promote('docs_col')~SELECT sift.col_merge('docs_col', true)"
 	"vacuum~$BM25; $COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
+	"col_net~$COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"tbl_seal~$TBL; INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; DELETE FROM tbl WHERE id % 5 = 0; DELETE FROM tbl_h WHERE id % 5 = 0~VACUUM tbl"
 )
 

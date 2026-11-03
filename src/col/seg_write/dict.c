@@ -17,17 +17,17 @@
 
 /*
  * Whether the dictionary of leaf c no longer fits the cache of parsed dictionaries (dict_cache_kb): its strings, parsed and scaled to the rows of the index (the
- * segments of an index are alike), pass the cache, or this segment's alone pass the half of it that a single dictionary may take. A dictionary that fits is
- * parsed once and kept; one that does not is read, and unwrapped, again by every test that needs it
+ * segments of an index are alike), pass pct per cent of the cache, or this segment's alone pass the half of it that a single dictionary may take. A dictionary that
+ * fits is parsed once and kept; one that does not is read, and unwrapped, again by every test that needs it
  */
-static bool
-dict_uncached(const SiftColSegWriter *w, int c)
+bool
+segw_dict_uncached(const SiftColSegWriter *w, int c, int pct)
 {
 	Size		cache = sift_cdict_cache_budget(),
 				parsed = sift_cdict_parsed_bytes(w->dict[c]->nbytes, w->dict[c]->n);
 	double		scale = Max((double) w->index_rows / (double) Max(sift_colw_rows(w), 1), 1.0);
 
-	return parsed > cache / 2 || (double) parsed * scale > (double) cache;
+	return parsed > cache / 2 || (double) parsed * scale * 100.0 > (double) cache * pct;
 }
 
 /*
@@ -40,7 +40,7 @@ tsig_wanted(const SiftColSegWriter *w, int c)
 	if (w->setting < SIFT_COL_FORMAT_PRESENCE || w->dict[c]->nbytes < (Size) sift_limit(dict_tsig_min, CDICT_TSIG_MIN_KB) * 1024 ||
 		w->dict[c]->nbytes < (Size) 5 * w->dict[c]->n)
 		return false;
-	return dict_uncached(w, c);
+	return segw_dict_uncached(w, c, 100);
 }
 
 void
@@ -71,7 +71,7 @@ segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	for (int c = 0; c < ncols; c++)
 		if (w->dict[c] != NULL)
 		{
-			w->dict[c]->scan = w->setting >= SIFT_COL_FORMAT_PRESENCE && dict_uncached(w, c);
+			w->dict[c]->scan = w->setting >= SIFT_COL_FORMAT_PRESENCE && segw_dict_uncached(w, c, 100);
 			w->dict[c]->leaf1 = c + 1;
 		}
 	for (int c = 0; blocks && c < ncols; c++)
@@ -124,8 +124,8 @@ segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 				continue;
 			}
 		}
-		/* a dictionary in blocks that no leaf asked to search keeps the hash alone (5 bytes a string): the first equality of a backend finds its code in a few pages, not by parsing the dictionary */
-		if (form == DICT_BLOCKS && w->pagg.dict_hash && w->setting >= SIFT_COL_FORMAT_PRESENCE && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+		/* a dictionary in blocks that no leaf asked to search keeps the hash alone (5 bytes a string): the first equality of a backend finds its code in a few pages, not by parsing the dictionary; the blocks the order of a text leaf asked for are read by code and keep none */
+		if (form == DICT_BLOCKS && !asked[c] && w->pagg.dict_hash && w->setting >= SIFT_COL_FORMAT_PRESENCE && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
 		{
 			w->dict[c]->hashed = true;
 			w->format = Max(w->format, SIFT_COL_FORMAT_HASH);

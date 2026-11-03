@@ -88,11 +88,23 @@ init_param_mutator(Node *n, AggExec *ex)
 	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, len, prm->value, prm->isnull, byval);
 }
 
-/* the operand of a condition, evaluated when the scan starts */
+/* the operand of a condition, evaluated when the scan starts: the state of an expression is made once for the scan (its parameters stand as constants for the scan, and a top-N asks for each operand three times) */
 ExprState *
 operand_state(AggExec *ex, Node *expr)
 {
-	return ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
+	MemoryContext old;
+	OperandState *o;
+
+	foreach_ptr(OperandState, c, ex->operands)
+		if (c->expr == expr)
+			return c->state;
+	old = MemoryContextSwitchTo(ex->cxt);
+	o = palloc(sizeof(OperandState));
+	o->expr = expr;
+	o->state = ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
+	ex->operands = lappend(ex->operands, o);
+	MemoryContextSwitchTo(old);
+	return o->state;
 }
 
 /*

@@ -83,9 +83,12 @@ static bool preagg_unit_exact(AggExec *ex);
 
 #define PA_DEAD_TRIES 8
 
-/* The aggregates that a unit net of its dead rows can give: counts and integer sums, not the minimum and maximum, the distinct values or the sketch of a unit, nor a float sum, which only an exact unit adds in its order */
+/*
+ * The aggregates that a unit can give with its dead rows taken off (net: net of them, by pre-aggregates of its live rows): counts and integer sums by subtraction, and with net the
+ * minimum and maximum and a float sum too; never the distinct values or the sketch of a unit, whose key lists and sketches hold the dead rows' values
+ */
 static bool
-preagg_dead_ok(AggExec *ex)
+preagg_dead_ok(AggExec *ex, bool net)
 {
 	if (ex->pa.list >= 0)
 		return false;
@@ -94,8 +97,10 @@ preagg_dead_ok(AggExec *ex)
 		const SiftAggAgg *a = &ex->spec->agg[ai];
 		int			leaf = pa_leaf(a);
 
-		if (a->kind == SAA_MIN || a->kind == SAA_MAX || a->kind == SAA_COUNT_DISTINCT || a->kind == SAA_GEN || a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 ||
-			(leaf >= 0 && a->kind != SAA_COUNT && ex->lay->leaf[leaf].vtype == SCV_F64))
+		if (a->kind == SAA_COUNT_DISTINCT || a->kind == SAA_GEN)
+			return false;
+		if (!net && (a->kind == SAA_MIN || a->kind == SAA_MAX || a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 ||
+					 (leaf >= 0 && a->kind != SAA_COUNT && ex->lay->leaf[leaf].vtype == SCV_F64)))
 			return false;
 	}
 	return true;
@@ -104,7 +109,8 @@ preagg_dead_ok(AggExec *ex)
 static bool
 preagg_unit_try(AggExec *ex)
 {
-	bool		ok;
+	bool		ok,
+				attempt;
 	int			dead;
 
 	ex->pa_xleaf = -1;
@@ -118,8 +124,6 @@ preagg_unit_try(AggExec *ex)
 			preagg_count(ex, rows);
 			return true;
 		}
-		if (!ex->pcount_cmp)
-			return false;
 	}
 	if (ex->pa.ktab && ex->unit.nsu == 0)
 		return false;
@@ -132,13 +136,16 @@ preagg_unit_try(AggExec *ex)
 	if (!ex->pa_dead || (ex->n_dead_units == 0 && ex->pa_dead_miss >= PA_DEAD_TRIES))
 		return false;
 	/* its zone is checked before its dead rows are read: a comparison the zone is not inside sends the unit to its scan, which has them from the liveness bits */
-	if (sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_BOUNDS) < 0 || !preagg_zone_bounds(ex))
+	if (ex->pa_dead_sub && (sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_BOUNDS) < 0 || !preagg_zone_bounds(ex)))
 	{
 		sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_OFF);
 		ex->n_dead_scan++;
 		return false;
 	}
-	if ((dead = sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_ON)) >= 0)
+	dead = sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_ON);
+	/* a unit net of its dead rows has every aggregate its cube has; one read minus them only counts and integer sums */
+	attempt = dead >= 0 && (ex->pa_dead_sub || sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_NET) > 0);
+	if (attempt)
 	{
 		ex->unit.nrow -= dead;
 		ok = preagg_unit_exact(ex);
@@ -149,7 +156,7 @@ preagg_unit_try(AggExec *ex)
 	sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_OFF);
 	if (ok)
 		ex->n_dead_units++;
-	else
+	else if (attempt || ex->pa_dead_sub)
 	{
 		ex->n_dead_scan++;
 		ex->pa_dead_miss++;
@@ -255,15 +262,17 @@ preagg_init(AggExec *ex)
 {
 	SiftSrcPreagg pa;
 
-	ex->pa_on = ex->pa_dead = ex->whole_on = false;
+	ex->pa_on = ex->pa_dead = ex->pa_dead_sub = ex->whole_on = false;
 	ex->pa_dead_miss = 0;
 	ex->pa_why = SPW_OFF;
-	if (!sift_agg_preagg)
+	/* a top-N of rows has no aggregate for a cell, a rollup or a sum to answer */
+	if (!sift_agg_preagg || (ex->spec->topn && ex->spec->naggs == 0 && ex->spec->nkeys == 0))
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->spec->nparts > 0 ? sift_aggpart_heap(ex->src, 0) : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
-	ex->pa_dead = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex);
+	ex->pa_dead_sub = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, false);
+	ex->pa_dead = ex->pa_dead_sub || (ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, true));
 	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
@@ -289,7 +298,7 @@ preagg_init(AggExec *ex)
 			}
 			else
 			{
-				ex->pa_on = ex->pa_dead = false;
+				ex->pa_on = ex->pa_dead = ex->pa_dead_sub = false;
 				ex->pa_why = SPW_ZONE;
 			}
 		}
@@ -323,10 +332,19 @@ preagg_init(AggExec *ex)
 		else if (ex->super_on && only && t == NULL)
 		{
 			int			leaf = sift_agg_cmp_only_leaf(ex);
+			const SiftSrcStrTest *lo,
+					   *hi;
 
 			if (leaf >= 0)
 			{
 				sift_colsrc_count_cmp(ex->src, leaf);
+				ex->pcount = ex->pcount_cmp = true;
+			}
+			/* ... or of the strings of a text leaf between two bounds: the ranks of its global order */
+			else if ((leaf = sift_agg_text_range(ex, &lo, &hi)) >= 0)
+			{
+				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0] : NULL, lo != NULL ? lo->lens[0] : 0, lo != NULL && lo->op == SSTR_GT,
+									   hi != NULL ? hi->vals[0] : NULL, hi != NULL ? hi->lens[0] : 0, hi != NULL && hi->op == SSTR_LT);
 				ex->pcount = ex->pcount_cmp = true;
 			}
 		}

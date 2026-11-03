@@ -25,6 +25,8 @@
 
 #define SIFT_COLR_CONT		0x0002	/* more payload of the preceding row: not counted */
 
+#define SIFT_COLR_XMIN		0x0004	/* the payload starts with the xid (4 bytes) of the transaction that inserted the row, ahead of the values; first piece only. A row of an index without track_changes, one a speculative insertion wrote and one of a buffer written before this flag have none: nothing is claimed of their inserter */
+
 #define COLV_NULL			0x01
 
 #define COLV_OVERFLOW		0x02
@@ -66,6 +68,8 @@ struct SiftCWbufReader
 	const SiftColSchema *schema;
 	MemoryContext mcxt;
 	SiftLaneIter it;
+	void		(*pagefn) (void *arg, BlockNumber blk, Page page, Size used);	/* called for each page copied (col/wbuf/batches.c) */
+	void	   *pagearg;
 	Page		page;			/* copy of the current page */
 	PageCursor	cur;
 	uint16		pflags;
@@ -86,11 +90,16 @@ typedef struct RawRec
 {
 	ItemPointerData tid;
 	bool		deleted;
+	TransactionId xmin;			/* InvalidTransactionId: the record has none */
 	const uint8 *payload;
 	Size		len;
 } RawRec;
 
 extern uint32	wbuf_limit_pages(Relation index);
+
+extern SiftCWbufReader *	wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt);
+
+extern void	wbuf_load_heads(SiftCWbufReader *r);
 
 extern void	wbuf_cursor_set(PageCursor *c, Page page);
 
@@ -98,9 +107,9 @@ extern const SiftColRecHead *	wbuf_rec_at(PageCursor *c, Size *size);
 
 extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, uint32 *jnull);
 
-extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, bool cont, const char *payload, Size len);
+extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
 
-extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, const char *payload, Size len, BlockNumber *tail);
+extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, BlockNumber *tail);
 
 extern void	wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask);
 
@@ -115,5 +124,16 @@ extern bool	wbuf_next_rec(SiftCWbufReader *r, RawRec *rec);
 extern const uint8 *	wbuf_get_value(SiftCWbufReader *r, const SiftColDef *def, const uint8 *p, const uint8 *end, SiftColValue *v);
 
 extern void	wbuf_decode_row(SiftCWbufReader *r, const RawRec *rec, SiftColRow *row);
+
+/* Where the next read of a lane starts: InvalidBlockNumber before the first */
+typedef struct WbufLane
+{
+	BlockNumber blk;
+	Size		pos;
+} WbufLane;
+
+extern uint32 wbuf_page_dead(Relation index, Page page, Size from, Size upto);
+
+extern void	wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg);
 
 #endif

@@ -70,6 +70,8 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	if (unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
+	if (sift_col_unit_net(unit))
+		return sift_cseg_net_agg(seg, col, u, a);
 	sift_cseg_agg(seg, col, u, a);
 	if (a->zflags & SIFT_COLZ_OVERFLOW)
 		return false;
@@ -384,12 +386,23 @@ hist_except(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHis
 	return x_rollup(seg, u, seg->schema->cols[dim].parent, mcxt, &r) && sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, &x) && hist_subtract(h, &x);
 }
 
+/* The cube of the unit, or the rollup of the list of dim (net: the unit's pre-aggregates net of its dead rows, col/seg/net.c) */
+static const uint8 *
+unit_cube(SiftColSegment *seg, uint32 u, bool net, int dim, uint32 *len)
+{
+	int			list = dim >= SIFT_PAGG_CAL ? -1 : seg->schema->cols[dim].parent;
+
+	if (!net)
+		return dim >= SIFT_PAGG_CAL ? sift_cseg_cube(seg, u, len) : sift_cseg_dim_cube(seg, u, dim, len);
+	return list < 0 ? sift_cseg_net_blob(seg, u, 0, len) : sift_cseg_net_rollup(seg, u, list, len);
+}
+
 /* The histogram of dim of a stored unit: from the cube (SIFT_PAGG_CAL + a leaf: the calendar cells of a date or timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
 static bool
-seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *out)
+seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, SiftCHistDim *out)
 {
 	uint32		len;
-	const uint8 *blob = dim >= SIFT_PAGG_CAL ? sift_cseg_cube(seg, u, &len) : sift_cseg_dim_cube(seg, u, dim, &len);
+	const uint8 *blob = unit_cube(seg, u, net, dim, &len);
 	SiftCRollup r;
 	int			found;
 
@@ -445,7 +458,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 		if (!sift_col_unit_preagg_ok(unit))
 			return false;
 		sift_col_unit_stored(unit, &seg, &u);
-		if (!seg_hist(seg, u, dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)) ||
+		if (!seg_hist(seg, u, sift_col_unit_net(unit), dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)) ||
 			(sift_col_unit_dead_on(unit) && !sift_col_unit_dead_hist(unit, out)))
 			return false;
 	}
@@ -465,7 +478,7 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
-	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
+	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
 	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 || sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
 		corrupt_cube(seg, u);
@@ -476,7 +489,7 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 
 		for (uint32 t = 0; t < r->ntuples; t++)
 			rows += r->count[t];
-		if (rows != unit->nrows)
+		if (rows != unit->nrows - sift_col_unit_net_dead(unit))
 			corrupt_cube(seg, u);
 	}
 	if (unit->except >= 0)
@@ -506,7 +519,7 @@ sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list)
 	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
 		return 0;
 	sift_col_unit_stored(unit, &seg, &u);
-	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
+	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return 0;
 	return sift_cpagg_rollup_tuples(blob, len);
 }
@@ -706,7 +719,7 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 		bool		exact;
 		int			slot;
 
-		if (!sift_col_unit_stored(&unit, &seg, &u) || !seg_hist(seg, u, dim, CurrentMemoryContext, &hd))
+		if (!sift_col_unit_stored(&unit, &seg, &u) || !seg_hist(seg, u, false, dim, CurrentMemoryContext, &hd))
 			continue;
 		slot = meas >= 0 ? sift_cpagg_meas_slot(d, meas) : -1;
 		exact = sift_col_unit_preagg_ok(&unit);

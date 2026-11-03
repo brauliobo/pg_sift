@@ -37,7 +37,7 @@
 	X(ERROR_PARITY, "error_parity", "the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read)", 0, 0) \
 	X(OUTPUT_EXPR, "output_expr", "the select list or HAVING reads something besides group keys and the aggregates the scan computes", 0, 0) \
 	X(AGGREGATE, "aggregate", "an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes", 0, 0) \
-	X(DISTINCT_ON, "distinct_on", "DISTINCT ON has no total order for the row it keeps", 0, 1) \
+	X(DISTINCT_ON, "distinct_on", "DISTINCT ON keeps a row the scan cannot pick: more than four sort columns after the ON columns, a sort or select-list column of a joined table, or a volatile select list", 0, 1) \
 	X(GROUPING_SETS, "grouping_sets", "the arm does not group by grouping sets", 0, 0) \
 	X(DIRTY_UNITS, "dirty_units", "some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does", 0, 0) \
 	X(DIRTY_ORDER, "dirty_order", "a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too", 0, 1) \

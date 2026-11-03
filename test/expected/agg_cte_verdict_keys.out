@@ -37,7 +37,7 @@ SELECT name, scans FROM lists ORDER BY name;
  hot  |     2
  n1   |     0
  n100 |     2
- n2   |     1
+ n2   |     0
  n3   |     1
  n5   |     2
 (6 rows)

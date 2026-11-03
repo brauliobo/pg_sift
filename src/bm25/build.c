@@ -1,6 +1,6 @@
 /*
  * bm25/build.c - the PostgreSQL side of the build: heap scan, parallel workers and leader, ambuild and ambuildempty
- * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs.c); the spill,
+ * The inverted buffer, the runs and their merge are shared with the other hosts (bm25/inv.c, bm25/runs/runs.c); the spill,
  * merge and segment writing of the build, and the page documents, are in build_runs.c.
  */
 #include "build_int.h"
@@ -44,7 +44,7 @@ mem_root_gone(void *arg)
 	sift_test_merge_term = NULL;
 }
 
-static void
+void
 mem_watch(MemoryContext cxt)
 {
 	mem_root = cxt;
@@ -156,6 +156,10 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 			appendBinaryStringInfo(&bs->text, VARDATA_ANY(t), len);
 	}
 	MemoryContextSwitchTo(old);
+#ifdef SIFT_TESTING
+	if (sift_test_page_text)
+		mem_sample();
+#endif
 	if (detoasted || len > bs->page_text)
 		MemoryContextReset(bs->tmpcxt);
 }
@@ -202,6 +206,7 @@ build_begin(Relation index, Size budget)
 	sift_analyzer_config_from_options(opts, &cfg);
 	bs->index = index;
 	bs->analyzer_hash = cfg.hash;
+	strlcpy(bs->analyzer_config, cfg.tsconfig, sizeof(bs->analyzer_config));
 	bs->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift build", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(bs->cxt);
 	bs->tmpcxt = AllocSetContextCreate(bs->cxt, "sift build tuple", ALLOCSET_DEFAULT_SIZES);
@@ -238,44 +243,6 @@ build_scan(BuildState *bs, Relation heap, IndexInfo *info, TableScanDesc scan, b
 }
 
 /*
- * Every participant scans its share of a parallel heap scan (ascending keys,
- * interleaved with the others') into sorted runs. The workers' runs are files
- * of a shared fileset; the leader merges them with its own into the segments
- * a serial build would write.
- */
-#define SCAN_OF(shared)	((ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(SiftBuildShared))))
-
-typedef struct SiftBuildShared
-{
-	SiftParCommon common;
-	int			nparticipants;
-	Size		budget;				/* per participant */
-	SharedFileSet fileset;
-	slock_t		mutex;
-	double		reltuples;
-	double		indexed;
-	int			peak_kb;			/* the most memory a participant allocated (SIFT_TESTING) */
-	/* the parallel table scan descriptor follows */
-} SiftBuildShared;
-
-/* The most runs a worker hands over (the leader opens each as it merges it) */
-#define MAX_PART_RUNS	1024
-
-/* A worker's runs, in the files sift_run_file(worker number, id) */
-typedef struct SiftBuildPart
-{
-	int			nruns;
-	struct
-	{
-		int			id;
-		uint64		ndocs;
-		uint64		maxdf;
-		uint64		maxblob;
-		uint64		dict;
-	}			run[MAX_PART_RUNS];
-} SiftBuildPart;
-
-/*
  * A synchronized scan starts mid-heap and wraps around, but every participant needs ascending keys.
  * The scan decides at initialization, so the setting only matters here.
  */
@@ -301,22 +268,25 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	if (!sift_par_setup(ldr, "sift_build_worker", nworkers, shared_size, mul_size(sizeof(SiftBuildPart), nworkers), false))
 		return NULL;
 	shared = ldr->shared;
-	*shared = (SiftBuildShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent},
-		.nparticipants = nworkers + 1,.budget = (Size) maintenance_work_mem * 1024 / (nworkers + 1)};
+	MemSet(shared, 0, sizeof(SiftBuildShared));
+	shared->common = (SiftParCommon) {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent};
+	shared->nparticipants = nworkers + 1;
+	shared->budget = (Size) maintenance_work_mem * 1024 / (nworkers + 1);
+	ConditionVariableInit(&shared->ranges.cv);
 	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
 	SpinLockInit(&shared->mutex);
 	init_scan(heap, shared, ldr->snapshot);
 	return sift_par_launch(ldr, "sift", index, nworkers) ? ldr : NULL;
 }
 
-/* Waits for the workers and adds their runs to the leader's; returns the tuple counts through res */
+/* Waits for the workers to hand their runs over and adds them to the leader's; returns the tuple counts through res */
 static void
 adopt_runs(SiftParLeader *ldr, BuildState *bs, IndexBuildResult *res)
 {
 	SiftBuildShared *shared = ldr->shared;
 	SiftBuildPart *parts = ldr->parts;
 
-	sift_par_wait(ldr);
+	sift_ranges_wait_scanned(shared, ldr->pcxt->nworkers_launched);
 	for (int w = 0; w < ldr->pcxt->nworkers_launched; w++)
 	{
 		for (int i = 0; i < parts[w].nruns; i++)
@@ -328,8 +298,8 @@ adopt_runs(SiftParLeader *ldr, BuildState *bs, IndexBuildResult *res)
 				bs->maxruns *= 2;
 				bs->runs = repalloc(bs->runs, bs->maxruns * sizeof(SiftRun *));
 			}
-			*run = (SiftRun) {.ndocs = parts[w].run[i].ndocs,.maxdf = parts[w].run[i].maxdf,
-				.maxblob = parts[w].run[i].maxblob,.dict = parts[w].run[i].dict,
+			*run = (SiftRun) {.ndocs = parts[w].run[i].ndocs,.sum_dl = parts[w].run[i].sum_dl,.trailer = parts[w].run[i].trailer,
+				.maxdf = parts[w].run[i].maxdf,.maxblob = parts[w].run[i].maxblob,.dict = parts[w].run[i].dict,
 			.fileset = &shared->fileset,.worker = w,.id = parts[w].run[i].id};
 			bs->runs[bs->nruns++] = run;
 		}
@@ -365,6 +335,8 @@ hand_over_runs(BuildState *bs, SiftBuildPart *part)
 	{
 		part->run[i].id = bs->runs[i]->id;
 		part->run[i].ndocs = bs->runs[i]->ndocs;
+		part->run[i].sum_dl = bs->runs[i]->sum_dl;
+		part->run[i].trailer = bs->runs[i]->trailer;
 		part->run[i].maxdf = bs->runs[i]->maxdf;
 		part->run[i].maxblob = bs->runs[i]->maxblob;
 		part->run[i].dict = bs->runs[i]->dict;
@@ -400,6 +372,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SpinLockRelease(&shared->mutex);
 #endif
 	MemoryContextDelete(bs->cxt);
+	sift_ranges_worker(shared, w.index);
 	sift_par_worker_end(&w);
 }
 
@@ -417,6 +390,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift indexes require a heap or sift_table table"),
 				 errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
+	sift_attr_check_table(index, heap);
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
 	{
 		SiftAnalyzerConfig cfg;
@@ -429,6 +403,12 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	old = MemoryContextSwitchTo(bs->cxt);
 	if (ldr == NULL)
 		init_bounds(bs, heap, opts->build_segments);
+	else
+	{
+		/* the leader's runs are files of the fileset too: the participants read them to write the terms */
+		bs->shared = ldr->shared;
+		bs->home = (RunHome) {.fileset = &bs->shared->fileset,.worker = ldr->pcxt->nworkers_launched};
+	}
 	bs->wt = sift_wt_begin(index, SIFT_WRITE_BULK);
 	if (heap->rd_rel->reltuples > 0)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
@@ -446,8 +426,12 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, 0);
 	end_segment(bs);
 	if (ldr)
+	{
+		sift_ranges_close(bs->shared);
+		sift_par_wait(ldr);
 		sift_par_end(ldr);
-	sift_store_init_meta(bs->wt, opts, bs->analyzer_hash);
+	}
+	sift_store_init_meta(bs->wt, opts, bs->analyzer_hash, bs->analyzer_config);
 	sift_wt_finish(bs->wt);
 	if (bs->nsegs > 0)
 		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.extra = InvalidBuffer});
@@ -463,6 +447,6 @@ sift_ambuildempty(Relation index)
 	SiftAnalyzerConfig cfg;
 
 	sift_analyzer_config_from_index(index, &cfg);
-	sift_store_init_meta(wt, sift_index_options(index), cfg.hash);
+	sift_store_init_meta(wt, sift_index_options(index), cfg.hash, cfg.tsconfig);
 	sift_wt_finish(wt);
 }

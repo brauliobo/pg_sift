@@ -3,6 +3,7 @@
 -- ("invalid memory alloc request size 17179869248"). Such a key keeps its ids in a hash table, like a key of an integer column, and the rows are those of the normal plan.
 -- (the rows of the two infinities must fall in a unit of their own: the test needs more than one unit, 200,000 rows)
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;

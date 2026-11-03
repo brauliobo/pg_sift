@@ -27,7 +27,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JCOLS` | yes |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JIDX` |  |
 | `lookup_kb` | estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine | 262,144 (256 MiB) | kB | normal plan (slug join_child, spine_rows) | `sift.agg_lookup_max_kb` | `agg/plan/finish.c` |  |
-| `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par.c` `SHARE_MAX` |  |
+| `lookup_shared_bytes` | a lookup table shared with the parallel workers through DSM | 1,073,741,824 (1 GiB) | bytes | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par/int.h` `SHARE_MAX` |  |
 | `lookup_shared_slots` | lookup tables shared through DSM at one time | 64 | tables | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/lookshm.c` `LOOKSHM_SLOTS` |  |
 | `topn_rows` | LIMIT + OFFSET a top-N scan keeps in a heap | 100,000 | rows | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` | yes |
 | `topn_keys` | ORDER BY columns a top-N scan keeps in a heap | 8 | columns | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it |  | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` | yes |
@@ -57,19 +57,20 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
 | `merge_disk_peak` | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | 2 | times the live index | the step fails with PostgreSQL's disk-full error before it replaces a segment |  | `col/maint/maint.c` |  |
-| `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected |  | `col/col.h` `SIFT_COL_MAX_COLS` | yes |
-| `string_bytes` | one string value of a column leaf | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 at build or merge |  | `col/col.h` `SIFT_COL_MAX_VALUE` | yes |
-| `unit_bytes` | string bytes of one leaf in one column unit | 1,073,741,823 (~1024 MiB) | bytes | the values after it are stored as overflow and read from the heap (NOTICE) |  | `col/col.h` `SIFT_COL_UNIT_MAX_BYTES` | yes |
-| `unit_rows` | rows of one column unit (256 heap pages) | 74,496 | rows | a new unit starts |  | `col/col.h` `SIFT_COL_UNIT_MAX_ROWS` |  |
-| `dict_entry` | longest string that is a dictionary entry | 255 | bytes | the unit stores its strings inline |  | `col/col.h` `SIFT_COL_DICT_MAX_ENTRY` |  |
-| `dict_bytes` | one segment dictionary | 67,108,864 (64 MiB) | bytes | the unit stores its strings inline |  | `col/col.h` `SIFT_COL_DICT_MAX_BYTES` |  |
+| `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected |  | `col/api/format.h` `SIFT_COL_MAX_COLS` | yes |
+| `string_bytes` | one string value of a column leaf | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 at build or merge |  | `col/api/format.h` `SIFT_COL_MAX_VALUE` | yes |
+| `unit_bytes` | string bytes of one leaf in one column unit | 1,073,741,823 (~1024 MiB) | bytes | the values after it are stored as overflow and read from the heap (NOTICE) |  | `col/api/format.h` `SIFT_COL_UNIT_MAX_BYTES` | yes |
+| `unit_rows` | rows of one column unit (256 heap pages) | 74,496 | rows | a new unit starts |  | `col/api/format.h` `SIFT_COL_UNIT_MAX_ROWS` |  |
+| `dict_entry` | longest string that is a dictionary entry | 255 | bytes | the unit stores its strings inline |  | `col/api/format.h` `SIFT_COL_DICT_MAX_ENTRY` |  |
+| `dict_bytes` | one segment dictionary | 67,108,864 (64 MiB) | bytes | the unit stores its strings inline |  | `col/api/format.h` `SIFT_COL_DICT_MAX_BYTES` |  |
+| `par_build_rows` | rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table) | 150,000 | rows | fewer workers are launched, down to the build of the leader alone: one segment | `max_parallel_maintenance_workers, the parallel_workers option of the table` | `col/build_par.c` `PAR_BUILD_ROWS` | yes |
 | `pre_census_units` | units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units) | 256 | units | the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole |  | `col/am/cache.c` | yes |
 | `dict_cache_kb` | parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them | 65,536 (64 MiB) | kB | the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too |  | `col/dictcache.c` `CDICT_CACHE_MAX_KB` | yes |
 | `dict_lookup_min` | strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14) | 1,024 | strings | the dictionary is written in the compact form and a fetch or a lookup loads it whole | `dict_lookup option` | `col/seg_write/seg_write_int.h` `CDICT_LOOKUP_MIN` | yes |
 | `dict_tsig_min` | bytes of the strings a segment dictionary in blocks needs before it is written with a trigram signature of each block, once the dictionary of its leaf, scaled to the index, no longer fits the parsed ones a backend keeps (dict_cache_kb), so that a substring test reads the blocks that may hold the part and not all of them (column format minor 29) | 1,024 (1 MiB) | kB | no signature: a substring test reads every block of the dictionary |  | `col/seg_write/dict.c` `CDICT_TSIG_MIN_KB` | yes |
 | `lst_min_units` | units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf | 64 | units | no statistics block: the plan reads the zone arrays of the segment (a few pages) |  | `col/seg_write/seg_write_int.h` `LST_MIN_UNITS` | yes |
 | `lst_share_div` | the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none | 33 | 1/n of a segment | no statistics block: the plan reads the zone arrays of the segment |  | `col/seg_write/seg_write.c` `LST_SHARE_DIV` | yes |
-| `int_digits` | precision of a numeric the integer leaf class holds exactly | 18 | digits | the wide leaf class holds it |  | `col/col.h` `SIFT_COL_MAX_SCALE` |  |
+| `int_digits` | precision of a numeric the integer leaf class holds exactly | 18 | digits | the wide leaf class holds it |  | `col/api/leaf.h` `SIFT_COL_MAX_SCALE` |  |
 | `wide_digits` | precision of a numeric in a wide leaf | 38 | digits | ERROR 54000 at build or merge |  | `col/wide.h` `SIFT_COL_MAX_WIDE_SCALE` |  |
 | `cube_dims` | dimensions of the cube of an index | 16 | dimensions | option rejected at CREATE or ALTER INDEX | `cube option` | `col/preagg.h` `SIFT_PAGG_MAX_DIMS` |  |
 | `rollup_dims` | dimensions of one rollup | 6 | dimensions | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/preagg.h` `SIFT_PAGG_MAX_RDIMS` |  |
@@ -95,6 +96,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
+| `segment_cache_kb` | docmap directories and term blobs of the segments that a backend keeps, in its own memory, for its next statement (one entry at most a quarter of it) | 32,768 (32 MiB) | kB | the least recently used entry that no cursor holds is dropped; a blob that does not fit while every entry is held is read as before and kept by nobody |  | `bm25/segcache.c` `SEGCACHE_MAX_KB` | yes |
 | `max_segments` | directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test) | 128 | segments | writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE) |  | `core/sift.h` `SIFT_MAX_SEGMENTS` | yes |
 | `term_bytes` | a BM25 token | 255 | bytes | the token is its first 236 bytes and a hash of all of it |  | `core/sift.h` `SIFT_MAX_TERM_BYTES` |  |
 | `term_tf` | term frequency in one document | 255 | occurrences | saturated |  | `core/sift.h` `SIFT_MAX_TF` |  |
@@ -110,6 +112,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `regex_bytes` | a regular expression of a query | 1,000 | bytes | ERROR 54000 |  | `bm25/query.h` `SIFT_MAX_REGEX_BYTES` |  |
 | `any_list_rows` | rows a query list (= ANY(array)) may match in one scan | 100,000 | rows | normal plan |  | `bm25/planner_path.c` `ANY_LIST_MAX_ROWS` |  |
 | `maint_backoff_ms` | longest wait before a failing background maintenance retries | 3,600,000 | ms | retried once an hour |  | `bm25/maint.c` `BACKOFF_MAX_MS` |  |
+| `semi_set` | rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys) | 65,536 | rows | the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns) |  | `bm25/planner.h` `SIFT_SEMI_MAX_SET` |  |
 
 ## `sift_table` (`src/table`)
 

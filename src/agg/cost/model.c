@@ -13,6 +13,7 @@
 #include "utils/syscache.h"
 #include "access/htup_details.h"
 
+#include "col/pg.h"
 #include "agg/cost/int.h"
 
 double
@@ -132,7 +133,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		}
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
-	k->cold_ops += entry_cost * (parallel_divisor(s->nworkers) - 1.0);
+	k->cold_ops += entry_cost * (s->gpart > 0 ? 0.0 : parallel_divisor(s->nworkers) - 1.0);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
@@ -151,11 +152,18 @@ agg_floor_cost(void)
 	return AGG_START_PLAIN * cpu_operator_cost;
 }
 
+/* The least a scan of one table that groups pays to start (AGG_START_GROUPS): a normal plan under it is out of reach of such a scan. */
+Cost
+agg_group_open_cost(void)
+{
+	return AGG_START_GROUPS * cpu_operator_cost;
+}
+
 /* What every path of the scan pays to start, whatever it reads: its source and the partitions it opens. No path costs less in total. */
 Cost
 agg_open_cost(int nparts)
 {
-	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
+	return ((nparts > 0 ? AGG_START_PART : AGG_START_COST) + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
 }
 
 /*
@@ -180,8 +188,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 				share,
 				entries,
 				key_ops,
-				ids;
-	Cost		startup;
+				ids,
+				mask_cost;
+	Cost		startup,
+				native;
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
@@ -193,6 +203,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
 	k.scan_cost = c->search ? sift_search_cost(c->search, k.rows, k.units, &k.rows, &k.units) : 0;
 	cost_read(c, s, &k);
+	mask_cost = k.scan_cost;
 	cost_tuples(c, s, input_rel, &k);
 	cost_joins(c, s, &k);
 	cost_work(c, s, &k);
@@ -206,8 +217,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		double		open = k.open_cost * AGG_SCAN_SPEED,
 					scan = (k.scan_cost - open) * c->topn_frac + open;
 
-		/* through the sorted runs, a unit costs a seek and the rows wanted, never more than its rows scanned */
-		k.scan_cost = c->topn_runs ? Min(scan, open + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW)) : scan;
+		/* through the sorted runs, a unit costs a seek and the rows wanted (and the conditions on its rows, when they are not on the key), never more than its rows scanned */
+		k.scan_cost = c->topn_runs ? Min(scan, open + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW) +
+										 (c->topn_resid ? mask_cost * AGG_SCAN_SPEED * c->topn_frac : 0.0)) : scan;
 	}
 	k.scan_cost *= cpu_operator_cost;
 	/*
@@ -233,7 +245,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
+	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost :
+			   s->nkeys > 0 && !s->topn && c->joins == NIL && !c->search && c->nparts == 0 ? agg_group_open_cost() : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
 	/* a search is opened first (k.open_cost) and its native plan is the index scan of the search, which the scan starts no cheaper than */
 	if (s->nkeys == 0 && s->naggs > 0 && !s->topn && c->nparts == 0 && c->level_params == NIL && !c->search)
 		startup -= (AGG_START_COST - AGG_START_PLAIN) * cpu_operator_cost;
@@ -256,14 +269,18 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
 	{
-		startup = (AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
+		startup = c->level_params != NIL ? (AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0)) * cpu_operator_cost :
+			(AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}
-	p->startup_cost = startup + k.scan_cost;
+	/* the price of the scan is in the operators of the model: its share against the native plan (SIFT_COST_AGG_SHARE); the plans PostgreSQL makes for the child and the sub-plans are its own prices */
+	native = k.child_cost + c->subplan_cost;
+	p->startup_cost = native + (startup + k.scan_cost - native) * SIFT_COST_AGG_SHARE;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
-	/* the rows of a top-N are fetched from the heap, one page each */
+	/* the rows of a top-N are fetched from the heap, one page each; those the order array or a sorted run gives come in the order of the key (the entries a walk tests too), a page in the buffers, the cache or the disk */
 	if (s->topn)
-		p->total_cost += c->topn_fetch * random_page_cost * 0.5;
+		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE :
+			c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 	if (c->having_sel > 0 && !s->topn)

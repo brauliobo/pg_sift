@@ -5,6 +5,9 @@
 #  - kill -9 of the primary under load, recovery, and the standby following it
 #  - a pg_basebackup taken while the workload runs restores (alone, and as a standby that is then promoted)
 #    to an index that sift.verify accepts and that agrees with the SQL reference
+# Not shrunk below this size: the kill has to land inside the running workload (promotion, merge, VACUUM), and
+# each kill point costs about 4.5 s (the kill, crash recovery, the standby catching up, verification and the
+# agreement with the SQL reference); a shorter workload ends before the kill and crashes nothing.
 use strict;
 use warnings FATAL => 'all';
 use FindBin;

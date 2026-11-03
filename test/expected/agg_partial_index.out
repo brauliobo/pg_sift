@@ -11,6 +11,8 @@ CREATE TABLE dims (id int, kind text);
 INSERT INTO dims SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 6) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, grp, day, deleted_at, score, doc) WITH (paths = 'doc.k int4')
   WHERE deleted_at IS NULL AND day >= '2026-01-15';
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
@@ -111,6 +113,8 @@ SELECT * FROM check_all();
 (11 rows)
 
 REINDEX INDEX facts_col;
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM check_all();
          label          | scan | same |                                               outcome                                                
 ------------------------+------+------+------------------------------------------------------------------------------------------------------
@@ -158,6 +162,8 @@ SELECT * FROM check_prepared('force_generic_plan');
 
 -- a full index next to the partial one: either answers a query the partial one covers
 CREATE INDEX facts_col_all ON facts USING sift_col (id, grp, day, deleted_at, score, doc) WITH (paths = 'doc.k int4');
+NOTICE:  sift_col index "facts_col_all" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_all();
          label          | scan | same |                                               outcome                                                
@@ -182,12 +188,14 @@ CREATE TABLE ev_a PARTITION OF ev FOR VALUES FROM ('2026-01-01') TO ('2026-02-01
 CREATE TABLE ev_b PARTITION OF ev FOR VALUES FROM ('2026-02-01') TO ('2026-04-01');
 INSERT INTO ev SELECT i, i % 7, date '2026-01-01' + i % 80, CASE WHEN i % 10 = 0 THEN timestamp '2026-03-01' END, i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, deleted_at, score) WHERE deleted_at IS NULL;
-NOTICE:  sift_col index ev_a_id_grp_day_deleted_at_score_idx writes a rollup of the rows by grp, deleted_at
+NOTICE:  sift_col index "ev_a_id_grp_day_deleted_at_score_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, deleted_at
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 14 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_a_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index ev_b_id_grp_day_deleted_at_score_idx writes a rollup of the rows by grp, deleted_at
+HINT:  To drop it, run ALTER INDEX ev_a_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "ev_a_id_grp_day_deleted_at_score_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ev_b_id_grp_day_deleted_at_score_idx": rollup_dims = 'auto' writes a rollup of the rows by grp, deleted_at
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 14 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_b_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX ev_b_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 SELECT * FROM check_query('partitions, implied', 'SELECT grp, count(*), sum(score) FROM ev WHERE deleted_at IS NULL AND day >= ''2026-01-20'' GROUP BY grp');
         label        | scan | same |                                               outcome                                                

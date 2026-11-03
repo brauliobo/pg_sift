@@ -280,5 +280,5 @@ SELECT count(*) FROM sift.tokenize('running', stemmer => '');
 
 SELECT * FROM sift.tokenize('x', stemmer => 'klingon');
 ERROR:  unknown sift stemmer "klingon"
-HINT:  Valid stemmers are "en" and "none".
+HINT:  Valid stemmers are "en", "none" and the names of text search configurations (with their schema unless they are in pg_catalog).
 DROP EXTENSION pg_sift;

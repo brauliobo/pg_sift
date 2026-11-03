@@ -1,5 +1,5 @@
--- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry of a unit with no dead row whose
--- pages are all-visible is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry on an all-visible page that is not
+-- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -17,6 +17,7 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
 	WITH (order_columns = 'id, a, b, c, t', order_array_columns = 'id, a, b, c, t, s');
+NOTICE:  sift_col index "ot_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "ot_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 6 columns
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
@@ -75,18 +76,19 @@ SELECT * FROM ot_all(60, ARRAY[100, 3000]);
 (1 row)
 
 RESET sift.test_limits;
--- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) reads the heap
+-- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b > 100'), ('b', 'b <> 3 AND b < 6'), ('b', 'b <= 7 OR b >= 490 OR b = 250'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b IS NOT NULL'), ('b', 'b > 1000'),
 				 ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('id', 'id <= 6000 AND id <> 77'), ('b', 'b > 100 AND a > 0')) q(c, w),
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 25, 800]) o) r
 GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- skipped |    84
- units   |    24
-(2 rows)
+  result   | count 
+-----------+-------
+ confirmed |    16
+ skipped   |    84
+ units     |     8
+(3 rows)
 
 -- rows of the write buffer, deleted rows (the pages are not all-visible until a VACUUM) and updated rows
 INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, TIMESTAMP '2021-01-01' + i * interval '1 minute', 'z' || i % 77 FROM generate_series(1, 1500) i;
@@ -98,21 +100,24 @@ SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
  confirmed | 96
 (1 row)
 
--- a VACUUM flags the dead rows of the units: those units are confirmed again
+-- a VACUUM flags the dead rows of the units: their entries are confirmed again
 VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 96
-(1 row)
+ confirmed | 26
+ partly    | 30
+ skipped   | 40
+(3 rows)
 
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
 INSERT INTO ot (id, a, b, c, t) SELECT 20000 + i, -i % 50, i % 400, i, TIMESTAMP '1990-01-01' + i * interval '1 hour' FROM generate_series(1, 900) i;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 96
-(1 row)
+ confirmed | 95
+ partly    |  1
+(2 rows)
 
 SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -123,12 +128,14 @@ SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 82
- partly    |  5
+ confirmed | 74
+ partly    | 13
  skipped   |  9
 (3 rows)
 
 SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
+NOTICE:  sift_col index "ot_i": point_tid_columns = 'auto' chooses "c" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +19%, 4 bytes a row, benefit 11 against cost 7)
+NOTICE:  sift_col index "ot_i": the rewrite chooses again from the data: point_tid_columns = 'auto: c' (was '')
  merged 
 --------
  t
@@ -137,8 +144,8 @@ SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
   result   | n  
 -----------+----
- confirmed | 76
- partly    | 11
+ confirmed | 74
+ partly    | 13
  skipped   |  9
 (3 rows)
 
@@ -146,8 +153,8 @@ SET sift.test_limits = 'topn_rows=50';
 SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
   result   | n  
 -----------+----
- confirmed | 59
- partly    | 11
+ confirmed | 57
+ partly    | 13
  skipped   |  2
 (3 rows)
 
@@ -168,15 +175,16 @@ SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
 (1 row)
 
 RESET sift.test_limits;
--- a key_cut index (its units are cut by the key, not by superblock): every entry is confirmed by the heap, the rows are the same
+-- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
+NOTICE:  sift_col index "ot_k" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "ot_k": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
-  result   | count 
------------+-------
- confirmed |    12
+ result  | count 
+---------+-------
+ skipped |    12
 (1 row)
 
 DROP TABLE ot CASCADE;

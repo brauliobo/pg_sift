@@ -1,0 +1,8 @@
+# FILE<TAB>REASON: a shell that reaches PostgreSQL with the cluster of its caller (PGHOST, PGPORT, PGDATABASE of the environment) and names none itself
+bench/churn/waste.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
+bench/steps/ab.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
+bench/steps/corpus.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
+bench/steps/oracle.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
+bench/steps/rank_check.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
+bench/steps/xlib.sh	sourced by the benchmark steps, which export PGHOST/PGPORT of the cluster under test
+scripts/gen-reference.sh	--live asks the server of PGHOST/PGPORT that the caller names; without --live no server is reached

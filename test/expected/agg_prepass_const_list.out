@@ -7,6 +7,8 @@ CREATE TABLE pc_fact (id int, k int, v int);
 INSERT INTO pc_fact SELECT i, i % 5000, i % 7 FROM generate_series(1, 20000) i;
 ANALYZE pc_fact;
 CREATE INDEX pc_fact_col ON pc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+NOTICE:  sift_col index "pc_fact_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 -- a statement with a single-reference CTE, a sub-select, a lateral and a json_build_object call: every pass has something to look at
 -- a statement with a single-reference CTE, a sub-select, a lateral and a json_build_object call: every pass has something to look at; tail is added to the list
 CREATE FUNCTION pc_stmt(n int, tail text) RETURNS text LANGUAGE sql AS $f$

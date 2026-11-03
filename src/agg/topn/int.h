@@ -27,6 +27,7 @@
 #define TOPN_OUT_ROWS	16
 /* Rows of a unit the first key of which is an integer, at least, for the best value of a segment to be looked at before its rows (vec_rows), and the rows of a segment */
 #define TOPN_VEC_ROWS	512
+#define TOPN_ENUM_PASSES 16		/* values of an enum the ranks of its OIDs are found for by one pass each, not by a search for each row */
 #define TOPN_SEG		256
 /*
  * ... and one row in this many of the unit passes the filters at least: the passes of the kernels cost the same whatever the rows are, so fewer rows go
@@ -39,6 +40,7 @@
 #define SPEC_COUNT(spec)	((Node *) lsecond((List *) (spec)))
 #define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
 #define SPEC_EXPRS(spec)	((List *) lfourth((List *) (spec)))
+#define SPEC_LOOKUPS(spec)	((List *) list_nth((List *) (spec), 4))
 /* The bytes of a dictionary entry, copied out of the unit: what a heap entry holds for a key of byte strings (kept at int64 in TopEnt.k) */
 typedef struct KeyBlob
 {
@@ -127,6 +129,7 @@ typedef struct TopFetch
 	TupleTableSlot *slot;
 	IndexFetchTableData *fetch;
 	int		   *attno;
+	BlockNumber nblocks;		/* the heap's pages when the scan opens: the entry of a row that a vacuum took out of a truncated page lists an address past them. A row the snapshot sees is on a page that existed when the snapshot was taken, before this, and a truncation needs the lock this scan blocks, so a page added since holds only rows the snapshot does not see */
 } TopFetch;
 /*
  * The order code of a dictionary of a first key that compares as bytes (text under C, uuid, bytea): ord[code] puts the entries in the key's order, so that a
@@ -170,6 +173,9 @@ struct SiftTopN
 	int64		nmem;
 	int64		capmem;
 	int			stride;			/* int64s of a row of mem */
+	int64		keep;			/* a bound the heap does not take (LIMIT + OFFSET past the cap): mem is cut to the best of them whenever it holds twice that, 0: none */
+	int64		memmax;			/* bytes of rows mem may hold (sort_memory), read once */
+	int64	   *bar;			/* the last row kept by the last cut: a row after it cannot be among the rows that count */
 	Tuplesortstate *sort;		/* ... else a tuplesort of them (work_mem, then disk) */
 	TupleTableSlot *sin,
 			   *sout;			/* the rows going in and out of sort: the keys, then the TID as a number */
@@ -202,6 +208,9 @@ struct SiftTopN
 	int64		emitted;
 	TopEnt	   *heap;			/* the best rows so far, the worst at heap[0] */
 	int			n;
+	bool		brk_up,			/* the entries pushed while the heap filled were not in rank order, from the best (a unit that follows the key gives them so) */
+				brk_down,		/* ... or not from the worst */
+				desc_run;		/* the heap is full and its array is the worst-first run it was filled with: no entry has replaced one */
 	TopEnt	   *lh;				/* the best rows of the unit */
 	int			ln;
 	uint32	   *crow;			/* the rows of the unit that pass, their first sort key and whether it is NULL */
@@ -252,7 +261,10 @@ struct SiftTopN
 	Relation	rel;			/* the table the rows are fetched from: partitioned, or the heap */
 	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
+	int			gpart;			/* the partition whose heap the walk of the global order fetches from: the only one a partitioned scan reads (sift_aggpart_only), else 0 */
 	int64		skipped;
+	bool		skip_tried;		/* the global order was asked to take the OFFSET off its front (sift_gord_skip) */
+	int64		bulk;			/* ... and the rows it took, which go out as the rows the Limit throws away, with no entry read */
 	int64		nrun;			/* units read through their sorted run */
 	int64		nlazy;			/* ... of them with no filter run (sift_topn_lazy) */
 	int64		nrhead;			/* units answered from the head of their sorted run */
@@ -266,12 +278,22 @@ struct SiftTopN
 	bool		rwide[TOP_RESID];
 	bool		nogord;			/* TOPN_NOGORD: the plan counts on the heads of the sorted runs */
 	bool		gtext;			/* ... the one key is a text column, ranked in the arrays by its collation (key[0].collid) */
+	bool		gkeyout;		/* every output column is the first key, a plain integer or time column: the row of an exact entry is the entry's key, no heap row is read */
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
+	int			gscale[TOP_GKEYS];	/* a numeric key (gtyp NUMERICOID): the digits after the point, its key in the arrays is the number scaled by 10^gscale */
 	struct GRow *gq;			/* sift_topn_gorder with more keys: the rows of the whole groups of the first key that make the n, in order */
 	int			gqn;
+	int64		gbulk;			/* gprep: the rows of the OFFSET the order took off its front before the walk (gord_skip); the walk queues the rest */
+	int			gqroom;
 	int			gqpos;
+	bool		gprep;			/* the rows of the walk are queued before the first goes out (gord_prep): more keys, or a condition that the heap row of an entry decides */
+	int64		gtried;			/* ... heap rows it fetched, and those of them that passed */
+	int64		gpass;
+	int64		gbudget;		/* ... fetches it may make before the units read less (gord_giveup), and the heap blocks the units would vet row by row (not all-visible), with the rows of a block */
+	int64		gdirty;
+	double		grpp;
 	const SiftTopGPred *gcond;	/* sift_topn_gorder: what the key of an entry must satisfy */
 	struct SiftGOrd *go;		/* the global order of the key read in place of the units (sift_topn_gorder): rows come from the heap in the order of the key */
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
@@ -333,7 +355,9 @@ typedef struct GRow
 	ItemPointerData tid;
 	bool		isnull[TOP_GKEYS];
 	int64		key[TOP_GKEYS];
+	bool		exact;			/* an entry of an exact unit thrown away by the OFFSET: not fetched, a row of NULLs (gord_group) */
 } GRow;
+StaticAssertDecl(sizeof(GRow) == SIFT_TOPN_GROW_BYTES, "the planner prices the queue of a walk by the size of a GRow");
 extern KeyBlob * xform_blob(SiftTopN *t, const TopKey *k, const char *p, uint32 len);
 
 extern bool row_val(SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out);
@@ -347,9 +371,10 @@ extern int bytes_cmp(const TopKey *k, const char *a, uint32 la, const char *b, u
 extern int key_cmp_n(const SiftTopN *t, const TopEnt *a, const TopEnt *b, int nk);
 extern void sort_rows(uint32 *data, size_t n);
 extern int mem_cmp(const void *a, const void *b, void *arg);
+extern void mem_cut(SiftTopN *t);
 
 extern Tuplesortstate * sort_begin(SiftTopN *t);
-extern void grow_unit_buffers(SiftTopN *t, int nrow);
+extern void grow_unit_buffers(SiftTopN *t, int nrow, bool keep);
 extern void finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc);
 extern bool bar_rank(const SiftTopN *t, Rank *bar);
 extern void share_bar(SiftTopN *t);
@@ -368,8 +393,38 @@ extern SiftSrcZone key_zone(const TopKey *k, const SiftSrcZone *z);
 extern bool next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part);
 
 extern bool gcond_test(const SiftTopGPred *p, TupleTableSlot *slot);
-extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull);
+extern int64 gord_skip(SiftTopN *t);
+extern int gord_entry_state(SiftTopN *t, ItemPointerData *tid, int64 key, bool isnull);
+/* The columns of a condition other than the key, as the units hold them for an entry (st: 1 a value, 2 NULL, 0 not read) */
+#define GORD_COND_LEAVES	4
+typedef struct GEntVals
+{
+	int			n;
+	int			leaf[GORD_COND_LEAVES];
+	int64		val[GORD_COND_LEAVES];
+	uint8		st[GORD_COND_LEAVES];
+} GEntVals;
+/*
+ * More keys than the first: the array gives the rows in the order of the first key only, so the scan takes the whole groups of rows that share a value of it
+ * (the heap row says what the others hold, and whether it passes the condition) until the groups make the n rows, and puts each group in order. A scan that
+ * reads more entries than GORD_SCAN_MIN, or 64 for each row wanted, before the n are in has a first key that many rows share: the units read it better.
+ */
+#define GORD_SCAN_MIN	4096
+
+/*
+ * A condition on a column other than the key is tested on the heap row of every entry, which may be most of the array for a condition that few rows pass. The walk gives up, for the
+ * units, when the pass rate of the rows it has fetched says that the n will take more fetches than the units cost: a quarter of the heap's blocks, and the blocks the units would vet
+ * (those not all-visible that hold a row that passes), and never less than four for each row wanted (a filter that passes a quarter or more does what a b-tree's scan does). The
+ * walk is judged with two passes more than it saw, so that a few rows give no verdict: one that passes none is given up after about twice the budget over the rows wanted.
+ */
+#define GORD_BUDGET_DIV	4
+#define GORD_TRY_MIN	32
+
+extern bool gord_prep(SiftTopN *t);
+extern bool gord_probe(SiftTopN *t);
+extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull, const GEntVals *ev);
 extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);
+extern bool res_take(SiftTopN *t, int n);
 
 extern void fetch_begin(SiftTopN *t, int part);
 
@@ -494,13 +549,15 @@ key_entry(SiftTopN *t, int j, const SiftSrcDict *d, uint32 code, const char **p,
 	}
 }
 
-/* the place of row in the ascending rows[0, n), which holds it */
+/* the place of row in the ascending rows[0, n), which holds it; the entries of a unit that follows the key come in the order of the rows, so the place is mostly `guess` */
 static inline uint32
-row_at(const uint32 *rows, int n, uint32 row)
+row_at(const uint32 *rows, int n, uint32 row, int guess)
 {
 	int			lo = 0,
 				hi = n;
 
+	if (guess < n && rows[guess] == row)
+		return guess;
 	SIFT_BISECT(int, mid, lo, hi, rows[mid] < row);
 	return lo;
 }
@@ -602,6 +659,15 @@ heap_key(Oid typid, Datum d)
 		default:
 			return DatumGetInt64(d);
 	}
+}
+
+extern int64 numeric_gkey(int scale, Datum d);
+
+/* The key j of a heap row as the entries of the global order hold it */
+static inline int64
+gkey_of(const SiftTopN *t, int j, Datum d)
+{
+	return t->gtyp[j] == NUMERICOID ? numeric_gkey(t->gscale[j], d) : heap_key(t->gtyp[j], d);
 }
 
 /* The sign of a row of the first key (a NULL, or the entry `code` of dictionary d) against the entry bar, by the first key alone: < 0 before it, > 0 after it */

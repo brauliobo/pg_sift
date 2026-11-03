@@ -1,0 +1,110 @@
+# The figures the CHANGELOG states, checked against records (bench/steps/records/claims.py; `bench records claims RECORDS...`): phrase of the line, statement, rows, arm (heap, btree, gin,
+# sift, picked), option, metric (exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks, cold_blocks), the value the line gives, a tolerance in percent (default 25).
+phrase	statement	rows	arm	option	metric	value	tolerance	note
+4.0 M instructions	cnt_top	1050000	sift	key_order=k,ts	instr_m	4.0	25	count(*) of the biggest group after churn and VACUUM, run 89c6a2e19f1f-20261101T235905Z-8380
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	exec_ms	1.6	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	sift	default	instr_m	19	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
+`LATERAL` sub-select that looks up a `sift_col` index with an equality on a column of the outer row	pt_join1000	300000	btree	default	exec_ms	1.2	25	run 9179bfe5a825-20261102T012745Z-69d2, records in program-scale/records/planner-pl9-after-20261101.rec
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64s	300000	picked	default	exec_ms	0.07	40	run 9179bfe5a825-20261102T022539Z-634a (planner-pl11-h64-20261101.rec)
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64s	300000	picked	default	instr_m	0.5	25	same run
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	exec_ms	0.02	40	same run, the b-tree twin
+the planner charges the start of an aggregate scan of a partitioned table 40,000 operators	const_top20_h64b	300000	picked	default	instr_m	0.2	25	same run, the b-tree twin
+153 M instructions before the VACUUM	table_read_churned	1000000	picked	default	instr_m	153	25	run e4cbf120533c-20261102T191856Z-f772, records in program-scale/records/churn-table-cases-1m-20261102.rec
+1.7 M after it	table_read_settled	1000000	picked	default	instr_m	1.7	25	run e4cbf120533c-20261102T191856Z-f772, records in program-scale/records/churn-table-cases-1m-20261102.rec
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	picked	default	plan_ms	0.85	40	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	picked	default	exec_ms	1.4	40	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	picked	default	instr_m	11.7	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	picked	default	blocks	1516	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	heap	default	exec_ms	63	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), sift.enable_agg = off
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64	300000	heap	default	instr_m	441	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), sift.enable_agg = off
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64b	300000	picked	default	plan_ms	0.4	40	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64b	300000	picked	default	exec_ms	0.73	40	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64b	300000	picked	default	instr_m	9.6	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h64b	300000	picked	default	blocks	265	25	run 7ddb6ee9658d-20261102T221933Z-0d3d (aggscan-pl4e2-as3f-lat_h64-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16	300000	picked	default	plan_ms	0.27	40	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16	300000	picked	default	exec_ms	1.1	40	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16	300000	picked	default	instr_m	8.2	25	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec)
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16	300000	heap	default	exec_ms	102	25	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec), sift.enable_agg = off
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16	300000	heap	default	instr_m	1038	25	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec), sift.enable_agg = off
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16b	300000	picked	default	plan_ms	0.16	40	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16b	300000	picked	default	exec_ms	0.52	40	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec), the b-tree twin
+is one scan of the table that drops all the partitions but the one that holds the value of each row	lateral_top1_h16b	300000	picked	default	instr_m	5.6	25	run 7ddb6ee9658d-20261102T221849Z-3859 (aggscan-pl4e2-as3f-lat_h16-20261102.rec), the b-tree twin
+sizes the candidate buffers of a unit	tenant_latest_20_before	300000	picked	default	exec_ms	0.18	40	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+sizes the candidate buffers of a unit	tenant_latest_20_before	300000	picked	default	instr_m	1.3	10	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+sizes the candidate buffers of a unit	tenant_latest_20	300000	picked	default	exec_ms	0.11	40	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+sizes the candidate buffers of a unit	tenant_latest_20	300000	picked	default	instr_m	1.0	10	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+sizes the candidate buffers of a unit	tenant_latest_20b	300000	btree	default	instr_m	0.2	30	records tenant_unitfix_before.rec / tenant_unitfix_fixed.rec
+the key in order (	ordered_key_scan	1000000	picked	default	wall_ms	51	25	run 07c83e7cf116-20261102T212146Z-94df (ordered_key_scan_07c83e7c.rec)
+the key in order (	ordered_key_scan	1000000	picked	default	instr_m	785	25	
+the key in order (	ordered_key_scan	1000000	heap	default	wall_ms	147	25	sift.enable_agg = off, sift.enable_col_scan = off
+the key in order (	ordered_key_scan	1000000	heap	default	instr_m	1741	25	
+the key in order (	ordered_key_scanb	1000000	btree	default	wall_ms	42	25	the b-tree twin, own statement name
+the key in order (	ordered_key_scanb	1000000	btree	default	instr_m	708	25	
+a window over the key (	ordered_window_rank	1000000	picked	default	wall_ms	253	25	run 07c83e7cf116-20261102T212224Z-7161 (ordered_window_rank_07c83e7c.rec)
+a window over the key (	ordered_window_rank	1000000	picked	default	instr_m	3256	25	
+a window over the key (	ordered_window_rank	1000000	heap	default	wall_ms	335	25	sift.enable_agg = off, sift.enable_col_scan = off
+a window over the key (	ordered_window_rank	1000000	heap	default	instr_m	4338	25	
+a window over the key (	ordered_window_rankb	1000000	btree	default	wall_ms	219	25	the b-tree twin, own statement name
+a window over the key (	ordered_window_rankb	1000000	btree	default	instr_m	3180	25	
+a merge join of two tables on the key (	ordered_join_order	1000000	picked	default	wall_ms	151	25	run 07c83e7cf116-20261102T212346Z-ba5a (ordered_join_order_07c83e7c.rec)
+a merge join of two tables on the key (	ordered_join_order	1000000	picked	default	instr_m	2165	25	
+a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	wall_ms	504	30	sift.enable_agg = off, sift.enable_col_scan = off
+a merge join of two tables on the key (	ordered_join_order	1000000	heap	default	instr_m	4467	25	
+a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	wall_ms	114	25	the b-tree twin, own statement name
+a merge join of two tables on the key (	ordered_join_orderb	1000000	btree	default	instr_m	1957	25	
+A bitmap of 25 rows of 300,000 takes 0.39 M instructions	one_parent_narrow	300000	btree	bitmap	instr_m	0.39	25	run 7799abcf2bbb-20261103T013304Z-8ca8, records in program-scale/records/table-bitmap-density-300k-20261103.rec
+and 6 blocks (4.9 M and 38 before)	one_parent_narrow_before	300000	btree	bitmap	instr_m	4.9	25	run fb58eea1679c-20261103T000221Z-6618, records in program-scale/records/table-bitmap-pre-300k-20261103.rec
+and of 1,000,000 rows 0.63 M instructions	one_parent_narrow	1000000	btree	bitmap	instr_m	0.63	25	run 7799abcf2bbb-20261103T013433Z-db2e, records in program-scale/records/table-bitmap-density-1m-20261103.rec
+(18.3 M and 240 before)	one_parent_narrow_before	1000000	btree	bitmap	instr_m	18.3	25	run fb58eea1679c-20261103T013105Z-1286, records in program-scale/records/table-bitmap-pre-1m-20261103.rec
+4,110 rows of 1,000,000 take 36 M instructions	ten_days	1000000	btree	bitmap	instr_m	36	25	run 7799abcf2bbb-20261103T013433Z-db2e, records in program-scale/records/table-bitmap-density-1m-20261103.rec
+(95 M and 988 before)	ten_days_before	1000000	btree	bitmap	instr_m	95	25	run fb58eea1679c-20261103T013105Z-1286, records in program-scale/records/table-bitmap-pre-1m-20261103.rec
+4,110 rows of 300,000 take 12.8 M instructions	ten_days	300000	btree	bitmap	instr_m	12.8	25	run 7799abcf2bbb-20261103T013304Z-8ca8, records in program-scale/records/table-bitmap-density-300k-20261103.rec
+(18.5 M before)	ten_days_before	300000	btree	bitmap	instr_m	18.5	25	run fb58eea1679c-20261103T000221Z-6618, records in program-scale/records/table-bitmap-pre-300k-20261103.rec
+`bulk_copy_wal` of 10,000,000 rows, the COPY and the `sift.table_maintain` that followed, 24,534	bulk_copy_wal_before	10000000	sift	default	wall_ms	24534	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+to 13,836 ms	bulk_copy_wal	10000000	sift	default	wall_ms	13836	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+and 255,160 to 167,908 M instructions	bulk_copy_wal_before	10000000	sift	default	instr_m	255160	25	run 4281a82244c9-20261103T095633Z-0cee, records in program-scale/records/copy-load-before-10m-20261103.rec
+167,908 M instructions	bulk_copy_wal	10000000	sift	default	instr_m	167908	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+(a heap table 8,050 ms and 106,902 M)	bulk_copy_wal	10000000	heap	default	wall_ms	8050	25	run f98140da39b3-20261103T102103Z-6cc5, records in program-scale/records/copy-load-after-10m-20261103.rec
+of 1,000,000 rows 18,772 to 17,068 M instructions	bulk_copy_wal_before	1000000	sift	default	instr_m	18772	25	run 4281a82244c9-20261103T031407Z-4466, records in program-scale/records/copy-load-before-1m-20261103.rec
+to 17,068 M instructions	bulk_copy_wal	1000000	sift	default	instr_m	17068	25	run f98140da39b3-20261103T094631Z-f13c, records in program-scale/records/copy-load-after-1m-20261103.rec
+the grouped count 21.77 to 10.66 M instructions	group_all_tenants@heapfree_recent20_updated#track_off	300000	picked		instr_m	21.77	3	track_changes off, records-0020-reads-{off,on}.tsv
+the grouped count 21.77 to 10.66 M instructions	group_all_tenants@heapfree_recent20_updated#track_on	300000	picked		instr_m	10.66	3	track_changes on (default)
+1,241 to 2 heap blocks	group_all_tenants@heapfree_recent20_updated#track_off	300000	picked		heap_blocks	1241	3	track_changes off
+1,241 to 2 heap blocks	group_all_tenants@heapfree_recent20_updated#track_on	300000	picked		heap_blocks	2	3	track_changes on
+the top 20 by a key 2.28 to 0.80 M	top_n@heapfree_recent20_updated#track_off	300000	picked		instr_m	2.28	3	track_changes off
+the top 20 by a key 2.28 to 0.80 M	top_n@heapfree_recent20_updated#track_on	300000	picked		instr_m	0.80	3	track_changes on
+an UPDATE of 5% of the rows 144.6 to 207.7 M	update_5pct_covered@heapfree_default#pk/off1	100000	sift	off1	instr_m	144.6	3	option off, records-0021-write-merged.tsv
+an UPDATE of 5% of the rows 144.6 to 207.7 M	update_5pct_covered@heapfree_default#pk/def1	100000	sift	def1	instr_m	207.7	3	default
+a key change of 1% 66.4 to 86.9 M	update_key_1pct@heapfree_default#pk/off1	100000	sift	off1	instr_m	66.4	3	option off, records-0021-write-merged.tsv
+a key change of 1% 66.4 to 86.9 M	update_key_1pct@heapfree_default#pk/def1	100000	sift	def1	instr_m	86.9	3	default
+a DELETE of 2% 53.6 to 72.3 M	delete_2pct@heapfree_default#pk/off1	100000	sift	off1	instr_m	53.6	3	option off, records-0021-write-merged.tsv
+a DELETE of 2% 53.6 to 72.3 M	delete_2pct@heapfree_default#pk/def1	100000	sift	def1	instr_m	72.3	3	default
+reads 4.3 M instructions instead of 72.7 M	latest1_100	300000	sift	default	instr_m	4.3	25	run 4281a82244c9-20261103T030747Z-e587 (100 groups, rows sorted by the group, AU)
+reads 4.3 M instructions instead of 72.7 M	latest1_100	300000	sift	key_order=off	instr_m	72.7	25	run 4281a82244c9-20261103T030747Z-e587 (DN)
+`ORDER BY entity, ts OFFSET 10,000` 14.7 M instead of 51.0 M	order_group_offset	300000	sift	default	instr_m	14.7	25	run 4281a82244c9-20261103T030747Z-e587
+`ORDER BY entity, ts OFFSET 10,000` 14.7 M instead of 51.0 M	order_group_offset	300000	sift	key_order=off	instr_m	51.0	25	run 4281a82244c9-20261103T030747Z-e587
+the latest 20 of one tenant 0.3 M instead of 0.8 M	tenant_skew_latest_20	300000	sift	default	instr_m	0.3	25	run 4281a82244c9-20261103T030616Z-75d9
+the latest 20 of one tenant 0.3 M instead of 0.8 M	tenant_skew_latest_20	300000	sift	key_order=off	instr_m	0.8	25	run 4281a82244c9-20261103T030616Z-75d9
+`OFFSET 10,000` 6.2 M instead of 51.9 M	off10k	300000	sift	default	instr_m	6.2	25	timestamp cut, run 4281a82244c9-20261103T031126Z-2add
+`OFFSET 10,000` 6.2 M instead of 51.9 M	off10k	300000	sift	key_order=off	instr_m	51.9	25	run 4281a82244c9-20261103T031126Z-2add
+the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	default	instr_m	0.3	25	run 4281a82244c9-20261103T031126Z-2add
+the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	key_order=off	instr_m	6.3	25	run 4281a82244c9-20261103T031126Z-2add
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	picked	default	wall_ms	51	25	run efd3b66c2e19-20261103T103832Z-5148 (aggscan-as3i-ordgk_1000000_g1000-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	picked	default	instr_m	893	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	heap	default	wall_ms	272	25	sift.enable_agg = off, sift.enable_col_scan = off
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000	1000000	heap	default	instr_m	3811	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000b	1000000	btree	default	wall_ms	49	25	the b-tree twin, own statement name
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g1000b	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	picked	default	wall_ms	78	25	run efd3b66c2e19-20261103T103922Z-8707 (aggscan-as3i-ordgk_1000000_g100000-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	picked	default	instr_m	1290	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	heap	default	wall_ms	164	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000	1000000	heap	default	instr_m	2473	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000b	1000000	btree	default	wall_ms	47	25	the b-tree twin
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g100000b	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	picked	default	wall_ms	51	25	run efd3b66c2e19-20261103T104011Z-9c20 (aggscan-as3i-ordgk_1000000_g10opt-20261103.rec)
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	picked	default	instr_m	891	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	heap	default	wall_ms	324	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10opt	1000000	heap	default	instr_m	4442	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	wall_ms	48	25	the b-tree twin
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	instr_m	784	25	
+`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10	1000000	heap	default	wall_ms	318	25	run efd3b66c2e19-20261103T103741Z-6d39 (aggscan-as3i-ordgk_1000000_g10-20261103.rec), the default build: no order grouped by g, the sort stays

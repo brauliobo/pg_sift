@@ -11,6 +11,7 @@
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
@@ -33,6 +34,9 @@ int			sift_test_vis_pause = 0;
 int			sift_test_vis_jitter_us = 0;
 bool		sift_test_count_gate = false;
 bool		sift_test_cleanup_gate = false;
+bool		sift_test_shrink_gate = false;
+bool		sift_test_merge_gate = false;
+bool		sift_test_release_gate = false;
 static int	test_masks = 0;
 
 /* Waits until the test lets go of advisory lock (0x51F7, key) */
@@ -117,6 +121,47 @@ sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
 		left -= len;
 	}
 	return count;
+}
+
+/*
+ * The superblocks (SIFT_SB_PAGES pages: a unit's rows are in one) among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer.
+ * The map bytes of all the pages are read in order into one array (a map page holds VM_MAPSIZE bytes of bits), then a superblock is clean when its 64 bytes have every
+ * all-visible bit; the last, partial one counts the pages it has.
+ */
+BlockNumber
+sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks)
+{
+	SMgrRelation smgr = RelationGetSmgr(heap);
+	uint64		nbytes = ((uint64) nblocks + 3) / 4;
+	uint8	   *bits = palloc0(nbytes + VM_BYTES_PER_SB);
+	BlockNumber vm_nblocks,
+				clean = 0;
+
+	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
+		return 0;
+	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
+	for (BlockNumber mapblk = 0; (uint64) mapblk * VM_MAPSIZE < nbytes && mapblk < vm_nblocks; mapblk++)
+	{
+		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+
+		memcpy(bits + (uint64) mapblk * VM_MAPSIZE, PageGetContents(BufferGetPage(buf)), Min(VM_MAPSIZE, nbytes - (uint64) mapblk * VM_MAPSIZE));
+		ReleaseBuffer(buf);
+	}
+	for (BlockNumber sb = 0; (uint64) sb * SIFT_SB_PAGES < nblocks; sb++)
+	{
+		BlockNumber pages = Min(SIFT_SB_PAGES, nblocks - sb * SIFT_SB_PAGES);
+		bool		all = true;
+
+		for (BlockNumber p = 0; all && p < pages; p++)
+		{
+			uint64		blk = (uint64) sb * SIFT_SB_PAGES + p;
+
+			all = (bits[blk / 4] >> ((blk % 4) * 2) & 1) != 0;
+		}
+		clean += all;
+	}
+	pfree(bits);
+	return clean;
 }
 
 void
@@ -458,6 +503,48 @@ sift_vis_chain_members(Relation heap, uint32 *pos, BlockNumber blk, const uint64
 	sift_tbl_chain_members(heap, pos, blk, offmask, fn, arg);
 }
 
+/* Whether sift_vis_filter_page reads the page: it is in the heap and its visibility is not cached whole */
+static bool
+page_read_wanted(SiftVis *v, BlockNumber blk)
+{
+	PageVis    *e = v->pagevis ? hash_search(v->pagevis, &blk, HASH_FIND, NULL) : NULL;
+
+	if (blk >= v->heap_nblocks)
+		v->heap_nblocks = sift_vis_nblocks(v->heap);
+	return blk < v->heap_nblocks && (e == NULL || !e->full);
+}
+
+static BlockNumber
+stream_next(ReadStream *stream, void *arg, void *per_buffer)
+{
+	SiftVis    *v = arg;
+
+	for (BlockNumber blk; (blk = v->next(v->next_arg)) != InvalidBlockNumber;)
+		if (page_read_wanted(v, blk))
+			return blk;
+	return InvalidBlockNumber;
+}
+
+void
+sift_vis_stream_begin(SiftVis *v, SiftVisNext next, void *arg, bool whole)
+{
+	if (v->stream != NULL || sift_tbl_is_table(v->heap))
+		return;
+	v->next = next;
+	v->next_arg = arg;
+	v->whole = whole;
+	v->stream = read_stream_begin_relation(READ_STREAM_DEFAULT, NULL, v->heap, MAIN_FORKNUM, stream_next, v, 0);
+}
+
+void
+sift_vis_stream_end(SiftVis *v)
+{
+	if (v->stream == NULL)
+		return;
+	read_stream_end(v->stream);
+	v->stream = NULL;
+}
+
 int
 sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 {
@@ -490,9 +577,10 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 			}
 			return left;
 		}
-		full = e != NULL && found;
+		full = e != NULL && (found || v->whole);
 	}
-	page.buf = ReadBuffer(v->heap, blk);
+	page.buf = v->stream ? read_stream_next_buffer(v->stream, NULL) : ReadBuffer(v->heap, blk);
+	SIFT_INVARIANT(BufferGetBlockNumber(page.buf) == blk, "sift: the heap page stream is out of step (block %u, expected %u)", BufferGetBlockNumber(page.buf), blk);
 	LockBuffer(page.buf, BUFFER_LOCK_SHARE);
 	page.page = BufferGetPage(page.buf);
 	page.maxoff = PageGetMaxOffsetNumber(page.page);

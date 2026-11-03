@@ -136,13 +136,37 @@ sift_par_worker_begin(SiftParWorker *w, shm_toc *toc)
 	w->parts = shm_toc_lookup(toc, KEY_PARTS, false);
 	common = w->shared;
 	w->heaplock = common->isconcurrent ? ShareUpdateExclusiveLock : ShareLock;
+	/*
+	 * The build's own lock, which the leader holds already (group locking grants it to the worker without an xid): the index is being created or rebuilt in the transaction of the
+	 * leader. A merge of segments outside a build must not come here: a worker cannot take AccessExclusiveLock on an index the leader does not hold, nor assign an xid
+	 * ("cannot assign transaction IDs during a parallel operation"); the merge workers below read under AccessShareLock and the leader holds the exclusive lock.
+	 */
 	w->indexlock = common->isconcurrent ? RowExclusiveLock : AccessExclusiveLock;
 	debug_query_string = shm_toc_lookup(toc, KEY_QUERY_TEXT, true);
 	pgstat_report_activity(STATE_RUNNING, debug_query_string);
-	w->heap = table_open(common->heaprelid, w->heaplock);
-	w->index = index_open(common->indexrelid, w->indexlock);
-	w->info = BuildIndexInfo(w->index);
-	w->info->ii_Concurrent = common->isconcurrent;
+	if (!OidIsValid(common->heaprelid))
+	{
+		/* the merge of segments: the leader holds the index, which the worker reads */
+		w->heap = NULL;
+		w->index = index_open(common->indexrelid, AccessShareLock);
+		w->indexlock = AccessShareLock;
+		w->info = NULL;
+	}
+	else if (!OidIsValid(common->indexrelid))
+	{
+		/* the load of a table: the leader holds the lock of an insert */
+		w->heaplock = RowExclusiveLock;
+		w->heap = table_open(common->heaprelid, w->heaplock);
+		w->index = NULL;
+		w->info = NULL;
+	}
+	else
+	{
+		w->heap = table_open(common->heaprelid, w->heaplock);
+		w->index = index_open(common->indexrelid, w->indexlock);
+		w->info = BuildIndexInfo(w->index);
+		w->info->ii_Concurrent = common->isconcurrent;
+	}
 	w->restored = snap != NULL;
 	w->snapshot = snap ? RegisterSnapshot(RestoreSnapshot(snap)) : SnapshotAny;
 	InstrStartParallelQuery();
@@ -155,6 +179,8 @@ sift_par_worker_end(SiftParWorker *w)
 						  &((WalUsage *) shm_toc_lookup(w->toc, KEY_WAL_USAGE, false))[ParallelWorkerNumber]);
 	if (w->restored)
 		UnregisterSnapshot(w->snapshot);
-	index_close(w->index, w->indexlock);
-	table_close(w->heap, w->heaplock);
+	if (w->index)
+		index_close(w->index, w->indexlock);
+	if (w->heap)
+		table_close(w->heap, w->heaplock);
 }

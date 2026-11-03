@@ -9,7 +9,7 @@ BEGIN
 	RETURN 'ok';
 EXCEPTION WHEN OTHERS THEN
 	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL, h = PG_EXCEPTION_HINT;
-	RETURN SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), '');
+	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), ''), 'pg_sift [0-9]+\.[0-9]+', 'pg_sift <version>');
 END $$;
 
 -- Fresh index: segment 1 = 20000 bytes (header block 5, data 2-4), segment 2 = 100 bytes
@@ -44,21 +44,24 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
--- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note and the 272 with it are read, others are not
+-- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 12, 24 + 40, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
-SELECT sift._test_poke('t_idx', 0, 12, 24 + 300, 2);
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 12, 24 + 272, 2);
 SELECT sift._test_check('t_idx') >= 0 AS note_size_is_read;
 SELECT fresh();
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 400, 2);
+SELECT sift._test_check('t_idx') >= 0 AS config_size_is_read;
+SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
-SELECT sift._test_poke('t_idx', 0, 30, 5, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 6, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 30, 0, 2);

@@ -1,0 +1,32 @@
+-- A unit answers from its pre-aggregates only when every page it has rows on is all-visible: a unit is a superblock of 256 pages, so a table with 5% of its pages dirty
+-- everywhere has no unit that answers (300,000 rows: the count of a month 0.6 ms clean, 2.2 ms with 1 page in 20 dirty), while the same 5% at the end of the table leaves all
+-- but the last unit exact. The scan was priced as if 95% of the units answered in both: 238 clean, 357 with the dirt spread. The cost of the spread dirt is over twice the clean,
+-- that of the dirt at the end of the table is not.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int PRIMARY KEY, kind_id int NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + (g::bigint * 7919) % 12, date '2024-01-01' + (g * 37 % 700), (g * 31 % 1000)::float8 FROM generate_series(1, 300000) g;
+CREATE INDEX events_col ON events USING sift_col (kind_id, ts, amount);
+VACUUM (FREEZE, ANALYZE) events;
+
+CREATE FUNCTION month_cost() RETURNS float8 LANGUAGE sql AS
+$$ SELECT scan_cost FROM sift.explain_why('SELECT count(*) FROM events WHERE ts >= ''2025-03-01'' AND ts < ''2025-04-01''') $$;
+CREATE TABLE costs AS SELECT 'clean' AS state, month_cost() AS cost;
+
+-- the last 5% of the pages: the first row of each updated
+UPDATE events SET amount = amount WHERE (ctid::text::point)[0]::int >= (SELECT relpages * 0.95 FROM pg_class WHERE relname = 'events') AND (ctid::text::point)[1]::int = 1;
+ANALYZE events;
+INSERT INTO costs SELECT 'dirt at the end', month_cost();
+
+-- 1 page in 20 anywhere
+UPDATE events SET amount = amount WHERE (ctid::text::point)[0]::int % 20 = 0 AND (ctid::text::point)[1]::int = 1;
+ANALYZE events;
+INSERT INTO costs SELECT 'dirt spread', month_cost();
+
+SELECT (SELECT cost FROM costs WHERE state = 'dirt at the end') < 2 * (SELECT cost FROM costs WHERE state = 'clean') AS end_of_table_stays_exact,
+	(SELECT cost FROM costs WHERE state = 'dirt spread') > 2 * (SELECT cost FROM costs WHERE state = 'clean') AS spread_dirt_reads_the_rows;
+
+DROP FUNCTION month_cost();
+DROP TABLE costs, events;
+DROP EXTENSION pg_sift;

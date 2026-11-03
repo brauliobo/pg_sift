@@ -156,20 +156,25 @@ void
 sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwords)
 {
 	uint32		sh = rank % 8,
-				nout = (n + 7) / 8,
-				nin = (sh + n + 7) / 8;
-	uint8	   *raw = palloc(nin + 1);
+				nin = (sh + n + 7) / 8,
+				nw = (n + 63) / 64;
+	uint8	   *raw;
 
 	memset(out, 0, nwords * sizeof(uint64));
 	if (n == 0)
-	{
-		pfree(raw);
 		return;
-	}
+	raw = palloc0((Size) nw * 8 + 8);
 	sift_live_copy(l, SIFT_LIVE_START(l->nsb) + rank / 8, nin, raw);
-	raw[nin] = 0;
-	for (uint32 i = 0; i < nout; i++)
-		out[i / 8] |= (uint64) (((raw[i] | (uint32) raw[i + 1] << 8) >> sh) & 0xFF) << (8 * (i % 8));
+	/* the bit sh of the copy is the first bit of the unit: a word is the shifted halves of two loads */
+	for (uint32 w = 0; w < nw; w++)
+	{
+		uint64		lo,
+					hi;
+
+		memcpy(&lo, raw + (Size) w * 8, 8);
+		memcpy(&hi, raw + (Size) w * 8 + 8, 8);
+		out[w] = sh ? (lo >> sh) | (hi << (64 - sh)) : lo;
+	}
 	if (n % 64)
 		out[(n - 1) / 64] &= (UINT64CONST(1) << (n % 64)) - 1;
 	pfree(raw);

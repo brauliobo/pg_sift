@@ -410,6 +410,9 @@ sift_col_w128_numeric(SiftCI128 v, int scale)
 {
 	char		txt[SIFT_COL_W128_TEXT];
 
+	/* a value of 18 digits or fewer is divided by the power of ten in the digits of the numeric, which keeps the display scale as the text does */
+	if (scale >= 0 && scale <= 18 && v == (SiftCI128) (int64) v)
+		return NumericGetDatum(int64_div_fast_to_numeric((int64) v, scale));
 	sift_col_w128_to_decimal(v, scale, txt);
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }

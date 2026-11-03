@@ -92,6 +92,7 @@ extern bool tbl_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern void tbl_counters(const void *impl, SiftSrcCounters *c);
 extern void tbl_preagg(Relation rel, SiftSrcPreagg *pa);
 extern bool tbl_unit_exact(void *impl, const SiftSrcUnit *unit);
+extern int	tbl_unit_dead(void *impl, const SiftSrcUnit *unit, int mode);
 extern bool tbl_whole(void *impl, int leaf, const int *meas, int nmeas);
 extern uint32 tbl_super_span(void *impl);
 extern void tbl_split(void *impl, const SiftSrcUnit *unit);

@@ -28,6 +28,8 @@ SELECT pt_fill(1, 6000);
 
 -- on the parent: one index per partition, with the partitions' own attribute numbers
 CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pt_a_id_g_d_v_amount_s_doc_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pt;
 -- the maintenance view lists the indexes of the partitions, not the parent's, which has no storage to read
 SELECT NOT EXISTS (SELECT 1 FROM sift.workers WHERE index = 'pt_col'::regclass) AS parent_skipped;
@@ -187,6 +189,8 @@ CREATE TABLE pb_a PARTITION OF pb FOR VALUES FROM (0) TO (10) WITH (autovacuum_e
 CREATE TABLE pb_b PARTITION OF pb FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
 INSERT INTO pb SELECT i % 20, i FROM generate_series(1, 400) i;
 CREATE INDEX pb_col ON pb USING sift_col (k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pb_a_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pb;
 PREPARE pb_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = $1;
 SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
@@ -225,7 +229,11 @@ CREATE TABLE pf_c (k int NOT NULL, g int, v int) WITH (autovacuum_enabled = fals
 INSERT INTO pf SELECT i % 20, i % 3, i FROM generate_series(1, 600) i;
 INSERT INTO pf_c SELECT 20 + i % 10, i % 3, i FROM generate_series(1, 300) i;
 CREATE INDEX pf_col ON pf USING sift_col (k, g, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pf_a_k_g_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX pf_c_col ON pf_c USING sift_col (k, g, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pf_c_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pf, pf_c;
 PREPARE pf_q (int, int) AS SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= $1 AND k < $2 GROUP BY g;
 SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
@@ -268,6 +276,8 @@ SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) 
 ALTER TABLE pf ATTACH PARTITION pf_c FOR VALUES FROM (20) TO (30);
 -- the index of a partition rebuilt (a new file, the directory's versions start over), and its table emptied and filled again
 REINDEX INDEX pf_c_col;
+NOTICE:  sift_col index "pf_c_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
   scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
 ---------+-----------------+--------------+-------------+----------------
@@ -275,6 +285,8 @@ SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) 
 (1 row)
 
 TRUNCATE pf_c;
+NOTICE:  sift_col index "pf_c_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 INSERT INTO pf_c SELECT 20 + i % 5, i % 3, i FROM generate_series(1, 40) i;
 SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
   scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
@@ -385,6 +397,8 @@ CREATE TABLE pt_n (LIKE pt INCLUDING DEFAULTS) WITH (autovacuum_enabled = false)
 INSERT INTO pt_n SELECT 100000 + i, i % 11, DATE '2025-03-01' + i % 20, i, i / 10.0, 'red', '{"k": 1}' FROM generate_series(1, 500) i;
 ALTER TABLE pt DETACH PARTITION pt_rest;
 ALTER TABLE pt ATTACH PARTITION pt_n FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
+NOTICE:  sift_col index "pt_n_id_g_d_v_amount_s_doc_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pt GROUP BY g');
                      plan                     | result_rows | vs_normal_plan 
 ----------------------------------------------+-------------+----------------
@@ -405,6 +419,8 @@ CREATE TABLE pn_a PARTITION OF pn FOR VALUES FROM ('2024-01-01') TO ('2024-07-01
 CREATE TABLE pn_b PARTITION OF pn FOR VALUES FROM ('2024-07-01') TO ('2025-01-01') WITH (autovacuum_enabled = false);
 INSERT INTO pn SELECT i, i % 7, DATE '2024-01-01' + i % 360, i % 100, jsonb_build_object('k', i % 5) FROM generate_series(1, 3000) i;
 CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pn_a_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 ANALYZE pn;
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
   plan  | result_rows | vs_normal_plan 
@@ -419,6 +435,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn WHERE d < DATE ''2024-07-01'
 (1 row)
 
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int8', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pn_b_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------
@@ -427,6 +445,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 
 DROP INDEX pn_b_col;
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pn_b_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------
@@ -435,6 +455,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 
 DROP INDEX pn_b_col;
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pn_b_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pn GROUP BY g');
         plan        | result_rows | vs_normal_plan 
 --------------------+-------------+----------------
@@ -489,6 +511,8 @@ SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 5, 6) ORDER BY n;
 (4 rows)
 
 TRUNCATE pt_b;
+NOTICE:  sift_col index "pt_b_id_g_d_v_amount_s_doc_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 6) ORDER BY n;
  n |                      plan                       | result_rows | vs_normal_plan 
 ---+-------------------------------------------------+-------------+----------------
@@ -579,6 +603,8 @@ CREATE TABLE ih (id int, g int) WITH (autovacuum_enabled = false);
 CREATE TABLE ih_a (CHECK (g < 5)) INHERITS (ih);
 INSERT INTO ih_a SELECT i, i % 5 FROM generate_series(1, 500) i;
 CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "ih_a_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih GROUP BY g');
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------
@@ -599,6 +625,8 @@ CREATE TABLE pl_c PARTITION OF pl FOR VALUES IN ('cat_d') WITH (autovacuum_enabl
 CREATE TABLE pl_rest PARTITION OF pl DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pl SELECT i, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d', 'cat_e'])[1 + i % 5], i % 100 FROM generate_series(1, 4000) i;
 CREATE INDEX pl_col ON pl USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pl_a_id_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pl;
 SET plan_cache_mode = force_generic_plan;
 PREPARE pl_k (text) AS SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = $1 GROUP BY k;
@@ -637,6 +665,8 @@ SELECT * FROM same_exec('EXECUTE pl_ks(ARRAY[''cat_a'', ''cat_d''])', 'SELECT k,
 CREATE TABLE pl_n (LIKE pl INCLUDING DEFAULTS) WITH (autovacuum_enabled = false);
 INSERT INTO pl_n SELECT 100000 + i, 'cat_z', i FROM generate_series(1, 300) i;
 ALTER TABLE pl ATTACH PARTITION pl_n FOR VALUES IN ('cat_z');
+NOTICE:  sift_col index "pl_n_id_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ''cat_z'' GROUP BY k');
   scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
 ---------+-----------------+--------------+-------------+----------------
@@ -665,6 +695,8 @@ CREATE TABLE ph_6 PARTITION OF ph FOR VALUES WITH (MODULUS 8, REMAINDER 6) WITH 
 CREATE TABLE ph_7 PARTITION OF ph FOR VALUES WITH (MODULUS 8, REMAINDER 7) WITH (autovacuum_enabled = false)
 INSERT INTO ph SELECT i, CASE WHEN i % 40 = 0 THEN NULL ELSE i % 300 END, i % 100 FROM generate_series(1, 4000) i;
 CREATE INDEX ph_col ON ph USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "ph_0_id_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) ph;
 -- two key columns (a remainder needs both), and a key that is an expression
 CREATE TABLE phm (a int, b text, v int) PARTITION BY HASH (a, b);
@@ -675,6 +707,8 @@ CREATE TABLE phm_2 PARTITION OF phm FOR VALUES WITH (MODULUS 4, REMAINDER 2) WIT
 CREATE TABLE phm_3 PARTITION OF phm FOR VALUES WITH (MODULUS 4, REMAINDER 3) WITH (autovacuum_enabled = false)
 INSERT INTO phm SELECT i % 50, 'cat_' || chr(97 + i % 6), i % 100 FROM generate_series(1, 3000) i;
 CREATE INDEX phm_col ON phm USING sift_col (a, b, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "phm_0_a_b_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) phm;
 CREATE TABLE phx (k int, v int) PARTITION BY HASH ((k + 1));
 SELECT format('CREATE TABLE phx_%s PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
@@ -684,6 +718,8 @@ CREATE TABLE phx_2 PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER 2) WIT
 CREATE TABLE phx_3 PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER 3) WITH (autovacuum_enabled = false)
 INSERT INTO phx SELECT i % 200, i % 100 FROM generate_series(1, 2000) i;
 CREATE INDEX phx_col ON phx USING sift_col (k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "phx_0_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) phx;
 SET plan_cache_mode = force_generic_plan;
 PREPARE ph_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1;
@@ -905,6 +941,8 @@ CREATE TABLE pk_n PARTITION OF pk FOR VALUES IN (NULL) WITH (autovacuum_enabled 
 CREATE TABLE pk_rest PARTITION OF pk DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pk SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 12 END, i % 100 FROM generate_series(1, 3000) i;
 CREATE INDEX pk_col ON pk USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "pk_a_id_k_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pk;
 CREATE TABLE pk_keys (k int, kind text);
 INSERT INTO pk_keys SELECT i, 'cat_' || chr(97 + i % 3) FROM generate_series(0, 14) i;
@@ -1142,15 +1180,19 @@ CREATE TABLE pr_a PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2024-04-01
 CREATE TABLE pr_b PARTITION OF pr FOR VALUES FROM ('2024-04-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);
 INSERT INTO pr SELECT i, i % 5, DATE '2024-01-01' + i % 180, i FROM generate_series(1, 3000) i;
 CREATE INDEX pr_col ON pr USING sift_col (id, g, d, v);
-NOTICE:  sift_col index pr_a_id_g_d_v_idx writes a rollup of the rows by g, d
+NOTICE:  sift_col index "pr_a_id_g_d_v_idx": rollup_dims = 'auto' writes a rollup of the rows by g, d
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 91 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX pr_a_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index pr_b_id_g_d_v_idx writes a rollup of the rows by g, d
+HINT:  To drop it, run ALTER INDEX pr_a_id_g_d_v_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "pr_a_id_g_d_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pr_b_id_g_d_v_idx": rollup_dims = 'auto' writes a rollup of the rows by g, d
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 89 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX pr_b_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX pr_b_id_g_d_v_idx SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 CREATE TABLE pr_n (LIKE pr INCLUDING DEFAULTS) WITH (autovacuum_enabled = false);
 INSERT INTO pr_n SELECT 10000 + i, i % 5, DATE '2024-07-01' + i % 90, i FROM generate_series(1, 20) i;
 ALTER TABLE pr ATTACH PARTITION pr_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+NOTICE:  sift_col index "pr_n_id_g_d_v_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) pr;
 SELECT string_agg(coalesce(c.reloptions::text, 'none'), ' ' ORDER BY c.relname) AS partition_rollups FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relname LIKE 'pr\_%';
                         partition_rollups                        

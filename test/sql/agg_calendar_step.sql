@@ -11,7 +11,7 @@ SET random_page_cost = 10000;
 CREATE TABLE st (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO st
 SELECT i, t AT TIME ZONE 'UTC', t
-FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '47 minutes' AS t FROM generate_series(1, 60000) g) s;
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 6000) g) s;
 INSERT INTO st VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
 	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
 CREATE INDEX st_col ON st USING sift_col (id, ts, tz);
@@ -56,7 +56,9 @@ BEGIN
 		n := 0; s := 0; sp := 0;
 		EXECUTE format('SET LOCAL TimeZone = %L', z);
 		FOREACH t IN ARRAY ARRAY['st', 'si'] LOOP
-			FOREACH col IN ARRAY ARRAY['tz', 'ts'] LOOP
+			-- a timestamp without a zone does not depend on the zone of the session: it runs in UTC only, the infinite timestamps in two zones
+			CONTINUE WHEN t = 'si' AND z NOT IN ('UTC', 'America/New_York');
+			FOREACH col IN ARRAY CASE WHEN z = 'UTC' THEN ARRAY['tz', 'ts'] ELSE ARRAY['tz'] END LOOP
 				FOR c IN SELECT * FROM st_case LOOP
 					q := format('SELECT count(*) FROM %s WHERE ' || replace(c.f, '%1$s', col), t);
 					n := n + 1;

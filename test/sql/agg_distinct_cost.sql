@@ -3,9 +3,10 @@
 -- chunks while they fit the memory of the set (work_mem times hash_mem_multiplier), and only for the sets that start as bitmaps: a group of few rows (under 16
 -- chunks of the range of the column, and the directory) starts as a hash set, as does a set past the memory, whose pair costs between 0.1 and 2 microseconds
 -- with the column and the size of the set, which is not priced. The statements run with enable_agg on and off: the rows must be the same.
--- The workers of a scan are priced for their start (3 ms and 0.35 ms each) and, for a count(DISTINCT), for the leader merging the pairs of the sets one by one;
+-- The workers of a scan are priced for their start (3 ms and 0.5 ms each) and, for a count(DISTINCT), for the leader merging the pairs of the sets one by one;
 -- a parallel_setup_cost of 0 asks for them.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, grp int NOT NULL, part int NOT NULL, cat int NOT NULL, amount float8 NOT NULL, half int NOT NULL);
@@ -50,11 +51,10 @@ END $$;
 SELECT * FROM workers_at(0) UNION ALL SELECT * FROM workers_at(1) UNION ALL SELECT * FROM workers_at(100) ORDER BY 1;
 RESET sift.plan_scale;
 SELECT sum_workers AS small_scan_workers FROM workers_at(1);
--- at the default setup cost a group by key of a table priced as 15 times larger stays in one process (1,500,000 rows of this width: the 2 workers of the heap's size
--- cost 3 ms to start and 11 million instructions, and 100,000 rows of the same shape took 5 to 10 ms with them against 3 to 5 alone); priced as 40 times larger
--- it takes them
-SET sift.plan_scale = 15;
-SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_15;
+-- at the default setup cost a group by key of a table priced as 5 times larger stays in one process (500,000 rows of this width: the 2 workers of the heap's size
+-- cost 4 ms to start and 11 million instructions, more than they save); priced as 40 times larger it takes them
+SET sift.plan_scale = 5;
+SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_5;
 SET sift.plan_scale = 40;
 SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_40;
 RESET sift.plan_scale;

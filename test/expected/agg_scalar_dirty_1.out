@@ -29,6 +29,9 @@ UPDATE s_t SET doc = '"text"' WHERE id % 100 = 2;
 UPDATE s_t SET doc = '7' WHERE id % 100 = 3;
 UPDATE s_t SET doc = jsonb_set(doc, '{v}', 'null') WHERE id % 100 = 4;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.ok bool, doc.t text, doc.w int8');
+NOTICE:  sift_col index "s_t_col" installed two statement triggers on table "s_t" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM ANALYZE s_t;
 -- the leaves hold no value they cannot store but the documents that are no object: those rows are read again
 CREATE TABLE s_q (n text PRIMARY KEY, q text);
@@ -145,7 +148,8 @@ SELECT n, pushed(q) AS pushed, outcome(q) FROM (VALUES
 	('io float8 deleted',   'SELECT grp, sum((doc ->> ''v'')::float8) FROM s_t GROUP BY grp'),
 	('cast float8 deleted', 'SELECT grp, sum((doc -> ''v'')::float8) FROM s_t GROUP BY grp'),
 	('io int4 deleted',     'SELECT grp, sum((doc ->> ''n'')::int4) FROM s_t GROUP BY grp'),
-	('only the deleted',    'SELECT grp, sum((doc -> ''v'')::float8) FROM s_t WHERE id IN (1234, 1236, 1238) GROUP BY grp')) v(n, q) ORDER BY n;
+-- id + 0: the b-tree of the primary key answers a short list of keys (agg_unique_key_in_list), and the scan is the plan under test
+	('only the deleted',    'SELECT grp, sum((doc -> ''v'')::float8) FROM s_t WHERE id + 0 IN (1234, 1236, 1238) GROUP BY grp')) v(n, q) ORDER BY n;
           n          | pushed |                             outcome                              
 ---------------------+--------+------------------------------------------------------------------
  cast float8 deleted | f      | same ERR 22023 cannot cast jsonb string to type double precision

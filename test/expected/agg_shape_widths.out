@@ -16,6 +16,9 @@ SELECT i, i % 50, 'k' || i % 5, date '2025-01-01' + i % 6, i % 7, i % 5, i % 3, 
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 3000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, a, b, c, d, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 -- a dimension with four key columns and seventeen value columns
 CREATE TABLE dd (id int NOT NULL, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v1 int NOT NULL, v2 int NOT NULL, v3 int NOT NULL, v4 int NOT NULL, v5 int NOT NULL, v6 int NOT NULL, v7 int NOT NULL, v8 int NOT NULL, v9 int NOT NULL, v10 int NOT NULL, v11 int NOT NULL, v12 int NOT NULL, v13 int NOT NULL, v14 int NOT NULL, v15 int NOT NULL, v16 int NOT NULL, v17 int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, i % 7, i % 5, i % 3, i % 2, i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16 FROM generate_series(0, 49) i;
@@ -25,10 +28,12 @@ CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
 CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
 CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
-NOTICE:  sift_col index wide_col writes a rollup of the rows by kind, c3
+NOTICE:  sift_col index "wide_col": rollup_dims = 'auto' writes a rollup of the rows by kind, c3
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 5 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX wide_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index wide_col: the cube holds 16 dimensions and left out the histograms of 2 columns: "c16", "c17"
+HINT:  To drop it, run ALTER INDEX wide_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "wide_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "wide_col": the cube holds 16 dimensions and leaves out the histograms of 2 columns: "c16", "c17"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
 VACUUM (FREEZE, ANALYZE) events, dd, wide;

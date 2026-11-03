@@ -76,13 +76,22 @@ extern MemoryContext sift_agg_memo_begin(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
 extern void sift_agg_drop_unused_laterals(Query *q);
+extern void sift_agg_defer_lookups(Query *q);
+extern bool sift_agg_exists_or_candidate(Query *q);
+extern void sift_agg_split_exists_or(Query *q);
+extern void sift_agg_drop_sorts(PlannedStmt *stmt);
 #ifdef SIFT_TESTING
 extern int64 sift_source_lookups;	/* the asks of has_column_source that went to the catalog */
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
+extern bool sift_agg_partition_arms(Query *q, bool apply);
+extern bool sift_agg_push_partial_aggs(Query *q, bool apply);
+extern int	sift_agg_push_arms;			/* the arms the last partial aggregation grouped (0: none) */
+extern Bitmapset *sift_agg_push_raw;	/* the arms (by position) the next one leaves ungrouped */
 
 /* agg/plan/paths.c: called by the upper path hook of bm25/planner.c */
 extern void sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel);
@@ -94,7 +103,7 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;
 /* agg/col.c: registers the sift_col index as a column source (does nothing in a build without the column engine) */
 extern void sift_aggcol_register(void);
 
-/* agg/par.c: entry point of the parallel workers of a scan (access/parallel.h) */
+/* agg/par/worker.c: entry point of the parallel workers of a scan (access/parallel.h) */
 struct dsm_segment;
 struct shm_toc;
 extern PGDLLEXPORT void sift_agg_worker_main(struct dsm_segment *seg, struct shm_toc *toc);

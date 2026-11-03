@@ -53,11 +53,12 @@ if [[ $MODE == full ]]; then
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
-	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
-	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 0
+	# the plan the planner picks, the cost ratios and the results of 106 shapes at 30000 events, the size the bands of test/plan are recorded at (a run at 50000 puts 40 to 46 shapes of each of
+	# the four lanes under their bands: hosted and local, PostgreSQL 18, 2026-11-03); no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
+	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
+	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
@@ -115,7 +116,7 @@ else
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
-	job fuzz fuzz 1 env FZ_SECS=2 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1 ${SIFT_FUZZ_TARGETS:-}
+	job fuzz fuzz 1 env FZ_SECS=2 FZ_GQUANT_N=10 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1 ${SIFT_FUZZ_TARGETS:-}
 	flavor_job hardened hardened "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
 		--docs 1000 --queries 12 --rounds 2 --minimize 1 --min-trials 10
@@ -125,10 +126,11 @@ else
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
-	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# each lane at 30000 rows and at 250000, the two sizes whose bands are recorded (the ratio falls with the rows: scripts/plangate.sh --rows; half a minute for the second)
+	job plan-gate plan-gate 1 bash -c '"$0" --runs 0 && "$0" --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-tuned plan-gate-tuned 1 bash -c '"$0" --lane tuned --runs 0 && "$0" --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-table plan-gate-table 1 bash -c '"$0" --table --runs 0 && "$0" --table --runs 0 --rows 250000' "$S/plangate.sh"
+	job plan-gate-table-tuned plan-gate-table-tuned 1 bash -c '"$0" --table --lane tuned --runs 0 && "$0" --table --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
 	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
@@ -143,7 +145,8 @@ else
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
-	tap_shell $(rest t .sh $SLOW_SHELL)
+	# the scaling gate (a build of the 8-page flavour of the library and 50 s of timings) is a job of the quick tier only when the run was asked for it by the diff: scripts/areas.tsv names its files
+	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL); else tap_shell $(rest t .sh $SLOW_SHELL scaling_slope); fi
 	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert

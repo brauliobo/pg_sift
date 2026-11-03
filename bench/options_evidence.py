@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The measured case of the options that docs/options.tsv records: index size, build and write cost with and without an option, and the query it is for.
+"""The measured case of the options of docs/OPTIONS.md: index size, build and write cost with and without an option, and the query it is for.
 
   PG* in the environment (scripts/pgtest.sh env, a cluster with sift installed)
   bench/options_evidence.py [--rows N] [--only KEY[,KEY]] [--out bench/results/options-evidence.tsv]
 
 Each experiment builds two identical tables that differ in one option (or one setting), alternates the measurements between them so that a drift of the load hits
 both, and keeps the median. Small data on purpose (50,000 to 300,000 rows, one scratch cluster under 1.5 GB): the figures are ratios of one option against its
-absence, not absolute speeds. The result file has one row per figure: key, experiment, rows, metric, without, with, unit, note. The cells of docs/options.tsv quote it.
+absence, not absolute speeds. The result file has one row per figure: key, experiment, rows, metric, without, with, unit, note.
 """
 import argparse
 import os

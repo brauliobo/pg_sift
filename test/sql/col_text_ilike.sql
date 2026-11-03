@@ -9,11 +9,11 @@ SET sift.agg_force = on;
 \ir test/agg_rows_helpers.sql
 
 CREATE TABLE ci (id int, s text, k text, c text COLLATE "C") WITH (autovacuum_enabled = off);
-INSERT INTO ci SELECT i, 'https://Shop' || (i % 50) || '.Example/ITEM/' || md5((i % 7000)::text), 'Key' || (i % 40), upper(md5(i::text))
-FROM generate_series(1, 20000) i;
-INSERT INTO ci VALUES (20001, '', '', ''), (20002, NULL, NULL, NULL), (20003, 'AB', 'ab', 'Ab'), (20004, 'İK', E'Kik', 'ık'), (20005, 'Kİ', 'kİ', 'KİK'),
-	(20006, 'naïve CAFÉ', 'NAÏVE café', 'Ünï'), (20007, 'ſtrasse', 'STRASSE', 'ǅ'), (20008, E'Kelvin', 'kelvin', 'KELVIN'), (20009, 'İİ', 'iİ', 'ii'),
-	(20010, 'a%B', 'A_b', E'back\\slash'), (20011, 'ikik', 'IKIK', 'iKİk'), (20012, 'xİx', 'xKx', 'xKx'), (20013, 'Ï', 'ï', 'İ');
+INSERT INTO ci SELECT i, 'https://Shop' || (i % 50) || '.Example/ITEM/' || md5((i % 3500)::text), 'Key' || (i % 40), upper(md5(i::text))
+FROM generate_series(1, 10000) i;
+INSERT INTO ci VALUES (10001, '', '', ''), (10002, NULL, NULL, NULL), (10003, 'AB', 'ab', 'Ab'), (10004, 'İK', E'Kik', 'ık'), (10005, 'Kİ', 'kİ', 'KİK'),
+	(10006, 'naïve CAFÉ', 'NAÏVE café', 'Ünï'), (10007, 'ſtrasse', 'STRASSE', 'ǅ'), (10008, E'Kelvin', 'kelvin', 'KELVIN'), (10009, 'İİ', 'iİ', 'ii'),
+	(10010, 'a%B', 'A_b', E'back\\slash'), (10011, 'ikik', 'IKIK', 'iKİk'), (10012, 'xİx', 'xKx', 'xKx'), (10013, 'Ï', 'ï', 'İ');
 CREATE INDEX ci_idx ON ci USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, k sift.col_text_ops, c sift.col_text_ops);
 VACUUM ci;
 INSERT INTO ci SELECT 40000 + i, 'HTTPS://wb' || (i % 50) || '/Item/' || md5(i::text), 'WB' || (i % 3), 'wb' || i FROM generate_series(1, 300) i;
@@ -34,7 +34,7 @@ INSERT INTO ci_pat VALUES
 	('s', '%ï%'), ('s', '%É%'), ('s', '%İ%'), ('s', '%item_a%'), ('s', '%a\%b%'), ('s', 'https://%'), ('s', '%item/'), ('s', '%'),
 	('k', '%a_b%'), ('k', 'ab%'), ('k', '%\\%');
 
-CREATE FUNCTION ci_check(tag text, tbl text, reps int, pats text[] DEFAULT NULL, coll text DEFAULT '') RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION ci_check(tag text, tbl text, reps int, pats text[] DEFAULT NULL, coll text DEFAULT '', shapes int DEFAULT 4) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r record;
 	q text;
@@ -43,11 +43,11 @@ DECLARE
 BEGIN
 	FOR i IN 1..reps LOOP
 		FOR r IN SELECT col, pat FROM ci_pat WHERE pats IS NULL OR pat = ANY (pats) ORDER BY col, pat LOOP
-			FOREACH q IN ARRAY ARRAY[
+			FOREACH q IN ARRAY (ARRAY[
 				format('SELECT count(*), sum(id), min(id), max(id) FROM %s WHERE %I %s ILIKE %L', tbl, r.col, coll, r.pat),
 				format('SELECT id FROM %s WHERE %I %s ILIKE %L AND id %% 3 = 0', tbl, r.col, coll, r.pat),
 				format('SELECT count(*) FROM %s WHERE %I %s ILIKE %L OR id < 5', tbl, r.col, coll, r.pat),
-				format('SELECT count(*) FROM %s WHERE %I %s NOT ILIKE %L', tbl, r.col, coll, r.pat)] LOOP
+				format('SELECT count(*) FROM %s WHERE %I %s NOT ILIKE %L', tbl, r.col, coll, r.pat)])[1:shapes] LOOP
 				n := n + 1;
 				IF agg_rows(q, true) IS DISTINCT FROM agg_rows(q, false) THEN
 					bad := bad + 1;
@@ -62,30 +62,30 @@ END $$;
 -- the part is pushed, and the rows are the normal plan's, in each storage of the strings
 SELECT agg_pushed('SELECT count(*) FROM ci WHERE s ILIKE ''%item/%''') AS pushed_part;
 SELECT ci_check('sift_col', 'ci', 1);
-SELECT ci_check('sift_table', 'cit', 1);
-SELECT ci_check('parsed', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%']);
+SELECT ci_check('sift_table', 'cit', 1, shapes => 1);
+SELECT ci_check('parsed', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%'], shapes => 1);
 SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
-SELECT ci_check('not kept', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%']);
+SELECT ci_check('not kept', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%'], shapes => 1);
 RESET sift.test_limits;
 -- the collation of the column or of the pattern
-SELECT ci_check('C collation', 'ci', 1, NULL, 'COLLATE "C"');
+SELECT ci_check('C collation', 'ci', 1, NULL, 'COLLATE "C"', 1);
 SELECT ci_check('column C', 'ci', 1, ARRAY['%ab%', '%ik%', '%k%', '%kelvin%']);
 
 -- after writes
 INSERT INTO ci SELECT 50000 + i, 'HTTP://Shop' || (i % 50) || '.EXAMPLE/item/' || md5(i::text), 'KEY' || (i % 40), 'C' || i FROM generate_series(1, 3000) i;
 DELETE FROM ci WHERE id % 11 = 0;
 VACUUM ci;
-SELECT ci_check('vacuumed', 'ci', 1);
+SELECT ci_check('vacuumed', 'ci', 1, shapes => 1);
 SET sift.simd = scalar;
-SELECT ci_check('scalar', 'ci', 1);
+SELECT ci_check('scalar', 'ci', 1, shapes => 1);
 RESET sift.simd;
 
 -- a collation whose lower() makes U+0130 and U+212A ASCII letters (ICU's i with a dot above, libc's i; the Kelvin sign k), and one that lowers I to another letter
 SELECT coalesce(bool_and(r LIKE '% 0 differ'), true) AS collations_same
-FROM (SELECT ci_check(collname, 'ci', 1, NULL, format('COLLATE %I', collname)) AS r FROM pg_collation
+FROM (SELECT ci_check(collname, 'ci', 1, NULL, format('COLLATE %I', collname), 1) AS r FROM pg_collation
 	  WHERE collname IN ('und-x-icu', 'en_US.utf8', 'tr-TR-x-icu') AND collencoding IN (-1, 6)) v;
 
-DROP FUNCTION ci_check(text, text, int, text[], text);
+DROP FUNCTION ci_check(text, text, int, text[], text, int);
 DROP TABLE ci_pat, ci, cit;
 DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
 DROP EXTENSION pg_sift_test;

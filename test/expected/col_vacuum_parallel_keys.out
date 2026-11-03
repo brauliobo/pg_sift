@@ -14,9 +14,9 @@ CREATE INDEX pv_owner ON pv (set_id);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pv;
 CREATE INDEX pv_idx ON pv USING sift_col (id, set_id, v);
 SELECT pv_opt('pv_idx') AS built;
-      built       
-------------------
- key_columns=auto
+                            built                             
+--------------------------------------------------------------
+ track_changes=id,point_tid_columns=auto: id,key_columns=auto
 (1 row)
 
 -- two rounds of non-HOT updates that scatter the owners, each promoted into its own segment
@@ -25,7 +25,7 @@ VACUUM pv;
 SELECT sift.col_promote('pv_idx') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 UPDATE pv SET set_id = (id::bigint * 104729 % 600)::int;
@@ -33,7 +33,7 @@ VACUUM pv;
 SELECT sift.col_promote('pv_idx') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 -- rows to remove, so that the index is vacuumed; every index is big enough for a worker
@@ -42,9 +42,9 @@ SET min_parallel_index_scan_size = 0;
 SET max_parallel_maintenance_workers = 2;
 VACUUM (PARALLEL 2) pv;
 SELECT pv_opt('pv_idx') AS after_parallel_vacuum;
- after_parallel_vacuum 
------------------------
- key_columns=auto
+                    after_parallel_vacuum                     
+--------------------------------------------------------------
+ track_changes=id,point_tid_columns=auto: id,key_columns=auto
 (1 row)
 
 -- outside parallel mode the merge decides
@@ -56,9 +56,9 @@ SELECT sift.col_merge('pv_idx', true) >= 0 AS merged;
 (1 row)
 
 SELECT pv_opt('pv_idx') AS after_merge;
-       after_merge        
---------------------------
- key_columns=auto: set_id
+                             after_merge                              
+----------------------------------------------------------------------
+ track_changes=id,key_columns=auto: set_id,point_tid_columns=auto: id
 (1 row)
 
 DROP TABLE pv;

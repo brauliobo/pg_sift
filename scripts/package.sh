@@ -35,7 +35,7 @@ TEST_AMZN=${TEST_AMZN:-amazonlinux:2023}
 
 run() { # run IMAGE OUTDIR MODE [docker args...]: packaging/container.sh MODE in a throwaway container
 	local image=$1 out=$2 mode=$3; shift 3
-	docker run --rm --cpus 4 -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/scripts/check-aarch64-baseline.sh:/check-aarch64-baseline.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
+	docker run --rm --cpus "$("$REPO/scripts/docker-cpus.sh")" -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/scripts/check-aarch64-baseline.sh:/check-aarch64-baseline.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
 }
 
 build() {

@@ -1,4 +1,4 @@
-"""The "Benchmark cases" block of README.md (the chart, the takeaway and the application-shaped cases) and docs/BENCHMARKS.md (every case), from bench/results/cases.tsv (bench/bench cases --docs).
+"""The "Benchmark cases" block of README.md (the chart, the takeaway and the application-shaped cases) and bench/out/BENCHMARKS.md (every case), from bench/results/cases.tsv (bench/bench cases --docs).
 
     python3 -I bench/steps/cases_render.py [--results DIR] [--readme FILE] [--benchmarks FILE]      (bench/bench readme)
 
@@ -24,9 +24,10 @@ MEASURES = ('PostgreSQL', 'pg_sift', 'speed-up', 'slope PostgreSQL', 'slope pg_s
 IO_MEASURES = ('PostgreSQL cold', 'pg_sift cold')   # after the speed-up, when the results have the cold IO of the headline cases
 OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
 UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms',
-        'io_cold_read_mb': 'MB read, cold', 'io_cold_read_blocks': 'blocks read, cold', 'io_extend_mb': 'MB of file growth'}
+        'io_cold_read_mb': 'MB read, cold', 'io_cold_read_blocks': 'blocks read, cold', 'io_extend_mb': 'MB of file growth', 'index_mb': 'MB of the index',
+        'io_warm_read_ops': 'read operations, warm', 'io_cold_read_ops': 'read operations, cold', 'io_cold_avg_kb_per_read': 'KB per read, cold', 'io_cold_dev_read_iops': 'device read IOPS, cold'}
 IO = tuple(m for m in UNIT if m.startswith('io_'))   # the IO rows shown beside the time of a case, where the results have them (steps/iolib.py)
-SHORT = {'wal_bytes': 'WAL B/row', 'minstr': 'M instr', 'io_extend_mb': 'MB'}   # the unit written after a figure that is not a time, a CPU or a read
+SHORT = {'wal_bytes': 'WAL B/row', 'minstr': 'M instr', 'io_extend_mb': 'MB', 'index_mb': 'MB'}   # the unit written after a figure that is not a time, a CPU or a read
 BLOCK = 8192 / 2**20   # MB of a buffer: the IO of a warm run is the blocks it hit or read (EXPLAIN (BUFFERS))
 NO_CPU = triple.NA('no CPU figure for this case in the results (it is recorded for one backend with no parallel workers)')
 NO_COLD = triple.NA('the time and CPU of the cold run are not recorded')
@@ -154,14 +155,14 @@ def takeaway(figs, brief=False):
         text += ', slower on %d: %s' % (len(slower), ', '.join('%s %s (%s slower)' % (f['case'].id, UNIT[f['metric']], speed(r)) for f, r in slower))
     flat = [(f, a) for f, _ in rs for a in OFF if isinstance(f['others'].get(a), float) and f['sift'] and f['others'][a] <= f['sift'] * (1 + TIE)]
     if brief:
-        return text + '; ' + kept_text(figs, ids=False) + '. The gap list per case and the setting of a variant that brings no gain are in docs/BENCHMARKS.md.'
+        return text + '; ' + kept_text(figs, ids=False) + '. The gap list per case and the setting of a variant that brings no gain are in bench/out/BENCHMARKS.md.'
     if flat:
         text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
     return text + '; ' + kept_text(figs) + '.'
 
 
 def gap_lines(figs, rows):
-    """docs/BENCHMARKS.md, block gaps: one row per case that runs PostgreSQL's plan, with the lane that forces the scan beside it and the reasons sift.explain_why gives; the key_sets work from this list"""
+    """bench/out/BENCHMARKS.md, block gaps: one row per case that runs PostgreSQL's plan, with the lane that forces the scan beside it and the reasons sift.explain_why gives; the key_sets work from this list"""
     owner = {'cost': 'cost model', 'feature': 'feature breadth', 'declined': 'none (the planner is right)', 'unmeasured': '-'}
     rows_ = [f for f in figs if f['kept'] and f['metric'] == f['case'].metrics[0]]
     if not rows_:
@@ -423,15 +424,15 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
     n = len({f['case'].id for f in figs})
     out = ['%d cases, each a query shape the planner has to recognize (a report with grouping sets, a ranked top-N per group, an anti join, a keyset page, a lookup by key, a JSON array and more), on %s rows, one backend[^cases]. '
            'Every case runs on pg_sift and on PostgreSQL on the same table and indexes (`sift.enable_agg = off`) and every answer is compared before it is timed.' % (n, '{:,}'.format(int(meta.get('orders', 0)))), '',
-           '<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="docs/img/cases-speedup-light.svg"></picture>', '',
+           '<picture><source media="(prefers-color-scheme: dark)" srcset="img/cases-speedup-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for every benchmark case, by family" src="img/cases-speedup-light.svg"></picture>', '',
            '**Takeaway:** ' + takeaway(figs, brief=True), '']
     table = featured(rows, registry, scale_rows)
     if table:
         out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows)%s:' % (results_dir, ', and a cold row is the MB read by the first run after the tables were emptied from memory' if any(m in ' '.join(table) for m in IO_MEASURES) else ''), ''] + table + ['']
-    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
-            'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
-            '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
-                meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'), meta.get('host_load_before', '?'))]
+    out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="img/cases-ecdf-light.svg"></picture>', '',
+            'Every case with its plan and variants: [BENCHMARKS.md](BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
+            '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (
+                meta.get('cpu', '?') + '.', rounds(meta), meta.get('postgresql', '?'), meta.get('pg_sift', '?'), meta.get('work_mem', '64MB'))]
     return out
 
 
@@ -442,24 +443,24 @@ def render(results, readme, benchmarks):
         meta, rows = extras.read(path)
         scale_path = os.path.join(results, 'cases-scale.tsv')
         scale_rows = extras.read(scale_path)[1] if os.path.exists(scale_path) else []
-        for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, readme_lines(meta, rows, registry, scale_rows))):
-            if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
+        for doc, body in ((benchmarks, lines(meta, rows, registry, '../results', '..')), (readme, readme_lines(meta, rows, registry, scale_rows))):
+            if doc:
                 extras.replace_block(doc, 'faster33', body)
-        if benchmarks and os.path.exists(benchmarks) and '<!-- bench:gaps:begin' in open(benchmarks).read():
+        if benchmarks:
             extras.replace_block(benchmarks, 'gaps', gap_lines(collect(rows, registry), rows))
     scale = os.path.join(results, 'cases-scale.tsv')
     meta, rows = extras.read(scale) if os.path.exists(scale) else ({}, [])
     for doc in (benchmarks, readme):
-        if doc and os.path.exists(doc) and '<!-- bench:scale33:begin' in open(doc).read():
+        if doc:
             body = scale_lines(meta, rows, registry)
-            extras.replace_block(doc, 'scale33', [l.replace('bench/results/', 'results/') if doc == benchmarks else l for l in body])
+            extras.replace_block(doc, 'scale33', [l.replace('bench/results/', '../results/') if doc == benchmarks else l for l in body])
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     a = ap.parse_args()
     render(a.results, a.readme, a.benchmarks)
 

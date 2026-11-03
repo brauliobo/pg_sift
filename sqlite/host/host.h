@@ -276,6 +276,7 @@ typedef struct StringInfoData
 
 typedef StringInfoData *StringInfo;
 
+extern StringInfo makeStringInfo(void);
 extern void initStringInfo(StringInfo str);
 extern void resetStringInfo(StringInfo str);
 extern void appendStringInfo(StringInfo str, const char *fmt,...) pg_attribute_printf(2, 3);

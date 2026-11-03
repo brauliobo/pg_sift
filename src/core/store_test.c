@@ -13,7 +13,7 @@
  * zeros without generating content, for throughput runs (read modes 2-3).
  *
  * Locks: writers and droppers take LockPage(index, 0, ShareLock), the sweep
- * and check take ExclusiveLock (the maintenance lock in release), drops
+ * and check take ExclusiveLock (the maintenance lock in a release build), drops
  * also serialize on LockPage(index, 1, ExclusiveLock).
  *
  * This file: the test index, the segments written and read back. The allocation, recycling, truncation, free list, page and churn functions are
@@ -43,9 +43,6 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_merge_max_kb",
 							"Testing: kB of segments one merge may read (0 = 16 GB).",
 							NULL, &sift_test_merge_max_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_merge_sleep_ms",
-							"Testing: ms a merge of the maintenance worker sleeps, its segments claimed (0 = no).",
-							NULL, &sift_test_merge_sleep_ms, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_room_segments",
 							"Testing: directory entries from which inserters merge (0 = 112).",
 							NULL, &sift_test_room_segments, 0, 0, SIFT_MAX_SEGMENTS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

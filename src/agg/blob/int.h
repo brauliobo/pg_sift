@@ -17,7 +17,7 @@ typedef struct OsaRec
 } OsaRec;
 
 extern void bw_values(StringInfo b, const OutTable *t, const uint32 *old, uint32 nused);
-extern uint32 * renumber(uint32 *ids, uint32 n, uint32 nold, uint32 *nused);
+extern uint32 * renumber(AggExec *ex, uint32 *ids, uint32 n, uint32 nold, uint32 *nused);
 extern bool set_agg(const SiftAggAgg *a);
 extern bool set_words(const SiftAggAgg *a, const Dist *d);
 extern void blob_set(AggExec *ex, int ai, const uint32 *gl, uint32 ng, const uint32 *cidx, const PartPairs *pre, StringInfo b);

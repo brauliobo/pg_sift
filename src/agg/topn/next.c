@@ -15,32 +15,119 @@
 
 #define TOPN_MAGIC	0x544F5031
 
+/* The skip of an OFFSET bisects the key over every cursor, about 0.4 M instructions whatever the offset; walking the entries of exact units costs about 600 an entry, so it pays from about 3,000 */
+#define GORD_SKIP_MIN	2048
+
+/* The entries the skip of the order left to the heap: each that is a row the scan would have given (visible, and with the entry's key where the block has it) is one more the Limit throws away */
+static uint32
+gord_pending(SiftTopN *t)
+{
+	TopFetch   *f = &t->pf[t->gpart];
+	uint32		n,
+				rows = 0;
+	const SiftGPend *pend = sift_gord_pending(t->go, &n);
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+		bool		call_again = false,
+					all_dead,
+					hnull;
+		Datum		d;
+
+		ItemPointerSet(&tid, (BlockNumber) (pend[i].tid >> 16), (OffsetNumber) (pend[i].tid & 0xFFFF));
+		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+			continue;
+		d = slot_getattr(f->slot, t->gatt[0], &hnull);
+		if (hnull)
+			continue;
+		if (t->gtext)
+		{
+			/* the entry's string is the heap row's: a row an UPDATE or a vacuumed address replaced holds another */
+			uint32		slen;
+			const char *str = sift_gord_pend_str(t->go, &pend[i], &slen);
+			struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+			if (VARSIZE_ANY_EXHDR(v) != slen || memcmp(VARDATA_ANY(v), str, slen) != 0)
+				continue;
+		}
+		else if (pend[i].check && gkey_of(t, 0, d) != pend[i].key)
+			continue;
+		t->fetched++;
+		rows++;
+	}
+	sift_gord_pending_done(t->go);
+	return rows;
+}
+
+/* The rows of the OFFSET that the order takes off its front and the heap is not asked for (0 when the OFFSET is short or a condition decides the rows) */
+int64
+gord_skip(SiftTopN *t)
+{
+	int64		rows;
+
+	if (t->gcond != NULL || t->skip < GORD_SKIP_MIN)
+		return 0;
+	rows = sift_gord_skip(t->go, (uint32) Min(t->skip, (int64) PG_UINT32_MAX));
+	return rows + gord_pending(t);
+}
+
 static bool
 gord_next(SiftTopN *t, TupleTableSlot *slot)
 {
-	TopFetch   *f = &t->pf[0];
+	TopFetch   *f = &t->pf[t->gpart];
 	int64		key;
 	bool		isnull;
 	ItemPointerData tid;
 
-	while (t->emitted < t->limit && (t->nkey > 1 ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
+	if (!t->skip_tried)
+	{
+		t->skip_tried = true;
+		if (!t->gprep)
+			t->bulk = gord_skip(t);
+	}
+	if (t->bulk > 0)
+	{
+		t->bulk--;
+		t->emitted++;
+		return skipped_row(t, slot);
+	}
+	while (t->emitted < t->limit && (t->gprep ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
 	{
 		bool		call_again = false,
 					all_dead,
 					hnull;
 		Datum		d;
 
-		if (t->nkey > 1)
-			tid = t->gq[t->gqpos++].tid;
-		/* an entry of an exact unit that the Limit throws away is not confirmed in the heap: its key is the array's */
-		else if (t->emitted < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
+		if (t->gprep)
 		{
-			t->emitted++;
-			return skipped_row(t, slot);
+			const GRow *r = &t->gq[t->gqpos++];
+
+			/* the Limit above throws away the rows before the OFFSET: the group fetch has confirmed them, they do not go out */
+			if (r->exact || t->emitted < t->skip)
+			{
+				t->emitted++;
+				return skipped_row(t, slot);
+			}
+			tid = r->tid;
 		}
-		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+		/* an entry of an exact unit is not confirmed in the heap when the Limit throws it away (its key is the array's) or when the key is all that goes out */
+		else if ((t->emitted < t->skip || t->gkeyout) && gord_entry_state(t, &tid, key, isnull) == SIFT_GORD_EXACT)
+		{
+			if (t->emitted++ < t->skip)
+				return skipped_row(t, slot);
+			ExecClearTuple(slot);
+			for (int c = 0; c < t->nout; c++)
+			{
+				slot->tts_isnull[c] = isnull;
+				slot->tts_values[c] = isnull ? (Datum) 0 : leaf_datum(t->gtyp[0], key);
+			}
+			ExecStoreVirtualTuple(slot);
+			return true;
+		}
+		if (ItemPointerGetBlockNumber(&tid) >= f->nblocks || !table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
-		if (t->nkey == 1)
+		if (!t->gprep)
 		{
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
 			if (hnull != isnull)
@@ -55,7 +142,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 				if (VARSIZE_ANY_EXHDR(v) != slen || memcmp(VARDATA_ANY(v), str, slen) != 0)
 					continue;
 			}
-			else if (!hnull && heap_key(t->gtyp[0], d) != key)
+			else if (!hnull && gkey_of(t, 0, d) != key)
 				continue;
 			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 				continue;
@@ -257,6 +344,8 @@ sift_topn_rewind(SiftTopN *t)
 	t->pos = 0;
 	t->emitted = 0;
 	t->gqpos = 0;
+	t->skip_tried = false;
+	t->bulk = t->gprep ? t->gbulk : 0;
 	if (t->go)
 		sift_gord_rewind(t->go);
 	if (t->sort)

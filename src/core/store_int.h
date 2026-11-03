@@ -6,6 +6,7 @@
 #define SIFT_STORE_INT_H
 
 #include "access/transam.h"
+#include "datatype/timestamp.h"
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 
@@ -116,6 +117,7 @@ extern void store_update(Relation index, const SiftDirChange *chg, bool publish,
 /* freelist.c */
 extern int	cmp_extent(const void *a, const void *b);
 extern BlockNumber alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *got);
+extern BlockNumber alloc_blocks_below(Relation index, Buffer metabuf, uint32 want, uint32 min, BlockNumber limit, uint32 *got);
 extern void read_chain(Relation index, Buffer metabuf, FreeChain *c, FullTransactionId horizon);
 extern void prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrelease,
 						 FullTransactionId safexid, FreePlan *plan);

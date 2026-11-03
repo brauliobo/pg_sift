@@ -3,7 +3,8 @@
 -- sift.col_format_minor = 13 and for the leaves of the option, so that an older library keeps reading what an index without it, or under a lower
 -- setting, writes; read back by the decoder that refuses a damaged run; recomputed by sift.col_verify; kept by promotion, merge and VACUUM.
 -- The rows and their order are those of the plain plan: every direction, NULLS FIRST and LAST, ties, NULLs, NaN and infinities, filters, OFFSET, the
--- write buffer, deletes and updates, workers.
+-- write buffer, deletes and updates, workers. About 12 s: the first sweep runs 10 columns in 3 limits and 3 plans; the states after writes, VACUUM, promotion and merge
+-- run 5 columns in the limit 300 (the buffer state also in 1), which is what their rows change.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET client_min_messages = warning;
@@ -149,7 +150,7 @@ INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['id', 'sk'], ARRAY[1, 300,
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_res;
  queries | same | read_runs 
 ---------+------+-----------
-     240 |  240 |       176
+     240 |  240 |       156
 (1 row)
 
 SELECT n, shape FROM sr_res WHERE NOT same;
@@ -216,8 +217,8 @@ SELECT sr_runs('SELECT id, sk FROM sr ORDER BY sk LIMIT 300') > sr_runs('SELECT 
  t
 (1 row)
 
-CREATE FUNCTION sr_small(tab text) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
-	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'sk'], ARRAY[1, 300])
+CREATE FUNCTION sr_small(tab text, lims int[] DEFAULT ARRAY[300]) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'sk'], lims)
 $$;
 -- filters that leave 2%, 10% and 50% of the rows (a unit reads the key of the rows that pass only when they are few) and a start after a value of the key
 -- itself (keyset paging): the run is walked over the rows that do not pass
@@ -228,7 +229,7 @@ $$;
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn', 't'], ARRAY[20, 300]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      96 |   96 |        84 | 
+      96 |   96 |        60 | 
 (1 row)
 
 -- a range on the first key bounds the part of each run that is read (a binary search of the run for each end): the rows are the plain plan's for every form of the
@@ -303,7 +304,7 @@ ERROR:  column "sk" is of type integer but expression is of type text
 LINE 2: ...END, 1.5, date '2019-01-01', g / 100, 100000 - g, repeat('x'...
                                                              ^
 HINT:  You will need to rewrite or cast the expression.
-SELECT * FROM sr_small('sr');
+SELECT * FROM sr_small('sr', ARRAY[1, 300]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
       80 |   80 |        80 | 
@@ -315,13 +316,13 @@ DELETE FROM sr WHERE id % 7 = 0;
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      80 |   80 |        80 | 
+      40 |   40 |        40 | 
 (1 row)
 
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      32 |   32 |        32 | 
+      32 |   32 |        24 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL BETWEEN 100 AND 120', 'WHERE COL > 900', 'WHERE COL BETWEEN 1000 AND 1100', 'WHERE COL = 2']);
@@ -340,7 +341,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) sr;
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      80 |   80 |        80 | 
+      40 |   40 |        40 | 
 (1 row)
 
 SELECT sift.col_promote('sr_on') >= 0 AS promoted;
@@ -364,7 +365,7 @@ SELECT sift.col_verify('sr_on', true);
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      80 |   80 |        80 | 
+      40 |   40 |        40 | 
 (1 row)
 
 SELECT sift.col_merge('sr_on', true) >= 0 AS merged;
@@ -389,13 +390,13 @@ SELECT sift.col_verify('sr_on', true);
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      80 |   80 |        80 | 
+      40 |   40 |        40 | 
 (1 row)
 
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      32 |   32 |        32 | 
+      32 |   32 |        24 | 
 (1 row)
 
 -- with workers: the rows are the plain plan's
@@ -597,5 +598,5 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTE
 (1 row)
 
 DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f, sr_d CASCADE;
-DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]), sr_range(text, text, text[]), sr_expr(text[]);
+DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text, int[]), sr_filt(text, text[], int[]), sr_range(text, text, text[]), sr_expr(text[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

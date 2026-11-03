@@ -9,9 +9,12 @@ CREATE TABLE events (id int PRIMARY KEY, grp int NOT NULL, sub int, ts int, amou
 INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 1000 END, i % 11, i % 4
 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie);
-NOTICE:  sift_col index events_col writes a rollup of the rows by sub, tie
+NOTICE:  sift_col index "events_col": rollup_dims = 'auto' writes a rollup of the rows by sub, tie
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 16 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX events_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX events_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 CREATE TABLE groups (grp int PRIMARY KEY, name text) WITH (autovacuum_enabled = false);
 INSERT INTO groups SELECT i, 'g' || i FROM generate_series(0, 36) i;
 VACUUM (FREEZE, ANALYZE) events;
@@ -94,7 +97,7 @@ SELECT * FROM check_query('order key is a partition key', $q$ SELECT * FROM (SEL
 SELECT * FROM check_query('order by an expression', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY amount * 1000 - id DESC) rn FROM events) t WHERE rn = 1 $q$);
          label          | in_scan | same | rows 
 ------------------------+---------+------+------
- order by an expression | f       | t    |   37
+ order by an expression | t       | t    |   37
 (1 row)
 
 SELECT * FROM check_query('a frame', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) rn FROM events) t WHERE rn = 1 $q$);
@@ -261,7 +264,7 @@ SELECT * FROM check_query('a left join', $q$
  a left join | f       | t    |   37
 (1 row)
 
--- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps DISTINCT ON for an ORDER BY that is a total order)
+-- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps the first one it meets)
 CREATE FUNCTION first_of_tie(q text) RETURNS TABLE (groups bigint, not_first bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
@@ -279,7 +282,7 @@ SELECT * FROM first_of_tie($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, ro
 SELECT runs_in_scan($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn = 1 $q$);
  runs_in_scan 
 --------------
- f
+ t
 (1 row)
 
 SELECT * FROM first_of_tie($q$ SELECT DISTINCT ON (grp) grp, id, tie FROM events ORDER BY grp, tie $q$);

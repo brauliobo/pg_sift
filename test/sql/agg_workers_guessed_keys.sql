@@ -39,8 +39,8 @@ BEGIN
 END $$;
 
 -- the keys are guessed: the lookup is expected to hold 9 of the 40 ids and holds 30; the scan keeps one process at the size of the table and plans the workers
--- at a larger one
-SELECT w_planned(1) AS planned_as_is, w_planned(64) > 0 AS workers_planned_at_scale;
+-- at a larger one (256 times: at 64 the scan priced 3,400 units is one of 3 ms that workers do not shorten)
+SELECT w_planned(1) AS planned_as_is, w_planned(256) > 0 AS workers_planned_at_scale;
 
 CREATE FUNCTION w_rows(push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

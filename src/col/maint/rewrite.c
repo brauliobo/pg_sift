@@ -10,6 +10,32 @@
 
 double		sift_col_auto_merge_buffer_pct = 1.0;
 
+/* The worker was started because the reads of a backend owe the rewrite (maint_read_due) */
+bool		maint_read_asked = false;
+
+/*
+ * The price of a row of the rewrite, instructions and WAL in instructions: 930 M instructions and 2.9 to 3.5 MB of WAL for 300,000 rows (3,100 a row), and a MB of WAL weighs
+ * 0.6 G instructions (a G of instructions weighs a third, a MB of WAL a fifth), so about 9,000 a row; a maintenance step counts at half, so a read asks when what the reads owe
+ * (sift_col_vacuum_tick) reaches half of it.
+ */
+#define ROW_PRICE	9000.0
+#define MAINT_HALF	0.5
+
+/* Do the reads of this backend owe the rewrite of the index? The rows are the directory's: no unit is read */
+bool
+maint_read_due(Relation index, double owed)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		rows = 0;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			rows += snap->segs[i].ndocs;
+	pfree(snap);
+	return owed >= MAINT_HALF * ROW_PRICE * (double) rows;
+}
+
 /*
  * Do the segments the budget counts from (those of at least half the bytes of the largest) overlap each other? A build in parallel, or one that
  * outgrew the memory of a segment writer, leaves peers that all cover the same superblocks, and the rewrite that merges them is the first, not
@@ -43,7 +69,7 @@ peers_overlap(const RewriteView *v)
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
  * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent). It waits too while the blocks the last rewrite freed are held back by a snapshot.
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent), which defers the rewrite of the segments and not the promotion of the write buffer. It waits too while the blocks the last rewrite freed are held back by a snapshot.
  * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with dirty_pct of its units dirty is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
@@ -57,6 +83,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	const char *why = NULL;
 	bool		partitioned,
 				part_dirty = false,
+				buffer_due,
 				build_peers;
 	uint64		listed = 0,
 				dirty = 0,
@@ -83,6 +110,13 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		uint32		d = 0;
 
 		rows += e->ndocs;
+		if (e->flags & SIFT_SEG_UNIT)
+		{
+			sbytes[i] = 0;
+			lsn[i] = InvalidXLogRecPtr;
+			sift_cseg_close(seg);
+			continue;
+		}
 		bytes += e->bytes;
 		sbytes[i] = e->bytes;
 		lsn[i] = automatic ? maint_header_lsn(index, e) : InvalidXLogRecPtr;
@@ -102,7 +136,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		sift_cseg_close(seg);
 	}
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED)
 		{
 			uint64		nrows,
 						npages;
@@ -118,16 +152,22 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		why = "dirty units";
 	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
 		why = "fragmented units";
-	if (why == NULL && buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
+	else if (maint_read_asked && dirty > 0)
+		why = "dirty units";
+	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
+	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
 	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
 	if (why != NULL && automatic && build_peers && gates != NULL && maint_rewrite_all(why))
 		*gates |= SIFT_COL_PEERS;
-	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && maint_wal_budget_spent(lsn, sbytes, nseg, bytes))
+	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && !maint_read_asked && maint_wal_budget_spent(lsn, sbytes, nseg, bytes))
 	{
 		if (gates != NULL)
 			*gates |= SIFT_COL_GATE_WAL;
-		return NULL;
+		/* the budget defers the rewrite of the segments, not the promotion of the write buffer, which costs its rows: reads would walk them until the budget is back */
+		if (!buffer_due)
+			return NULL;
+		why = WHY_BUFFER;
 	}
 	/*
 	 * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
@@ -171,8 +211,8 @@ maint_rewrite_request(Relation index)
  * peer for good. A look at the directory (the ranges of the largest segments overlap) comes before the rule, which opens the segments; the request is
  * the one of VACUUM, so that its backoff and the stamp in the index keep the backends that look from starting a worker each.
  */
-void
-sift_col_rewrite_tick(Relation index)
+bool
+sift_col_rewrite_tick(Relation index, double owed)
 {
 	SiftDirSnapshot *snap;
 	SiftDirSnapshot *peers;
@@ -181,7 +221,7 @@ sift_col_rewrite_tick(Relation index)
 	int			gates = 0;
 
 	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		return;
+		return false;
 	snap = palloc(sizeof(SiftDirSnapshot));
 	peers = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, snap);
@@ -199,4 +239,5 @@ sift_col_rewrite_tick(Relation index)
 		(void) sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
 	pfree(peers);
 	pfree(snap);
+	return owed > 0 && maint_read_due(index, owed) && sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main");
 }

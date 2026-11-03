@@ -58,7 +58,15 @@ CREATE INDEX ws_col ON ws USING sift_col (id, payload);
 RESET sift.test_limits;
 SELECT pushed('SELECT count(DISTINCT payload) FROM ws') AS scanned, same('SELECT count(DISTINCT payload) FROM ws');
 
-DROP TABLE wv, wm, ws;
+-- a leaf that passes the budget in each of several superblocks is one NOTICE for the statement, naming the first superblock
+CREATE TABLE wsb (id int, payload text) WITH (autovacuum_enabled = false);
+INSERT INTO wsb SELECT i, repeat(md5(i::text), 12) FROM generate_series(1, 12000) i;
+SELECT pg_relation_size('wsb') / 8192 / 256 >= 2 AS spans_superblocks;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX wsb_col ON wsb USING sift_col (id, payload);
+RESET sift.test_limits;
+
+DROP TABLE wv, wm, ws, wsb;
 DROP FUNCTION runq(text, bool), same(text), pushed(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

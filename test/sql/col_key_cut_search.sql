@@ -50,7 +50,10 @@ SELECT sift.col_promote('ks_col') > 0 AS promoted;
 SELECT * FROM kscheck('promoted');
 DELETE FROM ks WHERE id % 7 = 0;
 UPDATE ks SET amount = amount + 1, cust = 42, memo = 'cable wire' WHERE id % 1009 = 0;
+-- the heap check of the dirty pages prices the scan above the normal plan: it runs for the rows at the addresses it keeps
+SET sift.agg_force = on;
 SELECT * FROM kscheck('deleted and updated');
+RESET sift.agg_force;
 VACUUM ks;
 SELECT * FROM kscheck('vacuumed');
 SELECT sift.col_merge('ks_col', true) >= 0 AS merged;

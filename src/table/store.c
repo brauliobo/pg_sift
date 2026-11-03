@@ -137,7 +137,7 @@ sift_tbl_rel(Relation rel)
 		e->st->relnumber = rel->rd_locator.relNumber;
 		e->st->cxt = cxt;
 		e->st->tgt_blk = InvalidBlockNumber;
-		e->st->tomb_last = InvalidBlockNumber;
+		sift_tomb_init(&e->st->tomb, cxt, &e->st->dir);
 	}
 	return e->st;
 }
@@ -168,27 +168,6 @@ init_dir(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 	dir->segs[dir->nsegs++] = ((InitArg *) arg)->tomb;
 }
 
-static SiftSegEntry
-new_tomb_segment(Relation rel)
-{
-	uint64		gen = sift_store_new_gen(rel);
-	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
-	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-	Page		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
-	SiftSegEntry e = {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_TOMB,.header_blk = BufferGetBlockNumber(hbuf)};
-
-	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
-	TBL_TOMB_HDR(hp)->magic = SIFT_TBL_TOMB_MAGIC;
-	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTblTombHdr));
-	sift_lane_init_page(dp, TBL_TOMB_PAGE_INIT);
-	GenericXLogFinish(state);
-	UnlockReleaseBuffer(hbuf);
-	UnlockReleaseBuffer(dbuf);
-	return e;
-}
-
 /* The first writer writes the metapage and then the directory, two blocks one after the other: a file of the metapage alone is being laid out */
 #define BLOCKS_WRITTEN(rel)	(RelationGetNumberOfBlocks(rel) > SIFT_DIRECTORY_BLKNO)
 
@@ -198,7 +177,7 @@ sift_tbl_ensure_init(Relation rel)
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	/* a read between the first writer's metapage and its tombstone segment caches a table that is not laid out yet */
-	if (st->initialized && find_seg(&st->dir, is_tomb, 0) != NULL)
+	if (st->initialized && sift_tomb_find_seg(&st->dir) != NULL)
 		return;
 	if (!BLOCKS_WRITTEN(rel))
 	{
@@ -209,22 +188,22 @@ sift_tbl_ensure_init(Relation rel)
 		{
 			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
 
-			sift_store_init_meta(wt, &none, 0);
+			sift_store_init_meta(wt, &none, 0, "");
 			sift_wt_finish(wt);
 		}
 		UnlockRelationForExtension(rel, ExclusiveLock);
 	}
 	sift_tbl_refresh(rel, st);
-	if (find_seg(&st->dir, is_tomb, 0) == NULL)
+	if (sift_tomb_find_seg(&st->dir) == NULL)
 	{
 		InitArg		arg;
 
 		sift_tbl_gate(sift_tbl_init_gate);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_dir_read(rel, &st->dir);
-		if (find_seg(&st->dir, is_tomb, 0) == NULL)
+		if (sift_tomb_find_seg(&st->dir) == NULL)
 		{
-			arg.tomb = new_tomb_segment(rel);
+			arg.tomb = sift_tomb_new_segment(rel, SIFT_SEG_WBUF_OPEN, 0);
 			sift_dir_update(rel, &(SiftDirChange) {.fn = init_dir,.arg = &arg,.extra = InvalidBuffer});
 		}
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);

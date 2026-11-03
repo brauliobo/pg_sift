@@ -91,7 +91,7 @@ def cases_speedup(results, theme):
                     c.text(x1 - 6, cy + 4, label, 12, 'end', c.t['ink'] if kept else c.t['down'], None if kept else 'bold')
             y += rowh
         y += gap
-    end = c.foot(y + 14, [f'Data: bench/results/cases.tsv, bench/cases.tsv; measured {meta.get("date", "?")} on {meta.get("cpu", "?").split(",")[0]}; PostgreSQL {meta.get("postgresql", "?")}, pg_sift {meta.get("pg_sift", "?")}. The milliseconds are in the table of docs/BENCHMARKS.md.'])
+    end = c.foot(y + 14, [f'Data: bench/results/cases.tsv, bench/cases.tsv; measured {meta.get("date", "?")} on {meta.get("cpu", "?").split(",")[0]}; PostgreSQL {meta.get("postgresql", "?")}, pg_sift {meta.get("pg_sift", "?")}. The milliseconds are in the table of bench/out/BENCHMARKS.md.'])
     return c.render(end + 8, 'Speed-up of every benchmark case', 'Bars: PostgreSQL time over pg_sift time for each case, grouped by family.')
 
 
@@ -231,6 +231,6 @@ def shapes_latency(results, theme):
         name = {'heap': 'PostgreSQL', 'flat': 'flat tables', 'ch': 'ClickHouse'}[best]
         word = f'{factor_text(ratio)} faster than {name}' if ratio >= 1.05 else f'tie with {name}' if ratio > 0.95 else f'{factor_text(1 / ratio)} slower than {name}'
         c.text(W - 20, cy + 4, word, 12, 'end', c.t['ink'] if ratio >= 0.95 else c.t['down'], 'bold' if ratio < 0.95 else None)
-    end = c.foot(top + rowh * len(cases) + 22, [f'Data: bench/results/analytics.json, {meta.get("date", "?")[:10]}, median of {meta.get("runs", "?")} runs, one backend with no parallel workers, ClickHouse on one thread; the filter of 400 tenants is in docs/perf/AGGREGATES.md. '
+    end = c.foot(top + rowh * len(cases) + 22, [f'Data: bench/results/analytics.json, {meta.get("date", "?")[:10]}, median of {meta.get("runs", "?")} runs, one backend with no parallel workers, ClickHouse on one thread; the filter of 400 tenants is in bench/out/perf/AGGREGATES.md. '
                                                 'Flat tables are the best conventional layout (denormalized copies) of the same data. notes-path-exists has no ClickHouse query.'])
     return c.render(end + 8, 'Time per application shape', 'Median time of each application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse.')

@@ -18,6 +18,7 @@ CREATE ROLE ap_none;
 CREATE TABLE docs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO docs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, g, v);
+NOTICE:  sift_col index "docs_col" installed two statement triggers on table "docs" and tracks its changes
 VACUUM (FREEZE, ANALYZE) docs;
 CREATE VIEW docs_v AS SELECT g, v FROM docs;
 GRANT SELECT (id, g) ON docs TO ap_col;
@@ -27,11 +28,13 @@ CREATE TABLE pdocs_a PARTITION OF pdocs FOR VALUES FROM (1) TO (2501) WITH (auto
 CREATE TABLE pdocs_b PARTITION OF pdocs FOR VALUES FROM (2501) TO (5001) WITH (autovacuum_enabled = false);
 INSERT INTO pdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX pdocs_col ON pdocs USING sift_col (id, g, v);
+NOTICE:  sift_col index "pdocs_a_id_g_v_idx" does not track changes: the table has no primary key of one column
 VACUUM (FREEZE, ANALYZE) pdocs;
 GRANT SELECT (id, g) ON pdocs TO ap_col;
 CREATE TABLE rdocs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO rdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX rdocs_col ON rdocs USING sift_col (id, g, v);
+NOTICE:  sift_col index "rdocs_col" installed two statement triggers on table "rdocs" and tracks its changes
 VACUUM (FREEZE, ANALYZE) rdocs;
 ALTER TABLE rdocs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY rdocs_all ON rdocs USING (true);

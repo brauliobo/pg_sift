@@ -17,6 +17,7 @@
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "col/am.h"
@@ -69,7 +70,7 @@ keycols_ends_in_id(const char *name)
 	return n > 3 && strcmp(name + n - 3, "_id") == 0;
 }
 
-/* The option name of index set to value; visible to the relcache entry at once */
+/* The option name of index set to value (NULL: reset); visible to the relcache entry at once */
 void
 sift_col_set_option(Relation index, const char *name, const char *value)
 {
@@ -82,7 +83,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	bool		isnull,
 				nulls[Natts_pg_class] = {false},
 				repl[Natts_pg_class] = {false};
-	List	   *def = list_make1(makeDefElem((char *) name, (Node *) makeString(pstrdup(value)), -1));
+	List	   *def = list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1));
 
 	/* the lock an update of an index's pg_class row expects on its table (checked in assert builds); the ShareLock of the build already excludes every other holder of it */
 	LockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
@@ -90,7 +91,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: no pg_class row for index %u", RelationGetRelid(index));
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
-	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, false);
+	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
 	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
 	values[Anum_pg_class_reloptions - 1] = newopts;
 	nulls[Anum_pg_class_reloptions - 1] = newopts == (Datum) 0;
@@ -226,6 +227,91 @@ sift_col_auto_keys(Relation heap, Relation index)
 		return false;
 	set_chosen(index, &list);
 	return true;
+}
+
+/* key_cut as the option holds it ("auto: d"), not as the reader returns it (" d") */
+static char *
+auto_cut_text(Relation index)
+{
+	const char *c = sift_col_options_key_cut(index);
+
+	while (*c == ' ')
+		c++;
+	return *c && sift_col_options_key_cut_auto(index) ? psprintf("auto: %s", c) : pstrdup(c);
+}
+
+/*
+ * Before a merge of every immutable segment: what a build chooses from the data and keeps in an option it wrote itself (key_cut, order_array_columns, point_tid_columns,
+ * each 'auto' or 'auto: list') is chosen again, in the order of the build, so the segments about to be written are those a REINDEX would write: rows of every tenant appended
+ * at the end of a heap built in the order of its tenants make a cut pay, the cut makes the ends of an order array and a point directory the better choices, and the index
+ * a merge kept at the choices of the day of its build was a third larger. The rewrite is due for its own reasons (dead or fragmented units, the buffer), so the decision
+ * adds the sample of the cut (at most a quarter of the heap, the build's) and no rewrite. An option the user wrote is left as it is. Returns whether an option changed; the
+ * caller reads the schema again after it. Returns whether key_cut changed (the merge then sorts the rows of its inputs again).
+ */
+bool
+sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
+{
+	Relation	heap;
+	char	   *cut,
+			   *arr,
+			   *pt;
+	const char *o;
+	bool		pushed = false,
+				changed;
+	uint64		loaded = 0;
+	MemoryContext mcx;
+	StringInfoData what;
+
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || IsInParallelMode())
+		return false;
+	/* the lock and the reasons of sift_col_auto_keys_merge: the merge holds the metapage, a VACUUM the heap */
+	if (!ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock))
+		return false;
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	if (!ActiveSnapshotSet())
+	{
+		PushActiveSnapshot(GetTransactionSnapshot());
+		pushed = true;
+	}
+	/* a merge that cuts by another key than the segments' holds their rows whole and sorts them: a cut is chosen only if they fit (col/order.c) */
+	mcx = AllocSetContextCreate(CurrentMemoryContext, "sift_col redecide", ALLOCSET_DEFAULT_SIZES);
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &in[i], mcx);
+
+		loaded += sift_cseg_live_rows(seg);
+		sift_cseg_close(seg);
+		MemoryContextReset(mcx);
+	}
+	loaded *= sift_colk_row_bytes(sift_col_rel_private(index, mcx)->schema);
+	MemoryContextDelete(mcx);
+	cut = auto_cut_text(index);
+	o = sift_col_options_order_array_columns(index);
+	arr = pstrdup(o ? o : "");
+	pt = pstrdup(sift_col_options_point_tid_columns(index));
+	changed = sift_col_auto_cut_again(heap, index, loaded <= (uint64) maintenance_work_mem * 1024);
+	sift_col_auto_gorder(heap, index, false);
+	sift_col_auto_point(heap, index);
+	if (pushed)
+		PopActiveSnapshot();
+	table_close(heap, NoLock);
+	initStringInfo(&what);
+	if (changed)
+		appendStringInfo(&what, "key_cut = '%s' (was '%s'); ", auto_cut_text(index), cut);
+	o = sift_col_options_order_array_columns(index);
+	if (strcmp(arr, o ? o : "") != 0)
+		appendStringInfo(&what, "order_array_columns = '%s' (was '%s'); ", o ? o : "", arr);
+	if (strcmp(pt, sift_col_options_point_tid_columns(index)) != 0)
+		appendStringInfo(&what, "point_tid_columns = '%s' (was '%s'); ", sift_col_options_point_tid_columns(index), pt);
+	if (what.len == 0)
+		return false;
+	what.data[what.len - 2] = '\0';
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the rewrite chooses again from the data: %s", RelationGetRelationName(index), what.data),
+			 errdetail("Rows appended since the build, or a different spread of the values, change what the default formulas choose for key_cut, order_array_columns and point_tid_columns "
+					   "(an option you wrote is never changed); the segments written now are the ones a REINDEX would write."),
+			 errhint("To keep a choice off, run ALTER INDEX %s SET (key_cut = 'off') (and the same for the others).", quote_identifier(RelationGetRelationName(index)))));
+	return changed;
 }
 
 /*
@@ -469,8 +555,8 @@ sift_col_auto_keys_report(Relation index)
 		if (left.len > 0)
 			appendStringInfo(&detail, " Left out: %s.%s", why.data,
 							 cube_left ? " The units written now keep the lists of a column the cube holds; a REINDEX drops them." : "");
-		ereport(NOTICE, (errmsg("sift_col index %s keeps the keys of %s in every unit", name, kept.data), errdetail_internal("%s", detail.data),
-						 errhint("ALTER INDEX %s SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns = 'auto' keeps the keys of %s in every unit", RelationGetRelationName(index), kept.data), errdetail_internal("%s", detail.data),
+						 errhint("To turn it off, run ALTER INDEX %s SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
 	}
 	MemoryContextDelete(cx);
 	pfree(snap);
@@ -529,22 +615,21 @@ sift_col_auto_paths(Relation heap, Relation index)
 				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
 			if (both.len > 0)
 				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
-			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s", name, only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' keeps the elements of the arrays %s", RelationGetRelationName(index), only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
 							 errdetail_internal("%s", detail.data),
-							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, leaves the elements out.", name)));
+							 errhint("To keep the arrays and leave the elements out, run ALTER INDEX %s SET (paths = 'auto:') and REINDEX.", name)));
 		}
 	}
 	if (spec.len == 0)
 		return;
 	{
 		StringInfoData v;
-		const char *name = quote_identifier(RelationGetRelationName(index));
 
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", spec.data);
 		sift_col_set_option(index, "paths", v.data);
 		if (ncols + ngroups > 0)
-			ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' reads the jsonb paths %s", RelationGetRelationName(index), spec.data),
 							 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
 									   SIFT_COL_AUTO_PATHS_SAMPLE),
 							 errhint("Write paths = '...' to fix them by hand.")));

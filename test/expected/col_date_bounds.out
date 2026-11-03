@@ -11,8 +11,14 @@ CREATE TABLE xr_d AS SELECT * FROM xb_d;
 CREATE TABLE xr_ts AS SELECT * FROM xb_ts;
 CREATE TABLE xr_tz AS SELECT * FROM xb_tz;
 CREATE INDEX xb_d_i ON xb_d USING sift_col (d);
+NOTICE:  sift_col index "xb_d_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX xb_ts_i ON xb_ts USING sift_col (t);
+NOTICE:  sift_col index "xb_ts_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX xb_tz_i ON xb_tz USING sift_col (t);
+NOTICE:  sift_col index "xb_tz_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) xb_d, xb_ts, xb_tz, xr_d, xr_ts, xr_tz;
 CREATE FUNCTION xb_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text = '';

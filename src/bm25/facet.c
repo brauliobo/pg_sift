@@ -159,8 +159,8 @@ static bool
 facet_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 {
 	Facets	   *f = arg;
-	Datum		value;
-	bool		isnull;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
 
 	if (!sift_vis_fetch(&f->vis, tid, f->slot))
 		return false;
@@ -168,10 +168,10 @@ facet_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 		return true;
 	ResetPerTupleExprContext(f->estate);
 	GetPerTupleExprContext(f->estate)->ecxt_scantuple = f->slot;
-	FormIndexDatum(f->iinfo, f->slot, f->estate, &value, &isnull);
-	if (isnull)
+	FormIndexDatum(f->iinfo, f->slot, f->estate, values, isnull);
+	if (isnull[0])
 		return false;
-	*doc = DatumGetTextPP(value);
+	*doc = DatumGetTextPP(values[0]);
 	return true;
 }
 

@@ -34,19 +34,42 @@ put_pad(StringInfo out, Size align)
  * ------------------------------------------------------------------------- */
 
 /* The one definition of a zone: the encoder and the verification of a stored chunk both come through here */
-static void
-zone_of_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z)
+void
+sift_cchunk_zone_keys(const int64 *key, const uint64 *nulls, const uint64 *ovf, uint32 n, SiftColStore store, SiftCZone *z)
 {
 	int64		mn = PG_INT64_MAX,
 				mx = PG_INT64_MIN,
 				carry = 0;		/* the sum is carry * 2^64 + sum (unsigned): exact, whatever the order of the additions */
 	uint64		sum = 0;
-	uint32		nnull = 0;
+	uint32		nnull = 0,
+				from = 0;
 	bool		nosum;
 
 	memset(z, 0, sizeof(*z));
 	z->nvals = n;
-	for (uint32 i = 0; i < n; i++)
+	if (nulls == NULL && n > 0 && (store == SIFT_COLS_INT || store == SIFT_COLS_VAR))
+	{
+		/* the common unit: integers without a NULL; the kernel's sum is exact within 2^31 of zero, a wider unit adds with the carry */
+		int64		ksum;
+		uint64		sq[2];
+
+		sift_colk->int_stats(key, n, &mn, &mx, &ksum, sq);
+		if (mn >= -((int64) 1 << 31) && mx < ((int64) 1 << 31))
+		{
+			sum = (uint64) ksum;
+			carry = ksum < 0 ? -1 : 0;
+		}
+		else
+			for (uint32 i = 0; i < n; i++)
+			{
+				uint64		before = sum;
+
+				sum += (uint64) key[i];
+				carry += (sum < before) - (key[i] < 0);
+			}
+		from = n;
+	}
+	for (uint32 i = from; i < n; i++)
 	{
 		int64		k = key[i];
 
@@ -148,7 +171,7 @@ sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z)
 		if (c->enc == SIFT_COLENC_CC)
 			sift_cc_close(cc_open(c, true));
 		sift_cchunk_decode(c, key);	/* a STRS chunk is verified by its decoding */
-		zone_of_keys(key, c->nulls, c->ovf, c->n, store, z);
+		sift_cchunk_zone_keys(key, c->nulls, c->ovf, c->n, store, z);
 	}
 	z->flags |= zone_jnull(c->kmask);
 	pfree(key);
@@ -325,7 +348,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 	int64		base;
 	uint8		head[8];
 
-	zone_of_keys(key, nulls, ovf, n, store, z);
+	sift_cchunk_zone_keys(key, nulls, ovf, n, store, z);
 	z->flags |= zone_jnull(kmask);
 	flags = chunk_flags(z, tags, kmask);
 	span = (uint64) z->max - (uint64) z->min;
@@ -372,7 +395,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 }
 
 /* The chunk of an STR leaf stored inline: the strings of the rows (the batch's codes looked up in its dictionary bd), no codes of the segment */
-/* set by the host while it builds an index, to name the leaf whose strings the formula wrapped otherwise than the cold rule (col/build.c) */
+/* set by the host while it builds an index, to name the leaf whose strings the formula wrapped otherwise than the cold rule (col/build/build.c) */
 void		(*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *chosen, const SiftCcScanSum *kept);
 
 static void

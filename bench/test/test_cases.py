@@ -6,6 +6,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
 import cases  # noqa: E402
 import cases_discover as disc  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 
 class Signature(unittest.TestCase):
@@ -100,14 +102,10 @@ class Ties(unittest.TestCase):
         self.assertTrue(self.equal(ORDERING[0:1], ['9|5.0000000000001|2025-01-05|8|40.00']))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class Takeaway(unittest.TestCase):
     def fig(self, case, native, sift, others, plan):
-        c = type('C', (), dict(id=case))
-        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False)
+        c = type('C', (), dict(id=case, metrics=['ms']))
+        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False, forced=None, forced_note='')
 
     def test_wins_ties_kept_plans_and_settings_that_do_not_help(self):
         import cases_render as r
@@ -116,17 +114,17 @@ class Takeaway(unittest.TestCase):
         text = r.takeaway(figs)
         self.assertIn('faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 2 of 2 numbers (10x to 10x)', text)
         self.assertIn('brings no gain (its variant is as fast, within 5%) on 1: b ms `zone_off`', text)
-        self.assertIn("on 1: c ms", text)
-        slow = self.fig('d', 1.0, 1.5, {}, 'Seq Scan')
-        slow['kept'] = True
-        self.assertEqual(r.same_plan(slow), 'same plan (1.5x slower)')
-        self.assertEqual(r.same_plan(figs[2]), 'same plan')
+        self.assertIn("ran PostgreSQL's plan on 1 (no ratio for those); with the scan forced (`sift.agg_force`) it is not measured on 1 (c)", text)
+        for forced, note, want in ((0.5, '', "forced scan **2.0x**"), (2.0, '', 'forced scan 2.0x slower'), (None, '', 'forced scan not measured'), (None, 'no scan: x', 'the scan cannot run it')):
+            kept = self.fig('d', 1.0, 1.0, {}, 'Seq Scan')
+            kept.update(kept=True, forced=forced, forced_note=note)
+            self.assertIn(want, r.declined(kept))
 
     def test_ranked_puts_losses_before_ties_and_wins(self):
         import cases_render as r
         win, loss, tie = self.fig('w', 20.0, 2.0, {}, 'Top-N'), self.fig('l', 1.0, 2.0, {}, 'Top-N'), self.fig('t', 1.0, 1.0, {}, 'Seq Scan')
         slow_kept = self.fig('k', 1.0, 1.5, {}, 'Seq Scan')
-        slow_kept['kept'] = True
+        slow_kept['kept'], slow_kept['forced'] = True, 0.5   # the planner keeps PostgreSQL's plan where the forced scan is 2x faster: a gap
         self.assertEqual([r.ranked(f) for f in (win, loss, tie, slow_kept)], [2, 0, 1, 0])
 
 
@@ -154,3 +152,190 @@ class PlanShape(unittest.TestCase):
         a = 'HashAggregate  (cost=1 rows=2) (actual time=1 rows=3 loops=1)\n  Group Key: x\n  ->  Seq Scan on t  (cost=1)\nPlanning Time: 0.1 ms'
         self.assertEqual(cases.plan_shape(a), cases.plan_shape(a.replace('rows=3', 'rows=9').replace('0.1', '7')))
         self.assertNotEqual(cases.plan_shape(a), cases.plan_shape(a.replace('Seq Scan on t', 'Index Scan using i on t')))
+
+
+class Sizes(unittest.TestCase):
+    def test_rows_is_the_number_of_the_point_in_a_statement_and_a_setup(self):
+        from cases import runcfg
+        from cases.measure import expand
+        runcfg.ROWS = 300000
+        self.assertEqual(expand('SELECT 1 WHERE id <= {rows} * 3 / 20', None), 'SELECT 1 WHERE id <= 300000 * 3 / 20')
+
+    def test_no_case_builds_a_table_above_the_rows_of_its_point(self):
+        """a fixed table of millions of rows fills the memory of a small run (a 3,000,000-row table at --rows 100000): the size is `{rows}` times a factor"""
+        import re
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cases')
+        fixed = []
+        for name in sorted(os.listdir(root)):
+            with open(os.path.join(root, name)) as f:
+                fixed += [name for m in re.finditer(r'generate_series\s*\(\s*1\s*,\s*([0-9_]+)\s*\)', f.read()) if int(m.group(1).replace('_', '')) > 1000000]
+        self.assertEqual(fixed, [])
+
+
+class Visibility(unittest.TestCase):
+    def settle(self, *partials):
+        """settle_visibility against a psql that answers each check of the maps with the next of PARTIALS ('' is a full map); the statements it ran"""
+        from unittest import mock
+        from cases import server
+        answers = iter(partials)
+        ran = []
+        with mock.patch.object(server, 'psql', side_effect=lambda sql, *a: next(answers) if 'string_agg' in sql else ran.append(sql) or ''):
+            server.settle_visibility('c_x')
+        return ran
+
+    def test_a_full_map_needs_the_second_vacuum_only(self):
+        ran = self.settle('')
+        self.assertEqual(len(ran), 1)
+        self.assertIn('VACUUM (FREEZE)', ran[0])
+
+    def test_emptied_pages_are_removed_by_vacuum_full_and_the_map_checked_again(self):
+        ran = self.settle('c_x.orders 1373 of 1408 pages', '')
+        self.assertEqual([r.split(' %s')[0].split("'")[-1] for r in ran], ['VACUUM (FREEZE)', 'VACUUM FULL', 'VACUUM (FREEZE, ANALYZE)'])
+
+    def test_a_map_that_stays_partial_fails_loudly(self):
+        from unittest import mock
+        from cases import server
+        with mock.patch.object(server, 'die', side_effect=SystemExit('partial')) as die:
+            with self.assertRaises(SystemExit):
+                self.settle('c_x.orders 3 of 250 pages', 'c_x.orders 3 of 250 pages')
+        self.assertIn('c_x.orders 3 of 250 pages', die.call_args.args[0])
+
+    def test_the_harness_sessions_commit_synchronously(self):
+        from unittest import mock
+        from cases import server
+        with mock.patch.object(server.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='')) as run:
+            server.psql('SELECT 1')
+        self.assertIn('synchronous_commit=on', run.call_args.kwargs['env']['PGOPTIONS'])
+
+
+class Release(unittest.TestCase):
+    def dropped(self, ids, **kw):
+        """the schemas the run drops, case by case, for the cases IDS of one dataset (`docs`)"""
+        from unittest import mock
+        from cases import run
+        cases = [mock.Mock(id=i, dataset='docs', share=None, load=kw.get('load', False), **{'schema.return_value': 'c_docs'}) for i in ids]
+        left, out = {'c_docs': len(cases)}, []
+        variants = []
+        with mock.patch.object(run, 'psql', side_effect=lambda sql: variants.append(sql) if 'starts_with' in sql else out.append(sql)), mock.patch.object(run, 'drop_added', side_effect=lambda schema: out.append('added to ' + schema + ' dropped')):
+            for c in cases:
+                n = len(out)
+                run.release(c, left, 300000, False)
+                out[n:] = [' '.join(out[n:])]
+        self.variants = variants
+        return out
+
+    def test_a_dataset_schema_is_dropped_after_its_last_case(self):
+        self.assertEqual(self.dropped(['a', 'b']), ['added to c_docs dropped', 'DROP SCHEMA IF EXISTS c_docs CASCADE'])
+
+    def test_a_load_case_drops_its_own_schema_too(self):
+        self.assertEqual(self.dropped(['a'], load=True), ['DROP SCHEMA IF EXISTS c_a CASCADE DROP SCHEMA IF EXISTS c_docs CASCADE'])
+
+    def test_the_variant_schemas_of_a_case_are_dropped_with_it(self):
+        self.dropped(['a'])
+        self.assertIn("starts_with(nspname, 'c_a__')", self.variants[0])
+
+
+class Perf(unittest.TestCase):
+    """minstr against a stand-in for steps/perf.sh: the counts, a retry, and the reason when every attempt fails"""
+    class Session:
+        def run(self, sql):
+            return None, ['4242']
+
+    def fake(self, body):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        f.write('#!/usr/bin/env bash\n' + body + '\n')
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def minstr(self, body, **kw):
+        from unittest import mock
+        from cases import measure
+        with mock.patch.object(measure, 'PERF', self.fake(body)), mock.patch.object(measure.time, 'sleep', lambda s, real=__import__('time').sleep: real(0.3)):
+            return measure.minstr(self.Session(), 'SELECT 1', **kw)
+
+    def test_the_median_of_the_runs(self):
+        self.assertEqual(self.minstr('echo 10 5000000 1', runs=1), 5.0)
+
+    def test_an_attempt_that_failed_is_tried_again(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, d)
+        body = 'if [ -e %s/n ]; then echo "10 7000000 1"; else touch %s/n; echo "NA NA NA"; fi' % (d, d)
+        self.assertEqual(self.minstr(body, runs=1), 7.0)
+
+    def test_every_attempt_failing_says_why(self):
+        from cases.measure import PerfFailed
+        with self.assertRaises(PerfFailed) as e:
+            self.minstr("echo 'NA NA NA'; echo no permission >&2; exit 1", runs=1, tries=2)
+        self.assertIn('attempt 2', str(e.exception))
+        self.assertIn('perf_event_paranoid', str(e.exception))
+        self.assertIn('no permission', str(e.exception))
+
+
+class Profile(unittest.TestCase):
+    """record_start / record_stop against a stand-in for perf: the file of the symbols, and the failure that says why"""
+    def perf(self, record):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False)
+        f.write('#!/usr/bin/env bash\nif [ "$1" = record ]; then\n  while [ "$1" != -o ]; do shift; done; out=$2\n  %s\nelse\n  echo "# header"; echo "  9.64%%  postgres  pg_sift.so  [.] sort_rows_rec"; echo; echo "  1.00%%  postgres  postgres  [.] AllocSetAlloc"\nfi\n' % record)
+        f.close()
+        os.chmod(f.name, 0o755)
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def run_record(self, record, tmp):
+        import time
+        from cases import measure
+        perf = self.perf(record)
+        path = os.path.join(tmp, 'c.sift.data')
+        proc = measure.record_start('4242', path, perf)
+        time.sleep(0.5)
+        measure.record_stop(proc, path, perf)
+        return path
+
+    def test_the_symbols_of_the_recording_are_written_beside_it(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.run_record('echo data > "$out"; trap "exit 0" TERM; while :; do sleep 0.05; done', tmp)
+            with open(path + '.txt') as f:
+                self.assertEqual(f.read().split('\n')[0].split()[-1], 'sort_rows_rec')
+
+    def test_a_recording_that_failed_dies_with_the_reason(self):
+        import tempfile
+        from unittest import mock
+        from cases import measure
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(measure, 'die', side_effect=SystemExit('failed')) as die:
+            with self.assertRaises(SystemExit):
+                self.run_record('echo "Permission denied" >&2; exit 1', tmp)
+        self.assertIn('Permission denied', die.call_args.args[0])
+
+    def test_a_host_without_the_perf_setting_says_so_instead_of_failing_the_message(self):
+        from unittest import mock
+        from cases import measure
+        with mock.patch('builtins.open', side_effect=FileNotFoundError('/proc/sys/kernel/perf_event_paranoid')):
+            self.assertEqual(measure.perf_paranoid(), 'not readable here')
+
+
+class Param(unittest.TestCase):
+    def test_a_list_parameter_is_a_psql_variable_the_session_sends_once(self):
+        from unittest import mock
+        from cases import measure, server
+        from duckdb import Session
+        case = mock.Mock(**{'schema.return_value': 'c_keys'})
+        server.IDS[('c_keys', 'keyset', '3')] = '1,2,3'
+        sql = measure.expand('SELECT 1 WHERE k = ANY({param:keyset:3})', case)
+        self.assertEqual(sql, "SELECT 1 WHERE k = ANY(:'ids_keyset_3'::int[])")
+        self.assertEqual(Session.VARS['ids_keyset_3'], '{1,2,3}')
+        sent = []
+        with mock.patch.object(Session.__bases__[0], 'run', side_effect=lambda text, capture: sent.append(text) or ['Time: 1.0 ms']), mock.patch.object(Session.__bases__[0], '__init__', return_value=None):
+            session = Session(1, 1, None)
+            session.run(sql)
+            session.run(sql)
+        self.assertIn("\\set ids_keyset_3 '{1,2,3}'", sent[0])
+        self.assertNotIn('\\set', sent[1])
+
+
+if __name__ == '__main__':
+    unittest.main()

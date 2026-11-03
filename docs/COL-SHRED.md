@@ -29,7 +29,7 @@ prefix share the node (`a.b int4, a.c text`, `a[].x int4, a[].y text`). Errors n
 metrics.* float4, items[].category text, ...`), always with `.`; `fingerprint` is the `sift_term_hash64` of the canonical text; a segment stores both, so a
 changed spec is told from the one the segment was built with. Limits: 256 columns, 64 groups, 16 steps per path, 64 KiB of spec.
 
-`sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies). The documents come from 16 stretches of blocks evenly spaced over the table. A key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text); a map of more than 4 keys of one type becomes a wildcard (it serves `jsonb_each` and every named key); an array of objects becomes a group (the root of a document may be that array). A key in fewer than 1% of the documents, without a single shape, or a text whose values average more than 64 bytes (free text is no filter or group key) is left out. It refuses a table the caller cannot read and one with row-level security.
+`sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies). The documents come from 16 stretches of blocks evenly spaced over the table. A table of another access method (a `sift_table`) has no blocks to space: its first documents, up to the sample, are read in one scan. A key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text); a map of more than 4 keys of one type becomes a wildcard (it serves `jsonb_each` and every named key); an array of objects becomes a group (the root of a document may be that array). A key in fewer than 1% of the documents, without a single shape, or a text whose values average more than 64 bytes (free text is no filter or group key) is left out. It refuses a table the caller cannot read and one with row-level security.
 
 An index with a `jsonb` column and no `paths` option (or `paths = 'auto'`) takes that answer at `CREATE INDEX`: the build reads the sample, writes the spec to the option as `auto: spec` (so the build, its workers and every later `REINDEX` share one schema; `pg_dump` restores it as written) and says so in a NOTICE. Paths written by hand are never touched. When no key qualifies (an empty table, documents without a repeated scalar key) nothing is written and the column is refused. To read the documents again, `ALTER INDEX ... SET (paths = 'auto')` (or `RESET (paths)`) and `REINDEX` at once: as after any change of `paths` the index has no layout between the two, and a write to the table fails until the `REINDEX` (`col_paths_auto`).
 
@@ -65,7 +65,7 @@ length, then bytes), dictionary ids in order of first appearance across the docu
 
 ### Wildcard dictionary
 
-`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`col/dict.c`) created with the
+`*` members are `(keyid, value)` pairs of a map group. Ids are the codes of a col-core `SiftCDict` (`col/dict/dict.c`) created with the
 shredder (`sh->dict`): first-seen order, `sift_cdict_str` gives the bytes of an id. A key over 255 bytes (`SIFT_COL_DICT_MAX_ENTRY`), or beyond `max_keys`
 (default 65536), gets `SIFT_SHRED_NO_KEY` and an `OVERFLOW` value: the member is still counted, never silently dropped.
 
@@ -182,7 +182,7 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 
 `expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast or faster than AVX-512 (memory bound on this host).
 
-On AArch64 (clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
+On AArch64 (a test host, clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
 
 | kernel | 4096 | 4 Mi |
 |---|---|---|

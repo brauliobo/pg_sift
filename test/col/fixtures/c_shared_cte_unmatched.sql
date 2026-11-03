@@ -1,6 +1,7 @@
--- a shared CTE whose arms the pushdown does not take (an ordered json_agg of text) keeps the materialized plan
--- shape: trap
--- expect: plain
+-- a shared CTE whose two arms each hold an ordered json_agg of text: the generic aggregates with ORDER BY are pushed down (a tuplesort per group, as g_order_by), so both arms are SiftAgg over the table and
+-- the CTE is not materialized: faster than the materialized plan with the same rows (4,000 rows: 3.9 ms against 7.1). The materialized plan of arms the pushdown cannot take is c_shared_cte_volatile.
+-- shape: flat
+-- expect: agg
 -- key: -
 WITH base AS (
   SELECT o.id, o.lang, o.status, o.tenant_id FROM orders o WHERE o.deleted_at IS NULL)

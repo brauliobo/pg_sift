@@ -7,6 +7,9 @@ CREATE TABLE gs_facts (id int PRIMARY KEY, dim_a_id int, day date, kind text, me
 INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b', NULL])[1 + i % 3],
 	jsonb_build_object('catg_i_catg_a', i % 10, 'catg_i', 3, 'catg_m', i % 4) FROM generate_series(1, 3000) i;
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, dim_a_id, day, kind, metrics_a) WITH (paths = 'metrics_a.* float8');
+NOTICE:  sift_col index "gs_facts_col" installed two statement triggers on table "gs_facts" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) gs_facts;
 \ir test/agg_check_pushed.sql
 \set ECHO none

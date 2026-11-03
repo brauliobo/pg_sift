@@ -17,10 +17,12 @@
  * 1.3: segments of segment format 3 (below) in a BM25 index, or a column group with unfrozen rows (SIFT_SEG_VERS) in a sift_table: the first
  *      one raises the minor, nothing lowers it; all older ones are read as before
  * 1.4: segments of segment format 4 (below) in a BM25 index
+ * 1.5: segments of segment format 5 (below) in a BM25 index, or a metapage that names the text search configuration of the stemmer: an
+ *      index with either is refused by a 3.7 library with this format, not read as damaged
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
  * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
-#define SIFT_FORMAT_MINOR		4
+#define SIFT_FORMAT_MINOR		5
 #define SIFT_FORMAT_MINOR_VERS	3	/* what a sift_table with unfrozen rows needs: unchanged by 1.4 */
 #define SIFT_FORMAT_MINOR_BASE	2
 
@@ -31,12 +33,14 @@
  * at a time, which cannot keep that table, so they keep writing format 1 (and read both). 3: format 2 with the narrower parts of
  * (dictionary blocks, dl rows, packed containers), each announced where it
  * starts, so that a segment of format 3 is read by the code that reads 1 and 2 and the other way round. 4: the position stream of a term
- * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c).
+ * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c). 5: the values of the INCLUDE columns of the index, a record per SB after the
+ * docmap records (bm25/attr.c); a segment of an index without INCLUDE columns is written as 4.
  */
 #define SIFT_SEGFMT_RANKBITS	1
 #define SIFT_SEGFMT_LIVEROWS	2
 #define SIFT_SEGFMT_PACKED		3
 #define SIFT_SEGFMT_POSBLK		4
+#define SIFT_SEGFMT_ATTR		5
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 #define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_RANKBITS
 #else
@@ -99,6 +103,9 @@ sift_block_sb(BlockNumber blk)
 	return blk >> SIFT_SB_SHIFT;
 }
 
+/* Longest name of a text search configuration as the stemmer option (the metapage keeps it) */
+#define SIFT_TSCONFIG_BYTES	128
+
 /* Index reloptions (amoptions); strings are offsets from the struct start */
 typedef struct SiftOptions
 {
@@ -108,6 +115,7 @@ typedef struct SiftOptions
 	int			stemmer;		/* text search dictionary name, "" = none */
 	bool		case_folding;
 	bool		accent_folding;
+	bool		accent_folding_set;	/* given in the options: with a text search configuration as stemmer the default is off */
 	int			write_buffer_limit;	/* kB; seal the open write buffer above it */
 	int			mutable_limit;	/* DEPRECATED ALIAS of write_buffer_limit: the 2.0.0 spelling, read by sift_amoptions only */
 	int			vacuum_segments; /* directory entries VACUUM merges towards (maintenance only, not part of the format) */
@@ -154,6 +162,8 @@ typedef struct SiftOptions
 #define SIFT_DEFAULT_B				0.75
 #define SIFT_DEFAULT_WRITE_BUFFER_LIMIT	4096
 #define SIFT_DEFAULT_VACUUM_SEGMENTS	2
+/* segments of a size tier that merge (merge_fanin): fewer than the 8 of the column and table hosts, which are not measured at it */
+#define SIFT_DEFAULT_MERGE_FANIN		4
 
 /* Returns the index options with defaults filled in; never NULL */
 extern const SiftOptions *sift_index_options(Relation index);

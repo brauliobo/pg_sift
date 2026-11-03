@@ -16,6 +16,7 @@
 # A pass of the whole tree is kept per box (SIFT_NEUTRAL_CACHE, default ~/.cache/pg_sift/neutral) as the git tree it scanned, under the hash of the vocabulary and
 # this script; the next run reads only the files that differ from that tree. CI (CI set) and SIFT_LINT_NOCACHE=1 read every file.
 #
+# SIFT_NEUTRAL_REQUIRED=1: no vocabulary loaded is exit 1 (land-local.sh sets it; CI and the nightly checks should too once the secret exists).
 # Exit 1 with the file and line, the commit or the pull request part of every hit (the word itself is not printed).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
@@ -34,6 +35,12 @@ load_vocab() {
 	{ printf 'kind\told\tnew\tmode\tskip\twhat\n'; section rename; } >"$REN"
 }
 load_vocab
+# require_vocab: with SIFT_NEUTRAL_REQUIRED=1 (a landing, a release check) a run that read no vocabulary or no rename table is an error: without them every rule that needs a name
+# passes, and old column names went in unseen
+require_vocab() {
+	[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 ]] || return 0
+	[[ -s $PAT && -s $WORDS && $(wc -l <"$REN") -gt 1 ]] || { echo "neutral: the vocabulary (denylist, words, rename table) is required and not loaded: set NEUTRAL_VOCAB_FILE or NEUTRAL_VOCAB"; return 1; }
+}
 
 # match: stdin holds a name of the denylist
 match() { grep -q -i -F -f "$PAT"; }
@@ -93,6 +100,15 @@ check_pr() {
 	return $bad
 }
 
+# no_match_ok CMD...: git grep exits 1 when no file matches (the files that differ from the cached tree were all deleted, or are binary); under pipefail that failed the
+# check with nothing printed. Any other exit is an error and says so.
+no_match_ok() {
+	local rc=0
+	"$@" || rc=$?
+	(( rc <= 1 )) || echo "neutral: internal error: '${*:1:3} ...' exited $rc"
+	(( rc <= 1 ))
+}
+
 # the files to read: all, or those that differ from the tree of the last pass (a work tree change is a difference); sets CLEAN to the file that remembers the pass
 changed_files() {
 	local last tag
@@ -108,6 +124,7 @@ changed_files() {
 check_repo() {
 	local bad=0 base sha names f tree only=0 todo=()
 	cd "$REPO"
+	require_vocab || return 1
 	if changed_files; then only=1; fi
 	names=$(git ls-files)
 	if [[ -s $PAT ]]; then
@@ -116,12 +133,12 @@ check_repo() {
 	fi
 	git ls-files -z | scan names || bad=1
 	if (( ! only )); then
-		git grep -I -l -z -e '' -- . ':(exclude)scripts/neutral.allow' | scan files || bad=1
+		no_match_ok git grep -I -l -z -e '' -- . ':(exclude)scripts/neutral.allow' | scan files || bad=1
 	else
 		for f in ${CHANGED[@]+"${CHANGED[@]}"}; do
 			[[ $f == scripts/neutral.allow ]] || todo+=("$f")
 		done
-		(( ${#todo[@]} == 0 )) || git --literal-pathspecs grep -I -l -z -e '' -- "${todo[@]}" | scan files || bad=1
+		(( ${#todo[@]} == 0 )) || no_match_ok git --literal-pathspecs grep -I -l -z -e '' -- "${todo[@]}" | scan files || bad=1
 	fi
 	# the naming vocabulary: no file holds a name it replaced (it needs the rows of the [rename] section)
 	if [[ $(wc -l <"$REN") -gt 1 ]]; then "$REPO/scripts/apply-rename.sh" --map "$REN" --check . || bad=1; fi
@@ -139,12 +156,12 @@ check_repo() {
 
 selftest() {
 	local w bad=0 n=0 nw=0 ip home host i
-	unset NEUTRAL_PR_TITLE NEUTRAL_PR_BODY NEUTRAL_VOCAB_FILE
+	unset NEUTRAL_PR_TITLE NEUTRAL_PR_BODY NEUTRAL_VOCAB_FILE SIFT_NEUTRAL_REQUIRED
 	# a vocabulary made for the test: the machinery does not depend on the real one
 	NEUTRAL_VOCAB=$({
 		echo '[denylist]'; for i in $(seq 1 10); do echo "zzbrand${i}x"; done
 		echo '[words]'; for i in $(seq 1 20); do echo "zzword${i}x"; done
-		printf '[allow]\nbench/steps/cell\\.py\t@zzword1x\n^<(commit|pr)>$\tzzword3x\n[rename]\n'
+		printf '[allow]\nbench/steps/cell\\.py\t@zzword1x\n^<(commit|pr)>$\tzzword3x\n[rename]\ncolumn\tzzold_id\tzznew_id\tW\t\ttest\n'
 	}) load_vocab
 	# fails WHAT PATH TEXT: the line is flagged; passes: it is not
 	fails() { printf '%s\n' "$3" | scan text "$2" "$1" >/dev/null && { echo "FAIL: $1 is not flagged"; bad=1; } || true; }
@@ -188,14 +205,40 @@ selftest() {
 	( NEUTRAL_PR_BODY="a body to $ip" check_pr ) >/dev/null 2>&1 && { echo "FAIL: a pull request body with an address passes"; bad=1; }
 	( NEUTRAL_PR_TITLE="ci: neutral: describe the change" NEUTRAL_PR_BODY=$'summary\n\nthe plan of the change' check_pr ) >/dev/null 2>&1 || { echo "FAIL: a neutral pull request is flagged"; bad=1; }
 	( unset NEUTRAL_PR_TITLE NEUTRAL_PR_BODY; check_pr ) || { echo "FAIL: no pull request text is flagged"; bad=1; }
+	# the old names of the naming vocabulary: a file that holds one fails the idempotence check of the engine, a file with the new name passes
+	d=$(mktemp -d); mkdir -p "$d/test/sql"
+	printf 'select zznew_id from t;\n' >"$d/test/sql/ok.sql"
+	"$REPO/scripts/apply-rename.sh" --map "$REN" --check "$d" >/dev/null 2>&1 || { echo "FAIL: a file with the new name is flagged by the rename check"; bad=1; }
+	printf 'select zzold_id from t;\n' >"$d/test/sql/old.sql"
+	"$REPO/scripts/apply-rename.sh" --map "$REN" --check "$d" >/dev/null 2>&1 && { echo "FAIL: a file with an old name passes the rename check"; bad=1; }
+	rm -rf "$d"
+	# SIFT_NEUTRAL_REQUIRED: a run that read no vocabulary is an error, one that read it is not (a landing without the vocabulary used to pass without reading the rename table)
+	# (the cases that empty the vocabulary come after the one that needs it: they share its files)
+	( SIFT_NEUTRAL_REQUIRED=1 require_vocab ) >/dev/null 2>&1 || { echo "FAIL: the vocabulary of the test is refused when it is required"; bad=1; }
+	( export SIFT_NEUTRAL_REQUIRED=1; NEUTRAL_VOCAB= load_vocab; require_vocab ) >/dev/null 2>&1 && { echo "FAIL: no vocabulary passes when it is required"; bad=1; }
+	( NEUTRAL_VOCAB= load_vocab; require_vocab ) >/dev/null 2>&1 || { echo "FAIL: no vocabulary is refused when it is not required"; bad=1; }
 	# no vocabulary: only the structural rules run and nothing else is flagged
 	( NEUTRAL_VOCAB= load_vocab; printf '%s\n' "zzword1x zzbrand1x" | scan text x/sample.md x >/dev/null ) || { echo "FAIL: a text is flagged without a vocabulary"; bad=1; }
+	# the pass cache: files deleted since the cached tree are not a failure (git grep finds nothing in them), a hit in a file changed since is still one
+	d=$(mktemp -d); mkdir -p "$d/scripts"
+	cp "$REPO/scripts/check-neutral.sh" "$REPO/scripts/neutral.allow" "$REPO/scripts/sha256.sh" "$d/scripts/"
+	printf 'one\n' >"$d/a.txt"; printf 'two\n' >"$d/b.txt"
+	g() { git -C "$d" -c user.name=t -c user.email=t@t "$@"; }
+	g init -q; g add -A; g commit -q -m x
+	w=$(printf 'zz%sx' cache); printf '[words]\n%s\n' "$w" >"$d/vocab"
+	nc() { ( cd "$d" && SIFT_NEUTRAL_CACHE=$d/cache NEUTRAL_VOCAB_FILE=$d/vocab "$d/scripts/check-neutral.sh" ); }
+	nc >/dev/null 2>&1 || { echo "FAIL: a clean tree is flagged"; bad=1; }
+	g rm -q b.txt
+	nc >/dev/null 2>&1 || { echo "FAIL: a tree that differs from the cached one only by a deleted file is flagged"; bad=1; }
+	printf '%s\n' "$w" >"$d/a.txt"
+	nc >/dev/null 2>&1 && { echo "FAIL: a changed file with a domain word passes with the cache"; bad=1; }
+	rm -rf "$d"
 	(( bad )) || echo "neutral-selftest: $n names and $nw words flagged, the allowlist, the addresses, the commit and pull request text, no vocabulary"
 	return $bad
 }
 
 case ${1:-} in
 	--selftest) selftest ;;
-	"") check_repo && echo "neutral: ok" ;;
+	"") check_repo && echo "neutral: ok" || { echo "neutral: FAILED, the lines above name the file and the rule; none means a defect of this script"; exit 1; } ;;
 	*) sed -n '2,16p' "$0"; exit 1 ;;
 esac

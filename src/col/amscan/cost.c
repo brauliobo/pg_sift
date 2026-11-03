@@ -10,6 +10,11 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "access/genam.h"
+#include "catalog/pg_statistic.h"
+#include "utils/syscache.h"
+#include "parser/parsetree.h"
+#include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "col/pg.h"
@@ -23,8 +28,8 @@
  */
 
 /*
- * The cost of a scan, in microseconds of an ordinary run (cost units are about that on the default settings: a cached b-tree lookup of 8 units takes 6-8 us and a
- * bitmap heap scan of 1,700 units about 1.7 ms; the figures below are measured, docs/COL-SCAN.md, and scale with cpu_operator_cost like the rest of the planner's costs).
+ * The cost of a scan, in microseconds of a warm run (the figures below are measured, docs/COL-SCAN.md), turned into the planner's units by SIFT_COST_COL_US_PER_UNIT (col/pg.h)
+ * in sift_col_amcostestimate, and scaled with cpu_operator_cost like the rest of the planner's costs.
  */
 #define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
 
@@ -38,16 +43,27 @@
 
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 
+#define COL_SCAN_UNIT_RESCAN	5.0		/* ... for the first unit of each probe of a scan repeated for the rows of a join: the unit is looked up by the key, not walked (8.5 us a probe of 1,000 in a nested loop over 1,000,000 rows with the heap row and the join) */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
 
 #define COL_SCAN_ROW		0.0005	/* the filter of one value of a column of a kept unit by a comparison: 0.4 to 0.5 ns measured over 3,000,000 rows of a date, an integer, a text and a numeric column (the bounds of a range are one pass over the lanes) */
 
 #define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 
-#define COL_SCAN_EMIT_IOS	0.003	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: a third of COL_SCAN_EMIT, so that it never costs more than the tuple scan of the same rows */
+#define COL_SCAN_EMIT_IOS	0.055	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 56 ns a row for an index of 3 columns, 62 for 12 and 85 for 30 (100,000 rows of a table of 80 columns, whose heap takes 6.7 ms to scan), so 0.055 and */
+#define COL_SCAN_ORDERED	0.045	/* a row of an ordered index-only scan (ordpath.c) of a whole order array: the merge of the segments and the write buffers, no unit read. 1,000,000 rows of a random key, summed: 1,019 Minstr and 133 ms where Seq Scan and Sort take 1,266 and 211 (run b5080144b211-20261102T020207Z-39fc); the heap plan is 1.75 us a cost unit */
+#define COL_SCAN_ORDERED_GROUP	0.6	/* ... the open of the merge of one group of an ordered pair (ordered.c): the group looked up in each segment, a cursor made, the chunk the last group decoded kept: 4.6 k instructions (0.23) measured (perf stat on a development cluster) over 300,000 rows of random keys in 1,000, 30,000 and 100,000 groups (276, 410 and 730 Minstr). 0.6 is where the plan changes to Seq Scan and Sort at the rows a group where they take the same time: 45 ms and 42 at 3 rows a group (100,000 groups), 38 and 46 at 5, 26 and 55 at 10; the Sort is priced at 1.7 times its time there (40,700 units against 42 ms), which the term makes up for */
+#define COL_SCAN_ORDERED_SORT	0.042	/* ... of an order with compact chunks or the ends only (the default build): the units are read in batches and the rows sorted by key and address, 913 Minstr and 109 ms in the same run */
+
+#define COL_SCAN_EMIT_IOS_COL	0.001	/* ... for each column of the index */
+#define COL_SCAN_EMIT_IOS_VAR	0.06	/* ... and for each text column the plan reads, which is formed by the path of a variable width (115 ns a row with one, 56 without); the TID of the bitmap node takes 10 ns */
 
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 
+#define COL_SCAN_KEY		20.0	/* a key of an IN list past the first that is not looked up in a directory of addresses (the units that may hold it are read, or the sorted keys are sought for it): the units that may hold it are searched for it, 2.5 us measured a key (60 to 500 keys of 300,000 and 1,000,000 rows, 0.16 to 1.15 ms) where the b-tree's probe takes 0.8 us and is priced 7: the price of a b-tree's cached probe is 9 units to the microsecond, and a scan that is priced by its microseconds would take the lookup of 500 keys from it for twice the time */
+#define COL_SCAN_FETCH		0.5		/* the heap row of each tuple an index scan (not a bitmap) hands over, for the probes of a scan repeated for the rows of a join: PostgreSQL's price of the page falls with the loops (the pages stay in the cache) and the tuple stays 1.2 us (124 rows a probe, 200 us measured, priced 94 units) */
+#define COL_SCAN_FETCH_ROW	0.1		/* ... and for the rows of a scan that is not repeated, the heap row beside the index tuple: PostgreSQL prices the pages (sequential or cached) and 10 ns the tuple */
+#define COL_SCAN_IOS_PROBE	15.0	/* the tuple of the columns an index-only scan forms for the row of each probe of a scan repeated for the rows of a join, whose unit it decodes: 17 to 26 us a probe (1,000 probes of 100,000 to 1,000,000 rows, 100 of 20,000) where the plain index scan hands over the address and the heap reads the row, 1.4 to 9.5 */
 #define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
 
 bool		sift_enable_col_scan = true;
@@ -83,7 +99,8 @@ rescan_floor(PlannerInfo *root, IndexPath *path)
 {
 	IndexOptInfo *index = path->indexinfo;
 
-	if (root->parent_root == NULL)
+	/* a parent that has its relations is planning a subquery of its FROM list (a LATERAL one): its loops are the rows of the join, which the join prices, not the estimate of a subplan's calls */
+	if (root->parent_root == NULL || root->parent_root->simple_rel_array != NULL)
 		return 0.0;
 	foreach_node(IndexClause, ic, path->indexclauses)
 		foreach_node(RestrictInfo, ri, ic->indexquals)
@@ -139,6 +156,21 @@ redundant_scans(PlannerInfo *root, IndexPath *path, Bitmapset **narrowed)
 	return redundant;
 }
 
+/* the text columns (the ones with a collation) of the index that the plan reads */
+static int
+ios_var_columns(IndexOptInfo *index)
+{
+	Bitmapset  *used = NULL;
+	int			n = 0;
+
+	pull_varattnos((Node *) index->rel->reltarget->exprs, index->rel->relid, &used);
+	foreach_node(RestrictInfo, ri, index->rel->baserestrictinfo)
+		pull_varattnos((Node *) ri->clause, index->rel->relid, &used);
+	for (int col = 0; col < index->nkeycolumns; col++)
+		n += OidIsValid(index->indexcollations[col]) && bms_is_member(index->indexkeys[col] - FirstLowInvalidHeapAttributeNumber, used);
+	return n;
+}
+
 /*
  * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
@@ -159,15 +191,16 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				kept_units,
 				idx_rows,
 				rescan,
+				repeat,
 				row_cost,
-				scale = cpu_operator_cost / 0.0025;
+				scale = cpu_operator_cost / 0.0025 / SIFT_COST_COL_US_PER_UNIT;
 	Bitmapset  *cols = NULL,
 			   *slow = NULL,
 			   *narrowed = NULL;
 	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
 
-	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one */
+	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one; IS [NOT] NULL tests a bit, as a comparison does */
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
 		cols = bms_add_member(cols, ic->indexcol);
@@ -175,7 +208,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		{
 			int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[ic->indexcol]) : 0;
 
-			if ((strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber) && !(IsA(ri->clause, ScalarArrayOpExpr) && bms_is_member(ic->indexcol, narrowed)))
+			if ((strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber) && !IsA(ri->clause, NullTest) &&
+				!(IsA(ri->clause, ScalarArrayOpExpr) && bms_is_member(ic->indexcol, narrowed)))
 				slow = bms_add_member(slow, ic->indexcol);
 		}
 	}
@@ -185,6 +219,22 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 			row_cost += COL_SCAN_ROW_VAR;
 
 	genericcostestimate(root, path, loop_count, &costs);
+	if (path->indexscandir != NoMovementScanDirection && path->path.pathkeys != NIL)
+	{
+		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c); a compact order is sorted by the first row, so its work is the startup */
+		bool		pair = index->indextlist != NIL && ((TargetEntry *) linitial(index->indextlist))->resname != NULL && strcmp(((TargetEntry *) linitial(index->indextlist))->resname, COL_ORDERED_PAIR_MARK) == 0;
+		bool		whole = pair || sift_col_ordered_whole(index->indexoid);
+		double		walk = costs.numIndexTuples * scale;
+		/* a pair opens the merge of each group of the first column (g = value: that one) */
+		double		groups = pair && path->indexclauses != NIL ? 1.0 : pair ? Min(estimate_num_groups(root, list_make1(((TargetEntry *) linitial(index->indextlist))->expr), Max(index->rel->tuples, 1.0), NULL, NULL), costs.numIndexTuples) : 0.0;
+
+		*indexStartupCost = scale * COL_SCAN_FIXED + (whole ? 0.0 : walk * COL_SCAN_ORDERED_SORT);
+		*indexTotalCost = scale * COL_SCAN_FIXED + (whole ? walk * COL_SCAN_ORDERED : walk * COL_SCAN_ORDERED_SORT) + groups * scale * COL_SCAN_ORDERED_GROUP + costs.numIndexTuples * cpu_index_tuple_cost;
+		*indexSelectivity = costs.indexSelectivity;
+		*indexCorrelation = 0.0;
+		*indexPages = Max(1.0, (double) index->pages);
+		return;
+	}
 	irel = index_open(index->indexoid, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
 	pkept = point_kept(root, path, irel, units, &nprobes, &tid, &extra);
@@ -193,12 +243,18 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one: the lists of a leaf that has an equality, or another list, are one test of the fewest keys (narrow_lists) */
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans / redundant, 1);
-	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
+	/* a scan repeated for the rows of a join (loop_count) opens the index once and walks its pages once: a probe is the unit it looks up (82 units priced against 8.5 us measured) */
+	repeat = Max(loop_count, 1.0);
+	/* the seek in the sorted keys is made for each key a probe passes down: it is not shared by the loops, as the opening of the index is */
+	costs.indexStartupCost = scale * ((COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK)) / repeat + extra);
 	costs.indexTotalCost = costs.indexStartupCost
-		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? Min(kept_units, 1.0) * COL_SCAN_UNIT_RESCAN + Max(kept_units - 1.0, 0.0) * COL_SCAN_UNIT : kept_units * COL_SCAN_UNIT) +
+											  kept_units * Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
-		+ index->pages * cpu_tuple_cost
-		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
+		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
+		+ index->pages * cpu_tuple_cost / repeat
+		+ (path->path.pathtype == T_IndexScan ? idx_rows * (repeat > 1.0 ? COL_SCAN_FETCH : COL_SCAN_FETCH_ROW) * scale : (repeat > 1.0 ? COL_SCAN_IOS_PROBE * scale : 0.0))
+		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns + COL_SCAN_EMIT_IOS_VAR * ios_var_columns(index) : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = Max(costs.indexTotalCost, rescan);
@@ -235,6 +291,26 @@ col_scale_rel(RelOptInfo *rel)
 static set_rel_pathlist_hook_type prev_pathlist_hook;
 
 /*
+ * The probes a parameterized path is run for: the rows of the smallest outer relation it reads (indxpath.c's get_loop_count, which is not exported). The path beside an
+ * index-only scan of a join is priced for as many as the scan is: for one probe a unit is walked, not looked up, and the plain path never beat the index-only one.
+ */
+static double
+probe_loops(PlannerInfo *root, Relids outer)
+{
+	double		loops = 0.0;
+	int			x = -1;
+
+	while ((x = bms_next_member(outer, x)) >= 0)
+	{
+		RelOptInfo *o = root->simple_rel_array[x];
+
+		if (o != NULL && o->reloptkind == RELOPT_BASEREL)
+			loops = loops == 0.0 ? o->rows : Min(loops, o->rows);
+	}
+	return Max(loops, 1.0);
+}
+
+/*
  * A query the index covers gets an index-only path, and the bitmap path PostgreSQL builds beside it carries the price of that one: a read of every kept unit (the
  * lookup of a key in the point directory returns the addresses and reads none, when the directory lists them). A lookup by one clause of the directory therefore
  * reads its units through the index-only path, 20 to 50 times slower than the bitmap path on the addresses. The bitmap path is added priced as what it does.
@@ -253,7 +329,7 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
 			ip->indexorderbys != NIL)
 			continue;
 		bp = create_index_path(root, ip->indexinfo, ip->indexclauses, ip->indexorderbys, ip->indexorderbycols, ip->path.pathkeys, ip->indexscandir, false,
-							   PATH_REQ_OUTER(&ip->path), 1.0, false);
+							   PATH_REQ_OUTER(&ip->path), probe_loops(root, PATH_REQ_OUTER(&ip->path)), false);
 		if (bp->path.total_cost >= ip->path.total_cost)
 			continue;
 		added = lappend(added, bp);
@@ -295,6 +371,132 @@ index_holds_columns_read(PlannerInfo *root, IndexOptInfo *ii)
 	return true;
 }
 
+/* the most keys of an IN list for which an index scan with a heap fetch for each competes with the unit reads of SiftAgg (SIFT_CORDER_MAX_KEYS) */
+#define POINT_LOOKUP_KEYS	512
+/*
+ * ... and the rows they return: an index scan prices the heap addresses of a lookup as in heap order, which holds for a few rows and not for hundreds (250,000 rows, one day of 216: priced 76
+ * against 187 for SiftAgg, takes 1.4 ms against 0.55), so a column of hundreds of rows a key is SiftAgg's, whose zones and key lists keep few units
+ */
+#define POINT_LOOKUP_ROWS_KEY	16
+#define POINT_LOOKUP_ROWS		1024
+
+/* whether qual is a constant key or a list of up to POINT_LOOKUP_KEYS of them for a column of the index (of the table heapid) that has a point directory of addresses or an order array */
+static bool
+point_lookup_qual(PlannerInfo *root, Node *qual, IndexOptInfo *ii, Oid heapid, const char *tid_cols, const char *ord_cols)
+{
+	Node	   *l,
+			   *r;
+	Var		   *var;
+	Const	   *c;
+	char	   *colname;
+	double		keys = 1.0;
+
+	if (IsA(qual, OpExpr) && list_length(((OpExpr *) qual)->args) == 2)
+	{
+		OpExpr	   *op = (OpExpr *) qual;
+		char	   *name = get_opname(op->opno);
+		bool		eq = name != NULL && strcmp(name, "=") == 0;
+
+		if (!eq)
+			return false;
+		l = linitial(op->args);
+		r = lsecond(op->args);
+	}
+	else if (IsA(qual, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) qual)->useOr)
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) qual;
+		char	   *name = get_opname(sa->opno);
+
+		if (name == NULL || strcmp(name, "=") != 0)
+			return false;
+		l = linitial(sa->args);
+		r = lsecond(sa->args);
+	}
+	else
+		return false;
+	if (IsA(qual, OpExpr) && IsA(r, Var) && IsA(l, Const))
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+	}
+	while (IsA(l, RelabelType))
+		l = (Node *) ((RelabelType *) l)->arg;
+	if (!IsA(l, Var) || !IsA(r, Const))
+		return false;
+	var = (Var *) l;
+	c = (Const *) r;
+	if (var->varno != ii->rel->relid || var->varlevelsup != 0 || c->constisnull)
+		return false;
+	if (IsA(qual, ScalarArrayOpExpr))
+	{
+		ArrayType  *arr = DatumGetArrayTypeP(c->constvalue);
+
+		keys = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+		if (keys > POINT_LOOKUP_KEYS)
+			return false;
+	}
+	colname = get_attname(heapid, var->varattno, true);
+	if (colname == NULL)
+		return false;
+	for (int i = 0; i < ii->nkeycolumns; i++)
+		if (ii->indexkeys[i] == var->varattno)
+		{
+			HeapTuple	stats;
+			double		distinct,
+						per_key;
+
+			if (!sift_col_list_has(tid_cols, colname) && !sift_col_list_has(ord_cols, colname))
+				return false;
+			/* the statistics of the column by their cache: the relation is not in the planner's arrays yet, so examine_variable cannot be asked */
+			stats = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(heapid), Int16GetDatum(var->varattno), BoolGetDatum(false));
+			if (!HeapTupleIsValid(stats))
+				return false;
+			distinct = ((Form_pg_statistic) GETSTRUCT(stats))->stadistinct;
+			ReleaseSysCache(stats);
+			per_key = distinct < 0 ? 1.0 / -distinct : ii->rel->tuples * Max(sift_plan_scale, 1.0) / Max(distinct, 1.0);
+			return per_key <= POINT_LOOKUP_ROWS_KEY && keys * per_key <= POINT_LOOKUP_ROWS;
+		}
+	return false;
+}
+
+/*
+ * A statement that aggregates and asks for the rows of a few keys of a column the index can look up by itself (an equality or an IN list of constants, a directory of heap
+ * addresses or an order array on the column): the rows are a few heap pages away, and SiftAgg reads a unit chunk of each key (about 40 buffer accesses against the 4 of a heap
+ * page), so the index and bitmap paths stay and the costs choose (1,000,000 rows, 60 keys: 0.47 ms of SiftAgg, 0.07 of the index scan with its aggregate).
+ */
+static bool
+point_lookup_only(PlannerInfo *root, IndexOptInfo *ii)
+{
+	Query	   *q = root->parse;
+	Relation	idx;
+	const char *tid_cols,
+			   *ord_cols;
+	List	   *quals;
+	bool		ok = q->jointree != NULL && q->jointree->quals != NULL && list_length(q->jointree->fromlist) == 1 && q->groupClause == NIL && q->groupingSets == NIL &&
+		q->distinctClause == NIL && !q->hasWindowFuncs && q->sortClause == NIL;
+
+	if (!ok)
+		return false;
+	idx = index_open(ii->indexoid, NoLock);
+	tid_cols = sift_col_options_point_tid_columns(idx);
+	ord_cols = sift_col_options_order_array_columns(idx);
+	if (ord_cols == NULL)
+		ord_cols = "";
+	quals = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
+	if (IsA(q->jointree->quals, BoolExpr) && ((BoolExpr *) q->jointree->quals)->boolop == AND_EXPR)
+		quals = ((BoolExpr *) q->jointree->quals)->args;
+	foreach_ptr(Node, qual, quals)
+		if (!point_lookup_qual(root, qual, ii, planner_rt_fetch(ii->rel->relid, root)->relid, tid_cols, ord_cols))
+		{
+			ok = false;
+			break;
+		}
+	index_close(idx, NoLock);
+	return ok;
+}
+
 static void
 plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 {
@@ -307,7 +509,7 @@ plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 	for (int i = 0; i < ii->nkeycolumns; i++)
 		if (ii->opcintype[i] != ANYELEMENTOID)
 			return;
-	if (!index_holds_columns_read(root, ii))
+	if (!index_holds_columns_read(root, ii) || point_lookup_only(root, ii))
 		return;
 	ii->amhasgetbitmap = ii->amhasgettuple = false;
 }
@@ -340,7 +542,10 @@ col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (sift_enable_col_scan)
+	{
 		add_address_paths(root, rel);
+		sift_col_add_ordered_paths(root, rel);
+	}
 }
 
 void
@@ -380,7 +585,7 @@ disable_col_bitmaps(List *paths)
 {
 	foreach_ptr(Path, p, paths)
 		if (IsA(p, BitmapHeapPath) && bitmap_uses_col(((BitmapHeapPath *) p)->bitmapqual))
-			p->disabled_nodes = Max(p->disabled_nodes, 1) + 1;
+			sift_path_disable(p, Max(sift_disabled_nodes(p), 1) + 1);
 }
 
 static build_simple_rel_hook_type prev_simple_rel_hook;
@@ -410,6 +615,7 @@ col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 	if (sift_enable_col_scan)
 	{
 		add_address_paths(root, rel);
+		sift_col_add_ordered_paths(root, rel);
 		return;
 	}
 	disable_col_bitmaps(rel->pathlist);

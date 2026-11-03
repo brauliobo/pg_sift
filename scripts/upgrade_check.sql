@@ -19,7 +19,7 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
@@ -85,7 +85,7 @@ BEGIN
 				CONTINUE;
 		END;
 		-- the first release that reads it
-		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
+		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
 		detected := format('format %s.%s', maj, mnr) ||
 				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;
@@ -100,7 +100,7 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
-			ELSIF hi IN (33, 34, 35, 36, 37, 38, 39) THEN
+			ELSIF hi IN (33, 34, 35, 36, 37, 38, 39, 40, 41, 42) THEN
 				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
 			ELSIF hi IN (30, 31, 32) THEN
@@ -122,6 +122,10 @@ BEGIN
 				-- not ALTER TABLE .. SET ACCESS METHOD heap and back: it fails with "row is too big" on a row that does not fit a heap page, VACUUM FULL rewrites any row
 				adv := format('SET sift.col_format_minor = %s, then VACUUM FULL %s rewrites it in what %s reads (ACCESS EXCLUSIVE lock)',
 							  col_setting->>tgt, r.rel, tgt);
+			END IF;
+			-- the setting 14 writes no global order: the option stays on the index and its arrays are left out until a REINDEX at the normal setting
+			IF adv LIKE 'SET sift.col_format_minor = 14,%' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'order_array_columns=%' AND o <> 'order_array_columns=off') THEN
+				adv := adv || '; the index keeps order_array_columns but is written without its arrays: an ORDER BY .. LIMIT above 32 rows on those columns reads their units (slower) until a REINDEX at the normal setting writes them again';
 			END IF;
 			advice := adv;
 		END IF;
@@ -194,7 +198,7 @@ BEGIN
 	-- test-only objects left behind
 	FOR r IN SELECT extname FROM pg_extension WHERE extname = 'pg_sift_test' LOOP
 		object := r.extname; kind := 'test'; detected := 'extension installed'; status := 'warn';
-		advice := 'it needs the test build of the library and is not meant for a normal install: DROP EXTENSION pg_sift_test';
+		advice := 'it needs the test build of the library and does not load in a release build: DROP EXTENSION pg_sift_test';
 		RETURN NEXT;
 	END LOOP;
 END

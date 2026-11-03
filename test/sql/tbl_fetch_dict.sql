@@ -29,11 +29,24 @@ UPDATE tf SET n = n + 1 WHERE id = 77 RETURNING id, s, v, n;
 UPDATE tf_heap SET n = n + 1 WHERE id = 77;
 SELECT loads = 0 AS no_dictionary_loaded FROM sift._test_col_dict_cache(false);
 
--- many strings of a segment: the dictionary is loaded once, then cached (the fetch path, not the aggregate scan that reads the columns)
+-- many strings of a segment read by a bitmap heap scan: its rows are handed to the slot undecoded, so the strings are read in place and the dictionary stays unloaded (the bitmap used to
+-- decode the string chunks of every page it fetched, which loaded it)
 SET sift.enable_agg = off;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET sift.test_bitmap_bulk_rows = 0;
 SELECT sum(length(s)) AS chars FROM tf WHERE id <= 2000;
-RESET sift.enable_agg;
+SELECT loads = 0 AS no_dictionary_loaded_by_the_bitmap_group_scan FROM sift._test_col_dict_cache(false);
+SET sift.test_bitmap_bulk_rows = 100000000;
+SELECT sum(length(s)) AS chars FROM tf WHERE id <= 2000;
+SELECT loads = 0 AS no_dictionary_loaded_by_the_bitmap_by_tid FROM sift._test_col_dict_cache(false);
+RESET sift.test_bitmap_bulk_rows;
+RESET enable_seqscan;
+RESET enable_indexscan;
+-- a read that decodes the chunks (a sampled scan) loads the dictionary once, then it is cached
+SELECT sum(length(s)) AS chars FROM tf TABLESAMPLE SYSTEM (100) WHERE id <= 2000;
 SELECT loads > 0 AS loaded FROM sift._test_col_dict_cache(false);
+RESET sift.enable_agg;
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf EXCEPT SELECT id, s, v FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf_heap EXCEPT SELECT id, s, v FROM tf) d;
 

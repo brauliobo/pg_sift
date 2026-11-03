@@ -1,6 +1,6 @@
 -- The tables of the plan-choice gate (scripts/plangate.sh, test/plan/shapes.sql): events (the fact rows, :n of them), dims (the parents, one per
 -- 500 events, at least 60), facts (a second, smaller fact table), a month spine, spans and a partitioned copy of the events. Every draw is a
--- hash of (row number, seed): the same arguments give the same rows, and ANALYZE reads every row (statistics target 1000), so the planner sees
+-- hash of (row number, seed): the same arguments give the same rows, and ANALYZE reads every row (statistics target 1000) and VACUUM marks every page visible, so the planner sees
 -- the same statistics on every run.
 --
 --   psql -v n=30000 -v seed=1 -f gen.sql
@@ -14,11 +14,18 @@
 \set seed 1
 \endif
 SET default_statistics_target = 1000;
+-- an asynchronous commit leaves the hint bit of the inserted rows unset until the WAL writer flushes, and VACUUM marks a page visible only when all its rows have it
+SET synchronous_commit = on;
 SELECT greatest(60, :n / 500) AS np \gset
 
 CREATE TABLE dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL, settings jsonb NOT NULL);
 INSERT INTO dims SELECT p, CASE WHEN p % 3 = 0 THEN 'tier_a' WHEN p % 3 = 1 THEN 'tier_b' ELSE 'tier_c' END, p % 7 <> 0,
 	jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= :np / 2 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, :np) p;
+
+-- the parents of the events by skew_id, read as a lookup through a column index of their own
+CREATE TABLE parents (id int PRIMARY KEY, name text NOT NULL);
+INSERT INTO parents SELECT p, 'parent ' || p FROM generate_series(1, :np) p;
+CREATE INDEX parents_col ON parents USING sift_col (id, name) WITH (key_columns = 'auto: id', order_array_columns = 'auto: id');
 
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, skew_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8 NOT NULL, qty int NOT NULL,
 	deleted_at timestamptz, doc jsonb NOT NULL, memo text NOT NULL) WITH (autovacuum_enabled = false);
@@ -58,4 +65,27 @@ INSERT INTO events_part SELECT id, parent_id, ts, kind, amount, deleted_at FROM 
 SELECT format('CREATE INDEX %1$s_parent ON %1$s (parent_id, ts, deleted_at); CREATE INDEX %1$s_col ON %1$s USING sift_col (id, parent_id, ts, kind, amount, deleted_at)', c.relname) AS ddl
 	FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid ORDER BY c.relname \gexec
 
-VACUUM (FREEZE, ANALYZE) dims, events, facts, buckets, events_part;
+-- the visible fraction of a table prices the index-only scans of the native plan and so every cost ratio of the gate, and a first pass has been seen to set the all-visible bit of only
+-- part of the pages it freezes (a different part each time): a table left with pages that are not all visible gets a second pass, and one that still has them stops the run
+\set unseen 'SELECT count(*) > 0 AS partial, coalesce(string_agg(relname || '' '' || relallvisible || ''/'' || relpages, '', ''), '''') AS tables FROM pg_class WHERE relnamespace = ''public''::regnamespace AND relkind = ''r'' AND relallvisible < relpages'
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
+:unseen \gset
+\if :partial
+\echo gen.sql: pages not all visible after the first VACUUM (allvisible/pages): :tables
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
+:unseen \gset
+\endif
+\if :partial
+\echo gen.sql: pages not all visible after the second VACUUM: :tables
+DO $$ BEGIN RAISE EXCEPTION 'gen.sql: a table has pages that are not all visible after two VACUUMs (a transaction holding the horizon?)'; END $$;
+\endif
+
+-- a copy of the events whose heap pages are all dirty after its VACUUM (the first row of every page updated: the update clears the page's bit of the visibility map, and ANALYZE
+-- counts the pages again for the index-only scans of the native plan): the rows are checked in the heap, page by page, and the scan is priced for it (vet_cost)
+CREATE TABLE events_dirty (id int PRIMARY KEY, set_id int NOT NULL, kind text NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events_dirty SELECT id, 1 + id % 8, kind, ts, amount FROM events;
+CREATE INDEX events_dirty_set ON events_dirty (set_id, ts) INCLUDE (kind, amount);
+CREATE INDEX events_dirty_col ON events_dirty USING sift_col (set_id, kind, ts, amount);
+VACUUM (FREEZE, ANALYZE) events_dirty;
+UPDATE events_dirty SET amount = amount WHERE (ctid::text::point)[1]::int = 1;
+ANALYZE events_dirty;

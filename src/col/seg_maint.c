@@ -776,6 +776,7 @@ sift_cseg_verify(SiftColSegment *seg)
 			crows[c] = palloc0(Max(sift_cseg_dict(seg, c)->n, 1) * sizeof(uint32));
 	sift_cseg_verify_points(seg);
 	sift_cseg_verify_lst(seg);
+	sift_cseg_net_verify(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		verify_unit(seg, u, keys, listed, kt, crows);

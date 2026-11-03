@@ -20,6 +20,8 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 	void		(*close) (void *impl);
+	/* Optional: make a source that has read nothing (no begin, no test but the filters) ready for another scan of the same statement, the counters at zero; false: it holds state of the last (the caller opens again) */
+	bool		(*rescan) (void *impl);
 	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
 	void		(*unpin) (void *impl);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
@@ -99,6 +101,8 @@ typedef struct SiftSrcProvider
 	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
+	/* Optional: the same for the comparisons of a text leaf that lie between two bounds (a NULL one: none) under the collation collid, all the conditions of the scan: a segment whose global order of the leaf holds the ranks of its strings counts them */
+	void		(*count_strs) (void *impl, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl);
 	/* Optional: the same for the only condition, an equality on an element of a list (the prune_str test that stands for it): a segment whose point directory lists the rows of the value counts them */
 	void		(*count_elem) (void *impl);
 	bool		(*unit_count) (void *impl, const SiftSrcUnit *unit, int64 *rows);
@@ -147,13 +151,21 @@ typedef struct SiftSrcProvider
 	 * the others are NULL rows by address). gorder_head: the first max(w, up to p) entries of the chunk that holds entry p, as keys and heap addresses into buf (SiftCGOrdBuf: the chunk's first entry, its entries, the count decoded). The entries are
 	 * of rows that may have died since: the caller has the heap say which are live and what they hold.
 	 */
-	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);	/* collid: the collation of a text key (0: an integer or time key; a block of another collation or kind cannot answer); grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
+	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want);	/* collid: the collation of a text key (0: an integer or time key; a block of another collation or kind cannot answer); grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
+	bool		(*gorder_compact) (void *impl, int i, int leaf);	/* optional: source i has compact chunks in its order block of the leaf (the exact keys of their entries are in the heap) */
+	bool		(*gorder_cuts) (void *impl, int i, int leaf, struct SiftCGOrdCuts *cuts);	/* source i is the ends of a segment's order (want says which): true, and where its entries stop being the segment's; false for a complete source */
 	uint32		(*gorder_strrank) (void *impl, int i, int leaf, const char *s, uint32 len, bool after);	/* a text key: the ranks below s in source i (after: below or equal), which is the rank of the first string that is not */
 	const char *(*gorder_str) (void *impl, int i, int leaf, int64 key, uint32 *len);	/* a text key: the string of the entries with that key in source i, valid until the next call */
 	void		(*gorder_head) (void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
+	bool		(*gorder_groups) (void *impl, int i, int leaf, uint32 *ngroups);	/* source i is read group after group (the entries are those of the second order of another leaf, keyed by the group): how many groups */
+	void		(*gorder_group_at) (void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the group at place gi, in the order of the groups, and its value entries [vs, ve) and NULL-key ones [ns, ne) */
 	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
-	bool		(*gorder_exact) (void *impl, int i, BlockNumber blk);	/* optional: the entry of source i at heap block blk is of a row that is live and visible to every snapshot, so the heap need not confirm it */
+	bool		(*gorder_before) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);	/* optional: of the entries [vs, ve) of source i, how many come before v in the scan (clo certainly, chi at most); false when the source cannot say */
+	int			(*gorder_exact) (void *impl, int i, SiftKey tid);	/* optional: what is known of the entry of source i at heap address tid: SIFT_GORD_EXACT (a row that is live and visible to every snapshot, so the heap need not confirm it), SIFT_GORD_CHECK (the unit holds the row live, the heap says whether this snapshot sees it), SIFT_GORD_DEAD (the unit has cleared the row: another source holds the row now at the address, if any), SIFT_GORD_UNKNOWN */
+	bool		(*gorder_group_values) (void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);	/* optional: the values of leaf gleaf of the rows of the scan (only: that one alone), ascending, once each, if the second order of kleaf grouped by it is in every source (an index-only scan ordered by both) */
+	bool		(*gorder_clean) (void *impl, int i);	/* optional: every entry of source i is exact (gorder_exact would answer SIFT_GORD_EXACT for each), so the merge need not ask for each */
+	void		(*gorder_values) (void *impl, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);	/* optional: the values of integer leaf at the addresses of entries that gorder_exact called exact, read from the sources (st 1 value, 2 NULL, 0 not read: the heap has it) */
 	uint32		(*gorder_seek) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; a segment leaves the chunk it ends in in keep (when not NULL) */
 	/*
 	 * Optional (needs run_info found a run): the head of that run, the best SiftSrcRunHeads.n entries of the run read ascending (lo) and descending (hi)

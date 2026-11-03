@@ -35,8 +35,10 @@ CREATE INDEX tz_col ON tz USING sift_col (id, ts, g, v);
 VACUUM ANALYZE tz;
 
 CREATE TABLE zones (z text);
-INSERT INTO zones VALUES ('UTC'), ('America/New_York'), ('Europe/London'), ('Asia/Kolkata'), ('Asia/Kathmandu'), ('Australia/Lord_Howe'), ('Pacific/Chatham'),
-	('America/Sao_Paulo'), ('Europe/Amsterdam'), ('Pacific/Kiritimati'), ('Pacific/Pago_Pago'), ('UTC+3'), ('+05:45'), ('PST8PDT');
+-- one zone for each kind of clock: UTC, daylight saving (New York, London, Sao Paulo, Lord Howe's half hour), offsets of 45 minutes (Kathmandu, Chatham, a fixed +05:45),
+-- of seconds (Amsterdam before 1937), the date line (Kiritimati)
+INSERT INTO zones VALUES ('UTC'), ('America/New_York'), ('Europe/London'), ('Asia/Kathmandu'), ('Australia/Lord_Howe'), ('Pacific/Chatham'),
+	('America/Sao_Paulo'), ('Europe/Amsterdam'), ('Pacific/Kiritimati'), ('+05:45');
 
 -- the key expressions: every unit of date_trunc, the fields of extract that are whole steps of the clock, date()
 CREATE TABLE exprs (n int, e text, steps boolean);

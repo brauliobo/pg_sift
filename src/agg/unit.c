@@ -704,7 +704,7 @@ process_unit(AggExec *ex)
 			   *cand;
 
 	unit_begin(ex);
-	if (nrow > 0 && (ex->pa_on || (ex->pcount && u->nsu > 0)) && !ex->spec->left_lateral && preagg_unit(ex))
+	if (nrow > 0 && (ex->pa_on || (ex->pcount && u->nsu > 0)) && !ex->spec->left_lateral && !ex->gp_mine && preagg_unit(ex))
 	{
 		/* a superunit stands for its units: they count as the units they are */
 		ex->n_units += Max(u->nsu, 1) - 1;
@@ -769,6 +769,21 @@ process_unit(AggExec *ex)
 	{
 		ex->row_base += nrow;
 		return;
+	}
+	if (ex->gp_mine)
+	{
+		int			kept;
+
+		split_rows(ex, rmask, nrow);
+		kept = sift_colk->bits_count(rmask, (nrow + 63) / 64);
+		if (!kept)
+		{
+			ex->row_base += nrow;
+			return;
+		}
+		/* the share is a few rows of the unit: the other leaves are decoded for them only */
+		if (!cand && kept * SPARSE_RATIO < nrow && sift_colsrc_can_read_sel(ex->src))
+			ex->rsel = rmask;
 	}
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);

@@ -54,6 +54,9 @@ UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1}' WHERE id = 141
 UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1e12}' WHERE id = 1420;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, day, doc, metrics, jsonb_exists(doc, 'flag_a'))
  WITH (paths = 'doc.parts[]{category astext, val astext, kind astext, score float8}, metrics.* float8');
+NOTICE:  sift_col index "facts_col" installed two statement triggers on table "facts" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM ANALYZE facts;
 -- EXISTS over the elements, the category of an element as the lookup of its parent's kind maps it
 CREATE FUNCTION tq(rng text, cond text DEFAULT 'x.category IN ($$type_a$$, $$cat_c$$)', joinq text DEFAULT 'JOIN dims d ON d.id = f.parent_id') RETURNS text LANGUAGE sql AS $f$
@@ -368,7 +371,8 @@ SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS after_promotion_buffer;
  same ERR 22023 cannot call jsonb_to_recordset on a non-array
 (1 row)
 
-SELECT same(cq('f.id IN (4002, 4003, 4005)')) AS cast_after_promotion_buffer;
+-- id + 0: the b-tree of the primary key answers a short list of keys (agg_unique_key_in_list), and the scan is the plan under test
+SELECT same(cq('f.id + 0 IN (4002, 4003, 4005)')) AS cast_after_promotion_buffer;
                  cast_after_promotion_buffer                  
 --------------------------------------------------------------
  same ERR 22023 cannot call jsonb_to_recordset on a non-array

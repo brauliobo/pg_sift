@@ -41,6 +41,8 @@ SELECT sift.col_verify('mm_idx', true);
  
 (1 row)
 
+-- one process: from 12 MB of segments the workers would write a segment each (col_rewrite_slices)
+SET max_parallel_maintenance_workers = 0;
 SET maintenance_work_mem = '1GB';
 SELECT sift.col_merge('mm_idx', true);
  col_merge 

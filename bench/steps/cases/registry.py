@@ -11,6 +11,20 @@ from .runcfg import DATASETS, FIELDS, FORCED, INDEX_COLUMNS, REPO, die
 
 # --- the registry
 
+def workers_asked(settings):
+    """the parallel workers a variant's settings (`max_parallel_maintenance_workers = 4; ..`) ask for: 0 when it names none"""
+    return max([int(n) for n in re.findall(r'max_parallel_(?:maintenance_workers|workers_per_gather)\s*=\s*(\d+)', settings)] or [0])
+
+
+def lane_cpus(cases, asked):
+    """the CPU quota of the lane: --cpus, raised to what the cases it runs declare (a worker variant cannot gain under a quota of one core); (cpus, the case that raised it or None)"""
+    need, who = asked, None
+    for c in cases:
+        if c.cpus_needed() > need:
+            need, who = c.cpus_needed(), c.id
+    return need, who
+
+
 class Case:
     def __init__(self, row, text):
         self.__dict__.update(zip(FIELDS, row))
@@ -18,8 +32,14 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base|gap|kind|segments): ', m))
         self.load = 'load' in self.sec
+        self.gap = None   # `-- gap: LANE the patch that closes it`: the plan of that lane is a known gap, reported without failing the run; the run fails when the lane passes
+        if 'gap' in self.opt:
+            lane, _, patch = self.opt['gap'].partition(' ')
+            if not patch.strip():
+                die('bench/cases/%s.sql: `-- gap:` names the lane and the patch that closes it (`-- gap: sift lab 0013`)' % self.id)
+            self.gap = (lane, patch.strip())
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
         self.fallback = self.plan.startswith('fallback:')   # the planner is expected to keep PostgreSQL's plan: `plan` is that plan, and a lane with the scan forced is measured beside it
@@ -29,6 +49,10 @@ class Case:
         self.metrics = self.metric.split(',')
         self.headline = self.headline == 'yes'
         self.share = None   # read_registry: the name of the table that cases with the same index and setup read together
+
+    def cpus_needed(self):
+        """the cores a case with worker variants needs for them to run beside the backend: the most workers a variant asks for, and the backend"""
+        return 1 + max([workers_asked(settings) for _, settings in self.variants] or [0])
 
     def statement(self, lane):
         if lane == 'pg_duckdb':

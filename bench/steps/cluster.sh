@@ -32,9 +32,10 @@ max_worker_processes = $(( n > 8 ? 2 * n : 16 ))
 max_parallel_workers = ${WORKERS:-$n}
 max_parallel_workers_per_gather = 2
 max_parallel_maintenance_workers = ${BUILD_WORKERS:-${WORKERS:-$build}}
-# In-memory throwaway cluster: durability is irrelevant, WAL volume is still measured.
+# In-memory throwaway cluster: durability is irrelevant, WAL volume is still measured. A commit that waits for the (memory) WAL flush costs nothing and sets the hint bits at once: with
+# `synchronous_commit = off` a VACUUM right after a load leaves the pages of unflushed commits not all-visible, and the native index-only plans read the heap (vm_settle, lib.sh).
 fsync = off
-synchronous_commit = off
+synchronous_commit = on
 max_wal_size = 2GB
 checkpoint_timeout = 30min
 jit = off

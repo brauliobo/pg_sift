@@ -6,11 +6,15 @@
 A figure is a number or `NA(reason)`: a measure nobody took (or the engine cannot report) prints `n/a` and its reason goes into the legend under the table, so a cell
 never hides a missing measure and never guesses one. `legend` writes that line.
 """
+import os
+import re
+
 import mdtable
 
 TIE = 0.05
 SEP = ' · '
-NOT_MEASURED = 'not measured under 3.7 yet'
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'pg_sift.control')) as _control:
+    NOT_MEASURED = 'not measured under %s yet' % re.search(r"default_version\s*=\s*'([^']*)'", _control.read()).group(1)   # the release the tables are for
 MINE = ('sift', 'sift_col', 'sift_table', 'sift_table_ord', 'sift_maint')   # the systems that are the reference: no factors
 MAX_COLS = 4   # a cell is about 40 characters: four of them and the system fit the 880 px of the README
 

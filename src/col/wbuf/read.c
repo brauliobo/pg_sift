@@ -6,8 +6,9 @@
 #include "postgres.h"
 #include "col/wbuf/wbuf_int.h"
 
+/* A reader whose lanes are not yet located: wbuf_load_heads reads the header page for them */
 SiftCWbufReader *
-sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
+wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
 {
 	SiftCWbufReader *r;
 
@@ -21,7 +22,26 @@ sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *
 	r->cur.page = r->page;
 	r->val = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue));
 	r->elem = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue *));
-	sift_lane_iter_init(&r->it, index, &r->entry);
+	r->it.index = index;
+	r->it.entry = &r->entry;
+	r->it.nextblk = InvalidBlockNumber;
+	for (int l = 0; l < SIFT_LANES; l++)
+		r->it.head[l] = InvalidBlockNumber;
+	return r;
+}
+
+void
+wbuf_load_heads(SiftCWbufReader *r)
+{
+	sift_lane_iter_init(&r->it, r->cur.index, &r->entry);
+}
+
+SiftCWbufReader *
+sift_cwbuf_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt)
+{
+	SiftCWbufReader *r = wbuf_open_lazy(index, entry, schema, mcxt);
+
+	wbuf_load_heads(r);
 	return r;
 }
 
@@ -45,7 +65,28 @@ wbuf_advance_page(SiftCWbufReader *r)
 		return false;
 	wbuf_cursor_set(&r->cur, r->page);
 	r->pflags = SiftLaneHead(r->page)->flags;
+	if (r->pagefn)
+		r->pagefn(r->pagearg, r->it.blk, r->page, r->cur.used);
 	return true;
+}
+
+/* The records of a page that start in bytes from to upto and are flagged dead */
+uint32
+wbuf_page_dead(Relation index, Page page, Size from, Size upto)
+{
+	PageCursor	c = {.index = index};
+	uint32		n = 0;
+
+	wbuf_cursor_set(&c, page);
+	while (c.pos < c.used && c.pos < upto)
+	{
+		Size		size;
+		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
+
+		n += c.pos >= from && (h->flags & SIFT_COLR_DELETED) != 0;
+		c.pos += size;
+	}
+	return n;
 }
 
 static void
@@ -109,6 +150,15 @@ wbuf_next_rec(SiftCWbufReader *r, RawRec *rec)
 		rec->deleted = (h->flags & SIFT_COLR_DELETED) != 0;
 		rec->payload = (const uint8 *) (h + 1);
 		rec->len = h->len;
+		rec->xmin = InvalidTransactionId;
+		if (h->flags & SIFT_COLR_XMIN)
+		{
+			if (rec->len < sizeof(TransactionId))
+				SIFT_CORRUPT(r->cur.index, "A record of segment %llu has an xmin flag and %u payload bytes.", (unsigned long long) r->entry.gen, (unsigned) rec->len);
+			memcpy(&rec->xmin, rec->payload, sizeof(TransactionId));
+			rec->payload += sizeof(TransactionId);
+			rec->len -= sizeof(TransactionId);
+		}
 		if (r->cur.pos < r->cur.used || !(r->pflags & SIFT_WBUFPAGE_SPANS))
 			return true;
 		r->joinedlen = 0;
@@ -267,4 +317,66 @@ sift_cwbuf_next(SiftCWbufReader *r, SiftColRow *row, bool *deleted)
 	wbuf_decode_row(r, &rec, row);
 	*deleted = rec.deleted;
 	return true;
+}
+
+/*
+ * The live records of the lane that starts at head, from where the last read of l stopped (the start of the lane for a lane not read yet) to its end, passed to fn;
+ * l is moved to the end read. The lane chains are append-only (VACUUM flags a record dead in place), so a later read starts there.
+ */
+void
+wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg)
+{
+	BlockNumber startblk = BlockNumberIsValid(l->blk) ? l->blk : head;
+	Size		startpos = BlockNumberIsValid(l->blk) ? l->pos : 0;
+	BlockNumber wblk = startblk;	/* the watermark: the start of the first row not read (a row whose last piece is not there yet), else the end of the lane */
+	Size		wpos = startpos;
+	bool		first = true;
+
+	r->it.lane = SIFT_LANES;
+	r->it.nextblk = startblk;
+	for (;;)
+	{
+		RawRec		rec;
+		BlockNumber rowblk;
+		Size		rowpos;
+
+		if (first || r->cur.pos >= r->cur.used)
+		{
+			if (!wbuf_advance_page(r))
+				break;
+			if (first)
+				r->cur.pos = startpos;
+			first = false;
+			continue;
+		}
+		rowblk = r->it.blk;
+		rowpos = r->cur.pos;
+		r->torn = false;
+		if (!wbuf_next_rec(r, &rec))
+		{
+			/* a torn row at the end of the lane may still be completed by its writer: read it again */
+			if (r->torn)
+			{
+				wblk = rowblk;
+				wpos = rowpos;
+			}
+			else
+			{
+				wblk = r->it.blk;
+				wpos = r->cur.pos;
+			}
+			goto done;
+		}
+		/* a torn row with a complete row after it was left by a writer that died: skipped for good */
+		if (!rec.deleted)
+			fn(arg, &rec);
+		wblk = r->it.blk;
+		wpos = r->cur.pos;
+	}
+	/* the end of the lane (the last page fully read): the next read starts there */
+	wblk = r->it.blk;
+	wpos = r->cur.pos;
+done:
+	l->blk = wblk;
+	l->pos = wpos;
 }

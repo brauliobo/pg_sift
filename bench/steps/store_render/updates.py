@@ -155,7 +155,7 @@ def upd_sentences(R, tier, engines):
 
 
 def updates_readme(R):
-    """the README's changes of data: the cost chart (rows/s of the 10% update is in it), the size growth chart, the takeaway and the losses; the table is in docs/BENCHMARKS.md"""
+    """the README's changes of data: the cost chart (rows/s of the 10% update is in it), the size growth chart, the takeaway and the losses; the table is in bench/out/BENCHMARKS.md"""
     tier = upd_tier(R)
     if not tier:
         return ['No update numbers yet: `bench/bench store all` measures them.']
@@ -169,7 +169,7 @@ def updates_readme(R):
     loss = upd_losses(R, tier, engines)
     if loss:
         out += ['- **Where pg_sift loses:** ' + '; '.join(loss) + '.']
-    out += ['', 'Every row, the update path of each system and the official pages: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
+    out += ['', 'Every row, the update path of each system and the official pages: [BENCHMARKS.md](BENCHMARKS.md#updates-and-deletes); raw results [bench/results/store.json](bench/results/store.json).']
     return out
 
 
@@ -181,7 +181,7 @@ def updates_benchmarks(R):
     t = R.meta['tiers'][tier]
     part = t['parts']['updates']
     host = R.meta.get('host', {})
-    out = [f'{t["rows"]:,} orders, after the read tests, {part["date"][:10]} on {host.get("cpu", "?")}, {cpu_name(R.cpus(tier))} per container, {host_noise(part)} at the start. Each system changes rows through the path its documentation recommends; '
+    out = [f'{t["rows"]:,} orders, after the read tests, {part["date"][:10]} on {host.get("cpu", "?")}, {cpu_name(R.cpus(tier))} per container, {host_noise(part)}. Each system changes rows through the path its documentation recommends; '
            'after each step the state (rows and sum of the amount per status) is compared with PostgreSQL\'s and the run stops on a difference. Medians; the best of a row in bold. '
            f'Steps: update 1% (`id % 100 = 0`), update 10% (`id % 10 = 1`), delete 5% (`id % 20 = 3`), {t.get("probes", "?")} single-row changes timed until a query sees them, the revenue-per-month query for {t.get("load_seconds", "?")} s '
            'while a second connection updates 0, 1,000 and 10,000 rows per second, then one maintenance step per system.', '']

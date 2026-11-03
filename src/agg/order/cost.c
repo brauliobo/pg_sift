@@ -48,6 +48,8 @@ topn_bounds(Query *parse, PlannerInfo *root, double *count, double *offset)
 
 /*
  * the heap of n rows takes the rows read: each is compared with the n-th and the better ones sift down, log2(n) steps (a heap of a page is the baseline).
+ * Past TOPN_SORT_ROWS the n rows are also ordered and passed up one by one, the offset's rows with the Limit above to throw away: that is a cost of n whatever
+ * the rows read (measured 600,000 rows against 60,000: within 20%), TOPN_ROW_STEP operator steps a row.
  * cmpx: what a compare of byte strings costs besides an integer's: every row is compared once, and the rows that enter the heap (about n for
  * every doubling of the rows read) sift down log2(n) steps
  */
@@ -56,7 +58,7 @@ topn_heap_cost(double read, double n, double cmpx)
 {
 	double		pushes = n * (1.0 + log(Max(read / Max(n, 1.0), 1.0)));
 
-	return (n <= TOPN_SORT_ROWS ? 0 : 4.0 * cpu_operator_cost * read * log2(n / TOPN_SORT_ROWS)) +
+	return (n <= TOPN_SORT_ROWS ? 0 : TOPN_ROW_STEP * cpu_operator_cost * n) +
 		cmpx * cpu_operator_cost * (read + pushes * log2(Max(n, 2.0)));
 }
 

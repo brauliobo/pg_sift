@@ -51,7 +51,7 @@ CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 1
 
 
 # The CI gate (scripts/scaling-gate.sh): 8-page units (a SIFT_TESTING=1 SIFT_SB_SHIFT=3 build), 0.5k-8k units = 0.7 GB of tmpfs (the CI scratch cap is 2.4 GB for all the jobs of a lane). The point and IN queries read the
-# point directory through the test function of the access method (a release plan does not reach it), flat in the units.
+# point directory through the test function of the access method (a release-build plan does not reach it), flat in the units.
 def point(keys):
     return lambda size: f"select count(*) from sift._test_col_tids('ix'::regclass, '0:in:{'|'.join(map(str, keys))}', 0)"
 

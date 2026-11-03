@@ -233,7 +233,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
 		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
-		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows) / ls[i].nvals, 1.0) : 0;
+		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows) / ls[i].nvals, 1.0) : 0;
 		st->gord_coll[i] = ls[i].gord_coll;
 		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
 		st->ndistinct[i] = nonnull;
@@ -250,6 +250,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 		if (cols[i].parent >= 0 && st->ovf_frac[i] > 0)
 			st->ovf_frac[i] = Min(1.0, st->ovf_frac[i] * Max(st->elems_per_row[cols[i].parent], 1.0));
+	col_stats_bygroup(st, ls, ncols);
 }
 
 /* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide */
@@ -284,8 +285,10 @@ col_stats(Relation index, SiftSrcStats *st)
 	st->nrows = meta->stats.nrows;
 	st->nunits = meta->stats.nunits;
 	st->bytes = meta->stats.bytes;
+	st->keyed_frac = meta->stats.keyed_frac;
 	st->allvisible_frac = meta->stats.allvisible_frac;
-	st->exact_frac = st->allvisible_frac;
+	/* a unit answers from its pre-aggregates when every page it has rows on is all-visible: the superblocks that are, a keyed unit (it spans the heap) only when all are */
+	st->exact_frac = (1.0 - st->keyed_frac) * meta->stats.clean_frac + (meta->stats.clean_frac >= 1.0 ? st->keyed_frac : 0.0);
 	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
 		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
@@ -534,6 +537,15 @@ col_count_cmp(void *impl, int leaf)
 }
 
 static void
+col_count_strs(void *impl, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep == NULL)
+		sift_col_count_strs(src->cs, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
+}
+
+static void
 col_count_elem_src(void *impl)
 {
 	ColSource  *src = impl;
@@ -669,11 +681,17 @@ col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, ui
 }
 
 static int
-col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
+col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want)
 {
 	ColSource  *src = impl;
 
-	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid);
+	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid, want);
+}
+
+static bool
+col_gorder_cuts(void *impl, int i, int leaf, struct SiftCGOrdCuts *cuts)
+{
+	return sift_col_gorder_cuts(((ColSource *) impl)->cs, i, leaf, cuts);
 }
 
 static uint32
@@ -707,9 +725,21 @@ col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bo
 }
 
 static bool
-col_gorder_exact(void *impl, int i, BlockNumber blk)
+col_gorder_before(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo)
 {
-	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, blk);
+	return sift_col_gorder_before(((ColSource *) impl)->cs, i, leaf, vs, ve, v, desc, clo, chi, memo);
+}
+
+static int
+col_gorder_exact(void *impl, int i, SiftKey tid)
+{
+	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, tid);
+}
+
+static void
+col_gorder_values(void *impl, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
+{
+	sift_col_gorder_values(((ColSource *) impl)->cs, leaf, seg, tid, n, val, st);
 }
 
 static void
@@ -758,6 +788,8 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 static int
 col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
 {
+	if (mode == SSD_NET)
+		return sift_col_unit_net(&((ColSource *) impl)->unit);
 	return sift_col_unit_dead(&((ColSource *) impl)->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
 }
 
@@ -867,6 +899,7 @@ static const SiftSrcProvider col_provider = {
 	.unpin = col_unpin,
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,
+	.rescan = col_rescan,
 	.begin = col_begin,
 	.kept = col_kept,
 	.next = col_next,
@@ -874,6 +907,7 @@ static const SiftSrcProvider col_provider = {
 	.whole = col_whole,
 	.count_range = col_count_range,
 	.count_cmp = col_count_cmp,
+	.count_strs = col_count_strs,
 	.count_elem = col_count_elem_src,
 	.unit_count = col_unit_count,
 	.point_exact = col_point_exact,
@@ -903,9 +937,17 @@ static const SiftSrcProvider col_provider = {
 	.gorder_strrank = col_gorder_strrank,
 	.gorder_str = col_gorder_str,
 	.gorder_info = col_gorder_info,
+	.gorder_compact = col_gorder_compact,
+	.gorder_cuts = col_gorder_cuts,
+	.gorder_before = col_gorder_before,
 	.gorder_exact = col_gorder_exact,
+	.gorder_clean = col_gorder_clean,
+	.gorder_group_values = col_gorder_group_values,
 	.gorder_head = col_gorder_head,
+	.gorder_values = col_gorder_values,
 	.gorder_range = col_gorder_range,
+	.gorder_groups = col_gorder_groups,
+	.gorder_group_at = col_gorder_group_at,
 	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,

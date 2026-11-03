@@ -20,6 +20,9 @@ SELECT tt_rows(1, 6000);
 (1 row)
 
 CREATE INDEX tt_col ON tt USING sift_col (id, k, k2, t);
+NOTICE:  sift_col index "tt_col" installed two statement triggers on table "tt" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (ANALYZE) tt;
 CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+ties' when the pushed plan is the scan under a Sort (or '+all' when it keeps every row), '+restarts N' when it started again N times, and the number of rows
@@ -328,6 +331,8 @@ RESET sift.enable_topn;
 -- more than 8,192 rows on a value of the first key (two values over 20,000 rows) keep the normal plan: the keys that follow are read from the heap for every row of the tie
 CREATE TABLE tt_big AS SELECT i AS id, i % 2 AS k, (i * 7919) % 1000 AS w FROM generate_series(1, 20000) i;
 CREATE INDEX tt_big_col ON tt_big USING sift_col (id, k);
+NOTICE:  sift_col index "tt_big_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 ANALYZE tt_big;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt_big ORDER BY k, w, id LIMIT 10;
            QUERY PLAN           

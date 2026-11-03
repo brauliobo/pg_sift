@@ -1,6 +1,6 @@
 -- SELECT DISTINCT as a group-by with no aggregate: the distinct stage of the planner takes the SiftAgg path. Every query runs with and without
--- the pushdown; the results must be the same. DISTINCT ON picks rows and a window function runs above the grouping: those keep their plan; the
--- DISTINCT of a grouped query stays above the grouping, which is the scan's.
+-- the pushdown; the results must be the same. A window function runs above the grouping and keeps its plan; the DISTINCT of a grouped query stays above the grouping, which is the scan's. DISTINCT ON
+-- picks the first row of each group in the order of the ORDER BY (agg_distinct_on): here the ORDER BY is the select list, so the row it picks has no other column to differ in.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
@@ -8,9 +8,11 @@ CREATE TABLE ds (id int, g int, k text, d date, n int, v numeric(10,2), c int);
 INSERT INTO ds SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'k' || i % 5 END, date '2024-01-01' + i % 400, i % 100, (i % 977) / 7.0,
 	CASE WHEN i % 13 = 0 THEN NULL ELSE i % 300 END FROM generate_series(1, 20000) i;
 CREATE INDEX ds_col ON ds USING sift_col (id, g, k, d, n, v, c);
-NOTICE:  sift_col index ds_col writes a rollup of the rows by g, k
+NOTICE:  sift_col index "ds_col": rollup_dims = 'auto' writes a rollup of the rows by g, k
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ds_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX ds_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "ds_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE ds_dim (g int, name text);
 INSERT INTO ds_dim SELECT i, 'g' || i % 3 FROM generate_series(0, 6) i;
 VACUUM ANALYZE ds;
@@ -38,7 +40,7 @@ INSERT INTO agg_q VALUES
 SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM agg_q) z ORDER BY query COLLATE "C";
                                     query                                     | pushed | same 
 ------------------------------------------------------------------------------+--------+------
- SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k                            | f      | t
+ SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k                            | t      | t
  SELECT DISTINCT c IS NULL, k IS NULL, g FROM ds                              | t      | t
  SELECT DISTINCT date_trunc('month', d) FROM ds                               | t      | t
  SELECT DISTINCT date_trunc('month', d), upper(k), g % 3 FROM ds WHERE v > 20 | t      | t
@@ -67,13 +69,15 @@ EXPLAIN (COSTS OFF) SELECT DISTINCT g, k FROM ds;
 (3 rows)
 
 EXPLAIN (COSTS OFF) SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k;
-         QUERY PLAN         
-----------------------------
- Unique
-   ->  Sort
-         Sort Key: g, k
-         ->  Seq Scan on ds
-(4 rows)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Sort
+   Sort Key: g, k
+   ->  Custom Scan (SiftAgg)
+         Index: ds_col
+         Group Keys: g
+         Pushed Aggregates: first_row(ds.k ORDER BY ds.k)
+(6 rows)
 
 DROP TABLE ds, ds_dim, agg_q;
 DROP FUNCTION agg_rows, agg_pushed;

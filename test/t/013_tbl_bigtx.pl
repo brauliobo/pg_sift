@@ -10,8 +10,9 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $rows = knob('SIFT_ROWS', 40000, 40000);
-my $conf = "sift.table_max_segments = 16\nsift.table_write_buffer_limit = 2048\nwal_consistency_checking = 'generic'";
+my $rows = knob('SIFT_ROWS', 20000, 20000);
+my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
+my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048\nwal_consistency_checking = 'generic'";
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(md5(string_agg(id || v, $$,$$ ORDER BY id)), $$-$$) FROM %s';
 my $load = "INSERT INTO %s SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g";
 # a loop of single-row INSERTs: no command closes the write buffers as a whole

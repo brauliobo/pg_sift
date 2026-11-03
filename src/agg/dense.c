@@ -208,29 +208,6 @@ dense_count(AggExec *ex, int64 *cnt, const uint64 *ok, const uint64 *mask, int n
 	}
 }
 
-/* float_guard for the bits of ok: a non-finite input marks its group, else the largest absolute input is noted */
-static void
-dense_float_guard(AggExec *ex, int ai, const double *x, const uint64 *ok, int n, const uint32 *gid)
-{
-	double		m;
-
-	if (!sift_aggk->absmax_f64(x, ok, n, &m))
-	{
-		for (int w = 0; w < (n + 63) / 64; w++)
-			for (uint64 b = ok[w]; b; b &= b - 1)
-			{
-				int			j = w * 64 + pg_rightmost_one_pos64(b);
-
-				if (!isfinite(x[j]))
-					ex->acc[ai].nf[gid[j]] = 1;
-			}
-		return;
-	}
-	ex->amax[ai] = Max(ex->amax[ai], m);
-	if (ex->spec->agg[ai].kind == SAA_AVG_F64 && 8.0 * ex->n_tuples * ex->amax[ai] * ex->amax[ai] >= DBL_MAX)
-		float_overflow_error();
-}
-
 static void
 dense_update(AggExec *ex, int ai, int start, int n, const uint64 *mask)
 {
@@ -255,7 +232,7 @@ dense_update(AggExec *ex, int ai, int start, int n, const uint64 *mask)
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
 			x = chunk_vals(ex, a->leaf, start, n, true, ex->c64);
-			dense_float_guard(ex, ai, x, ok, n, gid);
+			float_guard(ex, ai, x, ok, n, gid);
 			sift_aggk->sum_gid_f64(acc->d, gid, x, ok, n);
 			break;
 		default:

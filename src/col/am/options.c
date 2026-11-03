@@ -12,12 +12,13 @@
 #include "col/hll.h"
 #include "col/gorder.h"
 #include "col/setsum.h"
+#include "col/seg.h"
 #include "col/am/am_int.h"
 #include "core/ops.h"
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
- * aminsert. The build is in col/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
+ * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
  */
 
 bool		sift_enable_col = true;
@@ -137,11 +138,43 @@ SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
 SYNTAX_VALIDATOR(return_columns, am_return_walk(value, NULL, NULL))
 SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
 SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
+SYNTAX_VALIDATOR(order_layout, sift_cgord_layout_parse(value, NULL, NULL, NULL))
 SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
 SYNTAX_VALIDATOR(hll_columns, sift_hll_syntax(value))
 SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
+
+/* one column name, or off or auto */
+static const char *
+row_key_syntax(const char *value)
+{
+	if (strpbrk(value, ", ;") != NULL)
+		return "a single column: a composite key is not supported";
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
+
+/* one column, or 'group, key': the names themselves are checked where the options they stand for are */
+static const char *
+key_order_syntax(const char *value)
+{
+	const char *comma;
+
+	if (value[0] == '\0' || strcmp(value, "off") == 0)
+		return NULL;
+	if (strncmp(value, "auto:", 5) == 0)
+		value += 5 + strspn(value + 5, " ");
+	comma = strchr(value, ',');
+	if (value[0] == ' ' || value[0] == ',')
+		return "a column name, or 'group, key'";
+	if (comma && (strchr(comma + 1, ',') != NULL || comma[1 + strspn(comma + 1, " ")] == '\0'))
+		return "at most two columns, 'group, key'";
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(key_order, key_order_syntax(value))
 
 static relopt_enum_elt_def array_lengths_names[] = {
 	{"auto", SIFT_COL_ARRLEN_AUTO},
@@ -181,6 +214,7 @@ sift_col_init(void)
 							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
 	sift_cgord_strcmp = gord_strcmp;
+	sift_cseg_probe_init();
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
 							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",
@@ -258,7 +292,7 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.col_leaf_cache_kb",
 							"Shared memory, for all backends together, that keeps what the zones of the units of a sift_col index say to the planner (a record for each leaf and a sample of the unit zones), so that a new backend does not read them all (0: off).",
 							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), not its size. A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
-							&sift_col_leaf_cache_kb, 4096, 0, 262144,
+							&sift_col_leaf_cache_kb, 16384, 0, 262144,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written (15, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
@@ -285,6 +319,12 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open_gate",
+							"Testing: a column scan waits, right after it read the directory, for the advisory lock of this number (0 = no gate).",
+							NULL, &sift_test_col_open_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_gkept_fail",
+							 "Testing: extending the kept order of the write buffer's rows fails after its new arrays are made and before the order takes them.",
+							 NULL, &sift_test_col_gkept_fail, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_dict_shared",
 							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = every dictionary shared, 2 = the table cannot be had.",
 							NULL, &sift_test_col_dict_shared, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -294,15 +334,29 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_rel_inval",
 							 "Testing: a sift_col build and the recheck of the rows a leaf cannot store invalidate the index's relcache entry (what a lock taken while they run may do) at every tuple.",
 							 NULL, &sift_test_col_rel_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_net",
+							 "Testing: VACUUM writes the pre-aggregates net of their dead rows for the dirty units of a sift_col index (off: the units are read net of the dead rows by sift.agg_dead_delta).",
+							 NULL, &sift_test_col_net, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_paranoid",
 							 "Testing: a column scan checks the rows on all-visible pages against the heap too and logs the ones the snapshot does not see.",
 							 NULL, &sift_test_col_paranoid, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_point_unpacked",
 							 "Testing: the point directories are written as tables of slots (column format minor 33), not as packed tables (minor 35).",
 							 NULL, &sift_test_col_point_unpacked, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_gorder_strings",
+							 "Testing: the global order of a text leaf keeps a copy of its strings (as before column format minor 42), not the dictionary codes of them.",
+							 NULL, &sift_test_col_gorder_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_unpacked",
 							 "Testing: the chunks of a global order code their addresses with 9 bits of offset (as before column format minor 38), not the bits of the largest offset of the chunk.",
 							 NULL, &sift_test_col_gorder_unpacked, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_gorder_ends",
+							"Testing: the entries a block of the ends only keeps at each end (0: 4096).",
+							NULL, &sift_test_col_gorder_ends, 0, 0, SIFT_CGORD_ENDS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_gorder_choice",
+							"Testing: the global orders of the build's own choice of leaves keep the ends of the segment (1) or all of it (2), whatever the zones say (0: sift_cgord_pay decides).",
+							NULL, &sift_test_col_gorder_choice, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_gorder_noskip", "Testing: an OFFSET over a global order walks the entries it throws away.",
+							 NULL, &sift_test_col_gorder_noskip, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_dict_unpacked",
 							 "Testing: the order of a dictionary searched in place takes 32 bits a code (as before column format minor 39), not the bits of a code.",
 							 NULL, &sift_test_col_dict_unpacked, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -315,6 +369,12 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_fail_sb",
 							"Testing: the participant of a sift_col build that takes this superblock (1 = the first) fails (0 = none).",
 							NULL, &sift_test_col_fail_sb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_parallel_always",
+							 "Testing: a parallel sift_col build with key_cut launches its workers whatever its merge costs (off: only when the merge is made in slices).",
+							 NULL, &sift_test_col_parallel_always, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_merge_par_kb",
+							"Testing: kB of segments from which a merge outside a build is made by the workers of the backend.",
+							NULL, &sift_test_col_merge_par_kb, 12288, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_merge_workers",
 							"Testing: workers that merge the segments of a parallel sift_col build (-1 = those that built them, 0 = the leader alone).",
 							NULL, &sift_test_col_merge_workers, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -391,6 +451,12 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_order",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_columns, order_array_columns and point_tid_columns on it, for 'group, key' for order_columns and order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
+						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_layout",
+						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
+						 "", sift_col_validate_order_layout, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_group",
 						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
 						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
@@ -404,8 +470,11 @@ sift_col_init(void)
 						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
 						 "", sift_col_validate_count_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
-						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 16, which only 3.3 and later read, and the lists take 1 to 5 bytes per row (default none)",
+						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "track_changes",
+						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
+						 "auto", sift_col_validate_track_changes, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -437,6 +506,8 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
+	{"key_order", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_order)},
+	{"order_layout", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_layout)},
 	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
@@ -445,7 +516,56 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
+	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
 };
+
+/*
+ * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
+ * group and a key (the group of the order arrays; key_cut and the point directory are left to the build, which cuts by the group only where its rule says), 'a' is
+ * a key (key_cut, order_columns, order_array_columns and point_tid_columns). The columns are trimmed: 'a,b' and 'a , b' are the same option.
+ */
+static void
+key_order_expand(SiftColOptions **op)
+{
+	SiftColOptions *o = *op;
+	const char *spec = (const char *) o + o->key_order;
+	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
+	char	   *first,
+			   *last,
+			   *comma;
+	size_t		base = VARSIZE(o);
+	char	   *dst;
+
+	if (strcmp(spec, "off") == 0)
+		return;
+	first = pstrdup(autochosen ? spec + 5 + strspn(spec + 5, " ") : spec);
+	last = first;
+	comma = strchr(first, ',');
+
+	if (comma)
+	{
+		*comma = '\0';
+		last = comma + 1 + strspn(comma + 1, " ");
+		while (comma > first && comma[-1] == ' ')
+			*--comma = '\0';
+	}
+	o = repalloc(o, base + strlen(first) + strlen(last) + 4);
+	dst = (char *) o + base;
+	o->ko_lead = base;
+	dst += sprintf(dst, "%s", first) + 1;
+	if (comma)
+	{
+		o->ko_last = dst - (char *) o;
+		dst += sprintf(dst, "%s", last) + 1;
+	}
+	else
+		o->ko_last = base;
+	o->ko_group = comma ? o->ko_lead : 0;
+	o->ko_key = comma || autochosen ? 0 : o->ko_lead;
+	o->ko_auto = autochosen;
+	SET_VARSIZE(o, dst - (char *) o);
+	*op = o;
+}
 
 bytea *
 am_col_amoptions(Datum reloptions, bool validate)
@@ -454,6 +574,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 
 	if (validate && o && o->superunit == 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
+	if (o && o->key_order && *((const char *) o + o->key_order))
+		key_order_expand(&o);
 	return (bytea *) o;
 }
 #ifdef SIFT_TESTING
@@ -527,6 +649,8 @@ sift_col_alter_check(Relation index)
 	if (sift_col_paths_redecide(index))
 		return;
 	(void) sift_col_rel(index);
+	sift_col_row_key_check(index);
+	sift_col_track_reconcile(index);
 }
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
@@ -535,14 +659,34 @@ COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-COL_OPT_STR(sift_col_options_point_tid_columns, point_tid_columns, "")
+COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
+
+COL_OPT_STR(sift_col_options_key_order, key_order, "")
+
+/* whether the key_order is what a build chose ('auto: ...'), decided again by the next one (keycols/gorder.c) */
+bool
+sift_col_options_key_order_auto(Relation index)
+{
+	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
+}
+
+COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
+
+/* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
+bool
+sift_col_options_order_columns_set(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return (o->order_columns && *((const char *) o + o->order_columns)) || (o->ko_last && !o->ko_auto);
+}
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *
 sift_col_options_key_cut(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
-	const char *v = o->key_cut ? (const char *) o + o->key_cut : "";
+	const char *v = o->key_cut ? (const char *) o + o->key_cut : o->ko_key ? (const char *) o + o->ko_key : "";
 
 	if (strncmp(v, "auto:", 5) == 0)
 		return v + 5;
@@ -555,5 +699,5 @@ sift_col_options_key_cut_auto(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return o->key_cut == 0 || strncmp((const char *) o + o->key_cut, "auto", 4) == 0;
+	return (o->key_cut == 0 && o->ko_key == 0) || (o->key_cut != 0 && strncmp((const char *) o + o->key_cut, "auto", 4) == 0);
 }

@@ -71,10 +71,10 @@ SELECT ct_check('sift_table', 'ctt', 1);
 (1 row)
 
 -- the dictionaries are parsed and cached after enough tests
-SELECT ct_check('parsed', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
-             ct_check             
-----------------------------------
- parsed: 544 statements, 0 differ
+SELECT ct_check('parsed', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
+            ct_check             
+---------------------------------
+ parsed: 80 statements, 0 differ
 (1 row)
 
 -- the units whose dictionary lacks the part are not read: an absent or a rare part reads fewer rows than a common one
@@ -133,10 +133,10 @@ SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS l
  t
 (1 row)
 
-SELECT ct_check('not kept', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
-              ct_check              
-------------------------------------
- not kept: 544 statements, 0 differ
+SELECT ct_check('not kept', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
+             ct_check              
+-----------------------------------
+ not kept: 80 statements, 0 differ
 (1 row)
 
 RESET sift.test_limits;

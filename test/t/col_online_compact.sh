@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # While a physical standby streams, VACUUM cannot move a segment under the lock of the space step (the standby would replay the lock and wait for its queries). The
-# segments that end the file are written again into the reusable holes below them by the ordinary rewrite instead (sift_maint_compact), and the online cut takes the blocks
+# segments that end the file are moved into the reusable holes below them by the online shrink instead (sift_maint_shrink), and the online cut takes the blocks
 # they leave once no snapshot can read them: an index rewritten whole, whose one segment lies behind the blocks of the five it replaced (3.8 times the live bytes), comes back
 # to its live bytes, the replay does not stall behind a long query of the standby on the table, and the index agrees with the table on both servers.
 . "$(dirname "$0")/lib.bash"

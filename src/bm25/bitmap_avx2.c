@@ -75,7 +75,7 @@ static void bm25_v(float *score, const float *kn, const float *tf, const uint32_
 }
 
 const sift_kernels sift_kern_avx2 = { popcount_avx2_dispatch, and2_avx2, or2_avx2, andnot_avx2, and_count_avx2,
-				      count_mask_avx2, tids_avx2, ranks_avx2, vop_avx2, bm25_v };
+				      count_mask_avx2, tids_avx2, ranks_avx2, vop_avx2, bm25_v, ef_rank_avx2 };
 
 SIFT_VEC_POP
 #else

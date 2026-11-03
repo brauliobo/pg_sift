@@ -1,7 +1,7 @@
 # The engine registry: one line per engine, in the order of every table and chart (bench/bench, steps/lib.sh, tables.py,
 # charts.py, regress.py, generic.py). An engine is this line plus its adapter bench/engines/<id>.sh (text) or <id>.py (analytic); nothing else lists engines.
 # id	label (charts)	label (Markdown)	color (Okabe-Ito, distinguishable with color vision deficiencies)	chart	default	reference	kind	section
-# chart: drawn in docs/img when the dataset has rows for it. default: part of `bench run` (text) or `bench generic` (analytic) without --engines.
+# chart: drawn in bench/out/img when the dataset has rows for it. default: part of `bench run` (text) or `bench generic` (analytic) without --engines.
 # reference: the engine `bench regress` compares it with (a build of an older sift); - for none.
 # kind: text (the articles and places benchmarks), analytic (the generic suites of `bench/bench generic`) or both.
 # section: the `--@ SECTION` of a case that holds the analytic engine's statement (pg: PostgreSQL's dialect, duck, ch, es). With no such section the engine runs the case's pg

@@ -124,6 +124,23 @@ extern void sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *h
 						   SiftDictVisit fn, void *arg);
 
 /*
+ * The same scan, one term at a time: next gives the terms from lo (NULL = the first) in byte order and false at the end. The term
+ * and info stay valid until the next call (a term of a block is decoded from a copy of it).
+ */
+typedef struct SiftDictIter SiftDictIter;
+
+extern SiftDictIter *sift_dict_iter(SiftDict *d, const char *lo, int lolen, MemoryContext mcxt);
+extern bool sift_dict_iter_next(SiftDictIter *it, const char **term, int *len, SiftTermInfo *info);
+
+/*
+ * Calls fn for the first term of about max_samples blocks of the dictionary, evenly spaced, with the offset of the postings that start
+ * there (the stream offset of the first blob of the block) and the terms from there to the next sample: where a merge cuts the terms
+ * into ranges of about the same work.
+ */
+typedef void (*SiftDictSample) (void *arg, const char *term, int len, uint64 post_off, uint64 nterms);
+extern void sift_dict_samples(SiftDict *d, int max_samples, SiftDictSample fn, void *arg);
+
+/*
  * The same scan, asking skip about every term in the range before fn sees it: true says no term from `term` up to *next (> term, in
  * byte order; *nextlen 0: none above) is wanted, and the scan seeks there instead of decoding the blocks between. A seek costs a
  * bisection of the block index and the terms of one block, so a skip pays when it passes a block or more.

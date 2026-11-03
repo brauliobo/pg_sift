@@ -44,11 +44,21 @@ struct SiftSegmentWriter
 	uint64	   *reg;
 	uint32		nreg;
 	uint32		maxreg;
+	/* the INCLUDE columns (SIFT_SEGFMT_ATTR): the values of the SB being accumulated, and the records of the SBs flushed, spooled until the docmap ends */
+	SiftAttrSrc attr;
+	int64	   *av;				/* [col][page][MAXOFF] */
+	uint8	   *as;				/* the SiftAttrState of each */
+	BufFile    *arecs[SIFT_ATTR_MAXCOLS];	/* the records of each column */
+	uint64		arec_len[SIFT_ATTR_MAXCOLS];
+	SiftAttrRef *adir;			/* [SB][col] */
 	/* terms */
 	SiftPostingWriter *pw;
 	SiftDictWriter *dw;
 	char		term[SIFT_MAX_TERM_BYTES];
 	int			termlen;
+	/* a writer of a range of the terms (sift_segw_begin_range): the dictionary entries go to this file instead of dw */
+	BufFile    *ent;
+	uint64		nterms;
 };
 
 static void
@@ -155,6 +165,139 @@ write_dl_row(SiftStreamWriter *sw, const uint16 *dl, int n, int code)
 	sift_sw_write(sw, buf, len);
 }
 
+void
+sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src)
+{
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+	Size		n = (Size) SIFT_ATTR_MAXCOLS * SIFT_SB_PAGES * MAXOFF;
+
+	SIFT_INVARIANT(w->ndocs == 0 && src->ncols > 0 && src->ncols <= SIFT_ATTR_MAXCOLS, "sift: INCLUDE columns after the first doc, or %d of them", src->ncols);
+	w->attr = *src;
+	w->fmt = Max(w->fmt, SIFT_SEGFMT_ATTR);
+	w->av = palloc(n * sizeof(int64));
+	w->as = palloc0(n);
+	for (int c = 0; c < src->ncols; c++)
+		w->arecs[c] = BufFileCreateTemp(false);
+	w->adir = palloc(w->maxsb * src->ncols * sizeof(SiftAttrRef));
+	MemoryContextSwitchTo(old);
+}
+
+/* Bits a code of up to max needs */
+static int
+code_bits(uint64 max)
+{
+	return max == 0 ? 1 : 64 - __builtin_clzll(max);
+}
+
+/* The records of the INCLUDE values of the SB being flushed, one per column (header, then the row of each present page), appended to the spool of the column (w->nsb is the SB's index) */
+static void
+flush_attr(SiftSegmentWriter *w)
+{
+	const Size	cols = (Size) SIFT_SB_PAGES * MAXOFF;
+
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+	{
+		OffsetNumber offs[MAXOFF];
+		int64		vals[SIFT_ATTR_MAXCOLS * MAXOFF];
+		uint8		st[SIFT_ATTR_MAXCOLS * MAXOFF];
+		int			n = 0;
+
+		if (!(w->pagemask[p / 64] & (1ULL << (p % 64))))
+			continue;
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		{
+			uint64		m = w->offmask[p * SIFT_OFFMASK_WORDS + k];
+
+			for (; m; m &= m - 1)
+				offs[n++] = k * 64 + __builtin_ctzll(m) + 1;
+		}
+		w->attr.fetch(w->attr.arg, (w->sb << SIFT_SB_SHIFT) + p, offs, n, vals, st);
+		for (int c = 0; c < w->attr.ncols; c++)
+			for (int i = 0; i < n; i++)
+			{
+				w->av[c * cols + p * MAXOFF + offs[i] - 1] = vals[c * n + i];
+				w->as[c * cols + p * MAXOFF + offs[i] - 1] = st[c * n + i];
+			}
+	}
+	for (int c = 0; c < w->attr.ncols; c++)
+	{
+		SiftAttrColHdr hdr = {0};
+		Size		total = sizeof(hdr),
+					pad;
+		int64		lo = PG_INT64_MAX,
+					hi = PG_INT64_MIN;
+		bool		any = false,
+					unknown = false;
+		uint8	   *rec,
+				   *row;
+
+		if (!w->attr.intlike[c])
+			hdr.flags = SIFT_ATTR_NOROWS;
+		else
+		{
+			for (int p = 0; p < SIFT_SB_PAGES; p++)
+				for (int s = 0; s < w->maxoff[p]; s++)
+					if (!(w->offmask[p * SIFT_OFFMASK_WORDS + s / 64] >> (s % 64) & 1))
+						continue;
+					else if (w->as[c * cols + p * MAXOFF + s] == SIFT_AV_UNKNOWN)
+						unknown = true;
+					else if (w->as[c * cols + p * MAXOFF + s] == SIFT_AV_VALUE)
+					{
+						int64		v = w->av[c * cols + p * MAXOFF + s];
+
+						lo = Min(lo, v);
+						hi = Max(hi, v);
+						any = true;
+					}
+			if (any && (uint64) hi - (uint64) lo >= (UINT64CONST(1) << SIFT_ATTR_MAXWIDTH) - 2)
+				hdr.flags = SIFT_ATTR_NOROWS;
+		}
+		if (!(hdr.flags & SIFT_ATTR_NOROWS))
+		{
+			hdr.flags = unknown ? 0 : SIFT_ATTR_NOUNK;
+			hdr.base = any ? lo : 0;
+			hdr.unk = any ? (uint64) hi - (uint64) lo + 2 : 1;
+			hdr.width = code_bits(hdr.unk);
+			for (int p = 0; p < SIFT_SB_PAGES; p++)
+				if (w->pagemask[p / 64] & (1ULL << (p % 64)))
+					total += ATTR_ROW_BYTES(w->maxoff[p], hdr.width);
+		}
+		rec = palloc0(total + 16);
+		memcpy(rec, &hdr, sizeof(hdr));
+		row = rec + sizeof(hdr);
+		for (int p = 0; p < SIFT_SB_PAGES && !(hdr.flags & SIFT_ATTR_NOROWS); p++)
+		{
+			if (!(w->pagemask[p / 64] & (1ULL << (p % 64))))
+				continue;
+			for (int s = 0; s < w->maxoff[p]; s++)
+			{
+				uint64		code = 0,
+							x;
+				uint64		bit = (uint64) s * hdr.width;
+
+				if (w->offmask[p * SIFT_OFFMASK_WORDS + s / 64] >> (s % 64) & 1)
+				{
+					uint8		st = w->as[c * cols + p * MAXOFF + s];
+
+					code = st == SIFT_AV_NULL ? 0 : st == SIFT_AV_UNKNOWN ? hdr.unk :
+						(uint64) (w->av[c * cols + p * MAXOFF + s] - hdr.base) + 1;
+				}
+				x = code << (bit & 7);
+				for (int k = 0; k < 8 && x >> (8 * k); k++)
+					row[(bit >> 3) + k] |= (uint8) (x >> (8 * k));
+			}
+			row += ATTR_ROW_BYTES(w->maxoff[p], hdr.width);
+			memset(w->as + c * cols + p * MAXOFF, 0, MAXOFF);
+		}
+		pad = ALIGN4(total) - total;
+		w->adir[(Size) w->nsb * w->attr.ncols + c] = (SiftAttrRef) {w->arec_len[c], (uint32) total, 0};
+		BufFileWrite(w->arecs[c], rec, total);
+		BufFileWrite(w->arecs[c], "\0\0\0", pad);
+		w->arec_len[c] += total + pad;
+		pfree(rec);
+	}
+}
+
 static void
 flush_sb(SiftSegmentWriter *w)
 {
@@ -180,7 +323,11 @@ flush_sb(SiftSegmentWriter *w)
 	{
 		w->maxsb *= 2;
 		w->sbdir = repalloc_huge(w->sbdir, w->maxsb * sizeof(SiftDocSBRef));
+		if (w->adir)
+			w->adir = repalloc_huge(w->adir, w->maxsb * w->attr.ncols * sizeof(SiftAttrRef));
 	}
+	if (w->attr.ncols)
+		flush_attr(w);
 	sw_pad4(w->sw);
 	w->sbdir[w->nsb++] = (SiftDocSBRef) {w->sb, w->sb_ndocs, sift_sw_tell(w->sw)};
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
@@ -233,6 +380,18 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 	}
 }
 
+static void
+postw_open(SiftSegmentWriter *w)
+{
+	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
+	if (w->spool_min)
+		sift_postw_spool(w->pw, w->spool_min);
+	if (w->fmt >= SIFT_SEGFMT_PACKED)
+		sift_postw_pack(w->pw);
+	if (w->fmt >= SIFT_SEGFMT_POSBLK)
+		sift_postw_posblk(w->pw);
+}
+
 /* Closes DOCMAP and opens POSTINGS on the first term */
 static void
 start_terms(SiftSegmentWriter *w)
@@ -243,18 +402,40 @@ start_terms(SiftSegmentWriter *w)
 	flush_sb(w);
 	w->hdr.sb_hi = w->sb;
 	sw_pad4(w->sw);
-	sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
-	sift_sw_write(w->sw, &w->nsb, sizeof(uint32));
+	if (w->attr.ncols)
+	{
+		uint64		recs_end = sift_sw_tell(w->sw);
+		uint32		nc = w->attr.ncols;
+		char		buf[65536];
+		size_t		got;
+		uint64		start = recs_end;
+
+		for (uint32 c = 0; c < nc; c++)
+		{
+			SIFT_INVARIANT(BufFileSeek(w->arecs[c], 0, 0, SEEK_SET) == 0, "sift: could not rewind the INCLUDE records of a segment");
+			while ((got = BufFileRead(w->arecs[c], buf, sizeof(buf))) > 0)
+				sift_sw_write(w->sw, buf, got);
+			BufFileClose(w->arecs[c]);
+			w->arecs[c] = NULL;
+			for (uint32 i = 0; i < w->nsb; i++)
+				w->adir[(Size) i * nc + c].off += start;
+			start += w->arec_len[c];
+		}
+		sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
+		sift_sw_write(w->sw, w->adir, (Size) w->nsb * nc * sizeof(SiftAttrRef));
+		sift_sw_write(w->sw, &recs_end, sizeof(uint64));
+		sift_sw_write(w->sw, &nc, sizeof(uint32));
+		sift_sw_write(w->sw, &w->nsb, sizeof(uint32));
+	}
+	else
+	{
+		sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
+		sift_sw_write(w->sw, &w->nsb, sizeof(uint32));
+	}
 	w->hdr.sections[SIFT_SEC_DOCMAP].len = sift_sw_tell(w->sw);
 	w->hdr.sections[SIFT_SEC_POSTINGS].off = sift_sw_tell(w->sw);
 	w->ref.avgdl = (float4) ((double) w->sum_dl / w->ndocs);
-	w->pw = sift_postw_begin(w->sw, &w->ref, w->mcxt);
-	if (w->spool_min)
-		sift_postw_spool(w->pw, w->spool_min);
-	if (w->fmt >= SIFT_SEGFMT_PACKED)
-		sift_postw_pack(w->pw);
-	if (w->fmt >= SIFT_SEGFMT_POSBLK)
-		sift_postw_posblk(w->pw);
+	postw_open(w);
 	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED, w->fmt >= SIFT_SEGFMT_POSBLK);
 	pfree(w->offmask);
 	pfree(w->dl);
@@ -264,7 +445,9 @@ start_terms(SiftSegmentWriter *w)
 SiftPostingWriter *
 sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len)
 {
-	if (w->pw == NULL)
+	if (w->pw == NULL && w->ent)
+		postw_open(w);
+	else if (w->pw == NULL)
 		start_terms(w);
 	SIFT_INVARIANT(len >= 1 && len <= SIFT_MAX_TERM_BYTES, "sift: term of %d bytes", len);
 	memcpy(w->term, term, len);
@@ -278,7 +461,92 @@ sift_segw_end_term(SiftSegmentWriter *w)
 	SiftTermInfo info;
 
 	sift_postw_end_term(w->pw, &info);
+	if (w->ent)
+	{
+		uint8		len = w->termlen;
+
+		BufFileWrite(w->ent, &len, 1);
+		BufFileWrite(w->ent, w->term, len);
+		BufFileWrite(w->ent, &info, sizeof(info));
+		if ((info.flags & SIFT_TERM_INLINE) && (info.flags & SIFT_TERM_POS))
+			BufFileWrite(w->ent, info.inline_pos, info.pos_len);
+		w->nterms++;
+		return;
+	}
 	sift_dict_add(w->dw, w->term, w->termlen, &info);
+}
+
+SiftSegmentWriter *
+sift_segw_begin_range(SiftStreamWriter *post, BufFile *ent, const SiftScoreRef *ref, MemoryContext mcxt)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftSegmentWriter *w = palloc0(sizeof(SiftSegmentWriter));
+
+	w->fmt = SIFT_WRITE_SEGFMT;
+#ifdef SIFT_TESTING
+	if (sift_test_segfmt > 0)
+		w->fmt = Min(sift_test_segfmt, SIFT_WRITE_SEGFMT);
+#endif
+	w->mcxt = mcxt;
+	w->ref = *ref;
+	w->sw = post;
+	w->ent = ent;
+	w->termlen = -1;
+	MemoryContextSwitchTo(old);
+	return w;
+}
+
+uint64
+sift_segw_range_terms(const SiftSegmentWriter *w)
+{
+	return w->nterms;
+}
+
+void
+sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufFile *ent, uint64 nterms, float4 avgdl)
+{
+	uint64		base;
+	uint8	   *pos = NULL;
+	Size		poscap = 0;
+
+	if (w->pw == NULL)
+		start_terms(w);
+	SIFT_INVARIANT(w->ref.avgdl == avgdl, "sift: the ranges of a segment were scored with an average length %g, its docs have %g", avgdl, w->ref.avgdl);
+	if (post_len > 0)
+	{
+		sift_sw_write(w->sw, "\0\0\0", ALIGN4(sift_sw_tell(w->sw)) - sift_sw_tell(w->sw));
+		sift_sw_write_file(w->sw, post, post_len);
+	}
+	base = sift_sw_tell(w->sw) - post_len;
+	SIFT_INVARIANT(BufFileSeek(ent, 0, 0, SEEK_SET) == 0, "sift: could not rewind a range of terms");
+	for (uint64 i = 0; i < nterms; i++)
+	{
+		SiftTermInfo info;
+		char		term[SIFT_MAX_TERM_BYTES];
+		uint8		len;
+
+		BufFileReadExact(ent, &len, 1);
+		BufFileReadExact(ent, term, len);
+		BufFileReadExact(ent, &info, sizeof(info));
+		if (info.flags & SIFT_TERM_INLINE)
+		{
+			if (info.flags & SIFT_TERM_POS)
+			{
+				if (info.pos_len > poscap)
+				{
+					poscap = Max(info.pos_len, 256);
+					pos = pos ? repalloc(pos, poscap) : palloc(poscap);
+				}
+				BufFileReadExact(ent, pos, info.pos_len);
+			}
+			info.inline_pos = pos;
+		}
+		else
+			info.post_off += base;
+		sift_dict_add(w->dw, term, len, &info);
+	}
+	if (pos)
+		pfree(pos);
 }
 
 void

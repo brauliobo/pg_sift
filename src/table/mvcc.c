@@ -99,36 +99,6 @@ sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead
 	return false;
 }
 
-/* Does the tombstone e (not a LOCK) delete its row for the snapshot? Dirty snapshots also learn of an in-progress deleter */
-static bool
-tomb_deletes(Snapshot snapshot, const SiftTblTomb *e)
-{
-	switch (snapshot->snapshot_type)
-	{
-		case SNAPSHOT_ANY:
-			return false;
-		case SNAPSHOT_MVCC:
-			if (TransactionIdIsCurrentTransactionId(e->xid))
-				return e->cid < snapshot->curcid;
-			if (XidInMVCCSnapshot(e->xid, snapshot))
-				return false;
-			return TransactionIdDidCommit(e->xid);
-		case SNAPSHOT_SELF:
-			return TransactionIdIsCurrentTransactionId(e->xid) || TransactionIdDidCommit(e->xid);
-		case SNAPSHOT_DIRTY:
-			if (TransactionIdIsCurrentTransactionId(e->xid) || TransactionIdDidCommit(e->xid))
-				return true;
-			if (TransactionIdIsInProgress(e->xid))
-				snapshot->xmax = e->xid;
-			return false;
-		case SNAPSHOT_NON_VACUUMABLE:
-			return TransactionIdDidCommit(e->xid) && (!TransactionIdIsNormal(e->xid) || sift_vis_removable_xid(snapshot->vistest, e->xid));
-		default:
-			SIFT_INVARIANT(false, "sift_table: unsupported snapshot type %d", (int) snapshot->snapshot_type);
-	}
-	return false;
-}
-
 SiftTblVerState
 sift_tbl_ver_state(Relation rel, Snapshot snapshot, const SiftColVerSum *sum)
 {
@@ -152,7 +122,7 @@ bool
 sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv)
 {
 	bool		dead;
-	const SiftTblTomb *e;
+	const SiftTomb *e;
 	int			n;
 
 	if (!sift_tbl_inserted_visible(snapshot, rv, &dead))
@@ -161,13 +131,13 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 			CheckForSerializableConflictOut(rel, rv->xmin, snapshot);
 		return false;
 	}
-	if ((e = sift_tbl_tomb_find(st, rv->key, &n)) == NULL)
+	if ((e = sift_tomb_find(&st->tomb, rv->key, &n)) == NULL)
 		return true;
 	for (int i = 0; i < n; i++)
 	{
-		if (e[i].kind == SIFT_TBL_TOMB_LOCK)
+		if (e[i].kind == SIFT_TOMB_LOCK)
 			continue;
-		if (tomb_deletes(snapshot, &e[i]))
+		if (sift_tomb_deletes(snapshot, &e[i]))
 			return false;
 		if (snapshot->snapshot_type == SNAPSHOT_MVCC && TransactionIdIsValid(e[i].xid) && !TransactionIdDidAbort(e[i].xid))
 			CheckForSerializableConflictOut(rel, e[i].xid, snapshot);
@@ -182,13 +152,13 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 bool
 sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key)
 {
-	const SiftTblTomb *e;
+	const SiftTomb *e;
 	int			n;
 
-	if ((e = sift_tbl_tomb_find(st, key, &n)) == NULL)
+	if ((e = sift_tomb_find(&st->tomb, key, &n)) == NULL)
 		return false;
 	for (int i = 0; i < n; i++)
-		if (e[i].kind != SIFT_TBL_TOMB_LOCK && TransactionIdIsCurrentTransactionId(e[i].xid) && tomb_deletes(snapshot, &e[i]))
+		if (e[i].kind != SIFT_TOMB_LOCK && TransactionIdIsCurrentTransactionId(e[i].xid) && sift_tomb_deletes(snapshot, &e[i]))
 			return true;
 	return false;
 }
@@ -196,12 +166,12 @@ sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key)
 void
 sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 {
-	const SiftTblTomb *e;
+	const SiftTomb *e;
 	int			n;
 
 	memset(del, 0, sizeof(SiftTblDel));
 	del->state = SIFT_TBL_DEL_NONE;
-	if ((e = sift_tbl_tomb_find(st, key, &n)) == NULL)
+	if ((e = sift_tomb_find(&st->tomb, key, &n)) == NULL)
 		return;
 	for (int i = 0; i < n; i++)
 	{
@@ -209,7 +179,7 @@ sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 
 		if (TransactionIdIsCurrentTransactionId(e[i].xid))
 		{
-			if (e[i].kind == SIFT_TBL_TOMB_LOCK)
+			if (e[i].kind == SIFT_TOMB_LOCK)
 			{
 				del->self_locked = true;
 				continue;
@@ -218,7 +188,7 @@ sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 		}
 		else if (TransactionIdIsInProgress(e[i].xid))
 		{
-			if (e[i].kind == SIFT_TBL_TOMB_LOCK)
+			if (e[i].kind == SIFT_TOMB_LOCK)
 			{
 				del->lockxid = e[i].xid;
 				continue;
@@ -227,9 +197,9 @@ sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 		}
 		else if (TransactionIdDidCommit(e[i].xid))
 		{
-			if (e[i].kind == SIFT_TBL_TOMB_LOCK)
+			if (e[i].kind == SIFT_TOMB_LOCK)
 				continue;
-			state = e[i].kind == SIFT_TBL_TOMB_UPDATE ? SIFT_TBL_DEL_UPDATED : SIFT_TBL_DEL_DELETED;
+			state = e[i].kind == SIFT_TOMB_UPDATE ? SIFT_TBL_DEL_UPDATED : SIFT_TBL_DEL_DELETED;
 		}
 		else
 			continue;			/* aborted */
@@ -237,6 +207,6 @@ sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 		del->xid = e[i].xid;
 		del->cid = e[i].cid;
 		del->succ = e[i].succ;
-		del->hot = e[i].kind == SIFT_TBL_TOMB_UPDATE && (e[i].flags & SIFT_TBL_TOMB_HOT);
+		del->hot = e[i].kind == SIFT_TOMB_UPDATE && (e[i].flags & SIFT_TOMB_HOT);
 	}
 }

@@ -1,0 +1,83 @@
+-- Where the blocks of a sift_col file are: sift.col_extents lists every run (segments, buffers, free list, free extents), sift.col_space sums them and says
+-- what the shrink of VACUUM has still to move. The runs tile the file up to its high-water mark, with no overlap, before and after churn and a VACUUM.
+CREATE EXTENSION pg_sift;
+CREATE FUNCTION tiles(idx regclass) RETURNS bool LANGUAGE sql AS $$
+	SELECT sum(nblocks) = (SELECT high_water FROM sift.col_index_info(idx))
+		AND bool_and(first_block >= end_prev) AND min(first_block) = 0
+	FROM (SELECT nblocks, first_block, coalesce(lag(first_block + nblocks) OVER (ORDER BY first_block), 0) AS end_prev FROM sift.col_extents(idx)) e $$;
+CREATE TABLE em (id int PRIMARY KEY, grp int, amount numeric(10,2), note text) WITH (autovacuum_enabled = off);
+INSERT INTO em SELECT g, g % 50, g % 1000, 'note ' || md5(g::text) FROM generate_series(1, 100000) g;
+CREATE INDEX em_col ON em USING sift_col (grp, amount);
+NOTICE:  sift_col index "em_col" does not track changes: the index does not hold the primary key column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "em_col": order_array_columns = 'auto' keeps sorted arrays of amount
+DETAIL:  0.8 bytes a row for each whole array, 0.1 MB together. The segments are column format minor 38, which a library before 3.7 cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column or a column of few values that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block), else the ends. The choice of each column: amount: the whole order (a bound in the middle of its values reads many units). ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range of a whole-order column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit; a range in the middle of an ends-only column reads the units.
+HINT:  To drop them, run ALTER INDEX em_col SET (order_array_columns = 'off') and REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none.
+SELECT tiles('em_col') AS tiles_after_build;
+ tiles_after_build 
+-------------------
+ t
+(1 row)
+
+SELECT s.used_blocks + s.reusable_blocks + s.pending_blocks = s.high_water AS space_sums,
+	s.reusable_blocks + s.pending_blocks = i.free_blocks AS free_matches, s.reusable_blocks = i.reusable_blocks AS reusable_matches,
+	s.relation_blocks = i.relation_blocks AS blocks_match, s.tail_what IS NOT NULL AS has_tail, s.shrink_blocks >= 0 AS movable
+FROM sift.col_space('em_col') s, sift.col_index_info('em_col') i;
+ space_sums | free_matches | reusable_matches | blocks_match | has_tail | movable 
+------------+--------------+------------------+--------------+----------+---------
+ t          | t            | t                | t            | t        | t
+(1 row)
+
+SELECT what, count(*) > 0 AS present FROM sift.col_extents('em_col') WHERE what IN ('segment extent', 'segment header', 'metapage and directory') GROUP BY what ORDER BY what;
+          what          | present 
+------------------------+---------
+ metapage and directory | t
+ segment extent         | t
+ segment header         | t
+(3 rows)
+
+-- churn leaves free extents; their count and the pending ones agree with col_index_info
+UPDATE em SET amount = amount + 1 WHERE id % 3 = 0;
+DELETE FROM em WHERE id % 20 = 1;
+SELECT sift.col_merge('em_col', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT tiles('em_col') AS tiles_after_churn;
+ tiles_after_churn 
+-------------------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE what = 'free extent') = (SELECT free_extents FROM sift.col_index_info('em_col')) AS free_extents_match,
+	coalesce(sum(nblocks) FILTER (WHERE what = 'free extent' AND NOT pending), 0) = (SELECT reusable_blocks FROM sift.col_index_info('em_col')) AS reusable_match
+FROM sift.col_extents('em_col');
+ free_extents_match | reusable_match 
+--------------------+----------------
+ t                  | t
+(1 row)
+
+SELECT largest_free_extent = (SELECT max(nblocks) FROM sift.col_extents('em_col') WHERE what = 'free extent') AS largest_matches FROM sift.col_space('em_col');
+ largest_matches 
+-----------------
+ t
+(1 row)
+
+VACUUM em;
+SELECT tiles('em_col') AS tiles_after_vacuum;
+ tiles_after_vacuum 
+--------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('em_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE em;
+DROP FUNCTION tiles(regclass);
+DROP EXTENSION pg_sift;

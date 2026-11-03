@@ -1,0 +1,76 @@
+-- The batches of a write buffer are kept by the backend for the next scan, and so is the order made from them (col/wbuf/batches.c, col/scan/gorder.c). A buffer whose batches
+-- take more than 16 MB used to be built for its scan and dropped: every read decoded the whole buffer again. An index that allows a big buffer (write_buffer_limit) has its batches kept
+-- whole, within six times the bytes of its records. Rows of 500 bytes, 40,000 of them in the buffer: the second read finds the order made by the first.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE t (id int, k int, pad text);
+CREATE INDEX t_ix ON t USING sift_col (id, k, pad) WITH (order_columns = 'k', order_array_columns = 'k', write_buffer_limit = 65536);
+INSERT INTO t SELECT i, (i * 7919) % 40009, repeat(md5(i::text), 16) FROM generate_series(1, 40000) i;
+CREATE TABLE p AS SELECT * FROM t;
+ANALYZE t;
+ANALYZE p;
+CREATE TABLE last_stats AS SELECT * FROM sift._test_col_gkept_stats();
+CREATE FUNCTION moves(what text) RETURNS TABLE (step text, found bigint, extended bigint, made bigint) LANGUAGE plpgsql AS $$
+DECLARE s record; l record;
+BEGIN
+	SELECT * INTO s FROM sift._test_col_gkept_stats();
+	SELECT * INTO l FROM last_stats;
+	UPDATE last_stats SET hits = s.hits, extends = s.extends, builds = s.builds;
+	RETURN QUERY SELECT $1, s.hits - l.hits, s.extends - l.extends, s.builds - l.builds;
+END $$;
+-- the answer through the index is the copy's
+CREATE FUNCTION same() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SELECT string_agg(k || ':' || id, ',' ORDER BY ord) INTO a FROM (SELECT row_number() OVER () AS ord, k, id FROM (SELECT k, id FROM t ORDER BY k, id LIMIT 50) s) s;
+	SELECT string_agg(k || ':' || id, ',' ORDER BY ord) INTO b FROM (SELECT row_number() OVER () AS ord, k, id FROM (SELECT k, id FROM p ORDER BY k, id LIMIT 50) s) s;
+	RETURN a = b;
+END $$;
+-- the buffer holds every row; the first read makes the order, the next ones find it
+SELECT count(*) FILTER (WHERE kind = 'buffer') AS buffers, sum(rows) FILTER (WHERE kind = 'buffer') AS buffer_rows FROM sift.col_segments('t_ix');
+ buffers | buffer_rows 
+---------+-------------
+       1 |       40000
+(1 row)
+
+SELECT same();
+ same 
+------
+ t
+(1 row)
+
+SELECT * FROM moves('first read');
+    step    | found | extended | made 
+------------+-------+----------+------
+ first read |     0 |        0 |    1
+(1 row)
+
+SELECT same();
+ same 
+------
+ t
+(1 row)
+
+SELECT same();
+ same 
+------
+ t
+(1 row)
+
+SELECT * FROM moves('two more');
+   step   | found | extended | made 
+----------+-------+----------+------
+ two more |     2 |        0 |    0
+(1 row)
+
+DROP FUNCTION same();
+DROP FUNCTION moves(text);
+DROP TABLE last_stats;
+DROP TABLE p;
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

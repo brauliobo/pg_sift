@@ -24,9 +24,12 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
-NOTICE:  sift_col index tb_col writes a rollup of the rows by g, v
+NOTICE:  sift_col index "tb_col": rollup_dims = 'auto' writes a rollup of the rows by g, v
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 378 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX tb_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX tb_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "tb_col" installed two statement triggers on table "tb" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
@@ -119,7 +122,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  coalesce_texts_c  | same+topn 25
  coalesce_three    | same+topn 25
  coalesce_wide     | same+topn 25
- deep_page         | same+topn 20
+ deep_page         | same+topn+sorted 20
  expr_then_col     | same+topn 25
  greatest          | same+topn 25
  greatest_text     | same+topn 25
@@ -170,15 +173,15 @@ UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
 DELETE FROM tb WHERE id % 83 = 0;
 SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('case_null_zero', 'case_text', 'coalesce_ints', 'coalesce_texts', 'coalesce_dates', 'nullif_int', 'greatest', 'bool_or_null', 'two_exprs', 'deep_page') ORDER BY tag COLLATE "C";
-      tag       |   tb_check   
-----------------+--------------
+      tag       |      tb_check       
+----------------+---------------------
  bool_or_null   | same+topn 40
  case_null_zero | same+topn 25
  case_text      | same+topn 25
  coalesce_dates | same+topn 25
  coalesce_ints  | same+topn 25
  coalesce_texts | same+topn 25
- deep_page      | same+topn 20
+ deep_page      | same+topn+sorted 20
  greatest       | same+topn 25
  nullif_int     | same+topn 40
  two_exprs      | same+topn 40

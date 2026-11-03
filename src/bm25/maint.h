@@ -19,8 +19,6 @@
 #ifdef SIFT_TESTING
 /* Testing knob (sift.test_merge_max_kb, 0 = off): bytes of the segments one merge may read, in kB */
 extern PGDLLIMPORT int sift_test_merge_max_kb;
-/* Testing knob (sift.test_merge_sleep_ms, 0 = off): a merge of the background worker sleeps this long, its segments claimed */
-extern PGDLLIMPORT int sift_test_merge_sleep_ms;
 /* Testing knob (sift.test_room_segments, 0 = off): directory entries from which inserters merge */
 extern PGDLLIMPORT int sift_test_room_segments;
 /* Testing knob (sift.test_no_heap_positions): promotions and merges take no positions from the heap, as 3.7.0 did */
@@ -71,6 +69,9 @@ extern void sift_maint_replace(Relation index, const uint64 *old, int nold, cons
 extern void sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
 
+/* Tells that a maintenance step of an index failed and is retried; kind: "sift" or "sift_col" */
+extern void sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err);
+
 /* Counts a failed background transaction of the worker of the index (after AbortCurrentTransaction) for the backoff and sift.workers; err: the error it was aborted by */
 extern void sift_maint_record_failure(Oid indexoid, ErrorData *err);
 
@@ -106,7 +107,6 @@ typedef enum SiftMergeGoal
 } SiftMergeGoal;
 
 /* Writes the immutable segment of a generation again as one segment, the bytes it wrote (0: nothing) */
-typedef uint64 (*SiftCompactSegment) (Relation index, uint64 gen);
 
 /*
  * The policy of one kind of index. The steps are the whole difference between the kinds: promote_next promotes the oldest sealed
@@ -127,13 +127,16 @@ typedef struct SiftMaintOps
 	SiftStepResult (*merge_next) (Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 	void		(*bulkdelete_immutable) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 	void		(*bulkdelete_wbuf) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
+	void		(*bulkdelete_tomb) (Relation index, const SiftSegEntry *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);	/* NULL: the index keeps no tombstone log; else drops the entries of the rows the callback names */
 	bool		(*vacuum_truncate) (Relation index);	/* NULL: the file is not truncated by VACUUM */
+	uint64		(*vacuum_rotate) (Relation index);	/* NULL: an open buffer stays where it is; else VACUUM seals it, empty or not, when it ends the file past what a shrink can reach */
 	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
+	void		(*vacuum_net) (Relation index);	/* NULL: nothing; VACUUM, before its merges: the segments with dead rows get the pre-aggregates net of them (the maintenance lock is held) */
+	void		(*vacuum_log) (Relation index);	/* NULL: nothing; every VACUUM's cleanup, after the seal (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
 	bool		(*rewrite_all) (const char *why);	/* NULL: every reason rewrites all the segments; else false when the reason is met by promoting the write buffer and the merges of the policy */
-	SiftCompactSegment compact_segment;	/* NULL: the segments that end the file are not rewritten into the holes below them while a standby streams; else writes the immutable segment of this generation again as one, the bytes it wrote (0: nothing; the maintenance lock is held) */
 	bool		(*vacuum_space_defer) (Relation index);	/* NULL: the space step may move segments; else true when a rewrite of the index is coming, which moves them: VACUUM then only cuts the free tail */
 	void		(*vacuum_done) (Relation index);	/* NULL: nothing; called at the end of VACUUM's cleanup, the maintenance lock released */
 } SiftMaintOps;
@@ -154,6 +157,7 @@ extern bool sift_maint_make_room(Relation index);
 
 /* One tiered merge step if the policy asks; returns true if merged */
 extern bool sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait);
+extern void sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index);
 
 /* The VACUUM callbacks, and the SQL functions promote and merge (the lock and the index are the caller's: sift_mops_open_maintain) */
 extern IndexBulkDeleteResult *sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -195,9 +199,12 @@ extern bool sift_maint_file_is_new(Relation rel);
  */
 extern void sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel);
 /* The same with a cap on the bytes copied under the lock (0: only the free tail is cut), and its screen for a run of free blocks */
-extern uint64 sift_maint_compact(Relation rel, SiftCompactSegment rewrite, uint64 budget, int elevel);
+extern uint64 sift_maint_shrink(Relation rel, int elevel);
+extern bool sift_maint_buffer_above_shrink(Relation rel);
+extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
+extern BlockNumber sift_maint_cut_released(Relation rel, int elevel);
 extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */

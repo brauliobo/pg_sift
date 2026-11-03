@@ -3,6 +3,10 @@
 -- (date_trunc, extract, ::date), a range on the column or a test of its calendar parts is answered from them. Every query runs three ways, which must give
 -- the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units
 -- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
+-- Size, 16 s of CPU: tcy has 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27
+-- and 46, and tcm has them so that the dirty states leave shapes 9, 12 and 20 'none' (60000 rows of either changes those answers); tcd has 60000, which is as many units as it needs.
+-- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones, 12 four times on tc7.
+-- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
@@ -98,16 +102,17 @@ INSERT INTO pm_q VALUES
 	(47, 'tz at UTC, range',  'SELECT date_trunc(''quarter'', tz AT TIME ZONE ''UTC'')::date, count(*) FROM %s WHERE tz >= ''2000-01-01+00'' GROUP BY 1'),
 	(48, 'tz 3-arg UTC',      'SELECT date_trunc(''month'', tz, ''UTC''), count(*), sum(amt) FROM %s GROUP BY 1');
 
--- the shapes n of lo..hi but those in skip
-CREATE FUNCTION pm_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 100, skip int[] DEFAULT '{}') RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+-- the shapes n of lo..hi but those in skip (keep: just those, when it is not empty)
+CREATE FUNCTION pm_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 100, skip int[] DEFAULT '{}', keep int[] DEFAULT '{}') RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
-	       pm_rows(z.q, true, true) IS NOT DISTINCT FROM pm_rows(z.q, false, true) AND pm_rows(z.q, false, true) IS NOT DISTINCT FROM pm_rows(z.q, false, false)
-	FROM (SELECT n, shape, format(q, tbl) AS q FROM pm_q WHERE n BETWEEN lo AND hi AND n <> ALL (skip)) z, LATERAL pm_units(z.q) u ORDER BY z.n
+	       r.pre_agg IS NOT DISTINCT FROM r.scan AND r.scan IS NOT DISTINCT FROM r.plain
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pm_q WHERE n BETWEEN lo AND hi AND n <> ALL (skip) AND (keep = '{}' OR n = ANY (keep))) z, LATERAL pm_units(z.q) u,
+	     LATERAL (SELECT pm_rows(z.q, true, true) AS pre_agg, pm_rows(z.q, false, true) AS scan, pm_rows(z.q, false, false) AS plain OFFSET 0) r ORDER BY z.n
 $$;
 
 -- three windows of data: 45 days (a unit has a few dozen days: cells of days), 3 years (months), 40 years (years); a cell costs a few dozen bytes of the
 -- 5% a unit may spend on cells, and rows of other years in the last unit (the edges) do not take its cells from the others
-SELECT pm_fill('tcd', '2000-02-10', 45, 1, 150000);
+SELECT pm_fill('tcd', '2000-02-10', 45, 1, 60000);
 SELECT pm_fill('tcm', '1999-01-31 23:59:59', 1100, 1, 150000);
 SELECT pm_fill('tcy', '1980-01-01', 14600, 1, 150000);
 SELECT pm_edges('tcd', '2000-02-10', '2000-03-27');
@@ -129,31 +134,34 @@ SELECT * FROM pm_check('tcm');
 -- 3. cells of years
 SELECT * FROM pm_check('tcy');
 
+-- the states of the data below re-check these shapes: a date_trunc and an extract key, each calendar function family, the ranges (whole days, a cut day, no key),
+-- a test of a dim, the refused shapes (min, float, two keys) and the zones; section 1 to 3 and 8 to 10 run all of them
+CREATE FUNCTION pm_dirty() RETURNS int[] LANGUAGE sql AS $$ SELECT ARRAY[1, 5, 9, 12, 20, 23, 24, 26, 29, 30, 33, 35, 42, 44, 45] $$;
 -- 4. rows in the write buffer: their superblocks are scanned, the others answer
 INSERT INTO tcm SELECT 200000 + i, timestamp '2024-02-28' + i * interval '97 minutes', date '2024-02-28' + i / 8, timestamptz '2024-02-28+00' + i * interval '97 minutes', i % 10, i % 997, i % 7, i FROM generate_series(1, 3000) i;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 
 -- 5. promoted again
 VACUUM (DISABLE_PAGE_SKIPPING) tcm;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 
 -- 6. tombstones and updates: a unit with a dead row is scanned, the others answer, and the key of an updated row is its new one
 DELETE FROM tcm WHERE id BETWEEN 100 AND 140;
 UPDATE tcm SET ts = ts + interval '70 days', d = d + 70, tz = tz + interval '70 days' WHERE id BETWEEN 200 AND 260;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 DELETE FROM tcm WHERE id % 29 = 0;
 UPDATE tcm SET ts = ts + interval '70 days', d = d + 70, tz = tz + interval '70 days' WHERE id % 31 = 1;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 VACUUM (DISABLE_PAGE_SKIPPING) tcm;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 
 -- 7. a transaction's own rows (not final: their units are scanned), then its rollback
 BEGIN;
 INSERT INTO tcm SELECT 400000 + i, timestamp '2030-07-01' + i * interval '3 hours', date '2030-07-01' + i / 8, timestamptz '2030-07-01+00' + i * interval '3 hours', i % 10, i, i % 7, i FROM generate_series(1, 500) i;
 DELETE FROM tcm WHERE id % 37 = 0;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 ROLLBACK;
-SELECT * FROM pm_check('tcm');
+SELECT * FROM pm_check('tcm', keep => pm_dirty());
 
 -- 8. infinities and the ends of the range: a column of a unit that holds one has no cells, the others keep theirs (shape 6 casts the extract of an infinity to integer, which raises)
 CREATE TABLE tci (LIKE tcd) USING sift_table;
@@ -205,7 +213,7 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP BY 1');
 
 DROP TABLE tcd, tcm, tcy, tci, tc7;
-DROP FUNCTION pm_check(text, int, int, int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
+DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
 DROP TABLE pm_q;

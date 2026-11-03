@@ -292,6 +292,24 @@ hash_param_saop(ScalarArrayOpExpr *sa)
 	sa->negfuncid = sa->useOr ? InvalidOid : get_opcode(op);
 }
 
+/* The output Param of an InitPlan of the query as the executor of the scan reads it (offset by SIFT_AGG_INIT_PARAM, init_param_mutator), NULL for any other Param */
+Param *
+initplan_param(AggCtx *c, Param *n)
+{
+	foreach_ptr(SubPlan, sp, c->root->init_plans)
+		if (list_member_int(sp->setParam, n->paramid))
+		{
+			Param	   *init = copyObject(n);
+
+			c->nsubplan++;
+			c->sub_serial = true;
+			c->subplan_cost += sp->startup_cost;
+			init->paramid += SIFT_AGG_INIT_PARAM;
+			return init;
+		}
+	return NULL;
+}
+
 static Node *
 subst_mutator(Node *n, SubstCtx *s)
 {
@@ -314,17 +332,12 @@ subst_mutator(Node *n, SubstCtx *s)
 		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
 	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !null_input_param(n))
-		foreach_ptr(SubPlan, sp, s->c->root->init_plans)
-			if (list_member_int(sp->setParam, ((Param *) n)->paramid))
-			{
-				Param	   *init = copyObject((Param *) n);
+	{
+		Param	   *init = initplan_param(s->c, (Param *) n);
 
-				s->c->nsubplan++;
-				s->c->sub_serial = true;
-				s->c->subplan_cost += sp->startup_cost;
-				init->paramid += SIFT_AGG_INIT_PARAM;
-				return (Node *) init;
-			}
+		if (init != NULL)
+			return (Node *) init;
+	}
 	return expression_tree_mutator(n, subst_mutator, s);
 }
 

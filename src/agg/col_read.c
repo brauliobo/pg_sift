@@ -262,4 +262,47 @@ col_vet_needed(void *impl, const SiftSrcUnit *unit)
 	return sift_aggsel_vet_needed(&src->unit);
 }
 
+bool
+col_gorder_compact(void *impl, int i, int leaf)
+{
+	return sift_col_gorder_compact(((ColSource *) impl)->cs, i, leaf);
+}
+
+bool
+col_gorder_clean(void *impl, int i)
+{
+	return sift_col_gorder_clean(((ColSource *) impl)->cs, i);
+}
+
+bool
+col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+{
+	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, only, vals, n);
+}
+
+bool
+col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups)
+{
+	return sift_col_gorder_groups(((ColSource *) impl)->cs, i, leaf, ngroups);
+}
+
+void
+col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	sift_col_gorder_group_at(((ColSource *) impl)->cs, i, leaf, gi, group, vs, ve, ns, ne);
+}
+
+/* A leaf with a value in every row that is the group of the second order of a leaf holding every row: ORDER BY it reads those orders group after group (gord_bygroup) */
+void
+col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols)
+{
+	for (int j = 0; j < ncols && j < SIFT_COLSRC_MAX_LEAVES; j++)
+	{
+		int			gi = ls[j].gord_gcol;
+
+		if (ls[j].gord_grp_rows > 0 && gi >= 0 && gi < ncols && gi < SIFT_COLSRC_MAX_LEAVES && ls[gi].nnull == 0 && ls[j].gord_grp_rows >= 0.999 * ls[gi].nvals)
+			st->gord_bygroup[gi] = true;
+	}
+}
+
 #endif							/* __has_include("col/col.h") */

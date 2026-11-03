@@ -2,29 +2,57 @@
 # The release, from a green head to the published assets and the AUR, in one command.
 #
 #   scripts/release.sh VERSION [--dry-run] [--resume] [--skip-ci]
+#   scripts/release.sh --selftest
 #
 # It does not run the test matrix again: GitHub CI is the gate. In this order, stopping at the first failure:
+#   vocabulary the private wording vocabulary is readable (NEUTRAL_VOCAB_FILE, or the text in NEUTRAL_VOCAB): without it the release stops, a dry run too
 #   preflight  clean tree on main, equal to origin/main; the notes (docs/releases/vVERSION.md), CHANGELOG, control and SQL scripts are in place
 #   checks     at once: ci (a green run of the workflow `ci` with "Full scope" on any ref whose commit has HEAD's build inputs: waited for when it runs,
 #              dispatched when none exists), upgrade (the previous release's library writes a BM25 index, a sift_col index and a sift_table, this
 #              tree takes them over, ALTER EXTENSION UPDATE, verify, REINDEX; then the previous library reads what this one writes in the previous
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
 #   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines: one commit, after a check that every place agrees
-#   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit: a red one stops the release before the tag
+#   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit, with the vocabulary required (SIFT_NEUTRAL_REQUIRED=1,
+#              which the push CI cannot do: a name it lets pass stops the release here): a red one stops the release before the tag
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
 # A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # --skip-ci leaves out the ci check only, for a release whose CI the person releasing accepts as it is (no full-scope run, or a lighter one): it prints
 #   ci: SKIPPED by --skip-ci (no green full-scope run required), records it in the manifest (--resume and the last line show it), and every other check runs.
-# Environment: RELEASE_TMP (scratch, default ~/.cache), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
+# Environment: NEUTRAL_VOCAB_FILE or NEUTRAL_VOCAB (the wording vocabulary, required), RELEASE_TMP (scratch, default /dev/shm), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-VERSION='' DRY='' RESUME='' SKIPCI=''
+VERSION='' DRY='' RESUME='' SKIPCI='' SELFTEST=''
 for a in "$@"; do
-	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; -h|--help) sed -n '2,18p' "$0"; exit 0 ;; -*) sed -n '2,18p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
+	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; --selftest) SELFTEST=1 ;; -h|--help) sed -n '2,20p' "$0"; exit 0 ;; -*) sed -n '2,20p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
 done
+# A tag is never cut without the wording gate: a vocabulary that is not readable stops the release (a dry run too: one that passes is one that can be released), and the lint of
+# the release commit requires it. The CI of the repository has no such vocabulary and checks only the structure of the wording.
+vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} && -r $NEUTRAL_VOCAB_FILE ]]; }; }
+lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
+selftest() {
+	local bad=0 v
+	t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT   # global: the trap runs after the function
+	printf '[denylist]\nx\n' >"$t/voc"
+	chk() { local want=$1 what=$2; shift 2; if "$@"; then [[ $want == pass ]] || { echo "FAIL: $what"; bad=1; }; else [[ $want == fail ]] || { echo "FAIL: $what"; bad=1; }; fi; }
+	chk fail "no vocabulary is none" env -u NEUTRAL_VOCAB -u NEUTRAL_VOCAB_FILE bash -c "$(declare -f vocabulary); vocabulary"
+	chk fail "an unreadable file is none" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/missing" bash -c "$(declare -f vocabulary); vocabulary"
+	chk pass "a readable file is one" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f vocabulary); vocabulary"
+	chk pass "the text of a vocabulary is one" env -u NEUTRAL_VOCAB_FILE NEUTRAL_VOCAB="$(cat "$t/voc")" bash -c "$(declare -f vocabulary); vocabulary"
+	# the release itself, without a vocabulary: it stops at once, before any scratch clone or state exists
+	v=$(env -u NEUTRAL_VOCAB -u NEUTRAL_VOCAB_FILE RELEASE_STATE="$t/state" RELEASE_TMP="$t" SIFT_RELEASE_SCOPED=1 "$0" 9.9.9 --dry-run 2>&1); local rc=$?
+	chk pass "a dry run without a vocabulary exits 1 and says why" bash -c '[[ $1 == 1 && $2 == *vocabulary* && ! -e $3/state ]]' _ "$rc" "$v" "$t"
+	# the lint of the release commit runs with the vocabulary required, and the vocabulary reaches it
+	mkdir -p "$t/tree/scripts"
+	printf '#!/usr/bin/env bash\n[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 && ${GITHUB_BASE_REF:-} == main && -n ${NEUTRAL_VOCAB_FILE:-} ]]\n' >"$t/tree/scripts/lint.sh"; chmod +x "$t/tree/scripts/lint.sh"
+	chk pass "the lint of the release commit requires the vocabulary" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
+	((! bad)) || exit 1
+	echo "release: selftest ok (the vocabulary is required for a release and its lint)"
+}
+[[ -z $SELFTEST ]] || { selftest; exit; }
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
+vocabulary || { echo "release: no wording vocabulary: set NEUTRAL_VOCAB_FILE to a readable file (or NEUTRAL_VOCAB to its text); a release is never cut, nor a dry run passed, without the gate that reads it" >&2; exit 1; }
 MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} TAG=v$VERSION
 # the whole run in 2 cores and 12 GB, whatever the caller did
 if [[ -z ${SIFT_RELEASE_SCOPED:-} ]] && command -v systemd-run >/dev/null; then
@@ -53,7 +81,7 @@ step() { # NAME KEY CMD...: CMD, unless the manifest has the step passed with th
 	return $rc
 }
 
-W=$(mktemp -d "${RELEASE_TMP:-$HOME/.cache}/sift-release.XXXXXX") && mkdir -p "$STATE/logs" || exit 1
+W=$(mktemp -d "${RELEASE_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")}/sift-release.XXXXXX") && mkdir -p "$STATE/logs" || exit 1
 trap 'cp -f "$W"/*.log "$STATE/logs/" 2>/dev/null; rm -rf "$W"' EXIT
 if [[ -n $DRY ]]; then R=$W/repo; git clone -q "$REPO" "$R" && git -C "$R" remote set-url origin "$(git -C "$REPO" remote get-url origin)" && git -C "$R" remote set-url --push origin no-push://dry-run; else R=$REPO; fi
 g() { git -C "$R" "$@"; }
@@ -228,7 +256,7 @@ bump() {
 
 # ---------- lint of the release commit: what the push CI of main runs on it (a red lint there is a tag commit that fails by construction)
 lint_release() {
-	( cd "$R" && GITHUB_BASE_REF=main scripts/lint.sh ) >"$W/lint.log" 2>&1 || { grep -E '^(FAIL|[a-z-]+:)' "$W/lint.log" | head -20; echo "scripts/lint.sh fails on the bumped tree (the whole log: $W/lint.log, kept in $STATE/logs)"; return 1; }
+	lint_tree "$R" >"$W/lint.log" 2>&1 || { grep -E '^(FAIL|[a-z-]+:)' "$W/lint.log" | head -20; echo "scripts/lint.sh fails on the bumped tree (the whole log: $W/lint.log, kept in $STATE/logs)"; return 1; }
 	echo "lint ok on $(g rev-parse --short HEAD)"
 }
 

@@ -22,9 +22,12 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tc_col ON tc USING sift_col (id, g, a, b, c, d, t, z, s, v);
-NOTICE:  sift_col index tc_col writes a rollup of the rows by g, v
+NOTICE:  sift_col index "tc_col": rollup_dims = 'auto' writes a rollup of the rows by g, v
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 378 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX tc_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX tc_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "tc_col" installed two statement triggers on table "tc" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 VACUUM (ANALYZE) tc;
 CREATE FUNCTION tc_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
@@ -94,7 +97,7 @@ NOTICE:  table "tc_b" does not exist, skipping
  date              | same+topn 25
  date_desc         | same+topn 25
  date_infinity     | same+topn 25
- deep_page         | same+topn 20
+ deep_page         | same+topn+sorted 20
  int_above         | same+topn 40
  int_asc           | same+topn 25
  int_below         | same+topn 40
@@ -160,11 +163,11 @@ UPDATE tc SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tc SET a = -5, d = NULL WHERE id % 89 = 0;
 DELETE FROM tc WHERE id % 83 = 0;
 SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'int_below', 'bigint_asc', 'date', 'timestamp', 'lower', 'upper_desc', 'lower_locale', 'varchar', 'three_keys', 'deep_page') ORDER BY tag COLLATE "C";
-     tag      |   tc_check   
---------------+--------------
+     tag      |      tc_check       
+--------------+---------------------
  bigint_asc   | same+topn 25
  date         | same+topn 25
- deep_page    | same+topn 20
+ deep_page    | same+topn+sorted 20
  int_asc      | same+topn 25
  int_below    | same+topn 40
  int_desc     | same+topn 25
@@ -200,8 +203,11 @@ CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
-NOTICE:  sift_col: the strings of leaf 1 (attribute 2) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+NOTICE:  sift_col index "tv_col" installed two statement triggers on table "tv" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT tc_check($q$SELECT id, w FROM tv ORDER BY upper(w) DESC, id LIMIT 10$q$) AS overflow_key;
@@ -216,6 +222,8 @@ CREATE TABLE tq (id int, kn int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE tq ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO tq SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END, repeat('x', 1500) FROM generate_series(1, 12000) g;
 CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (order_columns = 'kn', cube_minmax = false, superunit = 0);
+NOTICE:  sift_col index "tq_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 ANALYZE tq;
 CREATE FUNCTION tq_runs(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text;

@@ -233,16 +233,16 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				else if (join_extra_leaves(cb, j) > 0 && combo_numeric_slots(cb) > 0)
 					*entry_cost += combo_entries(c, s, cb, probes, false) * (AGG_ENTRY_ROW + cb->nslots * AGG_ENTRY_SLOT) / AGG_SCAN_SPEED;
 			}
-			/* Without equality keys, every cached input tests every child row. */
+			/* Without equality keys, every cached input tests every child row, and the inputs are the tuples the scan keeps: the join that follows narrows them to scan_rows only after the test */
 			if (j->nkey == 0 && j->params == NIL)
 			{
-				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->tuples,
+				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows,
 							built = 0;
 
 				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
 				if (j->fslot >= 0)
 					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
-				cost += combo_entries(c, s, cb, scan_rows, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
+				cost += combo_entries(c, s, cb, alive, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
 			}
 			continue;
 		}

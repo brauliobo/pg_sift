@@ -10,7 +10,7 @@
 #pragma GCC visibility push(hidden)
 
 /* update/ */
-void float_guard(AggExec *ex, int ai, const double *x, int nsel);
+void float_guard(AggExec *ex, int ai, const double *x, const uint64 *ok, int n, const uint32 *gid);
 
 /* dense.c: false when the chunk is not dense and goes through the list of tuples */
 bool dense_chunk(AggExec *ex, int start, int n, const uint64 *mask);

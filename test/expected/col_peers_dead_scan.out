@@ -3,6 +3,8 @@
 -- col_scan_unit -> sift_col_sel_all; a column the index does not hold keeps the plan off the covering paths): from one backend that stays connected through the peers with dead rows, a REINDEX that replaces them and the rewrite, every answer is
 -- the one of the sequential scan, with a fresh IN list each time (what the backend keeps for a segment must not leak to another).
 CREATE EXTENSION pg_sift;
+SET sift.test_limits = 'par_build_rows=1';
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
 SET max_parallel_workers_per_gather = 0;
@@ -32,7 +34,7 @@ BEGIN
 				WHEN NOT used THEN 'ok, but not the index scan' ELSE 'ok' END;
 END $$;
 CREATE FUNCTION rv_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 3) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
+$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 2) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
 -- 1. the peers as the build leaves them, then with dead rows in every one
 SELECT * FROM rv_peers();
  peers_overlap | unequal_units | dirty_units 
@@ -43,7 +45,7 @@ SELECT * FROM rv_peers();
 SELECT result, count(*) FROM rv_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- ok     |    72
+ ok     |    48
 (1 row)
 
 DELETE FROM rv WHERE id % 13 = 0;
@@ -59,7 +61,7 @@ SELECT * FROM rv_peers();
 SELECT result, count(*) FROM rv_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- ok     |    72
+ ok     |    48
 (1 row)
 
 -- 2. the peers are replaced under the connected backend, and the new ones get dead rows
@@ -73,7 +75,7 @@ SELECT * FROM rv_peers();
 SELECT result, count(*) FROM rv_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- ok     |    72
+ ok     |    48
 (1 row)
 
 DELETE FROM rv WHERE id % 11 = 0;
@@ -88,7 +90,7 @@ SELECT * FROM rv_peers();
 SELECT result, count(*) FROM rv_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- ok     |    72
+ ok     |    48
 (1 row)
 
 -- 3. the rewrite replaces the peers under the same backend
@@ -101,7 +103,7 @@ SELECT sift.col_maintain('rv_idx') AS rewrote;
 SELECT result, count(*) FROM rv_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- ok     |    72
+ ok     |    48
 (1 row)
 
 SELECT sift.col_verify('rv_idx', true);

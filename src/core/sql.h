@@ -45,6 +45,7 @@ extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) reco
 
 /* core/jsonbuild.c */
 extern PGDLLEXPORT Datum sift_json_build_object(PG_FUNCTION_ARGS);	/* (VARIADIC "any") json */
+extern bool sift_json_build_object_calls(Query *q);	/* does a query tree call json_build_object (a read-only walk) */
 extern void sift_json_build_object_swap(Query *q);	/* the calls of json_build_object in a query tree call sift.json_build_object */
 
 /* bm25/facet.c */

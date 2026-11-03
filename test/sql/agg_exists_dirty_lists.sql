@@ -140,7 +140,8 @@ SELECT same(tq('f.id BETWEEN 90 AND 160')) AS after_promotion;
 SELECT same(tq('f.id BETWEEN 395 AND 405')) AS after_promotion_element_a_list;
 SELECT same(tq('f.id BETWEEN 505 AND 515')) AS after_promotion_score_nested;
 SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS after_promotion_buffer;
-SELECT same(cq('f.id IN (4002, 4003, 4005)')) AS cast_after_promotion_buffer;
+-- id + 0: the b-tree of the primary key answers a short list of keys (agg_unique_key_in_list), and the scan is the plan under test
+SELECT same(cq('f.id + 0 IN (4002, 4003, 4005)')) AS cast_after_promotion_buffer;
 SELECT same(cq('f.id BETWEEN 1390 AND 1430 AND f.id <> 1420')) AS cast_after_promotion_kept_by_cast;
 SELECT sift.col_merge('facts_col', true) >= 0 AS merged;
 SELECT same(tq('f.id BETWEEN 395 AND 405')) AS after_merge_element_a_list;

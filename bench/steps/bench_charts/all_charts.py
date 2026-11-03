@@ -1,4 +1,4 @@
-# make() draws every chart of docs/img for the results that exist.
+# make() draws every chart of bench/out/img for the results that exist.
 # A chart whose data file is missing is left out.
 
 import os

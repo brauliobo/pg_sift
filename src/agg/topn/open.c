@@ -17,11 +17,13 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
 #include "utils/varlena.h"
 
+#include "col/am.h"
 #include "agg/topn/int.h"
 
 bool		sift_topn_zone_keys = true;
@@ -30,6 +32,7 @@ bool		sift_topn_heads = true;
 #endif
 bool		sift_topn_runs = true;
 bool		sift_topn_gorder_on = true;
+int			sift_topn_gbudget = 0;
 
 /* Does a heap entry keep the value of the leaf as an integer (leaf_datum gives its Datum): the output of a row is then read from its unit */
 bool
@@ -91,7 +94,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, List *lookups, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
@@ -105,7 +108,13 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 	for (int c = 0; c < nout; c++)
 		l = lappend_int(lappend_int(l, attno[c]), oleaf[c]);
 	l = lappend_int(l, flags);
-	return (Node *) list_make4(l, count, offset, exprs);
+	return (Node *) list_make5(l, count, offset, exprs, lookups);
+}
+
+List *
+sift_topn_lookups(Node *spec)
+{
+	return SPEC_LOOKUPS(spec);
 }
 
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
@@ -201,6 +210,7 @@ fetch_begin(SiftTopN *t, int part)
 	}
 	f->slot = table_slot_create(heap, NULL);
 	f->fetch = sift_table_index_fetch_begin(heap);
+	f->nblocks = RelationGetNumberOfBlocks(heap);
 	MemoryContextSwitchTo(old);
 }
 
@@ -281,6 +291,13 @@ sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 	}
 }
 
+/* a boolean column other than a key: its condition is tested on the heap row of the entry */
+int
+sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf)
+{
+	return lay->leaf[leaf].typid == BOOLOID ? leaf_var_attno(lay, leaf) : 0;
+}
+
 /* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */
 bool
 sift_topn_same_scale(Oid a, Oid b)
@@ -288,23 +305,44 @@ sift_topn_same_scale(Oid a, Oid b)
 	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
 }
 
+/* The key of a numeric heap value as the arrays hold it; a NaN or an infinity (the array has none: a segment with one has no array) is a key no entry has */
+int64
+numeric_gkey(int scale, Datum d)
+{
+	Numeric		n = DatumGetNumeric(d);
+
+	if (numeric_is_nan(n) || numeric_is_inf(n))
+		return PG_INT64_MIN;
+	return sift_col_numeric_key(scale, d, SIFT_COL_ROUND_NEAREST);
+}
+
 /* Can the global order of the first key stand for the scan, the others being read from the heap rows: plain integer and time columns of a heap */
 static bool
 order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 {
-	if (t->nkey > TOP_GKEYS || lay->is_table || heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	if (t->nkey > TOP_GKEYS || lay->is_table)
 		return false;
 	for (int j = 0; j < t->nkey; j++)
 	{
 		const TopKey *k = &t->key[j];
 
-		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->nenum || (t->gatt[j] = k->blob ? leaf_var_attno(lay, k->leaf) : sift_topn_leaf_attno(lay, k->leaf)) == 0)
+		const SiftSrcLeaf *lf = k->leaf < 0 ? NULL : &lay->leaf[k->leaf];
+		/* a numeric(p <= 18, s): its key in the arrays is the number scaled by 10^s */
+		bool		num = lf != NULL && lf->typid == NUMERICOID && lf->vtype == SCV_I64 && !lf->wide && !k->blob;
+
+		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->nenum ||
+			(t->gatt[j] = num ? leaf_var_attno(lay, k->leaf) : k->blob ? leaf_var_attno(lay, k->leaf) : sift_topn_leaf_attno(lay, k->leaf)) == 0)
 			return false;
-		t->gtyp[j] = lay->leaf[k->leaf].typid;
+		t->gtyp[j] = lf->typid;
+		t->gscale[j] = num ? lf->scale : 0;
 		if (k->blob)
 		{
-			/* the one key of a text column (text, varchar): its strings are ranked in the arrays under the collation of the query's order */
-			if (t->nkey != 1 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID))
+			/*
+			 * the first key of a text column (text, varchar): its strings are ranked in the arrays under the collation of the query's order; the keys after it are read from the heap
+			 * rows, and a group of equal strings is told by its bytes, so a collation that calls different bytes equal cannot have them
+			 */
+			if (j != 0 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID) ||
+				(t->nkey > 1 && !get_collation_isdeterministic(k->collid)))
 				return false;
 			t->gtext = true;
 		}
@@ -368,7 +406,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			t->nblob++;
 		}
 	}
-	if (t->nblob > 0 || t->nexpr > 0)
+	if (t->nblob > 0 || t->nexpr > 0 || t->key[0].nenum > 0)
 		t->ucxt = AllocSetContextCreate(cxt, "sift top-N unit", ALLOCSET_DEFAULT_SIZES);
 	if (t->nblob > 0)
 		t->oc = palloc0(ORD_CACHE * sizeof(OrdCode));
@@ -413,6 +451,9 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->stride = t->nkey + (t->nkey + 63) / 64 + 1;
 		t->mem = palloc(1024 * t->stride * sizeof(int64));
 		t->capmem = 1024;
+		/* the Limit above takes the first LIMIT + OFFSET rows of the sort: the rows after them are not kept (but those that tie, TOPN_TIES) */
+		if (!(flags & TOPN_TIES))
+			t->keep = t->gwant;
 	}
 	else if (t->limit > 0)
 	{
@@ -448,6 +489,13 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		}
 	}
 	t->gok = order_gok(t, lay, heap);
+	/* the output is the first key alone, as the entry of the array has it */
+	if (t->gok && t->nkey == 1 && !t->gtext && t->nout > 0 && t->key[0].xk == TXK_NONE && t->key[0].x == NULL && !t->key[0].blob && !t->key[0].nenum)
+	{
+		t->gkeyout = t->gtyp[0] != NUMERICOID && sift_topn_out_ok(&lay->leaf[t->key[0].leaf]);
+		for (int c = 0; c < t->nout && t->gkeyout; c++)
+			t->gkeyout = t->oleaf[c] == t->key[0].leaf;
+	}
 	t->snap = snapshot;
 	t->src = src;
 	t->rel = heap;

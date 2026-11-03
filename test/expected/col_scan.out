@@ -2,7 +2,7 @@
 -- integer operators and OR/AND of bitmaps on a column index built with the sift.col_*_ops operator classes. Every query runs three ways and
 -- must return the same rows: on the heap (sc, no index but the column index, sequential scan), on the column index (sc, bitmap scan) and on
 -- btrees (sc_b, a copy that gets the same statements). Over the build, the write buffer, updates, deletes, a rollback, the promotion of the
--- buffer and a merge.
+-- buffer and a merge. The cut and the point directories are not under test (a table that was never analyzed has them chosen when the rewrite sees its statistics): off.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 -- pad makes a page hold about 15 rows: 30000 rows are about 8 superblocks
@@ -35,10 +35,12 @@ ALTER TABLE sc_b ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sc_b SELECT * FROM sc;
 CREATE INDEX sc_col ON sc USING sift_col (id sift.col_int4_ops, v sift.col_int4_ops, k2 sift.col_int2_ops, k8 sift.col_int8_ops, d sift.col_date_ops,
 	ts sift.col_timestamp_ops, tz sift.col_timestamptz_ops, s sift.col_text_ops, u sift.col_uuid_ops, g sift.col_int4_ops,
-	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc');
-NOTICE:  sift_col index sc_col writes a rollup of the rows by g, b
+	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc', key_cut = 'off', point_tid_columns = 'off');
+NOTICE:  sift_col index "sc_col": rollup_dims = 'auto' writes a rollup of the rows by g, b
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX sc_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX sc_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "sc_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX sc_b_id ON sc_b (id);
 CREATE INDEX sc_b_v ON sc_b (v);
 CREATE INDEX sc_b_k2 ON sc_b (k2);
@@ -262,13 +264,15 @@ CREATE FUNCTION sc_all(OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx b
 -- the queries the planner reads the column index for, and the ones that disagree (none)
 \echo -- after the build
 -- after the build
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_all();
+-- the 4 ways of every query run once for the summary and the list
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_r;
  queries | agree | on_col | on_tup | on_btree 
 ---------+-------+--------+--------+----------
      142 |   142 |    135 |    132 |      134
 (1 row)
 
-SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
+SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_r;
   n  | rows | agree | col_idx | tup_idx | btree_idx 
 -----+------+-------+---------+---------+-----------
    1 |    1 | t     | t       | t       | t
@@ -415,6 +419,7 @@ SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
  142 |  139 | t     | t       | t       | t
 (142 rows)
 
+DROP TABLE sc_r;
 -- a join that reads the column index once for each outer row
 CREATE TABLE sc_few (id int);
 INSERT INTO sc_few SELECT i * 301 FROM generate_series(1, 20) i;
@@ -529,17 +534,19 @@ SELECT buffers > 0 AS rows_in_the_buffer FROM sift.col_index_info('sc_col'::regc
  t
 (1 row)
 
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_r;
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
      142 |   142 |    135 |    132
 (1 row)
 
-SELECT n, rows, agree FROM sc_all() WHERE NOT agree;
+SELECT n, rows, agree FROM sc_r WHERE NOT agree;
  n | rows | agree 
 ---+------+-------
 (0 rows)
 
+DROP TABLE sc_r;
 -- an open transaction reads its own rows, a rollback leaves none
 BEGIN;
 SELECT sc_dml($$INSERT INTO %T (id, v, g, s) SELECT 200000 + i, 7, 7, 'k7' FROM generate_series(1, 50) i$$);
@@ -651,6 +658,8 @@ CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_text_ops);
 ERROR:  operator class sift.col_text_ops needs a deterministic collation
 HINT:  Use the default operator class for a column under a nondeterministic collation.
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci);
+NOTICE:  sift_col index "sc_col_ci" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP INDEX sc_col_ci;
 -- a char without a length and a numeric the leaf holds in another form are not scanned
 CREATE TABLE sc_bad (w bpchar, y numeric, z numeric(30, 5));

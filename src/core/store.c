@@ -34,6 +34,7 @@
 #include "core/ops.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/visibility.h"
 
 bool		sift_standby_conflicts = true;
 
@@ -292,7 +293,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 	{
 		const SiftSegEntry *s = &dir->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED)
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_TOMB)
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
@@ -350,8 +351,8 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	bool		pending = publish && chg->nrelease > 0 && !chg->immediate && !space_exclusive;
 	FullTransactionId safexid = pending && xid_safexid() ?
 		GetTopFullTransactionId() : InvalidFullTransactionId;
-	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	Buffer		dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
+	Buffer		metabuf;
+	Buffer		dirbuf;
 	FreePlan	plan = {.flbuf = InvalidBuffer, .newhead = InvalidBlockNumber};
 	GenericXLogState *state;
 	SiftMetaPageData before;
@@ -360,6 +361,10 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Page		fp = NULL;
 	Page		xp = NULL;
 
+	/* a test lets a reader start between the xid and the locks: its snapshot is later than the xid and reads the directory as it is before this change */
+	SIFT_TEST_GATE(pending && sift_test_release_gate, 6);
+	metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
+	dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
 	SIFT_DIR_TEST_POINT(false);
 	if (pending && !FullTransactionIdIsValid(safexid))
 		safexid = ReadNextFullTransactionId();
@@ -381,7 +386,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
-		if (META(mp)->maint_failed_at != 0)
+		if (META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0])
 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)

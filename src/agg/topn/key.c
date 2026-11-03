@@ -460,6 +460,58 @@ res_values(SiftTopN *t, TopEnt *c, uint32 oi, const int64 *v, const bool *vn)
 	}
 }
 
+static void
+reverse_ents(TopEnt *h, int n)
+{
+	for (int i = 0; i < n / 2; i++)
+	{
+		TopEnt		tmp = h[i];
+
+		h[i] = h[n - 1 - i];
+		h[n - 1 - i] = tmp;
+	}
+}
+
+/* The heap holds its n entries: a run in rank order is already one (worst first) or is once reversed; else the entries are made a heap */
+static void
+heap_made(SiftTopN *t)
+{
+	t->desc_run = !t->brk_up || !t->brk_down;
+	if (!t->brk_up)
+		reverse_ents(t->heap, t->n);
+	else if (t->brk_down)
+		for (int i = t->n / 2 - 1; i >= 0; i--)
+			heap_down(t, t->heap, t->n, i);
+}
+
+/*
+ * The entries a unit gives an empty heap that they do not overfill, with no output columns of their own: the unit's array becomes the heap's (and the heap's
+ * the unit's scratch: both hold limit entries), where the entries would be copied one by one. False when the heap or the array is not fit for it.
+ */
+bool
+res_take(SiftTopN *t, int n)
+{
+	TopEnt	   *h = t->heap;
+
+	if (t->n != 0 || t->nblob != 0 || n > t->limit || t->ccap != t->limit)
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		int			cmp = i > 0 ? ent_cmp(t, &t->ce[i], &t->ce[i - 1]) : 0;
+
+		t->brk_up |= cmp < 0;
+		t->brk_down |= cmp > 0;
+		t->ce[i].oi = i;
+		t->ce[i].hasv = false;
+	}
+	t->heap = t->ce;
+	t->ce = h;
+	t->n = n;
+	if (n == t->limit)
+		heap_made(t);
+	return true;
+}
+
 /* An entry takes the place of the one it pushes out, or the next place while the heap fills */
 void
 res_push(SiftTopN *t, const TopEnt *e, const int64 *v, const bool *vn)
@@ -469,23 +521,34 @@ res_push(SiftTopN *t, const TopEnt *e, const int64 *v, const bool *vn)
 
 	if (t->nblob == 0)
 	{
-		/* the entries are kept as they come until there are n of them, then made a heap: the fill costs one comparison an entry less log n */
+		/*
+		 * the entries are kept as they come until there are n of them, then made a heap: the fill costs one comparison an entry less log n. A run in rank order (a unit
+		 * whose key follows the row order gives its rows so) is a heap once reversed, and already sorted for the end, so the heap is not built nor the result sorted.
+		 */
 		if (t->n < t->limit)
 		{
+			if (t->n > 0)
+			{
+				int			cmp = ent_cmp(t, e, &t->heap[t->n - 1]);
+
+				t->brk_up |= cmp < 0;
+				t->brk_down |= cmp > 0;
+			}
 			res_values(t, &c, t->n, v, vn);
 			t->heap[t->n++] = c;
 			if (t->n == t->limit)
-				for (int i = t->n / 2 - 1; i >= 0; i--)
-					heap_down(t, t->heap, t->n, i);
+				heap_made(t);
 			return;
 		}
 		if (ent_cmp(t, e, &t->heap[0]) >= 0)
 			return;
+		t->desc_run = false;
 		res_values(t, &c, t->heap[0].oi, v, vn);
 		t->heap[0] = c;
 		heap_down(t, t->heap, t->n, 0);
 		return;
 	}
+	t->brk_up = t->brk_down = true;
 	if (t->n == t->limit)
 	{
 		if (ent_cmp(t, e, &t->heap[0]) >= 0)
@@ -509,11 +572,20 @@ sift_topn_finish(SiftTopN *t)
 	if (t->sort)
 		tuplesort_performsort(t->sort);
 	else if (t->all)
+	{
+		mem_cut(t);
 		qsort_arg(t->mem, t->nmem, t->stride * sizeof(int64), mem_cmp, t);
+	}
 	else
 	{
 		t->res = t->heap;
-		sort_ents(t->res, t->n, t);
+		/* a result that was never out of rank order is a run: the worst-first array of a full heap, or a best-first or worst-first one while it is not full */
+		if (t->desc_run || (t->n < t->limit && !t->brk_down && t->brk_up))
+			reverse_ents(t->res, t->n);
+		else if (!(t->n < t->limit && !t->brk_up))
+			sort_ents(t->res, t->n, t);
+		t->desc_run = false;
+		t->brk_up = t->brk_down = true;
 		if (t->want > 0 && t->n >= t->want)
 		{
 			const TopEnt *w = &t->res[t->want - 1];

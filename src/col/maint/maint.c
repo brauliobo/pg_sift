@@ -34,22 +34,30 @@ int			sift_col_auto_merge_max_workers = 0;
  */
 int	maint_part_kb = 0;
 
+int
+maint_part_kb_for(uint64 bytes)
+{
+	int			kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
+		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+	uint64		mem_kb;
+
+	if (sift_col_auto_merge_partition_kb > 0)
+		return kb;
+	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
+	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
+		kb = (int) Min(mem_kb, (uint64) INT_MAX);
+	return kb;
+}
+
 void
 maint_use_partitions(const SiftDirSnapshot *snap)
 {
 	uint64		bytes = 0;
-	uint64		mem_kb;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			bytes += snap->segs[i].bytes;
-	maint_part_kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
-		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
-	if (sift_col_auto_merge_partition_kb > 0)
-		return;
-	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
-	if (bytes / 1024 > mem_kb && (maint_part_kb == 0 || mem_kb < (uint64) maint_part_kb))
-		maint_part_kb = (int) Min(mem_kb, (uint64) INT_MAX);
+	maint_part_kb = maint_part_kb_for(bytes);
 }
 
 /*
@@ -75,6 +83,7 @@ maint_throttle(SiftWriteTarget *wt)
 
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
 int	maint_merge_workers = 0;
+bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
@@ -85,16 +94,19 @@ const SiftMaintOps maint_col_ops = {
 	.force_seals = true,
 	.vacuum_truncate = maint_vacuum_truncates,
 	.vacuum_seal = sift_cwbuf_seal_vacuum,
+	.vacuum_rotate = sift_cwbuf_rotate,
 	.is_index = maint_is_col,
 	.seal = sift_cwbuf_seal,
 	.promote_next = maint_promote_next,
 	.merge_next = maint_merge_next,
 	.bulkdelete_immutable = maint_bulkdelete_immutable,
 	.bulkdelete_wbuf = maint_bulkdelete_wbuf,
+	.bulkdelete_tomb = maint_bulkdelete_tomb,
+	.vacuum_net = maint_net_refresh,
+	.vacuum_log = maint_vacuum_log,
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
 	.rewrite_all = maint_rewrite_all,
-	.compact_segment = maint_compact_segment,
 	.vacuum_space_defer = maint_space_deferred,
 	.vacuum_done = maint_rewrite_request,
 };
@@ -123,6 +135,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 		workers = Min(workers, sift_test_col_merge_workers);
 #endif
 	maint_merge_workers = workers;
+	maint_after_build = true;
 	PG_TRY();
 	{
 		merged = sift_mops_rewrite(&maint_col_ops, index, false) > 0;
@@ -130,6 +143,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 	PG_FINALLY();
 	{
 		maint_merge_workers = 0;
+		maint_after_build = false;
 	}
 	PG_END_TRY();
 	if (merged || gapn > 0)
@@ -173,7 +187,7 @@ sift_col_maint_merge_step(Relation index, bool wait)
  * shutdown go on as they were.
  */
 static void
-worker_failed(Oid indexoid, MemoryContext cx)
+worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 {
 	ErrorData  *err;
 
@@ -183,10 +197,7 @@ worker_failed(Oid indexoid, MemoryContext cx)
 	AbortCurrentTransaction();
 	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	ereport(WARNING,
-			(errcode(err->sqlerrcode),
-			 errmsg("maintenance of sift_col index %u failed: %s", indexoid, err->message),
-			 errdetail("It is retried later, after a growing delay.")));
+	sift_maint_warn_failure("sift_col", name, err);
 	sift_maint_record_failure(indexoid, err);
 	FreeErrorData(err);
 }
@@ -198,6 +209,7 @@ sift_col_maint_worker_main(Datum main_arg)
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);	/* the name of the index, once it is open: a failure before that names the oid */
 
 	PG_TRY();
 	{
@@ -206,11 +218,14 @@ sift_col_maint_worker_main(Datum main_arg)
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 		index = try_index_open(indexoid, RowExclusiveLock);
+		if (index != NULL)
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
 				CHECK_FOR_INTERRUPTS();
+			sift_mops_cut_free_end(&maint_col_ops, index);
 			sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
 		}
 		if (index != NULL)
@@ -220,7 +235,7 @@ sift_col_maint_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, cx);
+		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
 }
@@ -251,6 +266,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
 
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
 	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
@@ -264,6 +280,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 			if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
 			{
 				TimestampTz start = GetCurrentTimestamp();
@@ -278,7 +295,15 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, cx);
+		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
+}
+
+/* The rewrite that the reads of a backend priced (sift_col_vacuum_tick): the rule of VACUUM and the WAL budget of the changes do not hold what the reads owe */
+void
+sift_col_read_rewrite_worker_main(Datum main_arg)
+{
+	maint_read_asked = true;
+	sift_col_rewrite_worker_main(main_arg);
 }

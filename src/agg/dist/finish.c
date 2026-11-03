@@ -5,8 +5,6 @@
  */
 #include "postgres.h"
 
-#include "utils/tuplesort.h"
-
 #include "agg/dist/int.h"
 
 typedef struct DistPairs
@@ -36,17 +34,11 @@ typedef struct PairSplit
 static void
 dist_sorted(Dist *d, void (*fn) (void *arg, int32 sid, int64 val), void *arg)
 {
-	Datum		x;
-	bool		isnull;
-	int64		prev = -1;
+	uint64		x;
 
-	tuplesort_rescan(d->sort);
-	while (tuplesort_getdatum(d->sort, true, false, &x, &isnull, NULL))
-	{
-		if (DatumGetInt64(x) != prev)
-			fn(arg, (int32) (DatumGetInt64(x) >> 32), (uint32) DatumGetInt64(x));
-		prev = DatumGetInt64(x);
-	}
+	psort_rewind(d->sort);
+	while (psort_next(d->sort, &x))
+		fn(arg, (int32) (x >> 32), (int64) (uint32) x);
 }
 
 static void
@@ -65,7 +57,7 @@ dist_finish(AggExec *ex, int ai)
 
 	if (d == NULL || d->mode != DD_SORT || d->done)
 		return;
-	tuplesort_performsort(d->sort);
+	psort_finish(d->sort);
 	d->cnt = MemoryContextAllocZero(ex->tcxt, Max(d->nsid, 1) * sizeof(uint64));
 	dist_sorted(d, dist_count_sid, d);
 	for (uint32 g = 0; g < Min(ngr, d->sidgroups); g++)
@@ -90,7 +82,7 @@ dist_end_all(AggExec *ex)
 	for (int ai = 0; ai < ex->spec->naggs; ai++)
 		if (ex->dist[ai] && ex->dist[ai]->sort)
 		{
-			tuplesort_end(ex->dist[ai]->sort);
+			psort_end(ex->dist[ai]->sort);
 			ex->dist[ai]->sort = NULL;
 		}
 }

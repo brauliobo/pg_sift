@@ -8,6 +8,7 @@
 
 /* open addressing set of (group, value id) pairs; a slot holds the pair with bit 63 set, 0 is empty */
 typedef struct Dist Dist;
+typedef struct PairSort PairSort;
 
 typedef struct DSet
 {
@@ -29,12 +30,14 @@ typedef struct DSet
  *
  *   DD_BITS  a bitmap per group, in chunks of 4096 bits allocated when a value falls in them, under a directory of chunk pointers that
  *            covers the range of values seen so far (the same for every group). A value costs one bit when the domain is dense (customer
- *            ids 1 to 2 million by 36 months is 9 MB); a test-and-set tells whether it is new. The range is limited to 2^28 values.
+ *            ids 1 to 2 million by 36 months is 9 MB); a test-and-set tells whether it is new. The range is limited to 2^28 values. Past
+ *            DIST_SPARSE_FROM bytes the set is looked at each time its bytes double, and becomes a DD_HASH one when it costs more than
+ *            DIST_SPARSE_BYTES for each value (ids spread over the domain, a few in each group: a chunk and a directory a value).
  *   DD_HASH  an open addressing set of (group, value) pairs, sized to hash_mem; values are inserted a batch at a time, the slots
  *            prefetched first.
- *   DD_SORT  every (group, value) pair goes through a tuplesort (work_mem, spilling to disk as the normal plan's sort does), and the
- *            groups' counts are taken from the sorted runs when the scan ends. A group is named by its sort id (the groups are
- *            renumbered while the scan runs), the number of its first value.
+ *   DD_SORT  every (group, value) pair goes to an array of hash memory (psort.c) that is sorted by radix and stripped of repeats when it is full, and
+ *            to a sorted run on disk when it is still more than half full; the groups' counts are taken from the merged runs when the scan ends. A group is
+ *            named by its sort id (the groups are renumbered while the scan runs), the number of its first value.
  *
  * dist_add() returns true when the pair is new and the count of the group is to be incremented at once; in DD_SORT it cannot know and
  * returns false, and dist_finish() sets the counts of all the groups.
@@ -63,6 +66,7 @@ typedef uint64 *DistChunk;
 struct Dist
 {
 	DistMode	mode;
+	int			ai;				/* the aggregate whose pairs these are */
 	bool		sgn;			/* the values are int32 */
 	bool		done;			/* DD_SORT: sorted and counted */
 	uint64		budget;			/* bytes the bitmaps or the set may take */
@@ -77,6 +81,7 @@ struct Dist
 	uint32		ngd;			/* groups with room in gd */
 	DistChunk **gd;				/* per group: its directory */
 	uint64		bytes;
+	uint64		chk;			/* bytes from which the next look at how sparse the bitmaps are */
 	uint64	   *arena;
 	uint32		arena_left;
 	uint64	   *freec;			/* chunks dist_compact gave back, linked through their first word */
@@ -85,7 +90,7 @@ struct Dist
 	DSet		ds;
 	uint64		maxn;
 	/* DD_SORT */
-	Tuplesortstate *sort;		/* int8 datums: the number of the group above the value id */
+	PairSort   *sort;			/* the number of the group above the value id, as int8 */
 	uint32		nsid;
 	uint32		nsidcap;
 	uint32	   *sid;			/* per group: its sort id + 1 */
@@ -104,13 +109,19 @@ dset_hash(uint64 x)
 #pragma GCC visibility push(hidden)
 
 /* agg/dist/ */
+PairSort *psort_begin(MemoryContext cxt, uint64 budget);
+void psort_put(PairSort *s, uint64 v);
+void psort_finish(PairSort *s);
+void psort_rewind(PairSort *s);
+bool psort_next(PairSort *s, uint64 *v);
+void psort_end(PairSort *s);
 void agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get);
 void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
 /* tuples ahead whose pair slot is prefetched while a loop adds: the set outgrows the caches with the groups */
 #define DSET_AHEAD	8
 void dset_prefetch(const DSet *s, uint32 g, uint32 v);
-Dist *dist_new(AggExec *ex, bool sgn);
+Dist *dist_new(AggExec *ex, int ai, bool sgn);
 bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
 uint64 dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, uint64 nwords);
 uint64 dist_or_chunk(AggExec *ex, Dist *d, uint32 g, int64 xc, const uint64 *bits);

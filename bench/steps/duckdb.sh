@@ -5,7 +5,7 @@
 # checkout, and the official pg_duckdb image (STORE_DUCKDB_IMAGE in versions.env). Their threads are told the same budget N (--cpus): a leader and N - 1 parallel workers for
 # PostgreSQL, duckdb.threads N and N - 1 workers for the Postgres scan of pg_duckdb. steps/duckdb.py measures four lanes (PostgreSQL, pg_sift, pg_duckdb on the heap, pg_duckdb on
 # the Parquet file it writes), warm and cold, the median of --runs; the timed part takes the perf lock (D_LOCK, default /tmp/sift-perf.lock).
-#   --docs   write bench/results/duckdb.tsv and the generated block of docs/BENCHMARKS.md and README.md
+#   --docs   write bench/results/duckdb.tsv and the generated block of bench/out/BENCHMARKS.md and README.md
 #   --rows   orders (default 200000, the `quick` size of the store benchmark)    --questions  numbers of the questions, comma separated (default all)
 #   --keep   keep the containers and the CSV    D_PORT  the first of two ports (default 56290)    IMAGE_JOBS  the make jobs of the pg_sift image (default 2)
 set -euo pipefail

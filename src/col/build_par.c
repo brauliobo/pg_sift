@@ -8,10 +8,13 @@
 
 #include "access/parallel.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
+#include "datatype/timestamp.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "optimizer/paths.h"
 #include "pgstat.h"
 #include "storage/condition_variable.h"
 #include "tcop/tcopprot.h"
@@ -23,10 +26,21 @@
 #include "bm25/build.h"
 #endif
 #include "col/build.h"
+#include "core/limits.h"
 #include "core/parbuild.h"
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15
+
+/*
+ * The rows a participant takes at the least. Every participant writes segments of its own, interleaved with the others' (a superblock is claimed at a time), so each
+ * further one costs the index 4 to 5% of its bytes, a unit's worth of instructions in the floor of every statement (+0.025 M of 0.22 M for the count of one value, +11%)
+ * and a merge afterwards that is dearer (0.65 to 0.8 of the build) than the build saved: 300,000 rows, 0.22 s alone, 0.15 s with 1 worker, 0.13 s with 2, 0.12 s with 4;
+ * 1,000,000 rows 0.64, 0.41, 0.29, 0.27 s. The weighted formula (log2(speedup of the build) / log2(1.05) against the bytes / 3 and the statements' floor, as for the arrays)
+ * pays from 150,000 rows to a participant: +3.9 for 300,000 rows with 1 worker, -0.2 with 2 (100,000 each), negative with 4. The 150,000 are for the default
+ * min_parallel_table_scan_size (8 MB) and go down with it, to none at 0; a table that sets parallel_workers has its participants.
+ */
+#define PAR_BUILD_ROWS	150000
 
 typedef struct ColShared
 {
@@ -153,14 +167,47 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 	SpinLockInit(&sh->mutex);
 }
 
+/*
+ * Does a parallel build pay? Without key_cut the participants take disjoint superblocks and their segments stay as they are: the scan is shared and nothing follows
+ * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8), as it does in a build that is not merged (CONCURRENTLY). With key_cut every
+ * participant holds all the keys, and the merge that follows rewrites every row; the workers can only take it in slices of the key range, which read every input
+ * again (instructions +77%, WAL twice, the file longer by the segments of the participants). On the tip (the rewrite of one process is 2.2 times faster than when the
+ * slices were measured, and the grouped order arrays are built by default) it does not pay at any size measured: 13 columns, 1,000,000 rows, 64 MB of
+ * `maintenance_work_mem`: 3,223 ms alone, 3,769 with 4 workers and 3,998 with 8 (CPU 3,201 / 3,736 / 3,962 ms of the backend alone); 4,000,000 rows: 13.7 s alone, 28.5 s with 4 and 29.1 s
+ * with 8 on one core, so a key_cut index is built by one process (the test option sift.test_col_parallel_always keeps the participants' build for the tests of their merge).
+ */
+static bool
+build_pays(Relation index, IndexInfo *info)
+{
+	if (info->ii_Concurrent || !sift_col_key_cut(sift_col_rel(index)))
+		return true;
+#ifdef SIFT_TESTING
+	if (sift_test_col_parallel_always)
+		return true;
+#endif
+	return false;
+}
+
 /* NULL when no worker could be launched: nothing is written and the caller builds alone */
 static SiftParLeader *
 begin_parallel(Relation heap, Relation index, IndexInfo *info)
 {
 	int			nworkers = Min(info->ii_ParallelWorkers, MAX_WORKERS);
-	SiftParLeader *ldr = sift_par_enter(info->ii_Concurrent);
+	SiftParLeader *ldr;
 	ColShared  *sh;
+	BlockNumber pages;
+	double		tuples,
+				allvisfrac;
 
+	/* a table that sets parallel_workers, or a server that lowers min_parallel_table_scan_size, asks for its participants: the rows are the rule of the others */
+	if (RelationGetParallelWorkers(heap, -1) < 0)
+	{
+		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+		nworkers = Min(nworkers, (int) Min(tuples / (sift_limit(par_build_rows, PAR_BUILD_ROWS) * Min(1.0, min_parallel_table_scan_size / 1024.0)), MAX_WORKERS) - 1);
+	}
+	if (nworkers < 1)
+		return NULL;
+	ldr = sift_par_enter(info->ii_Concurrent);
 	if (!sift_par_setup(ldr, "sift_col_build_worker", nworkers, sizeof(ColShared),
 						mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
 		return NULL;
@@ -226,7 +273,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 		return false;
 	sh = ldr->shared;
 	out = ldr->parts;
-	*sh = (MergeShared) {.common = {index->rd_index->indrelid, RelationGetRelid(index), false}, .n = n, .nslices = nslices};
+	*sh = (MergeShared) {.common = {InvalidOid, RelationGetRelid(index), false}, .n = n, .nslices = nslices};
 	pg_atomic_init_u32(&sh->next, 0);
 	memcpy(sh->in, in, n * sizeof(SiftSegEntry));
 	memset(out, 0, nslices * sizeof(SiftSegEntry));
@@ -259,7 +306,7 @@ IndexBuildResult *
 sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res;
-	SiftParLeader *ldr = begin_parallel(heap, index, info);
+	SiftParLeader *ldr;
 	ColShared  *sh;
 	SiftSegEntry *segs;
 	int			nsegs;
@@ -267,6 +314,9 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	uint32		gapn;
 	int			nmerge;
 
+	if (!build_pays(index, info))
+		return NULL;
+	ldr = begin_parallel(heap, index, info);
 	if (ldr == NULL)
 		return NULL;
 	sh = ldr->shared;
@@ -292,7 +342,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	gapn = sh->gapn;
 	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;
 	sift_par_end(ldr);
-	sift_colb_publish(index, segs, nsegs);
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
 	sift_col_build_merge(index, gap, gapn, nmerge);
 	return res;
 }

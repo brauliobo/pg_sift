@@ -8,6 +8,9 @@
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 
+/* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/order.c) */
+static bool merge_recut;
+
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic_armed = 0;
 
@@ -17,18 +20,18 @@ int			sift_test_col_refresh_sleep_armed = 0;
 #endif
 
 /*
- * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
- * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 430, rows * 45) a unit (a grouped sum over 300,000
- * rows: 10.7 M with 5% of them dead in every unit, 17.2 M with 13%, 1.3 M with the first 13% dead, which are whole units). The rewrite re-encodes every live row, 900 + 463 *
- * bytes instructions (300,000 rows: 4,200 at 7.1 bytes a row, 35,400 at 74.5). It pays once the SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a
- * segment half dead is rewritten whatever the scans, for the space.
+ * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
+ * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 700, rows * 58) a unit (a grouped count and sum over 1,000,000
+ * rows: 36 M with 5% of them dead in every unit, 58 M with 10%, 55 M with 20%; 300,000 rows: 13.5, 17.5, 16.7 M). The rewrite re-encodes every live row, 800 + 230 * bytes
+ * instructions (1,000,000 rows: 2,200 at 6.2 bytes a row, 4,600 at 16.5 with three order arrays; one price a byte fits the chunks and the order arrays). It pays once the
+ * SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a segment half dead is rewritten whatever the scans, for the space.
  */
 static bool
 rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 {
 	uint64		live = sift_cseg_live_rows(seg),
 				scan = 0,
-				row_cost = 900 + 463 * e->bytes / Max(e->ndocs, 1);
+				row_cost = SIFT_COL_REWRITE_ROW + SIFT_COL_REWRITE_BYTE * e->bytes / Max(e->ndocs, 1);
 	uint64	   *bits = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 
 	if (live * 2 <= e->ndocs)
@@ -44,6 +47,8 @@ rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 		for (uint32 w = 0; w < SIFT_COL_NWORDS(n); w++)
 			dead += pg_popcount64(bits[w]);
 		dead = n - dead;
+		if (sift_cseg_net_has(seg, u, dead))
+			continue;			/* the unit answers from its net pre-aggregates (col/seg/net.c) as a clean one does */
 		scan += Min((uint64) dead * SIFT_COL_DEAD_ROW, (uint64) n * SIFT_COL_DEAD_SCAN_ROW);
 	}
 	pfree(bits);
@@ -135,15 +140,11 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	return n > 0 && !clean_apart(index, snap, sel, n) ? n : sift_merge_pick_dead(index, &pol, snap, sel);
 }
 
-/* Units of the segment that hold a dead row */
+/* Units of the segment that hold a dead row its net pre-aggregates do not answer for (col/seg/net.c): the rest read as clean ones */
 uint32
 maint_dirty_units(SiftColSegment *seg)
 {
-	uint32		d = 0;
-
-	for (uint32 u = 0; u < seg->nsb; u++)
-		d += sift_cseg_dirty(seg, u);
-	return d;
+	return sift_cseg_net_uncovered(seg);
 }
 
 static SbSpans
@@ -217,6 +218,29 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			v->over[i] = j != i && !v->span[j].by_tid && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(&v->span[i], &v->span[j], 0);
 		}
 	return v;
+}
+
+/*
+ * A merge outside a build whose output is one segment (under a partition: the memory of its writer is what the merge of one process needs) is made by the
+ * backend and 2 of its max_parallel_maintenance_workers workers, a slice of the key range each, from MERGE_PAR_BYTES of input, and leaves 3 segments disjoint in the key
+ * (a query reads them as it reads one). Every participant decodes the rows of the inputs and writes its share: the instructions rise 2 to 4%, the blocks 7 to 8% and the
+ * index 3% for the 3 segments (5 to 7% for 5, which is why there are 3: 4 workers do not shorten the wall time, 631 against 623 ms at 1,000,000 rows). Rewrite of the
+ * 7-column index of a churned table, medians of 3 (2 at 3,000,000), wall ms with 0 / 2 / 4 workers, index MB with 0 / 2: 300,000 rows (7.3 MB) 458 / 368 / 398; 500,000
+ * (10.7) 872 / 746 / 815; 700,000 (14.6) 855 / 457 / 424; 1,000,000 (20.8) 965 / 623 / 631; 3,000,000 (62.5) 2,985 / 1,219 / 1,076. The gain in wall time is worth what the
+ * peers cost (the weighted net crosses zero) from 12 MB of index: between 500,000 and 700,000 rows.
+ */
+#define MERGE_PAR_BYTES ((uint64) 12 << 20)
+#define MERGE_WORKERS_MAX 2
+
+/* the input from which a merge outside a build is made by workers (under it one segment is the end state) */
+static uint64
+merge_par_bytes(void)
+{
+#ifdef SIFT_TESTING
+	return (uint64) sift_test_col_merge_par_kb * 1024;
+#else
+	return MERGE_PAR_BYTES;
+#endif
 }
 
 /*
@@ -298,10 +322,27 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	for (int i = 0; i < v->n; i++)
 		if (take[i])
 			sel[nsel++] = v->imm[i];
+	/* without partitions the end state of a key-cut index over the input a merge by workers starts from is also segments no dead row and no unit in common keep apart: its slices */
+	if (keyed && maint_part_kb == 0 && nsel > 1 && nsel == v->n)
+	{
+		uint64		bytes = 0;
+		bool		apart;
+
+		for (int i = 0; i < nsel; i++)
+			bytes += sel[i].bytes;
+		apart = bytes >= merge_par_bytes();
+		for (int i = 0; i < v->n && apart; i++)
+			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
+		for (int i = 0; i < v->n && apart; i++)
+			for (int j = i + 1; j < v->n && apart; j++)
+				apart = !share_superblock(&v->span[i], &v->span[j], 1);
+		if (apart)
+			nsel = 0;
+	}
 	for (int i = 0; i < v->n; i++)
 		sift_cseg_close(v->seg[i]);
 	MemoryContextDelete(cx);
-	/* one clean segment is the end state */
+	/* one clean segment is the end state (and segments no unit is in two of, above) */
 	return nsel > 1 || (nsel == 1 && (sel[0].flags & SIFT_SEG_DIRTY)) ? nsel : 0;
 }
 
@@ -364,7 +405,26 @@ typedef struct MergeOut
 	MemoryContext pcx;
 	SiftSegEntry neu[MAX_PARTS];
 	int			nneu;
+	TransactionId xstamp;		/* of the segments merged: all of them said so, else InvalidTransactionId */
 } MergeOut;
+
+/* The latest of the stamps of the segments, none when one has no stamp: a row of it may have an inserter that did not commit */
+static TransactionId
+merge_stamp(const SiftSegEntry *in, int n)
+{
+	TransactionId top = InvalidTransactionId;
+
+	for (int i = 0; i < n; i++)
+	{
+		TransactionId x;
+
+		if (!sift_seg_xstamp(&in[i], &x))
+			return InvalidTransactionId;
+		if (!TransactionIdIsValid(top) || TransactionIdFollows(x, top))
+			top = x;
+	}
+	return top;
+}
 
 static void
 out_begin(MergeOut *o)
@@ -379,13 +439,18 @@ out_begin(MergeOut *o)
 	if (o->pagg)
 		sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
-		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index));
+	{
+		const SiftColRel *r = sift_col_rel_private(o->index, CurrentMemoryContext);
+
+		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), sift_col_key_cut(r) && r->ncut > 0 ? r->cut[0] : -1);
+	}
 }
 
 static void
 out_finish(MergeOut *o)
 {
-	sift_colw_finish(o->w, &o->neu[o->nneu++]);
+	sift_colw_finish(o->w, &o->neu[o->nneu]);
+	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
 	o->w = NULL;
 	MemoryContextDelete(o->pcx);
@@ -397,6 +462,9 @@ out_next(void *arg, SiftColSegWriter *w)
 {
 	MergeOut   *o = arg;
 
+#ifdef SIFT_TESTING
+	sift_col_test_inval(o->index);
+#endif
 	if (w == NULL)
 	{
 		out_begin(o);
@@ -439,7 +507,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1};
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? merge_stamp(in, n) : InvalidTransactionId};
 	uint64		live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();
@@ -450,7 +518,9 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				heap_sbs;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
+	bool		resort = merge_recut;
 
+	merge_recut = false;
 	if (sift_col_is_index(index))
 	{
 		sift_col_pagg_rewrite(index, in, n, &rewrite);
@@ -519,14 +589,19 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		 */
 		if (live_rows > 0)
 		{
+			/* the cut is copied: the merge takes locks, which reload the cached state of the index and free what it holds */
+			int			cut[SIFT_COL_CUT_MAX];
+			int			ncut = key_cut ? sift_col_rel(index)->ncut : 0;
+
+			memcpy(cut, sift_col_rel(index)->cut, ncut * sizeof(int));
 			o.keyed = true;
 			if (slice == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
-			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? sift_col_rel(index)->cut : NULL, key_cut ? sift_col_rel(index)->ncut : 0,
+			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? cut : NULL, ncut,
 							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
-							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0);
+							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -622,30 +697,6 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1, NULL);
 }
 
-/* The segment of a generation written again as one, into the holes below it (sift_maint_compact): the bytes it took */
-uint64
-maint_compact_segment(Relation index, uint64 gen)
-{
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel;
-	const SiftColRel *r;
-	bool		found = false;
-
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs && !found; i++)
-		if (snap->segs[i].gen == gen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-		{
-			sel = snap->segs[i];
-			found = true;
-		}
-	pfree(snap);
-	if (!found)
-		return 0;
-	r = sift_col_rel_private(index, CurrentMemoryContext);
-	merge_segments(index, r->schema, r->policy, &r->pagg, &sel, 1, sift_col_format_minor, NULL, NULL, 0, 1, NULL);
-	return sel.bytes;
-}
-
 /* One slice of the merge of in[0..n), made by a participant of the build; out: its segment, ndocs 0 when the slice holds no row */
 void
 sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out)
@@ -668,27 +719,29 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 }
 
 /*
- * Fewer slices than this are merged by one process: the second round of workers (their start, a segment each, the rows decoded again) costs more than it saves.
- * 1,000,000 rows, 8 workers, 3 slices: CPU 6.0 s against 7.7 s, WAL 159 against 259 MB, wall 4.7 against 5.1 s (medians of 5); 3,000,000 rows, 9 slices:
- * wall 24.7 against 35.6 s at the same CPU.
+ * Fewer slices than this are merged by one process. The slices hold the same count of rows (slice_bounds), but every one reads all the inputs, so the merge costs more
+ * instructions than one process (+80% in a build of 1,000,000 rows): 2 slices take about what the scan the workers shared saved. A key_cut build is made by workers only
+ * for the tests (build_pays), so the participants' merge is what they exercise.
  */
-#define MERGE_SLICES_MIN 8
+#define MERGE_SLICES_MIN 3
 
 /*
- * The merge of the segments of a parallel build with key_cut, by the participants, when its output is cut into partitions (the rewrite of an index of the size
- * of one is a single segment, which a single process writes): a slice of the key range for each partition the serial merge would write, so the next step finds
- * the partitions it leaves alone. The participants take the slices, so the rows are read and written once, in parallel. Once: the steps after it are not
- * the build's. false: the merge is made by one process.
+ * The merge of the segments with key_cut by the participants of a parallel context, when its output is cut into partitions (the rewrite of an index of the
+ * size of one is a single segment, which a single process writes): a slice of the key range for each partition the serial merge would write, so the next step
+ * finds the partitions it leaves alone, of a parallel build (from MERGE_SLICES_MIN partitions) and of a merge or rewrite outside one (from 2: the rows are read by
+ * the backend and one worker each, 1.7 -> 1.1 s at 64 MB of maintenance_work_mem); when the output is one segment, outside a build, a slice for each participant
+ * from MERGE_PAR_BYTES. The participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the
+ * build's. false: the merge is made by one process.
  */
 static bool
 merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int room)
 {
 	uint64		bytes = 0;
 	uint64		share = (uint64) maint_part_kb * 1024 / 4 * 3;
-	int			workers = maint_merge_workers;
+	int			workers = maint_after_build ? maint_merge_workers : max_parallel_maintenance_workers;
 	int			nslices;
 
-	if (workers == 0 || !cut || n < 2 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+	if (workers == 0 || n < 2 || (!cut && maint_after_build) || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	for (int i = 0; i < n; i++)
 	{
@@ -696,9 +749,21 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 			return false;
 		bytes += sel[i].bytes;
 	}
-	nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
-	if (nslices < MERGE_SLICES_MIN)
-		return false;
+	if (cut)
+	{
+		nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
+		if (nslices < (maint_after_build ? MERGE_SLICES_MIN : 2))
+			return false;
+		if (!maint_after_build)
+			workers = Min(workers, nslices - 1);
+	}
+	else
+	{
+		if (bytes < merge_par_bytes() || room < 2)
+			return false;
+		workers = Min(workers, MERGE_WORKERS_MAX);
+		nslices = Min(workers + 1, room);
+	}
 	maint_merge_workers = 0;
 #ifdef SIFT_TESTING
 	sift_test_col_merge_slices = nslices;
@@ -717,19 +782,31 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	bool		cut = false;
 
 	sift_dir_read(index, snap);
+	int total = snap->nsegs;
+	for (int i = 0; i < total; i++)
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+	if (!force)
+	{
+		int keep = 0;
+		for (int i = 0; i < total; i++)
+			if (!(snap->segs[i].flags & SIFT_SEG_UNIT))
+				snap->segs[keep++] = snap->segs[i];
+		snap->nsegs = keep;
+	}
 	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut) : pick_merge(index, snap, force, sel);
 	/* the output of a merge of an index over the limit is partitions too: one segment of all the bytes of a build's tier would be larger than the space step moves */
 	if (goal != SIFT_GOAL_REWRITE)
 		cut = maint_part_kb > 0;
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
-	room = SIFT_MAX_SEGMENTS - 16 - (snap->nsegs - n);
-	for (int i = 0; i < snap->nsegs; i++)
-		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+	room = SIFT_MAX_SEGMENTS - 16 - (total - n);
 	pfree(snap);
 	if (n > 0)
 	{
-		/* the cached schema is read after the option is written: the write reloads it */
+		/* the cached schema is read after the option is written: the write reloads it. The rewrite that follows a parallel build merges the segments of its participants: the
+		 * build has just chosen from the same data, and choosing again took 40% of a build of 1,000,000 rows */
 		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
+
+		merge_recut = n == nimm && !maint_after_build && sift_col_auto_redecide(index, sel, n);
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 

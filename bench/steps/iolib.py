@@ -11,6 +11,10 @@ What one run reports (`measure`; every figure is a difference over the run, None
     stat_*                     pg_stat_io of the client backends, parallel workers (named `background worker` there) and io workers, relations (not WAL): reads, read_bytes, read_ms, writes, write_bytes, extends, extend_bytes.
                                PostgreSQL 17 has op_bytes instead of the byte columns (reads * op_bytes); 18 and 19 have them. Before 16 there is no pg_stat_io.
                                The delta is the cluster's, so it counts every other client backend that runs at the same time: measure on a quiet server
+    stat_fsyncs, wal_writes,   fsync operations on relations, and write and fsync operations on the WAL (object `wal` of PostgreSQL 18; None before: there it is pg_stat_wal)
+    wal_fsyncs
+    host_*                     the IO operations the host counts (steps/hostio.py): dev_read_iops, dev_read_mb, proc_read_ops, proc_read_mb, avg_kb_per_read ... over the postmaster's process tree
+                               and its data directory's device; None on tmpfs (no device) or where /proc cannot be read
     proc_read_bytes            read_bytes of /proc/PID/io of the backend and of the io workers (PostgreSQL 18 reads in them with io_method = worker): what the storage device
                                was asked for (Linux; None elsewhere or when not readable; parallel workers are other processes and not in it, so run with
                                max_parallel_workers_per_gather = 0 to compare; a data directory on tmpfs reads nothing from a device)
@@ -37,12 +41,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import hostio  # noqa: E402  (the device, process and cgroup counters around a run)
+from tmpfs import fs_type  # noqa: E402,F401  (the file system of a data directory: tmpfs has no page cache to empty)
 
 MB = 2 ** 20
 EXPLAINABLE = re.compile(r'\s*(select|with|insert|update|delete|merge|values|table)\b', re.I)
 EXPLAIN = 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY ON, FORMAT JSON) '
-STAT_FIELDS = ('reads', 'read_bytes', 'read_ms', 'writes', 'write_bytes', 'extends', 'extend_bytes', 'hits')
-STAT_WHERE = "backend_type IN ('client backend', 'background worker', 'parallel worker', 'io worker') AND object <> 'wal'"
+STAT_FIELDS = ('reads', 'read_bytes', 'read_ms', 'writes', 'write_bytes', 'extends', 'extend_bytes', 'hits', 'fsyncs', 'wal_writes', 'wal_fsyncs')
+STAT_WHERE = "(backend_type IN ('client backend', 'background worker', 'parallel worker', 'io worker') AND object <> 'wal') OR object = 'wal'"   # the WAL of every process, the relations of the readers
 
 
 def one(s, sql):
@@ -60,11 +66,26 @@ def setup(s):
         sql = None
         if has == 't':
             bytes_ = one(s, "SELECT count(*) FROM pg_attribute WHERE attrelid = 'pg_stat_io'::regclass AND attname = 'read_bytes'")[0] != '0'
-            cols = ['reads', 'read_bytes' if bytes_ else 'reads * op_bytes', 'read_time', 'writes', 'write_bytes' if bytes_ else 'writes * op_bytes', 'extends',
-                    'extend_bytes' if bytes_ else 'extends * op_bytes', 'hits']
-            sql = 'SELECT %s FROM pg_stat_io WHERE %s' % (', '.join('coalesce(sum(%s), 0)' % c for c in cols), STAT_WHERE)
+            b = lambda c, w, v=0: ('coalesce(sum(%s) FILTER (WHERE %s), 0)' % (c, w)) if not v else ("CASE WHEN current_setting('server_version_num')::int >= %d0000 THEN coalesce(sum(%s) FILTER (WHERE %s), 0) END" % (v, c, w))   # noqa: E731  the WAL is a pg_stat_io object from PostgreSQL 18
+            rel, wal = "object <> 'wal'", "object = 'wal'"
+            cols = [b('reads', rel), b('read_bytes' if bytes_ else 'reads * op_bytes', rel), b('read_time', rel), b('writes', rel), b('write_bytes' if bytes_ else 'writes * op_bytes', rel),
+                    b('extends', rel), b('extend_bytes' if bytes_ else 'extends * op_bytes', rel), b('hits', rel), b('fsyncs', rel), b('writes', wal, 18), b('fsyncs', wal, 18)]
+            sql = 'SELECT %s FROM pg_stat_io WHERE %s' % (', '.join(cols), STAT_WHERE)
         s.io_facts = (int(pid), int(block), sql)
     return s.io_facts
+
+
+def host_args(s):
+    """(processes, data directory) for hostio when the server is a local PostgreSQL (the backend's parent is the postmaster), else (None, None): a container has other pids"""
+    if not hasattr(s, 'io_host'):
+        pid = setup(s)[0]
+        try:
+            with open('/proc/%d/cmdline' % pid) as f:
+                local = f.read().startswith('postgres')
+            s.io_host = ([hostio.ppid(pid)], one(s, 'SHOW data_directory')[0]) if local else (None, None)
+        except (OSError, RuntimeError):
+            s.io_host = (None, None)
+    return s.io_host
 
 
 def proc_read_bytes(pids):
@@ -116,7 +137,7 @@ def snapshot(s):
     stat = None
     if sql:
         s.run('SELECT pg_stat_force_next_flush()')
-        stat = dict(zip(STAT_FIELDS, (float(x) for x in one(s, sql))))
+        stat = dict(zip(STAT_FIELDS, (float(x) if x else None for x in one(s, sql))))
     try:
         wal = int(one(s, "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint")[0])
     except RuntimeError:   # a standby
@@ -127,25 +148,9 @@ def snapshot(s):
 
 def delta(a, b):
     """what happened between two snapshots: stat_<field> (pg_stat_io), wal_bytes, proc_read_bytes; None where either end has none"""
-    out = {'stat_' + k: (b['stat'][k] - a['stat'][k] if a['stat'] and b['stat'] else None) for k in STAT_FIELDS}
+    out = {'stat_' + k: (b['stat'][k] - a['stat'][k] if a['stat'] and b['stat'] and b['stat'][k] is not None else None) for k in STAT_FIELDS}
     out.update(wal_bytes=None if a['wal'] is None else b['wal'] - a['wal'], proc_read_bytes=None if a['proc'] is None or b['proc'] is None else b['proc'] - a['proc'])
     return out
-
-
-def fs_type(path):
-    """the file system type of the longest mount point that holds PATH ('' when /proc/mounts cannot say)"""
-    best = ('', '')
-    try:
-        with open('/proc/mounts') as f:
-            for line in f:
-                _, mnt, typ = line.split()[:3]
-                mnt = mnt.replace('\\040', ' ')
-                if (path == mnt or path.startswith(mnt.rstrip('/') + '/')) and len(mnt) >= len(best[0]):
-                    best = (mnt, typ)
-    except OSError:
-        pass
-    return best[1]
-
 
 def relations(tables):
     """SQL for the oids a table holds data in: itself, its TOAST table and the indexes of both (the recipe of cold_table in steps/lib.sh)"""
@@ -233,7 +238,11 @@ def measure(s, sql, tables=None, sized=None):
     s.run('SET track_io_timing = on')   # the read time of EXPLAIN and of pg_stat_io (superuser)
     try:
         size = total_size(s, sized) if sized else None
+        pids, datadir = host_args(s)
+        meter = hostio.Meter(pids, datadir) if pids else None
         before = snapshot(s)
+        if meter:
+            meter.start()
         pid = setup(s)[0]
         cpu = backend_cpu_ns(pid)
         peak = reset_peak_rss(pid)
@@ -243,7 +252,8 @@ def measure(s, sql, tables=None, sized=None):
             if err:
                 raise RuntimeError(err)
         cpu = None if cpu is None else (backend_cpu_ns(setup(s)[0]) - cpu) / 1e6
-        d = delta(before, snapshot(s))
+        d = dict(host=meter.stop() if meter else {})
+        d.update(delta(before, snapshot(s)))
         d['peak_rss_mb'] = peak_rss_mb(pid) if peak else None
         d['size_bytes'] = total_size(s, sized) - size if sized else None
     finally:
@@ -261,14 +271,20 @@ def measure(s, sql, tables=None, sized=None):
 # --- the rows of bench/results (steps/cases.py)
 
 def metrics(io):
-    """{metric: value} of one measurement for a results file: io_<cache>_read_blocks, _hit_pct, and after a cold run _read_mb (what pg_stat_io read, else blocks of the block size),
+    """{metric: value} of one measurement for a results file: io_<cache>_read_blocks, _hit_pct, the operations (pg_stat_io: _read_ops, _read_avg_kb, _write_ops, _fsyncs, _wal_write_ops; the host,
+    steps/hostio.py: _dev_read_iops, _dev_read_mb, _proc_read_ops, _proc_read_mb, _avg_kb_per_read, ...) and after a cold run _read_mb (what pg_stat_io read, else blocks of the block size),
     _device_mb (the backend's /proc read_bytes) and _read_ms; absent where the figure is None"""
     c = 'io_' + io['cache'] + '_'
     mb = lambda b: None if b is None else b / MB  # noqa: E731
-    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct'], c + 'ms': io.get('exec_ms'), c + 'cpu_ms': io.get('cpu_ms'), c + 'peak_mb': io.get('peak_rss_mb'), c + 'wal_bytes': io.get('wal_bytes')}
+    reads = io.get('stat_reads')
+    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct'], c + 'ms': io.get('exec_ms'), c + 'cpu_ms': io.get('cpu_ms'), c + 'peak_mb': io.get('peak_rss_mb'), c + 'wal_bytes': io.get('wal_bytes'),
+           c + 'read_ops': reads, c + 'read_avg_kb': io['stat_read_bytes'] / reads / 1024 if reads and io.get('stat_read_bytes') is not None else None, c + 'write_ops': io.get('stat_writes'),
+           c + 'fsyncs': io.get('stat_fsyncs'), c + 'wal_write_ops': io.get('stat_wal_writes')}
+    out.update({c + k: v for k, v in io.get('host', {}).items()})
     if io['cache'] == 'cold':
         out.update({c + 'read_mb': mb(io['read_bytes']), c + 'device_mb': mb(io['proc_read_bytes']), c + 'read_ms': io['read_ms']})
-    return {k: ('%d' % v if k.endswith('blocks') else '%.3f' % v if k in (c + 'ms', c + 'cpu_ms') else '%d' % v if k == c + 'wal_bytes' else '%.2f' % v) for k, v in out.items() if v is not None}
+    count = lambda k: k.endswith(('blocks', '_ops', 'iops', '_ios', 'fsyncs', 'flushes', 'merged', 'wal_bytes'))  # noqa: E731
+    return {k: ('%d' % v if count(k) else '%.3f' % v if k in (c + 'ms', c + 'cpu_ms') else '%.2f' % v) for k, v in out.items() if v is not None}
 
 
 def load_metrics(d):

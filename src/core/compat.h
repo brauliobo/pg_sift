@@ -22,6 +22,34 @@
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
 #include "commands/explain_state.h"
+#else
+#include "optimizer/cost.h"
+#endif
+
+/*
+ * A path that loses to every path that is not disabled, as the path of a node whose enable_ setting is off: 18 counts the disabled nodes of a path
+ * (nodes: at least that many), 17 adds disable_cost to its cost, once.
+ */
+#if PG_VERSION_NUM >= 180000
+#define sift_disabled_nodes(p)	((p)->disabled_nodes)
+
+static inline void
+sift_path_disable(Path *p, int nodes)
+{
+	p->disabled_nodes = Max(p->disabled_nodes, nodes);
+}
+#else
+#define sift_disabled_nodes(p)	0
+
+static inline void
+sift_path_disable(Path *p, int nodes)
+{
+	if (p->total_cost < disable_cost)
+	{
+		p->startup_cost += disable_cost;
+		p->total_cost += disable_cost;
+	}
+}
 #endif
 
 /* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
@@ -238,6 +266,10 @@ typedef CompareType SiftCmpStrategy;
 #define sift_expand_rte(rte, rti, names, vars) \
 	expandRTE((rte), (rti), 0, VAR_RETURNING_DEFAULT, -1, false, (names), (vars))
 
+/* The same with a NULL constant for each dropped column, so that the list is indexed by attribute number */
+#define sift_expand_rte_dropped(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, VAR_RETURNING_DEFAULT, -1, true, (names), (vars))
+
 /* One page of a TIDBitmap: block, lossy, and the offsets of an exact page */
 typedef TBMPrivateIterator SiftTbmIter;
 
@@ -273,6 +305,9 @@ typedef int16 SiftCmpStrategy;
 
 #define sift_expand_rte(rte, rti, names, vars) \
 	expandRTE((rte), (rti), 0, -1, false, (names), (vars))
+
+#define sift_expand_rte_dropped(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, -1, true, (names), (vars))
 
 typedef TBMIterator SiftTbmIter;
 

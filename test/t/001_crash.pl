@@ -1,6 +1,11 @@
 # kill -9 of the backend running an index build, a maintenance step (GIN
 # pending-list cleanup / sift promotion and merge) or VACUUM, then crash
 # recovery, verification and result equivalence with the SQL reference.
+#
+# Not shrunk below this size: the kill has to land inside the operation, so each operation runs long enough
+# to be killed part way, and each kill point costs about 4.5 s (the kill, crash recovery, verification and the
+# agreement with the SQL reference). With fewer rows (8,000 where this file takes 18 s) the operation ends
+# before the kill and the file passes without having crashed anything.
 use strict;
 use warnings FATAL => 'all';
 use FindBin;

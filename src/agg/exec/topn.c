@@ -202,16 +202,29 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 				return NULL;
 		return g;
 	}
-	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < ex->nbase && (g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0)
+	if (p->kind == SAP_NULL && p->op <= 1 && p->level == 0 && !p->late && p->leaf < ex->nbase && (g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0)
 	{
-		g->kind = STG_NOTNULL;
+		g->kind = p->op == 1 ? STG_NOTNULL : STG_ISNULL;
 		g->lead = p->leaf == keyleaf;
 		g->pinned = pinned;
 		g->leaf = p->leaf;
 		g->typid = ex->lay->leaf[p->leaf].typid;
 		return g;
 	}
-	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf == keyleaf && p->leaf < ex->nbase && (g->attno = sift_topn_text_attno(ex->lay, p->leaf)) > 0)
+	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf != keyleaf && p->leaf < ex->nbase && (g->attno = sift_topn_bool_attno(ex->lay, p->leaf)) > 0)
+	{
+		ExprState  *e = ex->ps[p->id].expr;
+
+		g->kind = STG_BOOL;
+		g->pinned = pinned;
+		g->leaf = p->leaf;
+		g->typid = BOOLOID;
+		g->tab[0] = eval_bool(ex, e, BoolGetDatum(false), false);
+		g->tab[1] = eval_bool(ex, e, BoolGetDatum(true), false);
+		g->tab[2] = eval_bool(ex, e, (Datum) 0, true);
+		return g;
+	}
+	if (p->kind == SAP_LUT && p->level == 0 && !p->late && p->leaf < ex->nbase && (g->attno = sift_topn_text_attno(ex->lay, p->leaf)) > 0)
 	{
 		SiftSrcStrTest st = {0};
 
@@ -222,7 +235,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->str = st.vals[0];
 		g->slen = st.lens[0];
 		g->collid = st.collid;
-		g->lead = true;
+		g->lead = p->leaf == keyleaf;
 		g->pinned = pinned;
 		g->leaf = p->leaf;
 		g->typid = ex->lay->leaf[p->leaf].typid;
@@ -234,7 +247,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		ExprState  *e = operand_state(ex, p->expr);
 		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 		ArrayType  *arr;
 		int16		elen;
@@ -278,7 +291,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		ExprState  *e = operand_state(ex, p->expr);
 		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 
 		MemoryContextSwitchTo(old);
@@ -361,11 +374,12 @@ topn_run(AggExec *ex)
 				bufs = false;
 
 	ex->started = true;
+	/* the walk of the global order answers a scan with no aggregate, group, join or search from the index alone */
+	ex->open_deferred = ex->spec->naggs == 0 && ex->spec->group < 0 && ex->spec->ncombo == 0 && ex->spec->search == NULL;
 	engine_open(ex, ex->snap, ex->params);
 	agg_test_wait();
-	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
-		topn_buffers(ex, &bufs);
-	table_init(ex);
+	if (!ex->open_deferred)
+		table_init(ex);
 	t = ex->topn;
 	if (sift_topn_empty(t))
 		return;
@@ -382,6 +396,10 @@ topn_run(AggExec *ex)
 		if ((ex->spec->npred == 0 || cond != NULL) && sift_topn_gorder(t, ex->src, cond))
 			return;
 	}
+	engine_open_rest(ex);
+	/* a lookup by the order array (above) reads no vector, which a LATERAL probe saves at every call */
+	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
+		topn_buffers(ex, &bufs);
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
 	{
@@ -491,6 +509,40 @@ topn_widen(AggExec *ex)
 	}
 }
 
+/*
+ * The columns of the joined tables that the page reads (topn_lookup_cols), after the columns of the heap: the row of each table with the key of the row of the
+ * page, from the rows the scan loaded (the keys of the rows that pass are among them: the scan tests them, join_filters).
+ */
+static void
+topn_lookups(AggExec *ex, TupleTableSlot *slot)
+{
+	List	   *l = sift_topn_lookups(ex->spec->topn);
+	int			n = list_length(l) / 4,
+				first = slot->tts_tupleDescriptor->natts - ex->spec->naggs - n;
+
+	for (int i = 0; i < n; i++)
+	{
+		int			ci = list_nth_int(l, 4 * i),
+					col = list_nth_int(l, 4 * i + 1),
+					kpos = list_nth_int(l, 4 * i + 2);
+		Oid			ktype = (Oid) list_nth_int(l, 4 * i + 3);
+		Datum		d = slot->tts_values[kpos];
+		int64		key = ktype == INT2OID ? DatumGetInt16(d) : ktype == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+		const char *ptr[1] = {NULL};
+		uint32		len[1] = {0},
+				   *rows;
+		int			found;
+
+		/* a row the Limit above throws away is NULLs (skipped_row) */
+		if (slot->tts_isnull[kpos])
+			continue;
+		found = map_find(ex->cs[ci].map, ptr, len, &key, &rows);
+		SIFT_INVARIANT(found == 1, "sift: a row of the page has no row in the table joined by its key");
+		slot->tts_values[first + i] = map_col(ex->cs[ci].map, rows[0], col, &slot->tts_isnull[first + i]);
+		pfree(rows);
+	}
+}
+
 /* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
 TupleTableSlot *
 topn_next(AggExec *ex, TupleTableSlot *slot)
@@ -522,5 +574,10 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 		slot->tts_values[nout + i] = ex->total_val[i];
 		slot->tts_isnull[nout + i] = ex->total_null[i];
 	}
-	return sift_topn_next(ex->topn, slot) ? slot : NULL;
+	for (int i = nout - list_length(sift_topn_lookups(s->topn)) / 4; i < nout; i++)
+		slot->tts_isnull[i] = true;
+	if (!sift_topn_next(ex->topn, slot))
+		return NULL;
+	topn_lookups(ex, slot);
+	return slot;
 }

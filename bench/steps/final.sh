@@ -4,9 +4,9 @@
 #   store        the store benchmark: PostgreSQL, pg_sift (sift_col, sift_table), Citus (columnar), Elasticsearch, ClickHouse; warm, cold and update tables
 #   compression  the pg_sift compression variants of the column index and the codecs' sizes in every system (1M orders)
 #   stats        what ClickHouse and Elasticsearch read per question
-#   gap          the pg_sift profile (private cluster under a memory cap) and docs/BENCH-GAP.md
+#   gap          the pg_sift profile (private cluster under a memory cap) and bench/out/BENCH-GAP.md
 #   updates      the update, delete and VACUUM section of the README (store section): bulk changes at 200,000 and 1,000,000 orders, steady churn, inserts only, the reads around a churn
-#   search       articles and places, every engine: warm and cold tables, charts, README.md and docs/BENCHMARKS.md
+#   search       articles and places, every engine: warm and cold tables, charts, README.md and bench/out/BENCHMARKS.md
 #   cases        the cases of bench/cases.tsv at the size of the pass, on pg_sift, PostgreSQL and pg_duckdb: tables shared by the cases that read the same one, a lane stops repeating after 20 s
 #   duckdb       the ten questions of the store on pg_duckdb at 1M orders
 #   generic      the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse at 1M rows; pg_sift and PostgreSQL are in the cases stage
@@ -15,7 +15,7 @@
 #   extras element rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU (steps/extras.sh), the builds they compare are tags
 # The total budget is checked first (the sum of the stages that will run; exit 4 over it, --budget 0 skips the check); a stage that finished before with the same code, settings and
 # host is skipped (its key is in $STORE/final-state; --no-resume runs everything). Every other option is passed on to the stages (bench/bench --help). --docs also writes bench/results,
-# the charts, README.md and docs/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
+# the charts, README.md and bench/out/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
 # Competitor cells (Elasticsearch, ClickHouse, Citus) come from the cache of cells unless --remeasure-all or their key changed: the stage minutes are
 # those of a pass that measures everything, a pass with a warm cache takes less.
 set -euo pipefail
@@ -200,4 +200,4 @@ bench store clean >/dev/null 2>&1 || true
 log "final: $(( (SECONDS - T0 + 30) / 60 )) min (budget $BUDGET); stages:"
 [[ ! -s $STAGE_LOG ]] || awk -F'\t' '{printf "  %-12s %5.1f min (budget %s)\n", $1, $2 / 60, $3}' "$STAGE_LOG" >&2
 (( ${#FAILED[@]} == 0 )) || { log "FAILED stages: ${FAILED[*]}"; exit 1; }
-[[ -z $DOCS ]] || log "review git diff for README.md, docs/BENCH-GAP.md and bench/results/"
+[[ -z $DOCS ]] || log "review git diff for README.md, bench/out/BENCH-GAP.md and bench/results/"

@@ -10,6 +10,8 @@ SELECT i, date '2024-01-01' + i % 60,
 FROM generate_series(1, 50000) i;
 INSERT INTO events VALUES (50001, NULL, '{"m_total":8}');
 CREATE INDEX events_col ON events USING sift_col (id, day, metrics) WITH (paths = 'metrics.* float8');
+NOTICE:  sift_col index "events_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) events;
 \ir test/agg_check_pushed.sql
 \set ECHO none
@@ -186,13 +188,12 @@ $q$);
 (1 row)
 
 -- A predicate-only lookup examines every candidate for each distinct input tuple.
--- Planning this large child must account for that work without executing the cross product.
+-- Planning this large child must account for that work without executing the cross product (scan 1,498,994 against normal 791,615: a gap of 47%).
 DO $$
 DECLARE l text;
+  q text = $q$SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id WHERE f.id < 1000$q$;
 BEGIN
-  FOR l IN EXECUTE $q$EXPLAIN (COSTS OFF)
-    SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id
-    WHERE f.id < 1000$q$ LOOP
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
     IF l LIKE '%Custom Scan (SiftAgg)%' THEN
       RAISE EXCEPTION 'candidate predicate work was not priced';
     END IF;

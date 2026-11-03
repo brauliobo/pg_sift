@@ -13,12 +13,6 @@
 			 errdetail(__VA_ARGS__)))
 
 static inline bool
-is_tomb(const SiftSegEntry *e)
-{
-	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_TOMB);
-}
-
-static inline bool
 is_wbuf(const SiftSegEntry *e)
 {
 	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_WBUF);

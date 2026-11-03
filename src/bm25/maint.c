@@ -51,7 +51,6 @@
 
 #ifdef SIFT_TESTING
 int			sift_test_merge_max_kb = 0;
-int			sift_test_merge_sleep_ms = 0;
 int			sift_test_room_segments = 0;
 bool		sift_test_no_heap_positions = false;
 #define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_MAX_SEGMENTS) - ROOM_SPARE)
@@ -372,8 +371,15 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
-		else
+		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
 			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
+	/*
+	 * The tombstones of the entries removed go last, whatever the order of the directory: a reader that took the log and then the liveness of an entry that is now
+	 * cleared sees the tombstone or the clear bit, never neither.
+	 */
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)
+			ops->bulkdelete_tomb(index, &snap->segs[i], callback, callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
@@ -413,8 +419,12 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	if (ops->vacuum_seal)
 		ops->vacuum_seal(index);
 	promote_locked(ops, index, false, false);
+	if (ops->vacuum_log)
+		ops->vacuum_log(index);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
+	if (ops->vacuum_net)
+		ops->vacuum_net(index);
 	vacuum_merge(ops, index);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
@@ -425,8 +435,15 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	{
 		bool		defer = ops->vacuum_space_defer && ops->vacuum_space_defer(index);
 
-		if (ops->compact_segment && !defer)
-			(void) sift_maint_compact(index, ops->compact_segment, (uint64) sift_vacuum_rewrite_limit << 20, info->message_level);
+		if (!defer)
+		{
+			if (ops->vacuum_rotate && sift_maint_buffer_above_shrink(index))
+			{
+				ops->vacuum_rotate(index);
+				promote_locked(ops, index, false, false);
+			}
+			(void) sift_maint_shrink(index, info->message_level);
+		}
 		sift_maint_space_rounds(index, NULL, info->message_level, defer ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
 	}
 	sift_maint_unlock(index);
@@ -464,6 +481,26 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 }
 
 /* Seals the active segment and promotes every sealed one; returns the number promoted */
+/* The free end of the file that a step of the worker leaves, cut when it is worth the lock (released: the step freed it itself, which its own snapshot holds back from the screen) */
+static void
+cut_free_end(const SiftMaintOps *ops, Relation index, bool released)
+{
+	if (!ops->vacuum_truncate || !ops->vacuum_truncate(index) || RecoveryInProgress())
+		return;
+	sift_maint_lock(index, true);
+	if (released)
+		(void) sift_maint_cut_released(index, DEBUG1);
+	else
+		(void) sift_maint_space_budget(index, NULL, DEBUG1, 0);
+	sift_maint_unlock(index);
+}
+
+void
+sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
+{
+	cut_free_end(ops, index, false);
+}
+
 int
 sift_mops_sql_promote(const SiftMaintOps *ops, Relation index)
 {
@@ -490,6 +527,8 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 		CHECK_FOR_INTERRUPTS();
 	}
 	sift_maint_unlock(index);
+	/* also when no merge was due: the end a merge left is cut by the first call that finds the lock free, however many calls the busy ones were */
+	cut_free_end(ops, index, false);
 	return n;
 }
 
@@ -526,6 +565,8 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 			break;
 		maint_lock_mode(index, true, ops->step_lock);
 	}
+	if (n > 0)
+		cut_free_end(ops, index, true);
 	sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	return n;
 }
@@ -582,6 +623,7 @@ static const SiftMaintOps bm25_ops = {
 	.vacuum_to_fixed_point = true,
 	.is_index = is_sift,
 	.seal = sift_wbuf_seal,
+	.vacuum_seal = sift_wbuf_seal_vacuum,
 	.promote_next = promote_next,
 	.merge_next = merge_next,
 	.bulkdelete_immutable = bulkdelete_immutable,

@@ -69,26 +69,46 @@ wbuf_leaf_ok(void *arg, const uint64 *bloom)
 	return false;
 }
 
-static bool
-leaf_term_hit(const EvalLeaf *l, const char *t, int len, uint32 hash)
+/* The first position from i of the hash in h[0..n), or n */
+static uint32
+hash_from(const uint32 *h, uint32 n, uint32 i, uint32 x)
 {
-	return l->m ? sift_matcher_match(l->m, t, len) :
-		(hash == l->hash && len == l->node->textlen && memcmp(t, l->node->text, len) == 0);
+#ifdef __SSE2__
+	__m128i		vx = _mm_set1_epi32((int) x);
+
+	for (; i + 4 <= n; i += 4)
+	{
+		int			m = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(_mm_loadu_si128((const __m128i *) (h + i)), vx)));
+
+		if (m)
+			return i + __builtin_ctz(m);
+	}
+#endif
+	for (; i < n; i++)
+		if (h[i] == x)
+			break;
+	return i;
+}
+
+/* The position of a plain leaf's term in the doc and its bytes, or -1: the hashes are compared first, the bytes only of one that is equal */
+static int
+exact_pos(const EvalLeaf *l, const SiftWbufDoc *d, const char **term)
+{
+	for (uint32 i = hash_from(d->hash, d->nterms, 0, l->hash); i < d->nterms; i = hash_from(d->hash, d->nterms, i + 1, l->hash))
+	{
+		const char *t = d->terms + sift_sum_u8(d->len, i);
+
+		if (d->len[i] == l->node->textlen && memcmp(t, l->node->text, d->len[i]) == 0)
+		{
+			*term = t;
+			return (int) i;
+		}
+	}
+	return -1;
 }
 
 static bool
-leaf_hits(const EvalLeaf *l, const SiftWbufDoc *d)
-{
-	const char *t = d->terms;
-
-	for (int i = 0; i < d->nterms; t += d->len[i++])
-		if (leaf_term_hit(l, t, d->len[i], d->hash[i]))
-			return true;
-	return false;
-}
-
-static bool
-doc_matches(const SiftPlan *p, const EvalNode *n, const SiftWbufDoc *d)
+doc_matches(const SiftPlan *p, const EvalNode *n, const bool *hit)
 {
 	int			npos = 0;
 
@@ -97,20 +117,20 @@ doc_matches(const SiftPlan *p, const EvalNode *n, const SiftWbufDoc *d)
 		case EN_NOTHING:
 			return false;
 		case EN_LEAF:
-			return leaf_hits(&p->leaves[n->leaf], d);
+			return hit[n->leaf];
 		case EN_NOT:
-			return !doc_matches(p, n->child[0], d);
+			return !doc_matches(p, n->child[0], hit);
 		case EN_AND:
 			for (int i = 0; i < n->nchild; i++)
 			{
 				npos += n->child[i]->kind != EN_NOT;
-				if (!doc_matches(p, n->child[i], d))
+				if (!doc_matches(p, n->child[i], hit))
 					return false;
 			}
 			return npos > 0;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
-				if (doc_matches(p, n->child[i], d))
+				if (doc_matches(p, n->child[i], hit))
 					return true;
 			return false;
 	}
@@ -152,21 +172,44 @@ leaf_wbuf_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 }
 
 /*
- * One more document for every term of a scoring leaf that the doc has, for the wide term of a wide
- * leaf if it has any word of it (deleted docs count like in the statistics)
+ * Which leaves the doc has a term of (hit[]), and one more document for every term of a scoring leaf that it has, for the wide term of a wide
+ * leaf if it has any word of it (deleted docs count like in the statistics). A plain leaf is found by its hash, and its entry of the table of
+ * document frequencies is kept in ent[]: a doc costs a pass over its hashes for each leaf, not a hash table lookup for every hit.
  */
 static void
-doc_count_terms(SiftPlan *p, const SiftWbufDoc *d)
+doc_hits(SiftPlan *p, const SiftWbufDoc *d, bool *hit, WbufTermEnt **ent)
 {
 	for (int i = 0; i < p->nleaves; i++)
 	{
 		EvalLeaf   *l = &p->leaves[i];
 		const char *t = d->terms;
 
-		for (int j = 0; l->scoring && j < d->nterms; t += d->len[j++])
+		hit[i] = false;
+		if (l->m == NULL)
 		{
-			if (!leaf_term_hit(l, t, d->len[j], d->hash[j]))
+			if (exact_pos(l, d, &t) < 0)
 				continue;
+			hit[i] = true;
+			if (l->scoring && p->scoring)
+			{
+				if (ent[i] == NULL)
+				{
+					char		key[SIFT_MAX_TERM_BYTES + 1] = {0};
+
+					memcpy(key, t, l->node->textlen);
+					ent[i] = leaf_wbuf_term(p, l, key);
+				}
+				ent[i]->df++;
+			}
+			continue;
+		}
+		for (int j = 0; j < d->nterms; t += d->len[j++])
+		{
+			if (!sift_matcher_match(l->m, t, d->len[j]))
+				continue;
+			hit[i] = true;
+			if (!(l->scoring && p->scoring))
+				break;
 			if (l->wide)
 			{
 				leaf_wbuf_count(p, l, l->wide, l->widelen);
@@ -208,6 +251,8 @@ bind_wbuf(SiftPlan *p)
 				dead_docs = 0,
 				dead_dl = 0;
 	int64		cap = 0;
+	bool	   *hit = palloc(Max(p->nleaves, 1) * sizeof(bool));
+	WbufTermEnt **ent = palloc0(Max(p->nleaves, 1) * sizeof(WbufTermEnt *));
 
 	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
@@ -228,9 +273,8 @@ bind_wbuf(SiftPlan *p)
 				dead_dl += doc.dl;
 				continue;
 			}
-			if (p->scoring)
-				doc_count_terms(p, &doc);
-			if (!doc_matches(p, p->root, &doc))
+			doc_hits(p, &doc, hit, ent);
+			if (!doc_matches(p, p->root, hit))
 				continue;
 			if (p->nmhit == cap)
 			{
@@ -255,6 +299,8 @@ bind_wbuf(SiftPlan *p)
 				p->mhit[k++] = p->mhit[j];
 		p->nmhit = k;
 	}
+	pfree(hit);
+	pfree(ent);
 	p->wbuf_ndocs = ndocs - dead_docs;
 	p->wbuf_sum_dl = sum_dl - dead_dl;
 	bind_stats(p, p->wbuf_ndocs, p->wbuf_sum_dl);
@@ -418,9 +464,12 @@ wbuf_leaf_score(const EvalLeaf *l, const SiftWbufDoc *d, float4 knorm)
 	const char *t = d->terms;
 	float4		best = 0;
 	int			wtf = 0;
+	int			j;
 
-	for (int j = 0; j < d->nterms; t += d->len[j++])
-		if (leaf_term_hit(l, t, d->len[j], d->hash[j]))
+	if (l->m == NULL)
+		return (j = exact_pos(l, d, &t)) < 0 ? 0 : sift_kern_bm25(leaf_weighed(l, t, d->len[j])->w, d->tf[j], knorm);
+	for (j = 0; j < d->nterms; t += d->len[j++])
+		if (sift_matcher_match(l->m, t, d->len[j]))
 		{
 			if (l->wide)
 				wtf += d->tf[j];

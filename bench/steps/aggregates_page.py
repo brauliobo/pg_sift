@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The generated blocks of docs/perf/AGGREGATES.md and the Scale block of README.md, from bench/results, standard library only.
+"""The generated blocks of bench/out/perf/AGGREGATES.md and the Scale block of README.md, from bench/results, standard library only.
 
     python3 -I bench/steps/aggregates_page.py [--results DIR]
 
   README.md                  <!-- bench:scale:begin -->       the charts of scale (rows, CPUs); <!-- bench:shapes:begin --> the real query shapes
-  docs/perf/AGGREGATES.md    <!-- bench:agg-map:begin -->     every results file behind an aggregate benchmark: what it answers, when, on which host
+  bench/out/perf/AGGREGATES.md    <!-- bench:agg-map:begin -->     every results file behind an aggregate benchmark: what it answers, when, on which host
                              <!-- bench:agg-charts:begin -->  every chart with the question it answers
                              <!-- bench:agg-scale:begin -->   the tables behind the scale charts
                              <!-- bench:agg-shapes:begin -->  the real-world shapes (joins, lookups, top-N, distinct, time buckets, UNION ALL arms)
@@ -29,7 +29,7 @@ import triple  # noqa: E402
 from store_charts import SYSTEMS, picture  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
-PAGE = os.path.join(REPO, 'docs', 'perf', 'AGGREGATES.md')
+PAGE = os.path.join(REPO, 'bench', 'out', 'perf', 'AGGREGATES.md')
 IMG = '../img/'
 LABEL = {e: SYSTEMS[e][0] for e in SYSTEMS}
 
@@ -77,7 +77,7 @@ def charts_lines(results, prefix):
     out = []
     for name, question, src in CHARTS:
         if maybe(results, src):
-            out += [f'#### {question}', '', picture(name, question, prefix), '', f'Data: [bench/results/{src}](../results/{src}).' if prefix == IMG else '', '']
+            out += [f'#### {question}', '', picture(name, question, prefix), '', f'Data: [bench/results/{src}](../../results/{src}).' if prefix == IMG else '', '']
     return out
 
 
@@ -142,7 +142,7 @@ def rows_tables(results):
     noisy = [f'at {S.tiers[tiers[n]]["rows"]:,} orders: ' + '; '.join(S.tiers[tiers[n]]['parts']['warm']['noisy']) for n in sizes if S.tiers[tiers[n]]['parts']['warm'].get('noisy')]
     out += [f'- Cells the harness flagged NOISY after measuring them again (the host is shared), {x}.' for x in noisy]
     out += ['- One pass per size, 3 CPUs per container, no cold or restart runs; the 1,000,000-order column is the pass of the tables above. A system that is not the fastest here can still be within noise of it.', '',
-            'Raw results: [bench/results/store-scaling.json](../results/store-scaling.json) (25,000 to 10,000,000 orders) and [bench/results/store.json](../results/store.json); reproduce with `bench/bench store all --sizes 25000,100000,10000000 --cold-runs 0 --restart-runs 0 --update-sizes none`.', '']
+            'Raw results: [bench/results/store-scaling.json](../../results/store-scaling.json) (25,000 to 10,000,000 orders) and [bench/results/store.json](../../results/store.json); reproduce with `bench/bench store all --sizes 25000,100000,10000000 --cold-runs 0 --restart-runs 0 --update-sizes none`.', '']
     return out
 
 
@@ -177,7 +177,7 @@ def dim_table(results, dim, label):
             ] + (['- † the planner kept the normal plan on the pg_sift arm (no `SiftAgg` node), so the cell is the same plan as PostgreSQL\'s.'] if any(plain(x, f'{q}_sift') for x in xs for q in qs) else []) + [
             '- point-lookup (a lookup by id) is pruned to one partition and uses the primary key in both arms.'] + ([f'- RESULT DIFFERS: {", ".join(bad)}.'] if bad else []) + [
             '- A scratch cluster on a shared host with 4 CPUs (`bench/bench scaling`), ' + ('2 parallel workers per query' if dim == 'partitions' else 'one plain table') + '; every pg_sift result was compared with the normal plan\'s.', '',
-            'Raw results: [bench/results/scaling.tsv](../results/scaling.tsv); reproduce with `bench/bench scaling --docs`.', '']
+            'Raw results: [bench/results/scaling.tsv](../../results/scaling.tsv); reproduce with `bench/bench scaling --docs`.', '']
 
 
 def scale_lines(results, prefix, brief=False):
@@ -198,7 +198,7 @@ def scale_lines(results, prefix, brief=False):
             if name == 'scale-growth' and take and brief:
                 out += [take + '.', '']
     if brief:
-        return out + ['The tables behind these charts, the partition and worker sweeps and the chart of every question: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#scale-rows-partitions-workers-cpus).']
+        return out + ['The tables behind these charts, the partition and worker sweeps and the chart of every question: [perf/AGGREGATES.md](perf/AGGREGATES.md#scale-rows-partitions-workers-cpus).']
     if maybe(results, 'store-scaling.json'):
         out += ['### Rows', ''] + rows_tables(results)
     if maybe(results, 'scaling.tsv'):
@@ -221,7 +221,7 @@ def duckdb_scale_lines(results):
             '', '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', '**Caveats**', '',
             '- ' + best[1][2:],
             '- † the full-text questions run in DuckDB as a substring match, not an index; the client is `psql`, so the numbers are not those of the tables above.',
-            '', 'Raw results: [bench/results/duckdb-10000000.tsv](../results/duckdb-10000000.tsv); reproduce with `bench/bench duckdb --rows 10000000 --out FILE`.', '']
+            '', 'Raw results: [bench/results/duckdb-10000000.tsv](../../results/duckdb-10000000.tsv); reproduce with `bench/bench duckdb --rows 10000000 --out FILE`.', '']
 
 
 # ---- shapes ----------------------------------------------------------------------------------------------------------------------------
@@ -288,7 +288,7 @@ def readme_shapes(results):
     out = [f'{len(gains)} shapes of an analytics application on {meta.get("tier", "?")} orders, one backend: whole-table reports (counts, groups, distinct, percentiles) and reports of a set of tenants (mapping lookups, rollups at three levels, time series at four granularities, '
            f'top 3 per tenant, notes by role) with 10, 400 and 4,000 tenants in the filter. pg_sift is faster than the PostgreSQL heap on {len(faster)} of them ({rng(faster)}, median {statistics.median(g for g, _, _ in gains):.1f}x)'
            + (f' and slower on {len(slower)} ({rng([r for r, _ in slower])}; {sum(1 for _, v in slower if v == "K10")} of them with the smallest filter set, where the whole query takes 1 to 5 ms)' if slower else '') + '.', '',
-           picture('shapes-speedup', 'Speed-up of pg_sift over the PostgreSQL heap on 8 whole-table shapes and 7 shapes at three filter sizes', 'docs/img/'), '']
+           picture('shapes-speedup', 'Speed-up of pg_sift over the PostgreSQL heap on 8 whole-table shapes and 7 shapes at three filter sizes', 'img/'), '']
     ch = [(q, v, t['ch'] / t['col']) for q, v, t in cases if t['ch'] and t['col']]
     flat = [(q, v, t['flat'] / t['col']) for q, v, t in cases if t['flat'] and t['col']]
     name = lambda q, v: q if v == '-' else f'{q} at {v.replace("K", "")} tenants'
@@ -296,7 +296,7 @@ def readme_shapes(results):
         out += [f'Against ClickHouse (one thread, a throwaway server) pg_sift is faster on {sum(1 for *_, r in ch if r >= 1.05)} of {len(ch)} cases and slower on '
                 + ', '.join(name(q, v) + f' ({1 / r:.1f}x)' for q, v, r in sorted(ch, key=lambda c: c[2]) if r <= 0.95) + '; against the best conventional layout of the same data in PostgreSQL (flat tables) it is faster on '
                 f'{sum(1 for *_, r in flat if r >= 1.05)} of {len(flat)} and slower on {sum(1 for *_, r in flat if r <= 0.95)} ({sum(1 for _, v, r in flat if r <= 0.95 and v == "K10")} of them with the smallest filter set).', '',
-                picture('shapes-latency', 'Time per application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse', 'docs/img/'), '']
+                picture('shapes-latency', 'Time per application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse', 'img/'), '']
     if maybe(results, 'cases-wm4g.tsv'):
         import cases as cases_mod
         import cases_render
@@ -307,8 +307,8 @@ def readme_shapes(results):
         wm, now = extras.read(os.path.join(results, 'cases-wm4g.tsv'))[0], extras.read(os.path.join(results, 'cases.tsv'))[0]
         old = f' The 4GB run is of pg_sift {wm["pg_sift"]} and was not repeated for {now["pg_sift"]}.' if wm.get('pg_sift') != now.get('pg_sift') else ''
         out += [f'The application-shaped cases of the table above again at a large `work_mem` ({wm.get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
-                f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.{old}', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
-    return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#shapes-of-real-queries); raw results [bench/results/analytics.json](bench/results/analytics.json).']
+                f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.{old}', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'img/'), '']
+    return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [perf/AGGREGATES.md](perf/AGGREGATES.md#shapes-of-real-queries); raw results [bench/results/analytics.json](bench/results/analytics.json).']
 
 
 BLOCKS = {'agg-map': lambda r: map_lines(r), 'agg-charts': lambda r: charts_lines(r, IMG), 'agg-scale': lambda r: scale_lines(r, IMG), 'agg-shapes': lambda r: shapes_lines(r)}
@@ -318,11 +318,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
     ap.add_argument('--page', default=PAGE)
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     for name, fn in BLOCKS.items():
         readme.replace_block(a.page, name, fn(a.results))
-    readme.replace_block(a.readme, 'scale', scale_lines(a.results, 'docs/img/', brief=True))
+    readme.replace_block(a.readme, 'scale', scale_lines(a.results, 'img/', brief=True))
     readme.replace_block(a.readme, 'shapes', readme_shapes(a.results))
 
 

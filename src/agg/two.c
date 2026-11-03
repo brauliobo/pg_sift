@@ -271,7 +271,7 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 	}
 }
 
-static void
+static pg_attribute_always_inline void
 cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
 {
 	if (!a->local)
@@ -321,7 +321,7 @@ cell_find(AggExec *ex, int k, ArmSt *a, int j, uint64 row)
 	return c;
 }
 
-static void
+static pg_attribute_always_inline void
 cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 {
 	Cell	   *c = &a->cell[ai][g];
@@ -362,7 +362,7 @@ cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 }
 
 /* the value of inner aggregate ai in a cell: false for NULL */
-static bool
+static pg_attribute_always_inline bool
 cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 {
 	const Cell	   *c = &a->cell[ai][g];

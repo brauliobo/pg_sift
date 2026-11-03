@@ -2,6 +2,7 @@
 -- VACUUM to the rewrite, and only for the indexes whose table the caller can read. The statistics of the table (last VACUUM, rows changed) lag
 -- the statements and are the test of sift.col_maintenance_status's.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 CREATE TABLE cis (id int, k int, v float8, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO cis SELECT g, g % 7, g, md5(g::text) FROM generate_series(1, 20000) g;

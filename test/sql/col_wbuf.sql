@@ -85,6 +85,50 @@ SELECT s.kind, s.nrows = c.nrows AS same_nrows, s.live
 FROM sift._test_col_wbuf_segments('t_idx') s JOIN counts c USING (gen) ORDER BY gen;
 SELECT sift._test_check('t_idx') AS orphans;
 
+-- the batches a scan keeps are the buffer as it is now: a read after VACUUM flagged records leaves them out, rows appended since are in
+CREATE TABLE t4 (doc int);
+CREATE INDEX t4_idx ON t4 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t4_idx') IS NOT NULL AS prepared;
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 0, 600) >= 0 AS appended;
+SELECT count(*) AS kept, count(*) FILTER (WHERE id % 5 = 0) AS dead_kept FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT count(*) AS kept_again FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT sift._test_col_wbuf_delete('t4_idx', 5) AS flagged;
+SELECT count(*) AS kept, count(*) FILTER (WHERE id % 5 = 0) AS dead_kept FROM sift._test_col_wbuf_batches('t4_idx', 7, true);
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 600, 100) >= 0 AS appended;
+SELECT sift._test_col_wbuf_delete('t4_idx', 7) AS flagged_more;
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 700, 100) >= 0 AS appended;
+SELECT (SELECT count(*) FROM (SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7, true) EXCEPT SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7)) x) AS only_kept,
+	   (SELECT count(*) FROM (SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7) EXCEPT SELECT id FROM sift._test_col_wbuf_batches('t4_idx', 7, true)) x) AS only_fresh,
+	   (SELECT count(*) FROM sift._test_col_wbuf_batches('t4_idx', 7, true)) AS kept;
+SELECT sift._test_check('t4_idx') AS orphans;
+
+-- a scan keeps the version it read at open: a VACUUM between two of its reads leaves the second on the batches of the first (the rows VACUUM flagged are
+-- dead to its snapshot, which held VACUUM back from anything it sees), and a scan that opens afterwards reads the flags. Only id 0 is flagged here, on the
+-- first page of its lane
+CREATE TABLE t5 (doc int);
+CREATE INDEX t5_idx ON t5 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t5_idx') IS NOT NULL AS prepared;
+SELECT sift._test_col_wbuf_append('t5_idx', 7, 0, 3000) >= 0 AS appended;
+SELECT (SELECT max(npages) FROM sift._test_col_wbuf_segments('t5_idx')) > 8 AS many_pages;
+CREATE TABLE opened AS SELECT sift._test_col_dir_version('t5_idx') AS v;
+SELECT count(*) AS first_read FROM sift._test_col_wbuf_batches('t5_idx', 7, true, (SELECT v FROM opened));
+SELECT sift._test_col_wbuf_delete('t5_idx', 100000) AS flagged;
+SELECT sift._test_col_dir_version('t5_idx') > (SELECT v FROM opened) AS bumped;
+SELECT count(*) AS second_read, count(*) FILTER (WHERE id = 0) AS flagged_kept FROM sift._test_col_wbuf_batches('t5_idx', 7, true, (SELECT v FROM opened));
+SELECT count(*) AS later_scan, count(*) FILTER (WHERE id = 0) AS flagged_kept FROM sift._test_col_wbuf_batches('t5_idx', 7, true);
+
+-- ... except in the page it goes on reading (the last of each lane): flags set there since the last read are found whatever version it holds, or the next scan
+-- would take the stamp of that read for a check
+CREATE TABLE t6 (doc int);
+CREATE INDEX t6_idx ON t6 USING sift_col (doc) WITH (write_buffer_limit = 64);
+SELECT sift._test_col_wbuf_prepare('t6_idx') IS NOT NULL AS prepared;
+SELECT sift._test_col_wbuf_append('t6_idx', 7, 0, 600) >= 0 AS appended;
+CREATE TABLE opened6 AS SELECT sift._test_col_dir_version('t6_idx') AS v;
+SELECT count(*) AS first_read FROM sift._test_col_wbuf_batches('t6_idx', 7, true, (SELECT v FROM opened6));
+SELECT sift._test_col_wbuf_delete('t6_idx', 5) AS flagged;
+SELECT count(*) AS resumed_read, count(*) FILTER (WHERE id % 5 = 0 AND id < 600) AS flagged_kept FROM sift._test_col_wbuf_batches('t6_idx', 7, true, (SELECT v FROM opened6));
+SELECT count(*) AS later_scan, count(*) FILTER (WHERE id % 5 = 0 AND id < 600) AS flagged_kept FROM sift._test_col_wbuf_batches('t6_idx', 7, true);
+
 -- a string of any length is held: a record of 300 000 bytes spans pages
 SELECT sift._test_col_wbuf_long('t_idx');
 SELECT sift._test_check('t_idx') AS orphans;
@@ -131,7 +175,7 @@ SELECT sift._test_poke('t2_idx', :rec_page, 40, 100000, 4);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
 
-DROP TABLE t, t2, t3, r, b, p, pages, counts;
+DROP TABLE t, t2, t3, t4, t5, t6, opened, opened6, r, b, p, pages, counts;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

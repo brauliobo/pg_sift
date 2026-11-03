@@ -49,6 +49,85 @@ term_mask(const sift_grp *g, int b, BlockMask out)
 	return true;
 }
 
+/*
+ * A row that only the last leaves of ord have scores at most their bounds' sum, which prune_leaves would take it out for at the first step
+ * where that sum cannot reach theta: the kids that are those leaves add no candidates (leaf_accum gives the leaves that stay their rows)
+ */
+static void
+kids_skip(const RankSeg *rs, float4 theta, int n, const int *ord, const float4 *rest)
+{
+	float4		margin = fabsf(theta) * (1.0f / 65536);
+	int			m = n;
+
+	/* a leaf that is not a kid of the root (inside an AND NOT, say) may score rows its candidates do not have: its bound would have to join the sum */
+	for (int k = 0; k < n; k++)
+	{
+		bool		kid = false;
+
+		for (int i = 0; i < rs->nug; i++)
+			kid |= rs->kidleaf[i] == ord[k];
+		if (!kid)
+			theta = -INFINITY;
+	}
+	if (theta > -INFINITY && n > 1)
+		for (int k = 1; k < n; k++)
+			if (rest[k - 1] + margin <= theta)
+			{
+				m = k;
+				break;
+			}
+	for (int i = 0; i < rs->nug; i++)
+	{
+		bool		essential = false;
+
+		for (int k = 0; k < m; k++)
+			essential |= ord[k] == rs->kidleaf[i];
+		rs->kidskip[i] = m < n && rs->kidleaf[i] >= 0 && !essential;
+	}
+}
+
+/* the union of the groups the kids of an OR root have in block b, on the pages of live */
+static void
+kids_mask(const RankSeg *rs, int b, uint32 live, RankWork *wk)
+{
+	memset(wk->res, 0, sizeof(BlockMask));
+	for (int i = 0; i < rs->nug; i++)
+	{
+		const sift_grp *g = rs->ug[i];
+		uint32		pm,
+					idx = 0;
+
+		if (g == NULL || rs->kidskip[i] || !(pm = g->pages[b / 4] >> ((b % 4) * 16) & 0xffff))
+			continue;
+		for (int wd = 0; wd < b / 4; wd++)
+			idx += pg_popcount64(g->pages[wd]);
+		idx += pg_popcount64(g->pages[b / 4] & ((UINT64CONST(1) << ((b % 4) * 16)) - 1));
+		for (; pm; pm &= pm - 1, idx++)
+		{
+			int			pg = pg_rightmost_one_pos32(pm);
+			const uint8 *row = g->off + (size_t) idx * g->w;
+
+			if (!(live >> pg & 1))
+				continue;
+			if (g->w < 8)
+			{
+				uint64		v = 0;
+
+				memcpy(&v, row, g->w);
+				wk->res[pg][0] |= v;
+			}
+			else
+				for (uint32 o = 0; o < g->w; o += 8)
+				{
+					uint64		v;
+
+					memcpy(&v, row + o, 8);
+					wk->res[pg][o / 8] |= v;
+				}
+		}
+	}
+}
+
 /* tf of every posting of the term's group and the rank each block starts at */
 static void
 term_decode(MemoryContext cx, RkTerm *t)
@@ -148,6 +227,56 @@ block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub)
 	return true;
 }
 
+/*
+ * The pages of block b that can lift a document over theta: bit i is set when the best the leaves can reach on page i, over the
+ * terms that score the block (block_terms) and have postings on the page, is above theta. The ub of a leaf in the block assumes all
+ * of its terms on every page; most pages hold few of them.
+ */
+uint32
+block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta)
+{
+	uint32		live = 0;
+	float4		pub[SIFT_BLK_PAGES] = {0};
+
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		const RkTerm *t = rs->term + rs->first[i];
+		float4		lm[SIFT_BLK_PAGES] = {0};
+
+		/* a leaf of one word, the common one: its bound goes to the pages it has, no row to zero and add (a sum with 0 is exact) */
+		if (p->leaves[i].scoring && p->leaves[i].nterms[rs->s] == 1)
+		{
+			float4		v;
+
+			if (!term_in_block(&t[0], b))
+				continue;
+			v = t[0].ubw * (float4) t[0].bb->blk_bound[b];
+			for (uint32 m = t[0].g->pages[b / 4] >> ((b % 4) * 16) & 0xffff; m; m &= m - 1)
+				pub[pg_rightmost_one_pos32(m)] += v;
+			continue;
+		}
+		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[rs->s]; j++)
+		{
+			float4		v;
+
+			if (!term_in_block(&t[j], b))
+				continue;
+			v = t[j].ubw * (float4) t[j].bb->blk_bound[b];
+			for (uint32 m = t[j].g->pages[b / 4] >> ((b % 4) * 16) & 0xffff; m; m &= m - 1)
+			{
+				int			pg = pg_rightmost_one_pos32(m);
+
+				lm[pg] = Max(lm[pg], v);
+			}
+		}
+		for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+			pub[pg] += lm[pg];
+	}
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		live |= (uint32) (pub[pg] > theta) << pg;
+	return live;
+}
+
 /* Builds the term's mask in wk->tm, decoding its tf on first use */
 static void
 term_prepare(SiftPlan *p, RkTerm *t, int b, RankWork *wk)
@@ -242,6 +371,150 @@ filter_result(const SiftPlan *p, const SiftFilterSB *fs, int b, RankWork *wk)
 	return any != 0;
 }
 
+/* The pages of the block with a candidate */
+static uint32
+res_pages(const RankWork *wk)
+{
+	uint32		want = 0;
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		uint64		w = 0;
+
+		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+			w |= wk->res[pg][k];
+		want |= (uint32) (w != 0) << pg;
+	}
+	return want;
+}
+
+/* The code of value v in a block of ab: 0 below its base, else v - base + 1, and 2^62 for any value beyond what a code can be */
+static uint64
+attr_code(const SiftAttrBlock *ab, int64 v)
+{
+	uint64		d;
+
+	if (v < ab->base)
+		return 0;
+	d = (uint64) v - (uint64) ab->base;
+	return d >= (UINT64CONST(1) << 62) ? (UINT64CONST(1) << 62) : d + 1;
+}
+
+/*
+ * The codes of a block that pass a test, as SiftAttrCodes has them: a comparison is a range of codes (codes 1 .. unk - 1 stand for the values the
+ * block holds, 0 for NULL, unk for unknown, which always passes), <> two ranges, IN a table of bytes. False for an IN over more codes than
+ * SIFT_ATTR_TABLE: the caller tests the decoded values.
+ */
+static bool
+attr_codes(const SiftAttrTest *at, const SiftAttrBlock *ab, RankWork *wk, SiftAttrCodes *c)
+{
+	uint64		top = ab->unk - 1,
+				v = attr_code(ab, at->v),
+				none = ab->unk + 1;
+
+	*c = (SiftAttrCodes) {1, top, none, none, ab->unk, NULL};
+	switch (at->op)
+	{
+		case SIFT_AT_EQ:
+			c->lo1 = c->hi1 = v;
+			break;
+		case SIFT_AT_LT:
+			c->hi1 = v == 0 ? 0 : v - 1;
+			break;
+		case SIFT_AT_LE:
+			c->hi1 = v;
+			break;
+		case SIFT_AT_GT:
+			c->lo1 = v + 1;
+			break;
+		case SIFT_AT_GE:
+			c->lo1 = Max(v, 1);
+			break;
+		case SIFT_AT_NE:
+			c->hi1 = v == 0 ? 0 : v - 1;
+			c->lo2 = v + 1;
+			c->hi2 = top;
+			break;
+		case SIFT_AT_ISNULL:
+			c->lo1 = c->hi1 = 0;
+			break;
+		case SIFT_AT_IN:
+			if (ab->unk > SIFT_ATTR_TABLE)
+				return false;
+			if (wk->attab_test != at || wk->attab_base != ab->base || wk->attab_unk != ab->unk)
+			{
+				memset(wk->attab, 0, ab->unk + 1 + SIFT_KERN_PAD);
+				wk->attab[ab->unk] = 1;
+				for (int i = 0; i < at->nset; i++)
+					if (at->set[i] >= ab->base && attr_code(ab, at->set[i]) <= top)
+						wk->attab[attr_code(ab, at->set[i])] = 1;
+				wk->attab_test = at;
+				wk->attab_base = ab->base;
+				wk->attab_unk = ab->unk;
+			}
+			c->table = wk->attab;
+			return true;
+		default:				/* SIFT_AT_NOTNULL */
+			c->hi1 = ab->unk;
+			break;
+	}
+	for (int r = 0; r < 2; r++)
+	{
+		uint64	   *lo = r ? &c->lo2 : &c->lo1,
+				   *hi = r ? &c->hi2 : &c->hi1;
+
+		*hi = Min(*hi, ab->unk);
+		if (at->op != SIFT_AT_ISNULL)
+			*lo = Max(*lo, 1);
+		if (*lo > *hi)
+			*lo = *hi = none;
+	}
+	return true;
+}
+
+/* Clears from wk->res the docs of the block that fail a test of an INCLUDE column (a doc whose value is unknown passes); false when none is left */
+static bool
+attr_filter(const SiftPlan *p, SiftSegment *seg, const SiftDocChunk *dc, int b, RankWork *wk)
+{
+	int			ncols = sift_seg_attr_ncols(seg);
+	uint32		want = res_pages(wk);
+
+	for (int t = 0; t < p->nattrs && want && ncols; t++)
+	{
+		const SiftAttrTest *at = &p->attrs[t];
+		SiftAttrBlock ab;
+		SiftAttrCodes c;
+		bool		fast;
+
+		if (at->col >= ncols)
+			continue;
+		sift_seg_block_attr(seg, dc, b, want, at->col, &ab);
+		if (ab.norows)
+			continue;
+		fast = attr_codes(at, &ab, wk, &c);
+		for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		{
+			if (ab.row[pg] == NULL)
+				continue;
+			if (fast)
+				sift_kern->attr_mask(wk->res[pg], ab.row[pg], ab.width, ab.nslots[pg], &c);
+			else
+				for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+					for (uint64 m = wk->res[pg][k]; m; m &= m - 1)
+					{
+						int			bit = pg_rightmost_one_pos64(m);
+						int64		v = 0;
+						int			st = sift_attr_get(&ab, pg, k * 64 + bit, &v);
+
+						if (!sift_attr_test_pass(at, st, v))
+							wk->res[pg][k] &= ~(UINT64CONST(1) << bit);
+					}
+		}
+		want = res_pages(wk);
+	}
+	return want != 0;
+}
+
 /*
  * The leaves present in the block (ub > 0) by descending bound, ties by leaf,
  * and rest[i], the sum of the bounds after ord[i]; returns their number.
@@ -293,13 +566,13 @@ prune_leaves(SiftPlan *p, RankSeg *rs, int b, float4 theta, RankWork *wk, const 
 }
 
 /*
- * Scores block b of the unit's SB for the group's result documents; returns
- * the candidates above theta in wk->slot / wk->vals. ub is the bound of each
- * leaf in the block.
+ * Scores block b of the unit's SB for the group's result documents on the
+ * pages of live (block_live); returns the candidates above theta in
+ * wk->slot / wk->vals. ub is the bound of each leaf in the block.
  */
 int
 score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
-			float4 theta, const float4 *ub)
+			float4 theta, const float4 *ub, uint32 live)
 {
 	SiftPlan   *p = r->plan;
 	RankWork   *wk = r->wk;
@@ -308,9 +581,20 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	uint32		want = 0;
 	int			n;
 
-	if (!term_mask(g, b, wk->res))
+	n = leaf_order(p, ub, r->ord, r->rest);
+	if (g == NULL)
+	{
+		kids_skip(rs, theta, n, r->ord, r->rest);
+		kids_mask(rs, b, live, wk);
+	}
+	else if (!term_mask(g, b, wk->res))
 		memset(wk->res, 0, sizeof(BlockMask));
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		if (!(live >> pg & 1))
+			memset(wk->res[pg], 0, sizeof(wk->res[pg]));
 	if (fs && !filter_result(p, fs, b, wk))
+		return 0;
+	if (p->nattrs && !attr_filter(p, seg, dc, b, wk))
 		return 0;
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 	{
@@ -336,7 +620,6 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	if (!any)
 		return 0;
 	sift_kern->knorm(wk->knorm, wk->dl, wk->res[0], SIFT_BLK_PAGES, &p->bm);
-	n = leaf_order(p, ub, r->ord, r->rest);
 	if (n > 1 && theta > -INFINITY && !prune_leaves(p, rs, b, theta, wk, r->ord, r->rest, n))
 		return 0;
 	zero_rows(wk->scores, wk->res[0]);

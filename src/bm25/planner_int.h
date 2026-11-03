@@ -25,6 +25,11 @@ typedef struct ScanCand
 	List	   *residual;			/* RestrictInfos the scan evaluates itself */
 	int64		late_k;				/* > 0: the scan checks them on the rows it hands out, asked for this many hits (SIFT_PRIV_LATE) */
 	int64		late_rows;			/* ... to take this many rows */
+	List	   *attr;				/* SIFT_PRIV_ATTR: tests of INCLUDE columns among the residual quals, which stay there to be rechecked */
+	double		attr_sel;			/* the fraction of the rows they keep */
+	List	   *semi;				/* SIFT_PRIV_SEMI: tables of the join the scan reads the keys of, to test the INCLUDE column they are joined on */
+	Relids		semi_rels;			/* ... and their rels: the rows the join keeps of the scan's are then the scan's own */
+	bool		attr_all;			/* they are every residual qual: nothing is checked late */
 } ScanCand;
 
 typedef struct ScoreRefs
@@ -63,6 +68,10 @@ typedef struct ScanEst
 	SiftFilterEst fe;
 } ScanEst;
 
+/* bm25/planner_attr.c: the residual quals that the ranker can test on the INCLUDE columns of the index */
+extern List *scan_semi_tests(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Relids *rels, double *sel);
+extern List *scan_attr_tests(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, List *residual, double *sel, bool *all);
+
 /* bm25/planner_match.c */
 extern bool scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query);
 extern bool score_walker(Node *node, ScoreRefs *refs);
@@ -74,9 +83,12 @@ extern bool sorted_by_score(PlannerInfo *root, RelOptInfo *rel, PathKey **pk);
 extern int64 query_limit(PlannerInfo *root);
 extern int64 scan_limit(PlannerInfo *root, bool ranked);
 extern bool late_quals(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanCost *sc, int64 k);
-extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept);
+extern int64 joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept, Relids skip);
 extern List *param_limits(PlannerInfo *root);
 extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
+
+/* bm25/planner_ties.c: the scans of the finished plan whose rows go to an incremental sort under a LIMIT are told to hand out the group tied with the last */
+extern void sift_tie_scans(PlannedStmt *stmt);
 
 /* bm25/planner_path.c */
 extern bool any_list_too_long(PlannerInfo *root, ScanCand *c, const ScanCost *sc);

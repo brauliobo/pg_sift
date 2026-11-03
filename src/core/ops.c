@@ -126,7 +126,7 @@ warn_analyzer_options(Relation index)
 {
 	if (analyzer_changed(index))
 		ereport(WARNING,
-				(errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
+				(errmsg("sift index \"%s\": it was built with other analyzer options", RelationGetRelationName(index)),
 				 errdetail("Queries and inserts on its table fail until the index is rebuilt with REINDEX."),
 				 errhint("To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.")));
 }

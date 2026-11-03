@@ -114,9 +114,8 @@ def cmd_merge(args):
     for path in args.files:
         d = json.load(open(path))
         tier = d['meta']['tier']
-        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'loadavg', 'loadavg_end', 'pressure', 'noisy', 'baseline', 'rerun', 'utilization')})
-        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], loadavg=d['meta']['loadavg'], loadavg_end=d['meta'].get('loadavg_end'), pressure=d['meta'].get('pressure'), noisy=d['meta'].get('noisy', []), baseline=d['meta'].get('baseline'), rerun=d['meta'].get('rerun', []), utilization=d['meta'].get('utilization'))
-        metas[tier].pop('loadavg_end', None)
+        metas.setdefault(tier, {}).update({k: v for k, v in d['meta'].items() if k not in ('date', 'noisy', 'baseline', 'rerun', 'utilization')})
+        metas[tier].setdefault('parts', {})[os.path.basename(path).split('-')[-1][:-5]] = dict(date=d['meta']['date'], noisy=d['meta'].get('noisy', []), baseline=d['meta'].get('baseline'), rerun=d['meta'].get('rerun', []), utilization=d['meta'].get('utilization'))
         rows += d['rows']
     entries = [json.load(open(v['path'])) for plan in args.plan for v in json.load(open(plan))['groups'].values() if v['status'] == 'cached']
     benchlib.check_homogeneous(entries, fp)

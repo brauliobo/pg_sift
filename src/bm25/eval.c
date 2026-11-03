@@ -217,7 +217,7 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 	{
 		p->phr = p->phr ? repalloc(p->phr, (p->nphr + 1) * sizeof(PhraseCheck)) :
 			MemoryContextAlloc(p->mcxt, sizeof(PhraseCheck));
-		p->phr[p->nphr++] = (PhraseCheck) {n->nterms, leaf, NULL, at.required};
+		p->phr[p->nphr++] = (PhraseCheck) {n->nterms, leaf, NULL, n->offs, at.required};
 	}
 	and = en_make(p, EN_AND, nk, kids);
 	if (at.positive && !at.required)
@@ -692,6 +692,13 @@ void
 sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
 {
 	plan->filter = filter;
+}
+
+void
+sift_plan_set_attrs(SiftPlan *plan, const SiftAttrTest *tests, int n)
+{
+	plan->attrs = tests;
+	plan->nattrs = n;
 }
 
 typedef struct Estimate

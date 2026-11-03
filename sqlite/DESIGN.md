@@ -27,7 +27,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 - **Writes.** One writer (SQLite's). INSERT/UPDATE/DELETE go to an in-memory inverted buffer; commit (xSync), the
   posting threshold, or a savepoint boundary flushes it as one immutable segment published in the manifest in the same
   SQLite transaction, so rollback, crash and WAL readers are consistent by construction.
-- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/bm25/runs.c`): the live part of every input (documents, then every term with its
+- **Merge.** Through sorted runs, as in the PostgreSQL host (`src/bm25/runs/runs.c`): the live part of every input (documents, then every term with its
   postings and positions) is spilled to a run, a temporary file, and the runs are merged by a k-way merge into the output segment, in several
   passes when they do not fit the memory budget (`maintenance_work_mem`, 64 MiB here); memory is the reader buffers plus one term, never the inverted
   index. Before this unification the SQLite host merged the inputs in lockstep without a temporary file (same result, byte for byte; on the 12-segment 218k

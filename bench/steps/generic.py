@@ -23,6 +23,7 @@ sys.path.insert(0, HERE)
 import cases as cases_mod  # noqa: E402
 import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 import benchlib  # noqa: E402  (steps/benchlib.py)
+import engine_io  # noqa: E402  (steps/engine_io.py: the IO of each timed call)
 from suite_engine import REPO, Unsupported, canon, first_diff, log, same, timed  # noqa: E402
 
 VERSION = next(l.split("'")[1] for l in open(os.path.join(REPO, 'pg_sift.control')) if l.startswith('default_version'))   # the rows carry the version they were measured at
@@ -46,9 +47,9 @@ def inputs_key(a, cases, chosen):
 
 
 def host_words():
-    """cpu, threads and memory of this host: what an older file must have for its numbers to stand in (the kernel and docker versions are not asked)"""
+    """an id of the cpu, threads and memory of this host: what an older file must have for its numbers to stand in (the kernel and docker versions are not asked; the details are not written)"""
     fp = benchlib.host_fingerprint()
-    return '%s, %s threads, %s' % (fp['cpu'], fp['threads'], fp['ram'])
+    return benchlib.key_of(dict(cpu=fp['cpu'], threads=fp['threads'], ram=fp['ram']), 12)
 
 
 def main():
@@ -86,7 +87,7 @@ def main():
         print('inputs %s, host %s; the file has inputs %s, host %s, measured %s' % (key, host, have.get('inputs'), have.get('host'), have.get('date')))
         sys.exit(0 if have.get('inputs') == key and have.get('host') == host else 1)
     runs = 0 if a.check_only else a.runs
-    results, failures, reference, skipped = [], [], {}, {}   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
+    results, failures, reference, skipped, io_rows = [], [], {}, {}, []   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
 
     def run_suite(eng, suite_cases_):
         for c in suite_cases_:
@@ -96,7 +97,9 @@ def main():
                     sql = eng.statement(c, arm)
                     note = eng.precheck(arm, sql) or ''
                     if not note:
-                        med, lo, hi, got = timed(eng.runner(arm, sql), runs)
+                        sink = []
+                        med, lo, hi, got = timed(engine_io.metered(eng, eng.runner(arm, sql), sink) if runs else eng.runner(arm, sql), runs)
+                        io_rows.extend((c.id, arm, 'io_warm_' + k, v) for k, v in engine_io.medians(sink, runs).items())   # extend: `+=` would make io_rows local to this function
                         got = canon(got)
                         if arm == 'pg':
                             reference[c.id] = got
@@ -115,7 +118,7 @@ def main():
                 if note:
                     med = lo = hi = None
                     skipped.setdefault(arm, []).append('%s: %s' % (c.id, note))
-                results.append((c.id, arm, med, lo, hi, open('/proc/loadavg').read().split()[0], note))
+                results.append((c.id, arm, med, lo, hi, '', note))
 
     for eid in order:
         eng = adapters[eid].Engine(ctx)
@@ -137,18 +140,23 @@ def main():
     for arm in dict.fromkeys(r[1] for r in results):
         why = skipped.get(arm, [])
         total = sum(1 for r in results if r[1] == arm)
-        loads = [float(r[5]) for r in results if r[1] == arm]
-        log('%-17s %2d of %2d compared, host load %.1f to %.1f%s' % (arm, total - len(why), total, min(loads), max(loads), ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
+        log('%-17s %2d of %2d compared%s' % (arm, total - len(why), total, ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
     if a.out and runs:
         with open(a.out, 'w') as f:
             f.write('# The generic suites on the other engines (steps/generic.py, bench/engines.tsv): %s against PostgreSQL 18 (the pg_duckdb image), the same rows, answers compared before any time.\n' % ', '.join(order))
             f.write('# inputs: %s\n# host: %s\n# sha: %s\n' % (key, host, subprocess.run(['git', '-C', REPO, 'describe', '--tags', '--always'], capture_output=True, text=True).stdout.strip()))
             f.write('# rows: %d\n# date: %s\n# method: client-side milliseconds, warm median of %d runs after one untimed; %d CPUs and %s per engine, one engine at a time; pg is PostgreSQL 18.1 of the pg_duckdb image\n'
                     % (a.rows, time.strftime('%Y-%m-%d'), runs, a.cpus, a.memory))
-            f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')
+            f.write('# NA: the engine did not run the case, the reason is in note; load: always empty (the column is kept for the older files)\n')
             f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
             for case, arm, med, lo, hi, load, note in results:
                 f.write('\t'.join([str(x) for x in (VERSION, case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')
+    if a.out and runs and io_rows:   # beside the times, not in them: the readers of generic.tsv count every row of an arm
+        with open(a.out.replace('.tsv', '-io.tsv'), 'w') as f:
+            f.write('# The IO of the same runs (steps/engine_io.py, steps/hostio.py): the host counters over the engine\'s processes and the device of its data, and the engine\'s own counters. A figure that the host cannot tell (no device on tmpfs or overlay storage) has no row.\n')
+            f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
+            for case, arm, metric, value in io_rows:
+                f.write('\t'.join([str(x) for x in (VERSION, case, arm, metric, '%.2f' % value, '', '', runs, '', '')]) + '\n')
     sys.exit(1 if failures else 0)
 
 

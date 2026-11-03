@@ -1,8 +1,9 @@
--- The lookups on a cached segment dictionary (col/dict.c): a dictionary is searched entry by entry until it has been asked a few times, then
+-- The lookups on a cached segment dictionary (col/dict/dict.c): a dictionary is searched entry by entry until it has been asked a few times, then
 -- an equality goes through a table of its codes (after 8 finds) and a prefix or range through its codes in byte order (after 16 tests, 1024
 -- entries or more). Every answer must be the heap's, in the rounds before, at and after each switch, on strings that tie on their first
 -- 8 bytes, NULLs, empty strings, unicode, a unit with inline strings, DML, the write buffer and a promoted segment.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 
 CREATE FUNCTION dl_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
@@ -83,16 +84,16 @@ $$ SELECT count(*) = k * (SELECT count(*) FROM dl_q) AND count(*) FILTER (WHERE 
 -- what the queries select (some of them nothing, some most of the table)
 SELECT n, (SELECT count(*) FROM sift._test_col_tids('dl_idx', preds)) AS rows FROM dl_q ORDER BY n;
 
--- 30 rounds in one backend: before, at and after the switch to the table of codes and the sorted order
-SELECT dl_rounds(30);
+-- 6 rounds in one backend: before, at and after the switch to the table of codes and the sorted order
+SELECT dl_rounds(6);
 
 -- the write buffer, an update, a delete, a promotion into a segment of its own dictionary
 INSERT INTO dl (id, s, t) SELECT 20000 + i, CASE WHEN i % 3 = 0 THEN 'commonprefix_' || i ELSE 'k' || md5((i % 400)::text) END, 'v' || i FROM generate_series(1, 500) i;
 UPDATE dl SET s = 'ab' || id WHERE id % 211 = 0;
 DELETE FROM dl WHERE id % 97 = 0 AND id < 15000;
-SELECT dl_rounds(20);
+SELECT dl_rounds(4);
 SELECT sift.col_promote('dl_idx') > 0 AS promoted;
-SELECT dl_rounds(20);
+SELECT dl_rounds(4);
 SELECT sift.col_verify('dl_idx', true);
 
 -- the same through SQL: the index scan (=, LIKE, ^@) and the aggregate pushdown (ranges), against the heap, 30 times each

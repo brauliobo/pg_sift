@@ -49,6 +49,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROLLUP_PERMILLE	20			/* the rollups of one list of elements take at most this share of the unit's bytes */
 #define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
 #define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
+#define SIFT_PAGG_EXC_ROWS		32			/* ... or at most one byte for each 32 rows of the unit: a unit with few groups has a cube as small as its exceptions */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* a unit's rollups of a list always may take this many bytes */
 #define SIFT_PAGG_CUBE_MIN_BUDGET	8192		/* ... and its cube's dims (and calendar cells) this many, or the tail of a table would keep none under the share */
 #define SIFT_PAGG_CAL_PERMILLE	100		/* the calendar dims of a unit together may take this much of its bytes, counted as built (at least the cube's minimum budget) */
@@ -123,9 +124,13 @@ typedef struct SiftCPaggSpec
 	bool		hll[SIFT_COL_MAX_COLS];	/* the leaves that keep a HyperLogLog sketch of their values in every unit (option hll_columns, column format minor 20; col/hll.h) */
 	bool		gorder[SIFT_COL_MAX_COLS];	/* the leaves that get a global order block in the segment (column format minor 21; col/gorder.h) */
 	uint32		gorder_coll[SIFT_COL_MAX_COLS];	/* ... of a text leaf: the collation its strings are ranked by (the column's) */
+	uint8		glayout[SIFT_COL_MAX_COLS];	/* the layout of the global order of each leaf (option order_layout, SIFT_CGORD_OL_*; col/gorder.h) */
 	bool		gorderauto;				/* order_array_columns is the choice of the build ('auto: a, b'): the leaves of it get their sorted run too */
 	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
-	bool		gorder_group_auto;	/* order_array_group is the choice of the build ('auto: g'): only the blocks of dates and timestamps are grouped, a range of another leaf keeps its plain order */
+	bool		gorder_group_auto;	/* order_array_group is the choice of the build ('auto: g'): every block of a date, timestamp or integer array is grouped and keeps its plain order beside it */
+	bool		gorder_only[SIFT_COL_MAX_COLS];	/* ... and these arrays keep the second order only, no plain order beside it ('auto: g, a, b': a time column the units are cut by or that follows the heap order) */
+	bool		gorder_listed;		/* ... 'auto: g, a, b; c, d': only the arrays named (a, b: second order only; c, d: beside their plain order) are grouped, the others keep the plain order alone; without the ';' every array is grouped */
+	bool		gorder_with[SIFT_COL_MAX_COLS];
 	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write/seg_write.c) */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
@@ -207,6 +212,9 @@ typedef struct SiftCPaggCol
 	const uint64 *ovf;
 	uint32		n;
 	bool		ready;					/* key is usable: false for a STR leaf stored inline and for a leaf that was not decoded */
+	bool		ranged;					/* the caller knows the zone: lo and hi bound the keys of the rows that are not NULL (false: not known) */
+	int64		lo,
+				hi;
 } SiftCPaggCol;
 
 /*
@@ -224,6 +232,7 @@ extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec
 
 /* The exact sums of one INT leaf's values */
 extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
+extern void sift_cpagg_leaf_in(const SiftCPaggCol *c, int64 lo, int64 hi, SiftCLeafAgg *a);
 /*
  * The cube of a unit of nrows rows, appended to out as one blob (nothing appended when no dim fits). unit_bytes is the encoded size of the unit,
  * the base of the default byte budget. Deterministic: the same columns give the same bytes.
@@ -232,7 +241,7 @@ extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
  * list, cols[leaf].n of them. eout NULL: no rollup is built (a segment of column format minor 3 has none). The byte budget is shared: the cube
  * first, then the rollups in list order take what is left; a rollup that does not fit drops its dim of the most distinct values until it does.
  *
- * Element blob: u8 nlists, nlists x (list leaf, bytes of its rollup) as varints, then the rollups (format in col/preagg.c), in ascending list order.
+ * Element blob: u8 nlists, nlists x (list leaf, bytes of its rollup) as varints, then the rollups (format in col/preagg/preagg.c), in ascending list order.
  */
 extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 							StringInfo out, StringInfo eout);
@@ -360,6 +369,9 @@ extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eb
 /* The measure slot of leaf m in the dim, -1 if it is not stored */
 extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
+/* The cube and rollups of the rows cols[0..nrows) in the dims and measures of the stored blobs; false: the stored ones do not decode */
+extern bool sift_cpagg_cube_like(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+								 int format, StringInfo out, StringInfo eout);
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
  * false on any difference, or when the cube holds min and max (minmax) a calendar dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.

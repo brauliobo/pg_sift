@@ -18,7 +18,7 @@ VACUUM (FREEZE, ANALYZE) ka;
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
 
 -- chosen: the key is scattered over the units, nothing else follows the table
-CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
 SELECT kopt('ka_auto');
 SELECT kind, format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SELECT sift.col_verify('ka_auto', true);
@@ -69,7 +69,7 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 -- the NOTICE says what was chosen and how to turn it off
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
-CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
 
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 -- (small rows, 20 to a page: the prediction counts the addresses of the rows, not what the cut saves in the pre-aggregates, so it is an upper bound)
@@ -77,18 +77,23 @@ DROP INDEX ka_auto;
 SET client_min_messages = warning;
 CREATE TABLE kg (id int, tenant_id int, a1 int, a2 int, a3 int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
-CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3);
+CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
 SET client_min_messages = warning;
 CREATE TABLE kf (id int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
+INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
+-- the setting silences the advice
+SET sift.cluster_advice = off;
+CREATE INDEX kf_quiet ON kf USING sift_col (tenant_id);
+RESET sift.cluster_advice;
+DROP INDEX kf_quiet;
 SET client_min_messages = warning;
 CREATE INDEX ka_seq ON ka USING sift_col (tenant_id, seq, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 CREATE INDEX ka_wide ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
@@ -100,7 +105,7 @@ UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cu
 -- here, and its units cost 30% of the index), and the decision reads the rows of a superblock from the heap
 CREATE TABLE ku (id int, tenant_id int, a1 int, a2 int, a3 int) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 250000) i;
 CREATE INDEX ku_cut ON ku USING sift_col (tenant_id, a1, a2, a3) WITH (key_cut = 'tenant_id');
 SELECT sum(units) BETWEEN pg_relation_size('ku') / 8192 / 256 / 2 AND 2 * pg_relation_size('ku') / 8192 / 256 AS units_of_the_superblocks FROM sift.col_segments('ku_cut') WHERE kind = 'immutable';
 SELECT leaf, decision FROM sift.key_cut_decision('ku_cut');
@@ -124,7 +129,7 @@ UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt
 -- a date of 1,826 values on narrow rows: the cut lists the addresses of every row, so the index grows, and a range reads 100 times the units its rows fill: the benefit pays for the growth
 CREATE TABLE kd (id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
-INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 400000) i;
+INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_i ON kd USING sift_col (d);
 SELECT kopt('kd_i'), growth_pct > 3 AS grows, decision FROM sift.key_cut_decision('kd_i');

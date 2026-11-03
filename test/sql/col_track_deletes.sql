@@ -1,0 +1,228 @@
+-- track_changes (default auto, a key) installs two internal statement triggers, AFTER UPDATE and AFTER DELETE: they tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
+-- transaction that installs them first writes a tombstone for every version of the table that is dead then (the baseline). The log can be taken for complete (heap_free of
+-- sift.col_tracking) only while the triggers are the ones that made it so. The oracle is the heap: the address each row had before the statement.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(1, 2000) i;
+CREATE TEMP TABLE expected (tid tid);
+-- the addresses of the log that no aborted transaction wrote (an address twice is one tombstone), against the addresses the oracle expects
+CREATE FUNCTION log_matches(idx regclass) RETURNS bool LANGUAGE sql AS $$
+  SELECT coalesce((SELECT array_agg(DISTINCT tid ORDER BY tid) FROM expected), '{}') =
+         coalesce((SELECT array_agg(DISTINCT tid ORDER BY tid) FROM sift._test_col_log_entries(idx) WHERE txid_status(xid::text::bigint) IS DISTINCT FROM 'aborted'), '{}') $$;
+CREATE FUNCTION sift_triggers() RETURNS text LANGUAGE sql AS $$
+  SELECT coalesce(string_agg(regexp_replace(tgname, '_[0-9]+$', '') || ':' || tgenabled::text || ':' || tgisinternal::text, ' ' ORDER BY tgname), 'none')
+    FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%' $$;
+
+-- built by the default: both triggers and a complete log, and a delete is heard
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
+SELECT * FROM sift.col_tracking('t_c');
+SELECT sift_triggers();
+CREATE TEMP TABLE b_deleted AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 1 AND 10;
+DELETE FROM t WHERE id BETWEEN 1 AND 10;
+SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
+
+-- refused, with what to do: a partition, a table with children, whose statements a trigger does not hear
+CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100);
+ALTER TABLE p1 ADD PRIMARY KEY (id);
+CREATE INDEX p1_c ON p1 USING sift_col (id, g) WITH (track_changes = 'id');
+DROP TABLE p;
+CREATE TABLE child () INHERITS (t);
+CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
+ALTER INDEX t_c SET (track_changes = 'off');
+ALTER INDEX t_c SET (track_changes = 'id');
+SELECT sift_triggers();
+DROP TABLE child;
+
+-- turned off, and on later: the baseline writes a tombstone for every dead version the table holds then (rows deleted before and since, old versions of updated rows)
+CREATE TEMP TABLE b_later AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 11 AND 30 OR id BETWEEN 71 AND 80;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 11 AND 30;
+DELETE FROM t WHERE id BETWEEN 71 AND 80;
+ALTER INDEX t_c SET (track_changes = 'id');
+SELECT * FROM sift.col_tracking('t_c');
+SELECT sift_triggers();
+INSERT INTO expected SELECT old FROM b_deleted UNION ALL SELECT old FROM b_later;
+SELECT log_matches('t_c') AS baseline_matches;
+-- an ALTER INDEX of another option takes no lock on the table that holds a writer out
+BEGIN;
+ALTER INDEX t_c SET (cluster_advice = off);
+SELECT count(*) AS table_locks_above_row_exclusive FROM pg_locks WHERE relation = 't'::regclass AND pid = pg_backend_pid() AND mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock');
+ROLLBACK;
+-- turned off: no trigger, nothing complete, the log stays
+ALTER INDEX t_c SET (track_changes = 'off');
+SELECT sift_triggers();
+SELECT * FROM sift.col_tracking('t_c');
+DROP INDEX t_c;
+
+-- built with it
+CREATE TEMP TABLE b_built AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 81 AND 90;
+DELETE FROM t WHERE id BETWEEN 81 AND 90;
+CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
+SELECT * FROM sift.col_tracking('t_c');
+INSERT INTO expected SELECT old FROM b_built;
+SELECT log_matches('t_c') AS built_matches;
+
+-- from now on: a delete, a key change, an update that replaces an entry
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+DELETE FROM t WHERE id BETWEEN 101 AND 140;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 101 AND 140;
+UPDATE t SET id = id + 100000 WHERE id BETWEEN 141 AND 150;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 141 AND 150;
+UPDATE t SET v = v + 1 WHERE id BETWEEN 151 AND 160;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 151 AND 160;
+SELECT log_matches('t_c') AS matches;
+-- an update that replaces an entry is one tombstone, not two (the supersede wrote it, the trigger finds it)
+SELECT count(*) AS twice FROM (SELECT tid FROM sift._test_col_log_entries('t_c') GROUP BY tid HAVING count(*) > 1) d;
+-- a key moved onto the key another row just left
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+UPDATE t SET id = id + 1000000 WHERE id = 172;
+UPDATE t SET id = 172 WHERE id = 171;
+INSERT INTO expected SELECT old FROM before WHERE id IN (171, 172);
+SELECT log_matches('t_c') AS matches_after_move;
+-- a delete and an insert of the same key in one statement: the new row's entry is not tombstoned
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+WITH d AS (DELETE FROM t WHERE id = 181 RETURNING g) INSERT INTO t SELECT 181, g, 0, 0 FROM d;
+INSERT INTO expected SELECT old FROM before WHERE id = 181;
+SELECT log_matches('t_c') AS matches_after_reinsert;
+-- rolled back, and a savepoint
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+BEGIN;
+DELETE FROM t WHERE id BETWEEN 201 AND 210;
+UPDATE t SET id = id + 100000 WHERE id BETWEEN 211 AND 220;
+SAVEPOINT s;
+DELETE FROM t WHERE id BETWEEN 221 AND 230;
+ROLLBACK TO s;
+DELETE FROM t WHERE id BETWEEN 231 AND 240;
+SELECT txid_current() AS tx \gset
+ROLLBACK;
+SELECT txid_status(:tx) AS status, log_matches('t_c') AS matches_after_rollback;
+BEGIN;
+SAVEPOINT s;
+DELETE FROM t WHERE id BETWEEN 251 AND 260;
+ROLLBACK TO s;
+DELETE FROM t WHERE id BETWEEN 261 AND 270;
+COMMIT;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 261 AND 270;
+SELECT log_matches('t_c') AS matches_after_savepoint;
+SELECT * FROM sift.col_tracking('t_c');
+
+-- the reads stay the heap's
+SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off;
+CREATE TEMP TABLE by_heap AS SELECT count(*) AS c, sum(v) AS s FROM t WHERE g = 3;
+SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = on;
+CREATE TEMP TABLE by_index AS SELECT count(*) AS c, sum(v) AS s FROM t WHERE g = 3;
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+SELECT h.c = i.c AND h.s = i.s AS same_answers FROM by_heap h, by_index i;
+
+-- the mutant: with the triggers silent a delete is missed, and the oracle sees it
+SET sift.test_no_track = on;
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
+DELETE FROM t WHERE id BETWEEN 301 AND 310;
+INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 301 AND 310;
+SELECT log_matches('t_c') AS matches_with_mutant;
+RESET sift.test_no_track;
+DELETE FROM expected WHERE tid IN (SELECT old FROM before WHERE id BETWEEN 301 AND 310);
+
+-- the channel: any change to a trigger ends the completeness (heap_free) until a new baseline
+-- the triggers are internal: DISABLE TRIGGER USER leaves them (and the completeness) alone
+ALTER TABLE t DISABLE TRIGGER USER;
+SELECT 'disable trigger user' AS step, heap_free FROM sift.col_tracking('t_c');
+ALTER TABLE t DISABLE TRIGGER ALL;
+SELECT 'disable trigger all' AS step, heap_free FROM sift.col_tracking('t_c');
+ALTER TABLE t ENABLE TRIGGER ALL;
+SELECT 'enabled (normal role)' AS step, triggers, complete, heap_free FROM sift.col_tracking('t_c');
+DO $$ DECLARE n text; BEGIN FOR n IN SELECT tgname FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track%' LOOP EXECUTE format('ALTER TABLE t ENABLE ALWAYS TRIGGER %I', n); END LOOP; END $$;
+SELECT 'enabled always again' AS step, triggers, complete, heap_free FROM sift.col_tracking('t_c');
+SELECT sift_triggers();
+ALTER INDEX t_c SET (track_changes = 'off');
+ALTER INDEX t_c SET (track_changes = 'id');
+SELECT 'new baseline' AS step, * FROM sift.col_tracking('t_c');
+DO $$ DECLARE n text; BEGIN SELECT tgname INTO n FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_delete%'; EXECUTE format('DROP TRIGGER %I ON t', n); END $$;
+SELECT 'trigger dropped' AS step, triggers, heap_free FROM sift.col_tracking('t_c');
+REINDEX INDEX t_c;
+SELECT 'reindex' AS step, * FROM sift.col_tracking('t_c');
+-- the unique index the key is found by
+ALTER TABLE t DROP CONSTRAINT t_pkey;
+SELECT 'no unique index' AS step, heap_free FROM sift.col_tracking('t_c');
+ALTER TABLE t ADD PRIMARY KEY (id);
+SELECT 'primary key again' AS step, heap_free FROM sift.col_tracking('t_c');
+
+-- a concurrent build tracks from now on, and says what makes the log complete
+DROP INDEX t_c;
+CREATE INDEX CONCURRENTLY t_cic ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
+SELECT * FROM sift.col_tracking('t_cic');
+SELECT sift_triggers();
+ALTER INDEX t_cic SET (track_changes = 'off');
+ALTER INDEX t_cic SET (track_changes = 'id');
+SELECT * FROM sift.col_tracking('t_cic');
+DROP INDEX t_cic;
+SELECT sift_triggers();
+
+-- the target of a subscription: the apply worker fires no statement trigger (the catalog row is what ALTER SUBSCRIPTION .. REFRESH PUBLICATION writes)
+CREATE TABLE sub_t (id int PRIMARY KEY, g int NOT NULL);
+CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_changes = 'id');
+SELECT heap_free FROM sift.col_tracking('sub_c');
+SET client_min_messages = error;
+CREATE SUBSCRIPTION sub_s CONNECTION 'dbname=none' PUBLICATION nothing WITH (connect = false, slot_name = NONE, enabled = false);
+SET client_min_messages = warning;
+SET allow_system_table_mods = on;
+INSERT INTO pg_subscription_rel SELECT oid, 'sub_t'::regclass, 'r', NULL FROM pg_subscription WHERE subname = 'sub_s';
+RESET allow_system_table_mods;
+SELECT 'subscribed' AS step, track_changes, heap_free FROM sift.col_tracking('sub_c');
+DROP INDEX sub_c;
+CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_changes = 'id');
+DROP SUBSCRIPTION sub_s;
+DROP TABLE sub_t;
+
+-- TRUNCATE rebuilds the index: the channel and the baseline are made again on the empty table
+CREATE TABLE tr (id int PRIMARY KEY, g int NOT NULL);
+INSERT INTO tr SELECT i, i FROM generate_series(1, 100) i;
+CREATE INDEX tr_c ON tr USING sift_col (id, g) WITH (track_changes = 'id');
+TRUNCATE tr;
+SELECT 'truncate' AS step, * FROM sift.col_tracking('tr_c');
+INSERT INTO tr SELECT i, i FROM generate_series(1, 100) i;
+DELETE FROM tr WHERE id <= 10;
+SELECT count(*) AS entries FROM sift._test_col_log_entries('tr_c');
+DROP TABLE tr;
+
+-- a chain of HOT updates is live: its root has no tombstone; a chain that moved to another page is dead: its root has one
+CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enabled = false, fillfactor = 50);
+INSERT INTO h SELECT i, i % 10, 0 FROM generate_series(1, 200) i;
+CREATE TEMP TABLE h_root AS SELECT id, ctid AS root FROM h;
+UPDATE h SET w = w + 1 WHERE id <= 100;
+CREATE INDEX h_c ON h USING sift_col (id, g) WITH (track_changes = 'id');
+UPDATE h SET w = w + 1 WHERE id <= 100;
+ALTER INDEX h_c SET (track_changes = 'id');
+CREATE TEMP TABLE h_log AS SELECT DISTINCT tid FROM sift._test_col_log_entries('h_c');
+SELECT count(*) FILTER (WHERE (r.root::text::point)[0] = (h.ctid::text::point)[0]) > 0 AS some_chains_stay,
+       count(*) FILTER (WHERE (r.root::text::point)[0] <> (h.ctid::text::point)[0]) > 0 AS some_chains_moved,
+       count(*) FILTER (WHERE (r.root::text::point)[0] = (h.ctid::text::point)[0] AND r.root IN (SELECT tid FROM h_log)) AS live_roots_tombstoned,
+       count(*) FILTER (WHERE (r.root::text::point)[0] <> (h.ctid::text::point)[0] AND r.root NOT IN (SELECT tid FROM h_log)) AS dead_roots_missing
+  FROM h_root r JOIN h USING (id);
+DROP TABLE h;
+
+-- a delete, and a change of the key, of more rows than one look-up of the trigger takes (8192 keys), with a key of a type passed by reference: every dead address has its tombstone, once
+CREATE TABLE big (k text PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO big SELECT 'key' || lpad(i::text, 6, '0'), i % 10, 0 FROM generate_series(1, 30000) i;
+CREATE INDEX big_c ON big USING sift_col (k, g) WITH (track_changes = 'k');
+TRUNCATE expected;
+INSERT INTO expected SELECT ctid FROM big WHERE g <> 3;
+DELETE FROM big WHERE g <> 3;
+SELECT (SELECT count(*) FROM expected) AS deleted, log_matches('big_c') AS matches;
+INSERT INTO expected SELECT ctid FROM big WHERE k < 'key015000';
+UPDATE big SET k = 'x' || k WHERE k < 'key015000';
+SELECT (SELECT count(*) FROM expected) AS deleted_or_moved, log_matches('big_c') AS matches;
+DROP TABLE big;
+
+DROP FUNCTION log_matches(regclass);
+DROP FUNCTION sift_triggers();
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

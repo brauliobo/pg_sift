@@ -406,6 +406,52 @@ test_gather(Test *t)
 	mix(t, dst, (k + GUARD) * sizeof(uint32));
 }
 
+/* The statistics of the rows of a group gathered from a column: the sum wraps modulo 2^64 for any values (the caller proves that it fits), so it is compared for the extremes of int64 too */
+static void
+test_gather_stats(Test *t)
+{
+	uint32		na = 1 + rnd(t, 2000),
+				k = 1 + (rnd(t, 3) ? rnd(t, 800) : rnd(t, 20));
+	int64	   *a = in_array(t, sizeof(int64), na);
+	uint32	   *idx = in_array(t, sizeof(uint32), k);
+	int64		out[3];
+	bool		wide = rnd(t, 4) == 0;
+
+	for (uint32 i = 0; i < na; i++)
+		a[i] = wide ? (rnd(t, 4) == 0 ? (int64) (rnd(t, 2) ? PG_INT64_MAX - rnd(t, 3) : PG_INT64_MIN + rnd(t, 3)) : (int64) pg_prng_uint64(&t->rs)) :
+			(int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
+	for (uint32 i = 0; i < k; i++)
+		idx[i] = rnd(t, na);
+	t->k->gather_stats(a, idx, k, &out[0], &out[1], &out[2]);
+	mix(t, out, sizeof(out));
+}
+
+/* The statistics of a column: the sums of squares are compared when every value is within 2^31 of zero (the kernel's contract), the extremes and the wrapping sum always (the extremes of int64 among them) */
+static void
+test_int_stats(Test *t)
+{
+	uint32		n = 1 + (rnd(t, 3) ? rnd(t, 3000) : rnd(t, 20));
+	bool		wide = rnd(t, 4) == 0;
+	int64	   *a = in_array(t, sizeof(int64), n);
+	int64		mn,
+				mx,
+				sum;
+	uint64		sq[2];
+
+	for (uint32 i = 0; i < n; i++)
+		a[i] = wide ? (rnd(t, 4) == 0 ? (int64) (rnd(t, 2) ? PG_INT64_MAX - rnd(t, 3) : PG_INT64_MIN + rnd(t, 3)) : (int64) pg_prng_uint64(&t->rs)) :
+			(int64) rnd(t, UINT64CONST(1) << 32) - ((int64) 1 << 31);
+	t->k->int_stats(a, n, &mn, &mx, &sum, sq);
+	mix64(t, (uint64) mn);
+	mix64(t, (uint64) mx);
+	mix64(t, (uint64) sum);			/* wraps modulo 2^64 for any values, in every implementation */
+	if (!wide)
+	{
+		mix64(t, sq[0]);
+		mix64(t, sq[1]);
+	}
+}
+
 /* Float keys of every kind of double back to doubles, in place; a bit vector as byte flags (the bits past n are zero, as in a chunk's bitmap) */
 static void
 test_decode_lanes(Test *t)
@@ -653,6 +699,8 @@ run_cases(const SiftColKernels *k, int32 seed)
 		for (int w = 0; w < 4; w++)
 			test_for(&t, w);
 		test_gather(&t);
+		test_gather_stats(&t);
+		test_int_stats(&t);
 		test_decode_lanes(&t);
 		test_expand_parents(&t);
 		test_str_contains(&t);

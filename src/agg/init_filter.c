@@ -242,7 +242,7 @@ part_fold(Node *n, AggExec *ex)
 		return n;
 	if (contain_var_clause(n))
 		return expression_tree_mutator(n, part_fold, ex);
-	e = ExecInitExpr((Expr *) n, EXPR_PARENT(ex));
+	e = operand_state(ex, n);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	get_typlenbyval(exprType(n), &len, &byval);
 	return (Node *) makeConst(exprType(n), exprTypmod(n), exprCollation(n), len, isnull ? (Datum) 0 : datumCopy(d, byval, len), isnull, byval);
@@ -264,20 +264,29 @@ part_prune_init(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* The leaves the comparisons of cmp_only are of (at most two: a key and the group it is counted in), and whether some comparison of each is not an equality */
+typedef struct CmpLeaves
+{
+	int			n;
+	int			leaf[2];
+	bool		range[2];
+} CmpLeaves;
+
 /*
- * Is the WHERE of the statement only comparisons (<, <=, =, >=, >) of one integer, date or timestamp leaf with constants of its own type, and which leaf: a count(*) of
- * it is the number of rows whose key lies in the range they make, which a segment's global order counts (sift_colsrc_count_cmp)
+ * Is the WHERE of the statement only comparisons (<, <=, =, >=, >) of one integer, date or timestamp leaf with constants of its own type, or of two, the second only equalities (the group of the rows
+ * of the first): a count(*) of it is the number of rows whose key lies in the range they make, which a segment's global order counts (sift_colsrc_count_cmp), and in a group, its second order
  */
 static bool
-cmp_only(AggExec *ex, SiftAggPred *p, int *leaf)
+cmp_only(AggExec *ex, SiftAggPred *p, CmpLeaves *cl)
 {
 	SiftSrcPrune z;
 	Oid			typid;
+	int			k;
 
 	if (p->kind == SAP_AND)
 	{
 		for (int i = 0; i < p->nchild; i++)
-			if (!cmp_only(ex, p->child[i], leaf))
+			if (!cmp_only(ex, p->child[i], cl))
 				return false;
 		return true;
 	}
@@ -288,22 +297,80 @@ cmp_only(AggExec *ex, SiftAggPred *p, int *leaf)
 	if (!((typid == INT2OID || typid == INT4OID || typid == INT8OID) ? (p->argtype == INT2OID || p->argtype == INT4OID || p->argtype == INT8OID) :
 		  ((typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID) && p->argtype == typid)))
 		return false;
-	if (*leaf >= 0 && *leaf != p->leaf)
-		return false;
-	*leaf = p->leaf;
+	for (k = 0; k < cl->n && cl->leaf[k] != p->leaf; k++)
+		;
+	if (k == cl->n)
+	{
+		if (cl->n == 2)
+			return false;
+		cl->leaf[cl->n] = p->leaf;
+		cl->range[cl->n++] = false;
+	}
+	cl->range[k] |= p->op != SCMP_EQ;
 	return true;
 }
 
-/* the leaf of the only comparisons of the statement (cmp_only), -1 when the conditions are anything else */
+/* the leaf of the only comparisons of the statement (cmp_only): the one with a range, when a second has equalities only (its group); -1 when the conditions are anything else */
 int
 sift_agg_cmp_only_leaf(AggExec *ex)
 {
-	int			leaf = -1;
+	CmpLeaves	cl = {0};
 
 	if (ex->spec->npred == 0)
 		return -1;
 	for (int i = 0; i < ex->spec->npred; i++)
-		if (!cmp_only(ex, ex->spec->pred[i], &leaf))
+		if (!cmp_only(ex, ex->spec->pred[i], &cl))
+			return -1;
+	if (cl.n == 2 && cl.range[0] && cl.range[1])
+		return -1;
+	return cl.n == 2 && cl.range[1] ? cl.leaf[1] : cl.leaf[0];
+}
+
+/*
+ * Is the WHERE of the statement only comparisons of one text leaf with constants that bound its strings in the order of its collation (a lower and an upper bound at most, an
+ * equality being both), and which: a count(*) of it is the number of rows whose string lies between them, which a segment's global order of the leaf counts by their ranks
+ * (sift_colsrc_count_strs). lo and hi are the tests of the bounds, NULL for none.
+ */
+static bool
+text_range(AggExec *ex, SiftAggPred *p, int *leaf, const SiftSrcStrTest **lo, const SiftSrcStrTest **hi)
+{
+	SiftSrcStrTest *t;
+
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (!text_range(ex, p->child[i], leaf, lo, hi))
+				return false;
+		return true;
+	}
+	t = palloc0(sizeof(SiftSrcStrTest));
+	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SSTR_PREFIX)
+		return false;
+	if ((*leaf >= 0 && *leaf != p->leaf) || ((*lo != NULL || *hi != NULL) && (*lo ? (*lo)->collid : (*hi)->collid) != t->collid))
+		return false;
+	*leaf = p->leaf;
+	if (t->op == SSTR_EQ && *lo == NULL && *hi == NULL)
+		*lo = *hi = t;
+	else if ((t->op == SSTR_GT || t->op == SSTR_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SSTR_EQ))
+		*lo = t;
+	else if ((t->op == SSTR_LT || t->op == SSTR_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SSTR_EQ))
+		*hi = t;
+	else
+		return false;
+	return true;
+}
+
+/* the leaf of the only comparisons of the statement when they are text_range, -1 when they are anything else */
+int
+sift_agg_text_range(AggExec *ex, const SiftSrcStrTest **lo, const SiftSrcStrTest **hi)
+{
+	int			leaf = -1;
+
+	*lo = *hi = NULL;
+	if (ex->spec->npred == 0)
+		return -1;
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (!text_range(ex, ex->spec->pred[i], &leaf, lo, hi))
 			return -1;
 	return leaf;
 }

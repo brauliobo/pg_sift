@@ -1,5 +1,5 @@
 /*
- * col/build.h - the build of a sift_col index in two files: col/build.c turns the rows of heap pages into
+ * col/build.h - the build of a sift_col index in two files: col/build/build.c turns the rows of heap pages into
  * batches and the batches into segments (a ColBuild is one participant) and runs the serial build; col/build_par.c shares the
  * superblocks of the table between the participants of a parallel build.
  */
@@ -7,6 +7,7 @@
 #define SIFT_COL_BUILD_H
 
 #include "access/genam.h"
+#include "datatype/timestamp.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/s_lock.h"
@@ -55,8 +56,12 @@ extern double sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Sna
 extern int	sift_colb_end(ColBuild *b);
 extern double sift_colb_rows(const ColBuild *b);
 extern void sift_colb_free(ColBuild *b);
-/* Publishes the segments of a build in the directory, ordered by their first superblock */
-extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs);
+/*
+ * Publishes the segments of a build in the directory, ordered by their first superblock. stamped: the build ran under the lock that holds the writers out
+ * (not CONCURRENTLY) of an index with track_changes, so every transaction that inserted a row it read has finished: the segments say that every inserter is before the
+ * next xid (SIFT_SEG_XSTAMP). A row the building transaction itself inserted is of an xid below it too, and no snapshot has an xmin above that xid before it commits.
+ */
+extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped);
 
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);
@@ -73,6 +78,8 @@ extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
 extern PGDLLIMPORT int sift_test_col_max_segments;
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
+extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with key_cut is made whatever its merge (on: the tests of the participants run on small tables; off: build_pays decides) */
+extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif

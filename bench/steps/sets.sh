@@ -4,7 +4,7 @@
 # plan, as IN (SELECT ... FROM membership), and on ClickHouse.
 #   --build DIR   the checkout whose sift is measured (default: this one; its scripts/pgtest.sh stages it): `git worktree add /tmp/x vX.Y.Z` measures a release
 #   --root DIR    a staged install of that build (pgtest.sh install, SIFT_TESTING= for the release library) instead of building it
-#   --docs        also write bench/results/sets.tsv and the generated block of docs/BENCHMARKS.md
+#   --docs        also write bench/results/sets.tsv and the generated block of bench/out/BENCHMARKS.md
 #   --keep        keep the scratch cluster (the data is also cached as a dump in $BENCH_STORE/cache, so a rerun only restores it)
 # Everything runs on a scratch cluster of its own under $SCRATCH_ROOT in a systemd scope (12G, 3 CPUs), ClickHouse in a container of 3 CPUs and 8g; the timed part
 # takes /tmp/sift-perf.lock (blocking), and the host load is recorded with every cell. The data is bench/sql/sets/gen.sql (deterministic).
@@ -102,7 +102,7 @@ if [[ -n $CH ]]; then
 	chq -n --query 'OPTIMIZE TABLE facts_ins FINAL; OPTIMIZE TABLE facts_tuned FINAL'
 fi
 
-meta=(--meta "date=$(date -u +%Y-%m-%d)" --meta "cpu=$(lscpu | awk -F: '/Model name/ {gsub(/^ +/, "", $2); n=$2} /^CPU\(s\)/ {gsub(/ /, "", $2); t=$2} END {printf "%s (%s threads)", n, t}'), scope 3 CPUs 12G" \
+meta=(--meta "date=$(date -u +%Y-%m-%d)" --meta "cpu=$(host_label), scope 3 CPUs 12G" \
 	--meta "postgresql=PostgreSQL $(sq -d sets -c 'SHOW server_version')" --meta "build=$(git -C "$SIFT_BUILD" describe --tags --always)" \
 	--meta "clickhouse=$([[ -n $CH ]] && docker exec "$CHC" clickhouse-client -q 'select version()' || echo none)" --meta "shared_buffers=$(sq -d sets -c 'SHOW shared_buffers')")
 python3 -I "$HERE/sets.py" run --db sets --out "$OUT" --reps "$REPS" ${CH:+--ch "$CHC"} "${meta[@]}"

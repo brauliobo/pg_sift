@@ -1,0 +1,117 @@
+-- order_layout = compact on the second order (order_array_group): a chunk of it that holds the keys of several groups keeps the heap address of each row and its key rounded to a bucket,
+-- each group counted from the bucket after the one before it, and the exact key of the first row of every group but the first. Every read of the second order answers what the table does
+-- (a copy without an index is the oracle): a group's rows from the start and the end with an OFFSET, with a bound, a range and its count, the walk over all the groups, the latest row of each
+-- group, in a table of groups of all sizes (one that fills chunks, 150 rows, 2 rows: more groups to a chunk than a chunk can note, which stays whole), a group of equal keys, NULL keys and a
+-- group that is not there; then a write buffer, a promotion, deleted and updated rows, a merge and a REINDEX with the layout whole and auto.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.test_col_gorder_ends = 64;
+\set VERBOSITY terse
+
+CREATE TABLE gc (id int, g int, created timestamp, score int);
+INSERT INTO gc SELECT i,
+	CASE WHEN i % 10 < 4 THEN 1 + abs(hashint4(i)) % 200		-- 200 groups of about 60 rows
+		 WHEN i % 10 < 5 THEN 5000 + abs(hashint4(i)) % 8000	-- about 2 rows a group
+		 WHEN i % 10 < 6 THEN 100000 + i % 3					-- 3 groups of many rows
+		 ELSE 300 + abs(hashint4(i)) % 40 END,					-- 40 groups of about 600 rows
+	CASE WHEN i % 29 = 0 THEN NULL WHEN i % 10 = 7 THEN timestamp '2024-01-01' + i % 4 * interval '1 day'	-- heavy ties
+		 ELSE timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second' END,
+	abs(hashint4(i + 3)) % 1000
+FROM generate_series(1, 30000) i;
+-- a group of equal keys
+UPDATE gc SET created = timestamp '2024-02-01' WHERE g = 5;
+CREATE TABLE gp AS SELECT * FROM gc;
+CREATE TABLE gw AS SELECT * FROM gc;
+CREATE INDEX gc_i ON gc USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', order_layout = 'compact');
+CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', order_layout = 'whole');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gc;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gw;
+ANALYZE gp;
+SELECT sift.col_verify('gc_i', true);
+SELECT pg_relation_size('gc_i') < pg_relation_size('gw_i') * 0.9 AS compact_is_smaller;
+
+-- the groups the shapes are asked of: a group of each kind, the first, the last and one that is not there
+CREATE TABLE probes AS
+SELECT g, kind FROM (VALUES (1, 'sixty'), (57, 'sixty'), (200, 'sixty'), (5003, 'pair'), (9876, 'pair'), (100001, 'big'), (100002, 'big'), (310, 'six hundred'), (339, 'six hundred'), (999999, 'missing')) v(g, kind);
+INSERT INTO probes VALUES (5, 'ties');
+
+-- md5 of the answer, and whether the second order served it
+CREATE FUNCTION gc_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; walk bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || replace(q, '@', 'gc') LOOP
+		walk := walk OR pl ~ 'Global Order: true';
+	END LOOP;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gc') || ') t' INTO ra;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gp') || ') t' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN walk THEN 'walk' ELSE 'units' END;
+END $$;
+-- the quantile of the keys of a group as a literal
+CREATE FUNCTION gc_q(x int, f float8) RETURNS text LANGUAGE sql AS
+$$ SELECT coalesce(quote_literal(percentile_disc(f) WITHIN GROUP (ORDER BY created)) || '::timestamp', 'NULL::timestamp') FROM gp WHERE g = x $$;
+CREATE FUNCTION gc_all() RETURNS TABLE (shape text, result text, n bigint) LANGUAGE sql AS
+$$ SELECT s.shape, gc_chk(format(s.q, p.g, gc_q(p.g, 0.2), gc_q(p.g, 0.7), o)), 1::bigint
+   FROM probes p,
+		(VALUES ('from the start', 'SELECT id, created FROM @ WHERE g = %1$s ORDER BY created, id LIMIT 20 OFFSET %4$s'),
+				('from the end', 'SELECT id, created FROM @ WHERE g = %1$s ORDER BY created DESC, id LIMIT 20 OFFSET %4$s'),
+				('a lower bound', 'SELECT id, created FROM @ WHERE g = %1$s AND created >= %2$s ORDER BY created, id LIMIT 20 OFFSET %4$s'),
+				('an upper bound, desc', 'SELECT id, created FROM @ WHERE g = %1$s AND created <= %3$s ORDER BY created DESC, id LIMIT 20 OFFSET %4$s'),
+				('a range', 'SELECT id, created FROM @ WHERE g = %1$s AND created BETWEEN %2$s AND %3$s ORDER BY created, id LIMIT 200 OFFSET %4$s'),
+				('a count', 'SELECT count(*) FROM @ WHERE g = %1$s AND created BETWEEN %2$s AND %3$s AND %4$s = %4$s'),
+				('the latest', 'SELECT created FROM @ WHERE g = %1$s ORDER BY created DESC LIMIT 1 OFFSET %4$s')) s(shape, q),
+		unnest(ARRAY[0, 40, 400]) o $$;
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- the walk over the groups, and the latest and the earliest row of every group
+CREATE FUNCTION gc_walk() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gc_chk(format('SELECT id, g, created FROM @ ORDER BY %s LIMIT %s OFFSET %s', o, l, f)), 1::bigint
+   FROM unnest(ARRAY['g, created, id', 'g DESC, created DESC, id']) o, unnest(ARRAY[1, 50]) l, unnest(ARRAY[0, 7, 1000, 15000, 29000]) f $$;
+SELECT result, count(*) FROM gc_walk() GROUP BY 1 ORDER BY 1;
+SELECT gc_chk('SELECT g, max(created) FROM @ GROUP BY g ORDER BY g') AS latest_of_each, gc_chk('SELECT g, min(created), count(*) FROM @ GROUP BY g ORDER BY g') AS earliest_of_each;
+
+-- a write buffer next to the segment, a promotion, rows deleted and updated, a VACUUM
+INSERT INTO gc SELECT 100000 + i, 1 + i % 230, timestamp '2024-03-01' + i * interval '1 second', i % 1000 FROM generate_series(1, 2500) i;
+INSERT INTO gp SELECT * FROM gc WHERE id > 100000;
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT sift.col_promote('gc_i') >= 0 AS promoted;
+VACUUM gc;
+SELECT result, count(*) FROM gc_walk() GROUP BY 1 ORDER BY 1;
+DELETE FROM gc WHERE id % 53 = 0;
+DELETE FROM gp WHERE id % 53 = 0;
+UPDATE gc SET g = 1 + g % 230 WHERE id % 97 = 0;
+UPDATE gp SET g = 1 + g % 230 WHERE id % 97 = 0;
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+VACUUM gc;
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT result, count(*) FROM gc_walk() GROUP BY 1 ORDER BY 1;
+SELECT sift.col_verify('gc_i', true);
+
+-- a merge and a REINDEX write the second order again: compact again, then compact forced, then whole, then as auto chooses
+SELECT sift.col_merge('gc_i', true) >= 0 AS merged;
+SELECT sift.col_verify('gc_i', true);
+SELECT result, count(*) FROM gc_walk() GROUP BY 1 ORDER BY 1;
+-- forced compact keeps a chunk with a run of equal keys in a group and the build says so
+SET client_min_messages = notice;
+\set VERBOSITY default
+ALTER INDEX gc_i SET (order_layout = 'compact');
+REINDEX INDEX gc_i;
+\set VERBOSITY terse
+SET client_min_messages = warning;
+SELECT sift.col_verify('gc_i', true);
+ALTER INDEX gc_i SET (order_layout = 'whole');
+REINDEX INDEX gc_i;
+SELECT sift.col_verify('gc_i', true);
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+ALTER INDEX gc_i RESET (order_layout);
+REINDEX INDEX gc_i;
+SELECT sift.col_verify('gc_i', true);
+SELECT shape, result, count(*) AS shapes FROM gc_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT result, count(*) FROM gc_walk() GROUP BY 1 ORDER BY 1;
+
+DROP TABLE gc, gp, gw, probes;
+DROP FUNCTION gc_chk(text), gc_q(int, float8), gc_all(), gc_walk();
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -1,0 +1,292 @@
+-- The sidecar of VACUUM against the rows, over a seeded random sequence of inserts, updates, deletes (also of the rows at the minimum and at the maximum of a group, of every row of
+-- a group, of a calendar month), VACUUMs, merges and promotions, with few-valued and many-valued measures, NULLs and a float: after each VACUUM the answers of sift (the groups
+-- of a dim, of a rollup and of a calendar, the whole table) are those of sift.enable_agg = off, and sift.col_verify finds the sidecar equal to one made from the live rows.
+-- The sequence is the same on every run.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE rn (id int PRIMARY KEY, g int NOT NULL, s text NOT NULL, d date NOT NULL, v bigint NOT NULL, w int NOT NULL, n int, f float8 NOT NULL, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO rn SELECT i, i % 7, chr(97 + i % 5), DATE '2024-01-01' + (i % 200), (i::bigint * 7919) % 100003, (i % 4) * 10, CASE WHEN i % 3 = 0 THEN NULL ELSE i % 100 END, (i % 8) * 0.25, repeat('x', 40) FROM generate_series(1, 15000) i;
+CREATE INDEX rn_col ON rn USING sift_col (g, s, d, v, w, n, f) WITH (key_cut = 'off');
+VACUUM (FREEZE, ANALYZE) rn;
+CREATE TABLE rn_step (n serial, sql text);
+CREATE TABLE rn_res (n int, query int, same boolean);
+CREATE FUNCTION rn_draw(n int, k int, m int) RETURNS int LANGUAGE sql IMMUTABLE
+	AS $$ SELECT ((n::bigint * 2654435761 + k::bigint * 40503) % 4294967296 / 65536 % m)::int $$;
+-- 40 steps; every second one is a VACUUM
+INSERT INTO rn_step (sql)
+SELECT CASE WHEN n % 2 = 0 THEN 'VACUUM (INDEX_CLEANUP on) rn' ELSE CASE rn_draw(n, 1, 12)
+		WHEN 0 THEN 'INSERT INTO rn SELECT i, i % 7, chr(97 + i % 5), DATE ''2024-01-01'' + (i % 200), (i::bigint * 7919) % 100003, (i % 4) * 10, CASE WHEN i % 3 = 0 THEN NULL ELSE i % 100 END, (i % 8) * 0.25, repeat(''x'', 40) FROM generate_series((SELECT max(id) FROM rn) + 1, (SELECT max(id) FROM rn) + ' || (800 + rn_draw(n, 2, 3200)) || ') i'
+		WHEN 1 THEN 'UPDATE rn SET v = v + 1 WHERE id % ' || (20 + rn_draw(n, 3, 40)) || ' = 0'
+		WHEN 2 THEN 'UPDATE rn SET w = w + 10 WHERE id % ' || (30 + rn_draw(n, 4, 40)) || ' = 0'
+		WHEN 3 THEN 'UPDATE rn SET d = d + 31 WHERE id % ' || (50 + rn_draw(n, 5, 40)) || ' = 0'
+		WHEN 4 THEN 'DELETE FROM rn WHERE id % ' || (40 + rn_draw(n, 6, 60)) || ' = 0'
+		WHEN 5 THEN 'DELETE FROM rn WHERE id IN (SELECT DISTINCT ON (g) id FROM rn ORDER BY g, v)'
+		WHEN 6 THEN 'DELETE FROM rn WHERE id IN (SELECT DISTINCT ON (g) id FROM rn ORDER BY g, v DESC)'
+		WHEN 7 THEN 'DELETE FROM rn WHERE id IN (SELECT DISTINCT ON (s, w) id FROM rn ORDER BY s, w, n NULLS LAST, id)'
+		WHEN 8 THEN 'DELETE FROM rn WHERE g = ' || rn_draw(n, 7, 7) || ' AND s = chr(97 + ' || rn_draw(n, 8, 5) || ') AND id % 3 = 0'
+		WHEN 9 THEN 'DELETE FROM rn WHERE date_trunc(''month'', d) = DATE ''2024-0' || (1 + rn_draw(n, 9, 7)) || '-01'' AND id % 5 = ' || rn_draw(n, 10, 5)
+		WHEN 10 THEN 'SELECT sift.col_merge(''rn_col'', true)'
+		ELSE 'SELECT sift.col_promote(''rn_col'')' END END
+FROM generate_series(1, 40) n;
+CREATE FUNCTION rn_check(step int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	q text[] := ARRAY[
+		'SELECT g, count(*), count(n), sum(v), min(v), max(v), sum(w), min(w), max(w), sum(n), min(n), max(n), sum(f) FROM rn GROUP BY g',
+		'SELECT ascii(s), count(*), count(n), sum(v), min(v), max(v), sum(w), min(w), max(w), sum(n), min(n), max(n), sum(f) FROM rn GROUP BY s',
+		'SELECT extract(month FROM date_trunc(''month'', d))::int + 12 * extract(year FROM date_trunc(''month'', d))::int, count(*), count(n), sum(v), min(v), max(v), sum(w), min(w), max(w), sum(n), min(n), max(n), sum(f) FROM rn GROUP BY date_trunc(''month'', d)',
+		'SELECT g * 100 + w, count(*), count(n), sum(v), min(v), max(v), sum(n), min(n), max(n), sum(f) FROM rn GROUP BY g, w',
+		'SELECT ascii(s) * 100 + w, count(*), sum(v), min(v), max(v), sum(n), min(n), max(n), sum(f) FROM rn WHERE g < 5 GROUP BY s, w',
+		'SELECT 0, count(*), count(n), sum(v), min(v), max(v), sum(w), min(w), max(w), sum(n), min(n), max(n), sum(f) FROM rn'];
+	a text;
+	b text;
+BEGIN
+	FOR i IN 1..array_length(q, 1) LOOP
+		SET LOCAL enable_seqscan = off;
+		SET LOCAL enable_indexscan = off;
+		SET LOCAL enable_bitmapscan = off;
+		SET LOCAL sift.enable_agg = on;
+		EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q[i] || ') t' INTO a;
+		SET LOCAL sift.enable_agg = off;
+		EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q[i] || ') t' INTO b;
+		INSERT INTO rn_res VALUES (step, i, a = b);
+	END LOOP;
+END $$;
+\set ECHO none
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ col_promote 
+-------------
+           0
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ col_merge 
+-----------
+         1
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ col_promote 
+-------------
+           1
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+ rn_check 
+----------
+ 
+(1 row)
+
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT count(*) FILTER (WHERE same) || ' ok' AS equal_to_sift_off, count(*) = (SELECT count(*) * 6 FROM rn_step WHERE sql LIKE 'VACUUM%') AS every_vacuum_checked FROM rn_res;
+ equal_to_sift_off | every_vacuum_checked 
+-------------------+----------------------
+ 120 ok            | t
+(1 row)
+
+SELECT n, query FROM rn_res WHERE NOT same ORDER BY n, query;
+ n | query 
+---+-------
+(0 rows)
+
+SELECT count(*) FROM (SELECT sift.col_verify('rn_col')) v;
+ count 
+-------
+     1
+(1 row)
+
+DROP FUNCTION rn_check(int);
+DROP FUNCTION rn_draw(int, int, int);
+DROP TABLE rn_step, rn_res, rn;
+DROP EXTENSION pg_sift CASCADE;

@@ -16,6 +16,7 @@ SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid i
 SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
 SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
 SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
+SIFT_CORDER_MAX_KEYS	an IN list of more keys than this is read from the units: each key seeks a chunk of the sorted keys of its own
 SIFT_CORDER_MAX_ROWS	a range of more rows than this is read from the units: the addresses of a range are sorted by position before the heap is read
 SIFT_CPOINT_MAX_KEYS	keys of one lookup that the point directory answers: a speed threshold, the answer is the same either way
 SIFT_CPOINT_MAX_RANGE	keys of one range that the point directory enumerates: a speed threshold, the zones answer a longer range the same way
@@ -50,3 +51,5 @@ VSHM_MAX_SETS	the array of the shared verdict table, which sift.verdict_cache_kb
 CAL_MAX_CUTS	the most clock changes of the session zone the prefilter of a periodic calendar step splits its windows at (a span of several centuries); more and the step is tested by the expression, no result changes
 WARM_MAX_RELS	the relations a correlated child tracks for its read-ahead (the indexes and heaps of its scans); a further relation is left alone, no result changes
 WARM_MAX_BLOCKS	the largest relation (8 GB) a correlated child asks the OS to read ahead; a larger one is left alone, no result changes
+LOAD_MAX_GROUPS	groups a bulk load writes at once: the backend and three workers, bounded by max_parallel_maintenance_workers and maintenance_work_mem
+LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_GROUPS

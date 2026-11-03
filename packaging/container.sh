@@ -59,12 +59,13 @@ build_rpm() {
 }
 
 build() {
+	command -v tar >/dev/null || dnf -y -q install tar gzip # the Amazon Linux image has neither, and the source tarball is unpacked below
 	mkdir /build && tar xzf "/src/pg_sift-$VER.tar.gz" -C /build --strip-components=1 && cd /build
 	build_$FMT
 	chown -R "$HOST_UID" /out
 }
 
-install_pkg() { if [[ $FMT == deb ]]; then apt-get install -y -qq -o Dpkg::Use-Pty=0 --no-install-recommends "$1"; else dnf -y -q install "$1"; fi; }
+install_pkg() { if [[ $FMT == deb ]]; then apt-get install -y -qq -o Dpkg::Use-Pty=0 --no-install-recommends "$1"; else local i; for i in 1 2 3; do dnf -y -q install "$1" && return 0; sleep 5; done; return 1; fi; }   # a mirror answers with an empty repomd.xml now and then
 remove_pkg()  { if [[ $FMT == deb ]]; then apt-get remove -y -qq "$1"; else dnf -y -q remove "$1"; fi; }
 pkg_name()    { if [[ $FMT == deb ]]; then dpkg-deb -f "$1" Package; else rpm -qp --qf '%{NAME}' "$1"; fi; }
 

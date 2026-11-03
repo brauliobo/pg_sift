@@ -311,10 +311,19 @@ part_prune_clauses(AggCtx *c)
 	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
 	{
 		Node	   *cl = (Node *) ri->clause;
-		bool		dynamic = extern_param_walker(cl, NULL) || contain_mutable_functions(cl);
+		bool		dynamic = extern_param_walker(cl, NULL) || contain_mutable_functions(cl),
+					level = false;
 
-		if (contain_volatile_functions(cl) || exec_param_walker(cl, NULL) || !mentions_key(cl, c->heapoid, names))
+		if (contain_volatile_functions(cl) || !mentions_key(cl, c->heapoid, names))
 			continue;
+		/* the value a LATERAL row or a correlated reference passes down prunes the partitions of each probe; another executor parameter has no value when the scan starts */
+		if (exec_param_walker(cl, NULL))
+		{
+			cl = agg_mark_level_params(c->root, copyObject(cl));
+			if (has_exec_param_walker(cl, NULL))
+				continue;
+			dynamic = level = true;
+		}
 		if (mentions_key(cl, c->heapoid, hashed))
 		{
 			Var		   *v;
@@ -325,7 +334,7 @@ part_prune_clauses(AggCtx *c)
 
 			if (!sift_aggpart_key_clause(cl, &v, &operand, &opno, &collid, &any) || !hash_clause_handled(c, c->rel, v, operand, opno, collid, any))
 			{
-				if (dynamic)
+				if (dynamic && !level)
 					return false;
 				continue;
 			}
@@ -402,6 +411,7 @@ part_source(AggCtx *c)
 			c->partheap[i] = planner_rt_fetch(leaf->relid, c->root)->relid;
 			c->partindex[i] = pc->indexoid;
 			c->part_pages += leaf->pages;
+			c->part_tuples += leaf->tuples;
 			sift_aggpart_add_stats(&c->stats, pc->stats);
 		}
 		c->lay = f->lay;

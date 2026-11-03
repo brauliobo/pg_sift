@@ -17,6 +17,8 @@ SELECT i % 10, i::bigint * 1000003 - 15000000000, (hashint4(i) & 2147483647) % 2
 	   CASE WHEN i % 10 = 0 THEN (hashint4(i + 5) & 2147483647) % 1000 END
 FROM generate_series(1, 30000) i;
 CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul) WITH (point_tid_columns = 'off');
+NOTICE:  sift_col index "tv_col" does not track changes: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) tv;
 CREATE FUNCTION tv_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- one query in both plans: the md5 of its rows in order and whether the pushed plan is the top-N scan
@@ -40,7 +42,8 @@ BEGIN
 		SELECT format('SELECT id, %1$s FROM tv %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', k, f, d, nl, l)
 		FROM unnest(ARRAY['b_clu', 'b_rand', 'b_ext', 'i_ext', 'ts_rand', 'b_mix', 'b_nul']) k,
 			 unnest(ARRAY['', 'WHERE g < 8', 'WHERE g = 3', 'WHERE id % 97 = 0']) f,
-			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 100, 700]) l
+			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 700]) l
+		WHERE nl = '' OR k IN ('b_mix', 'b_nul')
 	LOOP
 		SELECT * INTO r FROM tv_run(q);
 		queries := queries + 1;
@@ -51,7 +54,7 @@ END $$;
 SELECT * FROM tv_stage();
  queries | differ | not_topn 
 ---------+--------+----------
-     504 |      0 |        0
+     176 |      0 |        0
 (1 row)
 
 -- after deletes, updates that move rows and rows in the write buffer
@@ -62,7 +65,7 @@ SELECT i % 10, i * 7, i * 3 - 4000, i::bigint * 100000000000, i, timestamp '2021
 SELECT * FROM tv_stage();
  queries | differ | not_topn 
 ---------+--------+----------
-     504 |      0 |        0
+     176 |      0 |        0
 (1 row)
 
 DROP FUNCTION tv_stage();

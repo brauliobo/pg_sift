@@ -1,5 +1,5 @@
 /*
- * agg/vk_min.h - the Vulkan declarations agg/vk.c uses, copied from the Khronos header vulkan_core.h (header version 363) by
+ * agg/vk_min.h - the Vulkan declarations agg/vk/ uses, copied from the Khronos header vulkan_core.h (header version 363) by
  * scripts/gen-aggvk-min.py; do not edit. A VULKAN=1 build needs no Vulkan SDK: the library is opened with dlopen and the functions are
  * taken from it by name. Only the structures, enumerators and function pointer types the backend mentions are here.
  * The Vulkan headers are Apache-2.0 OR MIT, Copyright 2015-2025 The Khronos Group Inc.

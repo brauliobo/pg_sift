@@ -9,6 +9,7 @@ from suite_engine import SQL, Server, Unsupported, image, sh  # noqa: F401
 
 class Engine(Server):
     section = 'ch'
+    data_path = '/var/lib/clickhouse'
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -26,6 +27,12 @@ class Engine(Server):
         else:
             raise SystemExit('generic: ClickHouse did not start (docker logs %s)' % self.name)
         self.query('CREATE DATABASE IF NOT EXISTS bench', db='default')
+
+    def native_io(self):
+        """the server's cumulative counters of file reads (operations, bytes) and of the rows and bytes the selects chose: system.events"""
+        names = {'ReadBufferFromFileDescriptorRead': 'ch_read_ops', 'ReadBufferFromFileDescriptorReadBytes': 'ch_read_bytes', 'SelectedRows': 'ch_selected_rows', 'SelectedBytes': 'ch_selected_bytes'}
+        got = dict(l.split('\t') for l in self.query("SELECT event, value FROM system.events WHERE event IN (%s)" % ', '.join("'%s'" % n for n in names), db='default').splitlines())
+        return {names[k]: float(v) for k, v in got.items()}
 
     def query(self, sql, body=None, db='bench'):
         """the response text; sql travels in the URL when a body is sent (an INSERT), else it is the body"""

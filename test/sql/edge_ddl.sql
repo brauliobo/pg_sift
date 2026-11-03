@@ -82,7 +82,8 @@ SELECT sift.verify('a_renamed', true);
 -- shapes the access method does not offer
 CREATE INDEX a_bad ON a USING sift (body, id);
 CREATE INDEX a_bad ON a USING sift (id);
-CREATE INDEX a_bad ON a USING sift (body) INCLUDE (id);
+CREATE INDEX a_incl ON a USING sift (body) INCLUDE (id);
+DROP INDEX a_incl;
 CREATE UNIQUE INDEX a_bad ON a USING sift (body);
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
 CREATE INDEX a_bad ON a USING sift (body) WITH (write_buffer_limit = 0);

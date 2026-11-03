@@ -80,7 +80,7 @@ SELECT * FROM check_query('the first three rows are arrays', $q$ SELECT * FROM (
 SELECT * FROM check_query('a left join', $q$
  SELECT g.grp, t.id FROM groups g LEFT JOIN (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events WHERE amount = 3) t ON t.grp = g.grp AND t.rn = 1 $q$);
 
--- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps DISTINCT ON for an ORDER BY that is a total order)
+-- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps the first one it meets)
 CREATE FUNCTION first_of_tie(q text) RETURNS TABLE (groups bigint, not_first bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);

@@ -22,6 +22,7 @@ SELECT count(*), sum(a) FROM five;
 
 CREATE TABLE items (a int, b int, c int, d int, e int, f int, g int);
 CREATE INDEX items_6 ON items USING sift_col (a, b, c, d, e, f);
+NOTICE:  sift_col index "items_6" does not track changes: the table has no primary key of one column
 CREATE INDEX items_7 ON items USING sift_col (a, b, c, d, e, f, g);
 ERROR:  a sift_col index holds at most 6 columns
 RESET sift.test_limits;

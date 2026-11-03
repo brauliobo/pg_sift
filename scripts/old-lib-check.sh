@@ -13,6 +13,10 @@
 #                                                       library refuses the merged index with the format error, and reads it again after a REINDEX at the setting 14
 #   scripts/old-lib-check.sh gorder                      the same for the global orders (the addresses of a chunk with the bits of its largest offset; column format 38)
 #   scripts/old-lib-check.sh keyed                      the same for the units of a key-cut index (the chunk table after the directory; column format 34)
+#   scripts/old-lib-check.sh include                    INCLUDE columns (segment format 5, metapage minor 1.5): the older library (SIFT_OLD_REF, default v3.7.0) writes an index without them, this tree
+#                                                       reads it as it reads its own and writes beside it; an index of this tree that names INCLUDE columns is refused by the older library
+#                                                       with the format error and reported by sift.upgrade_check('3.7') as a blocker, and an index without them is read again after
+#                                                       DROP INDEX and CREATE INDEX
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -21,11 +25,13 @@
 # to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
-# the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
+# the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP (scratch, default under /dev/shm) and SIFT_PORT as
 # for scripts/pgtest.sh (`run`), ROWS (rows of a table, default 40000), KEEP=1 (keep the cluster of `run`).
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# the column format a feature introduced, from the constant of the tree (src/col/api/format.h): no minor is written in this script, so that a feature that raises one cannot leave it behind
+colfmt() { sed -n "s/^#define SIFT_COL_FORMAT_$1[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p" "$REPO/src/col/api/format.h"; }
 PG="$REPO/scripts/pgtest.sh"
 OLD_REF=${SIFT_OLD_REF:-v3.0.1}
 ROWS=${ROWS:-40000}
@@ -133,7 +139,7 @@ load_table() { # NAME
 
 run() {
 	local data
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-run}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-run}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	build >/dev/null || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -167,7 +173,7 @@ run() {
 upgrade() {
 	local root log rows=${UP_ROWS:-150000} want
 	want="$rows:$((rows * (rows + 1) / 2))"
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-upgrade}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-upgrade}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -205,7 +211,7 @@ upgrade() {
 cycle() {
 	local root log new_md5 old_md5 s
 	OLD_REF=${SIFT_OLD_REF:-v3.6.0}
-	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-$CY_NAME}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-$CY_NAME}
 	export SIFT_PORT=${SIFT_PORT:-56140}
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -227,20 +233,22 @@ cycle() {
 	[[ $(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1) == "$old_md5" ]] && pass "... and with the heap's" || fail "... and with the heap's"
 	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the tables sound" || fail "sift.col_verify finds the tables sound"
 	psql_new -c "$CY_INSERT" -c "SELECT sift.col_promote('$CY_IDX'::regclass)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) < $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
-		pass "a new segment is column format $CY_NEW beside the older one" || fail "a new segment is column format $CY_NEW beside the older one"
+	[[ $(psql_new -c "SELECT min(format) < $CY_NEW AND max(format) >= $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] &&
+		pass "a new segment is column format $CY_NEW or more beside the older one" || fail "a new segment is column format $CY_NEW or more beside the older one"
 	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	old_md5=$(psql_new "${CY_HEAP[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap (got [$new_md5], want [$old_md5])"
 	psql_new -c "SELECT sift.col_merge('$CY_IDX'::regclass, true)" >/dev/null
-	[[ $(psql_new -c "SELECT min(format) = $CY_NEW AND max(format) = $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW" || fail "a merge writes column format $CY_NEW"
+	[[ $(psql_new -c "SELECT min(format) = max(format) AND max(format) >= $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW or more, one for all its segments" || fail "a merge writes column format $CY_NEW or more, one for all its segments"
+	# the writer stamps the newest minor of what a segment holds, which may be above the one this cycle is about (a merge adds what a promotion does not)
+	NEWF=$(psql_new -c "SELECT max(format) FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'")
 	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
 	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "the merged index answers as the heap" || fail "the merged index answers as the heap"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
-	FORMAT_ERROR="column format 1\\.$CY_NEW"
-	expect_refused "the older library refuses column format $CY_NEW with the format error" "$CY_REFUSED"
+	FORMAT_ERROR="column format 1\\.$NEWF"
+	expect_refused "the older library refuses column format $CY_NEW or more with the format error" "$CY_REFUSED"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
 	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
@@ -252,7 +260,7 @@ cycle() {
 
 # the point directories of the older library (a power of two of slots)
 points() {
-	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=39 CY_WHAT="point directories"
+	CY_NAME=points CY_IDX=pk_i CY_OLDMIN=16 CY_NEW=$(colfmt EXACTSLOT) CY_WHAT="point directories"
 	local w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"	# a key present, absent, a list, two columns, and a text key
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
 	CY_SETUP=("CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g"
@@ -266,20 +274,20 @@ points() {
 
 # the units of a key-cut index of the older library (the chunk table after the directory)
 keyed() {
-	CY_NAME=keyed CY_IDX=kk_i CY_OLDMIN=17 CY_NEW=34 CY_WHAT="key-cut units"
+	CY_NAME=keyed CY_IDX=kk_i CY_OLDMIN=17 CY_NEW=$(colfmt TABFIRST) CY_WHAT="key-cut units"
 	CY_SQL="SELECT md5(string_agg(tenant::text || ':' || n || ':' || s, ',' ORDER BY tenant)) FROM (SELECT tenant, count(*) n, sum(amount) s FROM kk WHERE amount < 700 OR tenant = 7 GROUP BY tenant) x"
 	CY_SETUP=("CREATE TABLE kk AS SELECT g AS id, g % 60 AS tenant, (g * 31) % 1000 AS amount FROM generate_series(1, 90000) g"
 		"CREATE INDEX kk_i ON kk USING sift_col (id, tenant, amount) WITH (key_cut = 'tenant')")
 	CY_FAST=("SET sift.agg_preagg = off" "SET sift.agg_force = on")
 	CY_HEAP=("SET sift.enable_agg = off")
-	CY_INSERT="INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
+	CY_INSERT="ALTER INDEX kk_i SET (point_tid_columns = 'off'); INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
 	CY_REFUSED="SET sift.agg_force = on; SELECT count(*) FROM kk WHERE tenant = 7"
 	cycle
 }
 
 # the global orders of the older library (u32 addresses of 9 bits) beside the packed addresses of this tree (column format 38; an integer point directory, no dictionary searched in place, which is 39)
 gorder() {
-	CY_NAME=gorder CY_IDX=go_i CY_OLDMIN=30 CY_NEW=38 CY_WHAT="global orders"
+	CY_NAME=gorder CY_IDX=go_i CY_OLDMIN=30 CY_NEW=$(colfmt ADDRPACK) CY_WHAT="global orders"
 	local w="(ts >= timestamp '2025-02-01' AND ts < timestamp '2025-02-03') OR k = 777 OR k IN (1, 2, 99999, 100002)"
 	CY_SQL="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM go WHERE $w"
 	CY_SETUP=("CREATE TABLE go AS SELECT g AS id, (g * 7919) % 100003 AS k, timestamp '2025-01-01' + ((g::bigint * 104729) % 5000000) * interval '1 second' AS ts FROM generate_series(1, 60000) g"
@@ -291,6 +299,48 @@ gorder() {
 	cycle
 }
 
+# the plain index of the older library, read by this tree; an index with INCLUDE columns of this tree, refused by the older library
+include() {
+	local root log want ids
+	OLD_REF=${SIFT_OLD_REF:-v3.7.0}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-include}
+	export SIFT_PORT=${SIFT_PORT:-56142}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	log=$SIFT_TMP/old-lib-include.log
+	ids="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM"
+	want="SELECT id FROM %s WHERE body @@> 'dim_a3 AND w7' AND category_id < 60 ORDER BY sift.score(ctid) DESC LIMIT 100000"
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" \
+		-c "CREATE TABLE inc AS SELECT g AS id, 'common dim_a' || g % 7 || ' w' || g % 30 AS body, g % 97 AS category_id, DATE '2026-01-01' + g % 300 AS created_at FROM generate_series(1, 30000) g" \
+		-c "CREATE TABLE inc2 AS SELECT * FROM inc" -c "CREATE INDEX inc_i ON inc USING sift (body)" >/dev/null || { fail "the older library writes the index"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	OLD_MD5=$("${OLD_PSQL[@]}" -c "$ids ($(printf "$want" inc)) x")
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	[[ $(psql_new -c "$ids ($(printf "$want" inc)) x") == "$OLD_MD5" ]] && pass "this tree reads the index of the older library with its answers" || fail "this tree reads the index of the older library with its answers"
+	psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
+	psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	uc=$(PGHOST=$SIFT_TMP/sock PGPORT=$SIFT_PORT PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --to 3.7 postgres 2>&1)
+	grep -qE '^blocker +inc2_i +index +format 1\.5' <<<"$uc" && pass "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns (format 1.5) as a blocker" || fail "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns as a blocker ($uc)"
+	grep -qE '^ok +inc_i +index +format 1\.4' <<<"$uc" && pass "... and the index without them, written to by this tree, as ok (format 1.4)" || fail "... and the index without them, written to by this tree, as ok ($uc)"
+	[[ $(psql_new -c "$ids ($(printf "$want" inc2)) x") == "$OLD_MD5" ]] && pass "the index with INCLUDE columns answers as the older library's" || fail "the index with INCLUDE columns answers as the older library's"
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
+	FORMAT_ERROR='on-disk format 1\.5'
+	expect_refused "the older library refuses an index with INCLUDE columns with the format error" "SET enable_seqscan = off; SELECT count(*) FROM inc2 WHERE body @@> 'dim_a3'"
+	expect_rows "... and reads the index it wrote, with the rows of this tree, as the heap" "$ids (SELECT id FROM inc WHERE id <= 30000 AND body ~ 'dim_a3' AND body ~ 'w7' AND category_id < 60) x" "$OLD_MD5"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
+	psql_new -c "DROP INDEX inc2_i" -c "CREATE INDEX inc2_i ON inc2 USING sift (body)" >/dev/null
+	"$PG" stop >/dev/null
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the new index"; return; }
+	expect_rows "the older library reads the index without INCLUDE columns that DROP INDEX and CREATE INDEX wrote" "$ids ($(printf "$want" inc2)) x" "$OLD_MD5"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
 case ${1:-} in
 	build) build ;;
 	check) shift; check "$@"; exit $FAILED ;;
@@ -299,5 +349,6 @@ case ${1:-} in
 	points) points; exit $FAILED ;;
 	keyed) keyed; exit $FAILED ;;
 	gorder) gorder; exit $FAILED ;;
+	include) include; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -45,25 +45,28 @@ stem_fixpoint(StemFn fn, char *w, int n)
 	}
 }
 
+static int
+stem_memo_fn(void *a, char *w, int n)
+{
+	return stem_fixpoint(((SiftAnalyzer *) a)->stem, w, n);
+}
+
 static inline int
 stem(SiftAnalyzer *a, char *w, int n)
 {
-	StemSlot   *e;
-
-	if (!a->stem_memo && ++a->nstems == STEM_MEMO_AFTER)
-		a->stem_memo = MemoryContextAllocZero(a->mcxt, STEM_SLOTS * sizeof(StemSlot));
-	if (n > STEM_MAXW || !a->stem_memo)
-		return stem_fixpoint(a->stem, w, n);
-	e = &a->stem_memo[hash64(w, n) & (STEM_SLOTS - 1)];
-	if (e->inlen != n || memcmp(e->in, w, n) != 0)
+	if (a->ts)					/* has a memo of its own; a stop word (-1) is dropped but keeps its position */
 	{
-		memcpy(e->in, w, n);
-		e->outlen = stem_fixpoint(a->stem, w, n);
-		memcpy(e->out, w, e->outlen);
-		e->inlen = n;
+		int			m = sift_ts_stem(a->ts, w, n);
+
+		a->gap += m < 0;
+		return Max(m, 0);
 	}
-	memcpy(w, e->out, e->outlen);
-	return e->outlen;
+	if (a->memo.tab == NULL && ++a->nstems < STEM_MEMO_AFTER)
+		return stem_fixpoint(a->stem, w, n);
+	if (n > STEM_MEMO_MAXW)
+		return stem_fixpoint(a->stem, w, n);
+	a->memo.mcxt = a->mcxt;
+	return memo_stem(&a->memo, stem_memo_fn, a, w, n);
 }
 
 static inline uint16
@@ -286,7 +289,7 @@ scan_token(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char 
 				*off = i;
 				return hashed;
 			}
-			if (a->stem)
+			if (a->stems)
 				n = stem(a, dst, n);
 			if (n > 0)
 			{
@@ -379,7 +382,7 @@ scan_token(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char 
 			*off = i;
 			return hashed;
 		}
-		if (n > 0 && a->stem)
+		if (n > 0 && a->stems)
 			n = stem(a, dst, n);
 		if (n > 0)
 		{
@@ -400,16 +403,20 @@ sift_analyze_tokens(SiftAnalyzer *a, const char *text, int len, SiftToken **out)
 				off = 0,
 				start,
 				n;
+	uint32		pos = 0;
 
+	a->gap = 0;
 	for (;;)
 	{
 		ENSURE(a, buf, bufcap, used + DST_CAP);
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
 		ENSURE(a, toks, tokcap, ntok + 1);
+		pos += a->gap;
+		a->gap = 0;
 		a->toks[ntok] = (SiftToken)
 		{
-			.str = (const char *) used, .len = n, .pos = ntok, .start = start, .end = off
+			.str = (const char *) used, .len = n, .pos = pos++, .start = start, .end = off
 		};
 		ntok++;
 		used += n;
@@ -430,10 +437,13 @@ bool
 sift_analyze_next(SiftAnalyzer *a, SiftTokenStream *ts, SiftToken *tok)
 {
 	int			start,
-				n = scan_token(a, (const uint8 *) ts->text, ts->len, &ts->off, &start, a->scratch);
+				n;
 
+	a->gap = 0;
+	n = scan_token(a, (const uint8 *) ts->text, ts->len, &ts->off, &start, a->scratch);
 	if (n < 0)
 		return false;
+	ts->pos += a->gap;
 	*tok = (SiftToken)
 	{
 		.str = a->scratch, .len = n, .pos = ts->pos++, .start = start, .end = ts->off

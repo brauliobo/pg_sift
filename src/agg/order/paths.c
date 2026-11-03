@@ -23,6 +23,9 @@
 #include "agg/agg.h"
 #include "agg/topn.h"
 #include "agg/order/int.h"
+#include "agg/cost/int.h"
+
+static double topn_first_ties(AggCtx *c, PlannerInfo *root, double wanted);
 
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
@@ -34,12 +37,6 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	Cost		extra;
 
 	s->nworkers = nworkers;
-	/* the joins are tables read by the scan itself: no child plan in a query level of its own */
-	for (int i = 0; i < list_length(c->joins); i++)
-	{
-		ap->correlated = lappend(ap->correlated, NULL);
-		ap->subroots = lappend(ap->subroots, NULL);
-	}
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
 	cp->path.pathtarget = c->topn_target;
@@ -47,15 +44,28 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.pathkeys = nordered < list_length(root->sort_pathkeys) ? list_copy_head(root->sort_pathkeys, nordered) : root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
+	if (agg_unique_keys_first(c, &cp->path))
+		return;
 	extra = matches * c->topn_xcost;
 	if (c->topn_array && nworkers == 0)
-		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * rows;	/* the walk of the order array: a merge step for each entry, no heap of rows */
+	{
+		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * Max(rows, c->topn_walk);	/* the walk of the order array: a merge step for each entry, no heap of rows */
+		/* the keys after the first order the entries that tie on it: the ties are read whole, so the rows past the entries wanted, up to the end of the last tie, are read for the keys that follow (a tie of 30,000 rows: 2.6 ms for 20 entries, 6.4 ms for 10,020) */
+		if (nordered > 1)
+		{
+			double		ties = Max(Min(topn_first_ties(c, root, rows), matches), 1.0);
+
+			extra += (ties * ceil(rows / ties) - rows) * TOPN_TIE_READ * (nordered - 1) * cpu_operator_cost;
+		}
+	}
 	else
 		extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
 			topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
+	agg_force_price(&cp->path);
 	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
+	agg_path_children(c, ap);
 	agg_arm_path(&cp->path);
 	/* TOPN_TIES: the rows come in the order of the first keys only; the Sort puts the others in order, and the Limit above it takes the first */
 	if (nordered < list_length(root->sort_pathkeys))
@@ -65,13 +75,13 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		add_path(output_rel, &cp->path);
 }
 
-/* The sub-selects a top-N takes are those PostgreSQL pulled up into semi joins (IN, EXISTS): their keys are a conjunct of the scan, like an inner join's */
+/* The sub-selects a top-N takes are those PostgreSQL pulled up into semi and anti joins (IN, EXISTS, NOT EXISTS): their keys are a conjunct of the scan, like an inner join's */
 static bool
 topn_lefts_ok(List *lefts)
 {
 	foreach_ptr(LeftJoin, lj, lefts)
-		if (lj->kind != SJ_SEMI)
-			return agg_refuse_on(TOPN_SHAPE, "an outer or anti join of the scanned table");
+		if (lj->kind != SJ_SEMI && lj->kind != SJ_ANTI)
+			return agg_refuse_on(TOPN_SHAPE, "an outer join of the scanned table");
 	return true;
 }
 
@@ -150,6 +160,14 @@ mark_level_params(Node *n, LevelParams *lp)
 	return expression_tree_mutator(n, mark_level_params, lp);
 }
 
+Node *
+agg_mark_level_params(PlannerInfo *root, Node *n)
+{
+	LevelParams lp = {root, NIL};
+
+	return mark_level_params(n, &lp);
+}
+
 /* topn_key for a key after the first, whose failure is not the plan's: the Sort above takes it */
 static bool
 topn_probe(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs)
@@ -163,8 +181,9 @@ topn_probe(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo tx
 	return ok;
 }
 
-static bool
-topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTopXform *xf, double wanted, int *slack)
+/* The rows that tie on the first sort key, by its statistics (the NULLs that come first tie with each other, and they are the rows the n-th is among when there are more than the n) */
+static double
+topn_first_ties(AggCtx *c, PlannerInfo *root, double wanted)
 {
 	SortGroupClause *first = linitial_node(SortGroupClause, root->parse->sortClause);
 	Node	   *x = strip_relabel((Node *) get_sortgroupclause_expr(first, root->processed_tlist));
@@ -173,15 +192,6 @@ topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTo
 				ties;
 	HeapTuple	tp;
 
-	if (list_length(root->sort_pathkeys) != list_length(root->parse->sortClause) || root->parse->hasWindowFuncs)
-		return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold, with a window function or a repeated sort key");
-	for (int j = 0; j < nlead; j++)
-	{
-		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
-
-		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
-			return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold follows keys that are not integers, dates or timestamps of a column");
-	}
 	if (IsA(x, Var) && (tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false))) != NULL)
 	{
 		Form_pg_statistic st = (Form_pg_statistic) GETSTRUCT(tp);
@@ -192,9 +202,26 @@ topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTo
 		ReleaseSysCache(tp);
 	}
 	ties = Max(c->rel->rows, 1.0) / Max(nd, 1.0);
-	/* the NULLs that come first tie with each other, and they are the rows the n-th is among when there are more than the n */
 	if (first->nulls_first && nulls >= wanted)
 		ties = Max(ties, nulls);
+	return ties;
+}
+
+static bool
+topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTopXform *xf, double wanted, int *slack)
+{
+	double		ties;
+
+	if (list_length(root->sort_pathkeys) != list_length(root->parse->sortClause) || root->parse->hasWindowFuncs)
+		return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold, with a window function or a repeated sort key");
+	for (int j = 0; j < nlead; j++)
+	{
+		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
+
+		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
+			return agg_refuse_on(TOPN_SHAPE, "a sort key the scan does not hold follows keys that are not integers, dates or timestamps of a column");
+	}
+	ties = topn_first_ties(c, root, wanted);
 	if (ties > TOPN_TIES_MAX)
 		return agg_refuse_on(TOPN_SHAPE, "the rows that tie on the first sort key, by its statistics, are too many to keep for the keys that follow");
 	*slack = Max(8, (int) ceil(2.0 * ties));
@@ -238,7 +265,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	SiftAggSpec *s;
 	StringInfoData txt;
 	List	   *scan_tlist = NIL,
-			   *funcs = NIL;
+			   *funcs = NIL,
+			   *lookups = NIL,
+			   *lookup_spec = NIL;
 	int			nworkers,
 				nout,
 				flags;
@@ -259,7 +288,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	List	   *exprs;
 	double		count = 0,
 				offset = 0,
-				rows;
+				rows,
+				walked;
 	int			nkey = list_length(parse->sortClause),
 				nlead = nkey,
 				slack = 0;
@@ -314,6 +344,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
 	c->topn_array = false;
+	c->topn_walk = 0;
 	c->topn_runs = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
@@ -348,13 +379,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		return;
 	}
 	attno = palloc(MaxHeapAttributeNumber * sizeof(int));
-	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno, &funcs))
+	if (contain_subplans((Node *) target->exprs) || !topn_columns(c, target, &scan_tlist, attno, &funcs, &lookups))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
 	nout = list_length(scan_tlist);
-	oleaf = palloc(Max(nout, 1) * sizeof(int));
+	oleaf = palloc(MaxHeapAttributeNumber * sizeof(int));
 	topn_out_leaves(c, scan_tlist, nlead, leaf, xf, oleaf);
 	if (!topn_windows(c, s, funcs, &scan_tlist))
 		return;
@@ -365,9 +396,20 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
+	if (!child_paths(c, s))
+		return;
+	if (lookups != NIL)
+	{
+		if (!topn_lookup_cols(c, s, lookups, &scan_tlist, attno, &nout, &lookup_spec))
+		{
+			agg_refused(TOPN_SHAPE);
+			return;
+		}
+		topn_out_leaves(c, list_copy_head(scan_tlist, nout), nlead, leaf, xf, oleaf);
+	}
 	/* the scan starts over for each value of the parameters: its other inputs (joined plans, partitions, window functions, expressions) are read once */
 	if (c->level_params != NIL &&
-		(c->joins != NIL || c->nparts > 0 || parse->hasWindowFuncs || s->naggs > 0 || has_exec_param_walker((Node *) root->processed_tlist, NULL)))
+		(c->joins != NIL || !topn_one_leaf(c) || parse->hasWindowFuncs || s->naggs > 0 || has_exec_param_walker((Node *) root->processed_tlist, NULL)))
 	{
 		agg_refused_on(TOPN_SHAPE, "a condition reads a parameter that an enclosing query sets, and the scan has joins, partitions, window functions or expressions of it");
 		return;
@@ -387,23 +429,44 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		(nlead < nkey ? TOPN_TIES | slack << TOPN_SLACK_SHIFT : 0);
 	rows += slack;
 	/* the order array gives the rows without a heap of them: only the LIMIT is held, an OFFSET past the cap is walked entry by entry (sift_topn_gorder) */
-	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
+	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
 	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) &&
 		((rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0) || deep))
 	{
 		c->topn_sorted = false;
-		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
+		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
+		c->topn_walk = c->topn_array ? walked : 0.0;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
-		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf);
+		/* the walk of a filter fetches the heap row of each entry it takes (3,400 instructions, 127 for 20 rows of a tenant out of 40, 785 when the sort has a second key), where the units the
+		 * zones leave are read a row in about 30: when the zones leave a quarter of the units or less and those hold fewer rows than TOPN_ROWS_PER_FETCH times the fetches the statistics
+		 * price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
+		if (s->npred > 0 && leaf[0] >= 0 && !(c->topn_array && walked == 0))
+		{
+			int			nkeys;
+			double		share,
+						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], -1, rows),
+						kept = zone_kept(c, s, &nkeys, &share);
+
+			if (kept <= TOPN_ZONE_FRAC && kept * input_rel->rows <= TOPN_ROWS_PER_FETCH * fetches)
+			{
+				c->topn_array = false;
+				c->topn_walk = 0.0;
+				flags |= TOPN_NOGORD;
+			}
+		}
+		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf, &c->topn_resid);
+		/* a walk the statistics price past its budget (topn_array_ok left its fetches in *walked) would only burn that budget before the units are read */
+		if (!c->topn_array && walked > 0)
+			flags |= TOPN_NOGORD;
 		if (c->topn_array && topn_heads_win(c, s, leaf[0], rows))
 		{
 			c->topn_array = false;
 			flags |= TOPN_NOGORD;
 		}
-		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, lookup_spec, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
 		nworkers = parallel_verdict(c, s,
 									deep ? "it reads the order array of the key down to the offset, which one process does" :
@@ -425,6 +488,6 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_array = false;
 	c->topn_runs = false;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, lookup_spec, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nkey, count + offset);
 }

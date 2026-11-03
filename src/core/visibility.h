@@ -14,6 +14,9 @@
 
 #define SIFT_VIS_DIRTY_MAX	8192
 
+/* The next block a stream is to read, InvalidBlockNumber at its end */
+typedef BlockNumber (*SiftVisNext) (void *arg);
+
 typedef struct SiftVis
 {
 	Relation	heap;
@@ -31,6 +34,10 @@ typedef struct SiftVis
 	BlockNumber *dirty;
 	MemoryContext mcxt;
 	struct HTAB *pagevis;		/* block -> visibility of its rows, for pages visited twice (sift_vis_filter_page) */
+	struct ReadStream *stream;	/* the heap pages sift_vis_filter_page reads next, in the order it asks for them (sift_vis_stream_begin) */
+	SiftVisNext next;
+	bool		whole;			/* the stream's pages are met again by other units: the first visit computes the whole page */
+	void	   *next_arg;
 	int64		heap_checks;	/* EXPLAIN counters */
 	int64		heap_pages;
 } SiftVis;
@@ -39,6 +46,8 @@ typedef struct SiftVis
 extern BlockNumber sift_vis_nblocks(Relation heap);
 /* The all-visible pages among the first nblocks of a heap, as visibilitymap_count counts them, reading only the map bytes they use */
 extern BlockNumber sift_vis_count_allvisible(Relation heap, BlockNumber nblocks);
+/* The superblocks among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer */
+extern BlockNumber sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks);
 /*
  * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
  * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0, and so does a column
@@ -65,9 +74,12 @@ extern void sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, ui
 /* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */
 extern PGDLLIMPORT int sift_test_vis_pause;
 extern PGDLLIMPORT int sift_test_vis_jitter_us;
-/* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables */
+/* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables; sift.test_merge_gate: a merge of the maintenance worker waits for lock (0x51F7, 4), its segments claimed; sift.test_release_gate: a directory change that releases extents waits for lock (0x51F7, 6) once its xid is taken, before it locks the directory */
 extern PGDLLIMPORT bool sift_test_count_gate;
 extern PGDLLIMPORT bool sift_test_cleanup_gate;
+extern PGDLLIMPORT bool sift_test_shrink_gate;
+extern PGDLLIMPORT bool sift_test_merge_gate;
+extern PGDLLIMPORT bool sift_test_release_gate;
 extern void sift_test_wait(int key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
 #else
@@ -79,6 +91,14 @@ extern void sift_test_wait(int key);
  * under the snapshot; reads the heap page once. Returns the remaining count.
  */
 extern int	sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask);
+/*
+ * Reads the heap pages that sift_vis_filter_page is about to be asked for through a read stream (combined, ahead of the filter): next gives the blocks in the order
+ * the filter takes them, and the stream skips by itself those the filter does not read (past the heap, cached whole). Not for a sift_table, which has no heap pages.
+ * whole: the units cut by a key take a few rows of each page, so the other units of the scan meet it again: the first visit checks every row of the page and a later one is
+ * a mask, where the page would be read again (from disk, once the scan has read more than the buffers hold).
+ */
+extern void sift_vis_stream_begin(SiftVis *v, SiftVisNext next, void *arg, bool whole);
+extern void sift_vis_stream_end(SiftVis *v);
 /* A sift_table with HOT chains: the TIDs an index hands out are those of the first version of a chain, and the table's own scans see the later ones */
 extern bool sift_vis_has_chains(Relation heap);
 typedef void (*SiftVisKeyFn) (void *arg, SiftKey key);

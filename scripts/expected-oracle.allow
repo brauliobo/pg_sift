@@ -1,0 +1,8 @@
+# scripts/check-expected-oracle.py: an oracle column (agree, same, equal, match, ok, identical, ...) that is f on purpose.
+# file:column<TAB>number of cells<TAB>why it is the right answer. A new f or NULL in the same column changes the number and fails the check.
+test/expected/dead_stale.out:same_scores	9	the scores of a table with dead rows stay within 1% of those of the table indexed afresh and are not equal; the test's verdicts are same_top20 and max_diff_below_1pct, both t
+test/expected/fields.out:match	1	the column is the name of the function sift.match(); the second call is the case that must not match ('alpha beta' against 'name:(alpha beta)')
+test/expected/agg_shape_widths.out:rows_ok	12	NULL where the scan was not used (a width past its limit): there is nothing to compare, and used says so on the same row
+test/expected/col_track_update_skip.out:same_key	6	the column is the name of a function that returns void: the empty cell is the void, the comparison is the RAISE inside it
+test/expected/dirty_query.out:top_ok	6	NULL for a case without ties (dq_cases.ties false): the order of equal scores is not specified, so no top-N comparison is made
+test/expected/dirty_query.out:deep_ok	6	as top_ok, for the page past 2000 rows

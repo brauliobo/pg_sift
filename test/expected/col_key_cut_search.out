@@ -95,18 +95,21 @@ SELECT * FROM kscheck('promoted');
 
 DELETE FROM ks WHERE id % 7 = 0;
 UPDATE ks SET amount = amount + 1, cust = 42, memo = 'cable wire' WHERE id % 1009 = 0;
+-- the heap check of the dirty pages prices the scan above the normal plan: it runs for the rows at the addresses it keeps
+SET sift.agg_force = on;
 SELECT * FROM kscheck('deleted and updated');
      after_step      |            shape            |   result    
 ---------------------+-----------------------------+-------------
- deleted and updated | a few rows                  | same 
+ deleted and updated | a few rows                  | same search
  deleted and updated | a fifth                     | same search
  deleted and updated | most rows                   | same search
  deleted and updated | two words                   | same search
  deleted and updated | word and a test             | same search
  deleted and updated | word and a range of the key | same search
- deleted and updated | word, no match              | same 
+ deleted and updated | word, no match              | same search
 (7 rows)
 
+RESET sift.agg_force;
 VACUUM ks;
 SELECT * FROM kscheck('vacuumed');
  after_step |            shape            |   result    

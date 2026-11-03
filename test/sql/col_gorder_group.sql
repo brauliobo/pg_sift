@@ -49,7 +49,7 @@ SELECT result, count(*) FROM (
 	FROM unnest(ARRAY['k > 250', 'k <= 40', 'k BETWEEN 100 AND 120', 'k = 77', '(k, id) > (250, 5000)', 'k > 1000', 'k < 10 OR k > 490']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
 GROUP BY 1 ORDER BY 1;
 
--- a list of groups is read one group after the other and merged by the key; more values than the scan pins, a NULL in the list or another condition on the group read the units
+-- a list of groups is read one group after the other and merged by the key; more values than the scan pins or a NULL in the list read the plain order or the units, and another condition on the group is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT gg_chk(format('SELECT id, k FROM gg WHERE %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
 	FROM unnest(ARRAY['g IN (1, 2)', 'g IN (3, 3)', 'g = ANY (ARRAY[6, 7, 8])', 'g IN (2, 4, 6) AND k > 250', 'g IN (2, 4, 6) AND (k, id) > (250, 5000)', 'g IN (100, 101)',
@@ -80,7 +80,6 @@ SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
  'SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k LIMIT 10',
  'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5',
  'SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10',
  'SELECT id, k FROM gg ORDER BY k DESC LIMIT 10',
@@ -124,9 +123,30 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
 SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
--- a write buffer of more rows than the scan sorts for so few reads the units
+-- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted: the order answers
 INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
+
+-- the group and the bounds of a probe come from the outer query: a LATERAL join and a correlated sub-select take them at each probe (PARAM_EXEC), where the scan once pinned group 0 for all of them and returned no row
+SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x ORDER BY v.g') AS lateral_group;
+SELECT gg_chk('SELECT v.g, x.id, x.t FROM generate_series(0, 9) v(g), LATERAL (SELECT id, t FROM gg WHERE g = v.g AND t > TIMESTAMP ''2000-01-01'' + v.g * interval ''2 hours'' ORDER BY t, id LIMIT 3) x ORDER BY v.g, x.t, x.id') AS lateral_group_and_bound;
+SELECT gg_chk('SELECT v.g, (SELECT k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_group;
+SELECT gg_chk('SELECT v.g, (SELECT max(k) FROM gg WHERE g = v.g) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_max;
+-- the scan starts over at each probe and keeps what the plan fixes: the same operand twice, NULL, a group with no array entry, a bound that is no pin (the units), a rewind
+SELECT gg_chk('SELECT v.i, v.g, x.id, x.k FROM (VALUES (1, 3), (2, 3), (3, NULL), (4, 100), (5, 101), (6, 7), (7, 3), (8, 55)) v(i, g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 2) x ORDER BY v.i, x.k DESC, x.id') AS lateral_repeats;
+SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 4) v(g), LATERAL (SELECT id, k FROM gg WHERE k > v.g * 90 ORDER BY k, id LIMIT 2) x ORDER BY v.g, x.k, x.id') AS lateral_bound_only;
+DO $$
+DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; want text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	OPEN c SCROLL FOR SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x;
+	LOOP FETCH NEXT FROM c INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r::text; END LOOP;
+	LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; bwd := r::text || bwd; END LOOP;
+	CLOSE c;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	SELECT string_agg(x::text, '' ORDER BY g) INTO want FROM (SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x) x;
+	RAISE NOTICE 'cursor: % %', CASE WHEN fwd = want THEN 'forward is the heap''s' ELSE 'DIFFERS forward' END, CASE WHEN bwd = want THEN 'backward is the same' ELSE 'DIFFERS backward' END;
+END $$;
 
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
 DROP INDEX gg_i;

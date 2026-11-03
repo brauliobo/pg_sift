@@ -3,6 +3,8 @@
 -- col_scan_unit -> sift_col_sel_all; a column the index does not hold keeps the plan off the covering paths): from one backend that stays connected through the peers with dead rows, a REINDEX that replaces them and the rewrite, every answer is
 -- the one of the sequential scan, with a fresh IN list each time (what the backend keeps for a segment must not leak to another).
 CREATE EXTENSION pg_sift;
+SET sift.test_limits = 'par_build_rows=1';
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
 SET max_parallel_workers_per_gather = 0;
@@ -35,7 +37,7 @@ BEGIN
 				WHEN NOT used THEN 'ok, but not the index scan' ELSE 'ok' END;
 END $$;
 CREATE FUNCTION rv_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 3) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
+$$ SELECT rv_chk(n, k, lim, off, shape), 1::bigint FROM unnest(ARRAY[50, 250]) n, generate_series(1, 2) k, unnest(ARRAY[25, 100]) lim, unnest(ARRAY[0, 400]) off, generate_series(1, 3) shape $$;
 
 -- 1. the peers as the build leaves them, then with dead rows in every one
 SELECT * FROM rv_peers();

@@ -1,5 +1,5 @@
--- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry of a unit with no dead row whose
--- pages are all-visible is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry on an all-visible page that is not
+-- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
@@ -56,7 +56,7 @@ SELECT * FROM ot_all(10, ARRAY[100, 3000, 11990, 13000]);
 SELECT * FROM ot_all(40, ARRAY[100, 3000]);
 SELECT * FROM ot_all(60, ARRAY[100, 3000]);
 RESET sift.test_limits;
--- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) reads the heap
+-- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
 	FROM (VALUES ('b', 'b > 100'), ('b', 'b <> 3 AND b < 6'), ('b', 'b <= 7 OR b >= 490 OR b = 250'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b IS NOT NULL'), ('b', 'b > 1000'),
@@ -69,7 +69,7 @@ INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17
 DELETE FROM ot WHERE id % 11 = 0;
 UPDATE ot SET a = coalesce(a, 0) + 1, b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1, t = t + interval '1 day', s = 'u' || s WHERE id % 7 = 0;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
--- a VACUUM flags the dead rows of the units: those units are confirmed again
+-- a VACUUM flags the dead rows of the units: their entries are confirmed again
 VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
@@ -90,7 +90,7 @@ SET sift.test_limits = 'topn_rows=50';
 SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
 RESET sift.test_limits;
 
--- a key_cut index (its units are cut by the key, not by superblock): every entry is confirmed by the heap, the rows are the same
+-- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;

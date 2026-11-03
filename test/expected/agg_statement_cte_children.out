@@ -1,5 +1,6 @@
 -- A sub-select that reads a statement-level common table expression is a plan read once, not a plan per row.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, day date, amount float8, payload text);
 INSERT INTO facts

@@ -1,7 +1,7 @@
 /*
  * col/codec_neon.c - AArch64 Advanced SIMD kernels of the chunk codec, the width and the compare-to-bits primitive of col/codec_vec.h.
  *
- * Only the slots that win on the target CPU (arm64, ns for 4096 values, scalar -> NEON): unpack32 (W 3..20) 1500 -> 195..250, unpack_range32
+ * Only the slots that win on the target CPU (a test host, ns for 4096 values, scalar -> NEON): unpack32 (W 3..20) 1500 -> 195..250, unpack_range32
  * 1750..2125 -> 312..375, rle_expand32 1125 -> 273, alp_keys_f4 1375 -> 719. The others stay the scalar functions because the compiler already
  * vectorizes them or the NEON loop is slower: max32 and prefix32 tie (105 and 1313 ns), scale32 117 -> 234, scale64 375 -> 688, prefix64 1813 -> 2625,
  * alp_keys_f8 1000 -> 1563, alp_f8 516 -> 1000, alp_f4 438 -> 516.

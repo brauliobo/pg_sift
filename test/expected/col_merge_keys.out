@@ -29,7 +29,7 @@ VACUUM mk;
 SELECT sift.col_promote('mk_auto') > 0 AS promoted_auto, sift.col_promote('mk_explicit') > 0 AS promoted_explicit, sift.col_promote('mk_off') > 0 AS promoted_off;
  promoted_auto | promoted_explicit | promoted_off 
 ---------------+-------------------+--------------
- t             | t                 | t
+ f             | f                 | f
 (1 row)
 
 UPDATE mk SET set_id = (id::bigint * 104729 % 600)::int;
@@ -37,7 +37,7 @@ VACUUM mk;
 SELECT sift.col_promote('mk_auto') > 0 AS promoted_auto, sift.col_promote('mk_explicit') > 0 AS promoted_explicit, sift.col_promote('mk_off') > 0 AS promoted_off;
  promoted_auto | promoted_explicit | promoted_off 
 ---------------+-------------------+--------------
- t             | t                 | t
+ f             | f                 | f
 (1 row)
 
 SELECT sift.col_merge('mk_auto', true) > 0 AS merged_auto, sift.col_merge('mk_explicit', true) > 0 AS merged_explicit, sift.col_merge('mk_off', true) > 0 AS merged_off;
@@ -98,7 +98,7 @@ VACUUM mk2;
 SELECT sift.col_promote('mk2_auto') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 SELECT sift.col_merge('mk2_auto', true) > 0 AS merged;
@@ -149,9 +149,9 @@ SELECT sift.col_promote('mk3_auto') > 0 AS promoted;
 CREATE TEMP TABLE mk3_units AS SELECT mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promoted;
 REINDEX INDEX mk3_auto;
 SELECT mk_opt('mk3_auto') AS auto, promoted <= mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promotion_prunes_like_reindex FROM mk3_units;
-       auto       | promotion_prunes_like_reindex 
-------------------+-------------------------------
- key_columns=auto | t
+                                  auto                                   | promotion_prunes_like_reindex 
+-------------------------------------------------------------------------+-------------------------------
+ order_array_columns=auto: v,point_tid_columns=auto: id,key_columns=auto | t
 (1 row)
 
 SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES

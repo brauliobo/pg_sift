@@ -13,7 +13,9 @@ ALTER TABLE nd ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO nd SELECT i, CASE WHEN i % 89 = 0 THEN NULL ELSE timestamp '2020-01-01' + (abs(hashint4(i)) % 100000000) * interval '1 second' END, 'x' FROM generate_series(1, 150000) i;
 ANALYZE nd;
 CREATE INDEX nd_i ON nd USING sift_col (ts);
-NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i" does not track changes: the table has no primary key of one column
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' keeps sorted arrays of ts
+NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.7% of 293 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            
 ----------------------------------
@@ -23,7 +25,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
 SELECT min(format) AS format FROM sift.col_segments('nd_i') WHERE kind = 'immutable';
  format 
 --------
-     30
+     41
 (1 row)
 
 SELECT sift.col_verify('nd_i');
@@ -90,7 +92,9 @@ SELECT sift.col_verify('nd_i');
 (1 row)
 
 REINDEX INDEX nd_i;
-NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+NOTICE:  sift_col index "nd_i" does not track changes: the table has no primary key of one column
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' keeps sorted arrays of ts
+NOTICE:  sift_col index "nd_i": order_layout: ts: rounded keys in 87.9% of 298 chunks, exact in the rest, 3.1 bytes a row
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
             reloptions            
 ----------------------------------
@@ -100,6 +104,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
 -- off is the user's; a table under 100,000 rows and a column in heap order get none
 ALTER INDEX nd_i SET (order_array_columns = 'off');
 REINDEX INDEX nd_i;
+NOTICE:  sift_col index "nd_i" does not track changes: the table has no primary key of one column
 SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
         reloptions         
 ---------------------------
@@ -115,9 +120,11 @@ SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS off;
 CREATE TABLE ns AS SELECT id, ts FROM nd WHERE id <= 90000;
 ANALYZE ns;
 CREATE INDEX ns_i ON ns USING sift_col (ts);
+NOTICE:  sift_col index "ns_i" does not track changes: the table has no primary key of one column
 CREATE TABLE no AS SELECT i AS id, timestamp '2020-01-01' + i * interval '1 second' AS ts FROM generate_series(1, 150000) i;
 ANALYZE no;
 CREATE INDEX no_i ON no USING sift_col (ts);
+NOTICE:  sift_col index "no_i" does not track changes: the table has no primary key of one column
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ns_i', 'no_i') ORDER BY 1;
  relname | reloptions 
 ---------+------------

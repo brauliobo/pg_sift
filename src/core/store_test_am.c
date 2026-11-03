@@ -64,7 +64,7 @@ test_ambuild(Relation heap, Relation index, IndexInfo *info)
 	pub.entries = palloc(Max(pub.n, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < pub.n; i++)
 		sift_test_write_segment(wt, i + 1, i64abs((int64) bs.v[i]), bs.v[i] < 0 ? 0 : (uint64) bs.v[i] + 1, 0, 0, &pub.entries[i]);
-	sift_store_init_meta(wt, sift_index_options(index), 0);
+	sift_store_init_meta(wt, sift_index_options(index), 0, "");
 	sift_wt_finish(wt);
 	if (pub.n > 0)
 		sift_dir_update(index, &(SiftDirChange) {.fn = publish_all, .arg = &pub, .extra = InvalidBuffer});
@@ -77,7 +77,7 @@ test_ambuildempty(Relation index)
 {
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_INIT);
 
-	sift_store_init_meta(wt, sift_index_options(index), 0);
+	sift_store_init_meta(wt, sift_index_options(index), 0, "");
 	sift_wt_finish(wt);
 }
 

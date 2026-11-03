@@ -3,7 +3,7 @@
 #
 #   bench/steps/articles.sh quick          Q tier (Q_DOCS articles, default 150k), cells of 0.25-1 s, 2-3 rounds
 #   bench/steps/articles.sh full           F tier (218k articles), cells of 0.25-2 s, 2-3 rounds
-#   bench/steps/articles.sh cold [quick]   cold-cache execution times (index and heap evicted before every query)
+#   bench/steps/articles.sh cold [quick]   cold-cache execution times (index and heap evicted before every query; the Postgres engines in turn, statement by statement)
 #
 # Every engine has a cluster of its own (a lane, steps/lanes.sh), restored from the corpus dump and indexed one engine after the
 # other (or taken from the cache of built lanes); the lanes then idle. Each round runs every class on every engine, one engine at a
@@ -191,17 +191,12 @@ phase 'restore and build'
 
 if [[ $cold ]]; then
   # shellcheck disable=SC2329  # run by lane_run
-  cold_lane() { # ENGINE, in its lane: the cold-cache times of every class
-    local e=$1 c t
-    # shellcheck disable=SC2317  # run by cold_cell
-    cold_stmt() { cold_ms "$(q -c "SELECT stmt FROM stmts WHERE wl = '$c' AND n = $1")"; }   # the first statements of the class, in the order of the trace
-    export PGDATABASE; PGDATABASE=$(engine_db "$e"); RUN=$OUT/$e
+  cold_one() { # ENGINE CLASS N, in its lane: the cold-cache time in ms of the Nth statement of the class, in the order of the trace (nothing when the engine has no statements of the class)
+    export PGDATABASE; PGDATABASE=$(engine_db "$1"); RUN=$OUT/$1
+    [[ -f $RUN/$2.pgb ]] || return 0
     q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
     cold_table docs
-    for c in ${COLD:-${CLASSES/update/}}; do
-      if [[ -f $RUN/$c.pgb ]]; then t=$(cold_cell cold_stmt); else t=$'NA\tNA\t0'; fi
-      printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
-    done >"$RUN/cold.part"
+    cold_ms "$(q -c "SELECT stmt FROM stmts WHERE wl = '$2' AND n = $3")"
   }
   # shellcheck disable=SC2329  # run by lane_run
   cold_http() { # ENGINE, in its lane: the cold-cache times of an HTTP engine (the index closed and opened before every request, xlib.sh); the other external engines have no cold cell
@@ -211,10 +206,26 @@ if [[ $cold ]]; then
       printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t"
     done >"$RUN/cold.part"
   }
-  for e in $ENGINES; do
-    fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
-    lane_run "$e" $fn "$e"
+  # The Postgres engines are measured in turn, statement by statement, the order rotating: the device's load (other jobs on the host) changes the cold time by a factor of
+  # two or more between two runs of one statement, so engines measured one after the other would be compared across different devices.
+  pg=(); for e in $ENGINES; do [[ -n ${EXT[$e]:-} ]] || pg+=("$e"); done
+  for e in "${pg[@]}"; do : >"$OUT/$e/cold.part"; done
+  for c in ${COLD:-${CLASSES/update/}}; do
+    for e in "${pg[@]}"; do rm -f "$OUT/$e/cold.times"; done
+    t0=$(now_ms)
+    for (( i = 1; i <= NQ; i++ )); do
+      for (( k = 0; k < ${#pg[@]}; k++ )); do
+        e=${pg[(i - 1 + k) % ${#pg[@]}]}
+        lane_run "$e" cold_one "$e" "$c" "$i" >>"$OUT/$e/cold.times"
+      done
+      (( i < ${COLD_MIN:-5} || $(now_ms) - t0 < ${COLD_TIME:-3} * 1000 * ${#pg[@]} )) || break
+    done
+    for e in "${pg[@]}"; do
+      if [[ -s $OUT/$e/cold.times ]]; then t=$(median_max <"$OUT/$e/cold.times"); else t=$'NA\tNA\t0'; fi
+      printf -- '-\t%s\t%s\t%s\n' "$c" "$e" "$t" >>"$OUT/$e/cold.part"
+    done
   done
+  for e in $ENGINES; do [[ -z ${EXT[$e]:-} ]] || lane_run "$e" cold_http "$e"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for c in ${COLD:-${CLASSES/update/}}; do for e in $ENGINES; do grep -P "^-\t$c\t$e\t" "$OUT/$e/cold.part" 2>/dev/null || true; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
@@ -222,7 +233,7 @@ if [[ $cold ]]; then
 fi
 
 cells_begin $'round\tload\tclass\tengine\tmetric\tvalue\tse\tn\tsecs'
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$2" "$3" "$4" "$5" "${6:-NA}" "${7:-NA}" "${8:-NA}" >>"$DEST/cells.tsv"; }   # round class engine metric value [stderr n seconds]
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "" "$2" "$3" "$4" "$5" "${6:-NA}" "${7:-NA}" "${8:-NA}" >>"$DEST/cells.tsv"; }   # round class engine metric value [stderr n seconds]
 qps_cells() { awk -F'\t' 'NR == 1 || $5 == "qps"' "$DEST/cells.tsv"; }
 stable() { [[ -z $(rse_cells <(qps_cells) 3,4 6 7) ]]; }   # no cell needs another round
 cell_engines() { # ROUND CLASS: the engines to measure: all up to MINR rounds, then those whose cell is above the error target

@@ -1,6 +1,7 @@
 -- A lookup table loaded from the leaves of a sift_col index reads a text column whose dictionary the segment keeps in blocks (many entries, not loaded by the backend)
 -- through the string of the entry, not through the arrays of the whole dictionary: the rows are those of the normal plan, with NULLs and repeated strings.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;

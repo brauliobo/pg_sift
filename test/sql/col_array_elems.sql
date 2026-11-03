@@ -1,6 +1,7 @@
 -- the elements of an array column (docs/COL-SHRED.md): an index with a path name[] text keeps the elements of a text[] column as the list of a jsonb array, with a
 -- point directory that lists the rows that own a value. Every query runs with and without the pushdown and the rows must be the same; the shapes with 'scan'
--- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time.
+-- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time. About 12 s: 54 shapes after each of 9 states
+-- on ae, the index that keeps no image of the arrays, and on ad, the one that does in the states built, orders, vacuum and reindex (ad gets the same writes in between).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
@@ -96,10 +97,10 @@ SELECT * FROM shapes('not null', 'an');
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
 INSERT INTO ad SELECT * FROM gen(30001, 34000);
-SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'ad');
+SELECT * FROM shapes('insert', 'ae');
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
-SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'ad');
+SELECT * FROM shapes('update', 'ae');
 -- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
 UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
 UPDATE ae SET tags = ARRAY['u1', 't7'], ids = ARRAY[1001, 7] WHERE id % 67 = 0;
@@ -114,17 +115,17 @@ UPDATE ad SET tags = '[0:1]={t7,u1}' WHERE id % 79 = 0;
 SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'ad');
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
-SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'ad');
+SELECT * FROM shapes('delete', 'ae');
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
 VACUUM ae;
 VACUUM ad;
 SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'ad');
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
-SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad');
+SELECT * FROM shapes('merge', 'ae');
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
 INSERT INTO ad SELECT * FROM gen(40001, 44000);
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
-SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'ad');
+SELECT * FROM shapes('merge2', 'ae');
 SELECT sift.col_verify('ae_col', true);
 REINDEX INDEX ae_col;
 REINDEX INDEX ad_col;

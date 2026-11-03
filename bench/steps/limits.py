@@ -32,7 +32,7 @@ def case_losses(results):
     rows, out = extras.read(path)[1], []
     ms = {(f['case'].id, f['metric']): f for f in cases_render.collect(rows, cases_mod.read_registry())}
     for f in ms.values():
-        if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of docs/BENCHMARKS.md
+        if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of bench/out/BENCHMARKS.md
             c = f['case'].id
             time = lambda arm: (ms[c, 'ms'][arm] if (c, 'ms') in ms else f[arm])   # noqa: E731  (the time of the case beside a loss in another measure)
             out.append((f['sift'] / f['native'], '`%s` %s' % (c, cases_render.UNIT[f['metric']]), 'PostgreSQL', cases_render.case_fig(rows, c, 'sift', time('sift')), cases_render.case_fig(rows, c, 'native', time('native'))))
@@ -96,18 +96,17 @@ def block(results):
     body += ['| %s | %s | %s | %s | %s |' % (w, a, compare.x(r), cell(mine), cell(theirs, mine)) for r, w, a, mine, theirs in rows]
     figs = [f for r in rows for f in r[3:] if not isinstance(f, str)]
     return head + body + [''] + triple.legend(figs, 'MB read (the cases: MB of buffers hit and read; the application shapes: not recorded)') + [
-        'The shapes are the application shapes of the 3.6 results (their CPU is the backend\'s). The rows of a write rate, a load and the disk carry their own unit and the CPU and IO of the write: `n/a`: not measured under 3.7 yet.']
+        'The shapes are the application shapes of the 3.6 results (their CPU is the backend\'s). The rows of a write rate, a load and the disk carry their own unit and the CPU and IO of the write: `n/a`: ' + triple.NOT_MEASURED + '.']
 
 
 def render(results, readme_path):
-    if os.path.exists(readme_path) and '<!-- bench:limits:begin' in open(readme_path).read():
-        readme.replace_block(readme_path, 'limits', block(results))
+    readme.replace_block(readme_path, 'limits', block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     render(a.results, a.readme)
 

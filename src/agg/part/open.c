@@ -78,8 +78,6 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
 	open_part(ps, 0);
 	ps->nleaves = sift_colsrc_source_layout(ps->src[0])->nleaves;
-	ps->id = MemoryContextAllocZero(mcxt, NSLOTS(ps->nleaves) * sizeof(PartId));
-	ps->dict = MemoryContextAllocZero(mcxt, NSLOTS(ps->nleaves) * sizeof(SiftSrcDict));
 	ps->cur = 0;
 	out->prov = &part_provider;
 	out->impl = ps;

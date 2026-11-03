@@ -93,7 +93,7 @@ SELECT sift.verify('mf_idx', true);
 INSERT INTO mf (body) SELECT 'vac ' || big(i) FROM generate_series(1, 3) i;
 SET sift.test_fail_pages = 3;
 VACUUM mf;
-WARNING:  maintenance of sift index "mf_idx" failed: sift test: injected failure after 3 pages
+WARNING:  sift index "mf_idx": maintenance failed: sift test: injected failure after 3 pages
 DETAIL:  It is retried later, after a growing delay.
 RESET sift.test_fail_pages;
 SELECT sift._test_maint_failures('mf_idx') AS failures;

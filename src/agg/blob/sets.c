@@ -139,9 +139,9 @@ blob_set(AggExec *ex, int ai, const uint32 *gl, uint32 ng, const uint32 *cidx, c
 	else
 		dset_pairs(ex, ai, cidx, &pg, &pv, &np);
 	if (!words && dict)
-		old = renumber(pv, np, ex->aot[ai].n, &nused);
+		old = renumber(ex, pv, np, ex->aot[ai].n, &nused);
 	else if (!words && num)
-		old = renumber(pv, np, ex->amap[ai].n, &nused);
+		old = renumber(ex, pv, np, ex->amap[ai].n, &nused);
 	hd[0] = np;
 	hd[1] = nc;
 	hd[2] = nwg;

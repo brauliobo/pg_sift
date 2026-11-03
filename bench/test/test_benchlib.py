@@ -6,6 +6,8 @@ import json, os, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import benchlib  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 FAKE = {'/proc/cpuinfo': 'processor\t: 0\nmodel name\t: Test CPU @ 3 GHz\nprocessor\t: 1\nmodel name\t: Test CPU @ 3 GHz\n', '/proc/meminfo': 'MemTotal:       16777216 kB\n',
         '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor': 'performance\n'}
@@ -27,9 +29,17 @@ class Fingerprint(unittest.TestCase):
 
     def test_same_host_compares_what_both_records_have(self):
         f = fp()
-        self.assertTrue(benchlib.same_host({'cpu': f['cpu'], 'threads': 2, 'kernel': '7.0-test'}, f))
-        self.assertFalse(benchlib.same_host({'cpu': f['cpu'], 'kernel': 'other'}, f))
+        self.assertTrue(benchlib.same_host({'cpu': 'one x86-64 host', 'docker': '29.0', 'id': f['id']}, f))
+        self.assertFalse(benchlib.same_host({'cpu': 'one x86-64 host', 'docker': '29.0', 'id': 'other'}, f))
+        self.assertTrue(benchlib.same_host({'docker': '29.0'}, f))
         self.assertFalse(benchlib.same_host({}, f))
+
+    def test_public_host_keeps_only_the_label_docker_and_id_and_the_rest_goes_to_a_private_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            benchlib.PRIVATE_HOST = os.path.join(d, 'sub', 'host.json')
+            f = fp()
+            self.assertEqual(benchlib.public_host(f), {'cpu': benchlib.host_label(), 'docker': '29.0', 'id': f['id']})
+            self.assertEqual(json.load(open(benchlib.PRIVATE_HOST)), f)
 
 
 class Keys(unittest.TestCase):

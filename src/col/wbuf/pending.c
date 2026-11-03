@@ -25,6 +25,9 @@
 
 #define PEND_HEAD		(sizeof(ItemPointerData) + sizeof(uint32))
 
+/* the top bit of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
+#define PEND_XMIN		0x80000000u
+
 typedef struct PendIndex
 {
 	Oid			index;			/* InvalidOid: free */
@@ -32,7 +35,7 @@ typedef struct PendIndex
 	RelFileLocator loc;
 	uint32		ovf;
 	uint32		jnull;
-	StringInfoData buf;			/* per row: tid, payload length, payload */
+	StringInfoData buf;			/* per row: tid, payload length (with PEND_XMIN), payload */
 } PendIndex;
 
 static PendIndex pend[PEND_SLOTS];
@@ -127,6 +130,7 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 
 		memcpy(&tid, cur, sizeof(tid));
 		memcpy(&len, cur + sizeof(tid), sizeof(len));
+		len &= ~PEND_XMIN;
 		if (!BufferIsValid(buf) || BufferGetBlockNumber(buf) != ItemPointerGetBlockNumber(&tid))
 		{
 			if (BufferIsValid(buf))
@@ -166,6 +170,7 @@ pend_flush(Relation index, PendIndex *p)
 		int			lane;
 		ItemPointerData tid;
 		uint32		len;
+		uint16		flags;
 		Size		room;
 
 		for (;;)
@@ -178,13 +183,15 @@ pend_flush(Relation index, PendIndex *p)
 		}
 		memcpy(&tid, cur, sizeof(tid));
 		memcpy(&len, cur + sizeof(tid), sizeof(len));
+		flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
+		len &= ~PEND_XMIN;
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
 		if (RECSIZE(len) > room)
 		{
 			BlockNumber tail;
 
 			/* a record that does not fit what is left of the tail page: as a row that goes in at once (a new page, pieces) */
-			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &tid, cur + PEND_HEAD, len, &tail);
+			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &tid, flags, cur + PEND_HEAD, len, &tail);
 			h.tail[lane] = tail;
 			cur += PEND_HEAD + len;
 		}
@@ -195,13 +202,15 @@ pend_flush(Relation index, PendIndex *p)
 			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
 			do
 			{
-				wbuf_put_piece(ed.page, &tid, false, cur + PEND_HEAD, len);
+				wbuf_put_piece(ed.page, &tid, flags, cur + PEND_HEAD, len);
 				room -= RECSIZE(len);
 				cur += PEND_HEAD + len;
 				if (cur >= rows + total)
 					break;
 				memcpy(&tid, cur, sizeof(tid));
 				memcpy(&len, cur + sizeof(tid), sizeof(len));
+				flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
+				len &= ~PEND_XMIN;
 			} while (RECSIZE(len) <= room);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
@@ -234,12 +243,14 @@ wbuf_flush_for_read(Relation index)
  * (a page of rows is buffered) crossed write_buffer_limit; the hint is the caller's, as for sift_cwbuf_append.
  */
 bool
-sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, bool *crossed)
+sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed)
 {
 	PendIndex  *p;
 	uint32		ovf,
 				jnull,
 				len;
+	uint16		flags = TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0;
+	uint32		stored;
 
 	*crossed = false;
 	if (pend_enc.data == NULL)
@@ -253,6 +264,8 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		MemoryContextSwitchTo(old);
 	}
 	resetStringInfo(&pend_enc);
+	if (flags)
+		appendBinaryStringInfo(&pend_enc, (const char *) &xmin, sizeof(xmin));
 	ovf = wbuf_encode_row(&pend_enc, schema, row, &jnull);
 	len = pend_enc.len;
 	/* a row of several pages goes in as pieces, at once; its scratch space does not stay allocated */
@@ -279,9 +292,13 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	if (h->gen == 0)
 		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 	wbuf_flag_overflow(index, h, ovf, jnull);
-	appendBinaryStringInfo(&p->buf, (const char *) &row->tid, sizeof(ItemPointerData));
-	appendBinaryStringInfo(&p->buf, (const char *) &len, sizeof(len));
-	appendBinaryStringInfo(&p->buf, pend_enc.data, len);
+	enlargeStringInfo(&p->buf, PEND_HEAD + len);
+	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
+	stored = len | (flags ? PEND_XMIN : 0);
+	memcpy(p->buf.data + p->buf.len + sizeof(ItemPointerData), &stored, sizeof(stored));
+	memcpy(p->buf.data + p->buf.len + PEND_HEAD, pend_enc.data, len);
+	p->buf.len += PEND_HEAD + len;
+	p->buf.data[p->buf.len] = '\0';
 	p->ovf |= ovf;
 	p->jnull |= jnull;
 	if (p->buf.len >= EMPTY_ROOM)
@@ -320,12 +337,32 @@ sift_cwbuf_seal(Relation index, bool force)
 	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, wbuf_limit_pages(index), has_rows);
 }
 
-/* VACUUM seals an open buffer once it holds a quarter of write_buffer_limit: its rows are promoted and merged with the rest instead of waiting for a seal that may never come */
+uint64
+sift_cwbuf_rotate(Relation index)
+{
+	wbuf_flush_for_read(index);
+	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS);
+}
+
+/* A quarter of a unit: rows this few are not worth a segment of their own for a reader of the units, but a buffer that holds them is read row by row by every probe */
+static bool
+quarter_unit(Relation index, const SiftSegEntry *entry)
+{
+	return wbuf_count_rows(index, entry, false) >= SIFT_COL_UNIT_MAX_ROWS / 4;
+}
+
+/*
+ * VACUUM seals an open buffer once it holds a quarter of write_buffer_limit or a quarter of a unit of rows (a point column's row is a few bytes: 45,000 of them stay under the pages
+ * and every probe of a join reads each one): its rows are promoted and merged with the rest instead of waiting for a seal that may never come
+ */
 uint64
 sift_cwbuf_seal_vacuum(Relation index)
 {
+	uint64		gen;
+
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, 0, quarter_unit);
 }
 
 void

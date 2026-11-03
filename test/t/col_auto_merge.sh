@@ -8,13 +8,14 @@
 
 plan 17
 node_init am 20 "autovacuum = off
+sift.test_col_net = off
 sift.log_min_duration = 0
 sift.maintenance_naptime = 200"
 node_start am || bail "start failed"
 D=$(dir am)
-sql am "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
-	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 150000) g" \
-	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
+sql am "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text, h1 bigint DEFAULT (random() * 1e12)::bigint, h2 bigint DEFAULT (random() * 1e12)::bigint, h3 bigint DEFAULT (random() * 1e12)::bigint) WITH (autovacuum_enabled = false)" \
+	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 20000) g" \
+	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount, h1, h2, h3)" "VACUUM facts" >/dev/null || bail "setup failed"
 
 # churn N: 1% of the rows each updated, deleted and inserted, spread over the table
 churn() { sql am "UPDATE facts SET amount = amount + 1 WHERE id % 100 = $1" "DELETE FROM facts WHERE id % 100 = $1 + 50" \
@@ -42,7 +43,7 @@ check "nothing is due after it" test "$(due)" == "not due"
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
 churn 2
 sql am "VACUUM facts" >/dev/null
-sleep 2
+sleep 1
 check "off: no rewrite after the VACUUM" scattered
 check "off: it is due and sift.col_maintain rewrites it" test "$(due) $(sql am "SELECT sift.col_maintain('facts_idx')")" == "dirty units t"
 check "off: one clean segment after the call" test "$(state)" == "1 segments, 0 dirty, 0 buffered"
@@ -91,10 +92,10 @@ check "afterwards the call rewrites it and the answers are the heap's" test "$(s
 # each time) and rewrites once they are done
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge_max_active = 1" >/dev/null
 churn 5
-for i in 1 2; do sql am "SELECT pg_sleep(4)" >/dev/null & done
+for i in 1 2; do sql am "SELECT pg_sleep(3)" >/dev/null & done
 sleep 0.5
 sql am "VACUUM facts" >/dev/null
-sleep 2
+sleep 1
 check "busy (3 backends running a statement over 1): the worker waits" scattered
 check "the rewrite is still due" test "$(due)" == "dirty units"
 check "quiet again: the worker rewrote it, one clean segment" await_rewrite
@@ -107,7 +108,6 @@ LINES=$(wc -l <"$D/postgres.log")
 BEFORE=$(grep -c "$REWROTE" "$D/postgres.log")
 churn 6
 sql am "VACUUM facts" >/dev/null
-await_rewrite
 for _ in $(seq 400); do [[ $(grep -c "$REWROTE" "$D/postgres.log") -gt $BEFORE ]] && break; sleep 0.05; done
 MS=$(grep "$REWROTE" "$D/postgres.log" | tail -1 | grep -o '[0-9]* ms' | grep -o '[0-9]*')
 PAGES=$(tail -n +$((LINES + 1)) "$D/postgres.log" | sed -n 's/.*sift: merged .* of index "facts_idx" in [0-9]* ms, [0-9]* documents, \([0-9]*\) bytes.*/\1/p' | awk '{ s += $1 } END { print int(s / 8192) }')

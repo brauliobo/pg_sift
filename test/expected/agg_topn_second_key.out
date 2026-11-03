@@ -1,0 +1,48 @@
+-- A top-N whose first key ties over thousands of rows (10 entities of 10,000 rows) reads the second key of every row of the tie: the order-array walk of one key is cheap, of two it is not.
+-- With a deep OFFSET the (entity, ts) index-only walk (the second order, group after group) is the plan, as it is by time (0.8 against 6.5 ms for 300,000 rows over a random heap);
+-- the one-key top-N has no tie to read and stays the scan.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE sk (id int, ent_id int NOT NULL, ts timestamptz NOT NULL, amount float8);
+INSERT INTO sk SELECT i, 1 + i % 10, timestamptz '2026-01-01' + (i * 7 % 100000) * interval '1 second', i % 97 FROM generate_series(1, 100000) i ORDER BY random();
+CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_changes = 'off');
+NOTICE:  sift_col index "sk_col": key_order = 'ent_id, ts' sets order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent_id'
+DETAIL:  The options you wrote stay. The rows of each unit are kept in the order of the key and the order arrays are built on it, which pays when the table is stored in that order: ORDER BY .. LIMIT, OFFSET, ranges and lists of values read entries and units, not rows at random. On a table in arrival order an ordered LIMIT costs what it does without the option; with 'group, key' the latest rows of each group cost b-tree-class instructions and key_cut is left to the build.
+HINT:  To build the index without it, run ALTER INDEX sk_col RESET (key_order) and REINDEX.
+NOTICE:  sift_col index "sk_col": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+DETAIL:  2.6 bytes a row for each column, 0.2 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
+HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+NOTICE:  sift_col index "sk_col": order_layout: ts: exact keys, 2.6 bytes a row
+DETAIL:  A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of 8 equal keys or more. The segments with a compact chunk are column format minor 41, which a library before 4.0 cannot read.
+HINT:  To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.
+VACUUM ANALYZE sk;
+CREATE FUNCTION sk_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'other';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; ELSIF l LIKE '%Index Only Scan%' THEN r := 'index only'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT n, sk_plan(format('SELECT ent_id, ts FROM sk ORDER BY ent_id, ts LIMIT 20 OFFSET %s', n)) AS two_keys, sk_plan(format('SELECT ent_id FROM sk ORDER BY ent_id LIMIT 20 OFFSET %s', n)) AS one_key
+FROM unnest(ARRAY[0, 3000, 10000]) n ORDER BY n;
+   n   |  two_keys  |  one_key   
+-------+------------+------------
+     0 | index only | index only
+  3000 | index only | scan
+ 10000 | index only | scan
+(3 rows)
+
+-- the rows are the heap's
+SELECT count(*) AS rows_same FROM (SELECT ent_id, ts FROM sk ORDER BY ent_id, ts LIMIT 20 OFFSET 10000) a
+JOIN (SELECT ent_id, ts FROM (SELECT ent_id, ts, row_number() OVER (ORDER BY ent_id, ts) rn FROM sk) w WHERE rn BETWEEN 10001 AND 10020) b USING (ent_id, ts);
+ rows_same 
+-----------
+        20
+(1 row)
+
+DROP TABLE sk;
+DROP FUNCTION sk_plan(text);
+DROP EXTENSION pg_sift;

@@ -3,10 +3,11 @@
 # deletes, updates, inserts, VACUUM and merges of a second session: they are equal. The column index of the table is created before the
 # BM25 index, so a VACUUM cleans it first and a scan that begins between the two passes reads the match set of the second before it
 # is cleaned. Runs on the release build too (no test functions), with less reach.
+# A soak, not a proof: no single-guard mutation is known that it catches (vacuum_agg_snapshot is the deterministic test of this race); it looks for races nobody wrote a test for, in 8 s.
 . "$(dirname "$0")/lib.bash"
 
-SECS=$(knob SIFT_CHURN_SECS 40 15)
-ROWS=100000
+SECS=$(knob SIFT_CHURN_SECS 8 6)
+ROWS=10000
 plan 3
 node_init vg 19 "autovacuum = off
 max_worker_processes = 16
@@ -33,7 +34,7 @@ check "the aggregate runs as SiftAgg with the search" test "$(sql vg "SET enable
 # a testing build also sleeps up to a millisecond before each read of the map, which widens the window the aggregate has to be wrong in
 printf '%s\n' "LOAD 'pg_sift';" "SELECT current_setting('sift.test_vis_jitter_us', true) IS NOT NULL AS jit \\gset" '\if :jit' 'SET sift.test_vis_jitter_us = 1000;' '\endif' \
 	'BEGIN ISOLATION LEVEL REPEATABLE READ;' 'SELECT chk();' 'COMMIT;' >"$D/read.sql"
-pgbench_bg vg 1 "$SECS" -f "$D/read.sql"
+pgbench_bg vg 8 "$SECS" -f "$D/read.sql"
 
 # the writes and the VACUUM are one session, so that every VACUUM has rows deleted just before it for the readers to be wrong about
 n=0

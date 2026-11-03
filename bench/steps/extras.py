@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stored results of the 3.1 and 3.2 benchmarks (bench/results/*.tsv, one file per benchmark) and the generated blocks of docs/BENCHMARKS.md and README.md.
+"""Stored results of the 3.1 and 3.2 benchmarks (bench/results/*.tsv, one file per benchmark) and the generated blocks of bench/out/BENCHMARKS.md and README.md.
 
     extras.py render [--results DIR] [--benchmarks FILE] [--readme FILE]      rewrite every block that has a results file (bench/bench extras report)
 
@@ -106,8 +106,7 @@ def table(head, body, align=None):
 
 
 def footer(meta):
-    return ('Measured %s on %s, %s; host %s at the start and %s at the end.' % (
-        meta.get('date', '?'), meta.get('cpu', '?'), meta.get('postgresql', '?'), meta.get('host_load_before', '?'), meta.get('host_load_after', '?')))
+    return 'Measured %s on %s, %s.' % (meta.get('date', '?'), meta.get('cpu', '?'), meta.get('postgresql', '?'))
 
 
 # ---- sets -------------------------------------------------------------------------------------------------------------------------------
@@ -506,8 +505,6 @@ def duckdb_section(meta, rows):
 def wrap(a):
     """rows of a runner (no header) -> a results file: title, the run's meta, the host load at the start and now"""
     meta = dict(m.split('=', 1) for m in a.meta or [])
-    meta['host_load_before'] = a.load_before
-    meta['host_load_after'] = host_load()
     rows = [dict(zip(COLUMNS, line.rstrip('\n').split('\t'))) for line in open(a.rows) if line.strip()]
     write(a.out, a.title, meta, rows)
 
@@ -522,14 +519,13 @@ def main():
     ap.add_argument('--title')
     ap.add_argument('--rows')
     ap.add_argument('--out')
-    ap.add_argument('--load-before', default='')
     ap.add_argument('--meta', action='append')
     ap.add_argument('--log')
     ap.add_argument('--raw')
     ap.add_argument('--versions')
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     if a.cmd == 'wrap':
         return wrap(a)
@@ -542,15 +538,9 @@ def main():
         if os.path.exists(path):
             meta, rows = read(path)
             lines = section(meta, rows)
-            if name not in ALSO_ONLY:
-                replace_block(a.benchmarks, name, lines)
-            for doc in ALSO.get(name, []):   # the other documents that carry the block
-                if os.path.exists(doc) and '<!-- bench:%s:begin' % name in open(doc).read():
-                    replace_block(doc, name, lines)
+            replace_block(a.benchmarks, name, lines)
 
 
-ALSO_ONLY = {'gpu'}   # kept in docs/GPU.md, labelled with the build it was measured on
-ALSO = {'gpu': [os.path.join(REPO, 'docs', 'GPU.md')]}
 SECTIONS = {'sets': sets_section, 'rollup': rollup_section, 'tablewrites': tablewrites_section, 'writepath': writepath_section, 'bm25size': bm25size_section,
             'leaftypes': leaftypes_section, 'fields': fields_section, 'buildcost': buildcost_section, 'gpu': gpu_section, 'duckdb': duckdb_section}
 

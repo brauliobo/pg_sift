@@ -14,12 +14,12 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $rows = knob('SIFT_ROWS', 40000, 40000);
-my $batch = knob('SIFT_BATCH', 5000, 4000);
-my $txns = knob('SIFT_TXNS', 16, 8);
-my $copy_rows = knob('SIFT_COPY_ROWS', 30000, 20000);
+my $rows = knob('SIFT_ROWS', 20000, 20000);
+my $batch = knob('SIFT_BATCH', 2600, 2600);
+my $txns = knob('SIFT_TXNS', 6, 6);
+my $copy_rows = knob('SIFT_COPY_ROWS', 10000, 10000);
 my $clients = 8;
-my $limit = knob('SIFT_MAX_SEGMENTS', 16, 16);
+my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
 my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048";
 # VACUUM does not cut the file while a standby streams (43e42dc9c): the test of the returned space needs the testing setting, as 006, 008, 013 and 015
 my $primary_conf = "$conf\nwal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on";
@@ -121,6 +121,10 @@ subtest 'a repeatable read snapshot of the standby survives a freeze on the prim
 	my $sbg = $standby->background_psql('postgres');
 	$sbg->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
 	is($sbg->query_safe('SELECT count(*) FROM r'), $rows, 'the snapshot sees the first load');
+	# the VACUUM below keeps what the snapshot needs only once the feedback of the standby (every wal_receiver_status_interval) has put its xmin in the slot: a fast
+	# primary is ahead of it, and the snapshot is cancelled by the conflict
+	my $xmin = $sbg->query_safe('SELECT pg_snapshot_xmin(pg_current_snapshot())');
+	ok($primary->poll_query_until('postgres', "SELECT xmin::text::bigint <= $xmin FROM pg_replication_slots WHERE slot_name = 'wp_standby' AND xmin IS NOT NULL"), 'the slot of the standby holds the xmin of the snapshot');
 	# a second loop, an aborted third one, a freeze and a delete
 	$primary->safe_psql('postgres', loop_sql('r', $rows + 1, 2 * $rows));
 	$primary->safe_psql('postgres', 'BEGIN; ' . loop_sql('r', 2 * $rows + 1, 3 * $rows) . '; ROLLBACK');

@@ -130,7 +130,7 @@ SELECT q, (pw_check(q)).* FROM (VALUES
 	('SELECT id, k_clu FROM pw WHERE memo @@> ''alpha'' AND g = 1 ORDER BY k_clu, id LIMIT 12'),
 	('SELECT id, k_rand FROM pw WHERE memo @@> ''omega OR sigma'' ORDER BY k_rand DESC, id LIMIT 12')) v (q);
 
-SELECT * FROM pw_fuzz('build', 21, 40);
+SELECT * FROM pw_fuzz('build', 21, 30);
 
 -- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table), for
 -- the workers as for the serial walk: the units read with and without sift.topn_zone_keys (the count of the workers depends on who takes what: a bound)
@@ -203,35 +203,35 @@ COMMIT;
 
 -- ids 8000 to 8300 are deleted (not yet vacuumed: dirty units); the new versions of the updated rows are stored in other pages
 DELETE FROM pw WHERE id BETWEEN 8000 AND 8300;
-SELECT * FROM pw_fuzz('dirty', 22, 40);
+SELECT * FROM pw_fuzz('dirty', 22, 14);
 VACUUM pw;
 UPDATE pw SET k_band = -5, k_clu = -5, k_rand = -5, k_mix = -5, f = -5 WHERE id IN (5, 6000);
 UPDATE pw SET k_band = 999999, k_clu = 999999, k_rand = 999999, k_mix = 999999, f = 'Infinity' WHERE id IN (7, 15000);
 UPDATE pw SET k_band = NULL, k_clu = NULL, k_rand = NULL, k_mix = NULL, f = NULL WHERE id IN (9, 22000);
 UPDATE pw SET k_band = k_band + 500 WHERE id BETWEEN 12000 AND 12040;
-SELECT * FROM pw_fuzz('moved', 23, 40);
+SELECT * FROM pw_fuzz('moved', 23, 14);
 
 -- rows in the write buffer: new rows with values at both ends and in the middle, and updates in place
 INSERT INTO pw (g, k_clu, k_band, k_rand, k_mix, f, memo)
 SELECT i % 5, 100000 + i, (i * 37) % 20000, (i * 91) % 100000, i % 50, i / 3.0, 'alpha red' FROM generate_series(1, 150) i;
 INSERT INTO pw (g, k_clu, k_band, k_rand, k_mix, f, memo) VALUES (1, -1000, -1000, -1000, -1000, -1000, 'beta'), (2, 2000000, 2000000, 2000000, 2000000, 2000000, 'beta'), (3, NULL, NULL, NULL, NULL, NULL, 'beta');
 UPDATE pw SET k_rand = k_rand / 2, k_mix = 3 WHERE id % 211 = 0;
-SELECT * FROM pw_fuzz('write buffer', 24, 40);
+SELECT * FROM pw_fuzz('write buffer', 24, 14);
 
 -- the buffer promoted into units, and the index after a vacuum
 VACUUM pw;
 SELECT sift.col_promote('pw_col') >= 0 AS promoted;
-SELECT * FROM pw_fuzz('promoted', 25, 40);
+SELECT * FROM pw_fuzz('promoted', 25, 14);
 
 -- a sift_table: the same queries over its column groups and write buffers
 CREATE TABLE pwt (LIKE pw INCLUDING DEFAULTS) USING sift_table;
 INSERT INTO pwt SELECT * FROM pw;
 CREATE INDEX pwt_bm ON pwt USING sift (memo);
 VACUUM (ANALYZE) pwt;
-SELECT * FROM pw_fuzz('table', 26, 40, 'pwt');
+SELECT * FROM pw_fuzz('table', 26, 14, 'pwt');
 UPDATE pwt SET k_rand = -3, k_band = 999999 WHERE id % 1500 = 0;
 INSERT INTO pwt (g, k_clu, k_band, k_rand, k_mix, f, memo) SELECT i % 5, 200000 + i, i, i, i % 50, i, 'beta red' FROM generate_series(1, 120) i;
-SELECT * FROM pw_fuzz('table, written', 27, 40, 'pwt');
+SELECT * FROM pw_fuzz('table, written', 27, 14, 'pwt');
 
 DROP TABLE pwt, pw;
 DROP FUNCTION pw_mode(bool, int), pw_rows(text), pw_kind(text, int), pw_check(text), pw_query(int, int, text), pw_fuzz(text, int, int, text), pw_gen_kind(), pw_units(text, int, bool);

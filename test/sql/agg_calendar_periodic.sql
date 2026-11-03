@@ -12,13 +12,13 @@ SET random_page_cost = 10000;
 CREATE TABLE pc (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO pc
 SELECT i, t AT TIME ZONE 'UTC', t
-FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '47 minutes' AS t FROM generate_series(1, 60000) g) s;
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 6000) g) s;
 INSERT INTO pc VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
 	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
 CREATE INDEX pc_col ON pc USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) pc;
 -- eight months across the clock changes of 2024 (under 256 days): few enough windows for the hours and the minutes to be tried
-CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '5 minutes' AS t FROM generate_series(0, 69600) g) s;
+CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '50 minutes' AS t FROM generate_series(0, 6960) g) s;
 CREATE INDEX pw_col ON pw USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) pw;
 -- the same with infinite timestamps: the span of the leaf is no window to enumerate, the expression is tested for every row
@@ -62,8 +62,14 @@ BEGIN
 		n := 0; s := 0; nr := 0;
 		EXECUTE format('SET LOCAL TimeZone = %L', z);
 		FOREACH t IN ARRAY ARRAY['pc', 'pi', 'pw'] LOOP
-			FOREACH col IN ARRAY ARRAY['tz', 'ts'] LOOP
+			-- a timestamp without a zone does not depend on the zone of the session: it runs in UTC only; the infinite timestamps in two zones; the span of pw
+			-- holds the clock changes of the zones that have them in 2024 and the half hour of Kolkata
+			CONTINUE WHEN (t = 'pi' AND z NOT IN ('UTC', 'America/New_York')) OR (t = 'pw' AND z IN ('Pacific/Apia', 'America/Sao_Paulo'));
+			FOREACH col IN ARRAY CASE WHEN z = 'UTC' THEN ARRAY['tz', 'ts'] ELSE ARRAY['tz'] END LOOP
 				FOR c IN SELECT * FROM pc_case LOOP
+					-- the minutes of pc try 47,000 windows of an hour (85 ms a statement, 13 of the 16 s of the file in the 51 statements of the 7 zones): the whole-hour zones
+					-- shift the windows by hours, so UTC, Kolkata and Lord Howe (the half hours) check them, and pw has the same cases in every zone
+					CONTINUE WHEN t = 'pc' AND c.f LIKE 'extract(minute%' AND z IN ('America/New_York', 'Pacific/Apia', 'America/Sao_Paulo', 'Europe/London');
 					q := format('SELECT count(*) FROM %s WHERE ' || replace(c.f, '%1$s', col) || ' = %s', t, c.o);
 					n := n + 1;
 					IF count_of(q, true) = count_of(q, false) THEN s := s + 1; END IF;

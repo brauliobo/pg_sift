@@ -33,7 +33,11 @@ bm25/liveness.c
 bm25/walk.c
 bm25/livestream.c
 core/live.c
-bm25/runs.c
+bm25/runs/runs.c
+bm25/runs/cuts.c
+bm25/runs/merge.c
+bm25/runs/reader.c
+bm25/runs/segs.c
 bm25/inv.c
 core/stream.c
 bm25/merge.c
@@ -53,8 +57,18 @@ core/span.c
 # headers (the data tables and kernels included by the sources above come with them)
 core/sift.h
 bm25/analyze.h
+bm25/attr.h
 bm25/analyze_tables.h
+bm25/analyze_tables/cp_stage1.h
+bm25/analyze_tables/cp_stage2_1.h
+bm25/analyze_tables/cp_stage2_2.h
+bm25/analyze_tables/cp_stage2_3.h
+bm25/analyze_tables/fold_pool_1.h
+bm25/analyze_tables/fold_pool_2.h
+bm25/analyze_tables/fold_recs_1.h
+bm25/analyze_tables/fold_recs_2.h
 bm25/analyze_scan.h
+bm25/analyze_memo.h
 bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
@@ -79,6 +93,7 @@ core/popcount.h
 bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h
+bm25/runs/runs_priv.h
 bm25/runs.h
 bm25/runs_int.h
 bm25/query.h

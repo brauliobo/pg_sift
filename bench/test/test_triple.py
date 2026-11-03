@@ -9,6 +9,20 @@ from triple import NA  # noqa: E402
 MISSING = NA(triple.NOT_MEASURED)
 
 
+class NotMeasured(unittest.TestCase):
+    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+
+    def test_the_version_in_the_reason_is_the_one_of_the_control_file(self):
+        control = open(os.path.join(self.ROOT, 'pg_sift.control')).read()
+        version = control.split('default_version', 1)[1].split("'")[1]
+        self.assertEqual(triple.NOT_MEASURED, f'not measured under {version} yet')
+
+    def test_no_generator_spells_the_reason_or_a_version_of_it(self):
+        steps = os.path.join(self.ROOT, 'bench', 'steps')
+        spelled = [f for f in sorted(os.listdir(steps)) if f.endswith('.py') and 'not measured under' in open(os.path.join(steps, f)).read()]
+        self.assertEqual(spelled, ['triple.py'])
+
+
 class Cell(unittest.TestCase):
     def test_reference_has_no_factors(self):
         self.assertEqual(triple.cell((4.4, 6.1, 0.5)), '4.40 · 6.10 · 0.50')
@@ -91,28 +105,6 @@ class UpdatesFig(unittest.TestCase):
         lines = '\n'.join(section_render.triples(self.S(), 1000, [('update', ('-', 'u', ('phase_s', section_render.SECONDS), 'phase_cpu_ms', 'wal_mib'))])[0])
         self.assertIn('| `sift_col` | **250 · 200 · 5.00** |', lines)
         self.assertIn('| PostgreSQL | 500 · 400 · 10.0 (2.0x · 2.0x · 2.0x) |', lines)
-
-
-class SearchFig(unittest.TestCase):
-    ROWS = [('articles', 'slim', e, 'and', '-', m, v, v, v, 'x', 'NA', '2', v) for e, m, v in (
-        ('sift', 'qps', '4000'), ('sift', 'cpu_ms_query', '0.5'), ('sift', 'read_mb_query', '0.25'),
-        ('es', 'qps', '2000'), ('es', 'cpu_ms_query', '2.0'), ('es', 'read_mb_query', 'NA'), ('pg', 'qps', '1000'))]
-
-    def test_time_is_the_clients_over_the_throughput(self):
-        import tables
-        self.assertEqual(tables.query_fig(self.ROWS, 'articles', 'slim', 'sift', 'and'), (2.0, 0.5, 0.25))
-        got = tables.query_fig(self.ROWS, 'articles', 'slim', 'es', 'and')
-        self.assertEqual(got[:2], (4.0, 2.0))
-        self.assertIs(got[2], tables.NO_COUNTER)
-        self.assertEqual(tables.query_fig(self.ROWS, 'articles', 'slim', 'pg', 'and')[1:], (triple.NA(triple.NOT_MEASURED),) * 2)
-        self.assertIsNone(tables.query_fig(self.ROWS, 'articles', 'slim', 'pg', 'or'))
-
-    def test_table_has_factors_over_sift(self):
-        import tables
-        text = '\n'.join(tables.md_triples(self.ROWS, 'articles', 'slim', {'pg_sift': 'sift', 'Elasticsearch': 'es', 'PostgreSQL': 'pg'}, [('and', 'and')]))
-        self.assertIn('| pg_sift | **2.00 · 0.50 · 0.25** |', text)
-        self.assertIn('| Elasticsearch | 4.00 · 2.00 · n/a (2.0x · 4.0x · n/a) |', text)
-        self.assertIn('`n/a`: the engine reports no count of the data a query touched.', text)
 
 
 class SearchFig(unittest.TestCase):

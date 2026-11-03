@@ -14,11 +14,17 @@ SELECT i, i % 7,
 	   CASE WHEN i % 89 = 0 THEN 'NaN' WHEN i % 13 = 0 THEN NULL ELSE round(((i * 53) % 3001 - 1500) / 11.0, 3) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX nc_col ON nc USING sift_col (id, g, n, m);
+NOTICE:  sift_col index "nc_col" installed two statement triggers on table "nc" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) nc;
 -- the same rows without a NaN, so that every unit is exact
 CREATE TABLE nf (id int PRIMARY KEY, g int, n numeric(12,2)) WITH (autovacuum_enabled = false);
 INSERT INTO nf SELECT i, i % 7, round(((i * 37) % 4001 - 2000) / 7.0, 2) FROM generate_series(1, 20000) i;
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n);
+NOTICE:  sift_col index "nf_col" installed two statement triggers on table "nf" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) nf;
 CREATE TABLE shapes (id serial PRIMARY KEY, shape text, q text);
 INSERT INTO shapes (shape, q)

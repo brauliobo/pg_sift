@@ -1,0 +1,13 @@
+-- A leaf is named in the notices of the build by its path, or by the column it comes from: the leaves of a jsonb column are more than its attributes, and leaf c is not
+-- attribute c. The index below has three attributes and four leaves (j.a, j.b, id, t): the notice says id, the third leaf, not t, the third attribute, and reading the
+-- fourth leaf as an attribute went past the descriptor (PostgreSQL 19 with assertions stopped the CREATE INDEX of agg_wildcard_key_cost on it).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ln (j jsonb, id int PRIMARY KEY, t int) WITH (autovacuum_enabled = false);
+INSERT INTO ln SELECT jsonb_build_object('a', i % 50, 'b', hashint4(i) & 1023), i, hashint4(i + 5) & 4095 FROM generate_series(1, 30000) i;
+CREATE INDEX ln_ix ON ln USING sift_col (j, id, t) WITH (paths = 'j.a int4, j.b int4', order_array_columns = 'auto: id');
+SELECT sift.col_verify('ln_ix');
+
+DROP TABLE ln;
+DROP EXTENSION pg_sift;

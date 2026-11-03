@@ -216,7 +216,7 @@ tbl_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
 	TblSource  *t = arg;
 	bool		plain = (sb < t->wbuf_lo || sb > t->wbuf_hi) &&
-		!sift_tbl_tomb_any(t->st, (uint64) sb * (SIFT_SB_PAGES << 16), (uint64) (sb + 1) * (SIFT_SB_PAGES << 16) - 1) &&
+		!sift_tomb_any(&t->st->tomb, (uint64) sb * (SIFT_SB_PAGES << 16), (uint64) (sb + 1) * (SIFT_SB_PAGES << 16) - 1) &&
 		sift_tbl_vers_sb(t->rel, t->snapshot, t->vers, sb) == SIFT_TBL_VER_ALL;
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
@@ -286,9 +286,10 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->last = -1;
 	sift_aggsel_init(&t->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&t->pre, mcxt);
+	pgstat_count_heap_scan(heap);
 	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);
-	sift_tbl_tomb_sync(heap, st);
+	sift_tomb_sync(heap, &st->tomb);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
 	*t->dir = st->dir;
 	t->vers = sift_tbl_vers_build(heap, st, t->dir, mcxt);
@@ -531,6 +532,7 @@ static const SiftSrcProvider tbl_provider = {
 	.read_rows = tbl_read_rows,
 	.preagg = tbl_preagg,
 	.unit_exact = tbl_unit_exact,
+	.unit_dead = tbl_unit_dead,
 	.whole = tbl_whole,
 	.super_span = tbl_super_span,
 	.split = tbl_split,

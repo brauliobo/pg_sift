@@ -66,24 +66,46 @@ grep -q '"key": "k2"' "$T/runs/run-kill1/a-1.json" || fail "a result of another 
 (( $(grep -c . "$T/runs/run-kill1/table/cells.tsv") == 10 )) || fail "the table of another key was not started over"
 echo "ok: a run with another key measures again"
 
+# the processes of a run are found by the run id in their environment, which only Linux says (/proc/PID/environ): without it there is none to find, and the checks below that
+# need an orphan to find are replaced by the one that says so
+if [[ -r /proc/self/environ ]]; then
 # a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
-d=$T/runs/run-orphan
+d=$T/runs/run-orphan$$   # unique: the run id is in the environment of its processes, and a second copy of this test (another lint) must not find or stop these
 CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
-sleep 0.6; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
-( . "$LIBSH"; run_procs orphan ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
+# the run is at its first cell when its `sleep 30` runs (on a slow host the start takes longer than any fixed wait)
+at_cell() { local e; for e in /proc/[0-9]*/environ; do grep -qaxz "BENCH_RUN_ID=orphan$$" "$e" 2>/dev/null && [[ $(tr '\0' ' ' <"${e%environ}cmdline" 2>/dev/null) == 'sleep 30 ' ]] && return 0; done; return 1; }
+for _ in $(seq 300); do at_cell && break; sleep 0.1; done
+at_cell || fail "the run did not reach its first cell"
+kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+( . "$LIBSH"; run_procs orphan$$ ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
-( . "$LIBSH"; run_procs orphan ) | grep -q . && fail "the orphan of the killed run is still running" || true
+( . "$LIBSH"; run_procs orphan$$ ) | grep -q . && fail "the orphan of the killed run is still running" || true
 echo "ok: the processes a killed run left are stopped"
 
+# run_stop returns when the processes are gone, also when a loaded host delivers the KILL late: the orphan ignores TERM and the KILL arrives 0.7 s after it is sent
+id=late$$ f=$T/late.pid
+( BENCH_RUN_ID=$id setsid bash -c 'trap "" TERM; echo $$ >"$1"; exec sleep 300' _ "$f" >/dev/null 2>&1 & )
+for _ in $(seq 200); do [[ -s $f ]] && break; sleep 0.05; done
+[[ -s $f ]] || fail "the late-KILL orphan did not start"
+( . "$LIBSH"; log() { :; }; kill() { if [[ $1 == -KILL ]]; then ( sleep 0.7; builtin kill "$@" ) & else builtin kill "$@"; fi; }; run_stop "$id" ) >/dev/null 2>&1
+left=$( . "$LIBSH"; run_procs "$id" )
+[[ -z $left ]] || { kill -KILL $left 2>/dev/null; fail "run_stop returned with the process of the run still running (the KILL had not taken effect)"; }
+echo "ok: run_stop waits for a late KILL"
+else
+	( . "$LIBSH"; [[ -z $(run_procs "orphan$$") ]] ) || fail "run_procs found a process on a host without /proc"
+	echo "ok: no /proc/PID/environ on this host: no process is found by its run id, so none is stopped"
+fi
+
+started() { local n; for n in $(seq 200); do [[ -s $1/.run/state ]] && return; sleep 0.05; done; }   # the run has its manifest, so its traps are set: a signal sent before that (a loaded host) kills it with the default action
 d=$T/runs/run-crash
 "$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!
-sleep 0.15; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+started "$d"; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 [[ $(cut -f1 "$d/.run/state") == running ]] || fail "a killed run should still say running"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
 [[ $(cut -f1 "$d/.run/state") == crashed ]] || fail "a run whose process is gone was not found out"
 d=$T/runs/run-term
 "$T/work.sh" "$d" k4 >/dev/null 2>&1 & pid=$!
-sleep 0.15; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+started "$d"; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
 (( rc == 75 )) || fail "SIGTERM exit status is $rc, not 75"
 [[ $(cut -f1 "$d/.run/state") == interrupted ]] || fail "SIGTERM did not record interrupted"
 "$T/work.sh" "$d" k4 >/dev/null 2>&1

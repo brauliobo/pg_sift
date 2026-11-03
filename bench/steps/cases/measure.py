@@ -6,9 +6,13 @@ import re
 import signal
 import statistics
 import subprocess
+import threading
 import time
+from collections import Counter
 
+import benchlib
 import iolib
+from duckdb import Session
 
 from . import runcfg
 from .runcfg import FORCED, HERE, IO_HOW, MIN_RUNS, SCAN, die, log
@@ -16,13 +20,20 @@ from .server import Fresh, IDS, build, equal, equal_ties, plan_note, plan_shape,
 
 
 def expand(sql, case):
-    """`{ids:TABLE:N}` is the list of the ids of the rows of TABLE with n = N, in the statement: a literal IN list of 50,000 or 500,000 values is not a thing to write in a file"""
+    """`{ids:TABLE:N}` is the list of the ids of the rows of TABLE with n = N, in the statement: a literal IN list of 50,000 or 500,000 values is not a thing to write in a file; `{param:TABLE:N}`
+    is the same list as one int[] (a psql variable, :'ids_TABLE_N'::int[], sent once per session): the statement carries no 3 MB of SQL to parse and the planner still sees the array"""
     def ids(m):
         key = (case.schema(), m.group(1), m.group(2))
         if key not in IDS:
             IDS[key] = psql("SELECT string_agg(id::text, ',' ORDER BY id) FROM %s.%s WHERE n = %s" % key)
         return IDS[key]
-    return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql)
+
+    def param(m):
+        name = 'ids_%s_%s' % (m.group(1), m.group(2))
+        Session.VARS[name] = '{' + ids(m) + '}'
+        return ":'%s'::int[]" % name
+    sql = re.sub(r'\{param:(\w+):(\d+)\}', param, sql)
+    return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql).replace('{rows}', str(runcfg.ROWS))
 
 
 def tie_rows(case, native):
@@ -89,7 +100,12 @@ def io_load(session, case, lane, sql, text, mode):
     Returns ([measurements], index names, index bytes)"""
     s = session.persistent() if isinstance(session, Fresh) else session
     try:
-        tables = iolib.schema_tables(s, case.schema() + '_base' if lane == 'base' else case.schema())
+        schema = case.schema() + '_base' if lane == 'base' else case.schema()
+        for name, settings in case.variants:   # a lane that reads the copy in another schema (`btree:search_path = c_ID__btree`) empties that copy, not the case's own tables
+            m = re.search(r'search_path = (\w+)', settings)
+            if name == lane and m:
+                schema = m.group(1)
+        tables = iolib.schema_tables(s, schema)
         ios = [iolib.measure(s, sql, tables if mode == 'cold' else None)]
         if ios[0]['cache'] == 'cold':
             IO_HOW.add(ios[0]['how'])
@@ -116,26 +132,53 @@ def why(session, sql):
 PERF = os.path.join(HERE, 'perf.sh')
 
 
-def minstr(session, sql, runs=3):
-    """user instructions (millions) of the backend of the session for one run of the statement, median of `runs` (steps/perf.sh, perf stat on the backend with no parallel workers: the count does
-    not depend on the load of the host); None when perf may not count them"""
+class PerfFailed(Exception):
+    """perf did not give the instructions of a statement in any of its attempts; the message is the reason of each"""
+
+
+def perf_paranoid():
+    """the perf_event_paranoid setting for a message about a perf that failed; where the host has none (not Linux) the message says so"""
+    try:
+        with open('/proc/sys/kernel/perf_event_paranoid') as f:
+            return f.read().strip()
+    except OSError:
+        return 'not readable here'
+
+
+def count_once(session, sql, pid):
+    """(millions of user instructions of one run of SQL by the backend PID, None) or (None, why): steps/perf.sh, perf stat on the backend with no parallel workers"""
+    p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    time.sleep(1)   # perf.sh traps SIGTERM only once bash has started: on a loaded host 0.3 s was too short and the signal killed bash, leaving perf to count to the end of the backend
+    session.run(sql)
+    p.send_signal(signal.SIGTERM)
+    try:
+        out, err = p.communicate(timeout=60)   # a SIGTERM that lands before perf.sh traps it leaves perf counting for ever
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        return None, 'perf did not end 60 s after the SIGTERM (it reached perf.sh before its trap)'
+    fields = out.split()
+    if len(fields) == 3 and fields[1].isdigit():
+        return int(fields[1]) / 1e6, None
+    return None, 'perf counted "%s" (perf_event_paranoid %s, exit %s): %s' % (' '.join(fields), perf_paranoid(), p.returncode, err.strip()[-200:] or 'no message')
+
+
+def minstr(session, sql, runs=3, tries=3):
+    """user instructions (millions) of the backend of the session for one run of the statement, median of `runs`; a count that perf could not give is tried again up to TRIES times, then
+    PerfFailed says why each attempt failed (the count does not depend on the load of the host, so a retry is the same measurement)"""
     session.run('SET max_parallel_workers_per_gather = 0')
     pid = session.run('SELECT pg_backend_pid()')[1][0]
     session.run(sql)
     counts = []
     for _ in range(runs):
-        p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-        time.sleep(1)   # perf.sh traps SIGTERM only once bash has started: on a loaded host 0.3 s was too short and the signal killed bash, leaving perf to count to the end of the backend
-        session.run(sql)
-        p.send_signal(signal.SIGTERM)
-        try:
-            fields = p.communicate(timeout=60)[0].split()   # a SIGTERM that lands before perf.sh traps it leaves perf counting for ever
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            return None
-        if len(fields) != 3 or not fields[1].isdigit():
-            return None
-        counts.append(int(fields[1]) / 1e6)
+        whys = []
+        for _ in range(tries):
+            n, why = count_once(session, sql, pid)
+            if why is None:
+                counts.append(n)
+                break
+            whys.append(why)
+        else:
+            raise PerfFailed('; '.join('attempt %d: %s' % (k + 1, w) for k, w in enumerate(whys)))
     return statistics.median(counts)
 
 
@@ -152,60 +195,129 @@ def cpu_ns(pid):
         return int(f.read().split()[0])
 
 
-def measure_load(case, csv, rounds, rows, instr=False):
-    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, and with INSTR the backend's user instructions of the whole load (minstr)"""
+def wait_sampler(pid):
+    """the kernel wait (state:function) of the backend every 2 ms while it does not run, until stop() returns: where the time of a load beyond its CPU went"""
+    seen, done = Counter(), threading.Event()
+
+    def sample():
+        while not done.wait(0.002):
+            try:
+                with open('/proc/%s/stat' % pid) as f:
+                    state = f.read().rsplit(')', 1)[1].split()[0]
+                if state in ('S', 'D'):
+                    with open('/proc/%s/wchan' % pid) as f:
+                        seen[state + ':' + f.read()] += 1
+            except OSError:
+                return
+    thread = threading.Thread(target=sample)
+    thread.start()
+
+    def stop():
+        done.set()
+        thread.join()
+        return seen
+    return stop
+
+
+def record_start(pid, path, perf='perf'):
+    """perf record of the user cycles of the backend PID into PATH (the profile of a load phase: `--profile DIR`); record_stop ends it"""
+    return subprocess.Popen([perf, 'record', '-q', '-F', '2000', '-e', 'cycles:u', '-p', pid, '-o', path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+
+def record_stop(proc, path, perf='perf', top=30):
+    """end the record and write the PATH's symbols by self cycles to PATH.txt (the first TOP); die with perf's message when it recorded nothing"""
+    proc.send_signal(signal.SIGTERM)   # perf record finishes its file on SIGTERM too; a job started in the background has SIGINT ignored
+    try:
+        err = proc.communicate(timeout=60)[1]
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        die('perf record did not end 60 s after the SIGTERM (%s)' % path)
+    if proc.returncode not in (0, -signal.SIGTERM) or not os.path.exists(path):   # perf finishes its file, then raises the signal again
+        die('perf record failed (exit %s, perf_event_paranoid %s): %s' % (proc.returncode, perf_paranoid(), err.strip()[-300:] or 'no message'))
+    report = subprocess.run([perf, 'report', '-i', path, '--no-children', '--stdio'], capture_output=True, text=True).stdout
+    with open(path + '.txt', 'w') as f:
+        f.write('\n'.join([l for l in report.split('\n') if l.strip() and not l.startswith('#')][:top]) + '\n')
+
+
+def load_settings(case_id, workers, sets, serial):
+    """the statements that open the session of a pass of a load case: the schema of the case, the parallel maintenance workers of the run, the settings of the variant and, in the serial pass of
+    the instructions, workers 0 as the last one so it overrides the variant's own (perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster)"""
+    return ['SET search_path = c_%s, public' % case_id, 'SET max_parallel_maintenance_workers = %s' % workers] + sets + (['SET max_parallel_maintenance_workers = 0'] if serial else [])
+
+
+def load_passes(instr):
+    """the passes of one lane in one round: the timed one, and with INSTR a serial one for the instructions"""
+    return (False, True) if instr else (False,)
+
+
+def measure_load(case, csv, rounds, rows, instr=False, profile=None):
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms, index_mb (the indexes other than the primary key, at the end), and with INSTR the user instructions of the whole load in a second, serial run of it (minstr: the backend alone, `max_parallel_maintenance_workers = 0` on every lane, the settings of workers of a variant overridden: the workers of a VACUUM, a build or a merge are children of the postmaster and perf does not follow them)"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
-    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': []} | ({'minstr': []} if instr else {}) for lane in lanes}, {}, {}
+    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': [], 'index_mb': []} | ({'minstr': []} if instr else {}) for lane in lanes}, {}, {}
     for r in range(rounds):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
             am, sets = lanes[lane]
-            s = server_session(600)
-            for st in ['SET search_path = c_%s, public' % case.id] + sets:
-                s.run(st)
-            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv)):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
-                err = s.run(stmt)[2]
-                if err:
-                    die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
-            pid = s.run('SELECT pg_backend_pid()')[1][0]
-            s.run('CHECKPOINT')
-            io0 = iolib.snapshot(s)
-            lsn, cpu = wal_lsn(s), cpu_ns(pid)
-            counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if instr else None
-            if counter:
-                time.sleep(1)
-            ms = 0
-            for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
-                took, _, err, _ = s.run(stmt.replace('{csv}', csv))
-                if err:
-                    die('%s: the load failed on %s: %s' % (case.id, lane, err))
-                ms += took
-            cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
-            if counter:
-                counter.send_signal(signal.SIGTERM)
-                fields = counter.communicate()[0].split()
-                if len(fields) == 3 and fields[1].isdigit():
-                    out[lane]['minstr'].append(int(fields[1]) / 1e6)
-            for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
-                out[lane][metric].append(mb)
-            checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
-            plans[lane] = checked.replace('\n', ', ')
-            if lane == 'sift' and not re.search(case.plan, checked, re.M):
-                errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
-            out[lane]['wal_bytes'].append(lsn / rows)
-            out[lane]['ms'].append(ms)
-            out[lane]['cpu_ms'].append(cpu / 1e6)
-            s.close()
-            build(case, rows)   # an empty schema again
+            for serial in load_passes(instr):   # the instructions in a pass of their own with no parallel workers: perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster
+                s = server_session(600)
+                for st in load_settings(case.id, os.environ.get('CASES_WORKERS', '2'), sets, serial):
+                    s.run(st)
+                for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
+                    err = s.run(stmt)[2]
+                    if err:
+                        die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
+                pid = s.run('SELECT pg_backend_pid()')[1][0]
+                s.run('CHECKPOINT')
+                io0 = iolib.snapshot(s)
+                lsn, cpu = wal_lsn(s), cpu_ns(pid)
+                counter = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True) if serial else None
+                recorded = os.path.join(profile, '%s.%s.data' % (case.id, lane)) if profile and not serial else None
+                recorder = record_start(pid, recorded) if profile and not serial else None
+                if counter or recorder:
+                    time.sleep(1)
+                ms = 0
+                stop = wait_sampler(pid)
+                for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
+                    took, _, err, _ = s.run(stmt.replace('{csv}', csv).replace('{rows}', str(rows)))
+                    if err:
+                        die('%s: the load failed on %s: %s' % (case.id, lane, err))
+                    ms += took
+                waits = stop()
+                if recorder:
+                    record_stop(recorder, recorded)
+                cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
+                if ms - cpu / 1e6 > max(20, ms / 5):
+                    log('%s %s: %.0f of %.0f ms off the CPU, 2 ms samples of the kernel wait: %s' % (case.id, lane, ms - cpu / 1e6, ms, ', '.join('%s %d' % kv for kv in waits.most_common(4))))
+                if counter:
+                    counter.send_signal(signal.SIGTERM)
+                    fields = counter.communicate()[0].split()
+                    if len(fields) == 3 and fields[1].isdigit():
+                        out[lane]['minstr'].append(int(fields[1]) / 1e6)
+                if serial:
+                    s.close()
+                    build(case, rows)
+                    continue
+                for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
+                    out[lane][metric].append(mb)
+                checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
+                plans[lane] = checked.replace('\n', ', ')
+                if lane == 'sift' and not re.search(case.plan, checked, re.M):
+                    errors[lane] = 'PLAN LOST: the load did not write what /%s/ describes' % case.plan
+                size = s.run("SELECT sum(pg_relation_size(i.indexrelid)) / 1048576.0 FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'c_%s' AND NOT i.indisprimary" % case.id)[1][0]
+                if size:   # a case with no index besides its primary key has no figure
+                    out[lane]['index_mb'].append(float(size))
+                out[lane]['wal_bytes'].append(lsn / rows)
+                out[lane]['ms'].append(ms)
+                out[lane]['cpu_ms'].append(cpu / 1e6)
+                s.close()
+                build(case, rows)   # an empty schema again
     return out, plans, errors
 
 
 def host():
-    cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
-    mem = int(next(l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal'))) // 1048576
-    return '%s, %d threads, %d GB memory' % (cpu, os.cpu_count(), mem)
+    return benchlib.host_label()
 
 
 def summarize(results, cases):

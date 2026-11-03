@@ -7,9 +7,12 @@ INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 3000) g;
 CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL);
 INSERT INTO events SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360) FROM generate_series(1, 6000) g;
 CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts);
-NOTICE:  sift_col index events_col writes a rollup of the rows by set_id, kind_id
+NOTICE:  sift_col index "events_col": rollup_dims = 'auto' writes a rollup of the rows by set_id, kind_id
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX events_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX events_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;
 -- the CTE joins the table to a filtered dimension (estimated at a row), two consumers read it, neither is an aggregate the scan takes (an ordered array_agg)

@@ -23,7 +23,8 @@ CREATE FUNCTION go_key(leaf int) RETURNS text LANGUAGE sql IMMUTABLE AS
 $$ SELECT (ARRAY['id', 'a', 'b', 'c', '(d - DATE ''2000-01-01'')', '((extract(epoch FROM t) - 946684800) * 1000000)::int8',
 				 '((extract(epoch FROM z) - 946684800) * 1000000)::int8'])[leaf + 1] $$;
 -- the array, read back, holds the live rows of the table sorted by (key, address), the rows with no value last by address (the entries of rows that died stay until the segment is rewritten: the heap says which are live)
-CREATE FUNCTION go_check(idx regclass, leaf int) RETURNS text LANGUAGE plpgsql AS $$
+-- no nested loop: the join of the two 6,000-row sides by position is a hash join (a nested loop reads 36 million pairs, 1.8 s a leaf)
+CREATE FUNCTION go_check(idx regclass, leaf int) RETURNS text LANGUAGE plpgsql SET enable_nestloop = off AS $$
 DECLARE r text;
 BEGIN
 	EXECUTE format($q$
@@ -37,6 +38,7 @@ BEGIN
 END $$;
 CREATE INDEX go_i ON go USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
 	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z');
+NOTICE:  sift_col index "go_i" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "go_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 7 columns
 SELECT leaf, go_check('go_i', leaf) FROM generate_series(0, 6) leaf;
  leaf | go_check 
@@ -112,6 +114,7 @@ SELECT sift.col_verify('go_i');
 
 -- an index without the option has no array, and the option on an index that has segments without one writes it for the segments written afterwards only
 CREATE INDEX go_n ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b');
+NOTICE:  sift_col index "go_n" does not track changes: the table has no primary key of one column
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_n', 0);
  entries 
 ---------
@@ -152,6 +155,7 @@ SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'order_
 (1 row)
 
 REINDEX INDEX go_n;
+NOTICE:  sift_col index "go_n" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "go_n": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
  commands 
@@ -162,6 +166,7 @@ SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_a
 DROP INDEX go_n;
 -- the array extends the sorted run: a subset of order_columns gets it, a column outside order_columns or of another type is refused
 CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, pad sift.col_text_ops) WITH (order_columns = 'id, b', order_array_columns = 'id');
+NOTICE:  sift_col index "go_x" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "go_x": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entries FROM generate_series(0, 2) leaf;
  leaf | entries 
@@ -177,6 +182,7 @@ ERROR:  invalid order_array_columns option: column "b" is not in order_columns
 -- the setting 14 keeps the sorted runs and no array
 SET sift.col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b', order_array_columns = 'id, b');
+NOTICE:  sift_col index "go_m" does not track changes: the table has no primary key of one column
 RESET sift.col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
  entries 
@@ -194,6 +200,7 @@ DROP INDEX go_m;
 -- a segment too small for a chunk, and an empty table
 CREATE TABLE go_e (a int, b int);
 CREATE INDEX go_e_i ON go_e USING sift_col (a sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'a, b', order_array_columns = 'a, b');
+NOTICE:  sift_col index "go_e_i" does not track changes: the table has no primary key of one column
 INSERT INTO go_e VALUES (3, NULL), (1, 2), (NULL, 2), (1, 1);
 SELECT sift.col_promote('go_e_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -218,6 +225,7 @@ SELECT sift.col_verify('go_e_i');
 
 -- a heap address directory (point_tid_columns) and a global order in one segment: the point frame holds both
 CREATE INDEX go_p ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (point_tid_columns = 'id, b', order_columns = 't', order_array_columns = 't');
+NOTICE:  sift_col index "go_p" does not track changes: the table has no primary key of one column
 NOTICE:  sift_col index "go_p": point_tid_columns lists the heap addresses of the rows
 NOTICE:  sift_col index "go_p": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 SELECT sift.col_verify('go_p');

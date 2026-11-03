@@ -1,7 +1,7 @@
 -- ORDER BY <scanned column> LIMIT n over an inner join to a small table that only filters: the keys of the table's rows that pass its conditions
 -- are a set of the scan (`key IN (keys)`), which the top-N holds exactly, so the join has nothing left to test. That needs the table to have a
--- unique index on its join column (no row of the scan matches twice), one integer join column, conditions that read the table's columns alone,
--- and no column of the table in the result. Everything else keeps the normal plan. A bounded differential fuzz (fixed seed, queries made from
+-- unique index on its join column (no row of the scan matches twice), one integer join column, and conditions that read the table's columns alone.
+-- The columns of the table that the result reads are taken from the rows the scan loaded. Everything else keeps the normal plan. A bounded differential fuzz (fixed seed, queries made from
 -- hashes) compares the pushed top-N with the plain plan (sift.enable_agg off) in order, and the refused shapes are checked one by one.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
@@ -14,6 +14,8 @@ SELECT CASE WHEN i % 41 = 0 THEN NULL ELSE (hashint4(i + 7) & 2147483647) % 50 E
 	   CASE WHEN i % 9 = 0 THEN NULL ELSE (hashint4(i + 2) & 2147483647) % 50 END
 FROM generate_series(1, 30000) i;
 CREATE INDEX jf_col ON jf USING sift_col (id, g, h, lab, k_rand, k_mix) WITH (write_buffer_limit = 256, point_tid_columns = 'off');
+NOTICE:  sift_col index "jf_col" does not track changes: point_tid_columns is 'off', and the key is found through its directory
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE jd (g int PRIMARY KEY, label text, region int);
 INSERT INTO jd SELECT x, 'label_' || x, x % 5 FROM generate_series(0, 39) x;
 CREATE TABLE jd2 (h bigint PRIMARY KEY, tier int);
@@ -100,9 +102,8 @@ INSERT INTO jt_shapes VALUES
 	(5, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g WHERE f.k_mix > 5 AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(6, 'SELECT f.id, f.k_rand FROM jd d JOIN jf f ON f.g = d.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(7, 'SELECT f.id, f.k_rand FROM jf f JOIN jd2 e ON e.h = f.h WHERE e.tier = 1 ORDER BY f.k_rand, f.id LIMIT 10'),
-	-- refused: a column of the table in the result, a table with no unique index on the key, an outer join (to a table without a unique index: PostgreSQL 19 removes one to a unique key that nothing reads), a condition that reads the scanned row,
+	-- refused: a table with no unique index on the key, an outer join (to a table without a unique index: PostgreSQL 19 removes one to a unique key that nothing reads), a condition that reads the scanned row,
 	-- a text key, an expression of the scanned column as the key, a second key, a join to a sub-select, an aggregate
-	(11, 'SELECT f.id, d.label FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(12, 'SELECT f.id, f.k_rand FROM jf f JOIN jn d ON d.g = f.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(13, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN jn d ON d.g = f.g AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(14, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region > f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
@@ -111,7 +112,8 @@ INSERT INTO jt_shapes VALUES
 	(17, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region = f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(18, 'SELECT f.id, f.k_rand FROM jf f JOIN (SELECT g FROM jd WHERE region = 2) d ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10'),
 	(19, 'SELECT f.id, d.region FROM jf f JOIN jd d ON d.g = f.g ORDER BY d.region, f.id LIMIT 10'),
-	-- pushed: a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind; it needs no unique key
+	-- pushed: a column of the table in the result; a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind, it needs no unique key
+	(11, 'SELECT f.id, d.label FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(20, 'SELECT f.id, f.k_rand FROM jf f WHERE f.g IN (SELECT g FROM jd WHERE region = 2) ORDER BY f.k_rand, f.id LIMIT 10');
 SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LATERAL jt_run(s.q) r ORDER BY s.n;
  n  | topn | same_rows 
@@ -123,7 +125,7 @@ SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LA
   5 | t    | t
   6 | f    | t
   7 | t    | t
- 11 | f    | t
+ 11 | t    | t
  12 | f    | t
  13 | f    | t
  14 | f    | t

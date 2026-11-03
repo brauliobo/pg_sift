@@ -25,10 +25,23 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 END $$;
 
+-- margin_note: with sift_helpers.margin = on, the price of the scan and of the normal plan of each arm of q (scripts/plan-margin.sh --tests); the plan helpers below call it
+CREATE FUNCTION sift_helpers.margin_note(q text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+	IF coalesce(current_setting('sift_helpers.margin', true), 'off') <> 'on' THEN RETURN; END IF;
+	FOR r IN SELECT arm, scan_cost, normal_cost FROM sift.explain_why(q) WHERE scan_cost < 'Infinity' AND normal_cost < 'Infinity' LOOP
+		RAISE WARNING 'plan-margin: % scan % normal % gap %', r.arm, round(r.scan_cost::numeric, 1), round(r.normal_cost::numeric, 1),
+			round((100 * abs(r.scan_cost - r.normal_cost) / greatest(r.scan_cost, r.normal_cost))::numeric, 0)::text || '%';
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
 -- plan_is_agg_scan: the helper that tests of test/sql defined themselves (pushed)
 CREATE FUNCTION sift_helpers.plan_is_agg_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; scan bool := false;
 BEGIN
+	PERFORM sift_helpers.margin_note(q);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
 		IF l ~ '(SiftAggRows|GroupAggregate|HashAggregate)' THEN RETURN false; END IF;
@@ -76,6 +89,7 @@ END $$;
 CREATE FUNCTION sift_helpers.plan_has_agg_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
+	PERFORM sift_helpers.margin_note(q);
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
@@ -253,6 +267,7 @@ DECLARE
 	l text;
 	r text := '';
 BEGIN
+	PERFORM sift_helpers.margin_note(q);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		r := r || l || E'\n';
 	END LOOP;
@@ -263,6 +278,7 @@ END $$;
 CREATE FUNCTION sift_helpers.plan_mentions_siftagg(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
+	PERFORM sift_helpers.margin_note(q);
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
@@ -319,6 +335,7 @@ END $$;
 CREATE FUNCTION sift_helpers.plan_siftagg_or_normal(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
+	PERFORM sift_helpers.margin_note(q);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
 	END LOOP;
@@ -391,6 +408,7 @@ END $$;
 CREATE FUNCTION sift_helpers.plan_mentions_siftagg_regex(qq text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
+	PERFORM sift_helpers.margin_note(qq);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || qq LOOP
 		IF l ~ 'SiftAgg' THEN RETURN true; END IF;
 	END LOOP;

@@ -81,6 +81,7 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 	for (int k = 0; k < ph->nterms; k++)
 	{
 		uint32		i = ph->order[k],
+					o = ph->offs ? ph->offs[i] : i,
 					j = 0,
 					m = 0;
 		const SiftPosBuf *pb = posctx_positions(c, ph->leaf[i]);
@@ -94,13 +95,13 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 					MemoryContextAllocHuge(c->mcxt, (Size) c->startcap * sizeof(uint32));
 			}
 			for (; j < pb->n; j++)
-				if (pb->v[j] >= i)
-					c->start[m++] = pb->v[j] - i;
+				if (pb->v[j] >= o)
+					c->start[m++] = pb->v[j] - o;
 		}
 		else
 			for (uint32 x = 0; x < n; x++)
 			{
-				uint32		want = c->start[x] + i;
+				uint32		want = c->start[x] + o;
 
 				while (j < pb->n && pb->v[j] < want)
 					j++;

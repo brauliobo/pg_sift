@@ -3,6 +3,7 @@
 -- the values (a list that is not known is taken over the whole range of the column). A scan priced for the 10 elements PostgreSQL assumes and no table took the
 -- generic plan at 256 keys over a range of a million, where the index plan is several times faster; the plan cache then keeps the custom plans.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, key int NOT NULL, kind int NOT NULL, amount float8 NOT NULL);
 SELECT setseed(0.42);

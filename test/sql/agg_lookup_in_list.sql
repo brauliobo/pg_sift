@@ -6,6 +6,8 @@ SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
+-- the ordered index-only scan of the key joined by a memoized lookup costs few pages and would take the plan over from the pushed one at these page costs: the statements check the pushed plan
+SET sift.enable_col_scan = off;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev

@@ -2,7 +2,7 @@
 -- label: `count(*)` and `sum(v)` by `grp` (1,500,000 groups), a table of 3,000,000 rows, at `work_mem = 1GB`
 -- set: work_mem = '1GB'
 --@ setup
-CREATE TABLE many_groups AS SELECT g AS id, (hashint4(g) & 2147483647) % 1500000 AS grp, g % 1000 AS v FROM generate_series(1, 3000000) g;
+CREATE TABLE many_groups AS SELECT g AS id, (hashint4(g) & 2147483647) % ({rows} * 3 / 2) AS grp, g % 1000 AS v FROM generate_series(1, {rows} * 3) g;
 CREATE INDEX many_groups_col ON many_groups USING sift_col (grp, v);
 ANALYZE many_groups
 --@ pg

@@ -98,7 +98,7 @@ def gen_trail(r, ctx):
     for c in r.sample(TR_TAIL, r.choice([1, 1, 2])):
         e = c.replace('w', 'g.w').replace('x', 'g.x').replace('s', 'g.s').replace('k', 'g.k').replace('length(g.s)', 'length(g.s)')
         order.append(f"{e} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip())
-    return dict(order=order, limit=r.choice([1, 5, 10, 33, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500]),
+    return dict(order=order, limit=r.choice([1, 5, 10, 33, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500, 1800]),
                 where=r.sample(['g.k > 20', 'g.d < DATE \'2024-03-01\'', 'g.t IS NOT NULL', 'g.id % 3 = 1', 'g.k BETWEEN 50 AND 250', 'g.w IS NOT NULL'], r.choice([0, 0, 1, 2])),
                 keys=[], aggs=[], having=[], ordered=True)
 

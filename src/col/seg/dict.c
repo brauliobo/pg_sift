@@ -96,8 +96,8 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 }
 
 /* Block b of a dictionary of the searched form, decompressed into l->blkraw with the offsets of its strings in l->blkoff */
-static void
-look_load_block(DictLook *l, uint32 b)
+void
+sift_cseg_look_load(DictLook *l, uint32 b)
 {
 	uint32		o[2],
 				cnt = Min(DICT_BLOCK, l->n - b * DICT_BLOCK),
@@ -160,7 +160,7 @@ look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 		uint32		i = code % DICT_BLOCK;
 
 		if (l->blkno != code / DICT_BLOCK)
-			look_load_block(l, code / DICT_BLOCK);
+			sift_cseg_look_block(l, code / DICT_BLOCK);
 		*len = l->blkoff[i + 1] - l->blkoff[i];
 		memcpy(buf, l->blkraw + l->blkoff[i], *len);
 		return buf;
@@ -388,7 +388,7 @@ look_contains(DictLook *l, SiftColOp op, const SiftColValue *c, int nvals, uint6
 		}
 		(*passed)++;
 		if (l->blkno != b)
-			look_load_block(l, b);
+			sift_cseg_look_load(l, b);
 		for (uint32 i = 0; i <= cnt; i++)
 			off[i] = l->blkoff[i];
 		if (op == SIFT_COLOP_SUFFIX)

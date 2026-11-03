@@ -10,6 +10,29 @@
 #include "bm25/analyze.h"
 #include "core/store.h"
 
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
+
+/* The sum of n bytes (the lengths of the terms of a record, read for every doc of a buffer by every query) */
+static inline uint32
+sift_sum_u8(const uint8 *p, uint32 n)
+{
+	uint32		sum = 0;
+	uint32		i = 0;
+
+#ifdef __SSE2__
+	__m128i		acc = _mm_setzero_si128();
+
+	for (; i + 16 <= n; i += 16)
+		acc = _mm_add_epi64(acc, _mm_sad_epu8(_mm_loadu_si128((const __m128i *) (p + i)), _mm_setzero_si128()));
+	sum = (uint32) (_mm_cvtsi128_si32(acc) + _mm_cvtsi128_si32(_mm_srli_si128(acc, 8)));
+#endif
+	for (; i < n; i++)
+		sum += p[i];
+	return sum;
+}
+
 /*
  * Appends one doc to the open write buffer (creating it if none) on
  * lane MyProcNumber % SIFT_LANES, falling back to other lanes when the tail
@@ -24,6 +47,9 @@ extern bool sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq
  * a fresh one; returns the sealed gen or 0.
  */
 extern uint64 sift_wbuf_seal(Relation index, bool force);
+
+/* Seals the active segment once it holds a quarter of write_buffer_limit (VACUUM); returns the sealed gen or 0 */
+extern uint64 sift_wbuf_seal_vacuum(Relation index);
 
 /* Re-sets the sealed flag on every lane tail of a sealed segment (idempotent) */
 extern void sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry);

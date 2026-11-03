@@ -5,6 +5,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import os, sys  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bench/steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('perf_select', ROOT / 'scripts/perf-select.py')

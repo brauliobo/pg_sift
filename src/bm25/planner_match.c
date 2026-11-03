@@ -45,7 +45,7 @@
 bool
 sift_index_matches_key(IndexOptInfo *index, Node *expr)
 {
-	if (index->ncolumns != 1 || index->relam != sift_catalog()->am)
+	if (index->nkeycolumns != 1 || index->relam != sift_catalog()->am)
 		return false;
 	while (IsA(expr, RelabelType))
 		expr = (Node *) ((RelabelType *) expr)->arg;
@@ -316,13 +316,28 @@ query_limit(PlannerInfo *root)
 }
 
 /*
+ * A scan under a sort by further keys (ORDER BY sift.score(ctid) DESC, id: an Incremental Sort per group of equal scores) is read to the end of the group
+ * of its k-th row and to the row after it, which a search of k rows does not hold: the second search scores every block again for the rows of the first
+ * and more. It is asked for those rows at once.
+ */
+static int64
+tie_limit(int64 k)
+{
+	return Min(sift_rank_next_k(k + 1), (int64) PG_INT32_MAX);
+}
+
+/*
  * The rows the query takes from the scan before it stops, 0 when it drains the scan: the limit, unless a Sort
  * sits between them (the scan is not what the first sort key asks for)
  */
 int64
 scan_limit(PlannerInfo *root, bool ranked)
 {
-	return ranked || root->query_pathkeys == NIL ? query_limit(root) : 0;
+	int64		k = query_limit(root);
+
+	if (!ranked)
+		return root->query_pathkeys == NIL ? k : 0;
+	return k > 0 && list_length(root->query_pathkeys) > 1 ? tie_limit(k) : k;
 }
 
 /*
@@ -330,10 +345,11 @@ scan_limit(PlannerInfo *root, bool ranked)
  * answer keep the fraction `kept` of its rows, and the other relations of an inner join keep the fraction their own
  * restrictions leave (a key join passes that fraction of the scan's rows). The rows asked for carry three standard
  * deviations of the binomial so that the search seldom comes up short. Only a hint: a ranked scan that is drained
- * past it searches again, scoring every block again, which costs about as much as the search itself.
+ * past it searches again, scoring every block again, which costs about as much as the search itself. The tables in skip are the ones
+ * the scan tests the keys of itself (planner_attr.c): the rows it hands out already have a match there.
  */
 int64
-joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept)
+joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept, Relids skip)
 {
 	double		pass = kept,
 				mean;
@@ -346,7 +362,7 @@ joined_limit(PlannerInfo *root, RelOptInfo *rel, int64 k, double kept)
 		RelOptInfo *other = root->simple_rel_array[x];
 		bool		inner = true;
 
-		if (other == NULL || other == rel || other->tuples <= 0 || bms_is_member(x, rel->top_parent_relids))
+		if (other == NULL || other == rel || other->tuples <= 0 || bms_is_member(x, rel->top_parent_relids) || bms_is_member(x, skip))
 			continue;
 		foreach_node(SpecialJoinInfo, sj, root->join_info_list)
 			inner &= !bms_is_member(x, sj->min_lefthand) && !bms_is_member(x, sj->min_righthand);

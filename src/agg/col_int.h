@@ -81,7 +81,8 @@ typedef struct ColSource
 	Relation	index;
 	Snapshot	snapshot;
 	SiftAggSel	sel;			/* the match set the units are restricted to */
-	SiftAggFilters flt;			/* the filters set_filters accepted */
+	SiftAggFilters flt;			/* the filters set_filters accepted, in rcx (reset by the next set_filters) */
+	MemoryContext rcx;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
 	int		   *spmap;			/* per spred: the test of prune_str it stands for */
@@ -116,6 +117,7 @@ extern int col_set_wide(void *impl, const SiftSrcWideTest *t, int nt);
 extern bool col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
 extern uint64 col_set_filters(void *impl, const SiftSrcFilter *f, int nf);
 extern bool col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits);
+extern bool col_rescan(void *impl);
 extern void col_tolerate_ovf(void *impl, int leaf);
 extern void col_set_raw(void *impl, int leaf);
 extern void col_set_numsum(void *impl, int leaf);
@@ -138,5 +140,11 @@ extern void col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const u
 extern void col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool col_vet_needed(void *impl, const SiftSrcUnit *unit);
+extern bool col_gorder_compact(void *impl, int i, int leaf);
+extern bool col_gorder_clean(void *impl, int i);
+extern bool col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);
+extern bool col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups);
+extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
+extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
 
 #endif							/* SIFT_AGG_COL_INT_H */

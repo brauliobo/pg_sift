@@ -1,4 +1,4 @@
-"""The generated parts of README.md and docs/BENCHMARKS.md, from the rows of bench/results/*.tsv of one tier (the slim tier by default).
+"""The generated parts of README.md and bench/out/BENCHMARKS.md, from the rows of bench/results/*.tsv of one tier (the slim tier by default).
 
     python3 -I bench/steps/readme.py [--results DIR] [--readme FILE] [--benchmarks FILE] [--tier slim]
                                      (bench/bench readme; bench/bench report --docs and bench/bench all --docs run it)
@@ -6,8 +6,8 @@
 Prints the Benchmarks block of README.md and rewrites, in place, the blocks between these marker lines (a file without them is left alone,
 with an error):
 
-                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the articles table, the bullets, the charts of the Search benchmark (the places table is in docs/BENCHMARKS.md)
-  docs/BENCHMARKS.md  <!-- bench:slim:begin -->   ... <!-- bench:slim:end -->      the tier's tables (the Markdown of steps/tables.py)
+                      <!-- bench:readme:begin  --> ... <!-- bench:readme:end -->    the articles table, the bullets, the charts of the Search benchmark (the places table is in bench/out/BENCHMARKS.md)
+  bench/out/BENCHMARKS.md  <!-- bench:slim:begin -->   ... <!-- bench:slim:end -->      the tier's tables (the Markdown of steps/tables.py)
 
 Nothing in a block is typed by hand: every number is a row of bench/results (tables.py writes the corpus size, the seconds of the phases and
 the host as rows too), the engines are those of bench/engines.tsv that have rows for the tier, in its order, so a new row of the registry
@@ -114,14 +114,6 @@ class Tier:
         """the seconds of the phases of both datasets, from the wall_s rows"""
         return sum(float(r[6]) for r in self.rows if r[1] == (tier or self.tier) and r[5] == 'wall_s')
 
-    def load(self):
-        rows = [r for r in self.rows if r[1] == self.tier and r[5] == 'load_1m' and r[4] == '-']
-        return (min(float(r[7]) for r in rows), max(float(r[8]) for r in rows), sorted(float(r[6]) for r in rows)[len(rows) // 2]) if rows else None
-
-    def late_loads(self):
-        """[(classes, min, max, median)] of the cells measured in a later run merged into the tier (tables.py --merge)"""
-        return [(r[4].replace(',', ', '), r[7], r[8], r[6]) for r in self.rows if r[1] == self.tier and r[5] == 'load_1m' and r[4] != '-']
-
     def qps(self, e, c):
         return self.get('articles', self.tier, e, c, '-', 'qps')
 
@@ -165,36 +157,36 @@ def positions_bullet(t):
 
 
 def benchmarks_block(t, timing):
-    """the README's search block: the findings and the charts; the scope, method, CPU budget and host are the footnote [^search], every cell with its standard error is in docs/BENCHMARKS.md"""
-    s, p = t.session, t.load()
+    """the README's search block: the findings and the charts; the scope, method, CPU budget and host are the footnote [^search], every cell with its standard error is in bench/out/BENCHMARKS.md"""
+    s = t.session
     articles, places = format(t.corpus('articles'), ','), format(t.corpus('places'), ',')
     rounds = max((int(r[11]) for r in t.rows if r[:2] == ('articles', t.tier) and r[5] == 'qps'), default=0)
     budget, details = tables.cpus_parts(s.get('quota', ''))
     out = ['Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, autocomplete, 1 client), every engine on the same data, queries and clients[^search]. Throughput in queries per second, higher is better; '
            'the error bars are one standard error over the interleaved rounds.' % (articles, places), '',
-           '![Throughput by workload](docs/img/articles-throughput.svg)', '', '![Index size](docs/img/index-size.svg)', '']
+           '![Throughput by workload](img/articles-throughput.svg)', '', '![Index size](img/index-size.svg)', '']
     out += [places_bullet(t)]
     out += [b for b in (positions_bullet(t),) if b]
-    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](docs/BENCHMARKS.md#correctness)).', '',
-            '![Autocomplete latency](docs/img/places-latency.svg)', '',
-            'Every cell with its standard error, the cold-cache tables and the method: [docs/BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
+    out += ['- Prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search\'s does, because sift metrics_a a prefix as the best word it expands to ([correctness](BENCHMARKS.md#correctness)).', '',
+            '![Autocomplete latency](img/places-latency.svg)', '',
+            'Every cell with its standard error, the cold-cache tables and the method: [BENCHMARKS.md]; reproduce with `bench/bench all` (%s for the slim tier, %s with the cold-cache tables of `--docs`; `--full` runs every article of the dump and GeoNames cities500, about an hour, and writes results that are not published here; `bench/bench regress --run` compares this checkout with an earlier release).' % (timing[0], timing[1]), '']
     foot = ['[^search]: Scope: every engine, query class and workload of [bench/README.md](bench/README.md) on a smaller corpus (the slim tier, the default of `bench/bench all`); cells stop at a 5%% relative standard error (at most 1 s). '
             'Method: one engine at a time, median of %s interleaved rounds. CPUs: %s%s' % ('2-%d' % rounds if rounds > 2 else '2', budget, (': ' + '; '.join(details) + '.') if details else '.')]
     if s:
         at = ' at pg_sift %s (%s)' % (s['version'], s['sift'][:7]) if s.get('version') and s.get('sift') else ''
-        foot[0] += ' Measured%s %s on %s (%s threads), PostgreSQL %s.' % (at, s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''))
-    foot[0] += ' The host was shared%s, so absolute numbers are noisy and ratios close to each other are not distinguishable.' % (' (load average %.0f-%.0f during the cells, median %.0f%s)' % (p + (''.join('; %s measured later: %.0f-%.0f, median %.0f' % (c, float(lo), float(hi), float(m)) for c, lo, hi, m in t.late_loads()),)) if p else '')
+        foot[0] += ' Measured%s %s on %s, PostgreSQL %s.' % (at, s['date'], s['cpu'], s['pg'].replace('PostgreSQL ', ''))
+    foot[0] += ' The host was shared, so absolute numbers are noisy and ratios close to each other are not distinguishable.'
     return out + foot
 
 
 def replace_block(path, name, lines):
-    text = open(path).read()
+    text = open(path).read() if os.path.exists(path) else ''   # the pages of bench/out start empty: a block is appended
     begin, end = '<!-- bench:%s:begin' % name, '<!-- bench:%s:end -->' % name
     m = re.search(r'(%s[^\n]*-->\n)(.*?)(%s)' % (re.escape(begin), re.escape(end)), text, re.S)
-    if not m:
-        sys.exit('readme.py: %s has no <!-- bench:%s:begin --> ... <!-- bench:%s:end --> block' % (path, name, name))
-    new = text[:m.start(2)] + '\n'.join(lines).rstrip('\n') + '\n' + text[m.start(3):]
+    body = '\n'.join(lines).rstrip('\n') + '\n'
+    new = text[:m.start(2)] + body + text[m.start(3):] if m else text + '%s -->\n%s%s\n\n' % (begin, body, end)
     if new != text:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, 'w').write(new)
 
 
@@ -205,16 +197,13 @@ def slim_section(t, rows):
            'Simple English Wikipedia (%s articles, 8 clients) and GeoNames cities15000 (%s places, 1 client), every engine of `bench/engines.tsv`, the same query classes as the full tier and its workloads but the unordered scan, '
            'cells of at most 1 s that stop at a relative standard error of 5%%, %s interleaved rounds. Generated by `bench/bench all --docs` from [results/](results/) (tier `%s`); '
            'the README quotes these tables. %s' % (format(t.corpus('articles'), ','), format(t.corpus('places'), ','), '2-%d' % rounds if rounds > 2 else '2', t.tier,
-                                                   'Measured %s on %s (%s threads), PostgreSQL %s, sift %s%s.' % (
-                                                       s['date'], s['cpu'], s.get('threads', '?'), s['pg'].replace('PostgreSQL ', ''), s.get('sift', '?'),
+                                                   'Measured %s on %s, PostgreSQL %s, sift %s%s.' % (
+                                                       s['date'], s['cpu'], s['pg'].replace('PostgreSQL ', ''), s.get('sift', '?'),
                                                        ', Elasticsearch %s' % s['elasticsearch'] if s.get('elasticsearch') else '') if s else ''), '']
     for dataset, title, md in (('articles', 'Articles', tables.md_articles), ('places', 'Places', tables.md_places)):
         if not any(r[:2] == (dataset, t.tier) and r[5] in ('qps', 'p50_ms') for r in rows):
             continue
-        load = tables.get(rows, dataset, t.tier, '-', '-', '-', 'load_1m')
         out += ['### %s' % title, '', tables.method(t.session.get('quota', ''))]
-        if load:
-            out += ['Host load average (1 min) during the cells: %s-%s (median %s).' % (load[7], load[8], load[6])]
         out += [''] + md(rows, t.tier) + ['']
         if any(r[:2] == (dataset, t.tier + '-cold') for r in rows):
             out += ['#### Cold cache', ''] + tables.md_cold(rows, dataset, t.tier + '-cold') + ['']
@@ -224,8 +213,8 @@ def slim_section(t, rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     ap.add_argument('--tier', default='slim')
     a = ap.parse_args()
     rows = load(a.results)

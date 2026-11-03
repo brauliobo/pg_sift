@@ -15,9 +15,6 @@ NAME = os.environ.get('STORE_NAME', 'sift-store')
 PORT = int(os.environ.get('STORE_PORT', 56280))
 
 
-START_LOAD = ['%.2f' % x for x in os.getloadavg()]     # the load average when this command started: only recorded, for the older tables
-
-
 QUIET = os.path.join(HERE, '..', '..', 'scripts', 'quiet.sh')
 
 
@@ -34,9 +31,6 @@ def quiet(*args):
     """scripts/quiet.sh COMMAND: its stdout, stripped; the exit status is the helper's (0 quiet, 1 timeout, 3 no PSI)"""
     p = subprocess.run(['bash', QUIET, *args], capture_output=True, text=True)
     return p.returncode, p.stdout.strip() or p.stderr.strip()
-
-
-START_PRESSURE = quiet('report')[1]                       # the pressure when this command started
 
 
 NOISY = []                                                # the cells whose window (still, after a second measurement) had other work in it: Window.judge

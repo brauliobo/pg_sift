@@ -133,6 +133,7 @@ sift_test_segment_parts(PG_FUNCTION_ARGS)
 			const PartRow rows[] = {
 				{"docmap: dl rows", p->docmap_dl, ndocs},
 				{"docmap: present docs", p->docmap_presence, ndocs},
+				{"docmap: INCLUDE values", p->docmap_attr, 0},
 				{"docmap: SB directory", p->docmap_dir, 0},
 				{"postings: LIST codec", p->list_codec, 0},
 				{"postings: GROUPED directory", p->grouped_dir, 0},
@@ -163,6 +164,77 @@ sift_test_segment_parts(PG_FUNCTION_ARGS)
 		put_part(rsinfo, gen, "live pages", live, 0);
 		put_part(rsinfo, gen, "other (page headers, segment header, unused end)", snap->segs[i].bytes - known, 0);
 		put_part(rsinfo, gen, "segment total", snap->segs[i].bytes, 0);
+		MemoryContextReset(cxt);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_attr_dump);
+
+/*
+ * sift._test_attr_dump(index) returns (gen int8, blk int8, off int4, col int4, state text, val int8): the INCLUDE value each doc of every segment of
+ * format 5 holds for each column, as the reader that the filter uses gives it ('value', 'null' or 'unknown'; val is NULL but for 'value')
+ */
+Datum
+sift_test_attr_dump(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test attr", ALLOCSET_DEFAULT_SIZES);
+	static const char *const names[] = {"value", "null", "unknown"};
+
+	InitMaterializedSRF(fcinfo, 0);
+	index = open_sift(PG_GETARG_OID(0));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftSegment *seg;
+		MemoryContext old;
+		SiftDocChunk dc;
+		int			nc;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		old = MemoryContextSwitchTo(cxt);
+		seg = sift_seg_open(index, &snap->segs[i], cxt);
+		nc = sift_seg_attr_ncols(seg);
+		for (uint32 sb = seg->hdr->sb_lo; nc > 0 && sift_seg_docs_next(seg, sb, &dc); sb = dc.sb + 1)
+			for (int page = 0; page < SIFT_SB_PAGES; page++)
+			{
+				uint64		present[SIFT_OFFMASK_WORDS];
+
+				if (!(dc.pagemask[page / 64] >> (page % 64) & 1) || !sift_seg_page(seg, &dc, page, present, NULL))
+					continue;
+				for (int c = 0; c < nc; c++)
+				{
+					SiftAttrBlock ab;
+
+					sift_seg_block_attr(seg, &dc, page / SIFT_BLK_PAGES, 1U << (page % SIFT_BLK_PAGES), c, &ab);
+					for (int off = 1; off <= SIFT_MAX_OFFSET; off++)
+					{
+						int64		v = 0;
+						int			st;
+						Datum		d[6];
+						bool		n[6] = {0};
+
+						if (!(present[(off - 1) / 64] >> ((off - 1) % 64) & 1))
+							continue;
+						st = sift_attr_get(&ab, page % SIFT_BLK_PAGES, off - 1, &v);
+						d[0] = Int64GetDatum(snap->segs[i].gen);
+						d[1] = Int64GetDatum((int64) dc.sb * SIFT_SB_PAGES + page);
+						d[2] = Int32GetDatum(off);
+						d[3] = Int32GetDatum(c);
+						d[4] = CStringGetTextDatum(names[st]);
+						d[5] = Int64GetDatum(v);
+						n[5] = st != SIFT_AV_VALUE;
+						tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, d, n);
+					}
+				}
+			}
+		sift_seg_close(seg);
+		MemoryContextSwitchTo(old);
 		MemoryContextReset(cxt);
 	}
 	index_close(index, AccessShareLock);

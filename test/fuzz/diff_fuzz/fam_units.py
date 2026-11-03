@@ -55,7 +55,7 @@ def gen_keycut(r, ctx):
         ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 6))))
         return dict(table=t, form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
     order = ', '.join(f'e.{k} {r.choice(["", "DESC"])} {r.choice(["", "NULLS FIRST", "NULLS LAST"])}'.strip() for k in r.sample(KCUT_KEYS, r.choice([1, 2, 3])))
-    return dict(table=t, form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order=order, limit=r.choice([1, 5, 20, 100, 400]), offset=r.choice([0, 0, 7]))
+    return dict(table=t, form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order=order, limit=r.choice([1, 5, 20, 100, 400]), offset=r.choice([0, 0, 7, 300, 2500]))
 
 
 def render_keycut(p):

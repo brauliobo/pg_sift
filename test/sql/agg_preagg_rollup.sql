@@ -15,6 +15,8 @@ SET cpu_tuple_cost = 0.5;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE rl (id int, grp int, lines jsonb, tags jsonb, attrs jsonb, pad text) WITH (autovacuum_enabled = off);
+-- a wide row: a superblock is 256 pages, so that 4,000 rows are eight of them
+ALTER TABLE rl ALTER COLUMN pad SET STORAGE PLAIN;
 
 \ir test/agg_preagg_helpers.sql
 
@@ -112,12 +114,12 @@ SELECT g, g % 7,
                                                           'amt', CASE WHEN (g + e) % 6 = 0 THEN NULL ELSE (g * e) % 500 END) AS o) l) END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END,
        CASE WHEN g % 23 = 0 THEN NULL ELSE coalesce((SELECT jsonb_object_agg('m' || (g + e) % 6, CASE WHEN (g + e) % 9 = 0 THEN NULL ELSE ((g * e) % 50) * 0.25 END) FROM generate_series(1, g % 5) e), '{}') END,
-       repeat('p', 200)
-FROM generate_series(1, 30000) g;
+       repeat('p', 3000)
+FROM generate_series(1, 4000) g;
 
-CREATE TABLE rd (LIKE rl) WITH (autovacuum_enabled = off);
-CREATE TABLE ro (LIKE rl) WITH (autovacuum_enabled = off);
-CREATE TABLE rx (LIKE rl) WITH (autovacuum_enabled = off);
+CREATE TABLE rd (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE ro (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE rx (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
 INSERT INTO rd SELECT * FROM rl;
 INSERT INTO ro SELECT * FROM rl;
 INSERT INTO rx SELECT * FROM rl;
@@ -146,7 +148,7 @@ SELECT * FROM pa_check('rx', 1, 5);
 
 -- 2. a few pages change: their units are scanned, the others answer
 UPDATE rl SET lines = '[{"a": "ab", "b": "bb", "c": 1, "q": 5, "w": 1.5}]' WHERE id BETWEEN 100 AND 200;
-DELETE FROM rl WHERE id BETWEEN 18000 AND 18100;
+DELETE FROM rl WHERE id BETWEEN 2500 AND 2600;
 UPDATE rd SET lines = '[{"a": "ab", "b": "bb", "c": 1, "q": 5, "w": 1.5}]' WHERE id BETWEEN 100 AND 200;
 SELECT * FROM pa_check('rl');
 SELECT * FROM pa_sum('rd');
@@ -157,7 +159,7 @@ SELECT * FROM pa_sum('rl');
 
 -- 4. rows in the write buffer, then sealed
 INSERT INTO rl SELECT g, g % 7, jsonb_build_array(jsonb_build_object('a', 'ab', 'b', 'bb', 'c', g % 3, 'q', g % 9, 'w', g * 0.25), jsonb_build_object('a', 'zz', 'q', 1)),
-       '["t1", null]', '{"m1": 2.5, "m7": null}', repeat('p', 200) FROM generate_series(300001, 301500) g;
+       '["t1", null]', '{"m1": 2.5, "m7": null}', repeat('p', 3000) FROM generate_series(300001, 300400) g;
 SELECT * FROM pa_sum('rl');
 SELECT sift.col_promote('rl_col') >= 0 AS promoted;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;

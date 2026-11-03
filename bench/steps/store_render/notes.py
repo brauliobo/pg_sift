@@ -88,7 +88,7 @@ def cache_note(R, tier):
     host_ = R.meta.get('host', {})
     when = ', '.join(f'{LANES[g][0]} {v["date"][:10]} (key `{v["key"][:8]}`)' for g, v in cached.items())
     done = R.meta['tiers'][tier]['parts'].get('warm', {}).get('date', '?')[:10]
-    return [f'† Read from the cache of earlier passes, not measured in this one: {when}. Same host ({host_.get("cpu", "?")}, kernel {host_.get("kernel", "?")}, fingerprint `{host_.get("id", "?")}`), same data, '
+    return [f'† Read from the cache of earlier passes, not measured in this one: {when}. Same host ({host_.get("cpu", "?")}, fingerprint `{host_.get("id", "?")}`), same data, '
             f'images, settings, statements and runs (the key); the other columns were measured {done}.']
 
 

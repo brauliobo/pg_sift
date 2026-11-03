@@ -187,8 +187,8 @@ bucket_numbers_utc(int64 us, const SiftSrcVec *v, const uint32 *idx, int nsel, u
 		case USECS_PER_DAY:
 			return bucket_numbers(v, idx, nsel, out, USECS_PER_DAY, 0, mn, mx);
 	}
-	SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) us);
-	return false;
+	/* a date_bin stride (bucket_step): the division by a step the kernel does not know is a division */
+	return bucket_numbers(v, idx, nsel, out, us, 0, mn, mx);
 }
 
 /* the zone's pieces cover the selected rows that are not an infinity or NULL (false: there are none) */

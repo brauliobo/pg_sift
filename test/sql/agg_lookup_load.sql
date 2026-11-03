@@ -70,6 +70,28 @@ SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN 
 -- no index on the condition: the filter runs while the table loads, and the answer is the normal plan's
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.tier = 2 GROUP BY d.country ORDER BY 1');
 
+-- a table read whole (no condition of its own) is loaded to the rows the statistics give, its integer keys take the slots of the key dictionary by blocks of sixteen, and a
+-- by-reference column value is found where it is and copied when new: keys that follow each other, are multiples of sixteen, negative or wider than int4, values that are short
+-- (a one byte header), long, compressed, empty and NULL
+CREATE TABLE lk_dim (k bigint, label text, tag varchar(40), note text) WITH (autovacuum_enabled = false);
+INSERT INTO lk_dim SELECT k, CASE WHEN k % 17 = 0 THEN NULL ELSE 'label ' || k % 23 END, CASE WHEN k % 5 = 0 THEN '' ELSE 'tag' || k % 4 END,
+       CASE k % 4 WHEN 0 THEN 'x' WHEN 1 THEN repeat('long value of one hundred and thirty bytes, so that its header is four bytes ... ', 2) WHEN 2 THEN repeat('compressible ', 400) ELSE NULL END
+FROM (SELECT g AS k FROM generate_series(1, 6000) g
+      UNION ALL SELECT g * 16 + 100000 FROM generate_series(1, 4000) g
+      UNION ALL SELECT -g * 3 FROM generate_series(1, 2000) g
+      UNION ALL SELECT 5000000000 + g FROM generate_series(1, 500) g
+      UNION ALL SELECT 9223372036854775807 - g FROM generate_series(1, 300) g) q;
+ANALYZE lk_dim;
+CREATE TABLE lk_fact (id int, k bigint, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO lk_fact SELECT i, (ARRAY[1, 17, 16, 2000, 100016, 164000, -3, -6000, 5000000001, 5000000500, 9223372036854775800, 0, 99999999])[1 + i % 13] + i % 5, (i % 1000) / 10.0
+FROM generate_series(1, 60000) i;
+CREATE INDEX lk_fact_col ON lk_fact USING sift_col (k, amount);
+VACUUM (FREEZE, ANALYZE) lk_fact;
+SELECT * FROM same('SELECT d.label, d.tag, count(*) AS n, sum(amount) AS s FROM lk_fact f JOIN lk_dim d ON d.k = f.k GROUP BY d.label, d.tag ORDER BY 1, 2');
+SELECT * FROM same('SELECT d.note, count(*) AS n, sum(amount) AS s FROM lk_fact f JOIN lk_dim d ON d.k = f.k GROUP BY d.note ORDER BY 1');
+SELECT * FROM same('SELECT length(d.note) AS len, d.tag, count(*) AS n FROM lk_fact f LEFT JOIN lk_dim d ON d.k = f.k GROUP BY 1, 2 ORDER BY 1, 2');
+DROP TABLE lk_dim, lk_fact;
+
 -- the value of the condition is a parameter, NULL included (no row matches NULL), and a generic plan
 SET plan_cache_mode = force_generic_plan;
 PREPARE by_group(int) AS SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = $1) GROUP BY kind ORDER BY kind;

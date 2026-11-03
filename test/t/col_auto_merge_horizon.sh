@@ -6,11 +6,12 @@
 
 plan 7
 node_init hz 23 "autovacuum = off
+sift.test_col_net = off
 sift.maintenance_naptime = 200"
 node_start hz || bail "start failed"
 sql hz "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 100) FROM generate_series(1, 100000) g" \
-	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
+	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50)" "VACUUM facts" >/dev/null || bail "setup failed"
 
 # the churn of a round: every twentieth row, then the VACUUM that tells the index which rows died
 churn() { sql hz "UPDATE facts SET amount = amount + 1 WHERE id % 20 = $1" "VACUUM facts" >/dev/null; }

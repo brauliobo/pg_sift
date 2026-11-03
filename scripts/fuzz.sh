@@ -3,7 +3,7 @@
 #
 #   scripts/fuzz.sh [--scale N] [--seed N] [--budget SEC] [TARGET...]
 #
-# Targets (default: all): canary codec blob kernels analyze query sql colchunk bm25 shred colwide (bm25-raw is opt-in). Standalone
+# Targets (default: all): canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant (bm25-raw is opt-in). Standalone
 # harnesses are built sanitized into $SIFT_TMP/fuzz; "query" also replays its
 # corpus through the server, "sql" fuzzes parse_query/tokenize in the server.
 # Server-side targets run against the scripts/pgtest.sh cluster, which should
@@ -33,7 +33,7 @@ while [[ ${1:-} == --* ]]; do
 	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,16p' "$0"; exit 1 ;; esac
 	shift 2
 done
-TARGETS=("${@:-canary codec blob kernels analyze query sql colchunk bm25 shred colwide}")
+TARGETS=("${@:-canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant}")
 (( BUDGET == 0 )) || SCALE=1
 
 q() { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
@@ -76,6 +76,11 @@ kernels() {
 # the portable value code of the wide leaf types (128-bit lanes, interval totals, numeric images): random and boundary tests, FZ_COLWIDE_N scales them
 colwide() {
 	build -C "$REPO/tools/colwide" SANITIZE=1 OUT="$OUT/colwide" "$OUT/colwide/test" && "$OUT/colwide/test" "${FZ_COLWIDE_N:-$SCALE}"
+}
+
+# the quantized keys of a compact chunk: every decoder level against the scalar one, on sound and damaged blobs
+gquant() {
+	build -C "$REPO/tools/gquant" SANITIZE=1 OUT="$OUT/gquant" "$OUT/gquant/test" && "$OUT/gquant/test" "${FZ_GQUANT_N:-$SCALE}"
 }
 
 analyze() {

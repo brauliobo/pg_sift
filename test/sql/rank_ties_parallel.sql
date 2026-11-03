@@ -1,0 +1,68 @@
+-- ORDER BY sift.score(ctid) DESC, id LIMIT k under workers: every participant keeps, with its k best hits, the hits that tie with its k-th, and the merge of
+-- the participants' hits ends with the whole group tied with the k-th of all of them. The rows are those of the serial plan and of the sort of every match,
+-- for the leader alone, with the workers only, and under write buffers, dead rows and updates.
+CREATE EXTENSION pg_sift;
+\ir test/sift_plan.sql
+SELECT sift.version() IS NOT NULL AS library_loaded;
+
+-- about a thousand rows per superblock: a few superblocks to hand out, and documents of few distinct lengths: groups of thousands
+CREATE TABLE pt (id int PRIMARY KEY, body text, pad text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 3);
+ALTER TABLE pt ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION pt_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT (ARRAY['quick brown fox', 'lazy dog', 'the quick fox jumps', 'brown dog runs fast', 'fox'])[1 + i % 5]
+		|| ' w' || i % 7 || ' x' || i % 101 || repeat(' filler', i % 4) || CASE WHEN i % 11 = 0 THEN ' rare' ELSE '' END
+$$;
+INSERT INTO pt SELECT i, pt_doc(i), repeat('x', 1500) FROM generate_series(1, 6000) i;
+CREATE INDEX pt_idx ON pt USING sift (body) WITH (write_buffer_limit = 64);
+INSERT INTO pt SELECT i, pt_doc(i), repeat('x', 1500) FROM generate_series(6001, 9000) i;
+SELECT sift.promote('pt_idx') IS NOT NULL AS promoted;
+INSERT INTO pt SELECT i, pt_doc(i), repeat('x', 1500) FROM generate_series(9001, 10000) i;
+DELETE FROM pt WHERE id % 10 = 3;
+UPDATE pt SET body = body || ' moved' WHERE id % 19 = 0;
+ANALYZE pt;
+SELECT pg_relation_size('pt') / current_setting('block_size')::int / 256 >= 8 AS superblocks;
+
+CREATE FUNCTION pt_set(mode text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.parallel_scan', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode LIKE 'par%' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	PERFORM set_config('parallel_leader_participation', (mode <> 'par_workers')::text, true);
+END $$;
+-- the first k ids of the plan's order by mode: 'par' (leader and workers), 'par_workers' (workers only), 'ser'
+CREATE FUNCTION pt_top(q text, k int, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM pt_set(mode);
+	EXECUTE format('SELECT string_agg(id::text, '','') FROM (SELECT id FROM pt WHERE body @@> $1 ORDER BY sift.score(ctid) DESC, id LIMIT %s) t', k) INTO r USING q;
+	RETURN r;
+END $$;
+-- the sort of every match
+CREATE FUNCTION pt_all(q text, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM pt_set('ser');
+	EXECUTE 'SELECT string_agg(id::text, '','' ORDER BY s DESC, id) FROM (SELECT id, s FROM (SELECT id, sift.score(ctid) AS s FROM pt WHERE body @@> $1) a ORDER BY s DESC, id OFFSET 0) t' INTO r USING q;
+	RETURN (SELECT string_agg(x, ',') FROM (SELECT x FROM unnest(string_to_array(r, ',')) WITH ORDINALITY u(x, n) WHERE n <= k ORDER BY n) z);
+END $$;
+CREATE FUNCTION pt_plan(q text, k int, mode text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pt_set(mode);
+	RETURN sift_plan(format('SELECT id FROM pt WHERE body @@> %L ORDER BY sift.score(ctid) DESC, id LIMIT %s', q, k));
+END $$;
+
+SELECT pt_plan('fox', 20, 'par') LIKE '%Gather Merge%' AS parallel_plan, pt_plan('fox', 20, 'par') LIKE '%Includes Ties: true%' AS parallel_ties,
+	pt_plan('fox', 20, 'ser') NOT LIKE '%Gather%' AND pt_plan('fox', 20, 'ser') LIKE '%Includes Ties: true%' AS serial_ties;
+
+CREATE TABLE qs (q text, k int);
+INSERT INTO qs SELECT q, k FROM unnest(ARRAY['fox', 'quick fox', 'dog', 'filler', 'w3 x7', 'fox OR dog', 'rare', 'moved', 'fox AND filler']) q, unnest(ARRAY[1, 20, 300, 2500]) k;
+SELECT q, k FROM qs
+WHERE NOT (pt_top(q, k, 'par') IS NOT DISTINCT FROM pt_top(q, k, 'ser') AND pt_top(q, k, 'par_workers') IS NOT DISTINCT FROM pt_top(q, k, 'ser')
+	AND pt_top(q, k, 'ser') IS NOT DISTINCT FROM pt_all(q, k))
+ORDER BY 1, 2;
+
+DROP FUNCTION sift_plan(text), pt_plan(text, int, text), pt_all(text, int), pt_top(text, int, text), pt_set(text), pt_doc(int);
+DROP TABLE pt, qs;
+DROP EXTENSION pg_sift;

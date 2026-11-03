@@ -1,0 +1,297 @@
+-- The batches a scan builds from the write buffer are kept by the backend for the next scan, which reads only the records appended since (col/wbuf/batches.c). Every step
+-- is read through the column index and through the heap and must agree: a repeated read, rows appended, rows that take the address of rows VACUUM removed (below the ones
+-- already kept), an aborted insert, a read after a promotion, a cursor that holds the batches while rows are appended, and a rebuilt index.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE wc (id int, grp int, amount int, label text, pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(1, 3000) i;
+CREATE INDEX wc_col ON wc USING sift_col (id, grp, amount, label);
+NOTICE:  sift_col index "wc_col": rollup_dims = 'auto' writes a rollup of the rows by grp, label
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 91 of them a unit; the cells add to the index and to its build.
+HINT:  To drop it, run ALTER INDEX wc_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "wc_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+VACUUM (FREEZE, ANALYZE) wc;
+CREATE FUNCTION wc_agg(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', use_col::text, true);
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(string_agg(g::text, '','' ORDER BY grp)) FROM (SELECT grp, count(*) AS c, sum(amount) AS s, min(label) AS lo, max(label) AS hi, count(DISTINCT label) AS d FROM wc GROUP BY grp) g' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wc_rows(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(coalesce(string_agg(id::text || label, '','' ORDER BY id), '''')) FROM wc WHERE grp = 3 AND amount > 40' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wc_same(step text) RETURNS TABLE (step text, aggregate bool, rows bool) LANGUAGE sql AS $$
+	SELECT $1, wc_agg(true) = wc_agg(false), wc_rows(true) = wc_rows(false)
+$$;
+SELECT * FROM wc_same('segment only');
+     step     | aggregate | rows 
+--------------+-----------+------
+ segment only | t         | t
+(1 row)
+
+-- rows only in the write buffer, read twice (the second read appends nothing)
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(3001, 3600) i;
+SELECT * FROM wc_same('buffer built');
+     step     | aggregate | rows 
+--------------+-----------+------
+ buffer built | t         | t
+(1 row)
+
+SELECT * FROM wc_same('buffer read again');
+       step        | aggregate | rows 
+-------------------+-----------+------
+ buffer read again | t         | t
+(1 row)
+
+-- appended rows, in several statements
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'm' || i % 5 FROM generate_series(3601, 3700) i;
+SELECT * FROM wc_same('100 rows appended');
+       step        | aggregate | rows 
+-------------------+-----------+------
+ 100 rows appended | t         | t
+(1 row)
+
+INSERT INTO wc (id, grp, amount, label) VALUES (3701, 3, 99, 'one');
+SELECT * FROM wc_same('1 row appended');
+      step      | aggregate | rows 
+----------------+-----------+------
+ 1 row appended | t         | t
+(1 row)
+
+INSERT INTO wc (id, grp, amount, label) VALUES (3702, 3, NULL, NULL), (3703, NULL, 1, 'two');
+SELECT * FROM wc_same('NULLs appended');
+      step      | aggregate | rows 
+----------------+-----------+------
+ NULLs appended | t         | t
+(1 row)
+
+-- an aborted insert leaves records of dead tuples
+BEGIN;
+INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 90, 'gone' FROM generate_series(4000, 4100) i;
+ROLLBACK;
+SELECT * FROM wc_same('aborted insert');
+      step      | aggregate | rows 
+----------------+-----------+------
+ aborted insert | t         | t
+(1 row)
+
+-- updates and deletes: new versions are appended, the old ones are dead for the heap
+UPDATE wc SET amount = amount + 1, label = 'u' || amount % 3 WHERE id % 11 = 0;
+DELETE FROM wc WHERE id % 17 = 0;
+SELECT * FROM wc_same('updates and deletes');
+        step         | aggregate | rows 
+---------------------+-----------+------
+ updates and deletes | t         | t
+(1 row)
+
+-- VACUUM flags the records of the tuples it removes and the new tuples take their addresses: addresses below the rows already kept
+VACUUM wc;
+SELECT * FROM wc_same('after VACUUM');
+     step     | aggregate | rows 
+--------------+-----------+------
+ after VACUUM | t         | t
+(1 row)
+
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, 50 + i % 50, 'r' || i % 3 FROM generate_series(5000, 5400) i;
+SELECT * FROM wc_same('addresses reused');
+       step       | aggregate | rows 
+------------------+-----------+------
+ addresses reused | t         | t
+(1 row)
+
+DELETE FROM wc WHERE id BETWEEN 5000 AND 5100;
+VACUUM wc;
+INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 60 + i % 30, 'q' || i % 4 FROM generate_series(5500, 5700) i;
+SELECT * FROM wc_same('addresses reused again');
+          step          | aggregate | rows 
+------------------------+-----------+------
+ addresses reused again | t         | t
+(1 row)
+
+-- a cursor holds the batches it read while rows are appended: it keeps its snapshot, a scan of its own reads the rows after it
+CREATE FUNCTION wc_cursor() RETURNS TABLE (cursor_rows bool, scan_while_open bool) LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off AS $$
+DECLARE
+	c refcursor;
+	r record;
+	expect bigint;
+	n bigint := 0;
+	same bool;
+BEGIN
+	SELECT count(*) INTO expect FROM wc WHERE grp = 3 AND amount > 40;
+	OPEN c FOR SELECT id, label FROM wc WHERE grp = 3 AND amount > 40 ORDER BY id;
+	FOR i IN 1..5 LOOP
+		FETCH c INTO r;
+		n := n + 1;
+	END LOOP;
+	INSERT INTO wc (id, grp, amount, label) SELECT i, 3, 80, 'c' FROM generate_series(6000, 6050) i;
+	same := wc_agg(true) = wc_agg(false) AND wc_rows(true) = wc_rows(false);
+	LOOP
+		FETCH c INTO r;
+		EXIT WHEN NOT FOUND;
+		n := n + 1;
+	END LOOP;
+	CLOSE c;
+	RETURN QUERY SELECT n = expect, same;
+END $$;
+SELECT * FROM wc_cursor();
+ cursor_rows | scan_while_open 
+-------------+-----------------
+ t           | t
+(1 row)
+
+SELECT * FROM wc_same('after the cursor');
+       step       | aggregate | rows 
+------------------+-----------+------
+ after the cursor | t         | t
+(1 row)
+
+-- promoted: the batches of the old buffer are not read again, the new buffer starts empty
+SELECT sift.col_promote('wc_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM wc_same('promoted');
+   step   | aggregate | rows 
+----------+-----------+------
+ promoted | t         | t
+(1 row)
+
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'p' || i % 9 FROM generate_series(7000, 7200) i;
+SELECT * FROM wc_same('after promotion');
+      step       | aggregate | rows 
+-----------------+-----------+------
+ after promotion | t         | t
+(1 row)
+
+-- a rebuilt index
+REINDEX INDEX wc_col;
+NOTICE:  sift_col index "wc_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+SELECT * FROM wc_same('rebuilt');
+  step   | aggregate | rows 
+---------+-----------+------
+ rebuilt | t         | t
+(1 row)
+
+INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'z' FROM generate_series(8000, 8100) i;
+SELECT * FROM wc_same('rebuilt and appended');
+         step         | aggregate | rows 
+----------------------+-----------+------
+ rebuilt and appended | t         | t
+(1 row)
+
+-- the dictionary of a kept batch: a top-N scan on a text column makes its byte order once it compared enough rows (col/dict/parse.c), and the strings of the rows appended
+-- since must be in that order, or the scan reads past it
+CREATE EXTENSION pg_sift_helpers;
+CREATE TABLE tw (id int PRIMARY KEY, g int, s text COLLATE "C", pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
+INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX tw_col ON tw USING sift_col (id, g, s);
+NOTICE:  sift_col index "tw_col" installed two statement triggers on table "tw" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+VACUUM (FREEZE, ANALYZE) tw;
+INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(201, 3000) i;
+CREATE FUNCTION tw_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tw_a, tw_b;
+	PERFORM sift_helpers.agg_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tw_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM sift_helpers.agg_mode(false);
+	EXECUTE 'CREATE TEMP TABLE tw_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tw_a EXCEPT ALL SELECT pos, r FROM tw_b) UNION ALL (SELECT pos, r FROM tw_b EXCEPT ALL SELECT pos, r FROM tw_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END;
+END $$;
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') AS first;
+NOTICE:  table "tw_a" does not exist, skipping
+NOTICE:  table "tw_b" does not exist, skipping
+   first   
+-----------
+ same+topn
+(1 row)
+
+SELECT count(*) AS repeated FROM (SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') FROM generate_series(1, 20)) x;
+ repeated 
+----------
+       20
+(1 row)
+
+INSERT INTO tw (id, g, s) SELECT i, i % 7, 'a' || md5(i::text) FROM generate_series(3001, 3300) i;
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') AS strings_appended;
+ strings_appended 
+------------------
+ same+topn
+(1 row)
+
+SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s DESC, id LIMIT 30') AS strings_appended_desc;
+ strings_appended_desc 
+-----------------------
+ same+topn
+(1 row)
+
+RESET ALL;
+DROP TABLE tw;
+DROP FUNCTION tw_check(text);
+DROP EXTENSION pg_sift_helpers;
+-- a read of a kept set does not read the pages of the buffer when no VACUUM flagged a record since (the version of the directory is the same): the blocks of a scan stay
+-- those of the scan, not one more for each of the ~70 pages of the buffer
+CREATE TABLE wn (id int PRIMARY KEY, g int NOT NULL, kind int NOT NULL, ts timestamp NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(1, 60000) i;
+CREATE INDEX wn_col ON wn USING sift_col (id, g, kind, ts, amount) WITH (key_cut = 'g');
+NOTICE:  sift_col index "wn_col" installed two statement triggers on table "wn" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "wn_col": key_columns = 'auto' keeps the keys of id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 136 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  To turn it off, run ALTER INDEX wn_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
+VACUUM (FREEZE, ANALYZE) wn;
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(60001, 75000) i;
+ANALYZE wn;
+CREATE FUNCTION wn_blocks() RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	PERFORM set_config('enable_seqscan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) SELECT id, amount FROM wn WHERE g = 77 AND ts >= ''2024-06-01'' ORDER BY id' INTO j;
+	RETURN (j -> 0 -> 'Plan' ->> 'Shared Hit Blocks')::bigint + (j -> 0 -> 'Plan' ->> 'Shared Read Blocks')::bigint;
+END $$;
+SELECT wn_blocks() > 0 AS first_read;
+ first_read 
+------------
+ t
+(1 row)
+
+SELECT wn_blocks() < 60 AS repeated_read_blocks;
+ repeated_read_blocks 
+----------------------
+ t
+(1 row)
+
+INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(75001, 75100) i;
+SELECT wn_blocks() < 60 AS appended_read_blocks;
+ appended_read_blocks 
+----------------------
+ t
+(1 row)
+
+DROP TABLE wn;
+DROP FUNCTION wn_blocks();
+DROP TABLE wc CASCADE;
+DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
+DROP EXTENSION pg_sift;

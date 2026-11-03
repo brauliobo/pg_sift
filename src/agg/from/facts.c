@@ -59,6 +59,7 @@ typedef struct SrcFacts
 				table_gen,
 				all_gen;
 	bool		read;
+	uint64		memo_seq;		/* the planning (sift_agg_memo_begin) that checked the stamp last */
 	SiftSrcStats stats;			/* as the index gave them: sift.plan_scale is applied to the copy a plan takes */
 	SiftSrcPreagg pa;
 } SrcFacts;
@@ -66,6 +67,7 @@ typedef struct SrcFacts
 #define FACTS_CACHE		SIFT_AGG_MAX_PARTS	/* the indexes of the largest scan */
 
 static MemoryContext part_memo_cx;
+static uint64 memo_seq;			/* the plannings of this backend, counted at each memo */
 static HTAB *part_memo;
 static MemoryContext facts_cx;
 static HTAB *facts;
@@ -115,6 +117,7 @@ sift_agg_memo_begin(void)
 	if (facts != NULL && hash_get_num_entries(facts) + (src_facts ? hash_get_num_entries(src_facts) : 0) + facts_replaced >= FACTS_CACHE)
 		facts_empty();
 	part_memo_cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan memo", ALLOCSET_DEFAULT_SIZES);
+	memo_seq++;
 	return part_memo_cx;
 }
 
@@ -205,6 +208,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	dst->nrows = src->nrows;
 	dst->nunits = src->nunits;
 	dst->bytes = src->bytes;
+	dst->keyed_frac = src->keyed_frac;
 	dst->allvisible_frac = src->allvisible_frac;
 	dst->exact_frac = src->exact_frac;
 	dst->rows_miss = src->rows_miss;
@@ -222,6 +226,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->head_cover, src->head_cover, d);
 	memcpy(dst->gord_cover, src->gord_cover, d);
 	memcpy(dst->gord_group, src->gord_group, n * sizeof(int));
+	memcpy(dst->gord_bygroup, src->gord_bygroup, n * sizeof(bool));
 	memcpy(dst->gord_coll, src->gord_coll, n * sizeof(uint32));
 	memcpy(dst->elems_per_row, src->elems_per_row, d);
 	memcpy(dst->ovf_units, src->ovf_units, d);
@@ -235,17 +240,14 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
  * The statistics and pre-aggregates of the column index of a table scanned in one piece (sift.plan_scale applied), as of the stamp of the index: read when
  * the index has changed since a plan of this backend took them, not by every plan: they cost more than the plan of a statement that the normal plan answers.
  */
-void
-index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
+/* the facts as of the stamp of the index: read again where it moved or the catalog entry of the index or its table changed */
+static void
+facts_check(Relation rel, SrcFacts *e, bool found)
 {
 	Oid			indexoid = RelationGetRelid(rel);
 	SiftSrcStamp stamp;
-	SrcFacts   *e;
-	bool		found;
 
-	facts_init();
 	sift_colsrc_stamp(rel, &stamp);
-	e = hash_search(src_facts, &indexoid, HASH_ENTER, &found);
 	if (!found || !e->read || memcmp(&e->stamp, &stamp, sizeof(stamp)) != 0 || e->index->gen != e->index_gen || e->table->gen != e->table_gen || e->all_gen != facts_all)
 	{
 		SiftSrcStats fresh;
@@ -263,6 +265,23 @@ index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
 		sift_colsrc_preagg(rel, &e->pa);
 		e->stamp = stamp;
 		e->read = true;
+	}
+}
+
+void
+index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
+{
+	Oid			indexoid = RelationGetRelid(rel);
+	SrcFacts   *e;
+	bool		found;
+
+	facts_init();
+	e = hash_search(src_facts, &indexoid, HASH_ENTER, &found);
+	/* a planning checks the stamp of an index once: the index does not change under it, and the stamp reads the visibility map */
+	if (!(found && e->read && part_memo_cx != NULL && e->memo_seq == memo_seq))
+	{
+		facts_check(rel, e, found);
+		e->memo_seq = part_memo_cx != NULL ? memo_seq : 0;
 	}
 	/* the context of a plan is zero until its first source (a second source of the same context, by another index, is the exception) */
 	if (st->nrows != 0 || st->nunits != 0 || st->bytes != 0 || st->zones != NULL)

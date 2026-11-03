@@ -22,6 +22,8 @@ SELECT i, i % 7,
                   FROM generate_series(1, (i * 5) % 6) k) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX j_col ON j_t USING sift_col (id, grp, attrs, items) WITH (paths = 'attrs.tags[] text(1024), items[]{kind text, n int4}');
+NOTICE:  sift_col index "j_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE j_t;
 CREATE FUNCTION j_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 CREATE FUNCTION j_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_agg_scan(q) $$;
@@ -110,6 +112,8 @@ CREATE TABLE j_bad (id int, attrs jsonb);
 INSERT INTO j_bad SELECT i, CASE i % 4 WHEN 0 THEN '{"tags": ["a", "b"]}' WHEN 1 THEN '{"tags": ["a", 5]}' WHEN 2 THEN '{"tags": "a"}' ELSE '{"tags": {"a": 1}}' END::jsonb
 FROM generate_series(1, 200) i;
 CREATE INDEX j_bad_col ON j_bad USING sift_col (id, attrs) WITH (paths = 'attrs.tags[] text');
+NOTICE:  sift_col index "j_bad_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM j_bad;
 SET sift.enable_agg = on;
 SELECT count(*) FROM j_bad WHERE attrs->'tags' ? 'a';

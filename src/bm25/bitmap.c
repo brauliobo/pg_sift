@@ -261,13 +261,6 @@ static const sift_grp *gr_seek(sift_cur *c, uint32_t target)
 	return found(c, key >> 8, w, b.pages, c->buf, base, n);
 }
 
-static inline uint64_t ld_upto8(const uint8_t *p, const uint8_t *end)
-{
-	uint64_t x = 0;
-	if (end - p >= 8) return sift_ld8(p);
-	memcpy(&x, p, (size_t)(end - p));
-	return x;
-}
 
 /*
  * The header of the block of cnt postings at p, whose keys are below lim (a power of two: a key's group number then fits 24 bits, and
@@ -286,47 +279,79 @@ static inline void ef_hdr(const uint8_t *p, const uint8_t *end, uint64_t lim, ui
 	b->lows = p, b->highs = p + lows, b->end = b->highs + highs;
 }
 
-static void ef_decode(const ef_blk *b, uint32_t ob, sift_tid *out)
+/* up to m postings of the block from the k-th one, whose high bit is at bit pos of the high bits, into out; *next is the bit after the last one read */
+static uint32_t ef_slice(const ef_blk *b, uint32_t ob, uint32_t k, uint64_t pos, uint32_t m, sift_tid *out, uint64_t *next)
 {
-	uint32_t l = b->l, k = 0;
+	uint32_t l = b->l, n = 0;
 	uint64_t mask = (1ull << l) - 1, omask = (1ull << ob) - 1;
 	size_t nw = (size_t)(b->end - b->highs + 7) / 8;
 	/* the high bits are the block's own bytes: a block whose bits run out before cnt postings is damaged */
-	for (uint32_t wi = 0; wi < nw && k < b->cnt; wi++)
-		for (uint64_t w = ld_upto8(b->highs + 8 * wi, b->end); w && k < b->cnt; w &= w - 1, k++) {
-			uint64_t pos = (uint64_t)k * l, h = 64 * wi + (uint32_t)__builtin_ctzll(w) - k;
-			uint64_t x = b->x0 + (h << l | ((ld_upto8(b->lows + (pos >> 3), b->highs) >> (pos & 7)) & mask));
-			out[k] = SIFT_TID(x >> ob, (x & omask) + 1);
+	for (size_t wi = pos / 64; wi < nw && n < m && k < b->cnt; wi++) {
+		uint64_t w = ld_upto8(b->highs + 8 * wi, b->end);
+		if (wi == pos / 64) w &= ~0ull << (pos % 64);
+		for (; w && n < m && k < b->cnt; w &= w - 1, k++, n++) {
+			uint64_t bit = 64 * wi + (uint32_t)__builtin_ctzll(w), lp = (uint64_t)k * l;
+			uint64_t x = b->x0 + ((bit - k) << l | ((ld_upto8(b->lows + (lp >> 3), b->highs) >> (lp & 7)) & mask));
+			out[n] = SIFT_TID(x >> ob, (x & omask) + 1);
+			*next = bit + 1;
 		}
-	if (k != b->cnt) sift_codec_corrupt("LIST block high bits do not count its postings");
+	}
+	return n;
 }
 
-/* decode the LIST block b (postings [start, start + cnt)) into ls.blk */
-static void ls_decode(sift_cur *c, const ef_blk *b, uint32_t start)
+static void ef_decode(const ef_blk *b, uint32_t ob, sift_tid *out)
 {
-	ef_decode(b, c->ls.ob, c->ls.blk);
-	c->ls.bi = start, c->ls.bn = b->cnt;
+	uint64_t next;
+	if (ef_slice(b, ob, 0, 0, b->cnt, out, &next) != b->cnt) sift_codec_corrupt("LIST block high bits do not count its postings");
 }
 
-/* tid at index i (monotonic access); LIST blocks before the one holding gid >= target are skipped undecoded */
+/* the postings of the block whose high part is below h (h >= 1: those before its h-th zero bit) and the bit where the h-th zero is */
+static void ef_rank(const ef_blk *b, uint64_t h, uint32_t *k, uint64_t *pos)
+{
+	uint64_t ones = sift_k->ef_rank(b->highs, b->end, h, pos);
+	/* no h-th zero in the bytes of the block: it is damaged, or h is past its last group */
+	*k = *pos == 64 * ((uint64_t)(b->end - b->highs + 7) / 8) || ones > b->cnt ? b->cnt : (uint32_t)ones;
+}
+
+/* the postings of a LIST block are decoded as far as the cursor reads them: a slice from the first one that can be at or after the target group, the slice growing with each read of the block */
+static void ls_slice(sift_cur *c, uint32_t target)
+{
+	ef_blk *b = &c->ls.cb;
+	uint32_t k = c->ls.ck;
+	uint64_t pos = c->ls.cpos, tk = (uint64_t) target << SIFT_GROUP_SHIFT << c->ls.ob;
+	if (tk > b->x0 + (1ull << b->l) && (k == 0 || SIFT_GID(c->ls.blk[c->ls.bn - 1]) < target)) {
+		uint32_t rk;
+		uint64_t rp;
+		ef_rank(b, (tk - b->x0) >> b->l, &rk, &rp);
+		if (rk > k) k = rk, pos = rp;
+	}
+	c->ls.bi = c->ls.cstart + k;
+	c->ls.bn = ef_slice(b, c->ls.ob, k, pos, c->ls.cw < b->cnt - k ? c->ls.cw : b->cnt - k, c->ls.blk, &c->ls.cpos);
+	if (c->ls.bn == 0 && k < b->cnt) sift_codec_corrupt("LIST block high bits do not count its postings");
+	c->ls.ck = k + c->ls.bn;
+	if (c->ls.cw < SIFT_LIST_BLOCK) c->ls.cw *= 2;
+}
+
+/* tid at index i (monotonic access), or all ones past the last posting; LIST blocks, and the postings of a block, before the first group >= target are not decoded */
 static inline sift_tid ls_at(sift_cur *c, uint32_t *i, uint32_t target)
 {
 	if (c->ls.t) return c->ls.t[*i];
 	while (*i >= c->ls.bi + c->ls.bn) {
-		uint32_t start = c->ls.bi + c->ls.bn, cnt = blk_cnt(c->ls.n, start);
-		ef_blk b;
-		ef_hdr(c->ls.p, c->ls.end, c->ls.lim, c->ls.prev, cnt, !c->tf, &b);
-		uint64_t last = b.x0 + b.u - 1, d;
-		c->ls.p = b.end, c->ls.prev = last;
-		/* the next block starts at last + d: when that is before the target group, skip this block undecoded */
-		if (*i <= start && start + cnt < c->ls.n) {
-			get_varint(b.end, &d);
-			if (((last + d) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
-				c->ls.bi = start + cnt, c->ls.bn = 0, *i = start + cnt;
-				continue;
-			}
+		uint32_t start = c->ls.bi + c->ls.bn;
+		if (c->ls.ck < c->ls.cb.cnt) start = c->ls.cstart + c->ls.ck;
+		else if (start >= c->ls.n) return ~(sift_tid) 0;
+		else {
+			ef_hdr(c->ls.p, c->ls.end, c->ls.lim, c->ls.prev, blk_cnt(c->ls.n, start), !c->tf, &c->ls.cb);
+			c->ls.p = c->ls.cb.end, c->ls.prev = c->ls.cb.x0 + c->ls.cb.u - 1;
+			c->ls.cstart = start, c->ls.ck = 0, c->ls.cpos = 0, c->ls.cw = SIFT_LIST_SLICE;
 		}
-		ls_decode(c, &b, start);
+		if (*i <= start && ((c->ls.cb.x0 + c->ls.cb.u - 1) >> c->ls.ob >> SIFT_GROUP_SHIFT) < target) {
+			c->ls.ck = c->ls.cb.cnt, c->ls.bi = c->ls.cstart + c->ls.cb.cnt, c->ls.bn = 0, *i = c->ls.bi;
+			if (*i >= c->ls.n) return ~(sift_tid) 0;
+			continue;
+		}
+		ls_slice(c, target);
+		if (*i < c->ls.bi) *i = c->ls.bi;
 	}
 	return c->ls.blk[*i - c->ls.bi];
 }
@@ -386,6 +411,39 @@ uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
 	return ng;
 }
 
+/*
+ * The postings of an unused LIST cursor that sit on a set bit of dead[gid - lo] (bits NULL: none in that group), counted posting by
+ * posting: no group is built for them. Another cursor answers all ones: the caller counts its groups.
+ */
+uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb)
+{
+	uint64_t n = 0;
+	uint32_t i = 0, tot = c->ls.n;
+
+	if (c->seek != ls_seek || c->state != 0) return ~(uint64_t) 0;
+	while (i < tot) {
+		/* the window of decoded postings that holds posting i, then a tight loop over it */
+		const sift_tid *t;
+		uint32_t o, end;
+
+		(void) ls_at(c, &i, 0);
+		t = c->ls.t ? c->ls.t : c->ls.blk;
+		o = c->ls.t ? 0 : c->ls.bi;
+		end = c->ls.t ? tot : c->ls.bi + c->ls.bn;
+		for (; i < end; i++) {
+			sift_tid x = t[i - o];
+			uint32_t gid = SIFT_GID(x) - lo, row = SIFT_BLK(x) & (SIFT_GROUP_PAGES - 1), off = SIFT_OFF(x) - 1;
+			const sift_dead_sb *d;
+
+			if (gid >= nsb) sift_codec_corrupt("a posting lies outside the superblocks of its segment");
+			d = &dead[gid];
+			if (d->bits == NULL || (off >> 3) >= d->w) continue;
+			n += d->bits[(size_t) row * d->w + (off >> 3)] >> (off & 7) & 1;
+		}
+	}
+	return n;
+}
+
 /* the first and last gid of an unpositioned, non-empty LIST cursor: only the block headers are read */
 void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi)
 {
@@ -417,7 +475,7 @@ void sift_cur_tids(sift_cur *c, const sift_tid *t, uint32_t n, uint8_t *buf)
 	cur_init(c, ls_seek, buf);
 	for (uint32_t i = 0; i < n; i++)
 		if (SIFT_OFF(t[i]) > maxoff) maxoff = SIFT_OFF(t[i]);
-	c->ls.t = t, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0, c->ls.w = sift_w_for(maxoff);
+	c->ls.t = t, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = c->ls.ck = c->ls.cb.cnt = 0, c->ls.w = sift_w_for(maxoff);
 }
 
 void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf)
@@ -432,7 +490,7 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf)
 		if (!(p = sift_get_varint_n(blob + 2, end, &nn)) || nn > UINT32_MAX || (wtf && p >= end)) sift_codec_corrupt("LIST header overruns the blob");
 		uint32_t n = (uint32_t)nn;
 		cur_init(c, ls_seek, buf);
-		c->ls.t = NULL, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = 0;
+		c->ls.t = NULL, c->ls.n = n, c->ls.i = c->ls.bi = c->ls.bn = c->ls.ck = c->ls.cb.cnt = 0;
 		if (wtf) c->ub1 = *p++;
 		c->ls.p = p, c->ls.end = end, c->ls.lim = 1ull << (32 + blob[1]);
 		c->ls.ob = blob[1], c->ls.w = sift_w_for(1u << blob[1]), c->ls.prev = 0;
@@ -556,6 +614,13 @@ static const sift_grp *andnot_seek(sift_cur *c, uint32_t target)
 		}
 	}
 	return seek_limit == UINT32_MAX ? ended(c) : NULL;
+}
+
+sift_cur **sift_cur_or_kids(const sift_cur *c, int *k)
+{
+	if (c->seek != or_seek) return NULL;
+	*k = c->op.k;
+	return c->op.kid;
 }
 
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid)

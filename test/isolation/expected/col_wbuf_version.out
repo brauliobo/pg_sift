@@ -1,0 +1,123 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1wa s2d s1b s2l s1qa s2v s2h s2r s2u s1c s1z s2q s2x
+step s1wa: SELECT n, total, agree FROM iso_wv_q('agg', 0);
+  n| total|agree
+---+------+-----
+260|245790|t    
+(1 row)
+
+step s2d: DELETE FROM iso_wv WHERE id > 1030;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wv;
+count
+-----
+  230
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7001);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1qa: SELECT n, total, agree FROM iso_wv_q('agg', 7001); <waiting ...>
+step s2v: VACUUM iso_wv;
+step s2h: UPDATE iso_wv SET pad = 'y' WHERE id BETWEEN 1001 AND 1030;
+step s2r: SELECT count(*) AS reused FROM iso_wv w JOIN iso_wv_gone g ON w.ctid = g.t;
+reused
+------
+    30
+(1 row)
+
+step s2u: SELECT pg_advisory_unlock(7001);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1qa: <... completed>
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s1c: COMMIT;
+step s1z: SELECT n, total, agree FROM iso_wv_q('agg', 0);
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s2q: SELECT n, total, agree FROM iso_wv_q('agg', 0);
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wv_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wv_idx')) AS index_rows, (SELECT count(*) FROM iso_wv) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       260|      230
+(1 row)
+
+
+starting permutation: s1wi s2d s1b s2l s1qi s2v s2h s2r s2u s1c s1y s2q s2x
+step s1wi: SELECT n, total, agree FROM iso_wv_q('scan', 0);
+  n| total|agree
+---+------+-----
+260|245790|t    
+(1 row)
+
+step s2d: DELETE FROM iso_wv WHERE id > 1030;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wv;
+count
+-----
+  230
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7001);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1qi: SELECT n, total, agree FROM iso_wv_q('scan', 7001); <waiting ...>
+step s2v: VACUUM iso_wv;
+step s2h: UPDATE iso_wv SET pad = 'y' WHERE id BETWEEN 1001 AND 1030;
+step s2r: SELECT count(*) AS reused FROM iso_wv w JOIN iso_wv_gone g ON w.ctid = g.t;
+reused
+------
+    30
+(1 row)
+
+step s2u: SELECT pg_advisory_unlock(7001);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1qi: <... completed>
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s1c: COMMIT;
+step s1y: SELECT n, total, agree FROM iso_wv_q('scan', 0);
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s2q: SELECT n, total, agree FROM iso_wv_q('agg', 0);
+  n| total|agree
+---+------+-----
+230|151695|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wv_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wv_idx')) AS index_rows, (SELECT count(*) FROM iso_wv) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       260|      230
+(1 row)
+

@@ -1,0 +1,126 @@
+-- A page of a list (ORDER BY .. LIMIT) is served by the top-N of the column index when its keys come from a plan (a scope sub-select over the link tables, a
+-- sub-select over a join) and when the page reads columns of a table joined by its unique key: the scan walks the units from the end of the order and stops
+-- at the page, so the blocks it reads do not grow with the rows that match. Each statement gives the rows of the plan without the extension, in order.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE dim_a (id int PRIMARY KEY, name text NOT NULL, type text NOT NULL, note text);
+INSERT INTO dim_a SELECT g, 'a' || g, 't' || g % 6, CASE WHEN g % 4 <> 0 THEN 'n' || g END FROM generate_series(1, 700) g;
+-- a lookup by a column that is not unique: a row of the events has two
+CREATE TABLE dim_d (id int NOT NULL, label text NOT NULL);
+INSERT INTO dim_d SELECT g % 30 + 1, 'd' || g FROM generate_series(1, 45) g;
+CREATE TABLE dim_c (id int PRIMARY KEY, enabled bool);
+INSERT INTO dim_c SELECT g, CASE WHEN g % 9 = 0 THEN false WHEN g % 7 = 0 THEN NULL ELSE true END FROM generate_series(1, 30) g;
+-- the links of a tenant: a key itself, or a group whose members are the keys
+CREATE TABLE links_a (id int PRIMARY KEY, tenant_id int NOT NULL, group_id int, dim_a_id int, deleted_at timestamp);
+INSERT INTO links_a SELECT g, 1 + g % 6, CASE WHEN g % 3 = 0 THEN g % 9 END, CASE WHEN g % 3 <> 0 THEN 1 + (g * 13) % 700 END, CASE WHEN g % 11 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 120) g;
+INSERT INTO links_a VALUES (1001, 7, NULL, 5, NULL), (1002, 8, 3, NULL, NULL), (1003, 9, NULL, NULL, NULL);
+CREATE TABLE group_dim_a (group_id int NOT NULL, dim_a_id int, deleted_at timestamp);
+INSERT INTO group_dim_a SELECT g % 9, CASE WHEN g % 17 <> 0 THEN 1 + (g * 29) % 700 END, CASE WHEN g % 13 = 0 THEN timestamp '2025-05-01' END FROM generate_series(1, 150) g;
+
+-- events grow with n; dates repeat (ties on the first sort key) and some are NULL, as the table order follows the date
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, foreign_id int NOT NULL, event_date date, updated_at timestamp NOT NULL, deleted_at timestamp) WITH (autovacuum_enabled = false);
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, event_date, foreign_id, deleted_at, updated_at);
+CREATE FUNCTION fill(n int) RETURNS void LANGUAGE sql AS $$
+	TRUNCATE events;
+	INSERT INTO events SELECT g, 1 + (g * 7919) % 710, 1 + g % 30, CASE WHEN g % 33 <> 0 THEN date '2025-01-01' + (g::bigint * 300 / n)::int END,
+	       timestamp '2025-01-01' + (g::bigint * 300 * 86400 / n) * interval '1 second', CASE WHEN g % 41 = 0 THEN timestamp '2026-01-01' END
+	FROM generate_series(1, n) g
+$$;
+SELECT fill(30000);
+VACUUM (FREEZE, ANALYZE) events, links_a, group_dim_a, dim_a, dim_c, dim_d;
+
+CREATE FUNCTION scope(tenant int) RETURNS text LANGUAGE sql AS $$
+	SELECT format($s$SELECT coalesce(a.dim_a_id, g.dim_a_id) FROM links_a a LEFT JOIN group_dim_a g ON g.group_id = a.group_id AND g.deleted_at IS NULL
+	                 WHERE a.tenant_id = %s AND a.deleted_at IS NULL$s$, tenant)
+$$;
+CREATE FUNCTION page(sel text, joins text, filt text, tail text DEFAULT 'ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3') RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT ' || sel || ' FROM events e ' || joins || ' WHERE e.deleted_at IS NULL ' || filt || ' ' || tail
+$$;
+-- a key that may be NULL: NOT EXISTS keeps its row, a test of the keys drops it
+CREATE TABLE notes (id int PRIMARY KEY, dim_a_id int, event_date date) WITH (autovacuum_enabled = false);
+INSERT INTO notes SELECT g, CASE WHEN g % 5 <> 0 THEN 1 + g % 700 END, date '2025-01-01' + g % 300 FROM generate_series(1, 3000) g;
+CREATE INDEX notes_col ON notes USING sift_col (dim_a_id, event_date);
+VACUUM (FREEZE, ANALYZE) notes;
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+	('scope sub-select', page('e.id', '', 'AND e.dim_a_id IN (' || scope(3) || ')')),
+	('scope on the joined table', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(3) || ')')),
+	('scope, two joins', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE', 'AND a.id IN (' || scope(3) || ')')),
+	('no scope', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE', '')),
+	('in one table', page('e.id', '', 'AND e.dim_a_id IN (SELECT dim_a_id FROM links_a WHERE tenant_id = 3 AND dim_a_id IS NOT NULL)')),
+	('in a list', page('e.id', '', 'AND e.dim_a_id IN (1,2,3,4,5,6,7,8,9,10)')),
+	('in a join', page('e.id', '', 'AND e.dim_a_id IN (SELECT l.dim_a_id FROM links_a l JOIN dim_a x ON x.id = l.dim_a_id WHERE l.tenant_id = 3)')),
+	('column of the joined table', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND e.dim_a_id IN (SELECT dim_a_id FROM links_a WHERE tenant_id = 3 AND dim_a_id IS NOT NULL)')),
+	('columns of two joined tables, scope', page('e.id, a.type, a.name, c.enabled', 'JOIN dim_a a ON a.id = e.dim_a_id JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE', 'AND a.id IN (' || scope(3) || ')')),
+	('a lookup again of the joined column', page('e.id, a.type, t.name', 'JOIN dim_a a ON a.id = e.dim_a_id LEFT JOIN LATERAL (SELECT x.name FROM dim_a x WHERE x.id = e.dim_a_id AND x.type = a.type) t ON true', 'AND a.id IN (' || scope(3) || ')')),
+	('columns with NULLs, a total', page('e.id, a.note, a.name, count(*) OVER ()', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(3) || ')', 'ORDER BY e.updated_at DESC LIMIT 3')),
+	('joined by a column that is not unique', page('e.id, d.label', 'JOIN dim_d d ON d.id = e.foreign_id', 'AND e.dim_a_id IN (' || scope(3) || ')')),
+	('a list and the scope on the joined table', page('e.id, a.type, c.enabled', 'JOIN dim_a a ON a.id = e.dim_a_id JOIN dim_c c ON c.id = e.foreign_id AND c.enabled IS TRUE',
+		'AND e.dim_a_id IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 400, 2) g) || ') AND a.id IN (' || scope(3) || ')')),
+	('ascending', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(3) || ')', 'ORDER BY e.event_date, e.id LIMIT 3')),
+	('nulls first', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(3) || ')', 'ORDER BY e.event_date DESC NULLS FIRST, e.id LIMIT 3')),
+	('offset', page('e.id', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(3) || ')', 'ORDER BY e.event_date DESC NULLS LAST, e.id LIMIT 3 OFFSET 400')),
+	('page of 500, cursor', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND e.updated_at >= timestamp ''2025-03-01'' AND a.id IN (' || scope(3) || ')', 'ORDER BY e.updated_at, e.id LIMIT 500')),
+	('scope of one key', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(7) || ')')),
+	('scope of a group of no member', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(9) || ')')),
+	('scope of no link', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id IN (' || scope(99) || ')')),
+	('exists', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND EXISTS (SELECT 1 FROM links_a l LEFT JOIN group_dim_a g ON g.group_id = l.group_id AND g.deleted_at IS NULL WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND coalesce(l.dim_a_id, g.dim_a_id) = e.dim_a_id)')),
+	('not exists', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = e.dim_a_id)')),
+	('not exists, a list and ascending', page('e.id', '', 'AND e.dim_a_id IN (1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20) AND NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = e.dim_a_id)', 'ORDER BY e.event_date, e.id LIMIT 3')),
+	('not exists, a key that may be NULL', 'SELECT n.id FROM notes n WHERE NOT EXISTS (SELECT 1 FROM links_a l WHERE l.tenant_id = 3 AND l.deleted_at IS NULL AND l.dim_a_id = n.dim_a_id) ORDER BY n.event_date DESC NULLS LAST, n.id LIMIT 3'),
+	('not in, a join', page('e.id, a.type', 'JOIN dim_a a ON a.id = e.dim_a_id', 'AND a.id NOT IN (' || scope(3) || ' AND coalesce(a.dim_a_id, g.dim_a_id) IS NOT NULL)'));
+
+-- whether the plan the statement gets is the top-N of the column index, and whether the rows are the normal plan's, in order
+CREATE FUNCTION topn_plan(q text, forced bool DEFAULT false) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.agg_force', CASE WHEN forced THEN 'on' ELSE 'off' END, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION rows_equal(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () AS ord FROM (%s) r) x', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () AS ord FROM (%s) r) x', q) INTO b;
+	PERFORM set_config('sift.agg_force', 'off', true);
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT name, topn_plan(q) AS topn, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
+
+-- rows changed and not vacuumed (dirty units, moved versions), and a joined table that changed since the rows were written
+UPDATE events SET dim_a_id = 1 + (dim_a_id * 3) % 700, event_date = event_date + 1 WHERE id % 97 = 0;
+UPDATE events SET foreign_id = 1 + foreign_id % 30 WHERE id % 89 = 0;
+DELETE FROM events WHERE id % 211 = 0;
+INSERT INTO events SELECT g, 1 + g % 700, 1 + g % 30, date '2025-10-30', timestamp '2025-10-30' + g * interval '1 second', NULL FROM generate_series(30001, 30200) g;
+UPDATE dim_a SET type = 't9', note = NULL WHERE id % 5 = 0;
+DELETE FROM dim_a WHERE id % 53 = 0;
+SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
+
+-- many rows that tie on the first sort key since the statistics were made (the scan starts again with a larger heap): the keys of the plans are tested again
+INSERT INTO events SELECT 100000 + g, 1 + (g * 7919) % 710, 1 + g % 30, date '2026-06-01', timestamp '2026-01-01' + g * interval '1 second', NULL FROM generate_series(1, 6000) g;
+SELECT name, topn_plan(q, true) AS forced, rows_equal(q) AS rows_equal FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'a list and the scope on the joined table') ORDER BY name;
+
+-- the blocks a page reads, with the extension on: the same statements at three times the rows read the same blocks (the normal plan reads three times as many)
+CREATE FUNCTION blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE p jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO p;
+	RETURN (p -> 0 -> 'Plan' ->> 'Shared Hit Blocks')::bigint + coalesce((p -> 0 -> 'Plan' ->> 'Shared Read Blocks')::bigint, 0);
+END $$;
+CREATE TABLE reads (name text, small bigint, large bigint);
+INSERT INTO reads SELECT name, blocks(q), NULL FROM forms WHERE name IN ('scope sub-select', 'scope on the joined table', 'column of the joined table', 'columns of two joined tables, scope', 'a lookup again of the joined column', 'a list and the scope on the joined table', 'not exists');
+SELECT fill(90000);
+VACUUM (FREEZE, ANALYZE) events;
+UPDATE reads r SET large = blocks(f.q) FROM forms f WHERE f.name = r.name;
+SELECT name, large <= small * 1.3 AS flat FROM reads ORDER BY name;
+
+DROP FUNCTION fill(int), scope(int), page(text, text, text, text), topn_plan(text, bool), rows_equal(text), blocks(text);
+DROP TABLE reads, forms, notes, events, links_a, group_dim_a, dim_a, dim_c, dim_d;
+DROP EXTENSION pg_sift;

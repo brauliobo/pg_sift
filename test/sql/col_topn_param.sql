@@ -84,12 +84,13 @@ INSERT INTO tp_q VALUES
 	('param_sort',  $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY abs(v - d.k), id LIMIT 3) x$q$),
 	('twice',       $q$SELECT d.k, a.id, b.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 2) a CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k AND id < a.id ORDER BY id DESC LIMIT 1) b$q$);
 
-CREATE FUNCTION tp_stage() RETURNS TABLE (tag text, queries int, differ int, topn int) LANGUAGE plpgsql AS $$
+-- every key set in the first stage, the keys that are present, repeated and NULL in the others (the key sets are about the keys, not about what changed in the table)
+CREATE FUNCTION tp_stage(keysets text[] DEFAULT NULL) RETURNS TABLE (tag text, queries int, differ int, topn int) LANGUAGE plpgsql AS $$
 DECLARE r record; kk record; res text;
 BEGIN
 	FOR r IN SELECT * FROM tp_q ORDER BY tag LOOP
 		tag := r.tag; queries := 0; differ := 0; topn := 0;
-		FOR kk IN SELECT * FROM tp_keys ORDER BY tag LOOP
+		FOR kk IN SELECT * FROM tp_keys WHERE keysets IS NULL OR tp_keys.tag = ANY (keysets) ORDER BY tp_keys.tag LOOP
 			res := tp_check(format(r.q, kk.k));
 			queries := queries + 1;
 			differ := differ + (res LIKE 'DIFFERENT%')::int;
@@ -110,13 +111,13 @@ UPDATE tp SET dev = 5 WHERE id % 40 = 0;
 UPDATE tp SET ts = ts + interval '30 day' WHERE id % 53 = 0;
 DELETE FROM tp WHERE id % 97 = 3;
 INSERT INTO tp (dev, dev8, ts, v, g, nm, w) SELECT 5, 4000000005, timestamp '2025-01-01' + i * interval '1 second', i % 3, 1, 'n5', 500000000000000.25 FROM generate_series(1, 50) i;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
 VACUUM tp;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
 
 -- workers allowed: the scan with a parameter of the enclosing query runs in the leader, the rest of the plan may use them
 SET tp.workers = 2;
-SELECT * FROM tp_stage();
+SELECT * FROM tp_stage(ARRAY['present', 'repeated']);
 RESET tp.workers;
 
 -- a btree on the key and the order answers each probe in less time than the scan does (the price of the scan for a key is a scan of a unit): the plan keeps it
@@ -145,5 +146,5 @@ SELECT a = tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) AND b = tp_gen(ARRAY[1, 2], 1) AN
 
 DEALLOCATE tp_p;
 DROP TABLE tp_q, tp_keys, tp, tp_dim;
-DROP FUNCTION tp_stage(), tp_check(text), tp_mode(bool), tp_gen(int[], int);
+DROP FUNCTION tp_stage(text[]), tp_check(text), tp_mode(bool), tp_gen(int[], int);
 DROP EXTENSION pg_sift;

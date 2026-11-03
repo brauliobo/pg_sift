@@ -1,0 +1,66 @@
+-- The price of a top-N over a partitioned table that reads one partition's order array: a probe restarted for each row of a join costs more over more partitions (it opens the source
+-- of the first partition and prunes the others each time), and the start of a scan that pruning left one partition prices the segments of that partition, not of the whole table.
+-- The estimates are compared (never printed): the order must hold at any cost scale. (The start, not the total: the heap visits of a partition's rows are priced from its pages.)
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE FUNCTION pc_make(nm text, parts int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TABLE %I (id int NOT NULL, tenant int NOT NULL, ts timestamp NOT NULL, pad text) PARTITION BY HASH (tenant)', nm);
+	FOR i IN 0 .. parts - 1 LOOP
+		EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS %s, REMAINDER %s)', nm || '_' || i, nm, parts, i);
+	END LOOP;
+	EXECUTE format('INSERT INTO %I SELECT i, i %% 100, timestamp ''2025-01-01'' + (i * 7919 %% 7776000) * interval ''1 second'', repeat(''x'', 20) FROM generate_series(1, 20000) i', nm);
+	EXECUTE format('CREATE INDEX ON %I USING sift_col (id, tenant, ts) WITH (order_columns = ''ts'', order_array_columns = ''ts'', order_array_group = ''tenant'')', nm);
+END $$;
+SELECT pc_make('p4', 4), pc_make('p16', 16), pc_make('p64', 64), pc_make('q2', 2), pc_make('q8', 8);
+ pc_make | pc_make | pc_make | pc_make | pc_make 
+---------+---------+---------+---------+---------
+         |         |         |         | 
+(1 row)
+
+CREATE TABLE tn AS SELECT n FROM generate_series(0, 99) n;
+VACUUM (FREEZE, ANALYZE) p4, p16, p64, q2, q8, tn;
+-- the total cost of the plan with the other paths disabled, and whether it is a SiftAgg (agg_force would price it at 0)
+CREATE FUNCTION pc_cost(q text, OUT total float8, OUT startup float8, OUT sift bool) LANGUAGE plpgsql AS $$
+DECLARE j json; pl text;
+BEGIN
+	SET LOCAL plan_cache_mode = force_generic_plan; SET LOCAL sift.enable_agg = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	EXECUTE 'EXPLAIN (FORMAT JSON, COSTS on) ' || q INTO j;
+	total := (j->0->'Plan'->>'Total Cost')::float8;
+	startup := (j->0->'Plan'->>'Startup Cost')::float8;
+	sift := false;
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
+		sift := sift OR pl LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+END $$;
+CREATE FUNCTION pc_lat(t text) RETURNS text LANGUAGE sql AS
+$$ SELECT format('SELECT tn.n, x.ts FROM tn LEFT JOIN LATERAL (SELECT ts FROM %I e WHERE e.tenant = tn.n ORDER BY ts DESC LIMIT 1) x ON true', t) $$;
+-- the partitions a probe prunes and opens each time: 4 < 16 < 64, and the scan is a SiftAgg at each
+SELECT (a).sift AND (b).sift AND (c).sift AS sift_scans, (a).total < (b).total AND (b).total < (c).total AS dearer_with_partitions
+FROM (SELECT pc_cost(pc_lat('p4')) a, pc_cost(pc_lat('p16')) b, pc_cost(pc_lat('p64')) c) s;
+ sift_scans | dearer_with_partitions 
+------------+------------------------
+ t          | t
+(1 row)
+
+-- the same rows in 2 partitions and in 8, the partition chosen by a parameter of a generic plan (nothing is pruned when it is planned): the start prices the rows of one partition (the segments of its array)
+UPDATE pg_class SET reltuples = 4000000 WHERE relname ~ '^q2_[0-9]+$';
+UPDATE pg_class SET reltuples = 1000000 WHERE relname ~ '^q8_[0-9]+$';
+PREPARE pc_q2(int) AS SELECT ts FROM q2 WHERE tenant = $1 ORDER BY ts DESC LIMIT 5;
+PREPARE pc_q8(int) AS SELECT ts FROM q8 WHERE tenant = $1 ORDER BY ts DESC LIMIT 5;
+SELECT (a).sift AND (b).sift AS sift_scans, (b).startup < (a).startup AS start_prices_the_partition
+FROM (SELECT pc_cost('EXECUTE pc_q2(7)') a, pc_cost('EXECUTE pc_q8(7)') b) s;
+ sift_scans | start_prices_the_partition 
+------------+----------------------------
+ t          | t
+(1 row)
+
+DEALLOCATE pc_q2;
+DEALLOCATE pc_q8;
+DROP FUNCTION pc_cost(text), pc_lat(text), pc_make(text, int);
+DROP TABLE p4, p16, p64, q2, q8, tn;
+DROP EXTENSION pg_sift CASCADE;

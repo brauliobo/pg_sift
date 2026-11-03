@@ -26,6 +26,13 @@ typedef struct RunIO
 	int			cap;			/* of buf when reading */
 	int			pos;
 	int			len;
+	uint64		off;			/* bytes written to the file when writing, before those in buf */
+	/* the samples of the terms of the run being written (see run_sample) */
+	uint8	   *smp;
+	Size		smp_len;
+	Size		smp_cap;
+	uint32		nsmp;
+	uint64		smp_at;
 } RunIO;
 
 /* Feeds postings of one term to the posting writer in batches */
@@ -56,6 +63,7 @@ io_put(RunIO *io, const void *p, int n)
 	if (n > IO_BUF)
 	{
 		BufFileWrite(io->file, p, n);
+		io->off += n;
 		return;
 	}
 	memcpy(io->buf + io->len, p, n);
@@ -74,7 +82,16 @@ io_varint(RunIO *io, uint64 x)
 	io_put(io, v, n);
 }
 
+/* The offset of the next byte of a run being written */
+static inline uint64
+io_tell(const RunIO *io)
+{
+	return io->off + io->len;
+}
+
 /* runs.c */
+extern SIFT_INTERNAL void run_sample(RunIO *io, const char *term, int len);
+extern SIFT_INTERNAL void run_finish(SiftRun *run, RunIO *io);
 extern SIFT_INTERNAL SiftRun *run_new(MemoryContext mcxt, SharedFileSet *fileset, int worker, int id);
 extern SIFT_INTERNAL void batch_flush(Batch *bt);
 extern SIFT_INTERNAL void batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 len);

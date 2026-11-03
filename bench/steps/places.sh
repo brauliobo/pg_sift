@@ -133,22 +133,13 @@ phase 'restore and build'
 
 if [[ $what == cold ]]; then
   # shellcheck disable=SC2329  # run by lane_run
-  cold_lane() { # ENGINE, in its lane: the cold-cache times of every workload and class
-    local e=$1 wl c b s t tq tsq tsqb ttq tng
-    # shellcheck disable=SC2317  # run by cold_cell
-    cold_query() { # i: the i-th query of the class
-      IFS=$'\t' read -r tq tsq tsqb ttq tng < <(PGDATABASE=places q -F $'\t' -c "$FORMS WHERE id = $b + $1) x")
-      PGDATABASE=$(edb "$e") cold_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
-    }
+  cold_one() { # ENGINE WORKLOAD CLASS N, in its lane: the cold-cache time in ms of the Nth query of the class (nothing when the engine has no statement of the workload)
+    local e=$1 wl=$2 c=$3 b s tq tsq tsqb ttq tng
+    [[ -n $(stmt "$wl" "$e") ]] || return 0
+    b=$(base "$c"); s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
+    IFS=$'\t' read -r tq tsq tsqb ttq tng < <(PGDATABASE=places q -F $'\t' -c "$FORMS WHERE id = $b + $4) x")
     PGDATABASE=$(edb "$e") cold_table places
-    for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do
-      b=$(base "$c")
-      if [[ -n $(stmt "$wl" "$e") ]]; then
-        s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
-        t=$(cold_cell cold_query)
-      else t=$'NA\tNA\t0'; fi
-      printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t"
-    done; done >"$ROOT/places/$e/cold.part"
+    PGDATABASE=$(edb "$e") cold_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
   }
   # shellcheck disable=SC2329  # run by lane_run
   cold_http() { # ENGINE, in its lane: an engine outside Postgres closes and opens its index before every request (steps/xlib.sh)
@@ -157,10 +148,25 @@ if [[ $what == cold ]]; then
       printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$(xe "$e" x_cold_class "$ROOT/places/$e/$wl.$c.q" places)"
     done; done >"$ROOT/places/$e/cold.part"
   }
-  for e in $ENGINES; do
-    fn=cold_lane; [[ -z ${EXT[$e]:-} ]] || fn=cold_http
-    lane_run "$e" $fn "$e"
-  done
+  # The Postgres engines are measured in turn, query by query, the order rotating (the device's load moves a cold time by a factor of two or more between runs)
+  pg=(); for e in $ENGINES; do [[ -n ${EXT[$e]:-} ]] || pg+=("$e"); done
+  for e in "${pg[@]}"; do : >"$ROOT/places/$e/cold.part"; done
+  for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do
+    for e in "${pg[@]}"; do rm -f "$ROOT/places/$e/cold.times"; done
+    t0=$(now_ms)
+    for (( i = 1; i <= NQ; i++ )); do
+      for (( k = 0; k < ${#pg[@]}; k++ )); do
+        e=${pg[(i - 1 + k) % ${#pg[@]}]}
+        lane_run "$e" cold_one "$e" "$wl" "$c" "$i" >>"$ROOT/places/$e/cold.times"
+      done
+      (( i < ${COLD_MIN:-5} || $(now_ms) - t0 < ${COLD_TIME:-3} * 1000 * ${#pg[@]} )) || break
+    done
+    for e in "${pg[@]}"; do
+      if [[ -s $ROOT/places/$e/cold.times ]]; then t=$(median_max <"$ROOT/places/$e/cold.times"); else t=$'NA\tNA\t0'; fi
+      printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$t" >>"$ROOT/places/$e/cold.part"
+    done
+  done; done
+  for e in $ENGINES; do [[ -z ${EXT[$e]:-} ]] || lane_run "$e" cold_http "$e"; done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
   for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do for e in $ENGINES; do grep -P "^$wl\t$c\t$e\t" "$ROOT/places/$e/cold.part" || true; done; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
@@ -229,7 +235,7 @@ round() {
     IFS=. read -r wl c e <<<"$id"
     if [[ -n ${EXT[$e]:-} ]]; then v=$(ext_cell "$wl" "$c" "$e")
     else v=$(awk -F'\t' -v id="$id" '$1 == id {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8; if ($9 == 1) noisy = 1} END {exit noisy ? 1 : 0}' "$out") || printf '%s\tplaces %s\n' "$id" "$(quiet_report 2>&1)" >>"$DEST/noisy.txt"; fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(loadavg)" "$wl" "$c" "$e" "$v" >>"$DEST/cells.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "" "$wl" "$c" "$e" "$v" >>"$DEST/cells.tsv"
   done
 }
 log "start: $(quiet_report 2>&1)"

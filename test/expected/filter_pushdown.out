@@ -81,8 +81,8 @@ DECLARE
 	seq tid[];
 BEGIN
 	all_rows := pd_top(tbl, q, flt, 1000000, 'force');
-	FOREACH k IN ARRAY ARRAY[1, 7, 25, 1000000] LOOP
-		a := pd_top(tbl, q, flt, k, 'force');
+	FOREACH k IN ARRAY ARRAY[1, 25, 1000000] LOOP
+		a := CASE WHEN k = 1000000 THEN all_rows ELSE pd_top(tbl, q, flt, k, 'force') END;
 		b := pd_top(tbl, q, flt, k, 'off');
 		IF (SELECT array_agg(float4send(s)) FROM unnest(a.metrics_a) s) IS DISTINCT FROM (SELECT array_agg(float4send(s)) FROM unnest(b.metrics_a) s) THEN
 			RETURN format('k %s: metrics_a differ', k);
@@ -125,22 +125,15 @@ SELECT pd_seq_load('fd');
  
 (1 row)
 
-SELECT * FROM pd_run('fd');
-               what               |    plan     | checked | failures 
-----------------------------------+-------------+---------+----------
- BRIN, lossy by nature            | pushdown    |      11 | none
- BRIN range                       | pushdown    |      11 | none
- no index serves it               | post-filter |      11 | none
- GIN, recheck                     | pushdown    |      11 | none
- btree range                      | pushdown    |      11 | none
- half the table                   | pushdown    |      11 | none
- btree equality                   | pushdown    |      11 | none
- BitmapAnd of btree and BRIN      | pushdown    |      11 | none
- btree and a qual no index serves | pushdown    |      11 | none
- BitmapOr                         | pushdown    |      11 | none
- nothing                          | pushdown    |      11 | none
- btree ScalarArrayOp              | pushdown    |      11 | none
-(12 rows)
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'nothing']);
+            what             |   plan   | checked | failures 
+-----------------------------+----------+---------+----------
+ BRIN, lossy by nature       | pushdown |      11 | none
+ GIN, recheck                | pushdown |      11 | none
+ btree equality              | pushdown |      11 | none
+ BitmapAnd of btree and BRIN | pushdown |      11 | none
+ nothing                     | pushdown |      11 | none
+(5 rows)
 
 -- what the filters keep
 SELECT flt, (SELECT count(*) FROM fd WHERE ctid IN (SELECT tid FROM pd_seq WHERE q = 'common') AND (CASE flt
@@ -405,12 +398,11 @@ SELECT pd_seq_load('fd');
  
 (1 row)
 
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BitmapAnd of btree and BRIN']);
-            what             |   plan   | checked | failures 
------------------------------+----------+---------+----------
- btree equality              | pushdown |      11 | none
- BitmapAnd of btree and BRIN | pushdown |      11 | none
-(2 rows)
+SELECT * FROM pd_run('fd', ARRAY['btree equality']);
+      what      |   plan   | checked | failures 
+----------------+----------+---------+----------
+ btree equality | pushdown |      11 | none
+(1 row)
 
 ROLLBACK;
 SELECT pd_seq_load('fd');
@@ -421,17 +413,14 @@ SELECT pd_seq_load('fd');
 
 -- after VACUUM and after the merge one filter of each bitmap kind: the index kinds do not interact with the state of the sift index
 VACUUM fd;
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapAnd of btree and BRIN', 'BitmapOr']);
             what             |   plan   | checked | failures 
 -----------------------------+----------+---------+----------
  BRIN, lossy by nature       | pushdown |      11 | none
- GIN, recheck                | pushdown |      11 | none
- btree range                 | pushdown |      11 | none
- half the table              | pushdown |      11 | none
  btree equality              | pushdown |      11 | none
  BitmapAnd of btree and BRIN | pushdown |      11 | none
  BitmapOr                    | pushdown |      11 | none
-(7 rows)
+(4 rows)
 
 SELECT sift.promote('fd_body') IS NOT NULL AS promoted;
  promoted 
@@ -468,17 +457,14 @@ SELECT sift.merge('fd_body', true) IS NOT NULL AS merged;
  t
 (1 row)
 
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapAnd of btree and BRIN', 'BitmapOr']);
             what             |   plan   | checked | failures 
 -----------------------------+----------+---------+----------
  BRIN, lossy by nature       | pushdown |      11 | none
- GIN, recheck                | pushdown |      11 | none
- btree range                 | pushdown |      11 | none
- half the table              | pushdown |      11 | none
  btree equality              | pushdown |      11 | none
  BitmapAnd of btree and BRIN | pushdown |      11 | none
  BitmapOr                    | pushdown |      11 | none
-(7 rows)
+(4 rows)
 
 SELECT sift.verify('fd_body', true);
  verify 

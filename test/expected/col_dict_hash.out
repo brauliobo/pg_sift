@@ -19,6 +19,8 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 97 = 0 THEN '' WHEN i % 89 = 0
 	   CASE WHEN i % 53 = 0 THEN NULL ELSE md5((i % 4000)::text)::uuid END, 'v' || (i % 1500)
 FROM generate_series(1, 6000) i;
 CREATE INDEX dh_idx ON dh USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, f sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's,u,f', dict_lookup = 'on', write_buffer_limit = 256);
+NOTICE:  sift_col index "dh_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 INSERT INTO dh SELECT i, 'k' || md5(i::text), md5((i % 4000)::text)::uuid, 'v' || (i % 1500) FROM generate_series(6001, 9000) i;
 SELECT sift.col_promote('dh_idx') > 0 AS promoted;
  promoted 
@@ -119,6 +121,8 @@ SELECT sift.col_verify('dh_idx', true);
 (1 row)
 
 REINDEX INDEX dh_idx;
+NOTICE:  sift_col index "dh_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 
 --------
@@ -140,6 +144,8 @@ SELECT dh_round(10);
 -- segments of an older minor have no hash, and answer the same
 SET sift.col_format_minor = 14;
 REINDEX INDEX dh_idx;
+NOTICE:  sift_col index "dh_idx" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 

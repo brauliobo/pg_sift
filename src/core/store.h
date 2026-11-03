@@ -217,6 +217,18 @@ extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftS
 extern uint64 sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, uint64 budget, SiftSegEntry *fresh,
 							   SiftExtent **release, int *nrelease);
 
+/* The online shrink: moves what an immutable segment holds above keep, up to budget, into the reusable free runs below it (no exclusive lock, the allocator asked run by run); the header page is written again below as well. Zero if nothing moved. Publish the entry and the released runs together with sift_wt_publish. */
+extern uint64 sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, BlockNumber keep, uint64 budget, SiftSegEntry *fresh,
+								SiftExtent **release, int *nrelease);
+
+/*
+ * One call for every run of blocks the directory and the free list account for, in the order of the walk: what it is ("segment extent", "segment header",
+ * "liveness run", "write buffer header", "write buffer page", "free extent", "free list page", "metapage and directory"), the generation of its segment (0 for none),
+ * the first block, the blocks, and for a free extent whether the horizon still holds it (a snapshot may read it: it is not reusable yet)
+ */
+typedef void (*SiftExtentVisit) (void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending);
+extern void sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg);
+
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
 extern uint64 sift_store_held_blocks(Relation index);
@@ -245,7 +257,7 @@ extern int64 sift_store_free_below(Relation index, BlockNumber limit, uint32 min
  * final high-water mark. A BULK build numbers its segments from gen 1 and
  * sets meta->next_gen when it publishes them.
  */
-extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash);
+extern void sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash, const char *analyzer_config);
 /* The same with the scoring constants and the metapage flags given (a column index: k1 = b = 0, schema hash, SIFT_COL_META_FLAG) */
 extern void sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyzer_hash, uint32 flags);
 
@@ -304,6 +316,8 @@ typedef enum SiftWriteMode
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
+/* The index a target writes */
+extern Relation sift_wt_index(const SiftWriteTarget *wt);
 extern void sift_wt_finish(SiftWriteTarget *wt);	/* flush + WAL-log all pages */
 #ifdef SIFT_TESTING
 /* core/store_test.c: a test segment of payload bytes of content seed (0: zeros), written in pieces and aligned as the header records */
@@ -432,6 +446,8 @@ sift_extents_block(const SiftExtent *ext, const uint32 *pagestart, int n, uint32
 typedef struct SiftStreamWriter SiftStreamWriter;
 
 extern SiftStreamWriter *sift_sw_begin(SiftWriteTarget *wt, uint64 gen);
+/* PostgreSQL host only: a stream whose bytes go to file (offsets count from 0), for a range of a segment that another process appends (bm25/build_ranges.c) */
+extern SiftStreamWriter *sift_sw_begin_spool(BufFile *file);
 extern uint64 sift_sw_tell(const SiftStreamWriter *sw);
 extern void sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len);
 /* The first len bytes of a temporary file (the spool of a section written out of order), from its start */
@@ -457,6 +473,8 @@ extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
  */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
+/* The lowest reusable run below limit (up to want blocks, at least min), InvalidBlockNumber when none: a SHARED target only, the file is never extended */
+extern BlockNumber sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got);
 extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
 
 /*
@@ -498,6 +516,8 @@ typedef struct SiftStreamReader
 	uint32		pf_end;			/* ... and the page past it */
 	Buffer		pf_buf;			/* the stream's next buffer, taken from it but not used yet, or InvalidBuffer */
 	uint32		pf_buf_page;	/* its logical page */
+	uint32		ra;				/* the pages of the last sequential read of that kind, doubled while the reads go on in order (0: the last miss was not one) */
+	int64		miss_page;		/* the page of the last fetch that waited for the device (-9: none): a miss a page or two after it is a sequential read */
 } SiftStreamReader;
 
 extern void sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents,

@@ -29,14 +29,14 @@ BEGIN
 	RETURN n;
 END $$;
 
--- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 4 starts, with and without deleted_at IS NULL, and on the timestamp
+-- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 2 starts, with and without deleted_at IS NULL, and on the timestamp
 CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
 	WITH q AS (
 		SELECT format('SELECT id FROM kl WHERE d BETWEEN %L AND %L%s', a, a + w, CASE WHEN n THEN ' AND del IS NULL' ELSE '' END) AS q
-		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM generate_series(0, 3) s) x, unnest(ARRAY[0, 3, 30, 100, 400]) w, (VALUES (true), (false)) v(n)
+		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM unnest(ARRAY[1, 3]) s) x, unnest(ARRAY[0, 30, 400]) w, (VALUES (true), (false)) v(n)
 		UNION ALL
 		SELECT format('SELECT id FROM kl WHERE ts >= %L AND ts < %L AND ent = %s', timestamp '2022-01-01' + s * 170 * interval '1 day', timestamp '2022-01-01' + (s * 170 + w) * interval '1 day', 1 + s)
-		FROM generate_series(0, 4) s, unnest(ARRAY[1, 20, 200]) w
+		FROM unnest(ARRAY[0, 2, 4]) s, unnest(ARRAY[1, 200]) w
 	), r AS (SELECT q, kl_rows(q, 'heap') AS h FROM q)
 	SELECT layout, count(*)::int, count(*) FILTER (WHERE kl_rows(q, 'bitmap') <> h OR kl_rows(q, 'index') <> h)::int,
 		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int

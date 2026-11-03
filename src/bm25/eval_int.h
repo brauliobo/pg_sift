@@ -83,6 +83,7 @@ typedef struct PhraseCheck
 	int			nterms;
 	int		   *leaf;
 	int		   *order;
+	int		   *offs;			/* position of term i from the first, NULL: adjacent */
 	bool		required;
 } PhraseCheck;
 
@@ -121,6 +122,8 @@ struct SiftPlan
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;
 	const SiftFilter *filter;	/* ranked search: the tuples worth scoring */
+	const SiftAttrTest *attrs;	/* ranked search: tests of INCLUDE columns the docs of a block pass before they are scored */
+	int			nattrs;
 	SiftBm25	bm;
 	SiftPlanStats stats;
 };
@@ -263,6 +266,10 @@ typedef struct RankSeg
 	RkTerm	   *term;
 	int			nterm;
 	int		   *first;				/* [leaf] index of its first term */
+	const sift_grp **ug;			/* [kid of an OR root] the group each kid has in the superblock being ranked, NULL for none */
+	int			nug;				/* the kids of the root when it is an OR, else 0 */
+	int		   *kidleaf;			/* [kid of an OR root] the scoring leaf the kid is the cursor of, -1 for none */
+	bool	   *kidskip;			/* [kid of an OR root] left out of the candidates of the block being scored */
 } RankSeg;
 
 typedef struct Unit
@@ -290,6 +297,12 @@ typedef struct RankWork
 	BlockMask	flt pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint16		zero[SIFT_KERN_SLOTS];
 	const uint16 *dl[SIFT_BLK_PAGES];
+	uint8		attab[SIFT_ATTR_TABLE + 1 + SIFT_KERN_PAD];	/* the codes of a block that pass an IN test */
+	const SiftAttrTest *attab_test;	/* the test, and the base and code count of the block, that attab was built for (a superblock has one of each) */
+	int64		attab_base;
+	uint64		attab_unk;
+	int			zone_checks;	/* superblocks tested against their INCLUDE ranges, and the ones that dropped (sift_seg_attr_excludes) */
+	int			zone_drops;
 } RankWork;
 
 struct SiftRanker
@@ -320,6 +333,7 @@ struct SiftRanker
 	int64		fb_kept;
 	int64		fb_want;
 	bool		complete;
+	bool		ties;				/* the search keeps every hit that ties with its worst one; nothing is asked after them (sift_rank_ties) */
 	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
 	bool		par_active;			/* ... and is running now */
 	PosCtx	   *phrpos;

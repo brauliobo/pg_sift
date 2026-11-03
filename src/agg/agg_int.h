@@ -39,7 +39,7 @@
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
 #define ZONE_SET_CAP	(1 << 16)	/* members of an IN list that travel with its zone test, at most: the point directory of the source answers a list of any length up to this */
-#define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
+#define SPARSE_RANGE	(1 << 12)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it (the ids it makes are made again for the hash table that replaces it) */
 #define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
 #define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN slots, and 4 slots for each group expected) hold at most this many slots for each group in use, else the hash table: their size multiplies the capacity of the keys, not the groups */
@@ -56,14 +56,23 @@ typedef struct Touch
 
 extern PGDLLIMPORT bool sift_child_warm_test;
 
+/* the state of an operand expression of a condition (operand_state) */
+typedef struct OperandState
+{
+	Node	   *expr;
+	ExprState  *state;
+} OperandState;
+
 typedef struct AggExec
 {
 	CustomScanState css;
 	SiftAggSpec *spec;
+	SiftAggSpec *unpacked;		/* the spec as the pack gives it, in a context of its own that a scan starting over (agg_restart) keeps; spec may be a copy with the join filters */
 	Relation	heap;
 	bool		heap_opened;
 	Relation	index;
 	SiftSrcSource *src;
+	SiftSrcSource *kept;		/* the source of a top-N that a probe of an enclosing query starts over (agg_restart): opened in a context of its own, handed on while sift_colsrc_rescan says it can serve the next scan */
 	SiftSearch *search;			/* the BM25 match set the rows are restricted to (spec->search) */
 	SiftTopN   *topn;			/* ORDER BY .. LIMIT n: the scan keeps the best rows instead of groups (spec->topn) */
 	const SiftSrcLayout *lay;
@@ -114,7 +123,9 @@ typedef struct AggExec
 	KeyState   *ks;
 	DictSlot	dslot[NDICT_SLOTS];
 	uint64		dtick;
+	List	   *operands;		/* operand_state: the states made for the scan */
 	bool		started;
+	bool		open_deferred;	/* a top-N whose walk of the global order never reads the combos, the zone tests, the vectors or the group table: engine_open_rest makes them when the walk gives the scan to the units */
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
 	int			widen;			/* TOPN_TIES: the scan this engine runs is the widen-th start again (topn_widen) */
@@ -151,8 +162,14 @@ typedef struct AggExec
 	uint64		dist_hash;		/* the aggregates (below 64) whose sets had left their bitmaps when the table spilled: the next table starts them as hash sets */
 	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
 	int			n_spills;		/* ... and the times it did */
+	int			n_pass_restarts;	/* ... and the times the scan or a pass was stopped to be read again with fewer shares */
+	int			n_passes;		/* a scan read in passes (agg/spill/pass.c): the passes that ended */
+	struct GStream *gs;			/* an ordered scan whose groups are final in turn (spill.c gstream_begin): the superblocks in the order of the key and what the sweep holds */
+	int			n_gs;			/* ... and the batches of final groups it gave */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
+	uint32	   *renum;			/* blob/dump.c renumber: the new id of each old one, all zero between two calls */
+	Size		renum_cap;
 	uint32	   *glist;
 	uint32		nglist;
 	uint32		gpos;
@@ -162,6 +179,20 @@ typedef struct AggExec
 	struct ScanShared *shared;
 	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
+	uint32		gp_n;			/* a scan whose participants split the groups by a key (SiftAggSpec.gpart): the shares, one for each participant; 0: they split the rows */
+	uint32		gp_mine;		/* ... the shares this process aggregates, bit i = share i: its own, and those of the workers that did not start */
+	int			gp_leaf;		/* ... the leaf of the key */
+	bool		gp_one;			/* ... a single share: the hashes of its keys are [gp_lo, gp_lo + gp_w) */
+	uint32		gp_lo;
+	uint32		gp_w;
+	uint32		pass_w;			/* a serial scan that reads the table in passes, each for this many of the 32 shares of the keys of one leaf (agg/spill/pass.c); 0: one pass */
+	bool		pass_stop;		/* ... the scan is being stopped to start again in passes */
+	bool		pass_all;		/* ... one share did not fit: the shares left are read together and spill as a scan does */
+	bool		pass_fixed;		/* ... a pass overflowed: the number of shares of a pass no longer grows */
+	int			pass_key;		/* ... the key it splits by */
+	const void *gp_dict;		/* a text key: the dictionary gp_code was made for */
+	uint8	   *gp_code;		/* ... 1 for an entry of it in the share */
+	uint32		gp_ncode;
 	struct AggPar *par;			/* workers launched by the leader */
 	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
 	uint32		nvorder;
@@ -172,7 +203,7 @@ typedef struct AggExec
 	bool		dsabort;		/* ... and the sweep was given up: the table of the groups would have spilled, so the scan started over in plain order */
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts: the integer leaves they compare (nprune), then the ORs of such tests (up to nzone) */
 	int			nprune;
-	struct SkipMap *skip;		/* the superblocks the zones keep, made at the first unit range of the scan (par.c range_skipped) */
+	struct SkipMap *skip;		/* the superblocks the zones keep, made at the first unit range of the scan (par/items.c range_skipped) */
 	int			nzone;
 	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
@@ -286,7 +317,8 @@ typedef struct AggExec
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
 	int			pa_dead_miss;	/* its dirty units that read their dead rows and were scanned all the same */
-	bool		pa_dead;		/* ... and one with dead rows from what it stored minus theirs (sift.agg_dead_delta): the aggregates are counts and integer sums */
+	bool		pa_dead;		/* ... and one with dead rows from what it stored minus theirs (sift.agg_dead_delta), or net of them */
+	bool		pa_dead_sub;	/* ... minus theirs is possible for the aggregates: counts and integer sums (a unit net of its dead rows has any) */
 	SiftPaWhy	pa_why;			/* why not, when pa_on is false */
 	int			pa_xleaf;		/* the conjunct IS NULL on this leaf is answered as the unit net of its exceptions (-1: none; hist_net) */
 	int64		n_exc_units;	/* units answered net of their exceptions, and the units with some that were scanned (a missing dim, a float sum that cancels) */
@@ -350,14 +382,18 @@ extern bool		sift_agg_verdict_cache;
 extern bool		sift_test_verdict_fail;
 extern int		sift_test_fail_pick;
 extern bool		sift_test_verdict_gate;
+extern int		sift_test_direct_max;
 #endif
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);
+void scan_tail(AggExec *ex);
+void finish_groups(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
 void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);
+void done_put(AggExec *ex);
 void groups_order(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
@@ -366,6 +402,7 @@ Datum agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull);
 void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
 void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
+void engine_open_rest(AggExec *ex);
 void engine_close(AggExec *ex);
 void topn_items(AggExec *ex);
 

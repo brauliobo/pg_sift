@@ -106,7 +106,7 @@ sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcx
 		uint32		m;
 		uint64		r;
 
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
 			continue;
 		t = sift_cwbuf_lookup(src->index, &src->dir.segs[i], src->schema, p, src->mcxt, &m, &r);
 		rows += r;

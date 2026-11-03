@@ -1,0 +1,51 @@
+-- What a sift_col index chooses by itself (the columns of the order arrays, the dimensions of the rollup) is decided from the statistics of the table, not from the part of the rows a
+-- participant of a parallel CREATE INDEX reads: the same options, whatever the number of workers. Only the bytes differ, by the overhead of each further segment. The limit
+-- of the rows to a participant is lowered (sift.test_limits) so that a table of this size has its participants.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE sc (id int PRIMARY KEY, grp int, amount numeric(10,2), ts int, note text) WITH (autovacuum_enabled = off);
+INSERT INTO sc SELECT g, g % 50, (g::bigint * 7919 % 100003) / 100.0, (g::bigint * 104729) % 90001, 'n' || g % 40 FROM generate_series(1, 240000) g;
+ANALYZE sc;
+SET maintenance_work_mem = '128MB';
+SET min_parallel_table_scan_size = 0;
+SET sift.test_limits = 'par_build_rows=1';
+CREATE FUNCTION sc_build(workers int) RETURNS TABLE (launched int, segments bigint, options text[]) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('max_parallel_maintenance_workers', workers::text, true);
+	DROP INDEX IF EXISTS sc_i;
+	CREATE INDEX sc_i ON sc USING sift_col (id, grp, amount, ts, note);
+	RETURN QUERY SELECT current_setting('sift.test_col_workers')::int, count(*), (SELECT reloptions FROM pg_class WHERE oid = 'sc_i'::regclass) FROM sift.col_segments('sc_i') WHERE kind <> 'tombstones';
+END $$;
+CREATE TABLE sc_runs AS SELECT w AS asked, b.* FROM unnest(ARRAY[0, 2, 4]) w, LATERAL sc_build(w) b;
+-- the participants did write segments of their own, and the choice is the same
+SELECT asked, launched, segments > 1 AS several_segments, options FROM sc_runs ORDER BY asked;
+ asked | launched | several_segments |                                                       options                                                        
+-------+----------+------------------+----------------------------------------------------------------------------------------------------------------------
+     0 |        0 | f                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+     2 |        2 | t                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+     4 |        3 | t                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+(3 rows)
+
+SELECT count(DISTINCT options) AS choices FROM sc_runs;
+ choices 
+---------
+       1
+(1 row)
+
+SELECT sift.col_verify('sc_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT count(*), sum(amount) FROM sc WHERE grp = 7;
+ count |    sum     
+-------+------------
+  4800 | 2402899.19
+(1 row)
+
+DROP TABLE sc, sc_runs;
+DROP FUNCTION sc_build(int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

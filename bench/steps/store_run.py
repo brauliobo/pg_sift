@@ -348,5 +348,5 @@ def cmd_interference(args):
     worst = max(abs(r['median_change']) for r in out)
     log(f'{target} with {" ".join(others)} running at the same time on cores of their own: the median changed by at most {worst:.1%}, the p95 by at most {max(abs(r["p95_change"]) for r in out):.1%}')
     benchlib.write_json(os.path.join(args.out, f'interference-{target}-{args.tier}.json'), dict(target=target, others=others, cpus=args.cpus, rows=args.rows, samples=args.samples, cells=out,
-                                                                                            date=benchlib.now_iso(), host=host_fp(), threshold=args.threshold, ok=worst <= args.threshold))
+                                                                                            date=benchlib.now_iso(), host=benchlib.public_host(host_fp()), threshold=args.threshold, ok=worst <= args.threshold))
     return 0 if worst <= args.threshold else 1

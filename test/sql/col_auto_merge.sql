@@ -3,6 +3,7 @@
 -- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. The end state after the rewrite is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
@@ -14,9 +15,9 @@ CREATE TABLE facts_b (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_b SELECT * FROM facts_a ORDER BY id;
 CREATE TABLE facts_c (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_c SELECT * FROM facts_a ORDER BY id;
-CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount);
-CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount);
-CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount);
+CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
+CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
+CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 
 -- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree

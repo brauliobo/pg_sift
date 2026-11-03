@@ -1,0 +1,176 @@
+-- A shared CTE written inline may restate, in an IN sub-select over a CTE, the scope the CTE already keeps its rows by: "things" joins the key list "ids" (the
+-- ids of the table that satisfy Q), and the sub-select reads "things" again with Q. The rows of the CTE satisfy Q by their lineage, so the sub-select drops it
+-- and reads the CTE alone: the table of the scope is read by the CTE of the list once, not again by the lookup of every aggregate. What is not an exact
+-- restatement (an outer join, a DISTINCT ON, a LIMIT, a window, an aggregate, a volatile function, another constant, a CTE of the scope) keeps its conjunct.
+-- The rows are the normal plan's for each of them, and for a series of generated scopes, keys and shapes.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE things (id int PRIMARY KEY, kind int NOT NULL);
+INSERT INTO things SELECT g, g % 4 FROM generate_series(1, 600) g;
+-- owners 1-10 hold groups, 11 and 12 hold none (an empty scope); a group holds NULL keys, a thing twice, and a thing is in two groups
+CREATE TABLE grants (owner int, grp int);
+INSERT INTO grants SELECT o, g FROM generate_series(1, 10) o, generate_series(1, 6) g WHERE (o + g) % 3 = 0 OR o = g;
+CREATE TABLE dim_b (grp int, thing_id int);
+INSERT INTO dim_b SELECT 1 + g % 6, g FROM generate_series(1, 600) g;
+INSERT INTO dim_b SELECT 1 + g % 6, g FROM generate_series(1, 600, 5) g;
+INSERT INTO dim_b SELECT 1 + (g + 1) % 6, g FROM generate_series(1, 600, 7) g;
+INSERT INTO dim_b SELECT g, NULL FROM generate_series(1, 6) g;
+CREATE TABLE facts (id int PRIMARY KEY, thing_id int NOT NULL, ts date NOT NULL, score int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT g, 1 + ((g::bigint * 7919) % 600)::int, date '2025-01-01' + ((g::bigint * 7919) % 360)::int, g % 10 FROM generate_series(1, 60000) g;
+CREATE INDEX facts_col ON facts USING sift_col (id, thing_id, ts, score);
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE things;
+ANALYZE grants;
+ANALYZE dim_b;
+CREATE FUNCTION keep_stable(i int) RETURNS bool LANGUAGE sql STABLE AS $$ SELECT i % 7 <> 3 $$;
+CREATE FUNCTION keep_volatile(i int) RETURNS bool LANGUAGE sql VOLATILE AS $$ SELECT i % 7 <> 5 $$;
+-- the WITH of the list (ids), of the table restricted to it (things: the name of the table, a CTE that shadows it) and of the rows that the lookup filters
+CREATE FUNCTION scope_query(scope text, scope_again text, things_body text DEFAULT 'SELECT t.* FROM ids JOIN things t ON t.id = ids.id',
+                            ids_body text DEFAULT 'SELECT DISTINCT t.id FROM things t WHERE %s', other text DEFAULT 'SELECT 1 AS n',
+                            ids_with text DEFAULT 'MATERIALIZED') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH ids AS %s (%s),
+	  things AS (%s),
+	  f AS (SELECT * FROM facts WHERE thing_id IN (SELECT things.id FROM things WHERE %s) AND ts >= date '2025-03-01' AND ts < date '2025-09-01'),
+	  other AS (%s)
+	SELECT 'rows' k, count(*)::bigint v FROM f UNION ALL SELECT 'score', coalesce(sum(score), 0) FROM f UNION ALL SELECT 'things', count(DISTINCT thing_id) FROM f
+	UNION ALL SELECT 'other', count(*) FROM other$q$, ids_with, format(ids_body, scope), things_body, scope_again, other)
+$$;
+-- the scans of the scope table in the plan, with the lookup of each aggregate forced on
+CREATE FUNCTION plan_scans(q text, OUT agg_nodes int, OUT scope_scans int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	agg_nodes := 0; scope_scans := 0;
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN agg_nodes := agg_nodes + 1; END IF;
+		IF l ~ ' on dim_b( |$)' THEN scope_scans := scope_scans + 1; END IF;
+	END LOOP;
+	PERFORM set_config('sift.agg_force', 'off', true);
+END $$;
+-- do the rows of the query with the column index on equal the rows with it off
+CREATE FUNCTION rows_equal(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (%s) r', q) INTO b;
+	PERFORM set_config('sift.agg_force', 'off', true);
+	RETURN a IS NOT DISTINCT FROM b AND a IS NOT NULL;
+END $$;
+\set scope 't.id IN (SELECT m.thing_id FROM grants g LEFT JOIN dim_b m ON m.grp = g.grp WHERE g.owner = 4)'
+\set scope_again 'things.id IN (SELECT m.thing_id FROM grants g LEFT JOIN dim_b m ON m.grp = g.grp WHERE g.owner = 4)'
+-- the unit shape: the table of the scope is scanned once, by the list (it was scanned again by the lookup of each of the three aggregates); what is not
+-- a restatement keeps the conjunct, and the scans are the list's and the three lookups'
+CREATE TABLE shapes (name text PRIMARY KEY, q text);
+INSERT INTO shapes VALUES
+	('restated', scope_query(:'scope', :'scope_again')),
+	('restated, order swapped', scope_query(:'scope' || ' AND t.id % 2 = 0', 'things.id % 2 = 0 AND ' || :'scope_again')),
+	('restated beside a condition of its own', scope_query(:'scope', :'scope_again' || ' AND things.id > 100')),
+	('where join', scope_query(:'scope', :'scope_again', 'SELECT t.* FROM ids, things t WHERE t.id = ids.id')),
+	('stable function', scope_query(:'scope' || ' AND keep_stable(t.id)', :'scope_again' || ' AND keep_stable(things.id)')),
+	('list not materialized', scope_query(:'scope', :'scope_again', ids_with => 'NOT MATERIALIZED')),
+	('table read twice', scope_query(:'scope', :'scope_again', other => 'SELECT count(*) FROM things')),
+	-- the scope is on the null-extended side: the key of an unmatched row of the list does not satisfy it
+	('left join', scope_query('t.id <= 300', :'scope_again', 'SELECT ids.id, t.kind FROM ids LEFT JOIN things t ON t.id = ids.id AND ' || :'scope')),
+	('other constant', scope_query(:'scope', replace(:'scope_again', 'owner = 4', 'owner = 5'))),
+	('volatile function', scope_query(:'scope' || ' AND keep_volatile(t.id)', :'scope_again' || ' AND keep_volatile(things.id)')),
+	('volatile function in the scope', scope_query(replace(:'scope', 'owner = 4', 'owner = 4 AND keep_volatile(m.thing_id)'), replace(:'scope_again', 'owner = 4', 'owner = 4 AND keep_volatile(m.thing_id)'))),
+	('list limited', scope_query(:'scope', :'scope_again', ids_body => 'SELECT t.id FROM things t WHERE %s LIMIT 500')),
+	('list distinct on', scope_query(:'scope', :'scope_again', ids_body => 'SELECT DISTINCT ON (t.id) t.id FROM things t WHERE %s')),
+	('list window', scope_query(:'scope', :'scope_again', ids_body => 'SELECT t.id, row_number() OVER () rn FROM things t WHERE %s')),
+	('list aggregate', scope_query(:'scope', :'scope_again', ids_body => 'SELECT t.id, count(*) FROM things t WHERE %s GROUP BY t.id')),
+	('joined on another column', scope_query(:'scope', :'scope_again', 'SELECT t.* FROM ids JOIN things t ON t.kind = ids.id')),
+	('scope reads a CTE named as the table', scope_query(replace(:'scope', 'IN (SELECT', 'IN (WITH dim_b AS MATERIALIZED (SELECT * FROM dim_b WHERE thing_id > 0) SELECT'),
+	                                                       replace(:'scope_again', 'IN (SELECT', 'IN (WITH dim_b AS MATERIALIZED (SELECT * FROM dim_b WHERE thing_id > 0) SELECT')));
+SELECT name, (plan_scans(q)).agg_nodes, (plan_scans(q)).scope_scans, rows_equal(q) AS rows_equal FROM shapes ORDER BY name;
+                  name                  | agg_nodes | scope_scans | rows_equal 
+----------------------------------------+-----------+-------------+------------
+ joined on another column               |         3 |           4 | t
+ left join                              |         3 |           6 | t
+ list aggregate                         |         3 |           4 | t
+ list distinct on                       |         3 |           4 | t
+ list limited                           |         3 |           4 | t
+ list not materialized                  |         3 |           1 | t
+ list window                            |         3 |           4 | t
+ other constant                         |         3 |           4 | t
+ restated                               |         3 |           1 | t
+ restated beside a condition of its own |         3 |           1 | t
+ restated, order swapped                |         3 |           1 | t
+ scope reads a CTE named as the table   |         3 |           8 | t
+ stable function                        |         3 |           1 | t
+ table read twice                       |         3 |           1 | t
+ volatile function                      |         0 |           2 | t
+ volatile function in the scope         |         0 |           2 | t
+ where join                             |         3 |           1 | t
+(17 rows)
+
+-- generated scopes, keys and shapes: whatever the scope (an owner with groups or none, a stable or a volatile function in it), the keys (a list of ids, some of
+-- them not in the table), the shape of the CTEs and the order of the conjuncts, the rows are the normal plan's; and the scope table is scanned less than by the
+-- same query whose sub-select asks for another owner (not a restatement) exactly when the scope is not volatile
+CREATE TABLE generated (n int, shape text, volatile bool, agg_nodes int, scans_same int, scans_other int, rows_equal bool);
+SELECT setseed(0.37);
+ setseed 
+---------
+ 
+(1 row)
+
+DO $$
+DECLARE
+	i int;
+	own int;
+	fn int;
+	scope text;
+	conds text[];
+	again text[];
+	things_body text;
+	ids_body text;
+	other text;
+	ids_with text;
+	q text;
+	q_other text;
+	p record;
+	p_other record;
+BEGIN
+	FOR i IN 1..240 LOOP
+		own := floor(random() * 14)::int;
+		fn := floor(random() * 3)::int;
+		scope := format('t.id IN (SELECT m.thing_id FROM grants g LEFT JOIN dim_b m ON m.grp = g.grp WHERE g.owner = %s%s)', own,
+		                CASE fn WHEN 1 THEN ' AND keep_stable(m.thing_id)' WHEN 2 THEN ' AND keep_volatile(m.thing_id)' ELSE '' END);
+		conds := ARRAY[scope];
+		again := ARRAY[replace(scope, 't.id IN', 'things.id IN')];
+		IF random() < 0.5 THEN
+			scope := format('t.id IN (%s)', (SELECT string_agg((1 + floor(random() * 650))::int::text, ', ') FROM generate_series(1, 1 + floor(random() * 30)::int)));
+			conds := conds || scope;
+			again := again || replace(scope, 't.id', 'things.id');
+		END IF;
+		IF random() < 0.3 THEN
+			conds := conds || 't.id % 3 <> 1'::text;
+			again := again || 'things.id % 3 <> 1'::text;
+		END IF;
+		things_body := (ARRAY['SELECT t.* FROM ids JOIN things t ON t.id = ids.id', 'SELECT t.* FROM ids, things t WHERE t.id = ids.id', 'SELECT t.* FROM things t JOIN ids ON ids.id = t.id AND t.kind >= 0'])[1 + floor(random() * 3)::int];
+		ids_body := CASE WHEN random() < 0.8 THEN 'SELECT DISTINCT t.id FROM things t WHERE %s' ELSE 'SELECT t.id FROM things t WHERE %s' END;
+		other := CASE WHEN random() < 0.5 THEN 'SELECT 1 AS n' ELSE 'SELECT count(*) FROM things' END;
+		ids_with := CASE WHEN random() < 0.5 THEN 'MATERIALIZED' ELSE 'NOT MATERIALIZED' END;
+		again := ARRAY(SELECT c FROM unnest(again) c ORDER BY random());
+		q := scope_query(array_to_string(conds, ' AND '), array_to_string(again, ' AND '), things_body, ids_body, other, ids_with);
+		q_other := scope_query(array_to_string(conds, ' AND '), replace(array_to_string(again, ' AND '), 'owner = ' || own, 'owner = ' || own + 1), things_body, ids_body, other, ids_with);
+		SELECT * INTO p FROM plan_scans(q);
+		SELECT * INTO p_other FROM plan_scans(q_other);
+		INSERT INTO generated VALUES (i, things_body, fn = 2, p.agg_nodes, p.scope_scans, p_other.scope_scans, rows_equal(q) AND rows_equal(q_other));
+	END LOOP;
+END $$;
+SELECT count(*) AS combinations, count(*) FILTER (WHERE agg_nodes >= 1) > 100 AS served, count(*) FILTER (WHERE NOT rows_equal) AS rows_differ,
+       count(*) FILTER (WHERE agg_nodes >= 1 AND NOT volatile AND scans_same >= scans_other) AS restated_kept,
+       count(*) FILTER (WHERE volatile AND scans_same <> scans_other) AS volatile_dropped
+FROM generated;
+ combinations | served | rows_differ | restated_kept | volatile_dropped 
+--------------+--------+-------------+---------------+------------------
+          240 | t      |           0 |             0 |                0
+(1 row)
+
+DROP TABLE generated, shapes, facts, things, grants, dim_b;
+DROP FUNCTION scope_query(text, text, text, text, text, text), plan_scans(text), rows_equal(text), keep_stable(int), keep_volatile(int);
+DROP EXTENSION pg_sift;

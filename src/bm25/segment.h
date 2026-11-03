@@ -17,6 +17,7 @@
 
 #include "core/host.h"
 
+#include "bm25/attr.h"
 #include "bm25/dict.h"
 #include "bm25/posting.h"
 
@@ -26,6 +27,32 @@ typedef struct SiftDocSBRef
 	uint32		ndocs;
 	uint64		off;			/* record offset in the stream */
 } SiftDocSBRef;
+
+/*
+ * The values of the INCLUDE columns (SIFT_SEGFMT_ATTR): per column and SB one record after the docmap records (the records of a column are
+ * together, so a statement reads the pages of the columns it tests), with a base, the code that stands for "unknown" and the rows of the SB's present
+ * pages in the width the range of the SB's values needs. A slot holds 0 for NULL, v - base + 1
+ * for the value v, the unknown code for a doc whose heap tuple was gone when the segment was written. A column that is not an integer-like type has
+ * no rows (flags SIFT_ATTR_NOROWS): every doc passes its tests.
+ */
+#define SIFT_ATTR_MAXCOLS	8
+#define SIFT_ATTR_NOROWS	1
+#define SIFT_ATTR_NOUNK		2		/* no doc of the SB is unknown in this column: base and unk are its exact range, and a test no value of it passes drops the SB (an older segment never sets it) */
+#define SIFT_ATTR_MAXWIDTH	56
+#define SIFT_ATTR_TABLE		16384	/* codes of a block for which an IN test is a table of bytes, not a search of its set */
+
+/* The source of the values of the docs of a page at a write: state[col * n + i] and vals[col * n + i] for the doc at offs[i] of block blk */
+typedef struct SiftAttrSrc
+{
+	int			ncols;
+	bool		intlike[SIFT_ATTR_MAXCOLS];
+	void		(*fetch) (void *arg, BlockNumber blk, const OffsetNumber *offs, int n, int64 *vals, uint8 *state);
+	void	   *arg;
+} SiftAttrSrc;
+
+/* The attribute source of the index a target writes (NULL: it has no INCLUDE column, or the host keeps none); bm25/attr.c */
+extern void sift_attr_check_table(Relation index, Relation heap);
+extern SiftAttrSrc *sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt);
 
 /*
  * Writer: docs first (strictly ascending key; dl 0 for text without
@@ -43,6 +70,8 @@ extern PGDLLIMPORT int sift_test_segfmt;
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
 extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
+/* The values of the INCLUDE columns of the docs that follow are fetched from src when an SB is flushed; before the first doc */
+extern void sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src);
 
 /* Terms of min_postings postings or more are staged in temporary files as they arrive (sift_postw_spool), before the first term */
 extern void sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings);
@@ -50,6 +79,16 @@ extern void sift_segw_spool(SiftSegmentWriter *w, uint64 min_postings);
 /* Returns the posting writer for this term; finish it with sift_segw_end_term */
 extern SiftPostingWriter *sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len);
 extern void sift_segw_end_term(SiftSegmentWriter *w);
+
+/*
+ * The segment written by several processes: each writes a range of the terms into a writer that has a stream of its own for the term
+ * blobs (post: its offsets count from 0) and the dictionary entries of the terms in the file ent. The writer of the docs then appends the ranges in
+ * term order (avgdl: what the ranges were scored with, which the docs must come to): the blobs of a range after the padding to 4 bytes the stream of a single writer has, the entries to the dictionary with
+ * the offsets of the blobs moved to where they landed. The segment is the one a single writer makes, byte for byte.
+ */
+extern SiftSegmentWriter *sift_segw_begin_range(SiftStreamWriter *post, BufFile *ent, const SiftScoreRef *ref, MemoryContext mcxt);
+extern uint64 sift_segw_range_terms(const SiftSegmentWriter *w);
+extern void sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufFile *ent, uint64 nterms, float4 avgdl);
 
 /* Writes sections, LIVE pages (all live) and the header; fills the directory entry */
 extern void sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry);
@@ -73,7 +112,6 @@ typedef struct SiftSegment
 extern SiftSegment *sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
 extern void sift_seg_close(SiftSegment *seg);	/* releases buffers only */
 
-/* Docs of one SB; false when the segment has none there */
 typedef struct SiftDocChunk
 {
 	uint32		sb;
@@ -83,6 +121,46 @@ typedef struct SiftDocChunk
 	bool		dirty;			/* some doc in this SB was vacuumed */
 } SiftDocChunk;
 
+/* The columns of INCLUDE a segment holds values of (0 for a segment of an older format) */
+extern int	sift_seg_attr_ncols(SiftSegment *seg);
+
+/* Does a column of superblock sb leave no doc that passes the tests (read from the headers of the records, not their rows) */
+extern bool sift_seg_attr_excludes(SiftSegment *seg, uint32 sb, const SiftAttrTest *tests, int n);
+
+/* One column of the pages of a block (SIFT_BLK_PAGES pages) set in want that have docs: the rows of their slots, NULL for the others */
+typedef struct SiftAttrBlock
+{
+	int64		base;
+	uint64		unk;
+	int			width;
+	bool		norows;
+	const uint8 *row[SIFT_BLK_PAGES];
+	int			nslots[SIFT_BLK_PAGES];	/* the slots of each row */
+} SiftAttrBlock;
+
+extern void sift_seg_block_attr(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int col, SiftAttrBlock *out);
+
+/* The value of slot (offset - 1) in the row of page pg of the block: an SiftAttrState, and the value in *v for SIFT_AV_VALUE */
+static inline int
+sift_attr_get(const SiftAttrBlock *a, int pg, int slot, int64 *v)
+{
+	uint64		code;
+	uint64		bit;
+
+	if (a->norows || a->row[pg] == NULL)
+		return SIFT_AV_UNKNOWN;
+	bit = (uint64) slot * a->width;
+	memcpy(&code, a->row[pg] + (bit >> 3), sizeof(code));
+	code = (code >> (bit & 7)) & ((UINT64CONST(1) << a->width) - 1);
+	if (code == 0)
+		return SIFT_AV_NULL;
+	if (code == a->unk)
+		return SIFT_AV_UNKNOWN;
+	*v = a->base + (int64) code - 1;
+	return SIFT_AV_VALUE;
+}
+
+/* Docs of one SB; false when the segment has none there */
 extern bool sift_seg_docs(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 
 /*
@@ -93,6 +171,31 @@ extern bool sift_seg_docs(SiftSegment *seg, uint32 sb, SiftDocChunk *dc);
 extern bool sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle);
 extern void sift_docdir_ready(void *handle);
 extern PGDLLIMPORT int sift_docdir_min_sb;
+
+/*
+ * size bytes (SIMD aligned) of what a kind of immutable bytes of the segment of sr holds at id, for the caller to fill: false
+ * when it must (then call sift_segcache_ready(handle) once filled and checked; a NULL handle is memory of mcxt that nobody
+ * keeps), true when they are those of an earlier query (bm25/segcache.c). Kept bytes live as long as mcxt.
+ */
+typedef enum SiftSegcacheKind
+{
+	SIFT_SEGCACHE_DOCDIR,
+	SIFT_SEGCACHE_BLOB
+} SiftSegcacheKind;
+
+extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,
+							  void **obj, void **handle);
+extern void sift_segcache_ready(void *handle);
+#ifdef SIFT_TESTING
+/* Entries dropped for room, and blobs that did not fit though a cursor held every entry (sift._test_read_stats) */
+typedef struct SiftSegCacheStats
+{
+	uint64		evicted;
+	uint64		refused;
+} SiftSegCacheStats;
+extern SiftSegCacheStats sift_segcache_stats;
+extern Size sift_segcache_bytes(void);
+#endif
 
 #ifdef SIFT_TESTING
 /* Directories read from the segment and found in the backend's cache (sift._test_read_stats) */
@@ -209,6 +312,7 @@ typedef struct SiftPartStats
 {
 	uint64		docmap_dl;		/* dl rows */
 	uint64		docmap_presence;	/* the codec chunk of each SB's present docs, its headers and padding */
+	uint64		docmap_attr;	/* the INCLUDE values of the SBs */
 	uint64		docmap_dir;		/* SB directory */
 	uint64		list_codec;		/* LIST blobs */
 	uint64		grouped_dir;	/* GROUPED blobs: header, key/poff/base */
@@ -290,5 +394,22 @@ typedef struct SiftSegSink
 } SiftSegSink;
 
 extern void sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *arg);
+
+/*
+ * The same live part of a segment as a cursor, for a merge that reads its input segments directly: the docs in key order, or the
+ * terms from lo (NULL: the first) with a live posting, each with its postings in key order. A cursor reads either, not both. The
+ * memory is that of sift_seg_stream. next_term gives info->df the number of live postings; the term and info are valid until the next call.
+ */
+typedef struct SiftSegCursor SiftSegCursor;
+
+extern SiftSegCursor *sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen);
+extern bool sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl);
+extern bool sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo *info);
+/* The next live posting of the term; rec / len: its position record (NULL when the term has none) */
+extern bool sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, const uint8 **rec, uint32 *len);
+extern void sift_seg_cursor_close(SiftSegCursor *c);
+
+/* The live docs of the segment and their dl, as sift_seg_stream would deliver them (a dirty segment counts them) */
+extern void sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl);
 
 #endif							/* SIFT_SEGMENT_H */

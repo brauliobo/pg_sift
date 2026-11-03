@@ -31,6 +31,7 @@
 #include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/build.h"
+#include "core/compat.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
@@ -41,7 +42,7 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 
-#define CLAIM_TRIES			8		/* picks of a step whose segments others claimed or replaced meanwhile */
+#define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
 
 bool
 claim(Relation index, uint64 gen, bool wait)
@@ -92,6 +93,16 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->maint_errcode = err->sqlerrcode;
 	memset(meta->maint_errmsg, 0, sizeof(meta->maint_errmsg));
 	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
+}
+
+/* The WARNING of a maintenance step that failed and is retried: kind is "sift" or "sift_col" */
+void
+sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err)
+{
+	ereport(WARNING,
+			(errcode(err->sqlerrcode),
+			 errmsg("%s index \"%s\": maintenance failed: %s", kind, name, err->message),
+			 errdetail("It is retried later, after a growing delay.")));
 }
 
 /* A background worker whose transaction failed (sift_col steps run outside a subtransaction): its own transaction keeps the failure like run_step does */
@@ -148,10 +159,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 	sift_wt_abort(wt);
 	if (propagate || ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	ereport(WARNING,
-			(errcode(err->sqlerrcode),
-			 errmsg("maintenance of sift index \"%s\" failed: %s", RelationGetRelationName(index), err->message),
-			 errdetail("It is retried later, after a growing delay.")));
+	sift_maint_warn_failure("sift", RelationGetRelationName(index), err);
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);
 	return SIFT_STEP_FAILED;
@@ -300,7 +308,7 @@ typedef struct DocText
 	IndexInfo  *info;
 	EState	   *estate;
 	TupleTableSlot *slot;
-	HeapTupleData tup;
+	IndexFetchTableData *fetch;
 	SiftAnalyzer *an;
 	BlockNumber nblocks;
 } DocText;
@@ -323,6 +331,7 @@ doctext_open(Relation index)
 	d->info = BuildIndexInfo(index);
 	d->estate = CreateExecutorState();
 	d->slot = table_slot_create(d->heap, NULL);
+	d->fetch = sift_table_index_fetch_begin(d->heap);
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
 	d->nblocks = RelationGetNumberOfBlocks(d->heap);
@@ -336,49 +345,23 @@ doctext_close(DocText *d)
 	if (d == NULL)
 		return;
 	PopActiveSnapshot();
+	table_index_fetch_end(d->fetch);
 	ExecDropSingleTupleTableSlot(d->slot);
 	FreeExecutorState(d->estate);
 	table_close(d->heap, AccessShareLock);
 }
 
-/* The tuple a key stands for, or the member of its HOT chain that the root redirects to, in d->slot; false when it is gone (dead for every snapshot) */
+/* The tuple a key stands for, in d->slot, through the table access method (a sift_table has no heap pages to read); false when it is gone (dead for every snapshot) */
 static bool
 doctext_fetch(DocText *d, const ItemPointerData *tid)
 {
-	BlockNumber blk = ItemPointerGetBlockNumber(tid);
-	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
-	bool		found = false;
-	Buffer		buf;
-	Page		page;
+	ItemPointerData t = *tid;
+	bool		again = false,
+				all_dead = false;
 
-	if (blk >= d->nblocks)
+	if (ItemPointerGetBlockNumber(tid) >= d->nblocks)
 		return false;
-	buf = ReadBuffer(d->heap, blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-	for (int hops = 0; off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page) && hops < MaxHeapTuplesPerPage; hops++)
-	{
-		ItemId		lp = PageGetItemId(page, off);
-
-		if (ItemIdIsRedirected(lp))
-		{
-			off = ItemIdGetRedirect(lp);
-			continue;
-		}
-		if (ItemIdIsNormal(lp))
-		{
-			d->tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
-			d->tup.t_len = ItemIdGetLength(lp);
-			d->tup.t_tableOid = RelationGetRelid(d->heap);
-			ItemPointerSet(&d->tup.t_self, blk, off);
-			ExecStoreBufferHeapTuple(&d->tup, d->slot, buf);
-			found = true;
-		}
-		break;
-	}
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buf);
-	return found;
+	return table_index_fetch_tuple(d->fetch, &t, SnapshotAny, d->slot, &again, &all_dead);
 }
 
 /* The terms of the doc at tid with their position records, as a build analyzes it; false when its row or its text is gone */
@@ -731,6 +714,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	SiftScoreRef ref = score_ref(index);
 	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
+	int			written = -1;
 	DocText    *dt = NULL;
 	SiftInvBuf *inv = NULL;
 	SiftSegEntry neu;
@@ -742,38 +726,38 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
 	}
-#ifdef SIFT_TESTING
 	/* a long merge of the worker, the segments claimed */
-	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)
-	{
-		pg_usleep(50000);
-		CHECK_FOR_INTERRUPTS();
-	}
-#endif
+	SIFT_TEST_GATE(sift_test_merge_gate && MyBackendType == B_BG_WORKER, 4);
+	for (int i = 0; i < in->n; i++)
+		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of each segment */
 	for (int i = 0; i < in->n && dt == NULL; i++)
 		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
 			dt = doctext_open(index);
-	if (dt != NULL)
-		inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
-	for (int i = 0; i < in->n; i++)
+	/* the segments that get their positions from the heap are merged by this process */
+	if (dt == NULL)
+		written = sift_merge_ranges(index, wt, in->seg, in->n, &ref, &neu);
+	if (written < 0)
 	{
-		SiftSegment *seg;
-		SiftRun    *run;
+		if (dt != NULL)
+			inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
+		for (int i = 0; i < in->n; i++)
+		{
+			SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
+			SiftRun    *run;
 
-		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of this segment */
-		seg = sift_seg_open(index, &in->seg[i], cx);
-		if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
-			heal_runs(dt, inv, seg, &runs);
-		else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
-			runlist_push(&runs, run);
-		sift_seg_close(seg);
+			if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
+				heal_runs(dt, inv, seg, &runs);
+			else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
+				runlist_push(&runs, run);
+			sift_seg_close(seg);
+		}
+		doctext_close(dt);
+		if ((written = runs.n > 0) != 0)
+			sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	}
-	doctext_close(dt);
-	if (runs.n > 0)
-		sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	sift_wt_finish(wt);
-	sift_maint_replace(index, mi.gens, in->n, runs.n > 0 ? &neu : NULL, mi.release, mi.nrelease,
-					   psprintf("merged %d segments of", in->n), start, runs.n > 0 ? neu.ndocs : 0);
+	sift_maint_replace(index, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
+					   psprintf("merged %d segments of", in->n), start, written ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -821,8 +805,12 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 		sift_dir_read(index, snap);
 		if ((sel->n = pick_merge(index, snap, force, goal, sel)) == 0)
 			break;
+		/* a pick that met claimed segments learned them (at least one more), so it is not a try: the policy offers the rest next, and a step that leaves the claimed ones to their owners reaches a merge of its own */
 		if (!claim_all(index, sel))
+		{
+			tries--;
 			continue;
+		}
 		if (all_there(index, sel))
 			r = run_step(index, propagate, merge_segments, sel);
 		for (int i = 0; i < sel->n; i++)

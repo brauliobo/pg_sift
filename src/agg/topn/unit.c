@@ -20,22 +20,34 @@
 #define ST_DEFINE
 #include "lib/sort_template.h"
 
+/* A unit starts with scratch buffers (keep false: nothing in them is read again, so the larger ones are new and the old are freed, where repalloc would copy a megabyte of a unit that has just ended); a walk that fills them as it goes keeps what it has */
+static void *
+regrow(SiftTopN *t, void *p, Size sz, bool keep)
+{
+	if (!keep && p)
+	{
+		pfree(p);
+		p = NULL;
+	}
+	return grow(t, p, sz);
+}
+
 void
-grow_unit_buffers(SiftTopN *t, int nrow)
+grow_unit_buffers(SiftTopN *t, int nrow, bool keep)
 {
 	if (t->ccap >= nrow)
 		return;
 	t->ccap = Max(nrow, 2 * t->ccap);
-	t->crow = grow(t, t->crow, t->ccap * sizeof(uint32));
-	t->ck = grow(t, t->ck, t->ccap * sizeof(int64));
-	t->cnul = grow(t, t->cnul, t->ccap);
-	t->cand = grow(t, t->cand, t->ccap * sizeof(uint32));
-	t->ce = grow(t, t->ce, t->ccap * sizeof(TopEnt));
+	t->crow = regrow(t, t->crow, t->ccap * sizeof(uint32), keep);
+	t->ck = regrow(t, t->ck, t->ccap * sizeof(int64), keep);
+	t->cnul = regrow(t, t->cnul, t->ccap, keep);
+	t->cand = regrow(t, t->cand, t->ccap * sizeof(uint32), keep);
+	t->ce = regrow(t, t->ce, t->ccap * sizeof(TopEnt), keep);
 	if (t->all)
 	{
-		t->tids = grow(t, t->tids, t->ccap * sizeof(ItemPointerData));
-		t->skey = grow(t, t->skey, (Size) t->ccap * t->nkey * sizeof(int64));
-		t->snull = grow(t, t->snull, (Size) t->ccap * t->nkey);
+		t->tids = regrow(t, t->tids, t->ccap * sizeof(ItemPointerData), keep);
+		t->skey = regrow(t, t->skey, (Size) t->ccap * t->nkey * sizeof(int64), keep);
+		t->snull = regrow(t, t->snull, (Size) t->ccap * t->nkey, keep);
 	}
 }
 
@@ -74,7 +86,7 @@ read_outputs(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit)
 			sift_colsrc_read_rows(src, unit, t->oleaf[c], t->rows, t->ln, &v);
 			for (int i = 0; i < t->ln; i++)
 			{
-				uint32		x = row_at(t->rows, t->ln, t->lh[i].row);
+				uint32		x = row_at(t->rows, t->ln, t->lh[i].row, i);
 				Size		at = (Size) i * t->nov + c;
 
 				t->uvn[at] = v.isnull && v.isnull[x];
@@ -103,20 +115,24 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
 	uint16		part;
 	bool		vals;
+	TopEnt	   *lh = t->lh;
 
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
 	if (nc <= t->limit)
 	{
-		/* the unit has no more rows than the heap holds: all of them go on */
-		memcpy(t->lh, t->ce, nc * sizeof(TopEnt));
+		/* the unit has no more rows than the heap holds: all of them go on, in the entries they were made in (a copy of a heap's worth of them is a megabyte of new pages) */
+		t->lh = t->ce;
 		t->ln = nc;
 	}
 	else
 		for (int x = 0; x < nc; x++)
 			heap_push(t, t->lh, &t->ln, &t->ce[x]);
 	if (t->ln == 0)
+	{
+		t->lh = lh;
 		return;
+	}
 	for (int i = 0; i < t->ln; i++)
 		t->rows[i] = t->lh[i].row;
 	sort_rows(t->rows, t->ln);
@@ -126,15 +142,17 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 	{
 		TopEnt	   *e = &t->lh[i];
 
-		e->tid = t->tids[row_at(t->rows, t->ln, e->row)];
+		e->tid = t->tids[row_at(t->rows, t->ln, e->row, i)];
 		e->part = part;
 		e->tie = tie_key(&e->tid, part);
 	}
 	vals = t->nov > 0 && (t->nread == 0 || out_rows(t) >= Max(TOPN_OUT_ROWS, t->limit / 2));
 	if (vals)
 		read_outputs(t, src, unit);
-	for (int i = 0; i < t->ln; i++)
-		res_push(t, &t->lh[i], vals ? &t->uv[(Size) i * t->nov] : NULL, vals ? &t->uvn[(Size) i * t->nov] : NULL);
+	if (vals || t->lh != t->ce || !res_take(t, t->ln))
+		for (int i = 0; i < t->ln; i++)
+			res_push(t, &t->lh[i], vals ? &t->uv[(Size) i * t->nov] : NULL, vals ? &t->uvn[(Size) i * t->nov] : NULL);
+	t->lh = lh;
 	share_bar(t);
 }
 
@@ -247,7 +265,9 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 {
 	int64	   *r;
 
-	if (t->mem && (t->nmem + 1) * t->stride * (int64) sizeof(int64) > sort_memory())
+	if (t->memmax == 0)
+		t->memmax = sort_memory();
+	if (t->mem && (t->nmem + 1) * t->stride * (int64) sizeof(int64) > t->memmax)
 		mem_spill(t);
 	if (t->mem == NULL)
 	{
@@ -259,7 +279,7 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 		t->capmem *= 2;
 		t->mem = repalloc(t->mem, t->capmem * t->stride * sizeof(int64));
 	}
-	r = mem_row(t, t->nmem++);
+	r = mem_row(t, t->nmem);
 	memset(r, 0, t->stride * sizeof(int64));
 	for (int j = 0; j < t->nkey; j++)
 		if (isnull[j])
@@ -267,6 +287,71 @@ sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 		else
 			r[j] = k[j];
 	r[t->stride - 1] = tid;
+	if (t->bar && mem_cmp(r, t->bar, t) > 0)
+		return;
+	t->nmem++;
+	if (t->keep > 0 && t->nmem >= 2 * t->keep)
+		mem_cut(t);
+}
+
+static inline void
+mem_swap(const SiftTopN *t, int64 a, int64 b)
+{
+	int64	   *x = mem_row(t, a),
+			   *y = mem_row(t, b);
+
+	for (int i = 0; i < t->stride; i++)
+	{
+		int64		v = x[i];
+
+		x[i] = y[i];
+		y[i] = v;
+	}
+}
+
+/* The rows of mem rearranged so that the first n are the n that sort first (in no order): quickselect, the rows differ by their TIDs */
+static void
+mem_select(SiftTopN *t, int64 n)
+{
+	int64		lo = 0,
+				hi = t->nmem - 1;
+
+	while (lo < hi)
+	{
+		int64		mid = lo + (hi - lo) / 2,
+					at = lo;
+
+		if (mem_cmp(mem_row(t, mid), mem_row(t, lo), t) < 0)
+			mem_swap(t, mid, lo);
+		if (mem_cmp(mem_row(t, hi), mem_row(t, lo), t) < 0)
+			mem_swap(t, hi, lo);
+		if (mem_cmp(mem_row(t, hi), mem_row(t, mid), t) < 0)
+			mem_swap(t, hi, mid);
+		mem_swap(t, mid, hi);	/* the median is the pivot, at the end */
+		for (int64 j = lo; j < hi; j++)
+			if (mem_cmp(mem_row(t, j), mem_row(t, hi), t) < 0)
+				mem_swap(t, at++, j);
+		mem_swap(t, at, hi);
+		if (at == n)
+			return;
+		if (at < n)
+			lo = at + 1;
+		else
+			hi = at - 1;
+	}
+}
+
+/* mem keeps the best `keep` rows; the worst of them is the bar of the rows that come after */
+void
+mem_cut(SiftTopN *t)
+{
+	if (t->keep <= 0 || t->nmem <= t->keep)
+		return;
+	mem_select(t, t->keep - 1);
+	t->nmem = t->keep;
+	if (t->bar == NULL)
+		t->bar = MemoryContextAlloc(GetMemoryChunkContext(t), t->stride * sizeof(int64));
+	memcpy(t->bar, mem_row(t, t->keep - 1), t->stride * sizeof(int64));
 }
 
 int
@@ -298,7 +383,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 				nc = 0;
 	uint16		part;
 
-	grow_unit_buffers(t, nrow);
+	grow_unit_buffers(t, nrow, false);
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 		for (uint64 b = rmask[w]; b; b &= b - 1)
 		{

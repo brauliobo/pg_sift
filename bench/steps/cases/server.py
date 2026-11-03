@@ -4,12 +4,13 @@
 import os
 import re
 import subprocess
+import time
 from collections import Counter
 
 from duckdb import Session, key as row_key, same
 
 from . import runcfg
-from .runcfg import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, REPO, TYPES, die, log
+from .runcfg import BUILT, COLUMNS, DATASETS, DB, GEN, INDEX_COLUMNS, KEPT, REPO, TYPES, die, log
 
 
 # --- the server
@@ -19,7 +20,11 @@ ENV = {**os.environ, 'LC_ALL': 'C'}
 
 def psql(sql, db=DB, port=None, *args):
     cmd = ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', db] + (['-h', '127.0.0.1', '-p', str(port)] if port else []) + list(args)
-    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning' % runcfg.TIMEOUT})
+    for _ in range(5):
+        r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env={**ENV, 'PGOPTIONS': '-c statement_timeout=%ds -c client_min_messages=warning -c synchronous_commit=on' % runcfg.TIMEOUT})
+        if not r.returncode or 'deadlock detected' not in r.stderr:
+            break
+        time.sleep(1)   # DROP SCHEMA of the table a maintenance worker has just left takes the locks in the other order: the worker finishes, the retry goes through
     if r.returncode:
         die('psql: %s' % r.stderr.strip()[:500])
     return r.stdout.strip()
@@ -34,33 +39,71 @@ def dataset(rows):
     if psql("SELECT to_regclass('public.orders_src') IS NULL") == 't' or int(psql('SELECT count(*) FROM public.orders_src')) != rows:
         log('generating %s orders' % format(rows, ','))
         subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', GEN], check=True, capture_output=True, env=ENV)
+        settle_visibility('public')   # the generator of a dataset stops on a table of this schema with pages that are not all visible
         psql('ANALYZE orders_src')
-    csv = os.path.join(os.environ.get('CASES_TMP', '/var/tmp'), 'orders-%d.csv' % rows)
+    csv = os.path.join(os.environ.get('CASES_TMP', '/dev/shm/sift-cases'), 'orders-%d.csv' % rows)
     if not os.path.exists(csv):
         psql("COPY (SELECT %s FROM orders_src ORDER BY id) TO '%s' CSV" % (', '.join(COLUMNS), csv))
     return csv
 
 
+def partial_maps(schema):
+    """the heap tables of SCHEMA (a sift_table has no visibility map) with relallvisible < relpages: 'rel relallvisible of relpages pages', comma separated"""
+    return psql("SELECT string_agg(format('%%s %%s of %%s pages', oid::regclass, relallvisible, relpages), ', ') FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') "
+                "AND relam = (SELECT oid FROM pg_am WHERE amname = 'heap') AND relpages > 0 AND relallvisible < relpages" % schema)
+
+
+def settle_visibility(schema):
+    """VACUUM the tables of SCHEMA once more and fail unless relallvisible = relpages for each: the planner prices an index-only scan from relallvisible / relpages, so a partial map moves the
+    native lane's plan choice and its heap fetches even when no scan reads the pages outside it. Two things leave one: under `synchronous_commit = off` the pages of unflushed commits (hint bits
+    wait for the WAL writer, ~200 ms), and the pages a setup that rewrites every row (UPDATE, ALTER COLUMN TYPE) empties in the middle of the heap, which VACUUM keeps. The second is finished
+    by VACUUM FULL of the table and a VACUUM (FREEZE, ANALYZE): the heap of the final rows, as if built directly, and the indexes rebuilt on it"""
+    psql("SELECT format('VACUUM (FREEZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
+    partial = partial_maps(schema)
+    if partial:
+        log('visibility map: VACUUM FULL of %s' % partial)
+        psql("SELECT format('VACUUM FULL %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind IN ('r', 'm') AND relam = (SELECT oid FROM pg_am WHERE amname = 'heap') AND relpages > 0 AND relallvisible < relpages \\gexec" % schema)
+        psql("SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec" % schema)
+        bad = partial_maps(schema)
+        if bad:
+            die('the visibility map is partial after VACUUM FULL (all-visible pages of the pages): %s. The native plans would be priced on it: load with synchronous_commit = on or wait for the flush' % bad)
+
+
+def drop_added(schema):
+    """drop the tables and indexes a case added to the dataset SCHEMA (its copies of a table and their indexes: a text case at 300,000 documents holds 400 MB of each) and keep those of the generator"""
+    psql("SELECT format('DROP %%s IF EXISTS %%s', CASE relkind WHEN 'i' THEN 'INDEX' WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END, oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relname NOT IN (%s) "
+         "AND relkind IN ('r', 'p', 'm', 'i') AND NOT relispartition ORDER BY relkind = 'i' \\gexec" % (schema, KEPT[schema]))
+
+
+def generate(case, rows):
+    """the schema of a shared dataset (`events`, `keys`, `tpch`, `hits`, `tseries`, `docs`) with ROWS rows, made once per size from its generator (-v n=ROWS)"""
+    schema, path = DATASETS[case.dataset]
+    if (case.dataset, rows) not in BUILT:
+        psql('DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s' % (schema, schema))
+        gen = open(path).read()
+        if case.dataset == 'events':   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
+            gen = gen.replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")
+        r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
+                           env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
+        if r.returncode:
+            die('%s: %s' % (os.path.relpath(path, REPO), ' '.join((r.stdout.strip()[-300:], r.stderr.strip()[:500]))))   # the generator\'s \\echo says which table
+        if 'VACUUM' in gen:
+            settle_visibility(schema)
+        KEPT[schema] = psql("SELECT string_agg(quote_literal(relname), ',') FROM pg_class WHERE relnamespace = '%s'::regnamespace" % schema)
+        BUILT.add((case.dataset, rows))
+
+
 def build(case, rows):
     """the case's schema: `orders` from orders_src (+ the derived columns) with the btrees of the store's PostgreSQL lane (bench/sql/store/pg.sql, without the GIN) and
     the sift_col index, the case's DDL, VACUUM (FREEZE, ANALYZE) unless the case says no"""
+    if case.dataset in DATASETS:
+        generate(case, rows)
     if case.load:
         psql('DROP SCHEMA IF EXISTS c_%s CASCADE; CREATE SCHEMA c_%s' % (case.id, case.id))
         return
     if case.dataset in DATASETS:
-        schema, path = DATASETS[case.dataset]
-        if (case.dataset, rows) not in BUILT:
-            psql('DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s' % (schema, schema))
-            gen = open(path).read()
-            if case.dataset == 'events':   # the gate's sizes are 20,000 to 50,000 rows: int8 products keep 200,000 and 1,000,000 in range, and the partitions it indexes are those of its own schema
-                gen = gen.replace('(i * 7919)', '(i::bigint * 7919)').replace('(i * 104729)', '(i::bigint * 104729)').replace('JOIN pg_class c ON c.oid = i.inhrelid', "JOIN pg_class c ON c.oid = i.inhrelid AND c.relnamespace = 'c_events'::regnamespace")
-            r = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', DB, '-v', 'n=%d' % rows, '-f', '-'], input=gen, capture_output=True, text=True,
-                               env={**ENV, 'PGOPTIONS': '-c search_path=%s,public -c client_min_messages=warning' % schema})
-            if r.returncode:
-                die('%s: %s' % (os.path.relpath(path, REPO), r.stderr.strip()[:500]))
-            BUILT.add((case.dataset, rows))
         if case.sec.get('setup'):
-            psql('SET search_path = %s, public;\n' % schema + case.sec['setup'] + ';\n')
+            psql('SET search_path = %s, public;\n' % DATASETS[case.dataset][0] + case.sec['setup'].replace('{rows}', str(rows)) + ';\n')
         return
     if case.share and (case.schema(), rows) in BUILT:
         return
@@ -69,11 +112,13 @@ def build(case, rows):
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
     for schema, pre in [(case.schema(), '')] + ([(case.schema() + '_base', 'SET %s;\n' % case.opt['base'])] if case.base_settings() else []):
-        sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
+        sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS).replace('{rows}', str(rows)) + ';\n'
         if case.opt.get('vacuum', 'yes') == 'yes':
             # every table of the case, not only orders: without the visibility map the scan checks the heap of each page for its rows (many_groups: 17,668 blocks read against 1,500 of the index)
             sql += "SELECT format('VACUUM (FREEZE, ANALYZE) %%s', oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relkind = 'r' \\gexec\n" % schema
         psql(sql)
+        if case.opt.get('vacuum', 'yes') == 'yes':
+            settle_visibility(schema)
     psql('CHECKPOINT')
     BUILT.add((case.schema(), rows))
 
@@ -151,7 +196,7 @@ def load_duck(port, csv):
 
 def plan_note(text):
     """the plan the row says it used: the scan node and the lines that name what it does (or the first scan of PostgreSQL's plan)"""
-    sift = [re.sub(r' \(actual[^)]*\)', '', l.strip()) for l in text.split('\n') if re.match(r'\s*(Custom Scan \(Sift|Top-N:|Group Keys:|Pushed Aggregates:)', l)]
+    sift = [re.sub(r' \(actual[^)]*\)', '', l.strip()) for l in text.split('\n') if re.match(r'\s*(?:->\s*)?(?:Custom Scan \(Sift|Top-N:|Group Keys:|Pushed Aggregates:)', l)]
     if sift:
         return '; '.join(sift)[:140]
     scans = re.findall(r'(?:Parallel )?(?:Seq Scan|Index Only Scan|Index Scan|Bitmap Heap Scan)(?: using \w+)?(?: on \w+)?', text)

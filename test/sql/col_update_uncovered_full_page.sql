@@ -1,0 +1,54 @@
+-- An UPDATE of a column the index does not hold, on a heap page with no room for the new version, is not HOT: the executor inserts the new version into the index with
+-- indexUnchanged = true, the same values at a new address, while the old version stays until VACUUM. A reader that trusted the visibility map and the stored counts counted both
+-- (1,007,754 rows for 1,000,000 in a measurement of the report that found it): the counts, the sums and the index-only reads stay those of the heap, with the pre-aggregates on,
+-- before and after the VACUUM, after a second update of rows already updated and after a delete.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE u (id int, g int, v int, pad text) WITH (fillfactor = 100, autovacuum_enabled = false);
+INSERT INTO u SELECT i, i % 50, i % 1000, repeat('x', 40 + i % 7) FROM generate_series(1, 60000) i;
+CREATE INDEX u_c ON u USING sift_col (id, g, v);
+VACUUM (ANALYZE, FREEZE) u;
+
+-- the answers of one way to read: the total, a grouped count, and an index-only scan over half of the groups
+CREATE FUNCTION answers(way text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE way WHEN 'agg' THEN 'on' ELSE 'off' END, true);
+	IF way = 'heap' THEN
+		PERFORM set_config('enable_indexscan', 'off', true);
+		PERFORM set_config('enable_indexonlyscan', 'off', true);
+		PERFORM set_config('enable_bitmapscan', 'off', true);
+	END IF;
+	EXECUTE 'SELECT count(*) || $q$/$q$ || sum(id) || $q$/$q$ || sum(v) FROM u' INTO a;
+	EXECUTE 'SELECT md5(string_agg(g || $q$:$q$ || n || $q$:$q$ || s, $q$,$q$ ORDER BY g)) FROM (SELECT g, count(*) n, sum(v) s FROM u GROUP BY g) x' INTO b;
+	IF way <> 'heap' THEN
+		PERFORM set_config('enable_seqscan', 'off', true);
+		PERFORM set_config('enable_bitmapscan', 'off', true);
+		PERFORM set_config('enable_indexscan', 'off', true);
+	END IF;
+	EXECUTE 'SELECT count(*) || $q$/$q$ || sum(id) FROM (SELECT id, g FROM u WHERE g < 25) x' INTO c;
+	RETURN a || ' ' || b || ' ' || c;
+END $$;
+-- every way equals the heap's
+CREATE FUNCTION exact() RETURNS text LANGUAGE sql AS $$ SELECT (answers('agg') = answers('heap'))::text || ' ' || (answers('ioss') = answers('heap'))::text $$;
+
+SELECT exact() AS before_update;
+UPDATE u SET pad = pad || 'y' WHERE id % 20 = 3;
+SELECT pg_stat_force_next_flush();
+SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'u';
+SELECT exact() AS after_update;
+VACUUM u;
+SELECT exact() AS after_vacuum;
+UPDATE u SET pad = pad || 'z' WHERE id % 20 IN (3, 7);
+SELECT exact() AS after_second_update;
+DELETE FROM u WHERE id % 40 = 7;
+SELECT exact() AS after_delete;
+VACUUM u;
+SELECT exact() AS after_second_vacuum;
+SELECT answers('heap') AS heap_answers;
+
+DROP FUNCTION exact();
+DROP FUNCTION answers(text);
+DROP TABLE u;
+DROP EXTENSION pg_sift;

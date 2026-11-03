@@ -24,7 +24,7 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	const SiftSrcLeaf *lf;
 
-	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI && !(j->kind == SJ_ANTI && ex->spec->topn)) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
 		return false;
 	*leaf = cb->leaf[j->keypos[k]];
 	if (*leaf < 0 || *leaf >= ex->nbase)
@@ -251,11 +251,12 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live,
 	st->ready = true;
 	p = palloc0(sizeof(SiftAggPred));
 	p->kind = SAP_IN;
+	p->op = j->kind == SJ_ANTI;
 	p->id = id;
 	p->leaf = leaf;
 	p->leaf2 = -1;
 	p->argtype = ex->lay->leaf[leaf].typid;
-	p->desc = psprintf("%s IN (keys of %s)", ex->lay->leaf[leaf].name, j->desc);
+	p->desc = psprintf("%s %sIN (keys of %s)", ex->lay->leaf[leaf].name, p->op ? "NOT " : "", j->desc);
 	if (jk)
 	{
 		jk->pred = p;
@@ -303,7 +304,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			/* the table of the predicate is the state of the id it is given: make room first */
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
 			memset(&ex->ps[total], 0, sizeof(PredState));
-			live = join_live_rows(ex, ci, caller);
+			/* the keys of an anti join are the rows that match, whatever a join after it does with them */
+			live = j->kind == SJ_ANTI ? NULL : join_live_rows(ex, ci, caller);
 			if (s->topn)
 				live = join_own_rows(ex, ci, live);
 			if ((p = join_filter_pred(ex, ci, k, leaf, total, live, &seen, &add)) != NULL)
@@ -357,6 +359,21 @@ join_none(AggExec *ex)
 	return false;
 }
 
+/*
+ * Most rows open a group of their own and the keys are many: the direct arrays would grow by doubling a key at a time, copying all of
+ * them each time, to hold a product of the key ranges that is mostly empty. The hash table starts with room for the groups the planner expects. Past four keys the
+ * hash of each row's ids costs more than the doublings it saves (six keys, 15,000 groups of 80,000 rows: 5% slower).
+ */
+#define HASH_FIRST_KEYS	4
+
+static bool
+table_hash_first(const AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+
+	return s->nkeys > 1 && s->nkeys <= HASH_FIRST_KEYS && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max && s->est_rows < 2 * s->est_groups;
+}
+
 /* An empty group table, all in tcxt: key ids, group arrays, count(DISTINCT) sets */
 void
 table_init(AggExec *ex)
@@ -364,6 +381,7 @@ table_init(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
 	uint64		total = 1;
+	bool		hash_first;
 
 	ex->hash = false;
 	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : s->nkeys == 1 ? SINGLE_DIRECT_MAX : DIRECT_MAX;
@@ -374,6 +392,10 @@ table_init(AggExec *ex)
 	 */
 	ex->direct_max = Min((uint64) ex->direct_max,
 						 Max((uint64) LANE_DIRECT_MAX, 2 * (uint64) get_hash_memory_limit() / (sizeof(int64) * (1 + Max(s->naggs, 1)))));
+#ifdef SIFT_TESTING
+	if (sift_test_direct_max > 0 && ex->direct_max > 0)
+		ex->direct_max = sift_test_direct_max;
+#endif
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;
@@ -408,9 +430,12 @@ table_init(AggExec *ex)
 	}
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
-	if (total > ex->direct_max || direct_oversized(ex, total))
+	hash_first = table_hash_first(ex);
+	if (total > ex->direct_max || direct_oversized(ex, total) || hash_first)
 	{
 		total = Max(1024, spill_keep(ex));
+		if (hash_first)
+			total = Max(total, (uint64) Min(s->est_groups, s->est_rows));
 		hash_init(ex, (uint32) total);
 	}
 	else
@@ -455,12 +480,12 @@ table_init(AggExec *ex)
 		}
 		if (a->kind == SAA_COUNT_DISTINCT)
 		{
-			ex->dist[i] = dist_new(ex, !a->num.n && a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype != SCV_CODE);
+			ex->dist[i] = dist_new(ex, i, !a->num.n && a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype != SCV_CODE);
 			if (i < 64 && (ex->dist_hash >> i & 1))
 				dist_start_hash(ex->dist[i]);
 		}
 		else if (a->kind == SAA_O_COUNT_KEY)
-			ex->dist[i] = dist_new(ex, false);
+			ex->dist[i] = dist_new(ex, i, false);
 		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
 			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG || a->kind == SAA_M_PG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)

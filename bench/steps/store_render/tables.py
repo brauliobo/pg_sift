@@ -89,7 +89,7 @@ def size_rows(R, tier, engines):
 
 
 def size_note(R, tier, engines):
-    """what the size rows mean (the parts of each system are in the index tables of docs/BENCHMARKS.md); page: where the link to the per-column table starts from"""
+    """what the size rows mean (the parts of each system are in the index tables of bench/out/BENCHMARKS.md); page: where the link to the per-column table starts from"""
     own = [LANES[e][0] for e in ('sift_table', 'es', 'ch', 'citus') if e in engines]
     return ('- **The size rows.** *Index or columnar data* is what a system keeps beside the table: PostgreSQL its secondary indexes (the btrees on the date and on country and status, the GIN on the title), `sift_col` the column index and the BM25 title index; '
             f'the heap in parentheses is the table with its primary key btree, the same heap for PostgreSQL and `sift_col`, which indexes the ordinary table. {join_and(own)} store the data themselves, so there that row is the data, not an index in the PostgreSQL sense '

@@ -11,6 +11,7 @@ from store_data import Rows, effective, load_pg, mib, servers
 from store_engine import Window, cgroup_usage, container_cgroup, gate, psql_value
 from store_lib import LANES, NOISY, container, load_queries, log, port
 from store_updates import update_engine
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 SECTION_LANES = ['pg', 'sift', 'sift_maint', 'sift_table']   # sift_table runs with its defaults: sift.table_auto_defrag is on in 3.3
 CLIENTS = 4

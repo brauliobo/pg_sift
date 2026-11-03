@@ -81,6 +81,7 @@ Datum text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len);
 bool eval_bool(AggExec *ex, ExprState *e, Datum in, bool in_null);
 DictSlot *dict_slot(AggExec *ex, const SiftSrcDict *d);
 uint32 key_value_id(AggExec *ex, int ki, Datum in, bool in_null);
+Datum key_input_datum(AggExec *ex, int ki, Datum in, bool *isnull);
 uint32 *dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki);
 uint32 *dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai);
 uint32 kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c);

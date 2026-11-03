@@ -14,6 +14,10 @@
 #define TOPN_ASSUMED_ROWS	1000
 /* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
 #define TOPN_SORT_ROWS	1024
+#define TOPN_ZONE_FRAC	0.25		/* the share of the units the zones leave, at the most, for the units to be read in place of the walk of a filter */
+#define TOPN_ROWS_PER_FETCH	64		/* the rows of a unit that a scan reads for one heap fetch of the order-array walk of a filter (a row of a unit ~30 instructions, a fetch ~3,400, half of that margin) */
+/* What a row of the heap costs past TOPN_SORT_ROWS, in operator steps: 1.5, 3.1, 9.8 and 19.4 ms over a page of 100 for 2,000, 5,000, 20,000 and 50,000 rows of offset */
+#define TOPN_ROW_STEP	70.0
 /*
  * The sort reads the keys after the first at every row that passes (the scan reads the first anyway), by positions: a gather, dearer than
  * the decode of a whole column. Measured on 200,000 rows of small integer keys, sorted in memory: 11 ms for each key past the first, where
@@ -21,6 +25,12 @@
  * for 200,000 rows, 0.012 per row, 4.8 operators at the default cpu_operator_cost. The ratio to the plain plan cancels the speed of the host.
  */
 #define TOPN_KEY_READ	4.8
+/*
+ * The order-array walk of a first key that ties over thousands of rows reads, for the keys that follow, every row of the tie it is in, not the entries wanted: 300,000 rows
+ * of 10 entities over a random heap, 30,000 a tie, ORDER BY entity, ts LIMIT 20: 2.6 ms more than the one-key walk of the same entries (86 ns a row, 15 operators at the
+ * 2.3 us a unit of the scan), 0.5 ms for 100 entities (a tie of 3,000), 0.15 for 1,000
+ */
+#define TOPN_TIE_READ	15.0
 /*
  * A tuplesort compares through the tuple comparator, which PostgreSQL's cost_sort prices at 2 * cpu_operator_cost a step, and pays it twice,
  * forming the runs and merging them. Measured on the same rows, the sort that spills (4 keys, 4 MB) takes 172 ms more than the one in
@@ -73,14 +83,25 @@ extern Node * topn_xform(Node *e, SiftTopXform *xf, Node **konst);
 extern bool topn_raw_key(AggCtx *c, int leaf, int xkind);
 extern bool topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt, Oid *cmp, Oid *collid, SiftTopXform *xf, List **exprs);
 extern double topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit);
-extern bool topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs);
+/* a column of a joined table the select list reads, and its place among the columns the table's rows hold for the scan */
+typedef struct TopLookup
+{
+	JoinCtx    *jc;
+	Var		   *var;
+	int			col;
+} TopLookup;
+
+extern bool topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs, List **lookups);
+extern bool topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, int *attno, int *nout, List **spec);
 extern void topn_out_leaves(AggCtx *c, List *scan_tlist, int nkey, const int *leaf, const SiftTopXform *xf, int *oleaf);
 
 extern bool window_whole_set(WindowClause *wc);
 extern bool topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tlist);
 extern bool topn_joins_ok(AggCtx *c, SiftAggSpec *s);
-extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid);
-extern bool topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf);
+extern double topn_walk_fetches(AggCtx *c, int key, int group, double rows);
+extern bool topn_one_leaf(AggCtx *c);
+extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked);
+extern bool topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, bool *resid);
 extern bool topn_heads_win(const AggCtx *c, const SiftAggSpec *s, int leaf, double rows);
 
 #endif							/* SIFT_AGG_ORDER_DIR_INT_H */

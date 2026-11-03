@@ -29,6 +29,7 @@ extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot s
 extern bool sift_colsrc_can_part(Oid relam, bool index);
 extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 extern void sift_colsrc_close(SiftSrcSource *src);
+extern bool sift_colsrc_rescan(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
 
@@ -106,12 +107,25 @@ extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSr
 /* The order of the keys of a leaf in the unit (SiftSrcProvider.key_order) */
 extern int	sift_colsrc_key_order(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
-extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
+extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want);
+extern bool sift_colsrc_gorder_compact(SiftSrcSource *src, int i, int leaf);
+extern bool sift_colsrc_gorder_cuts(SiftSrcSource *src, int i, int leaf, struct SiftCGOrdCuts *cuts);
 extern const char *sift_colsrc_gorder_str(SiftSrcSource *src, int i, int leaf, int64 key, uint32 *len);
 extern uint32 sift_colsrc_gorder_strrank(SiftSrcSource *src, int i, int leaf, const char *s, uint32 len, bool after);
 extern bool sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values);
-extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, BlockNumber blk);
+extern bool sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);
+#define SIFT_GORD_EXACT		1
+#define SIFT_GORD_CHECK		0
+#define SIFT_GORD_DEAD		(-1)
+#define SIFT_GORD_UNKNOWN	(-2)
+extern int	sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid);
+extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid);
+extern bool sift_colsrc_gorder_clean(SiftSrcSource *src, int i);
+extern bool sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);
+extern void sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
+extern bool sift_colsrc_gorder_groups(SiftSrcSource *src, int i, int leaf, uint32 *ngroups);
+extern void sift_colsrc_gorder_group_at(SiftSrcSource *src, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern void sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);
 extern void sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
@@ -242,6 +256,13 @@ sift_colsrc_count_cmp(SiftSrcSource *src, int leaf)
 {
 	if (src->prov->count_cmp != NULL)
 		src->prov->count_cmp(src->impl, leaf);
+}
+
+static inline void
+sift_colsrc_count_strs(SiftSrcSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
+{
+	if (src->prov->count_strs != NULL)
+		src->prov->count_strs(src->impl, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
 }
 
 static inline uint64

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Promotion and merge steps of the worker and of inserters side by side (they claim the segments they replace),
-# with deletes, VACUUM and the exclusive SQL functions in between: no error, every row indexed, nothing leaked.
+# with deletes, VACUUM and the exclusive SQL functions in between: no error, every row indexed, nothing leaked. A smoke of the interleavings, 4 clients: the claims and the exclusion of
+# the exclusive functions are pinned without timing by maint_lock.
 # Runs on the release build too (no test functions).
 . "$(dirname "$0")/lib.bash"
 
@@ -15,7 +16,7 @@ sql conc2 "CREATE EXTENSION pg_sift" "CREATE TABLE t (id serial, body text)" \
 D=$(dir conc2)
 printf '%s\n' "INSERT INTO t (body) SELECT 'zzcommon ' || string_agg('w' || (random() * 3000)::int, ' ') FROM generate_series(1, 40);" >"$D/insert.sql"
 printf '%s\n' '\set did random(1, 200000)' 'DELETE FROM t WHERE id = :did;' >"$D/delete.sql"
-pgbench_bg conc2 12 "$SECS" -f "$D/insert.sql@20" -f "$D/delete.sql@1"
+pgbench_bg conc2 4 "$SECS" -f "$D/insert.sql@20" -f "$D/delete.sql@1"
 
 # VACUUM and the exclusive SQL functions meanwhile
 : >"$D/maint.out"

@@ -15,9 +15,11 @@ SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 301) END, (i % 40)
        CASE i % 9 WHEN 0 THEN 0.0 WHEN 1 THEN -0.0 WHEN 2 THEN 'NaN' WHEN 3 THEN NULL WHEN 4 THEN 'Infinity' WHEN 5 THEN '-Infinity' ELSE i % 5 - 2.5 END, i * 0.1
 FROM generate_series(1, 30000) i;
 CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
-NOTICE:  sift_col index o_col writes a rollup of the rows by c, e
+NOTICE:  sift_col index "o_col": rollup_dims = 'auto' writes a rollup of the rows by c, e
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 5 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX o_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX o_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE o;
 -- jsonb keys (a dimension built from columns): many distinct values, so the ranks come from the byte keys (gorder.c) and the check of the comparator; numbers that are one double
 -- (9007199254740992 and 9007199254740993), integers and fractions, strings of both cases, with accents and empty, true, false and null elements, nested arrays and objects
@@ -29,9 +31,11 @@ SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 19 - 9 END,
        CASE i % 3 WHEN 0 THEN true WHEN 1 THEN false END, i % 3
 FROM generate_series(1, 30000) i;
 CREATE INDEX oj_col ON oj USING sift_col (id, a, b, c, d, e);
-NOTICE:  sift_col index oj_col writes a rollup of the rows by d, e
+NOTICE:  sift_col index "oj_col": rollup_dims = 'auto' writes a rollup of the rows by d, e
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 5 sampled stretches of about a unit, about 3 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX oj_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX oj_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "oj_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE oj;
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
 CREATE FUNCTION o_keys(q text, k int, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
@@ -73,6 +77,12 @@ INSERT INTO o_q VALUES
 	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
 	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	(22, 0, 'SELECT * FROM (SELECT COALESCE(b, -1) AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (c), (b))) q ORDER BY c2 NULLS LAST, c1 DESC', 'ordered'),
+	-- the ORDER BY of the query that groups by sets: the keys a set leaves out are NULL, in the position the sort puts NULL
+	(24, 2, 'SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c) ORDER BY b NULLS FIRST, c NULLS FIRST', 'ordered'),
+	(25, 2, 'SELECT a AS c1, e AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((a, e), (a), (e), ()) ORDER BY a DESC NULLS LAST, e NULLS FIRST', 'ordered'),
+	(26, 1, 'SELECT c AS c1, b AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((c, b), (c), (b)) ORDER BY c DESC NULLS FIRST', 'ordered'),
+	(27, 0, 'SELECT b AS c1, c AS c2, count(*) AS n, lag(count(*)) OVER (PARTITION BY b ORDER BY c DESC) AS l FROM o GROUP BY GROUPING SETS ((b, c), (b))', 'ordered'),
+	(28, 0, 'SELECT a AS c1, count(*) AS n FROM o GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST', 'ordered'),
 	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- jsonb keys: the rank of the 3,000 distinct values, ascending, descending, nulls first, with a window on top
 	(30, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1', 'ordered'),
@@ -104,11 +114,16 @@ SELECT n, o_plan(q) = want AS plan FROM o_q ORDER BY n;
  21 | t
  22 | t
  23 | t
+ 24 | t
+ 25 | t
+ 26 | t
+ 27 | t
+ 28 | t
  30 | t
  31 | t
  32 | t
  33 | t
-(22 rows)
+(27 rows)
 
 -- rows in the normal plan's order (key columns), with no worker and with three
 SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k, true, 3) = o_keys(q, k, false, 0) AS workers FROM o_q WHERE want = 'ordered' ORDER BY n;
@@ -129,11 +144,16 @@ SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k,
  21 | t      | t
  22 | t      | t
  23 | t      | t
+ 24 | t      | t
+ 25 | t      | t
+ 26 | t      | t
+ 27 | t      | t
+ 28 | t      | t
  30 | t      | t
  31 | t      | t
  32 | t      | t
  33 | t      | t
-(19 rows)
+(24 rows)
 
 -- the groups are the same rows
 CREATE FUNCTION o_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -165,11 +185,16 @@ SELECT n, o_rows(q, true) = o_rows(q, false) AS rows FROM o_q ORDER BY n;
  21 | t
  22 | t
  23 | t
+ 24 | t
+ 25 | t
+ 26 | t
+ 27 | t
+ 28 | t
  30 | t
  31 | t
  32 | t
  33 | t
-(22 rows)
+(27 rows)
 
 -- adversarial keys: strings that sort differently by collation (case, accents, punctuation, digits, the empty string), numeric with NaN, floats with -0, NaN and infinities,
 -- dates and timestamps with infinity, booleans, negative bigints, NULLs everywhere; every key, both directions, both nulls orders, alone and with a second key that breaks the ties
@@ -192,9 +217,11 @@ UPDATE o2 SET t = NULL WHERE id % 37 = 0;
 UPDATE o2 SET b = NULL WHERE id % 41 = 0;
 UPDATE o2 SET i8 = NULL WHERE id % 43 = 0;
 CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
-NOTICE:  sift_col index o2_col writes a rollup of the rows by b, g
+NOTICE:  sift_col index "o2_col": rollup_dims = 'auto' writes a rollup of the rows by b, g
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 7 sampled stretches of about a unit, about 8 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX o2_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX o2_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o2_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE o2;
 -- a collation that is not the byte order, when the server has one
 SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') AS coll \gset
@@ -293,9 +320,11 @@ SELECT i, (ARRAY['1.0', '1.00', '2', '2.000', '0', '0.0', '-0.0', '3.10', '3.1']
 FROM generate_series(1, 20000) i;
 UPDATE o3 SET n = NULL WHERE id % 13 = 0;
 CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
-NOTICE:  sift_col index o3_col writes a rollup of the rows by s, g
+NOTICE:  sift_col index "o3_col": rollup_dims = 'auto' writes a rollup of the rows by s, g
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 21 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX o3_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX o3_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "o3_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM ANALYZE o3;
 CREATE FUNCTION o3_check(col text, canon text, dir text) RETURNS TABLE (plan text, same_groups bool) LANGUAGE plpgsql AS $$
 DECLARE q text; a text; b text;

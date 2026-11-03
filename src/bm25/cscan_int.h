@@ -26,6 +26,7 @@ typedef struct SiftCol
 
 typedef struct SiftTotals
 {
+	int64		searches;			/* searches of the ranker */
 	int64		sb_scanned;
 	int64		blocks_scored;
 	int64		blocks_skipped;
@@ -69,6 +70,7 @@ typedef struct SiftScanState
 	int64		late_rows;			/* > 0: the plan asked the ranker for the hits that this many rows take through the quals (SIFT_PRIV_LATE) */
 	int64		nread;				/* late quals: hits read from the ranker, and those that passed */
 	int64		nkept;
+	bool		ties;				/* the rows go to an incremental sort under a LIMIT of k rows: the ranker keeps the hits tied with the k-th (SIFT_PRIV_TIES) */
 	bool		late;				/* a ranked scan checks the quals on the rows it hands out, not on every candidate */
 	bool		secure;				/* a policy or security barrier view hides rows: no counter of the index in EXPLAIN ANALYZE */
 	Relation	index;
@@ -88,6 +90,10 @@ typedef struct SiftScanState
 	double		gate,				/* the bitmap is built when the query matches between gate and gate_to documents */
 				gate_to;
 	SiftFilter *filter;
+	SiftAttrTest *attr;			/* tests of INCLUDE columns the ranker applies (SIFT_PRIV_ATTR) */
+	int			nattr;
+	List	   *semi;			/* SIFT_PRIV_SEMI */
+	bool		semi_done;
 	SiftMatchIter *it;
 	SiftRanker *rank;
 	SiftVis		vis;
@@ -121,6 +127,7 @@ typedef struct SiftScanState
 	bool		kcomplete;			/* the round holds every match */
 } SiftScanState;
 
+extern void load_semi(SiftScanState *ss);
 extern TupleTableSlot *fill_scan_slot(SiftScanState *ss, float4 score);
 extern bool scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc);
 extern void reset_iter(SiftScanState *ss);

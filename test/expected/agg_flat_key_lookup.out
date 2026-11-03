@@ -4,6 +4,7 @@
 -- is priced for the few rows it reads of it, not for its index scan (30,000 members are priced 997 for the scan, over a quarter of the flat plan, and the join 22).
 -- Use default planner costs: the choice between the two forms is the point.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources SELECT i, i <> 7 FROM generate_series(1, 20) i;

@@ -219,11 +219,18 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 	return jc->cpath ? Max(child_keys(c->root, jc->cpath), 1.0) : lookup_rows(c, jc);
 }
 
-/* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
+/*
+ * is the count of a lookup a default guess: a filter of a table that PostgreSQL has no statistics for, or a CTE whose body is counted by defaults (cte_guessed)? A CTE
+ * of ids built from sub-selects on an expression key or a jsonb filter is estimated at the clamp of one row whatever it holds, and the normal plan would be priced for one probe
+ */
 bool
 lookup_guessed(AggCtx *c, const JoinCtx *jc)
 {
-	return planner_rt_fetch(jc->rti, c->root)->rtekind == RTE_RELATION && !lookup_counted(c, jc);
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+
+	if (rte->rtekind == RTE_CTE)
+		return cte_guessed(c, jc);
+	return rte->rtekind == RTE_RELATION && !lookup_counted(c, jc);
 }
 
 /*
@@ -409,6 +416,61 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
 	return best;
 }
 
+/* how well the order of the rows in the heap follows the values of column att, -1 to 1 (0 without statistics) */
+static double
+column_correlation(Oid relid, int att)
+{
+	HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(relid), Int16GetDatum(att), BoolGetDatum(false));
+	AttStatsSlot sslot;
+	double		corr = 0;
+
+	if (!HeapTupleIsValid(tp))
+		return 0;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		corr = sslot.numbers[0];
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	return corr;
+}
+
+/*
+ * The cost, in operators, of the heap pages the rows of a lookup read through a btree are fetched from. The btree gives the rows of a key one after the other, so a table
+ * that is not in the order of the key (correlation near 0) is a page visit for each row read: the rows that pass the `column = value` conditions the index starts with,
+ * before the table's other filters, counted by the statistics of the column (a hot value is not a typical one: 285,000 rows read for 45,000 kept). 1 to 1.5 us a page
+ * visit measured (vet_cost), 0.9 us a row read of 13,000 to 285,000 rows of a table of 1,500,000.
+ */
+static double
+idx_read_cost(AggCtx *c, RelOptInfo *jrel, const SiftAggJoin *j)
+{
+	List	   *conds = NIL;
+	Oid			relid = planner_rt_fetch(jrel->relid, c->root)->relid;
+	double		rows,
+				corr = 0;
+
+	foreach_node(RestrictInfo, ri, jrel->baserestrictinfo)
+	{
+		List	   *args = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->args :
+			IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->args : NIL;
+		Oid			opno = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->opno : IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->opno : InvalidOid;
+
+		for (int k = 0; k < j->nidx; k++)
+			foreach_ptr(Node, a, args)
+			{
+				Node	   *v = strip_relabel(a);
+
+				if (opno == j->idxop[k] && IsA(v, Var) && ((Var *) v)->varno == jrel->relid && ((Var *) v)->varattno == j->idxatt[k])
+				{
+					conds = list_append_unique_ptr(conds, ri);
+					corr = column_correlation(relid, j->idxatt[k]);
+				}
+			}
+	}
+	rows = conds != NIL ? clauselist_selectivity(c->root, conds, jrel->relid, JOIN_INNER, NULL) * Max(jrel->tuples, 1.0) : jrel->rows;
+	return Min(rows, Max(jrel->tuples, 1.0)) * ((1.0 - corr * corr) + Min(1.0, jrel->pages / Max(rows, 1.0)) * corr * corr) * heap_visit_ops(jrel->pages);
+}
+
 /* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities or the keys of a dependent lookup, the rest of a table is read whole */
 static double
 join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
@@ -430,8 +492,9 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	}
 	if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
 	{
-		*row_cost = AGG_IDX_ROW;
-		return Min(Max(jrel->rows, 1.0), tuples);
+		prows = Min(Max(jrel->rows, 1.0), tuples);
+		*row_cost = AGG_IDX_ROW + idx_read_cost(c, jrel, &jc->j) / prows;
+		return prows;
 	}
 	if ((probes = join_probe_keys(c, s, jc, &prows)) > 0)
 	{

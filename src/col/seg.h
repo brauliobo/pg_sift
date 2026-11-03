@@ -12,6 +12,7 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/runs.h"
 #include "core/store.h"
@@ -56,7 +57,7 @@ extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 /* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
 extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 /* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
-extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows);
+extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
@@ -322,13 +323,32 @@ extern const char *sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 ran
 extern uint32 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 len, bool after);	/* the strings of a text block that come before s (after: before or equal), which is the rank of the first one that does not */
 extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
+extern bool sift_cseg_gorder_compact(SiftColSegment *seg, int col);
+extern bool sift_cseg_gorder_pay(SiftColSegment *seg, int col, SiftCGOrdPay *out);	/* what sift_cgord_pay says of the units' zones of an integer leaf */
+extern bool sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *values, uint32 *head, uint32 *vtotal);	/* a block of the ends only (minor 40), not a complete one */
 extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
 extern void sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);	/* _head for the chunk that holds entry p, into buf */
 extern uint32 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);	/* _chunk for the first w entries of the chunk only */
 extern int	sift_cseg_gorder_group(SiftColSegment *seg, int col);	/* the leaf the block is grouped by, -1 when it is not */
 extern void sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the entries of a group (all of a block that is not grouped) */
-extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, int64 lo, int64 hi);
-extern bool sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
+extern uint32 sift_cseg_gorder_ngroups(SiftColSegment *seg, int col);	/* the groups of a grouped block */
+extern void sift_cseg_gorder_group_table(SiftColSegment *seg, int col);	/* the group table of the block of col in memory, whatever its size (a scan of every group looks each up) */
+extern void sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the group at place gi and its entries */
+extern bool sift_cseg_gorder_strkeys(SiftColSegment *seg, int col, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl, int64 *klo, int64 *khi);	/* the keys of the entries of a text block between two bounds (a NULL one: none) */
+extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi);
+extern int sift_cseg_gorder_group_slot(SiftColSegment *seg, int col);
+extern bool sift_cseg_gorder_each(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg);
+extern bool sift_cseg_gorder_tids(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
+extern uint32 sift_cseg_gorder_count_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi);
+extern bool sift_cseg_gorder_each_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, void (*fn) (void *arg, SiftKey tid), void *arg);
+extern bool sift_cseg_gorder_grouped_by(SiftColSegment *seg, int col, int gcol);
+extern bool sift_cseg_gorder_tids_group(SiftColSegment *seg, int col, int gcol, int64 group, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
+extern bool sift_cseg_gorder_tids_groups(SiftColSegment *seg, int gcol, const int64 *set, uint32 nset, uint32 limit, SiftKey **tids, uint32 *ntids);	/* every row of the groups of set, from the second order of any leaf grouped by gcol */
+extern bool sift_cseg_gorder_tids_group_range(SiftColSegment *seg, int gcol, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);	/* every row of the groups in [lo, hi] */
+extern bool sift_cseg_gorder_tids_keys(SiftColSegment *seg, int col, const int64 *keys, uint32 nkeys, uint32 limit, SiftKey **tids, uint32 *ntids);
+extern bool sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);	/* of the entries [vs, ve), how many come before v in a scan from the front (desc: the back): clo certainly, chi at most; a compact block answers from its buckets */
+/* The reader of the heap rows that the compact blocks of the global order take their exact keys from (col/seg/probe.c) */
+extern void sift_cseg_probe_init(void);
 extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; the chunk it ends in is left in keep */
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
@@ -390,7 +410,27 @@ extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPres
 
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);
+extern void sift_cseg_dirty_units(SiftColSegment *seg, uint64 *bits);	/* all the units: nsb bits */
+extern bool sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n);	/* any of the units [first, first + n) */
+
+/*
+ * The pre-aggregates of a dirty unit net of its dead rows (col/seg/net.c): sift_cseg_net_has says the unit has them for exactly ndead dead rows (its cube, rollups and sums
+ * are then those of its live rows), sift_cseg_net_stale that the unit has more dead rows than the sidecar knows. sift_cseg_net_build is the sidecar of the segment as it is
+ * now, sift_cseg_net_finish ends it for the stream, whose pages start at at; sift_cseg_net_pages is how many the segment's own sidecar takes and where it starts.
+ */
+extern bool sift_cseg_net_has(SiftColSegment *seg, uint32 u, uint32 ndead);
+extern bool sift_cseg_net_stale(SiftColSegment *seg, uint32 u, uint32 ndead);
+extern bool sift_cseg_net_due(SiftColSegment *seg);
+extern uint32 sift_cseg_net_uncovered(SiftColSegment *seg);
+extern const uint8 *sift_cseg_net_blob(SiftColSegment *seg, uint32 u, int kind, uint32 *len);
+extern const uint8 *sift_cseg_net_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
+extern bool sift_cseg_net_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
+extern StringInfo sift_cseg_net_build(SiftColSegment *seg);
+extern void sift_cseg_net_finish(StringInfo net, uint64 at);
+extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
+extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
+extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
 
 /* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema); the rows keep their versions */
@@ -467,6 +507,7 @@ sift_cseg_keyed(const SiftSegEntry *e)
 }
 
 #ifdef SIFT_TESTING
+extern bool sift_test_col_gorder_strings;	/* sift.test_col_gorder_strings: the global order of a text leaf keeps a copy of its strings (version 3, as before column format minor 42), not the dictionary codes of them */
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */
 extern bool sift_test_col_dict_unpacked;	/* sift.test_col_dict_unpacked: the order of a dictionary searched in place takes 32 bits a code (as before column format minor 39) */
 extern bool sift_test_col_point_unrooted;	/* sift.test_col_point_unrooted: the header and records of the point directories precede the tables (column format minor 35), not follow them */

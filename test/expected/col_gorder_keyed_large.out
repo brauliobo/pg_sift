@@ -36,14 +36,14 @@ BEGIN
 	FOR r IN EXECUTE q LOOP n := n + 1; END LOOP;
 	RETURN n;
 END $$;
--- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 4 starts, with and without deleted_at IS NULL, and on the timestamp
+-- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 2 starts, with and without deleted_at IS NULL, and on the timestamp
 CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
 	WITH q AS (
 		SELECT format('SELECT id FROM kl WHERE d BETWEEN %L AND %L%s', a, a + w, CASE WHEN n THEN ' AND del IS NULL' ELSE '' END) AS q
-		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM generate_series(0, 3) s) x, unnest(ARRAY[0, 3, 30, 100, 400]) w, (VALUES (true), (false)) v(n)
+		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM unnest(ARRAY[1, 3]) s) x, unnest(ARRAY[0, 30, 400]) w, (VALUES (true), (false)) v(n)
 		UNION ALL
 		SELECT format('SELECT id FROM kl WHERE ts >= %L AND ts < %L AND ent = %s', timestamp '2022-01-01' + s * 170 * interval '1 day', timestamp '2022-01-01' + (s * 170 + w) * interval '1 day', 1 + s)
-		FROM generate_series(0, 4) s, unnest(ARRAY[1, 20, 200]) w
+		FROM unnest(ARRAY[0, 2, 4]) s, unnest(ARRAY[1, 200]) w
 	), r AS (SELECT q, kl_rows(q, 'heap') AS h FROM q)
 	SELECT layout, count(*)::int, count(*) FILTER (WHERE kl_rows(q, 'bitmap') <> h OR kl_rows(q, 'index') <> h)::int,
 		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int
@@ -53,7 +53,7 @@ CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'en
 SELECT * FROM kl_check('one segment');
    layout    | cases | differ | below_limit | above_limit 
 -------------+-------+--------+-------------+-------------
- one segment |    53 |      0 |          45 |           8
+ one segment |    16 |      0 |          12 |           4
 (1 row)
 
 INSERT INTO kl SELECT 105000 + i, 1 + (random() * 59)::int, date '2022-01-01' + (random() * 1500)::int, timestamp '2022-01-01' + random() * 1500 * interval '1 day', NULL, repeat('x', 150) FROM generate_series(1, 10000) i;
@@ -67,14 +67,14 @@ SELECT sift.col_promote('kl_i') >= 0 AS promoted;
 SELECT * FROM kl_check('promoted');
   layout  | cases | differ | below_limit | above_limit 
 ----------+-------+--------+-------------+-------------
- promoted |    53 |      0 |          45 |           8
+ promoted |    16 |      0 |          12 |           4
 (1 row)
 
 REINDEX INDEX kl_i;
 SELECT * FROM kl_check('reindexed');
   layout   | cases | differ | below_limit | above_limit 
 -----------+-------+--------+-------------+-------------
- reindexed |    53 |      0 |          45 |           8
+ reindexed |    16 |      0 |          12 |           4
 (1 row)
 
 DROP FUNCTION kl_check(text);

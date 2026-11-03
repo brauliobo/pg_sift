@@ -2,7 +2,7 @@
 -- integer operators and OR/AND of bitmaps on a column index built with the sift.col_*_ops operator classes. Every query runs three ways and
 -- must return the same rows: on the heap (sc, no index but the column index, sequential scan), on the column index (sc, bitmap scan) and on
 -- btrees (sc_b, a copy that gets the same statements). Over the build, the write buffer, updates, deletes, a rollback, the promotion of the
--- buffer and a merge.
+-- buffer and a merge. The cut and the point directories are not under test (a table that was never analyzed has them chosen when the rewrite sees its statistics): off.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 
@@ -37,7 +37,7 @@ INSERT INTO sc_b SELECT * FROM sc;
 
 CREATE INDEX sc_col ON sc USING sift_col (id sift.col_int4_ops, v sift.col_int4_ops, k2 sift.col_int2_ops, k8 sift.col_int8_ops, d sift.col_date_ops,
 	ts sift.col_timestamp_ops, tz sift.col_timestamptz_ops, s sift.col_text_ops, u sift.col_uuid_ops, g sift.col_int4_ops,
-	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc');
+	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc', key_cut = 'off', point_tid_columns = 'off');
 CREATE INDEX sc_b_id ON sc_b (id);
 CREATE INDEX sc_b_v ON sc_b (v);
 CREATE INDEX sc_b_k2 ON sc_b (k2);
@@ -268,8 +268,11 @@ CREATE FUNCTION sc_all(OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx b
 
 -- the queries the planner reads the column index for, and the ones that disagree (none)
 \echo -- after the build
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_all();
-SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
+-- the 4 ways of every query run once for the summary and the list
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_r;
+SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_r;
+DROP TABLE sc_r;
 
 -- a join that reads the column index once for each outer row
 CREATE TABLE sc_few (id int);
@@ -322,8 +325,10 @@ SELECT sc_dml($$INSERT INTO %T (id, f4, f8, b, nm, c, vc) SELECT 110000 + i, i %
 SELECT sc_dml($$UPDATE %T SET f8 = f8 + 1, nm = nm + 0.01, c = 'c9', b = NOT b, vc = 'v' || (id % 150 + 1) WHERE id % 47 = 3$$);
 \echo -- write buffer
 SELECT buffers > 0 AS rows_in_the_buffer FROM sift.col_index_info('sc_col'::regclass);
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
-SELECT n, rows, agree FROM sc_all() WHERE NOT agree;
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_r;
+SELECT n, rows, agree FROM sc_r WHERE NOT agree;
+DROP TABLE sc_r;
 
 -- an open transaction reads its own rows, a rollback leaves none
 BEGIN;

@@ -18,12 +18,10 @@
 #include "agg/wide.h"
 #include "agg/lookup/int.h"
 
-/* room for one more row */
-void
-map_grow(MapTab *m)
+/* room for `cap` rows */
+static void
+map_grow_to(MapTab *m, uint32 cap)
 {
-	uint32		cap = Max(m->cap * 2, 256);
-
 	if (m->lazy)
 		m->rkey = m->rkey ? repalloc(m->rkey, (size_t) cap * sizeof(int64)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(int64));
 	else
@@ -47,13 +45,51 @@ map_grow(MapTab *m)
 	m->cap = cap;
 }
 
-/* the id of a by-reference column value among the distinct ones of the column: d is a palloc'd copy, kept when new and freed when not */
+/* room for one more row */
+void
+map_grow(MapTab *m)
+{
+	map_grow_to(m, Max(m->cap * 2, 256));
+}
+
+/* room for the rows a table of `rows` rows adds, and for their key values: a table read whole fills them once instead of doubling them (and hashing the keys again at each doubling) */
+void
+map_reserve(MapTab *m, uint32 rows)
+{
+	if (rows <= m->cap)
+		return;
+	map_grow_to(m, rows);
+	for (int k = 0; k < m->nkey && !m->lazy && !m->ktext[k]; k++)
+		kd_int_reserve(&m->kd[k], rows, m->cxt);
+}
+
+/* the bytes a by-reference column value is compared and hashed by: the data of a varlena (whatever its header), else all of the value */
+static inline const unsigned char *
+col_bytes(const MapCol *mc, Datum d, Size *sz)
+{
+	if (mc->len == -1)
+	{
+		*sz = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+		return (const unsigned char *) VARDATA_ANY(DatumGetPointer(d));
+	}
+	*sz = datumGetSize(d, false, mc->len);
+	return (const unsigned char *) DatumGetPointer(d);
+}
+
+/*
+ * The id of a by-reference column value among the distinct ones of the column. The value is looked up where it is and copied only when it is new, in the plain
+ * form (a four byte header) the stored values have.
+ */
 static uint32
 col_ref_id(MapTab *m, MapCol *mc, Datum d)
 {
-	Size		sz = datumGetSize(d, false, mc->len);
-	uint32		hv = hash_bytes((const unsigned char *) DatumGetPointer(d), sz),
+	struct varlena *dv = mc->len == -1 ? pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d)) : NULL;
+	Datum		src = dv ? PointerGetDatum(dv) : d;
+	Size		sz;
+	const unsigned char *b = col_bytes(mc, src, &sz);
+	uint32		hv = hash_bytes(b, sz),
 				h;
+	Datum		copy;
 
 	if (mc->nslot == 0)
 	{
@@ -65,19 +101,36 @@ col_ref_id(MapTab *m, MapCol *mc, Datum d)
 	}
 	h = hv & (mc->nslot - 1);
 	for (uint32 id; (id = mc->slot[h]) != 0; h = (h + 1) & (mc->nslot - 1))
-		if (mc->hv[id - 1] == hv && datumGetSize(mc->val[id - 1], false, mc->len) == sz &&
-			memcmp(DatumGetPointer(mc->val[id - 1]), DatumGetPointer(d), sz) == 0)
+	{
+		Size		osz;
+		const unsigned char *ob = col_bytes(mc, mc->val[id - 1], &osz);
+
+		if (mc->hv[id - 1] == hv && osz == sz && memcmp(ob, b, sz) == 0)
 		{
-			pfree(DatumGetPointer(d));
+			if (dv && (Pointer) dv != DatumGetPointer(d))
+				pfree(dv);
 			return id;
 		}
+	}
+	if (dv)
+	{
+		struct varlena *c = palloc(VARHDRSZ + sz);
+
+		SET_VARSIZE(c, VARHDRSZ + sz);
+		memcpy(VARDATA(c), b, sz);
+		copy = PointerGetDatum(c);
+		if ((Pointer) dv != DatumGetPointer(d))
+			pfree(dv);
+	}
+	else
+		copy = datumCopy(d, false, mc->len);
 	if (mc->n == mc->cap)
 	{
 		mc->cap *= 2;
 		mc->val = repalloc(mc->val, mc->cap * sizeof(Datum));
 		mc->hv = repalloc(mc->hv, mc->cap * sizeof(uint32));
 	}
-	mc->val[mc->n] = d;
+	mc->val[mc->n] = copy;
 	mc->hv[mc->n] = hv;
 	mc->slot[h] = ++mc->n;
 	if (mc->n * 2 > mc->nslot)
@@ -161,7 +214,7 @@ map_col_put(MapTab *m, int c, Datum d, bool cnull)
 	else if (cnull)
 		mc->id[m->nrow] = 0;
 	else
-		mc->id[m->nrow] = col_ref_id(m, mc, mc->len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) : datumCopy(d, false, mc->len));
+		mc->id[m->nrow] = col_ref_id(m, mc, d);
 }
 
 void

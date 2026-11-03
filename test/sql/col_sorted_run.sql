@@ -3,7 +3,8 @@
 -- sift.col_format_minor = 13 and for the leaves of the option, so that an older library keeps reading what an index without it, or under a lower
 -- setting, writes; read back by the decoder that refuses a damaged run; recomputed by sift.col_verify; kept by promotion, merge and VACUUM.
 -- The rows and their order are those of the plain plan: every direction, NULLS FIRST and LAST, ties, NULLs, NaN and infinities, filters, OFFSET, the
--- write buffer, deletes and updates, workers.
+-- write buffer, deletes and updates, workers. About 12 s: the first sweep runs 10 columns in 3 limits and 3 plans; the states after writes, VACUUM, promotion and merge
+-- run 5 columns in the limit 300 (the buffer state also in 1), which is what their rows change.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -145,8 +146,8 @@ RESET sift.topn_runs;
 -- a first pass that leaves units unfinished: sk has all its best values in three units, which the second pass reads again (more units read than there are)
 SELECT sr_runs('SELECT id, sk FROM sr ORDER BY sk LIMIT 300') > sr_runs('SELECT id, k FROM sr ORDER BY k LIMIT 300') AS second_pass_reads_units;
 
-CREATE FUNCTION sr_small(tab text) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
-	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'sk'], ARRAY[1, 300])
+CREATE FUNCTION sr_small(tab text, lims int[] DEFAULT ARRAY[300]) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'sk'], lims)
 $$;
 
 -- filters that leave 2%, 10% and 50% of the rows (a unit reads the key of the rows that pass only when they are few) and a start after a value of the key
@@ -192,7 +193,7 @@ SELECT * FROM sr_expr(ARRAY['k >= 0', 'k >= 250', 'k > 100 AND k <= 300', 'k BET
 -- version of an updated row is in the buffer; VACUUM, promotion and merge write the runs again
 INSERT INTO sr SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 2 = 0 THEN NULL ELSE g % 3 END, timestamptz '2023-06-01' + g * interval '1 second',
        CASE WHEN g % 5 = 0 THEN NULL ELSE -g END, 1.5, date '2019-01-01', g / 100, 100000 - g, repeat('x', 1500) FROM generate_series(15001, 15300) g;
-SELECT * FROM sr_small('sr');
+SELECT * FROM sr_small('sr', ARRAY[1, 300]);
 UPDATE sr SET k = 2, kn = NULL, t = NULL, f = 'NaN' WHERE id % 1000 = 5;
 UPDATE sr SET k = 1000 + k WHERE id % 1000 = 6;
 DELETE FROM sr WHERE id % 7 = 0;
@@ -287,5 +288,5 @@ SELECT sift.col_verify('sa_idx', true);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
 
 DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f, sr_d CASCADE;
-DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]), sr_range(text, text, text[]), sr_expr(text[]);
+DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text, int[]), sr_filt(text, text[], int[]), sr_range(text, text, text[]), sr_expr(text[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

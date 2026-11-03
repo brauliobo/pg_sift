@@ -61,6 +61,7 @@ typedef enum SiftStemmer
 {
 	SIFT_STEM_NONE = 0,
 	SIFT_STEM_EN,				/* Snowball English (Porter2) */
+	SIFT_STEM_TS,				/* the dictionaries of a PostgreSQL text search configuration (cfg->tsconfig) */
 	SIFT_STEM_COUNT
 } SiftStemmer;
 
@@ -72,6 +73,7 @@ typedef struct SiftAnalyzerConfig
 	uint8		prefix_len;		/* the bag also holds the first 1..prefix_len characters of every word, SEP prefix */
 	uint8		nfields;		/* the bag also holds the words of the first nfields sections apart (SIFT_FIELD_BYTE) */
 	char		field_names[SIFT_FIELDS_BYTES];	/* their names, comma separated; not part of the hash */
+	char		tsconfig[SIFT_TSCONFIG_BYTES];	/* stemmer SIFT_STEM_TS: the text search configuration, as written in the option */
 	bool		keyword;		/* the whole text, folded, is the only token (none when it folds to nothing) */
 	uint32		hash;			/* of the version and the fields above (prefix_len, nfields, keyword only when set) */
 } SiftAnalyzerConfig;
@@ -147,6 +149,21 @@ extern void sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *
  * ERRCODE_INVALID_PARAMETER_VALUE for unknown names.
  */
 extern SiftStemmer sift_analyze_stemmer(const char *name);
+
+/* Sets accent folding and refreshes the hash */
+extern void sift_analyzer_config_set_accent_fold(SiftAnalyzerConfig *cfg, bool accent_fold);
+
+/* Sets the stemmer by name: "", "none", "en" or a text search configuration (stemmer SIFT_STEM_TS) and refreshes the hash */
+extern void sift_analyzer_config_set_stemmer(SiftAnalyzerConfig *cfg, const char *name);
+
+/*
+ * The dictionaries of a text search configuration for words (PostgreSQL parser token types asciiword, word, numword). sift_ts_stem
+ * rewrites w[0..len) in place like a stemmer and returns the new length; 0: the word is dropped (no dictionary of the configuration
+ * knows it); -1: a stop word, dropped but it keeps its position.
+ */
+typedef struct SiftTsStem SiftTsStem;
+extern SiftTsStem *sift_ts_open(const char *config, MemoryContext mcxt);
+extern int	sift_ts_stem(SiftTsStem *ts, char *w, int len);
 
 /* Reloption validator form of sift_analyze_stemmer */
 extern void sift_analyze_validate_stemmer(const char *name);

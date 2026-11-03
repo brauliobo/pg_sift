@@ -26,6 +26,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/wbuf.h"
 #include "core/lane.h"
 
@@ -35,6 +36,11 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_torn);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_long);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
+PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
+PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
+uint64		sift_cseg_dict_blocks;
+
+PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
@@ -315,12 +321,6 @@ read_dir(Relation index)
 	return snap;
 }
 
-static bool
-is_wbuf(const SiftSegEntry *e)
-{
-	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
-}
-
 static void
 set_hash(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
@@ -400,7 +400,7 @@ sift_test_col_wbuf_append(PG_FUNCTION_ARGS)
 		gen_row(seed, id, t);
 		if (busy)
 			nbusy = lock_busy(index, &hint, pg_prng_uint64(&pg_global_prng_state), bufs);
-		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 		for (int k = 0; k < nbusy; k++)
 			UnlockReleaseBuffer(bufs[k]);
 		MemoryContextSwitchTo(old);
@@ -424,7 +424,7 @@ sift_test_col_wbuf_torn(PG_FUNCTION_ARGS)
 		elog(ERROR, "only the rows with id %% 1000 = 999 are big enough to be torn");
 	gen_row(PG_GETARG_INT64(1), id, t);
 	sift_cwbuf_fail_grow = PG_GETARG_INT32(3);
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 	sift_cwbuf_fail_grow = 0;
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
@@ -440,7 +440,7 @@ sift_test_col_wbuf_long(PG_FUNCTION_ARGS)
 
 	gen_row(1, 1, t);
 	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }
@@ -471,7 +471,7 @@ sift_test_col_wbuf_rows(PG_FUNCTION_ARGS)
 		SiftColRow	row;
 		bool		deleted;
 
-		if (!is_wbuf(&snap->segs[i]))
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
 			continue;
 		r = sift_cwbuf_open(index, &snap->segs[i], test_schema(), CurrentMemoryContext);
 		while (sift_cwbuf_next(r, &row, &deleted))
@@ -483,8 +483,8 @@ sift_test_col_wbuf_rows(PG_FUNCTION_ARGS)
 }
 
 /*
- * (index regclass, seed int8) -> (gen int8, sb int8, id int8): the live rows of every write buffer as batches. The batches ascend by
- * superblock, their keys ascend and belong to it, and every row is checked against its generator.
+ * (index regclass, seed int8, shared bool) -> (gen int8, sb int8, id int8): the live rows of every write buffer as batches, kept by the backend for the next
+ * read when shared. The batches ascend by superblock, their keys ascend and belong to it, and every row is checked against its generator.
  */
 Datum
 sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
@@ -492,6 +492,8 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	uint64		seed = PG_GETARG_INT64(1);
+	bool		shared = PG_GETARG_BOOL(2);
+	int64		dirver = PG_GETARG_INT64(3);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -502,9 +504,10 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 		SiftColBatch **batches;
 		SiftColRow	row = {0};
 
-		if (!is_wbuf(&snap->segs[i]))
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
 			continue;
-		batches = sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb);
+		batches = shared ? sift_cwbuf_batches_shared(index, &snap->segs[i], test_schema(), dirver < 0 ? snap->version : (uint32) dirver, CurrentMemoryContext, &nb, NULL, NULL) :
+			sift_cwbuf_batches(index, &snap->segs[i], test_schema(), CurrentMemoryContext, &nb, NULL);
 		for (int k = 0; k < nb; k++)
 		{
 			SiftColBatch *b = batches[k];
@@ -524,6 +527,48 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* (index regclass): the directory version a scan that opens now reads */
+Datum
+sift_test_col_dir_version(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	int64		version = read_dir(index)->version;
+
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT64(version);
+}
+
+/* (): the kept orders of the write buffers: reads that found the order as it was, extended it, made it, and orders dropped, in this backend */
+Datum
+sift_test_col_gkept_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[4];
+	bool		nulls[4] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < 4; i++)
+		values[i] = Int64GetDatum((int64) sift_col_gkept_stat[i]);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* (): the kept lists of dead rows of the units of the segments: lists found as they were, lists made, the entries the cut of an OFFSET took off, the dictionary blocks decompressed, in this backend */
+Datum
+sift_test_col_gdead_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[4];
+	bool		nulls[4] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < 3; i++)
+		values[i] = Int64GetDatum((int64) sift_col_gdead_stat[i]);
+	values[3] = Int64GetDatum((int64) sift_cseg_dict_blocks);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
 typedef struct DeleteState
@@ -550,8 +595,11 @@ sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	snap = read_dir(index);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (is_wbuf(&snap->segs[i]))
+		if (sift_seg_is_wbuf(&snap->segs[i]))
 			removed += sift_cwbuf_bulkdelete(index, &snap->segs[i], test_schema(), dead_every, &state, &stats);
+	/* as sift_mops_bulkdelete: the readers that keep batches find out by the version */
+	if (removed > 0)
+		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(removed);
@@ -617,7 +665,7 @@ sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 		Datum		values[7];
 		bool		nulls[7] = {0};
 
-		if (!is_wbuf(e))
+		if (!sift_seg_is_wbuf(e))
 			continue;
 		sift_cwbuf_summary(index, e, &nrows, &npages);
 		ext = sift_cwbuf_pages(index, e, &next);

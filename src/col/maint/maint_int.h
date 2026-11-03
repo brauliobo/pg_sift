@@ -52,10 +52,12 @@ typedef struct RewriteView
 } RewriteView;
 
 extern int maint_merge_workers;
+extern bool maint_after_build;
 
 extern const SiftMaintOps maint_col_ops;
 
 extern void	maint_use_partitions(const SiftDirSnapshot *snap);
+extern int	maint_part_kb_for(uint64 bytes);
 
 extern bool	maint_is_partition(const SiftSegEntry *e);
 
@@ -71,14 +73,21 @@ extern SiftStepResult	maint_promote_next(Relation index, bool propagate, uint64 
 
 extern uint32	maint_dirty_units(SiftColSegment *seg);
 
+extern void	maint_net_refresh(Relation index);
+
 extern RewriteView *	maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 
 extern bool	maint_is_col(Relation index);
 
+extern void maint_unit_layout(Relation index, bool strict);
+extern void maint_unit_bulkdelete(Relation index, SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
+
 extern void	maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
+extern void	maint_vacuum_log(Relation index);
+extern void	maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 extern void	maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_reap_overflow(Relation index, Relation heap);
@@ -87,7 +96,6 @@ extern bool	maint_vacuum_truncates(Relation index);
 
 extern bool	maint_space_deferred(Relation index);
 
-extern uint64	maint_compact_segment(Relation index, uint64 gen);
 
 extern XLogRecPtr	maint_header_lsn(Relation index, const SiftSegEntry *e);
 
@@ -98,6 +106,10 @@ extern const char *	maint_rewrite_check(Relation index, bool automatic, int *gat
 extern const char *	maint_rewrite_due(Relation index, bool automatic);
 
 extern bool	maint_rewrite_all(const char *why);
+
+/* the reads of a backend owe the rewrite (maint_read_due); the worker started for it takes the rewrite as due */
+extern bool	maint_read_asked;
+extern bool	maint_read_due(Relation index, double owed);
 
 extern void	maint_rewrite_request(Relation index);
 

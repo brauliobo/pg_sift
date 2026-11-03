@@ -2,6 +2,7 @@
 -- an index; a SELECT that scans exact units for lack of their rollup (none, other dims, a measure it lacks) queues the segment of each and does not write; the
 -- queue is served by a background worker, here by sift.col_rollup_refresh (sift.col_rollup_worker off), and the next SELECT answers from the rollups.
 CREATE EXTENSION pg_sift;
+SET sift.test_limits = 'par_build_rows=1';
 SET client_min_messages = warning;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
 SET sift.agg_rollup_cost = 0;

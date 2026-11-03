@@ -45,9 +45,9 @@ $$);
 SET client_min_messages = error;
 ALTER EXTENSION pg_sift UPDATE;
 SET client_min_messages = warning;
-SELECT extversion FROM pg_extension WHERE extname = 'pg_sift';
+SELECT extversion = (SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift') AS updated_to_the_default FROM pg_extension WHERE extname = 'pg_sift';
 
--- at 3.7: the same statements work and so does everything that was there
+-- at the current version: the same statements work and so does everything that was there
 SELECT * FROM rr_run($$
 ru_own | DROP TABLE ru.plain
 ru_own | DROP INDEX ru.docs_col
@@ -61,7 +61,7 @@ ru_own | CREATE INDEX docs_col ON ru.docs USING sift_col (id, g)
 ru_own | !SELECT sift.promote('ru.docs_idx')
 ru_own | !SELECT sift.col_verify('ru.docs_col', true)
 ru_rd | !SELECT * FROM sift.workers
-ru_new | SELECT sift.version()
+ru_new | SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
 ru_rd | DROP TABLE ru.docs
 ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i
 ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'

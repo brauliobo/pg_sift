@@ -6,6 +6,7 @@
 #define SIFT_COL_AM_H
 
 #include "access/amapi.h"
+#include "access/transam.h"
 #include "executor/execdesc.h"
 #include "datatype/timestamp.h"
 
@@ -14,6 +15,27 @@
 #include "col/enc.h"
 #include "col/preagg.h"
 #include "col/wbuf.h"
+
+/* The xid before which every transaction that inserted an entry of the segment committed; false when the segment does not say */
+static inline bool
+sift_seg_xstamp(const SiftSegEntry *e, TransactionId *xid)
+{
+	if (!(e->flags & SIFT_SEG_XSTAMP))
+		return false;
+	*xid = e->reserved;
+	return true;
+}
+
+static inline void
+sift_seg_set_xstamp(SiftSegEntry *e, TransactionId xid)
+{
+	e->flags &= ~SIFT_SEG_XSTAMP;
+	if (TransactionIdIsNormal(xid))
+	{
+		e->flags |= SIFT_SEG_XSTAMP;
+		e->reserved = xid;
+	}
+}
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
 #define SIFT_COL_CUT_MAX 4
@@ -35,8 +57,52 @@ typedef struct SiftColRel
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
 	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
+	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
+	int			rowkey_attno;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
+
+/* The tombstone log of a heap index with track_changes, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
+struct SiftTombLog;
+extern struct SiftTombLog *sift_col_log(Relation index);
+extern void sift_col_log_cache_stats(int64 *entries, int64 *bytes);
+extern void sift_col_log_create(Relation index);
+/* The log to append to (made when the index has none): no read of the directory, for the writer of many tombstones */
+extern struct SiftTombLog *sift_col_log_appender(Relation index);
+/* The tombstones of the replaced entries that a statement holds back (col/supersede.c): written before the log is read, before commit and before a savepoint starts, dropped when the transaction or the savepoint aborts */
+extern void sift_col_tombs_flush(void);
+extern void sift_col_tombs_discard(void);
+/* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
+extern bool sift_col_row_key_on(Relation index);
+extern void sift_col_row_key_check(Relation index);
+extern void sift_col_row_key_prepare(Relation heap, Relation index);
+extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
+/* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
+extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
+/* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+extern const char *sift_col_track_deaf(Relation heap);
+extern void sift_col_track_check(Relation heap, Relation index);
+extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
+extern void sift_col_track_remove(Relation heap, Relation index);
+extern void sift_col_track_reconcile(Relation index);
+extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
+/* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
+extern bool sift_col_updates_supersede(void);
+extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT bool sift_test_no_supersede;
+extern PGDLLIMPORT bool sift_test_tombs_at_once;
+extern PGDLLIMPORT bool sift_test_supersede_scan;
+extern PGDLLIMPORT bool sift_test_no_track;
+extern PGDLLIMPORT bool sift_test_no_log_reap;
+extern PGDLLIMPORT bool sift_test_no_log_hide;
+extern PGDLLIMPORT uint64 sift_test_col_log_hidden_count;
+extern PGDLLIMPORT bool sift_test_no_heapfree;
+extern PGDLLIMPORT bool sift_test_hf_ignore_tombs;
+extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
+#endif
+/* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
+extern PGDLLIMPORT int64 sift_col_hf_taken;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool
@@ -65,12 +131,18 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
+extern bool sift_col_options_order_columns_set(Relation index);
+extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
+/* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
+extern void sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail);
+extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
 extern bool sift_col_options_key_cut_auto(Relation index);
-/* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build.c) */
+/* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */
 extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */
 extern bool sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n);
+extern bool sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n);
 extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec);
 /* paths = 'auto' (col/keycols/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
@@ -82,8 +154,10 @@ extern void sift_col_auto_rows(Relation heap, Relation index);
 /* array_lengths = auto (col/keycols/keycols.c): written as on for an index with an array column, before the build */
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
-extern void sift_col_auto_gorder(Relation heap, Relation index);
+extern void sift_col_auto_gorder(Relation heap, Relation index, bool layout);
+extern char *sift_col_gorder_lines(Relation index);	/* what the last choice for the index said about the columns it weighed by the default formula (for the NOTICE of the build), or NULL */
 extern void sift_col_auto_point(Relation heap, Relation index);
+extern bool sift_col_list_has(const char *list, const char *name);	/* an option list of column names ('a, b' or 'auto: a, b') names the column */
 extern void sift_col_set_option(Relation index, const char *name, const char *value);
 extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
 extern const char *sift_col_options_paths_raw(Relation index);
@@ -101,6 +175,7 @@ extern bool sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
+extern PGDLLIMPORT bool sift_test_col_unit_gate;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
 extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16) */
@@ -114,10 +189,13 @@ extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_key_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);
 extern void sift_col_validate_order_array_columns(const char *value);
+extern void sift_col_validate_order_layout(const char *value);
 extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
+extern void sift_col_validate_track_changes(const char *value);
+extern void sift_col_validate_key_order(const char *value);
 extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);
 /* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
@@ -158,7 +236,7 @@ typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
-							int slice, int nslices, uint32 unit_base);
+							int slice, int nslices, uint32 unit_base, bool resort);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with
@@ -216,6 +294,8 @@ extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderb
 extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
 extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir);
+extern void sift_col_ammarkpos(IndexScanDesc scan);
+extern void sift_col_amrestrpos(IndexScanDesc scan);
 /* After ExecutorStart: the index-only scans of sift_col indexes in the plan form their tuples from the columns the plan reads */
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
 extern void sift_col_stmt_start(QueryDesc *queryDesc);
@@ -250,6 +330,7 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
@@ -273,10 +354,11 @@ extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n,
 #define SIFT_COL_PEERS		4
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
-extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);
-extern void sift_col_rewrite_tick(Relation index);
+extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
+extern bool sift_col_rewrite_tick(Relation index, double owed);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_vacuum_once_worker_main(Datum main_arg);
 
 extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 
@@ -287,6 +369,7 @@ extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries
 extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
 extern PGDLLIMPORT bool sift_test_col_rel_inval;	/* sift.test_col_rel_inval: the build and the recheck invalidate the index's relcache entry at every tuple (sift_col_test_inval) */
+extern PGDLLIMPORT bool sift_test_col_net;	/* sift.test_col_net: VACUUM writes the pre-aggregates net of dead rows (col/maint/net.c, table/net.c); off, the dirty units are left to the delta of sift.agg_dead_delta */
 extern void sift_col_test_inval(Relation index);	/* does so when it is on, after it overwrote the cached state the entry held */
 #ifdef SIFT_TESTING
 typedef struct SiftCDictCacheStats
@@ -304,8 +387,15 @@ extern Size sift_cdict_cache_bytes(void);
 extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
 extern void sift_col_jitter(void);
 #define SIFT_COL_JITTER()	sift_col_jitter()
+extern PGDLLIMPORT int sift_test_col_open_gate;	/* sift.test_col_open_gate: a scan waits for the advisory lock of this number right after it read the directory */
+extern void sift_col_open_gate(void);
+extern PGDLLIMPORT uint64 sift_col_gkept_stat[4];	/* the kept orders of the write buffers (col/scan/gorder.c): reads that found the order as it was, extended it, made it, dropped it */
+extern PGDLLIMPORT uint64 sift_col_gdead_stat[3];	/* the kept lists of dead rows (col/seg/dead.c): lists found as they were, lists made; the entries the cut of an OFFSET took off the sources (agg/gord.c) */
+extern PGDLLIMPORT bool sift_test_col_gkept_fail;	/* sift.test_col_gkept_fail: extending a kept order fails after the new arrays are made, before the order takes them */
+#define SIFT_COL_OPEN_GATE()	sift_col_open_gate()
 #else
 #define SIFT_COL_JITTER()	((void) 0)
+#define SIFT_COL_OPEN_GATE()	((void) 0)
 #endif
 
 /* the planner hook opens a planning, within which the statistics of an index are validated once (col/am/am.c leaf_cache_entry); true when this call opened it */
@@ -314,6 +404,7 @@ extern void sift_col_plan_end(bool started);
 extern MemoryContext sift_col_plan_memo(uint64 *plan);
 #ifdef SIFT_TESTING
 extern int64 sift_col_key_sorts;	/* the sorts of an IN list by the cost estimates */
+extern int64 sift_col_vet_offsets;	/* the row offsets decoded to check rows against the heap (sift_col_vet) */
 #endif
 
 #endif							/* SIFT_COL_AM_H */

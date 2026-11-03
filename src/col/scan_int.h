@@ -7,6 +7,7 @@
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/seg.h"
+#include "core/tomb.h"
 #include "core/visibility.h"
 
 #define corrupt(...) \
@@ -18,6 +19,15 @@
 #define COLO_TABLE		0x8000		/* internal flag: a source over a sift_table (sift_col_open_table) */
 #define MEM_ID_FLAG		(UINT64CONST(1) << 63)
 #define INL_ID_FLAG		(UINT64CONST(1) << 62)	/* the dictionary of an inline STR chunk: one per chunk read */
+
+/* What sift_col_gorder_exact knows of a unit: state 0 not asked, 1 usable, 2 not; the pages of its superblock that are all-visible and the addresses of its dead rows, ascending */
+typedef struct GExact
+{
+	uint8		state;
+	uint32		ndead;
+	SiftKey    *dead;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+} GExact;
 
 typedef struct ColCursor
 {
@@ -37,16 +47,26 @@ typedef struct ColCursor
 	uint32		ahead_end;		/* the units below this one are in the cluster cursor_ahead is on, which it reads ahead (ahead_skip false) or leaves to the kernel */
 	bool		ahead_skip;
 	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
+	uint32		cmemo_epoch;	/* the count of the segment (count_rows, count_unit_rows) answered for the scan numbered cmemo_epoch of SiftColSource.pcnt_epoch, in cmemo_seg at cmemo_gen: the prune of a scan runs more than once */
+	SiftColSegment *cmemo_seg;
+	uint64		cmemo_gen;
+	uint64		cmemo_rows;
+	uint64		cmemo_unit_rows;
 	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
 	uint64		count_rows;
 	uint32		count_unit_rows;	/* the rows of the segment's units */
+	uint64	   *count_dirty;	/* count_ok with units that are not exact: those (bit u) are read after the counted unit, which counts the rows of the others (col_count_segment) */
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
 	int			ppred;
 	uint64		pexact;			/* the predicates (bit i: preds[i], i < 64) whose rows prow is exactly: an element test of a list leaf the directory answered, which the caller need not test again */
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
-	uint8	   *gexact;		/* sift_col_gorder_exact: per unit, 0 not asked, 1 exact, 2 not (nsb bytes, in the source's mcxt; reset by sift_col_gorder_open) */
+	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
+	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
+	SiftCGOrdCuts gcuts;
+	int8		gclean;			/* sift_col_gorder_exact: 1 every entry of the segment is exact (no dead row, every page of its superblocks all-visible), 2 not, 0 not asked yet */
+	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's gxcx: kept from one probe of a rescanned source to the next, as long as the segments are current) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
 	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */
 	bool		others;			/* the scan has predicates besides the directory's: a unit with many of its addresses is read and filtered, not handed to the heap */
@@ -72,6 +92,7 @@ typedef struct ColMem
 	SiftColBatch *b;
 	uint32		id;
 	bool		lane;			/* read from the write buffer when the source began */
+	TransactionId xstamp;		/* a lane batch: the xid before which every transaction that inserted a row of it committed (SIFT_SEG_XSTAMP), none when not known */
 } ColMem;
 
 /* The element structure of one group leaf in the current unit */
@@ -138,6 +159,7 @@ typedef struct ColUnit
 	const SiftKey *ptid;		/* the addresses of ptidv that lie in this unit's superblock, when the cursor has some (nptid may be 0 only for a unit the directory lists nothing in) */
 	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
+	TransactionId xstamp;		/* ... and the xid before which every transaction that inserted a row of it committed, none when not known */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
 	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */
@@ -148,6 +170,8 @@ typedef struct ColUnit
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
+	bool		avvm_ready;
+	uint64		avvm[SIFT_PAGEMASK_WORDS];	/* the pages the visibility map holds all-visible, no page the log added (unit_allvisible_vm) */
 	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
 	ColGroup   *grp;
 	ColSelCache selc;
@@ -186,11 +210,37 @@ struct SiftColSource
 	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
+	/*
+	 * Reads that do without the heap: hflog is the tombstone log of an index with track_changes, read at open before any liveness, and hfgen
+	 * its generation then (a log replaced since says nothing of the entries VACUUM cleared). hf: 0 not decided, 1 the log can be taken for complete for this snapshot,
+	 * -1 it cannot. A stored segment that says its inserters committed before the xmin of the snapshot (SIFT_SEG_XSTAMP) has its pages taken for all-visible unless a
+	 * tombstone deletes a row of the page for the snapshot; the others are checked against the heap as ever.
+	 */
+	struct SiftTombLog *hflog;
+	SiftTombMemo hfmemo;		/* verdicts of the log's transactions for snap */
+	uint64		hfgen;
+	int			hf;
+	bool		begun;			/* a begin ran: sift_col_rescan refuses */
+	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
+	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
 	bool		super;			/* sift_col_super */
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
+	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
 	SiftColOp	pcnt_op;
-	bool		pcnt_int;		/* ... an integer leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp) */
+	bool		pcnt_int;		/* ... an integer or text leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp, sift_col_count_strs) */
+	bool		pcnt_str;		/* ... the key of a text leaf: the rows whose string lies between the bounds of pcnt_box, counted by the ranks of its global order (sift_col_count_strs) */
+	struct
+	{
+		const char *lo;			/* NULL: no lower bound */
+		const char *hi;
+		uint32		lolen;
+		uint32		hilen;
+		uint32		collid;
+		bool		lo_excl;
+		bool		hi_excl;
+	}			pcnt_box;
+	bool		pcnt_alt;		/* ... a prefix (sift_col_count_range): a segment whose dictionary holds no row counts counts the strings between the bounds of pcnt_box by the ranks of its global order */
 	bool		pcnt_elem;		/* ... the rows that own the value of the only test, an element of a list, counted by its point directory (sift_col_count_elem) */
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
@@ -202,6 +252,9 @@ struct SiftColSource
 	int			nmem;
 	int			capmem;
 	bool		mem_loaded;
+	int			gdirect;		/* the orders of one group of the write buffers made by reading all their rows (col/scan/gmem.c): past a few, the rows are put in groups once */
+	struct SiftCWbufToken *wtok;	/* the state of each kept batch set the write buffer batches came from, in the order of the segments; NULL when some batch came from elsewhere (sift_col_add_batches) */
+	int			nwtok;
 	ColMem	  **order;
 	int			norder;
 	int			ocur;
@@ -223,6 +276,7 @@ struct SiftColSource
 	uint32		capptid;
 	int			pstream;		/* the first cursor that may still have addresses to hand over (SIFT_COLO_POINT_LAZY) */
 	int			gpin_leaf;		/* the leaf the global order blocks are grouped by and the group the scan pinned (sift_col_gorder_open), -1: none */
+	int			galeaf1;		/* 1 + the leaf whose second order the scan reads group after group in place of the order of a group leaf that has none (sift_col_gorder_open), 0: none */
 	int			gpin_n;			/* the values of the group the scan reads (an IN list reads each in turn), in gpin_vals */
 	int64		gpin_vals[SIFT_GORD_PIN_MAX];
 	int			gper;			/* the sources of one value: the stored segments, then the write buffers when they hold rows (value v of source i is i / gper) */
@@ -235,6 +289,8 @@ struct SiftColSource
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
 extern bool col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds);
+extern bool units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
+extern bool units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows);
 /* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
 extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 
@@ -264,6 +320,7 @@ extern bool unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, Si
 extern bool unit_inline(ColUnit *cu, int col);
 extern SiftCDict *unit_dict(ColUnit *cu, int col);
 extern const uint64 *unit_allvisible(ColUnit *cu);
+extern const uint64 *unit_allvisible_vm(ColUnit *cu);
 extern ColGroup *unit_group(ColUnit *cu, int group);
 extern bool types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel);
 
@@ -304,7 +361,7 @@ unit_clean(ColUnit *cu)
 {
 	if (!cu->clean_ready)
 	{
-		unit_allvisible(cu);
+		unit_allvisible_vm(cu);
 		SIFT_COL_JITTER();
 		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
 		cu->clean_ready = true;
@@ -314,6 +371,21 @@ unit_clean(ColUnit *cu)
 
 /* col/delta.c */
 extern bool unit_pages_allvisible(ColUnit *cu);
+
+/*
+ * The all-visible state of the pages of a stored segment's units: what the visibility map says (the hook, or sift_vis_*), and, for a segment that is stamped and a
+ * source that can take the log for complete, the pages no tombstone deletes a row of for the snapshot as well. seg NULL: the rows are not a stored segment's (a write
+ * buffer batch): the map alone.
+ */
+extern void col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av);
+extern bool col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm);
+extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi);
+extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
+/* Opens the log of the source (before its first liveness read) */
+extern void col_hf_open(SiftColSource *src);
+/* Can the rows of a unit of this segment be told visible or not by the log, without the heap (the segment is stamped for the snapshot and the log is complete) */
+extern bool col_hf_unit(SiftColSource *src, const ColUnit *cu);
+extern bool col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *left);
 
 /* The units a begin reads, [ulo, uhi), and the bits of those that a small-set summary cleared */
 typedef struct PruneRange
@@ -325,9 +397,13 @@ typedef struct PruneRange
 } PruneRange;
 
 extern void	scan_load_wbuf(SiftColSource *src);
+extern bool	segments_current(SiftColSource *src);
+extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
 extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
+extern bool	scan_prune_group_tids(SiftColSource *src, ColCursor *c, int i, int col, int gcol, int64 group, int64 lo, int64 hi, uint64 *keep);
 extern bool	scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep);
+extern bool	scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *set, uint32 nset, uint64 *keep);
 extern bool	scan_prune_places(SiftColSource *src, ColCursor *c, int i, int col, const SiftColPred *p, uint64 *keep);
 extern bool	scan_prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep);
 extern bool	scan_keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones);

@@ -25,13 +25,14 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v, u);
-NOTICE:  sift_col index tb_col writes a rollup of the rows by g, v
+NOTICE:  sift_col index "tb_col": rollup_dims = 'auto' writes a rollup of the rows by g, v
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 378 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX tb_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col: the strings of leaf 12 (attribute 13) in superblock 0 pass 65536 bytes: the values after them are stored as overflow and read from the heap
+HINT:  To drop it, run ALTER INDEX tb_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col: the strings of leaf 12 (attribute 13) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col: the strings of leaf 12 (attribute 13) in superblock 1 pass 65536 bytes: the values after them are stored as overflow and read from the heap
-HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+NOTICE:  sift_col index "tb_col" installed two statement triggers on table "tb" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
@@ -132,7 +133,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  concat_sep      | same+topn 25
  concat_upper    | same+topn 25
  date_trunc      | same+topn 25
- deep_page       | same+topn 20
+ deep_page       | same+topn+sorted 20
  epoch_diff      | same+topn 25
  extract_date    | same+topn 25
  floor_ceil      | same+topn 25
@@ -218,11 +219,11 @@ UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
 DELETE FROM tb WHERE id % 83 = 0;
 SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('concat_lower', 'nested_lu', 'left', 'initcap', 'md5', 'case_text_func', 'round_numeric', 'user_function', 'two_funcs', 'deep_page') ORDER BY tag COLLATE "C";
-      tag       |   tb_check   
-----------------+--------------
+      tag       |      tb_check       
+----------------+---------------------
  case_text_func | same+topn 25
  concat_lower   | same+topn 25
- deep_page      | same+topn 20
+ deep_page      | same+topn+sorted 20
  initcap        | same+topn 25
  left           | same+topn 25
  md5            | same+topn 25

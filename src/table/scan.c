@@ -107,7 +107,7 @@ scan_open_state(Relation rel, SiftTblScan *s)
 	SiftTblRel *st = s->st;
 
 	sift_tbl_refresh(rel, st);
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	if (s->par)
 		s->dir = &s->par->dir;
 	else
@@ -151,6 +151,8 @@ scan_close_state(SiftTblScan *s)
 		sift_tbl_gscan_end(s->g);
 	s->seg = NULL;
 	s->g = NULL;
+	s->nlrows = s->lri = s->nltids = s->lti = 0;
+	s->lsb = PG_UINT32_MAX;
 }
 
 /* PG18 keeps the bitmap iterator in the scan descriptor; it ends itself when exhausted */
@@ -188,6 +190,7 @@ sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyDa
 		PredicateLockRelation(rel, snapshot);
 	}
 	s->st = sift_tbl_rel(rel);
+	pgstat_count_heap_scan(rel);
 	sift_tbl_auto_defrag_tick(rel, s->st);
 	s->sample_blk = InvalidBlockNumber;
 	s->copy = palloc(BLCKSZ);

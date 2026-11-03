@@ -2,7 +2,7 @@
 """The set-filter benchmark: a fact table filtered by a set of entity ids (bench/steps/sets.sh runs it on a scratch cluster).
 
     sets.py run --db DB --out FILE [--reps 9] [--ch CONTAINER] [--only REGEX] [--meta KEY=VALUE ...]
-    sets.py render [--results bench/results/sets.tsv] [--benchmarks docs/BENCHMARKS.md]
+    sets.py render [--results bench/results/sets.tsv] [--benchmarks bench/out/BENCHMARKS.md]
 
 `run` times every cell of the table below on the PostgreSQL named by PGHOST / PGPORT / PGUSER (and, with --ch, on a ClickHouse container), in random
 order interleaved over the cells, one untimed run first, and writes the rows of bench/results/sets.tsv (columns in extras.py). The time is the wall
@@ -163,30 +163,26 @@ def run(a):
     with open(LOCK, 'a') as lock:
         print('sets: waiting for %s' % LOCK, file=sys.stderr)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        load0 = extras.host_load()
-        print('sets: timing %d cells x %d reps, %s' % (len(cs), a.reps, load0), file=sys.stderr)
+        print('sets: timing %d cells x %d reps, %s' % (len(cs), a.reps, extras.host_load()), file=sys.stderr)
         times = {(c[0], c[1]): [] for c in cs}
-        loads = {(c[0], c[1]): [] for c in cs}
         ok = {(c[0], c[1]): True for c in cs}
         for rep in range(a.reps + 1):
             order = cs[:]
             random.Random(rep).shuffle(order)
             for arm, size, kind, gucs, stmt in order:
                 ms, text = psql(db, gucs + [stmt]) if kind == 'pg' else ch(a.ch, stmt)
-                loads[(arm, size)].append(float(open('/proc/loadavg').read().split()[0]))
                 if rep:
                     times[(arm, size)].append(ms)
                 ok[(arm, size)] &= same(ref[size], text, kind)
-        load1 = extras.host_load()
     meta = dict(m.split('=', 1) for m in a.meta or [])
-    meta.update({'bench': 'sets', 'sift': version, 'host_load_before': load0, 'host_load_after': load1,
+    meta.update({'bench': 'sets', 'sift': version,
                  'method': 'psql \\timing of one statement, planning included, one client, %d timed runs after one untimed, cells interleaved in random order; max_parallel_workers_per_gather 2, jit off' % a.reps})
     rows = [dict(version=version, case=t, arm='sift_col_key', metric='supported', value='0' if err else '1', min='', max='', n='', load='', note=err or 'ok') for t, err in supported(db)]
     for arm, size, kind, gucs, stmt in cs:
         t = times[(arm, size)]
         note = plans[(arm, size)] + ('' if ok[(arm, size)] else ' RESULT DIFFERS')
         rows.append(dict(version=version, case=size, arm=arm, metric='median_ms', value='%.2f' % statistics.median(t), min='%.2f' % min(t), max='%.2f' % max(t),
-                         n=str(len(t)), load='%.2f' % statistics.mean(loads[(arm, size)]), note=note))
+                         n=str(len(t)), load='', note=note))
     extras.write(a.out, 'Set filters: a fact table filtered by 1k, 2k, 5k, 10k and 100k entity ids (bench/steps/sets.sh).', meta, rows)
     for r in rows:
         print('%-6s %-24s %9s ms  load %s  %s' % (r['case'], r['arm'], r['value'], r['load'], r['note']))
@@ -209,7 +205,7 @@ def main():
     r.add_argument('--meta', action='append')
     g = sub.add_parser('render')
     g.add_argument('--results', default=os.path.join(REPO, 'bench', 'results', 'sets.tsv'))
-    g.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
+    g.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
     a = ap.parse_args()
     run(a) if a.cmd == 'run' else render(a)
 

@@ -84,9 +84,41 @@ range_hint(ColCursor *c, const SiftColPred *preds, int npreds, const bool *range
 				l = Max(l, lo[j]);
 				h = Min(h, hi[j]);
 			}
-		best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, l, h));
+		best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, false, false, l, h));
 	}
 	return best;
+}
+
+/*
+ * A range on a leaf whose second order is grouped by another leaf with an equality: the entries of the group between the bounds (WHERE g = x AND k BETWEEN a AND b), which answer the equality
+ * too; the plain order of the group leaf, or its directory, would list every row of x. gdone[i]: the addresses of predicate i came from there.
+ */
+static void
+prune_groups(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const SiftColPred *preds, int npreds, const int64 *lo, const int64 *hi, const bool *range, uint64 *keep, bool *gdone)
+{
+	for (int i = 0; i < npreds; i++)
+	{
+		int64		l = lo[i],
+					h = hi[i];
+		bool		first = range[i];
+
+		for (int j = 0; first && j < npreds; j++)
+			if (j != i && range[j] && preds[j].col == preds[i].col)
+			{
+				first &= j > i;
+				l = Max(l, lo[j]);
+				h = Min(h, hi[j]);
+			}
+		for (int e = 0; first && e < npreds; e++)
+			if (range[e] && !gdone[e] && lo[e] == hi[e] && preds[e].col != preds[i].col && sift_cseg_gorder_grouped_by(seg, preds[i].col, preds[e].col) &&
+				scan_prune_group_tids(src, c, i, preds[i].col, preds[e].col, lo[e], l, h, keep))
+			{
+				gdone[e] = true;
+				for (int j = 0; j < npreds; j++)
+					gdone[j] |= preds[j].col == preds[i].col;
+				break;
+			}
+	}
 }
 
 static void
@@ -96,6 +128,9 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
 	bool	   *late = palloc0(Max(npreds, 1) * sizeof(bool));
+	bool	   *gdone = palloc0(Max(npreds, 1) * sizeof(bool));	/* the predicate's addresses came from the second order of a group (below) */
+	const int64 **set = palloc0(Max(npreds, 1) * sizeof(int64 *));
+	uint32	   *nset = palloc0(Max(npreds, 1) * sizeof(uint32));
 
 	if (pr->top != NULL)
 	{
@@ -165,6 +200,11 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			range[i] = t.kind == SIFT_CT_RANGE;
 			lo[i] = t.lo;
 			hi[i] = t.hi;
+			if (t.kind == SIFT_CT_SET && pass == 0)
+			{
+				set[i] = t.set;
+				nset[i] = t.nset;
+			}
 		}
 	}
 	for (int i = 0; i < npreds; i++)
@@ -182,6 +222,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			make_test(src, def, NULL, &preds[i], &t);
 		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut, true);
 	}
+	if (pr->top != NULL)
+		prune_groups(src, seg, pr->top, preds, npreds, lo, hi, range, keep, gdone);
 	/* the ranges on one leaf together: BETWEEN is two tests, each too wide for a small set to answer alone */
 	for (int i = 0; i < npreds; i++)
 	{
@@ -202,9 +244,20 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			}
 		if (n > 1 && t.lo <= t.hi)
 			sift_cseg_prune_sets(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
-		if (pr->top != NULL)
+		if (pr->top != NULL && !gdone[i])
 			scan_prune_range_tids(src, pr->top, i, preds[i].col, t.lo, t.hi, keep);
 	}
+	for (int i = 0; i < npreds && pr->top != NULL; i++)
+	{
+		if (set[i] == NULL)
+			continue;
+		if (scan_window_empty(keep, pr))
+			break;
+		scan_prune_set_tids(src, pr->top, i, preds[i].col, set[i], nset[i], keep);
+	}
+	pfree(set);
+	pfree(nset);
+	pfree(gdone);
 	pfree(lo);
 	pfree(range);
 	pfree(late);
@@ -341,6 +394,27 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 		if (scan_prune_point(src, seg, c, i, preds[i].col, &t, c->ckeep) && def->parent < 0)
 			break;
 	}
+	if (c->prow == NULL && !c->ptids)
+	{
+		int64	   *lo = palloc(Max(npreds, 1) * 2 * sizeof(int64));
+		bool	   *range = palloc0(Max(npreds, 1) * 2 * sizeof(bool));
+
+		for (int i = 0; i < npreds; i++)
+		{
+			const SiftColDef *def = &seg->schema->cols[preds[i].col];
+			SiftCTest	t;
+
+			if (def->store == SIFT_COLS_STR || sift_colw_is_wide_pred(def, &preds[i]))
+				continue;
+			make_test(src, def, NULL, &preds[i], &t);
+			range[i] = t.kind == SIFT_CT_RANGE;
+			lo[i] = t.lo;
+			lo[npreds + i] = t.hi;
+		}
+		prune_groups(src, seg, c, preds, npreds, lo, lo + npreds, range, c->ckeep, range + npreds);
+		pfree(lo);
+		pfree(range);
+	}
 	MemoryContextSwitchTo(old);
 }
 
@@ -383,8 +457,23 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	c->ps = NULL;
 	c->count_ok = false;
-	if (src->pcnt && c->full && col_count_segment(src, c, preds, npreds))
+	c->count_dirty = NULL;
+	if (src->pcnt && c->full && c->cmemo_epoch == src->pcnt_epoch && c->cmemo_seg == seg && c->cmemo_gen == seg->entry.gen)
 	{
+		c->count_ok = true;
+		c->count_rows = c->cmemo_rows;
+		c->count_unit_rows = c->cmemo_unit_rows;
+	}
+	if (c->count_ok || (src->pcnt && c->full && col_count_segment(src, c, preds, npreds)))
+	{
+		if (c->count_dirty == NULL)
+		{
+			c->cmemo_epoch = src->pcnt_epoch;
+			c->cmemo_seg = seg;
+			c->cmemo_gen = seg->entry.gen;
+			c->cmemo_rows = c->count_rows;
+			c->cmemo_unit_rows = c->count_unit_rows;
+		}
 		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
 		c->prow = NULL;
 		c->pexact = 0;
@@ -392,9 +481,14 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 		c->ptidv = NULL;
 		c->nptidv = 0;
 		c->keep = palloc(nw * sizeof(uint64));
-		memset(c->keep, 0xFF, nw * sizeof(uint64));
-		if (seg->nsb % 64)
-			c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+		if (c->count_dirty != NULL)
+			memcpy(c->keep, c->count_dirty, nw * sizeof(uint64));
+		else
+		{
+			memset(c->keep, 0xFF, nw * sizeof(uint64));
+			if (seg->nsb % 64)
+				c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+		}
 		c->setcut = palloc0(nw * sizeof(uint64));
 		return;
 	}

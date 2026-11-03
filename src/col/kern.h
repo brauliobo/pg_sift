@@ -105,6 +105,17 @@ typedef struct SiftColKernels
 	void		(*gather_u32) (const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
 
 	/*
+	 * The minimum, the maximum, the sum (wrapping) and the sum of the squares of the n >= 1 values of a, in sq[0] + sq[1] * 2^32 (the sums of the low and of the high halves of
+	 * each square). The sums are exact when every value is within 2^31 of zero (mn and mx say so) and mean nothing otherwise: the zone and the exact sums of a leaf in one pass.
+	 */
+	void		(*int_stats) (const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *sum, uint64 *sq);
+
+	/*
+	 * The sum, the minimum and the maximum of the n >= 1 values a[idx[k]]: the rows of one group of a cube measure. The sum wraps modulo 2^64 (the caller proves that it fits).
+	 */
+	void		(*gather_stats) (const int64 *a, const uint32 *idx, uint32 n, int64 *sum, int64 *mn, int64 *mx);
+
+	/*
 	 * Decoding to the consumer's vector: f8_from_keys turns the n order-preserving keys of floats (sift_col_f8_key) in a into the
 	 * IEEE bits of the doubles, in place. bits_to_flags: flags[i] = bit i of bits as 0 or 1, i < n; it stores whole vectors, so
 	 * flags has room for n rounded up to SIFT_COL_PAD bytes (the bytes past n are undefined); bits has the words of n bits.

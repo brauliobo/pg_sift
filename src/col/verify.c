@@ -279,13 +279,13 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			}
 			sift_cseg_close(seg);
 		}
-		else
+		else if (e->kind != SIFT_SEG_TOMB)
 		{
 			int			n;
 			SiftColBatch **bs;
 
 			sift_cwbuf_verify(index, e, r->schema);
-			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n);
+			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n, NULL);
 			for (int j = 0; j < n; j++)
 				collect_batch(index, &cl, r->schema, bs[j]);
 		}

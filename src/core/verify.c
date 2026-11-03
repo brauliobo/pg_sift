@@ -38,6 +38,9 @@ typedef struct BlockMap
 	Relation	index;
 	BlockNumber hwm;
 	Bitmapset  *set;
+	SiftExtentVisit visit;		/* sift_store_extent_map: told of every run marked */
+	void	   *visit_arg;
+	bool		pending;		/* the run in hand is a free run the horizon still holds */
 } BlockMap;
 
 static BlockNumber
@@ -64,6 +67,8 @@ mark(BlockMap *m, BlockNumber start, uint64 n, const char *what, uint64 gen)
 			corrupt(m->index, "Block %u is referenced twice (%s of generation %llu).", b, what, ULL(gen));
 		}
 	m->set = bms_add_range(m->set, start, start + n - 1);
+	if (m->visit)
+		m->visit(m->visit_arg, what, gen, start, n, m->pending);
 }
 
 static bool
@@ -73,7 +78,11 @@ mark_freelist_page(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 
 	mark(m, blk, 1, "free list page", 0);
 	for (uint32 i = 0; i < fl->n; i++)
+	{
+		m->pending = FullTransactionIdIsValid(fl->ext[i].safexid) && !sift_store_removable(m->index, fl->ext[i].safexid);
 		mark(m, fl->ext[i].start, fl->ext[i].nblocks, "free extent", 0);
+	}
+	m->pending = false;
 	return true;
 }
 
@@ -166,10 +175,10 @@ mark_wbuf(BlockMap *m, const SiftSegEntry *s)
 	}
 }
 
-Bitmapset *
-sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
+static Bitmapset *
+referenced_blocks(Relation index, const SiftDirSnapshot *snap, SiftExtentVisit visit, void *arg)
 {
-	BlockMap	m = {index, high_water(index), NULL};
+	BlockMap	m = {index, high_water(index), NULL, visit, arg, false};
 	Buffer		metabuf;
 
 	for (int i = 0; i < snap->nsegs; i++)
@@ -188,6 +197,22 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 	return m.set;
 }
 
+Bitmapset *
+sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
+{
+	return referenced_blocks(index, snap, NULL, NULL);
+}
+
+void
+sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	sift_dir_read(index, snap);
+	bms_free(referenced_blocks(index, snap, visit, arg));
+	pfree(snap);
+}
+
 static bool
 in_flight(Page page, const SiftDirSnapshot *snap)
 {
@@ -200,9 +225,13 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 		return false;
 	if (op->gen >= snap->meta.next_gen)
 		return true;
+	/*
+	 * A page of a write buffer that an appender allocated and has not linked yet carries the generation of its buffer. A page of an immutable segment that
+	 * its header does not list is the copy of a move that was killed before it was published (the shrink keeps the generation): an orphan.
+	 */
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == op->gen)
-			return true;
+			return snap->segs[i].kind != SIFT_SEG_IMMUTABLE;
 	return false;
 }
 
@@ -245,7 +274,7 @@ sift_store_verify(Relation index)
 	{
 		const SiftSegEntry *s = &snap->segs[i];
 
-		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_WBUF_SEALED || s->gen == 0 ||
+		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_TOMB || s->gen == 0 ||
 			s->gen >= snap->meta.next_gen)
 			corrupt(index, "Directory entry %d has kind %u generation %llu (next %llu).",
 					i, s->kind, ULL(s->gen), ULL(snap->meta.next_gen));

@@ -132,10 +132,14 @@ col_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 	uint64		ok = 0;
 
 	src->flt = (SiftAggFilters) {0};
+	if (src->rcx == NULL)
+		src->rcx = AllocSetContextCreate(src->cxt, "sift source filters", ALLOCSET_SMALL_SIZES);
+	else
+		MemoryContextReset(src->rcx);
 	for (int i = 0; i < nf; i++)
 		if (sift_aggfilt_int(sift_col_def(src->cs, f[i].leaf)))
 		{
-			sift_aggfilt_add(&src->flt, src->cxt, f[i].leaf, &f[i]);
+			sift_aggfilt_add(&src->flt, src->rcx, f[i].leaf, &f[i]);
 			ok |= UINT64CONST(1) << i;
 		}
 	return ok;
@@ -223,12 +227,34 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;
+	c->rows_log = cc->rows_log;
 	c->heap_pages = cc->heap_pages;
 	c->rechecked = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nrechecked : 0;
 	c->recheck_units = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nunits : 0;
 	c->point_units = cc->point_units;
 	c->point_rows = cc->point_rows;
 	c->run_windows = cc->run_windows;
+	c->dirty_rows = cc->dirty_rows;
 }
 
 #endif							/* __has_include("col/col.h") */
+
+/*
+ * A source whose scan registered nothing but filters and began no read can serve the next scan of the statement (a LATERAL probe): the registrations of the last (a text
+ * test, a wide conjunct, a recheck, a match set, a leaf read raw or as sums) are what the next scan would find in place of its own, so a source that has any is opened again.
+ */
+bool
+col_rescan(void *impl)
+{
+	ColSource  *src = impl;
+
+	if (src->rck || src->nspred || src->nwtest || src->sel.keep)
+		return false;
+	for (int i = 0; i < src->lay->nleaves; i++)
+		if (src->tol[i] || src->raw[i] || src->numsum[i])
+			return false;
+	if (!sift_col_rescan(src->cs))
+		return false;
+	src->flt = (SiftAggFilters) {0};
+	return true;
+}

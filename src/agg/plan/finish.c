@@ -10,12 +10,14 @@
 #include "catalog/pg_proc.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
 #include "agg/agg.h"
+#include "agg/par_int.h"
 #include "agg/plan/int.h"
 
 /* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
@@ -400,6 +402,32 @@ param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *
 	}
 }
 
+int			sift_test_split = 0;
+
+/* the key a scan with the spec's workers splits the groups by: the first the shares of a hash keep apart, with the groups for every participant to hold several; -1 for none */
+static int
+split_key_of(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, List *keys)
+{
+	int			best = -1;
+	double		top = 0;
+
+	if (!split_shape_ok(s) || !parallel_leader_participation || preagg_share(c, s) > 0 || group_count(c, s) < AGG_SPLIT_GROUPS * (s->nworkers + 1))
+		return -1;
+	for (int j = 0; j < s->nkeys; j++)
+		if (split_key_ok(s, j, leaf_of(c, s->key[j].leaf)))
+		{
+			double		b = estimate_num_groups(root, list_make1(stats_expr(c, list_nth(keys, j))), Max(c->rel->tuples, 1.0), NULL, NULL);
+
+			/* the key with the most values keeps the shares even */
+			if (best < 0 || b > top)
+			{
+				best = j;
+				top = b;
+			}
+		}
+	return top < AGG_SPLIT_GROUPS * (s->nworkers + 1) ? -1 : best;
+}
+
 /* the cost; adds the paths to output_rel */
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
@@ -438,6 +466,20 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 								table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s) ? "its group table outgrows hash memory and spills, which one process does" : NULL);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
-		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+	{
+		int			key;
+
+		s->nworkers = nworkers;
+		key = sift_test_split == 1 ? -1 : split_key_of(c, s, root, keys);
+		if (key < 0 || sift_test_split != 2)
+			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+		/* many groups: the participants split them by a key instead of the rows, which keeps each table small and the leader's merge short (agg/par/split.c) */
+		if (key >= 0)
+		{
+			s->gpart = key + 1;
+			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+			s->gpart = 0;
+		}
+	}
 	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);
 }

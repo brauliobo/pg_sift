@@ -225,7 +225,7 @@ def sources(results):
     p = os.path.join(results, 'duckdb.tsv')
     if os.path.exists(p):
         duck_meta = store_charts.read_tsv(p)[0]
-    host = f'{h["cpu"].replace(" 8-Core Processor", "")}, {h["threads"]} threads, {h["ram"]} RAM'
+    host = h['cpu']
     lines = [
         '| system | version | data | host and settings | warm or cold | date | results |',
         '|---|---|---|---|---|---|---|',
@@ -284,10 +284,9 @@ def port_lines():
             if m:
                 vals += [int(g.replace(',', '')) for g in m.groups()[1:] if g]
         hist = re.search(r'\*\*Historical baseline \(([\d-]+), ([^;)]*?)(?:;[^)]*)?\)', sec)
-        load = re.search(r'load average ([\d ]+(?:to \d+)?)', sec)
         size = re.search(r'\|[^|]*index, with positions[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*([\d.]+x (?:larger|smaller))\s*\|', sec) or re.search(r'Index size: .*?: ([\d.]+x smaller)', sec)
         if vals:
-            out.append((name, what, f'{min(vals):,}x to {max(vals):,}x', hist.group(1) + ', ' + hist.group(2) if hist else '?', load.group(1) if load else '?',
+            out.append((name, what, f'{min(vals):,}x to {max(vals):,}x', hist.group(1) + ', ' + hist.group(2) if hist else '?',
                         size.group(1) if size else NOT, path))
     return out
 
@@ -296,9 +295,9 @@ def ports_table():
     ports = port_lines()
     if not ports:
         return []
-    rows = ['| the port against | measured | pg_sift faster by | index size | when and on what | host load | source |', '|---|---|---:|---|---|---|---|']
-    for name, what, rng_, when, load, size, path in ports:
-        rows.append(f'| {name} | {what}, 218,058 articles | {rng_} | {size} | **historical baseline**, {when} | load average {load} | [{path}]({path}) |')
+    rows = ['| the port against | measured | pg_sift faster by | index size | when and on what | source |', '|---|---|---:|---|---|---|']
+    for name, what, rng_, when, size, path in ports:
+        rows.append(f'| {name} | {what}, 218,058 articles | {rng_} | {size} | **historical baseline**, {when} | [{path}]({path}) |')
     return rows
 
 
@@ -319,7 +318,7 @@ def compare_block(results):
     desc = {slug: what for slug, what, _ in rows}
     out = ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. A cell is `faster of total (time · CPU · MB read)`: '
            'the time range is over the questions where pg_sift is faster, the CPU (of the whole server) and MB read ranges over all the questions, each the system over pg_sift (above 1x it uses more); the rates and times of the writes are one factor, then the same two measures. '
-           f'Losses are in bold and named under their table. `{NOT}` alone is a comparison no result file holds; inside the parentheses `{NOT}`: a measure not measured under 3.7 yet. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
+           f'Losses are in bold and named under their table. `{NOT}` alone is a comparison no result file holds; inside the parentheses `{NOT}`: a measure {triple.NOT_MEASURED}. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
     for title, slugs in GLANCE:
         slugs = [k for k in slugs if k in desc]
         out += ['', f'{title}: ' + '; '.join(f'{k} = {desc[k]}' for k in slugs) + '.', ''] + mdtable.tables([LABEL[e] for e in est], [('', [(k, k) for k in slugs])], lambda r, k: shown[r, k])
@@ -329,7 +328,7 @@ def compare_block(results):
 
 
 def generic_block(results):
-    """docs/BENCHMARKS.md, block generic: per engine and arm of bench/results/generic.tsv what is compared with pg_sift and what is not, with the reason of each case an engine did not run"""
+    """bench/out/BENCHMARKS.md, block generic: per engine and arm of bench/results/generic.tsv what is compared with pg_sift and what is not, with the reason of each case an engine did not run"""
     rows = generic_rows(results)
     if not rows:
         return ['Not measured at this build yet: `bench/bench generic --docs` writes bench/results/generic.tsv.']
@@ -351,7 +350,7 @@ def generic_block(results):
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
-            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure not measured under 3.7 yet.' + stand + ' '
+            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure ' + triple.NOT_MEASURED + '.' + stand + ' '
             'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
 
 
@@ -409,15 +408,14 @@ def numbers_block(results):
 def render(results, readme_path):
     for name, fn in (('compare', compare_block), ('compare-sources', sources_block), ('compare-search', search_block), ('compare-ports', ports_block), ('numbers', numbers_block), ('write-cost', write_cost_block)):
         readme.replace_block(readme_path, name, fn(results))
-    benchmarks = os.path.join(os.path.dirname(readme_path), 'docs', 'BENCHMARKS.md')
-    if os.path.exists(benchmarks) and '<!-- bench:generic:begin' in open(benchmarks).read():
-        readme.replace_block(benchmarks, 'generic', generic_block(results))
+    benchmarks = os.path.join(os.path.dirname(readme_path), 'BENCHMARKS.md')
+    readme.replace_block(benchmarks, 'generic', generic_block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--readme', default=os.path.join(REPO, 'README.md'))
+    ap.add_argument('--readme', default=os.path.join(REPO, 'bench', 'out', 'README-blocks.md'))
     a = ap.parse_args()
     render(a.results, a.readme)
 

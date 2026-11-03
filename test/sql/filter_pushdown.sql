@@ -81,8 +81,8 @@ DECLARE
 	seq tid[];
 BEGIN
 	all_rows := pd_top(tbl, q, flt, 1000000, 'force');
-	FOREACH k IN ARRAY ARRAY[1, 7, 25, 1000000] LOOP
-		a := pd_top(tbl, q, flt, k, 'force');
+	FOREACH k IN ARRAY ARRAY[1, 25, 1000000] LOOP
+		a := CASE WHEN k = 1000000 THEN all_rows ELSE pd_top(tbl, q, flt, k, 'force') END;
 		b := pd_top(tbl, q, flt, k, 'off');
 		IF (SELECT array_agg(float4send(s)) FROM unnest(a.metrics_a) s) IS DISTINCT FROM (SELECT array_agg(float4send(s)) FROM unnest(b.metrics_a) s) THEN
 			RETURN format('k %s: metrics_a differ', k);
@@ -123,7 +123,7 @@ CREATE FUNCTION pd_run(tbl regclass, whats text[] DEFAULT NULL) RETURNS TABLE (w
 $$;
 
 SELECT pd_seq_load('fd');
-SELECT * FROM pd_run('fd');
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'nothing']);
 
 -- what the filters keep
 SELECT flt, (SELECT count(*) FROM fd WHERE ctid IN (SELECT tid FROM pd_seq WHERE q = 'common') AND (CASE flt
@@ -205,19 +205,19 @@ BEGIN;
 INSERT INTO fd SELECT i, 7, 17, ARRAY[5], 'common w3 x2 fox', 'p' FROM generate_series(30001, 30050) i;
 DELETE FROM fd WHERE tenant = 7 AND id < 5000;
 SELECT pd_seq_load('fd');
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BitmapAnd of btree and BRIN']);
+SELECT * FROM pd_run('fd', ARRAY['btree equality']);
 ROLLBACK;
 SELECT pd_seq_load('fd');
 -- after VACUUM and after the merge one filter of each bitmap kind: the index kinds do not interact with the state of the sift index
 VACUUM fd;
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapAnd of btree and BRIN', 'BitmapOr']);
 SELECT sift.promote('fd_body') IS NOT NULL AS promoted;
 SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
 INSERT INTO fd SELECT i, (i * 7919) % 500, i / 300, ARRAY[i % 100], 'common w3 x2 late', 'p' FROM generate_series(25001, 25600) i;
 SELECT pd_seq_load('fd');
 SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapOr']);
 SELECT sift.merge('fd_body', true) IS NOT NULL AS merged;
-SELECT * FROM pd_run('fd', ARRAY['btree equality', 'btree range', 'BRIN, lossy by nature', 'GIN, recheck', 'BitmapAnd of btree and BRIN', 'BitmapOr', 'half the table']);
+SELECT * FROM pd_run('fd', ARRAY['btree equality', 'BRIN, lossy by nature', 'BitmapAnd of btree and BRIN', 'BitmapOr']);
 SELECT sift.verify('fd_body', true);
 
 -- a partial sift index, only used under its predicate

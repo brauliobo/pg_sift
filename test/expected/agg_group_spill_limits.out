@@ -36,6 +36,8 @@ SELECT * FROM spilled_rows('SELECT k1, count(*) AS n, sum(val) AS s, sum(w) AS t
 
 RESET sift.test_limits;
 -- a partition that does not fit hash memory after the levels the limit allows is an error that says what to raise
+-- (read in passes the scan would not spill: sift.test_agg_pass_w = -1 keeps the spill)
+SET sift.test_agg_pass_w = -1;
 SET sift.test_limits = 'group_spill_depth=1';
 DO $$
 DECLARE hint text;
@@ -48,6 +50,7 @@ EXCEPTION WHEN program_limit_exceeded THEN
 END $$;
 WARNING:  SQLSTATE 54000 hint: Raise work_mem or hash_mem_multiplier, or set sift.enable_agg to off.
 RESET sift.test_limits;
+RESET sift.test_agg_pass_w;
 -- a table that cannot spill (a generic aggregate, bit_or): 20,000 groups are under the 8 MB the factor applies to; with a factor of 0 the scan gives way
 RESET work_mem;
 RESET hash_mem_multiplier;

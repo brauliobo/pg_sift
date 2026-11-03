@@ -9,6 +9,9 @@ import contextlib
 import io
 import unittest
 from unittest.mock import patch
+import os  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 PATH = Path(__file__).resolve().parents[1]/'steps/perf_gate.py'
 spec = importlib.util.spec_from_file_location('perf_gate',PATH)

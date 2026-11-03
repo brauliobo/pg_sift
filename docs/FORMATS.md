@@ -25,6 +25,7 @@ Format major 1. The minor is what a build must read to understand an index or ta
 | 1.2 | segment format 2 | BM25 index |
 | 1.3 | BM25: segments of segment format 3. `sift_table`: a column group with unfrozen rows (`SIFT_SEG_VERS`) | the first such segment |
 | 1.4 | BM25: segments of segment format 4 (the position stream in blocks). A `sift_table` stays at 1.3 | the first such segment |
+| 1.5 | BM25: segments of segment format 5 (the values of the INCLUDE columns). A `sift_table` stays at 1.3 | the first such segment, of an index that names INCLUDE columns |
 
 `sift_col` indexes are never raised: their segment formats are the column engine's (section 4).
 
@@ -39,8 +40,9 @@ failure count (`SIFT_META_FAILURES_MASK`).
 | 2 | `SIFT_SEGFMT_LIVEROWS`: liveness rows per superblock, dead-posting table | 3.0 |
 | 3 | `SIFT_SEGFMT_PACKED`: dictionary blocks, narrower docmap rows, packed containers (perf/BM25-SIZE.md section 5) | 3.1 PostgreSQL |
 | 4 | `SIFT_SEGFMT_POSBLK`: the position stream of a term in blocks of 32 postings, bit-packed (`bm25/posblk.c`, perf/BM25-SIZE.md section 5.4); a dictionary block says so with `SIFT_DICT_POS2` | 3.7 PostgreSQL |
+| 5 | `SIFT_SEGFMT_ATTR`: format 4 with the values of the INCLUDE columns: per column and SB one record (a 24-byte `SiftAttrColHdr` of the smallest value, the code of an unknown value, the width and the flags (1: no rows; 2: no document of the SB is unknown, so the smallest value and the code give its exact range and a test that no value of it passes drops the SB), then the row of each present page, `width` bits a slot: 0 is NULL, `v - base + 1` a value, the unknown code a document whose heap tuple was gone) after the docmap records, and a docmap trailer `SiftAttrRef[nsb][ncols]`, `u64 recs_end`, `u32 ncols`, `u32 nsb` (`bm25/segment.h`, `bm25/segment_int.h`) | 4.0 PostgreSQL |
 
-A 3.7 build reads 1 to 4 side by side; a merge writes the current format. 3.0 refuses a segment of format 3, and 3.6 and older one of format 4, through the metapage minor
+A 4.0 build reads 1 to 5 side by side, and writes format 5 only for an index with INCLUDE columns (the others stay at 4: a 3.7 library still reads them); a merge writes the current format. 3.0 refuses a segment of format 3, 3.6 and older one of format 4, and 3.7 and older one of format 5, through the metapage minor
 (section 2); `REINDEX` with the older library rewrites it.
 
 ## 4. Column segments (`SiftSegEntry.format` of access methods `sift_col` and `sift_table`)
@@ -72,6 +74,9 @@ A 3.7 build reads 1 to 4 side by side; a merge writes the current format. 3.0 re
 | 25 | 3.6: the lookup dictionary (form 2 or 4, or the blocks of form 3 that no leaf asked to search) also holds a hash of its strings to their codes: an equality or `IN` test reads one slot and one block of strings in each segment, and an absent string decompresses nothing; for a dictionary of 1,024 strings or more written in the lookup form | 3.6 default (setting 15 or more; a smaller setting leaves it out) |
 | 26 | 3.6: the leaf list of a range, inet or cidr column has the lanes of its containment operators after the image; written for every index with such a column, whatever the setting | 3.5 and older refuse the index ("does not match its column layout", REINDEX) |
 | 33 | 3.7: the tables of the point directories have `ceil(keys * 4 / 3)` slots, not a power of two, and a key starts at the slot its hash scales to; written under `sift.col_format_minor` 15 or more | 3.6 and older refuse the segment ("Use a newer pg_sift, or REINDEX"); `SET sift.col_format_minor = 14` and `REINDEX` write the power of two (`sift.upgrade_check('3.6')` says so) |
+| 41 | 4.0: the global order of a leaf in a segment may be a compact block (version 4 of the block of `col/gorder.h`): the heap address of every row and, for each entry, the bucket of its key (mini-blocks of 32 differences, bit-packed, `col/gquant.h`); the exact key is read from the table row. Written by `order_layout` auto (a chunk where it is at least a fifth smaller and has no run of 8 equal keys) or `compact` (bit 2 of the pad word marks a compact chunk with such a run), for a segment of more than 32,768 values; the first and last 8,192 entries and the NULL rows of the block stay whole. The block of the second order by group (`order_array_group`, version 2) may have compact chunks too, and is then version 6: the keys of each group start one bucket after the one before it, and the first key of every group after the first in the chunk is kept exact after the addresses (positions, then keys; the count is in bits 16 to 23 of the pad word, at most 255, else the chunk stays whole) | 3.7 and older refuse the segment ("Use a newer pg_sift") |
+| 42 | 4.0: the global order of a text leaf names the strings of its ranks by their dictionary codes (version 5 of the block of `col/gorder.h`: `bits` bits a rank in the section that ends the block) and keeps no copy of them, for a leaf whose dictionaries, added up over the segments of the index, take three quarters of the cache of parsed dictionaries or less and whose codes save a fifth of the bytes (the others keep the strings of version 3 or 4); the dictionary of the leaf is written in blocks when it has 1,024 strings or more, to be read in place by code | 3.7 and older refuse the segment ("Use a newer pg_sift") |
+| 43 | 4.0: the index has a tombstone log, a directory entry of kind `SIFT_SEG_TOMB` (a lane chain of the 32-byte entries of `core/tomb.h`: the heap address of an entry of the index that stopped being live, the transaction and command that said so), and the rows of its write buffer carry the transaction that inserted them; written only for an index with the reloption `track_changes` | 3.7 and older refuse the index ("Use a newer pg_sift") |
 
 `SIFT_COL_FORMAT_MIN_READ` is 3. 3.0 reads only 3 and refuses 4 with a REINDEX hint; 3.2 reads 3 through 6, 3.3 3 through 16, 3.4 3 through 21, 3.5 3 through 24, 3.6 3 through 32, 3.7 3 through 33 (`SIFT_COL_FORMAT_MAX_READ`). A 3.1 library refuses minors 5 and 6, a 3.2 library minors 7 to 23, and a 3.4 library minors 22 and 23, with a format error and a REINDEX hint. Old segments remain readable; predicates needing unavailable kinds use the normal plan. REINDEX and a table VACUUM FULL rebuild from the original documents and restore complete kinds.
 
@@ -91,9 +96,16 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_TBL_SEG_WBUF` | 0x0100 | `sift_table` write buffer |
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
+| `SIFT_SEG_NET` | 0x2000 | column segment with the pre-aggregates of its dirty units net of their dead rows, in whole pages at the end of the stream (below) |
 
 - `SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of leaves holding a JSON null; 3.2 only.
 - `SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment and the smallest xid when `SIFT_SEG_VERS` is set.
+- `SIFT_SEG_NET` (4.0) needs no column format minor, as the leaf statistics (`SIFT_SEG_LSTATS`) needed none: a build that does not know the flag lists the pages in the header's extents like any others and never looks in them, so it reads the
+  segment as written and a rewrite or merge by it drops the sidecar with the segment. The sidecar starts at a page boundary after the segment's own stream (and its leaf statistics); the last 16 bytes of the stream are
+  `{magic 0x5445474e, offset of the sidecar}`. The sidecar is `NetHeader`, `NetUnit[nsb]` (the dead rows the unit had when it was made, the lengths of its cube and rollup blobs), `NetAgg[ncols][nsb]` (the zone and exact
+  sums of each leaf over the live rows) and the blobs, the bytes `sift_cpagg_cube` writes for the live rows with the dims, rollups and measures of the unit's own blobs (`src/col/seg/net.c`). VACUUM writes it
+  (`src/col/maint/net.c`): the segment keeps its generation and its header page is written again, as a relocation does, with the extents of the stream and those of the new sidecar; the old header page and the old sidecar
+  are released together with the directory switch. A reader uses the unit's net blobs when the unit has exactly the number of dead rows they were made for (liveness bits are only cleared), else it reads the unit as before.
 - A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
 
 Zone flags: `SIFT_COLZ_NOSUM` 0x1, `SIFT_COLZ_NAN` 0x2,

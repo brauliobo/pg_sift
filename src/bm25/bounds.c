@@ -191,6 +191,10 @@ rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 	rs->root = seg_cursor(p, s, p->root, &rs->cs, NULL, p->mcxt);
 	if (rs->root == NULL)
 		return;
+	if (sift_cur_or_kids(rs->root, &rs->nug) != NULL)
+		rs->ug = MemoryContextAllocZero(p->mcxt, rs->nug * sizeof(sift_grp *));
+	else
+		rs->nug = 0;
 	rs->lub = MemoryContextAllocZero(cx, Max(p->nleaves, 1) * sizeof(LeafUB));
 	rs->lmax = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(float4));
 	rs->first = MemoryContextAlloc(p->mcxt, Max(p->nleaves, 1) * sizeof(int));
@@ -212,6 +216,27 @@ rank_open_seg(SiftRanker *r, int s, MemoryContext cx)
 			term_bounds(p, rs, i);
 			leaf_bounds(p, rs, i, cx);
 		}
+	if (rs->nug > 0)
+	{
+		int			nk;
+		sift_cur  **kid = sift_cur_or_kids(rs->root, &nk);
+
+		rs->kidleaf = MemoryContextAlloc(p->mcxt, rs->nug * sizeof(int));
+		rs->kidskip = MemoryContextAllocZero(p->mcxt, rs->nug * sizeof(bool));
+		for (int k = 0; k < nk; k++)
+		{
+			rs->kidleaf[k] = -1;
+			for (int i = 0; i < p->nleaves; i++)
+			{
+				const EvalLeaf *l = &p->leaves[i];
+				sift_cur   *lc = rs->cs.leafor[i] ? rs->cs.leafor[i] :
+				l->scoring && l->nterms[s] == 1 ? sift_post_cursor(rs->cs.leafpc[i][0]) : NULL;
+
+				if (lc != NULL && kid[k] == lc)
+					rs->kidleaf[k] = i;
+			}
+		}
+	}
 }
 
 SiftRanker *

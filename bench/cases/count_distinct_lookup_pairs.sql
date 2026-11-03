@@ -2,9 +2,9 @@
 -- label: `count(DISTINCT cat)` and `count(DISTINCT lang)` of a lookup table of 50,000 rows by `grp` (600,000 groups of 10 rows), a table of 6,000,000 rows
 -- ordered: yes
 --@ setup
-CREATE TABLE pair_dim AS SELECT g AS id, (g * 7919 % 300)::int AS cat, (g % 12)::int AS lang FROM generate_series(1, 50000) g;
+CREATE TABLE pair_dim AS SELECT g AS id, (g * 7919 % 300)::int AS cat, (g % 12)::int AS lang FROM generate_series(1, {rows} / 20) g;
 ALTER TABLE pair_dim ADD PRIMARY KEY (id);
-CREATE TABLE pair_fact AS SELECT g AS id, (g::bigint * 104729 % 50000)::int + 1 AS dim_id, (g % 600000)::int AS grp FROM generate_series(1, 6000000) g;
+CREATE TABLE pair_fact AS SELECT g AS id, (g::bigint * 104729 % ({rows} / 20))::int + 1 AS dim_id, (g % ({rows} * 3 / 5))::int AS grp FROM generate_series(1, {rows} * 6) g;
 CREATE INDEX pair_fact_col ON pair_fact USING sift_col (dim_id, grp);
 ANALYZE pair_dim;
 ANALYZE pair_fact

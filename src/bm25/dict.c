@@ -425,6 +425,88 @@ sift_dict_scan_skipping(SiftDict *d, const char *lo, int lolen, const char *hi, 
 	pfree(buf);
 }
 
+struct SiftDictIter
+{
+	SiftDict   *d;
+	const char *lo;
+	int			lolen;
+	uint8	   *buf;
+	BlockIter	it;
+	uint64		off;			/* of the block after the open one */
+	uint32		slot;
+	bool		open;
+};
+
+SiftDictIter *
+sift_dict_iter(SiftDict *d, const char *lo, int lolen, MemoryContext mcxt)
+{
+	SiftDictIter *it = MemoryContextAllocZero(mcxt, sizeof(SiftDictIter));
+
+	it->d = d;
+	if (d->nblocks == 0)
+		return it;
+	if (lo)
+	{
+		it->lo = MemoryContextAlloc(mcxt, Max(lolen, 1));
+		memcpy((char *) it->lo, lo, lolen);
+		it->lolen = lolen;
+	}
+	it->buf = MemoryContextAlloc(mcxt, UINT16_MAX + 1);
+	{
+		SiftDictIdx e = read_idx(d, lo ? Max(find_block(d, lo, lolen), 0) : 0);
+
+		it->off = e.block_off;
+		it->slot = e.slot_base;
+	}
+	return it;
+}
+
+bool
+sift_dict_iter_next(SiftDictIter *it, const char **term, int *len, SiftTermInfo *info)
+{
+	SiftDict   *d = it->d;
+
+	for (;;)
+	{
+		while (it->open && block_next_slots(&it->it, info))
+		{
+			if (it->lo && sift_term_cmp(it->it.term, it->it.len, it->lo, it->lolen) < 0)
+				continue;
+			entry_stats(&it->it, info, true);
+			*term = it->it.term;
+			*len = it->it.len;
+			return true;
+		}
+		if (it->buf == NULL || it->off >= d->dict_len)
+			return false;
+		if (it->open)
+			it->slot = it->it.slot;
+		block_begin(d, it->off, it->slot, it->buf, &it->it);
+		it->off += it->it.end - it->buf;
+		it->open = true;
+		sift_sr_unlock(d->sr);	/* a buffer lock holds off interrupts */
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+void
+sift_dict_samples(SiftDict *d, int max_samples, SiftDictSample fn, void *arg)
+{
+	uint64		every = Max(1, (d->nblocks + max_samples - 1) / max_samples);
+
+	for (uint64 b = 0; b < d->nblocks; b += every)
+	{
+		BlockIter	it;
+		SiftTermInfo info;
+		SiftDictIdx e = read_idx(d, b);
+		uint64		first = b * SIFT_DICT_BLOCK;
+
+		block_begin(d, e.block_off, e.slot_base, d->blk, &it);
+		block_next(&it, &info);
+		fn(arg, it.term, it.len, (info.flags & SIFT_TERM_INLINE) ? it.post : info.post_off, Min(first + every * SIFT_DICT_BLOCK, d->nterms) - first);
+	}
+}
+
 struct SiftTermMatcher
 {
 	const SiftQNode *leaf;

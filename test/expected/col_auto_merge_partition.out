@@ -2,6 +2,7 @@
 -- takes one of them, the one the churn left dirty, and the partitions it did not touch are not written at all; the small segments the promotions left over
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 -- the overlays are cut by superblock here: the units a TID-range overlay (sift.col_unit_floor, col_unit_floor) lists are no fragmentation to fold
@@ -14,7 +15,11 @@ CREATE TABLE items_plain (LIKE items) WITH (autovacuum_enabled = false);
 INSERT INTO items_plain SELECT * FROM items ORDER BY id;
 -- the partitions are cut by their bytes: the stored form of a big dictionary (minor 14) would double the index, so dict_lookup = off
 CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount, tag, tag2) WITH (dict_lookup = off);
+NOTICE:  sift_col index "items_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX items_plain_col ON items_plain USING sift_col (id, key, kind, amount, tag, tag2) WITH (dict_lookup = off);
+NOTICE:  sift_col index "items_plain_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) items, items_plain;
 -- the rewrite of the worker is what is looked at: neither the rewrite of a lone mostly dead segment nor the moves of VACUUM's space step may change the segments
 ALTER INDEX items_col SET (dead_rewrite_pct = 100);

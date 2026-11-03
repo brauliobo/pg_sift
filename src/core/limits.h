@@ -54,7 +54,7 @@
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
 	X(lookup_kb, "-", "agg/plan/finish.c", 262144, "kB", \
 	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
-	X(lookup_shared_bytes, "SHARE_MAX", "agg/par.c", 1073741824, "bytes", \
+	X(lookup_shared_bytes, "SHARE_MAX", "agg/par/int.h", 1073741824, "bytes", \
 	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
 	X(lookup_shared_slots, "LOOKSHM_SLOTS", "agg/lookshm.c", 64, "tables", \
 	  "lookup tables shared through DSM at one time", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
@@ -104,24 +104,30 @@
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
 	X(merge_disk_peak, "-", "col/maint/maint.c", 2, "times the live index", \
 	  "disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back", "the step fails with PostgreSQL's disk-full error before it replaces a segment", "-", 0) \
-	X(col_leaves, "SIFT_COL_MAX_COLS", "col/col.h", SIFT_COL_MAX_COLS, "leaves", \
+	X(col_leaves, "SIFT_COL_MAX_COLS", "col/api/format.h", SIFT_COL_MAX_COLS, "leaves", \
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
-	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/col.h", SIFT_COL_MAX_VALUE, "bytes", \
+	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/api/format.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
-	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/col.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
+	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/api/format.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
 	  "string bytes of one leaf in one column unit", "the values after it are stored as overflow and read from the heap (NOTICE)", "-", 1) \
-	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/col.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
+	X(unit_rows, "SIFT_COL_UNIT_MAX_ROWS", "col/api/format.h", SIFT_COL_UNIT_MAX_ROWS, "rows", \
 	  "rows of one column unit (256 heap pages)", "a new unit starts", "-", 0) \
-	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/col.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \
+	X(dict_entry, "SIFT_COL_DICT_MAX_ENTRY", "col/api/format.h", SIFT_COL_DICT_MAX_ENTRY, "bytes", \
 	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
-	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/col.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
+	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/api/format.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
+	X(par_build_rows, "PAR_BUILD_ROWS", "col/build_par.c", 150000, "rows", \
+	  "rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table)", \
+	  "fewer workers are launched, down to the build of the leader alone: one segment", "max_parallel_maintenance_workers, the parallel_workers option of the table", 1) \
 	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
 	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
 	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
 	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too", "-", 1) \
+	X(segment_cache_kb, "SEGCACHE_MAX_KB", "bm25/segcache.c", 32768, "kB", \
+	  "docmap directories and term blobs of the segments that a backend keeps, in its own memory, for its next statement (one entry at most a quarter of it)", \
+	  "the least recently used entry that no cursor holds is dropped; a blob that does not fit while every entry is held is read as before and kept by nobody", "-", 1) \
 	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write/seg_write_int.h", 1024, "strings", \
 	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
 	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \
@@ -134,7 +140,7 @@
 	X(lst_share_div, "LST_SHARE_DIV", "col/seg_write/seg_write.c", 33, "1/n of a segment", \
 	  "the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none", \
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
-	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
+	X(int_digits, "SIFT_COL_MAX_SCALE", "col/api/leaf.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
 	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
 	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
@@ -208,7 +214,9 @@
 	X(any_list_rows, "ANY_LIST_MAX_ROWS", "bm25/planner_path.c", 100000, "rows", \
 	  "rows a query list (= ANY(array)) may match in one scan", "normal plan", "-", 0) \
 	X(maint_backoff_ms, "BACKOFF_MAX_MS", "bm25/maint.c", 3600000, "ms", \
-	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0)
+	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0) \
+	X(semi_set, "SIFT_SEMI_MAX_SET", "bm25/planner.h", 65536, "rows", \
+	  "rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys)", "the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns)", "-", 0)
 
 typedef enum SiftLimitId
 {

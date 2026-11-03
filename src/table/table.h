@@ -4,7 +4,7 @@
  *   table/am.c         handler, the TableAmRoutine callbacks, DML
  *   table/store.c   layout, per-relation cache
  *   table/wbuf.c    write buffers (row format)
- *   table/tomb.c    tombstone segment
+ *   table/wbpage.c   the page table of a write buffer (the log of tombstones is core/tomb.c)
  *   table/mvcc.c    visibility of a row version under every snapshot type
  *   table/scan.c    sequential, TID range and parallel scans
  *   table/fetch.c   TID fetches, bitmap scans, TABLESAMPLE
@@ -35,6 +35,7 @@
 #include "col/enc.h"
 #include "col/seg.h"
 #include "core/store.h"
+#include "core/tomb.h"
 
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
 #if PG_VERSION_NUM >= 180000
@@ -47,14 +48,9 @@
 
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
 #define SIFT_TBL_WBUF_MAGIC	0x444C5441	/* "DLTA" */
-#define SIFT_TBL_TOMB_MAGIC		0x544F4D42	/* "TOMB" */
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage
 #define SIFT_TBL_MAX_WBUF_PAGES 1024
 #define SIFT_TBL_VBLOCKS_SB		SIFT_SB_PAGES
-#define SIFT_TBL_TOMB_LOCK_BLKNO 4	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them. Not SIFT_WORKER_LOCK_BLKNO: a worker holds that one for a whole pass, and every delete would wait for it */
-StaticAssertDecl(SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_ACTIVE_LOCK_BLKNO &&
-				 SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_MAINT_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_DIRECTORY_BLKNO,
-				 "the lock targets of a relation are distinct");
 #define SIFT_TBL_ROW_MAX_INLINE	(BLCKSZ / 2)	/* a row above this goes to overflow pages */
 
 /* The next vblock to hand out: the field a table has no other use for (col-core: SIFT_COL_META_NEXT_VBLOCK) */
@@ -113,51 +109,6 @@ typedef struct SiftTblRec
 #define SIFT_TBL_REC_OVF		0x0004	/* the row continues in overflow pages */
 #define TBL_REC_SIZE(inline_len)	MAXALIGN(sizeof(SiftTblRec) + (inline_len))
 
-/* Tombstone segment header page: SiftWbufHeaderData then this; data pages: SiftTblTombPage then SiftTblTomb[] */
-typedef struct SiftTblTombHdr
-{
-	uint32		magic;
-	uint32		pad;
-	uint64		nentries;		/* appended so far: the version of the log */
-} SiftTblTombHdr;
-
-typedef struct SiftTblTombPage
-{
-	BlockNumber next;
-	uint16		nent;
-	uint16		flags;
-} SiftTblTombPage;
-
-#define TBL_TOMB_HDR(page) \
-	((SiftTblTombHdr *) (SiftPageGetData(page) + MAXALIGN(sizeof(SiftWbufHeaderData))))
-#define TBL_TOMB_PAGE(page)	((SiftTblTombPage *) SiftPageGetData(page))
-#define TBL_TOMB_PAGE_INIT	MAXALIGN(sizeof(SiftTblTombPage))
-#define TBL_TOMB_ENTS(page)	((SiftTblTomb *) (SiftPageGetData(page) + TBL_TOMB_PAGE_INIT))
-
-typedef enum SiftTblTombKind
-{
-	SIFT_TBL_TOMB_DELETE = 1,
-	SIFT_TBL_TOMB_UPDATE,		/* succ is the new version */
-	SIFT_TBL_TOMB_LOCK			/* row lock: never deletes */
-} SiftTblTombKind;
-
-/* UPDATE entries: the new version is a member of the chain of this one, no index has an entry for it */
-#define SIFT_TBL_TOMB_HOT		0x0001
-
-typedef struct SiftTblTomb
-{
-	uint64		key;			/* SiftKey of the row version */
-	TransactionId xid;
-	CommandId	cid;
-	uint64		succ;			/* UPDATE: key of the new version */
-	uint16		kind;
-	uint16		flags;
-	uint32		seq;			/* position in the log (not stored: set when loaded) */
-} SiftTblTomb;
-
-#define TBL_TOMB_CAP	((SIFT_PAGE_PAYLOAD - TBL_TOMB_PAGE_INIT) / sizeof(SiftTblTomb))
-
-StaticAssertDecl(sizeof(SiftTblTomb) == 32, "tombstone entries are 32 bytes");
 StaticAssertDecl(sizeof(SiftTblPageHdr) + 16 < BLCKSZ / 4, "page header leaves room for rows");
 StaticAssertDecl(TBL_WBUF_HDR_USED <= SIFT_PAGE_PAYLOAD, "write buffer header fits a page");
 
@@ -182,23 +133,7 @@ typedef struct SiftTblRel
 	int			nwbuf;
 	SiftTblSeg *wbuf;			/* [nwbuf], directory order = ascending vbase */
 	uint32		wbuf_version;	/* the directory version wbuf was built for (dir.version is also set by the readers of the directory that do not rebuild it) */
-	/* tombstones, sorted by (key, seq) */
-	uint64		tomb_gen;
-	BlockNumber tomb_hdr;
-	uint64		tomb_synced;
-	BlockNumber tomb_last;
-	uint32		tomb_lastcnt;
-	uint32		tomb_seqbase;	/* the entries of the logs read before the current one, which only follows them (tomb_follow) */
-	bool		tomb_followed;
-	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
-	uint32		nents;
-	uint32		capents;
-	SiftTblTomb *recent;		/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
-	uint32		nrecent;
-	uint32		caprecent;
-	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
-	SiftTblTomb *run;			/* scratch: the entries of one key found in both arrays */
-	uint32		caprun;
+	SiftTombLog tomb;			/* the log of deleted, updated and locked versions (core/tomb.h) */
 	/* the page this backend appends to */
 	uint64		tgt_gen;
 	BlockNumber tgt_blk;
@@ -212,6 +147,7 @@ typedef struct SiftTblRel
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
+	uint64		defrag_scans;	/* the reads of the table then (pgstat numscans) */
 	int64		defrag_free;
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
@@ -304,7 +240,7 @@ extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTbl
 /* Does the table have HOT chains (as the log this backend has read tells) */
 extern bool sift_tbl_has_chains(Relation rel);
 typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
-/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tbl_hot_offsets, for the vblocks of a search in ascending order */
+/* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tomb_hot_offsets, for the vblocks of a search in ascending order */
 extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
 extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
@@ -333,32 +269,6 @@ extern void sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uin
 /* A write buffer page, exclusively locked, for VACUUM: the caller edits records through a GenericXLog copy */
 extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx);
 
-/* Tombstones */
-extern void sift_tbl_tomb_sync(Relation rel, SiftTblRel *st);
-extern uint64 sift_tbl_tomb_entries(Relation rel, SiftTblRel *st);
-extern void sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid,
-								 SiftTblTombKind kind, uint16 flags, uint64 succ);
-/*
- * Rewrites the tombstone segment without the entries keep() refuses, under the lock that keeps appenders out, and switches the
- * new segment in (the old pages are released with a safexid). Returns the entries kept.
- */
-typedef bool (*SiftTblTombKeep) (SiftTblTomb *e, void *arg);	/* may rewrite the entry it keeps */
-extern uint64 sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKeep keep, void *arg);
-
-/* The entries of key (sorted by log position), n of them; NULL when none */
-extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n);
-/* Is the version a member of a chain (the next of a HOT update: no index has an entry for it); *pred: the version the update was of */
-extern bool sift_tbl_hot_pred(const SiftTblRel *st, uint64 key, uint64 *pred);
-#define sift_tbl_hot_member(st, key)	sift_tbl_hot_pred((st), (key), NULL)
-/*
- * The offsets of the rows of vblock a HOT update entry names, as bits (SIFT_OFFMASK_WORDS words). pos: two indexes (the main and the recent array of the log)
- * of a walk over ascending vblocks, zeroed at its start; NULL looks each vblock up alone
- */
-extern void sift_tbl_hot_offsets(const SiftTblRel *st, BlockNumber vblock, uint32 *pos, uint64 *mask);
-#ifdef SIFT_TESTING
-/* Test only: the lookups of a vblock alone in the log (pos NULL) by this backend: a walk over the pages of a search makes none */
-extern PGDLLIMPORT uint64 sift_tbl_hot_probes;
-#endif
 
 extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
 extern bool sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key);
@@ -465,8 +375,6 @@ extern void sift_tbl_layout_check(Relation rel);
 extern void sift_tbl_layout_ready(Relation rel, SiftTblRel *st);
 /* The layout of the new table of a rewrite: the columns of `rel` with the paths declared for the table it replaces */
 extern void sift_tbl_layout_adopt(Relation rel, SiftTblRel *st, Relation from);
-/* Is there a tombstone entry for a key between lo and hi? */
-extern bool sift_tbl_tomb_any(const SiftTblRel *st, uint64 lo, uint64 hi);
 /* Is xid's transaction over and aborted */
 extern bool sift_tbl_xid_aborted(TransactionId xid);
 /* No snapshot sees xid as running (a frozen xid, that of a chain's root the log keeps, always) */
@@ -514,9 +422,18 @@ extern bool sift_tbl_gscan_prev(SiftTblGroupScan *g, SiftTblRowVer *rv);
 extern void sift_tbl_gscan_seek_end(SiftTblGroupScan *g);
 extern bool sift_tbl_gscan_plain(const SiftTblGroupScan *g);
 extern HeapTuple sift_tbl_gscan_tuple(SiftTblGroupScan *g);
+/* A live row of a block of the groups left undecoded: where its unit holds it (a slot reads its columns by token and pos, sift_tbl_slot_store_group), and its version */
+typedef struct SiftTblBlockRow
+{
+	ItemPointerData tid;
+	uint32		token;
+	uint32		pos;
+	TransactionId xmin;			/* 0: frozen */
+	CommandId	cmin;
+} SiftTblBlockRow;
 /* The live rows of vblock whose offset bit is in offmask (NULL: all), as tuples into out (room for SIFT_TBL_MAX_OFF) and their xmin and cmin
- * into xmin / cmin (0: frozen; either may be NULL); their number */
-extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin);
+ * into xmin / cmin (0: frozen; either may be NULL); their number. lazy (room for SIFT_TBL_MAX_OFF): the rows undecoded into it instead, out, xmin and cmin unused */
+extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offmask, HeapTuple *out, TransactionId *xmin, CommandId *cmin, SiftTblBlockRow *lazy);
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
@@ -555,6 +472,8 @@ extern int	sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, b
 #define SIFT_TBL_ROOM_STEPS		16
 /* Clears the unfrozen flag of the groups whose live rows all committed before oldest; the maintenance lock held. The groups changed. */
 extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* VACUUM: the column segments with dead rows get the pre-aggregates net of them (table/net.c) */
+extern void sift_tbl_net_refresh(Relation rel, SiftTblRel *st);
 
 /* Keys (blk << 16 | off), runs of consecutive rows of a unit: nothing else of the table lies between the ends of one */
 typedef struct SiftTblKeyRuns
@@ -598,11 +517,19 @@ extern PGDLLIMPORT char *sift_tbl_compression_spec;
 /* Why the bulk load of rel (COPY, CREATE TABLE AS, REFRESH MATERIALIZED VIEW) keeps the write buffers; NULL when its rows may be written straight into groups */
 extern const char *sift_tbl_bulk_refusal(Relation rel);
 /*
- * sift.table_bulk_groups: the rows of a load are encoded into column groups instead of write buffer pages (table/load.c). wanted: does the load
+ * sift.table_bulk_groups: the rows of a load are encoded into column groups instead of write buffer pages (table/load/load.c). wanted: does the load
  * of rel qualify (decided once per load, and kept until it ends); row: encodes mtup under the next TID of the load, which it returns in tid;
  * finish: writes the rows that wait (the end of the command; the end of the transaction is the last chance). frozen: rows with no writer.
  */
 extern PGDLLIMPORT bool sift_tbl_bulk_groups;
+extern PGDLLIMPORT bool sift_tbl_load_from_copy;
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_load_publish;
+extern PGDLLIMPORT int sift_test_load_unit_bytes;
+extern PGDLLIMPORT int sift_test_load_segment_kb;
+extern PGDLLIMPORT bool sift_test_bitmap_no_visible;
+extern PGDLLIMPORT int sift_test_bitmap_bulk_rows;
+#endif
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
 extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);
 extern void sift_tbl_load_finish(Relation rel);
@@ -660,7 +587,6 @@ extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
-extern PGDLLIMPORT int sift_tbl_auto_defrag_dead_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_max_active;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_wal_rate;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_coalesce;

@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 CREATE TABLE dn (id int PRIMARY KEY, kind int, amount int) WITH (autovacuum_enabled = off);
 CREATE TABLE dc (id int PRIMARY KEY, kind int, amount int, pad text) WITH (autovacuum_enabled = off);
 CREATE TABLE dw (id int PRIMARY KEY, kind int, tags text[]) WITH (autovacuum_enabled = off);
@@ -16,7 +17,7 @@ SET max_parallel_maintenance_workers = 0;
 CREATE INDEX dn_col ON dn USING sift_col (id, kind, amount);
 CREATE INDEX dc_col ON dc USING sift_col (id, kind, amount, pad);
 CREATE INDEX dw_col ON dw USING sift_col (id, kind, tags);
-SELECT index, count(*) AS segments FROM (SELECT 'dn_col' AS index FROM sift.col_segments('dn_col') UNION ALL SELECT 'dc_col' FROM sift.col_segments('dc_col') UNION ALL SELECT 'dw_col' FROM sift.col_segments('dw_col')) s GROUP BY index ORDER BY index;
+SELECT index, count(*) AS segments FROM (SELECT 'dn_col' AS index FROM sift.col_segments('dn_col') WHERE kind <> 'tombstones' UNION ALL SELECT 'dc_col' FROM sift.col_segments('dc_col') WHERE kind <> 'tombstones' UNION ALL SELECT 'dw_col' FROM sift.col_segments('dw_col') WHERE kind <> 'tombstones') s GROUP BY index ORDER BY index;
 
 -- 15% dead: the narrow segment with a dead row in every unit is rewritten (no dead row left), the wide one is not, nor is the narrow one that has them in its first rows
 DELETE FROM dc WHERE id <= 30000;

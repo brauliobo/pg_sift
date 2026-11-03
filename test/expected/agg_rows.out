@@ -16,6 +16,9 @@ SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 50 END, i % 2,
                                               FROM generate_series(1, i % 5) j), '[]')) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
+NOTICE:  sift_col index "facts_col" installed two statement triggers on table "facts" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) facts;
 -- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
 CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$

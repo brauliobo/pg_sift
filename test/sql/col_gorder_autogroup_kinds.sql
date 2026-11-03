@@ -1,0 +1,97 @@
+-- The entity the arrays are grouped by (order_array_group 'auto: g') also serves a date with few values, a timestamp in heap order and an integer: WHERE g = x ORDER BY c LIMIT n
+-- reads the entries of x, where the units were read before. The second order is built where the weighted formula pays (B = log2(3.5) / log2(1.05) against C = G / 3 + W / 5); a
+-- table with no other array to group, or an index so narrow that the second order would double it, has none.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE FUNCTION ak_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
+END $$;
+
+-- a date of 365 values, a timestamp in heap order, an integer of 5,000 values, a decimal (it keeps its own array, never a grouped one) and an entity of 400 values
+CREATE TABLE ak (id int, ent_id int, d date, created timestamp, score int, amt numeric(12,2), pad text);
+ALTER TABLE ak ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint4(i + 3)) % 365, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, (abs(hashint4(i + 9)) % 90000) / 100.0,
+	   md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
+FROM generate_series(1, 120000) i;
+ANALYZE ak;
+CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
+SELECT sift.col_verify('ak_i');
+SELECT col, result, count(*) FROM (
+	SELECT col, ak_chk(format('SELECT id, %s FROM ak WHERE ent_id = %s ORDER BY %s %s, id LIMIT %s', col, e, col, d, l)) AS result
+	FROM unnest(ARRAY['d', 'created', 'score']) col, unnest(ARRAY[7, 399, 1000]) e, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20]) l) r
+GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- a timestamp in heap order has the second order only (no plain order beside it): the page of the whole table is the heap's all the same
+SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
+
+-- rows written after the build, a promotion and a merge keep the answers
+INSERT INTO ak SELECT 200000 + i, i % 400, date '2024-06-01' + i % 30, timestamp '2024-06-01' + i * interval '1 second', i % 5000, i % 100, 'w' FROM generate_series(1, 3000) i;
+UPDATE ak SET d = date '2023-12-31' WHERE id IN (5, 6, 7);
+DELETE FROM ak WHERE id % 211 = 0;
+SELECT ak_chk('SELECT id, d FROM ak WHERE ent_id = 7 ORDER BY d DESC, id LIMIT 20') AS buffers,
+	   ak_chk('SELECT id, score FROM ak WHERE ent_id = 7 ORDER BY score, id LIMIT 20') AS buffers_int;
+SELECT sift.col_promote('ak_i'::regclass) >= 0 AS promoted;
+SELECT sift.col_merge('ak_i'::regclass, true) >= 0 AS merged;
+SELECT ak_chk('SELECT id, d FROM ak WHERE ent_id = 7 ORDER BY d DESC, id LIMIT 20') AS promoted,
+	   ak_chk('SELECT id, score FROM ak WHERE ent_id = 7 ORDER BY score, id LIMIT 20') AS promoted_int;
+SELECT sift.col_verify('ak_i');
+
+-- one integer array and the entity candidate is itself: nothing to group; a two-column index is too narrow for the second order
+CREATE TABLE ak1 (id int, score int, pad text);
+INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generate_series(1, 120000) i;
+ANALYZE ak1;
+CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
+CREATE TABLE ak2 (ent_id int, d date);
+INSERT INTO ak2 SELECT abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint4(i + 3)) % 365 FROM generate_series(1, 120000) i;
+ANALYZE ak2;
+CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off', key_order = 'off');
+SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
+
+-- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
+CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
+INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
+ANALYZE ak3;
+CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
+SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
+CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
+INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
+ANALYZE ak4;
+CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
+
+-- a timestamp the units are cut by has no plain array to build, and the second order by the entity is the only one that serves WHERE ent_id = x ORDER BY created
+CREATE TABLE ak5 (id int, ent_id int, created timestamp, pad text);
+INSERT INTO ak5 SELECT i, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
+ANALYZE ak5;
+CREATE INDEX ak5_i ON ak5 USING sift_col (id, ent_id, created, pad) WITH (key_cut = 'created');
+SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
+SELECT ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS cut_latest,
+	   ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created, id LIMIT 20') AS cut_page;
+
+-- a filter on the column the units are cut by leaves a few units: the page of a tenant reads them, not the walk of the order array that fetches a heap row for each entry
+CREATE TABLE ak6 (id int, tenant_id int, ent_id int, created timestamp, pad text);
+INSERT INTO ak6 SELECT i, i % 40, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
+ANALYZE ak6;
+CREATE INDEX ak6_i ON ak6 USING sift_col (id, tenant_id, ent_id, created, pad) WITH (key_cut = 'tenant_id');
+SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
+SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
+	   ak_chk('SELECT id, created FROM ak6 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
+
+DROP TABLE ak, ak1, ak2, ak3, ak4, ak5, ak6;
+DROP FUNCTION ak_chk(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -1,6 +1,7 @@
 -- The point directory of heap addresses by the default formula: an equality on an integer column of nearly unique values that does not follow the order of the table reads every unit
 -- (the keys of a unit span the whole range), so a CREATE INDEX whose benefit B (the speedup of the equality) is at least its cost C (the growth of the index and of the build)
--- writes the column to point_tid_columns as 'auto: col' and says so. Not a column in heap order, not one of few values, not a table where the lookup is cheap, not an option the user set.
+-- writes the column to point_tid_columns as 'auto: col' and says so. A column in heap order reads one unit, and gets it once the table is large enough for the unit to cost (col_point_auto_ordered: 500,000 instructions
+-- saved); not one of few values, not a table where the lookup is cheap, not an option the user set. The table is 400,000 rows because the formula weighs the bytes of its rows against the instructions of a scan of them.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -13,14 +14,21 @@ CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((
 
 -- the column of random values: chosen, with the numbers of the formula
 SET client_min_messages = notice;
-CREATE INDEX pa_rid ON pa USING sift_col (rid, a, b, c, d, e, f);
+CREATE INDEX pa_rid ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
 SET client_min_messages = warning;
--- the column in heap order, few values, a one-column index of a table that is small for it: not chosen
-CREATE INDEX pa_id ON pa USING sift_col (id, a, b, c, d, e, f);
-CREATE INDEX pa_few ON pa USING sift_col (a, b, c, d, e, f);
+-- the column in heap order (400,000 rows: a unit to read is large), few values, a one-column index of a table that is small for it: the first is chosen, not the others
+CREATE INDEX pa_id ON pa USING sift_col (id, a, b, c, d, e, f) WITH (order_array_columns = 'off');
+CREATE INDEX pa_few ON pa USING sift_col (a, b, c, d, e, f) WITH (order_array_columns = 'off');
 CREATE TABLE pas AS SELECT * FROM pa WHERE id <= 20000;
 VACUUM (FREEZE, ANALYZE) pas;
-CREATE INDEX pas_rid ON pas USING sift_col (rid, a, b, c, d, e, f);
+CREATE INDEX pas_rid ON pas USING sift_col (rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
+-- a column with a unique b-tree of its own is not chosen: the planner takes the b-tree for an equality, so the directory would be size alone
+CREATE TABLE pau AS SELECT * FROM pa;
+ALTER TABLE pau ADD PRIMARY KEY (rid);
+VACUUM (FREEZE, ANALYZE) pau;
+CREATE INDEX pau_rid ON pau USING sift_col (rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
+SELECT popt('pau_rid') AS unique_btree;
+DROP TABLE pau;
 -- the options the user sets are kept
 CREATE INDEX pa_off ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'off');
 CREATE INDEX pa_user ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'a');
@@ -29,7 +37,7 @@ CREATE INDEX pa_plain ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_c
 SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid', 'pa_plain']) i ORDER BY 1;
 
 -- an index cut by a key (key_cut) keeps the directory, and a rebuild keeps both: the choice of the build does not stop the cut
-CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f);
+CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
 REINDEX INDEX pa_kc;
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';

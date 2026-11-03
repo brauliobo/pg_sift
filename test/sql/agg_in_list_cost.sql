@@ -1,6 +1,7 @@
 -- The planner prices the test of an IN list by the structure that makes it (docs/AGG.md): a small table in the cache costs a row next to nothing, a hash
 -- table of values spread over a wide range costs it several nanoseconds, so a short list of spread values keeps the btree plan that reads its few rows.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ev (id int PRIMARY KEY, wid int NOT NULL, kind int, score float8);

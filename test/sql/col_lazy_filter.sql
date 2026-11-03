@@ -3,6 +3,8 @@
 -- first key pins it). The rows are the plain plan's for every shape of the conditions: each comparison, ranges, ORs of ranges, a keyset page, NULLs, the ends of the
 -- types, an empty range, the write buffer, deletes and updates; a condition that the walk cannot test, or that it would read a column for every row of the unit for,
 -- leaves the filters to run (no unit is read without them).
+-- About 12 s, for 93 shapes x 3 plans x the ways of a sort: the build state runs every way (4 limits, both NULLS orders for a column that has NULLs), the two
+-- states after writes run the limits 20 and 6000, since what they change is the rows of the runs and not the way the limit cuts.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -87,29 +89,30 @@ INSERT INTO lz_shape (col, flt, ord) VALUES ('k', 'k >= 250', ', nn, id'), ('k',
 -- a sort key that is not the column as it is: the run orders the column, and the filters run
 INSERT INTO lz_shape (col, flt) VALUES ('coalesce(kn, 100)', 'kn >= 20'), ('coalesce(kn, 100)', 'kn < 20'), ('k * 2', 'k >= 250'), ('-k', 'k BETWEEN 100 AND 120');
 
-CREATE FUNCTION lz_check(OUT n int, OUT col text, OUT flt text, OUT same bool, OUT lazy bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+CREATE FUNCTION lz_check(deep bool, OUT n int, OUT col text, OUT flt text, OUT same bool, OUT lazy bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE
-	s record; dir text; nl text; lim int; q text; a text; b text; c text; units int;
+	s record; lims int[] := CASE WHEN deep THEN ARRAY[1, 20, 300, 6000] ELSE ARRAY[20, 6000] END; dir text; nl text; nls text[]; lim int; q text; a text; b text; c text;
 BEGIN
 	FOR s IN SELECT * FROM lz_shape ORDER BY lz_shape.n LOOP
 		n := s.n; col := s.col; flt := s.flt; same := true; lazy := false;
+		-- NULLS FIRST and LAST order a column that has no NULLs the same way
+		nls := CASE WHEN s.col ~ '^(kn|ts|d|coalesce)' THEN ARRAY['NULLS FIRST', 'NULLS LAST'] ELSE ARRAY['NULLS LAST'] END;
 		FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
-		FOREACH nl IN ARRAY ARRAY['NULLS FIRST', 'NULLS LAST'] LOOP
-		FOREACH lim IN ARRAY ARRAY[1, 20, 300, 6000] LOOP
+		FOREACH nl IN ARRAY nls LOOP
+		FOREACH lim IN ARRAY lims LOOP
 			q := format('SELECT id, %1$s FROM lz WHERE %2$s ORDER BY %1$s %3$s %4$s%7$s LIMIT %5$s%6$s', s.col, s.flt, dir, nl, lim, CASE WHEN lim = 300 THEN ' OFFSET 25' ELSE '' END, s.ord);
 			PERFORM lz_mode('plain'); a := lz_rows(q);
-			PERFORM lz_mode('norun'); b := lz_rows(q);
+			IF deep THEN PERFORM lz_mode('norun'); b := lz_rows(q); ELSE b := a; END IF;
 			PERFORM lz_mode('runs'); c := lz_rows(q);
 			same := same AND a = b AND b = c;
-			units := lz_units(q);
-			lazy := lazy OR units > 0;
+			IF lim = 20 THEN lazy := lazy OR lz_units(q) > 0; END IF;
 		END LOOP; END LOOP; END LOOP;
 		RETURN NEXT;
 	END LOOP;
 	PERFORM lz_mode('runs');
 END $$;
 
-CREATE TEMP TABLE lz_res AS SELECT * FROM lz_check();
+CREATE TEMP TABLE lz_res AS SELECT * FROM lz_check(true);
 SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same FROM lz_res;
 SELECT n, col, flt FROM lz_res WHERE NOT same ORDER BY n;
 -- the shapes the walk filters (a bounded range of the key, and the conditions that the key pins) and those it leaves to the filters
@@ -120,15 +123,15 @@ INSERT INTO lz SELECT g, g % 500, g % 40, g % 100, g * 1000, timestamp '2024-01-
 UPDATE lz SET k = 250, kn = NULL, ts = NULL WHERE id % 1000 = 5;
 UPDATE lz SET k = 1000 + k WHERE id % 1000 = 6;
 DELETE FROM lz WHERE id % 7 = 0;
-CREATE TEMP TABLE lz_res2 AS SELECT * FROM lz_check();
+CREATE TEMP TABLE lz_res2 AS SELECT * FROM lz_check(false);
 SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE lazy) AS lazy FROM lz_res2;
 SELECT n, col, flt FROM lz_res2 WHERE NOT same ORDER BY n;
 VACUUM lz;
-CREATE TEMP TABLE lz_res3 AS SELECT * FROM lz_check();
+CREATE TEMP TABLE lz_res3 AS SELECT * FROM lz_check(false);
 SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE lazy) AS lazy FROM lz_res3;
 SELECT n, col, flt FROM lz_res3 WHERE NOT same ORDER BY n;
 SELECT sift.col_verify('lz_i', true);
 
 DROP TABLE lz CASCADE;
-DROP FUNCTION lz_mode(text), lz_rows(text), lz_units(text), lz_check();
+DROP FUNCTION lz_mode(text), lz_rows(text), lz_units(text), lz_check(bool);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -23,6 +23,27 @@
 #define SIFT_DL_CODE_BITS(code)	(16 >> (code))
 #define SIFT_DL_ROW_BYTES(code, n)	(((n) * SIFT_DL_CODE_BITS(code) + 7) / 8)
 
+#define ATTR_ROW_BYTES(n, width)	(((uint64) (n) * (width) + 7) / 8)
+
+/* The record of one column of a SB (SIFT_SEGFMT_ATTR): where it is and how long; the records are grouped by column and the trailer is SiftAttrRef[nsb][ncols], u64 recs_end, u32 ncols, u32 nsb */
+typedef struct SiftAttrRef
+{
+	uint64		off;
+	uint32		len;
+	uint32		reserved;
+} SiftAttrRef;
+
+/* The header of a column's record of a SB; the rows of its present pages follow */
+typedef struct SiftAttrColHdr
+{
+	int64		base;
+	uint64		unk;
+	uint32		reserved;
+	uint8		width;
+	uint8		flags;
+	uint16		pad;
+} SiftAttrColHdr;
+
 /* Reader docmap state */
 typedef struct DocMap
 {
@@ -30,6 +51,14 @@ typedef struct DocMap
 	uint64	   *rank_base;
 	uint32		nsb;
 	uint64		dir_off;
+	uint64		recs_end;		/* where the SB records end: the directory, or the INCLUDE records after them */
+	uint32		ncols;			/* INCLUDE columns the segment holds */
+	SiftAttrRef *adir;			/* their records, by SB, read on the first use */
+	int64		acur[SIFT_ATTR_MAXCOLS];	/* the SB whose record of the column is in arec, -1 none */
+	uint8	   *arec[SIFT_ATTR_MAXCOLS];
+	Size		arecap[SIFT_ATTR_MAXCOLS];
+	SiftAttrColHdr ahdr[SIFT_ATTR_MAXCOLS];
+	uint32		arow[SIFT_ATTR_MAXCOLS][SIFT_SB_PAGES];	/* where the row of each present page starts, from the record of the column */
 	int64		cur;			/* loaded SB (index into dir), -1 none */
 	uint8	   *rec;
 	Size		reccap;

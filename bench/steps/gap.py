@@ -22,6 +22,7 @@ sys.path.insert(0, HERE)
 import pgq  # noqa: E402  (steps/pgq.py)
 import store_lib  # noqa: E402  (the queries and their statements)
 import store_render  # noqa: E402  (the tables and the stored results)
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 DB = 'gap'
 FLOOR = "SELECT country, count(*) FROM orders WHERE created_at > '2100-01-01' GROUP BY country"   # every unit pruned by its zone map: the cost of a SiftAgg that reads nothing
@@ -170,7 +171,7 @@ def cmd_profile(args):
     return 0
 
 
-# --- docs/BENCH-GAP.md: the generated blocks
+# --- bench/out/BENCH-GAP.md: the generated blocks
 
 def human(v):
     for unit, div in (('GiB', 2**30), ('MiB', 2**20), ('KiB', 2**10)):
@@ -241,7 +242,7 @@ def main():
     p.add_argument('--store', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
     p.add_argument('--profile', nargs='+', required=True)
     p.add_argument('--stats', nargs='*', default=[])
-    p.add_argument('--doc', default=os.path.join(HERE, '..', '..', 'docs', 'BENCH-GAP.md'))
+    p.add_argument('--doc', default=os.path.join(HERE, '..', '..', 'bench', 'out', 'BENCH-GAP.md'))
     args = ap.parse_args()
     try:
         sys.exit({'load': cmd_load, 'profile': cmd_profile, 'render': cmd_render}[args.cmd](args))

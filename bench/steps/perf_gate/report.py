@@ -124,7 +124,7 @@ def _write_report(output, report):
                   'Configuration: `'+json.dumps(report['config'])+'`.',
                   'Budget envelope: `'+json.dumps(report.get('budget',{}))+'`. Cleanup/report reserve is an allowance, not a hard deadline.',
                   'Fixture checkpoint barrier: `'+json.dumps(report.get('fixture_checkpoint_barrier',{}))+'`.',
-                  'This is a small warm serial workload on the recorded host; no hardware-counter or release throughput claim.'])
+                  'This is a small warm serial workload on the recorded host; no hardware-counter or throughput claim.'])
     if 'mutation_control_preflight' in report:
         preflight = report['mutation_control_preflight']
         lines.extend(['', 'Mutation control preflight (persisted before fault setup):',

@@ -66,7 +66,7 @@ is_read(Query *q, JoinExpr *j, Index rti, Bitmapset *around)
 }
 
 /* at most one row, and no effect but its rows: LIMIT 1 (not WITH TIES), no volatile function, no row lock, no data-modifying CTE */
-static bool
+bool
 one_row_query(Query *sq)
 {
 	Const	   *limit;

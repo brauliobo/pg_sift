@@ -8,7 +8,10 @@
 #include "storage/predicate.h"
 #include "utils/acl.h"
 #include "core/cmp.h"
+#include "col/gorder.h"
 #include "col/scan_int.h"
+#include "fmgr.h"
+#include "utils/fmgrprotos.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -18,6 +21,7 @@
  */
 
 int			sift_test_col_jitter_us = 0;
+int			sift_test_col_open_gate = 0;
 
 bool		sift_test_col_paranoid = false;
 
@@ -26,6 +30,19 @@ sift_col_jitter(void)
 {
 	if (sift_test_col_jitter_us > 0)
 		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_col_jitter_us));
+}
+
+/* Holds a scan, with the directory version it read, until the test releases the lock: what runs meanwhile (VACUUM, DML) is after the open for the scan */
+void
+sift_col_open_gate(void)
+{
+	if (sift_test_col_open_gate > 0)
+	{
+		Datum		key = Int64GetDatum(sift_test_col_open_gate);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
 }
 #endif
 
@@ -39,6 +56,15 @@ static int
 vis_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	return sift_vis_filter_page(arg, blk, offmask);
+}
+
+static void
+vis_stream(void *arg, BlockNumber (*next) (void *), void *nextarg, bool whole)
+{
+	if (next == NULL)
+		sift_vis_stream_end(arg);
+	else
+		sift_vis_stream_begin(arg, next, nextarg, whole);
 }
 
 static void
@@ -123,6 +149,8 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	sift_dir_read(index, &src->dir);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
+	col_hf_open(src);
+	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -135,7 +163,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
-	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
+	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis, vis_stream};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
 	for (int i = 0; i < src->nseg; i++)
@@ -156,6 +184,30 @@ sift_col_close(SiftColSource *src)
 	sift_vis_end(&src->vis);
 	if (!(src->flags & SIFT_COLO_SNAP_HELD))
 		UnregisterSnapshot(src->snap);
+}
+
+/* Do the segments the source opened still stand in the directory of the index (a promotion adds one and replaces none) */
+bool
+sift_col_current(SiftColSource *src)
+{
+	return !(src->flags & COLO_TABLE) && segments_current(src);
+}
+
+bool
+sift_col_rescan(SiftColSource *src)
+{
+	if ((src->flags & COLO_TABLE) || src->begun || src->super || src->whole || src->pcnt || !segments_current(src))
+		return false;
+	if (src->gcx)
+		MemoryContextReset(src->gcx);
+	memset(src->gmem, 0, sizeof(src->gmem));
+	src->gpin_leaf = -1;
+	src->galeaf1 = 0;
+	src->gpin_n = src->gper = 0;
+	memset(&src->cnt, 0, sizeof(src->cnt));
+	src->cnt.segments = src->nseg;
+	src->vis.heap_pages = 0;
+	return true;
 }
 
 void
@@ -203,7 +255,7 @@ sift_col_counters(const SiftColSource *src)
 }
 
 static void
-add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
+add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp)
 {
 	if (src->nmem == src->capmem)
 	{
@@ -212,29 +264,46 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane)
 	}
 	uint32		id = ++src->nmem;
 
-	src->mem[id - 1] = (ColMem) {b, id, lane};
+	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp};
 }
 
 void
 sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatches)
 {
+	src->wtok = NULL;
+	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
-		add_mem(src, batches[i], false);
+		add_mem(src, batches[i], false, InvalidTransactionId);
 }
 
 void
 scan_load_wbuf(SiftColSource *src)
 {
+	bool		own = src->nwtok >= 0;
+
+	if (own)
+	{
+		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir.nsegs, 1) * sizeof(SiftCWbufToken));
+		src->nwtok = 0;
+	}
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		int			n;
 		SiftColBatch **bs;
+		TransactionId stamp = InvalidTransactionId;
 
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
 			continue;
-		bs = sift_cwbuf_batches(src->index, &src->dir.segs[i], src->schema, src->mcxt, &n);
+		/*
+		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their
+		 * addresses; batches kept at another version have their pages checked, and the flags the version shows are found. A flag it does not show (set after
+		 * the open, or before a bump the open preceded) leaves the batches as they were: its record belongs to a row dead to every snapshot, since the snapshot
+		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
+		 * after that snapshot, which the heap check does not return.
+		 */
+		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
 		for (int j = 0; j < n; j++)
-			add_mem(src, bs[j], true);
+			add_mem(src, bs[j], true, stamp);
 	}
 	src->mem_loaded = true;
 }
@@ -384,6 +453,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	MemoryContext old;
 	bool		cached;
 
+	src->begun = true;
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
 	for (int i = 0; i < npreds; i++)
@@ -536,17 +606,33 @@ load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
 static void
 load_memory(ColUnit *cu, const ColMem *m)
 {
-	StringInfo	buf = makeStringInfo();
-	Size		start;
+	SiftColBatch *b = m->b;
+	SiftColImage *im = b->image;
 
-	cu->mzones = palloc(m->b->schema->ncols * sizeof(SiftCZone));
-	sift_cunit_encode(m->b, NULL, NULL, NULL, true, false, buf, &start, cu->mzones);
-	SIFT_INVARIANT(sift_cunit_parse((uint8 *) buf->data + start, buf->len - start, m->b->schema, &cu->v),
-				   "sift_col: an in-memory unit does not parse");
-	cu->batch = m->b;
-	cu->sb = m->b->sb;
+	if (im == NULL)
+	{
+		/* a batch of the write buffer outlives the scan: its unit is kept with it, the next scan parses it */
+		MemoryContext old = m->lane ? MemoryContextSwitchTo(b->mcxt) : CurrentMemoryContext;
+		StringInfo	buf = makeStringInfo();
+		Size		start;
+
+		im = palloc(sizeof(SiftColImage));
+		im->zones = palloc(b->schema->ncols * sizeof(SiftCZone));
+		sift_cunit_encode(b, NULL, NULL, NULL, true, false, buf, &start, im->zones);
+		im->buf = buf->data;
+		im->off = start;
+		im->len = buf->len - start;
+		MemoryContextSwitchTo(old);
+		if (m->lane)
+			b->image = im;
+	}
+	cu->mzones = im->zones;
+	SIFT_INVARIANT(sift_cunit_parse((uint8 *) im->buf + im->off, im->len, b->schema, &cu->v), "sift_col: an in-memory unit does not parse");
+	cu->batch = b;
+	cu->sb = b->sb;
 	cu->memid = m->id;
 	cu->lane = m->lane;
+	cu->xstamp = m->xstamp;
 	cu->clean = cu->clean_ready = true;
 }
 
@@ -588,6 +674,8 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	else if (!((src->super || src->whole || src->pcnt) && col_super_take(src, best, cu)))
 	{
 		load_stored(cu, best->seg, best->cur);
+		if (sift_cseg_dirty(best->seg, best->cur))
+			src->cnt.dirty_rows += best->seg->sbdir[best->cur].nrows;
 		if (best->prow != NULL)
 		{
 			const SiftColSBRef *r = &best->seg->sbdir[best->cur];
@@ -642,7 +730,7 @@ void
 sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 {
 	ColUnit    *cu = &src->cu;
-	ColMem		m = {b, MEM_BATCH_ID + ++src->batch_seq, false};
+	ColMem		m = {b, MEM_BATCH_ID + ++src->batch_seq, false, InvalidTransactionId};
 	MemoryContext old;
 
 	MemoryContextReset(src->arena);
@@ -669,31 +757,62 @@ sift_col_super(SiftColSource *src, bool on)
 	src->super = on;
 	src->whole = 0;
 	src->pcnt = 0;
-	src->pcnt_int = src->pcnt_elem = false;
+	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
 }
 
 void
 sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	src->pcnt = leaf + 1;
-	src->pcnt_int = src->pcnt_elem = false;
+	src->pcnt_epoch++;
+	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
 	src->pcnt_op = op;
 	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
+	/* the strings that pass the test are those between two bounds in the order of the bytes (the test is bytewise: the C collation): a prefix is those from s up to, not including, the least string after them */
+	src->pcnt_alt = true;
+	memset(&src->pcnt_box, 0, sizeof(src->pcnt_box));
+	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_GT || op == SIFT_COLOP_GE || op == SIFT_COLOP_PREFIX)
+	{
+		src->pcnt_box.lo = s, src->pcnt_box.lolen = len, src->pcnt_box.lo_excl = op == SIFT_COLOP_GT;
+	}
+	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_LT || op == SIFT_COLOP_LE)
+	{
+		src->pcnt_box.hi = s, src->pcnt_box.hilen = len, src->pcnt_box.hi_excl = op == SIFT_COLOP_LT;
+	}
+	else if (op == SIFT_COLOP_PREFIX)
+	{
+		src->pcnt_box.hi = sift_cgord_prefix_end(s, len, &src->pcnt_box.hilen);
+		src->pcnt_box.hi_excl = true;
+	}
 }
 
 void
 sift_col_count_cmp(SiftColSource *src, int leaf)
 {
 	src->pcnt = leaf + 1;
+	src->pcnt_epoch++;
 	src->pcnt_int = true;
+	src->pcnt_str = src->pcnt_elem = false;
+}
+
+void
+sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
+{
+	src->pcnt = leaf + 1;
+	src->pcnt_epoch++;
+	src->pcnt_int = src->pcnt_str = true;
 	src->pcnt_elem = false;
+	src->pcnt_box.lo = lo, src->pcnt_box.lolen = lolen, src->pcnt_box.lo_excl = lo_excl;
+	src->pcnt_box.hi = hi, src->pcnt_box.hilen = hilen, src->pcnt_box.hi_excl = hi_excl;
+	src->pcnt_box.collid = collid;
 }
 
 void
 sift_col_count_elem(SiftColSource *src)
 {
 	src->pcnt = 1;
-	src->pcnt_int = false;
+	src->pcnt_epoch++;
+	src->pcnt_int = src->pcnt_str = false;
 	src->pcnt_elem = true;
 }
 

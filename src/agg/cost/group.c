@@ -14,15 +14,11 @@
 #include "agg/acc_layout.h"
 #include "agg/cost/int.h"
 
-/* what PostgreSQL divides the cost of a parallel scan by: the workers, and the share of the leader that scans too */
+/* what the cost of a parallel scan is divided by: the workers and the leader, which scans as one of them (it passes no tuples: 3 participants run 1.5 times faster than 2, with the leader out of the scan 2 workers took 13.6 ms against 8.9) */
 double
 parallel_divisor(int workers)
 {
-	double		d = workers;
-
-	if (parallel_leader_participation)
-		d += Max(1.0 - 0.3 * workers, 0.0);
-	return d;
+	return workers + (parallel_leader_participation ? 1.0 : 0.0);
 }
 
 /*
@@ -34,17 +30,24 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
+	double		merge = AGG_MERGE_GROUP;
 	double		setup = parallel_setup_cost * AGG_SETUP_FACTOR;
 	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
 	/*
-	 * Starting the workers takes 3 ms and 0.35 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
+	 * Starting the workers takes 3 ms and 0.5 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
 	 * leader merges the pairs of a count(DISTINCT) into its own sets one by one, so they do not scale with the workers (below)
 	 */
+	for (int j = 0; j < s->nkeys; j++)
+		merge += AGG_MERGE_KEY + (get_typbyval(s->key[j].typid) ? 0.0 : AGG_MERGE_STR);
 	if (priced)
-		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
-	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
-		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * (AGG_MERGE_GROUP + (priced ? s->nkeys * AGG_MERGE_KEY : 0.0)) * AGG_SCAN_SPEED * cpu_operator_cost;
+		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS);
+	/* the participants that split the groups by a key each read every row and aggregate a share of the keys, and the leader adds their disjoint tables to its own */
+	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) *
+		(s->gpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+		(s->gpart > 0 ? Min(k->rows_out, k->agg_rows) : tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0))) * (priced ? merge : 0.0) * AGG_SCAN_SPEED * cpu_operator_cost;
+	if (priced && s->gpart == 0)
+		k->scan_cost += Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_TABLE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
@@ -62,6 +65,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 	}
 	*startup += setup * k->lift;
+	c->par_start = setup * k->lift;
 }
 
 /*
@@ -198,9 +202,29 @@ group_spill_cost(const SiftAggSpec *s, double groups, double ids, double rows, d
 		written * log2(runs + 1.0) * 2.0 * cpu_operator_cost + runs * ids * AGG_ID_SWEEP * cpu_operator_cost;
 }
 
+/* the shares of a table's pages that shared buffers hold, and that those and the cache of the operating system (effective_cache_size) hold */
+static void
+page_residency(double pages, double *buffered, double *cached)
+{
+	*buffered = Min(NBuffers / pages, 1.0);
+	*cached = Max(Min(effective_cache_size / pages, 1.0), *buffered);
+}
+
+/* the operators one visit to a heap page costs a read through an index in the order of its keys: found in the buffers, in the cache of the operating system, or read from the disk */
+double
+heap_visit_ops(double pages)
+{
+	double		buffered,
+				cached;
+
+	pages = Max(pages, 1.0);
+	page_residency(pages, &buffered, &cached);
+	return buffered * AGG_VISIT_PAGE * AGG_SCAN_SPEED + (cached - buffered) * AGG_VISIT_OS_PAGE * AGG_SCAN_SPEED + (1.0 - cached) * random_page_cost / cpu_operator_cost;
+}
+
 /*
  * The heap check of the rows on pages that are not all-visible (vis is their share), a page at a time: the pages of the units the zones keep
- * (zone_kept) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
+ * (zone_kept; a unit cut by a declared key spans the whole heap, whatever its zone) that hold a selected row, which the rows reach by chance (Poisson). A page is in shared buffers, in the cache the operating system keeps
  * (PostgreSQL's own assumption for it is effective_cache_size), or read from the disk: a sequential read when the scan reaches most of the pages it
  * passes and a random one when it skips them.
  */
@@ -208,10 +232,11 @@ double
 vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 {
 	double		pages = Max(rel_pages(c), 1.0),
-				vet_pages = vis * Min(Max(pages * zone_kept, 1.0), pages),
+				kept = zone_kept + (1.0 - zone_kept) * c->stats.keyed_frac,
+				vet_pages = vis * Min(Max(pages * kept, 1.0), pages),
 				rows = vis * sel_rows,
-				buffered = Min(NBuffers / pages, 1.0),
-				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
+				buffered,
+				cached,
 				touched,
 				seq,
 				disk,
@@ -219,6 +244,7 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 
 	if (vet_pages <= 0)
 		return 0;
+	page_residency(pages, &buffered, &cached);
 	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
 	/* the pages are read in order and skip the all-visible ones: never dearer than the random fetch of the same pages, where a configuration prices a sequential page above a random one */
 	seq = Min(seq_page_cost, random_page_cost);
@@ -245,7 +271,9 @@ in_tables_cost(AggCtx *c, const SiftAggPred *p)
  * 1,000,000 pass) caps the tuples that reach the groups (cost_tuples), and the scan is priced at milliseconds when it takes hundreds, so the workers it
  * would need (3 to 4 ms to start) never pay. The price of the scan stays the capped one, which is what the plan above and the normal plan are priced
  * with; the path with workers is priced at the share of it that the workers take of the scan when the tuples are the rows the scan reads: the
- * same scan, serial and with workers, priced without the cap, and the capped serial price times their ratio.
+ * same scan, serial and with workers, priced without the cap, and the capped serial price times their ratio. The start of the workers is a time, not a
+ * share of the scan (3.4 ms for two, whatever they read): it is added after the ratio, or a scan of 3 ms that the cap prices at 2,600 units took
+ * workers that cost 2 ms more than it.
  */
 void
 workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out, double out_cost)
@@ -272,7 +300,7 @@ workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double 
 	PG_END_TRY();
 	if (sw.total_cost <= 0 || pw.total_cost >= sw.total_cost)
 		return;
-	total = sc.total_cost * pw.total_cost / sw.total_cost;
+	total = sc.total_cost * (pw.total_cost - c->par_start) / sw.total_cost + c->par_start;
 	if (total < p->total_cost)
 	{
 		p->total_cost = total;

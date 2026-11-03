@@ -43,6 +43,10 @@
 #define SIFT_LIST_OB_MAX 9    /* bits of an offset in a LIST blob: log2(SIFT_MAX_OFF) */
 #define SIFT_MAX_W       64
 #define SIFT_LIST_BLOCK  256
+#define SIFT_LIST_SLICE  16
+
+/* an Elias-Fano block of a LIST blob: keys x0 + [0, u), cnt postings with l low bits each */
+typedef struct { uint64_t x0, u; uint32_t cnt, l; const uint8_t *lows, *highs, *end; } ef_blk;
 #define SIFT_GRP_BYTES   (SIFT_GROUP_PAGES * SIFT_MAX_W)
 #define SIFT_CUR_BUF     (2 * SIFT_GRP_BYTES)
 #define SIFT_GRP_MAXTIDS (SIFT_GROUP_PAGES * SIFT_MAX_OFF)
@@ -91,7 +95,10 @@ struct sift_cur {
 			const uint8_t *p;           /* next LIST block */
 			const uint8_t *end;         /* end of the blob */
 			uint64_t prev, lim;         /* last key of the block before p; keys are below lim, a power of two */
-			uint32_t n, i, bi, bn, w, ob;  /* postings, position, block window [bi, bi + bn) */
+			uint32_t n, i, bi, bn, w, ob;  /* postings, position, window [bi, bi + bn) of decoded postings */
+			ef_blk cb;                  /* the block the window comes from: its first posting cstart, the postings decoded or passed ck, the next slice's size cw, */
+			uint32_t cstart, ck, cw;
+			uint64_t cpos;              /* and the bit of its high bits after the last posting decoded */
 			sift_tid blk[SIFT_LIST_BLOCK];
 		} ls;
 		struct { sift_cur **kid; int k; } op;
@@ -139,9 +146,15 @@ void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf);   /* kid[0] AND
 /* the ascending distinct gids of a LIST cursor that has not been used (out holds sift_blob_n entries); the cursor must be rewound afterwards */
 uint32_t sift_cur_gids(sift_cur *c, uint32_t *out);
 void sift_cur_gid_span(const sift_cur *c, uint32_t *lo, uint32_t *hi);
+/* the rows (SIFT_GROUP_PAGES of w bytes, a bit for each offset) of one superblock where docs are dead; bits NULL: none */
+typedef struct { const uint8_t *bits; uint32_t w; } sift_dead_sb;
+/* the postings of an unused LIST cursor on a bit set in dead[gid - lo] (nsb entries), all ones for another cursor */
+uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb);
 static inline const sift_grp *sift_seek(sift_cur *c, uint32_t gid) { return c->seek(c, gid); }
 /* the group of exactly gid or NULL; operators do not look past gid, so a miss costs no leapfrogging */
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid);
+/* the kids of an OR cursor and their number, NULL for any other cursor */
+sift_cur **sift_cur_or_kids(const sift_cur *c, int *k);
 static inline const sift_grp *sift_next(sift_cur *c) { return c->seek(c, c->state ? c->g.gid + 1 : 0); }
 
 /* whole-stream helpers */

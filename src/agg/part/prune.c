@@ -68,11 +68,67 @@ typedef struct KeyRange
 #define KEYS_MAX_TESTS		20000	/* the keys times the partitions a list of keys is tested against exactly: more, and only the range of the keys is */
 
 /*
- * The remainder of each combination of values the sets (KeyVals of the conditions) leave the key columns of the hash level f
- * (satisfies_hash_partition(table, modulus, remainder, columns ..)), computed as PostgreSQL computes it for a row, with the support function of
- * the level's partition key: once for the level, so that testing a partition is a search (O(values + partitions), not O(values x partitions)).
- * A column without a set, or too many combinations: every remainder is possible (rem NULL).
+ * The remainders modulo `modulus` of the hash of each combination of values the sets (KeyVals of the conditions) leave the columns of a hash split's key (attnos[], 0
+ * for an expression), computed as PostgreSQL computes it for a row (satisfies_hash_partition), with the support function of the key: sorted and without repeats, *nrem of
+ * them. A column without a set, or too many combinations: NULL, every remainder is possible. A NULL or an empty list matches nothing: *nrem is 0.
  */
+static uint64 *
+hash_rems(PartitionKey key, const AttrNumber *attnos, List *sets, int modulus, int *nrem)
+{
+	KeyVals    *kv[PARTITION_MAX_KEYS] = {NULL};
+	int			idx[PARTITION_MAX_KEYS] = {0};
+	Datum		values[PARTITION_MAX_KEYS];
+	bool		isnull[PARTITION_MAX_KEYS] = {false};
+	uint64		combos = 1;
+	bool		known = true;
+	uint64	   *rem;
+	int			n = 0;
+
+	*nrem = 0;
+	for (int j = 0; j < key->partnatts; j++)
+	{
+		foreach_ptr(KeyVals, s, sets)
+			if (attnos[j] != 0 && s->attno == attnos[j] && s->typid == key->parttypid[j] && s->collid == key->partcollation[j] &&
+				get_op_opfamily_strategy(s->opno, key->partopfamily[j]) == HTEqualStrategyNumber && (kv[j] == NULL || s->n < kv[j]->n))
+				kv[j] = s;
+		if (kv[j] == NULL)
+			known = false;
+		else if (kv[j]->n == 0)
+			return palloc(sizeof(uint64));
+		else if (known)
+		{
+			combos *= kv[j]->n;
+			known = combos <= (uint64) sift_limit(hash_part_combos, HASH_MAX_COMBOS);
+		}
+	}
+	if (!known)
+		return NULL;
+	rem = palloc(combos * sizeof(uint64));
+	for (;;)
+	{
+		int			j;
+
+		for (j = 0; j < key->partnatts; j++)
+			values[j] = kv[j]->val[idx[j]];
+		rem[n++] = compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus;
+		for (j = 0; j < key->partnatts && ++idx[j] == kv[j]->n; j++)
+			idx[j] = 0;
+		if (j == key->partnatts)
+			break;
+	}
+	sift_sort_u64(rem, n);
+	{
+		int			k = 0;
+
+		for (int i = 0; i < n; i++)
+			if (i == 0 || rem[i] != rem[i - 1])
+				rem[k++] = rem[i];
+		*nrem = k;
+	}
+	return rem;
+}
+
+/* the remainders of the hash level f, once for the level, so that testing a partition is a search (O(values + partitions), not O(values x partitions)) */
 static const HashLevel *
 hash_level(FuncExpr *f, List *sets, List **levels)
 {
@@ -80,15 +136,8 @@ hash_level(FuncExpr *f, List *sets, List **levels)
 	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue);
 	Relation	level;
 	PartitionKey key;
-	KeyVals    *kv[PARTITION_MAX_KEYS] = {NULL};
-	int			idx[PARTITION_MAX_KEYS] = {0};
-	Datum		values[PARTITION_MAX_KEYS];
-	bool		isnull[PARTITION_MAX_KEYS] = {false};
-	uint64		combos = 1;
-	bool		known = true;
+	AttrNumber	attnos[PARTITION_MAX_KEYS] = {0};
 	HashLevel  *hl;
-	uint64	   *rem;
-	int			nrem = 0;
 
 	foreach_ptr(HashLevel, h, *levels)
 		if (h->parent == parent && h->modulus == modulus)
@@ -104,54 +153,10 @@ hash_level(FuncExpr *f, List *sets, List **levels)
 		Node	   *a = list_nth(f->args, 3 + j);
 
 		if (IsA(a, Var))
-			foreach_ptr(KeyVals, s, sets)
-				if (s->attno == ((Var *) a)->varattno && s->typid == key->parttypid[j] && s->collid == key->partcollation[j] &&
-					get_op_opfamily_strategy(s->opno, key->partopfamily[j]) == HTEqualStrategyNumber && (kv[j] == NULL || s->n < kv[j]->n))
-					kv[j] = s;
-		if (kv[j] == NULL)
-			known = false;
-		else if (kv[j]->n == 0)
-		{
-			relation_close(level, NoLock);	/* a NULL or an empty list matches nothing: no remainder */
-			hl->rem = palloc(sizeof(uint64));
-			return hl;
-		}
-		else if (known)
-		{
-			combos *= kv[j]->n;
-			known = combos <= (uint64) sift_limit(hash_part_combos, HASH_MAX_COMBOS);
-		}
+			attnos[j] = ((Var *) a)->varattno;
 	}
-	if (!known)
-	{
-		relation_close(level, NoLock);
-		return hl;
-	}
-	rem = palloc(combos * sizeof(uint64));
-	for (;;)
-	{
-		int			j;
-
-		for (j = 0; j < key->partnatts; j++)
-			values[j] = kv[j]->val[idx[j]];
-		rem[nrem++] = compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus;
-		for (j = 0; j < key->partnatts && ++idx[j] == kv[j]->n; j++)
-			idx[j] = 0;
-		if (j == key->partnatts)
-			break;
-	}
+	hl->rem = hash_rems(key, attnos, sets, modulus, &hl->nrem);
 	relation_close(level, NoLock);
-	sift_sort_u64(rem, nrem);
-	{
-		int			k = 0;
-
-		for (int i = 0; i < nrem; i++)
-			if (i == 0 || rem[i] != rem[i - 1])
-				rem[k++] = rem[i];
-		nrem = k;
-	}
-	hl->rem = rem;
-	hl->nrem = nrem;
 	return hl;
 }
 
@@ -378,6 +383,31 @@ range_window(Relation parent, List *conds, PartitionDesc *pd, Bitmapset **window
 }
 
 /*
+ * The partitions of a table split by hash that its rows can be in when the conditions give each column of the key a value or a few: the partitions the remainders
+ * of those values select (one for an equality, whatever the number of partitions), from the bound info PostgreSQL keeps. False when the conditions do not decide.
+ */
+static bool
+hash_window(Relation parent, List *sets, PartitionDesc *pd, Bitmapset **window)
+{
+	PartitionKey key = RelationGetPartitionKey(parent);
+	PartitionBoundInfo bi;
+	uint64	   *rem;
+	int			nrem;
+
+	if (key->strategy != PARTITION_STRATEGY_HASH || sets == NIL)
+		return false;
+	*pd = RelationGetPartitionDesc(parent, false);
+	bi = (*pd)->boundinfo;
+	if (bi == NULL || (rem = hash_rems(key, key->partattrs, sets, bi->nindexes, &nrem)) == NULL)
+		return false;
+	*window = NULL;
+	for (int k = 0; k < nrem; k++)
+		if (bi->indexes[rem[k]] >= 0)
+			*window = bms_add_member(*window, bi->indexes[rem[k]]);
+	return true;
+}
+
+/*
  * Is partition i, the next of the table's own partitions in the order of their bounds (pd->oids; the partitions of a partitioned partition stand
  * for it and are not found), outside the window? *next is where the next one is looked for.
  */
@@ -409,7 +439,7 @@ prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 		return 0;				/* the partitions are read already: the keys came too late */
 	if (ps->skip == NULL)
 		ps->skip = palloc0(ps->n * sizeof(bool));
-	bounded = !none && range_window(ps->parent, conds, &pd, &window);
+	bounded = !none && (range_window(ps->parent, conds, &pd, &window) || hash_window(ps->parent, sets, &pd, &window));
 	for (int i = 0; i < ps->n; i++)
 	{
 		const BoundEntry *b;

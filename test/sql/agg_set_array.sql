@@ -15,7 +15,7 @@ SELECT i,
             ELSE 1 + (i::bigint * 7919) % 40000 END,
        (i % 50)::int2, 5000000000 + (i::bigint * 7919) % 40000,
        (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0, date '2024-01-01' + i % 700, i
-FROM generate_series(1, 400000) i;
+FROM generate_series(1, 80000) i;
 CREATE INDEX ev_entity ON ev (dim_a_id, day);
 CREATE INDEX ev_ref ON ev (ref);
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, big_id, kind, amount, day, ref);
@@ -77,8 +77,8 @@ SELECT * FROM same_rows(NULL);
 SELECT * FROM same_rows('{-1,-3,-100,40001,2147483640,2147483642}');
 SELECT * FROM same_rows('{2147483640,2147483641,-5}');
 SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 40000, 4)));
-SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 200000)));
-SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 200000) UNION ALL SELECT NULL));
+SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 70000)));
+SELECT * FROM same_rows(ARRAY(SELECT generate_series(1, 70000) UNION ALL SELECT NULL));
 SELECT * FROM same_rows(ARRAY(SELECT x FROM generate_series(1, 30000) x CROSS JOIN generate_series(1, 3)));
 
 -- other element types, a second set, NOT IN with a NULL, and the same query as a custom plan and as a prepared statement that turns generic
@@ -193,10 +193,10 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE (i * 7)::int % 3000 - 1500 END,
        timestamp '2024-01-01 00:00:00' + ((i * 7) % 3000) * interval '1 minute',
        timestamptz '2024-01-01 00:00:00+00' + ((i * 7) % 3000) * interval '1 minute',
        i % 5, (i % 100) / 10.0
-FROM generate_series(1, 60000) i;
-INSERT INTO evk VALUES (60001, 1, 9223372036854775807, 'max', '2024-01-01', 'infinity', 'infinity', 1, 1.5),
-                       (60002, 1, -9223372036854775808, 'min', '2024-01-01', '-infinity', '-infinity', 2, 2.5),
-                       (60003, 1, 5000000000 + 90000000, 'far', '2024-01-01', '2024-01-01', '2024-01-01+00', 3, 3.5);
+FROM generate_series(1, 12000) i;
+INSERT INTO evk VALUES (12001, 1, 9223372036854775807, 'max', '2024-01-01', 'infinity', 'infinity', 1, 1.5),
+                       (12002, 1, -9223372036854775808, 'min', '2024-01-01', '-infinity', '-infinity', 2, 2.5),
+                       (12003, 1, 5000000000 + 90000000, 'far', '2024-01-01', '2024-01-01', '2024-01-01+00', 3, 3.5);
 CREATE INDEX evk_col ON evk USING sift_col (k2, k8, kt, kd, kts, ktz, g, amount);
 VACUUM (FREEZE, ANALYZE) evk;
 

@@ -2,6 +2,8 @@
  * table/vacuum_maint.c - the maintenance of a sift_table: sift_tbl_maintain, the automatic defragmentation tick, the background VACUUM and the workers (settle, maintenance).
  */
 #include "vacuum_int.h"
+#include <math.h>
+#include "pgstat.h"
 #include "utils/timestamp.h"
 
 void
@@ -70,39 +72,55 @@ removable_tombs(Relation rel, SiftTblRel *st)
 	TransactionId horizon = GetOldestNonRemovableTransactionId(rel);
 	uint64		n = 0;
 
-	sift_tbl_tomb_sync(rel, st);
+	sift_tomb_sync(rel, &st->tomb);
 	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
-	for (uint32 i = 0; i < st->nents; i++)
-		n += st->ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->ents[i].xid, horizon);
-	for (uint32 i = 0; i < st->nrecent; i++)
-		n += st->recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->recent[i].xid, horizon);
+	for (uint32 i = 0; i < st->tomb.nents; i++)
+		n += st->tomb.ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.ents[i].xid, horizon);
+	for (uint32 i = 0; i < st->tomb.nrecent; i++)
+		n += st->tomb.recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.recent[i].xid, horizon);
 	return n;
 }
 
+/*
+ * A pass is asked for when the reads it would spare have cost as much as it does, which needs neither a percent of dead rows nor a guess of
+ * the future: a read pays for each row of a superblock that holds a tombstone (its units are read from their rows, not from their pre-aggregates),
+ * the pass costs the same instructions for each row of the table whatever the share of dead rows, so the rows cancel and what is left is how many
+ * reads of the table, each paying for the share of it that is dirty, have been made since the last pass. A VACUUM of 300,000 rows takes 394 to 488 M
+ * instructions (1,500 a row), a maintenance step counted at half; a read pays 21 (one key of sixty) to 113 (every key) for a row of a dirty
+ * superblock, 20 at the least. 750 / 20 = 38 reads of a table dirty throughout; 1% of deleted rows already make it dirty throughout, and a table
+ * nobody reads is left to autovacuum, which the deletes feed.
+ */
+#define PASS_READS		38
+
+/* the share of the superblocks that tombs tombstones touch, each in one, as exact_share (src.c) counts them */
+static double
+dirty_share(const SiftTblRel *st, uint64 tombs)
+{
+	double		nsb = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) / SIFT_SB_PAGES + 1;
+
+	return 1.0 - exp(-(double) tombs / nsb);
+}
+
+/* the reads (scans) of the table the statistics hold; the aggregate scan and the sequential scan count one each */
 static uint64
-column_rows(const SiftTblRel *st)
+table_scans(Relation rel)
 {
-	uint64		rows = 0;
+	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(rel));
 
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			rows += st->dir.segs[i].ndocs;
-	return rows;
+	return tab ? (uint64) tab->numscans : 0;
 }
 
-/* Could that many tombstones be enough? The header counts every entry, the removable ones are fewer, and counting them reads the log */
+/* Could that many tombstones, with that many reads since the last pass, be enough? The header counts every entry, the removable ones are fewer, and counting them reads the log */
 static bool
-dead_over(const SiftTblRel *st, uint64 tombs)
+dead_over(const SiftTblRel *st, uint64 tombs, uint64 reads)
 {
-	uint64		rows = column_rows(st);
-
-	return sift_tbl_auto_defrag_dead_pct < 100 && rows > 0 && tombs * 100 >= rows * sift_tbl_auto_defrag_dead_pct;
+	return tombs > 0 && reads * dirty_share(st, tombs) >= PASS_READS;
 }
 
 static bool
-dead_wanted(Relation rel, SiftTblRel *st, uint64 tombs, uint64 seen)
+dead_wanted(const SiftTblRel *st, uint64 tombs, uint64 seen, uint64 reads)
 {
-	return dead_over(st, tombs) && tombs >= seen && (tombs - seen) * 200 >= column_rows(st) * sift_tbl_auto_defrag_dead_pct;
+	return tombs > seen && dead_over(st, tombs, reads);
 }
 
 /*
@@ -123,7 +141,9 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 {
 	BlockNumber nblocks;
 	SiftFreeStats fs;
-	uint64		tombs;
+	uint64		tombs,
+				scans,
+				entries;
 	bool		dead,
 				space,
 				writing;
@@ -133,11 +153,17 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	/* the log is read, by this backend, only when its length could cross the threshold: a ticking backend that does nothing else does not sync it */
-	if (dead_over(st, sift_tbl_tomb_entries(rel, st)))
+	scans = table_scans(rel);
+	entries = sift_tomb_entries(rel, &st->dir);
+	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it */
+	if (dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
 		tombs = removable_tombs(rel, st);
 	else
+	{
 		tombs = st->defrag_tombs = 0;
+		if (entries == 0)
+			st->defrag_scans = scans;
+	}
 	nblocks = RelationGetNumberOfBlocks(rel);
 	fs = sift_store_free_stats(rel);
 	/*
@@ -150,7 +176,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	/* a VACUUM rewrote the log, or a pass or a truncation used the free blocks: what is asked next is relative to what is left */
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
-	dead = dead_wanted(rel, st, tombs, st->defrag_tombs);
+	dead = dead_wanted(st, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
 	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
@@ -162,6 +188,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	if (sift_maint_request_worker(rel, "sift_tbl_maint_worker_main"))
 	{
 		st->defrag_tombs = tombs;
+		st->defrag_scans = scans;
 		st->defrag_free = fs.blocks;
 		sift_tbl_refresh(rel, st);	/* the request moved the directory version */
 	}
@@ -210,8 +237,9 @@ background_vacuum(Relation rel, SiftTblMaintain *r)
 #define DEFRAG_TRIES		20
 #define DEFRAG_IDLE_TRIES	3
 
-/* The tombstones the last pass of this worker left: the next one waits for them to grow, not for the rows it could not remove */
+/* The tombstones the last pass of this worker left and the reads of the table then: the next one waits for them to grow and for the reads to pay again, not for the rows it could not remove */
 static uint64 worker_tombs = 0;
+static uint64 worker_scans = 0;
 /* The last pass cleared dead rows (a VACUUM or the pass without the indexes): it found work even when it merged nothing and gave no block back */
 static bool pass_cleared = false;
 
@@ -247,7 +275,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
-			else if (dead_wanted(rel, st, removable_tombs(rel, st), worker_tombs))
+			else if (dead_wanted(st, removable_tombs(rel, st), worker_tombs, table_scans(rel) - Min(table_scans(rel), worker_scans)))
 			{
 				if (sift_tbl_auto_defrag_indexes)
 					background_vacuum(rel, r);
@@ -255,8 +283,9 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 					sift_tbl_maintain(rel, true, true, r);
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
-				sift_tbl_tomb_sync(rel, st);
+				sift_tomb_sync(rel, &st->tomb);
 				worker_tombs = removable_tombs(rel, st);
+				worker_scans = table_scans(rel);
 			}
 			else
 				sift_tbl_maintain(rel, true, false, r);

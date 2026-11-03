@@ -23,16 +23,38 @@ CHECKS=(
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host_stubs.o && make -s -C mariadb OUT=$b $b/host_stubs.o && echo "host_stubs.c compiles for the SQLite and MariaDB hosts"'
 	'neutral	scripts/check-neutral.sh'
 	'limits		scripts/gen-limits.sh --check'
+	'options		scripts/gen-options.sh --check && scripts/gen-options.sh --selftest'
+	'docs		scripts/lint-cache.sh docs . -- python3 scripts/gen-docs.py --check'
+	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'
 	'errors		scripts/check-errors.sh'
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
+	'pg-includes	scripts/check-pg-includes.sh && scripts/check-pg-includes.sh --selftest'
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
+	'bench-resume	bash bench/test/test_resume.sh'
+	'bench-coverage	bench/bench cases --check'
 	'slugs		scripts/check-slugs.sh'
+	'file-size	scripts/check-file-size.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
-	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par.c '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
-	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest'\'
+	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
+	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
+	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
+	'port-isa-check	sh scripts/port-isa-check.sh --selftest'
 	'ci-claim	scripts/test-ci-claim.sh'
+	'ci-stop	scripts/test-ci-stop.sh'
+	'ci-ready	scripts/test-ci-ready.sh'
+	'scaling-lock	scripts/test-scaling-gate.sh'
+	'pg-bare	scripts/check-pg-bare.sh --selftest && scripts/check-pg-bare.sh'
+	'scaling-triggers	scripts/check-scaling-triggers.sh'
+	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
+	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
+	'compat-calls	scripts/check-compat-calls.sh && scripts/check-compat-calls.sh --selftest'
+	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
+	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
+	'affected-untracked	scripts/test-affected-untracked.sh'
+	'affected-wide	scripts/test-affected-wide.sh'
+	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps README.md -- scripts/test-gen-docs-skip.sh'
 	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
 )
@@ -50,6 +72,6 @@ done
 bad=0
 for i in "${!pids[@]}"; do
 	if wait "${pids[i]}"; then echo "ok    ${names[i]}: $(tail -n 1 "$tmp/${names[i]}" | cut -c1-150)"
-	else bad=1; echo "FAIL  ${names[i]}"; tail -n 25 "$tmp/${names[i]}"; fi
+	else rc=$?; bad=1; echo "FAIL  ${names[i]} (exit $rc)"; [[ -s $tmp/${names[i]} ]] && tail -n 25 "$tmp/${names[i]}" || echo "(the check printed nothing: a defect of the check)"; fi
 done
 (( ! bad )) || exit 1

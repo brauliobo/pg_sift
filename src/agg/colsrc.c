@@ -123,6 +123,12 @@ sift_colsrc_close(SiftSrcSource *src)
 	src->prov->close(src->impl);
 }
 
+bool
+sift_colsrc_rescan(SiftSrcSource *src)
+{
+	return src->prov->rescan != NULL && src->prov->rescan(src->impl);
+}
+
 void
 sift_colsrc_unpin(SiftSrcSource *src)
 {
@@ -347,10 +353,22 @@ sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, bool
 }
 
 int
-sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
+sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const struct SiftCGOrdWant *want)
 {
 	*grouped = -1;
-	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped, collid) : -1;
+	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped, collid, want) : -1;
+}
+
+bool
+sift_colsrc_gorder_compact(SiftSrcSource *src, int i, int leaf)
+{
+	return src->prov->gorder_compact && src->prov->gorder_compact(src->impl, i, leaf);
+}
+
+bool
+sift_colsrc_gorder_cuts(SiftSrcSource *src, int i, int leaf, struct SiftCGOrdCuts *cuts)
+{
+	return src->prov->gorder_cuts && src->prov->gorder_cuts(src->impl, i, leaf, cuts);
 }
 
 uint32
@@ -371,6 +389,18 @@ sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, ui
 	return src->prov->gorder_info(src->impl, i, leaf, entries, values);
 }
 
+bool
+sift_colsrc_gorder_groups(SiftSrcSource *src, int i, int leaf, uint32 *ngroups)
+{
+	return src->prov->gorder_groups && src->prov->gorder_groups(src->impl, i, leaf, ngroups);
+}
+
+void
+sift_colsrc_gorder_group_at(SiftSrcSource *src, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	src->prov->gorder_group_at(src->impl, i, leaf, gi, group, vs, ve, ns, ne);
+}
+
 void
 sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
@@ -384,9 +414,41 @@ sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 v
 }
 
 bool
-sift_colsrc_gorder_exact(SiftSrcSource *src, int i, BlockNumber blk)
+sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo)
 {
-	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, blk);
+	return src->prov->gorder_before && src->prov->gorder_before(src->impl, i, leaf, vs, ve, v, desc, clo, chi, memo);
+}
+
+int
+sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid)
+{
+	return src->prov->gorder_exact ? src->prov->gorder_exact(src->impl, i, tid) : SIFT_GORD_UNKNOWN;
+}
+
+void
+sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
+{
+	memset(st, 0, n);
+	if (src->prov->gorder_values)
+		src->prov->gorder_values(src->impl, leaf, seg, tid, n, val, st);
+}
+
+bool
+sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
+{
+	return src->prov->gorder_clean && src->prov->gorder_clean(src->impl, i);
+}
+
+bool
+sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+{
+	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, only, vals, n);
+}
+
+bool
+sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid)
+{
+	return sift_colsrc_gorder_state(src, i, tid) == SIFT_GORD_EXACT;
 }
 
 void

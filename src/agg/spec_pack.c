@@ -426,6 +426,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_dbl(p, s->est_groups);
 	put_dbl(p, s->est_rows);
 	put_int(p, s->nworkers);
+	put_int(p, s->gpart);
 	put_dbl(p, s->wide_unit_rows);
 	put_str(p, s->serial);
 	put_str(p, s->desc_quals);
@@ -444,6 +445,9 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, (int) s->ord[i].collation);
 		put_int(p, s->ord[i].nulls_first);
 		put_node(p, (Node *) s->ord[i].subst);
+		put_node(p, (Node *) s->ord[i].eq);
+		put_int(p, (int) s->ord[i].eqop);
+		put_int(p, (int) s->ord[i].eqcoll);
 	}
 	return pk.items;
 }
@@ -883,6 +887,7 @@ sift_aggspec_unpack(const List *items)
 	s->est_groups = strtod(get_str(u), NULL);
 	s->est_rows = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
+	s->gpart = get_int(u);
 	s->wide_unit_rows = strtod(get_str(u), NULL);
 	s->serial = get_str(u);
 	if (!*s->serial)
@@ -904,6 +909,9 @@ sift_aggspec_unpack(const List *items)
 		s->ord[i].collation = (Oid) get_int(u);
 		s->ord[i].nulls_first = get_int(u);
 		s->ord[i].subst = (Const *) get_node(u);
+		s->ord[i].eq = (Const *) get_node(u);
+		s->ord[i].eqop = (Oid) get_int(u);
+		s->ord[i].eqcoll = (Oid) get_int(u);
 	}
 	return s;
 }

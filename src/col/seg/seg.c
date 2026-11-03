@@ -570,6 +570,48 @@ sift_cseg_dirty(SiftColSegment *seg, uint32 u)
 	return unit_dirty(seg, u);
 }
 
+/* The dirty bits of all the units, bit u of bits (nsb bits) set when unit u is dirty, read in one pass over the LIVE page instead of one buffer visit a unit */
+/* Whether any of units [first, first + n) is dirty, the dirty bits read through one visit of each LIVE page they lie on, not one a unit */
+bool
+sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n)
+{
+	Buffer		buf = InvalidBuffer;
+	bool		any = false;
+
+	if (first + n > seg->nsb)
+		corrupt(seg, "Units %u to %u of %u are not units of this segment.", first, first + n, seg->nsb);
+	for (uint32 u = first; u < first + n && !any; u++)
+	{
+		uint32		i = seg->sbdir[u].id - seg->hdr->sb_lo;
+
+		if (seg->sbdir[u].id < seg->hdr->sb_lo)
+			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
+		any = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1;
+	}
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+	return any;
+}
+
+void
+sift_cseg_dirty_units(SiftColSegment *seg, uint64 *bits)
+{
+	Buffer		buf = InvalidBuffer;
+
+	memset(bits, 0, SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		uint32		i = seg->sbdir[u].id - seg->hdr->sb_lo;
+
+		if (seg->sbdir[u].id < seg->hdr->sb_lo)
+			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
+		if (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1)
+			bits[u / 64] |= UINT64CONST(1) << (u % 64);
+	}
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+}
+
 void
 sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits)
 {

@@ -9,7 +9,7 @@
 #
 # SIFT_BUILD is the checkout whose scripts/pgtest.sh builds and loads the extension (default: this one); SIFT_ROOT, an install that already exists
 # (pgtest.sh install, SIFT_TESTING= for the release library), is used as it is. Both let one script measure a release tag next to main.
-SCRATCH_ROOT=${SCRATCH_ROOT:-$HOME/.cache/sift-bench-scratch}
+SCRATCH_ROOT=${SCRATCH_ROOT:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-bench-scratch}   # memory: a scratch cluster on a disk wears it (SIFT_ALLOW_DISK=1 allows a disk root)
 SIFT_BUILD=${SIFT_BUILD:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 
 scratch_scope() {
@@ -23,7 +23,10 @@ host_load() { # the load averages and the CPU pressure of the host
 }
 
 scratch_up() {
-	local name=$1 port=
+	local name=$1 port= fs
+	mkdir -p "$SCRATCH_ROOT"
+	fs=$(stat -f -c %T "$SCRATCH_ROOT" 2>/dev/null) || fs=tmpfs   # no stat -f -c (macOS): not checked
+	[[ $fs == tmpfs || ${SIFT_ALLOW_DISK:-} == 1 ]] || { echo "scratch_up: $SCRATCH_ROOT is on $fs, not tmpfs: a scratch cluster wears a disk (SCRATCH_ROOT=a tmpfs directory, or SIFT_ALLOW_DISK=1)" >&2; return 1; }
 	export SCRATCH_NAME=$name SIFT_TMP=$SCRATCH_ROOT/$name
 	PG=$SIFT_BUILD/scripts/pgtest.sh
 	local own= head=
@@ -48,7 +51,7 @@ scratch_up() {
 			unix_socket_directories = '$SIFT_TMP/sock'
 			$("$PG" conf)
 			fsync = off
-			synchronous_commit = off
+			synchronous_commit = on
 			shared_buffers = ${SCRATCH_SHARED_BUFFERS:-2GB}
 			max_wal_size = 16GB
 			checkpoint_timeout = 30min

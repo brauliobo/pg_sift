@@ -8,6 +8,8 @@ INSERT INTO facts
 SELECT i, i % 40, CASE i % 3 WHEN 0 THEN '{"k": 12.50, "j": 1.0}'::jsonb WHEN 1 THEN '{"k": 3, "j": 2}'::jsonb ELSE jsonb_build_object('k', i + 0.25, 'j', i) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/agg_helpers.sql
 \set ECHO none

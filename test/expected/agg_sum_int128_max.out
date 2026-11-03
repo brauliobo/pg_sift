@@ -30,6 +30,8 @@ WITH t AS (SELECT power(2::numeric, 127) - 1 AS top, 999999999999999999999999::n
 INSERT INTO big (id, g, c, d) SELECT 41, 41, floor(top / p), p FROM t UNION ALL SELECT 42, 41, top - floor(top / p) * p, 1 FROM t
 	UNION ALL SELECT 43, 42, 3, 2;
 CREATE INDEX big_col ON big USING sift_col (id, g, n0, n10, w, a, b, c, d);
+NOTICE:  sift_col index "big_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) big;
 CREATE FUNCTION same_rows(q text, workers int) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE

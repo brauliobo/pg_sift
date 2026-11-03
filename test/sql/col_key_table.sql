@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
 SET statement_timeout = '240s';
 
 -- 160,000 rows in about 20 units. grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with
@@ -47,6 +48,8 @@ CREATE FUNCTION kt_units(q text, OUT units int, OUT pre int, OUT scanned int) LA
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
+	-- a counted statement asks for no rollup: a worker that replaced a segment under it would make the statement read every unit (agg_preagg_elem)
+	PERFORM set_config('sift.col_rollup_on_demand', 'off', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
@@ -131,7 +134,7 @@ CREATE TABLE ka (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) 
 ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2024-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 60000) g;
 SET sift.col_format_minor = 14;
-CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096);
+CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, key_order = 'off');
 RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'grp_id');

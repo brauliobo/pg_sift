@@ -36,6 +36,24 @@ key_relabel(Node *n)
 	return n;
 }
 
+/* the members of a class that matter to the entry rti: the class's own and, for an arm of a UNION ALL, the one the class got for the arm (PostgreSQL 18 keeps those out of ec_members) */
+static List *
+class_members(EquivalenceClass *ec, Index rti)
+{
+#if PG_VERSION_NUM >= 180000
+	EquivalenceMemberIterator it;
+	EquivalenceMember *em;
+	List	   *out = NIL;
+
+	setup_eclass_member_iterator(&it, ec, bms_make_singleton(rti));
+	while ((em = eclass_member_iterator_next(&it)) != NULL)
+		out = lappend(out, em);
+	return out;
+#else
+	return ec->ec_members;
+#endif
+}
+
 /* the group key (position in keys) a pathkey is on, with its sort operator; -1: it is none of them */
 static int
 pathkey_key(PathKey *pk, List *keys, Oid *sortop)
@@ -80,6 +98,9 @@ order_cost(AggCtx *c, const SiftAggSpec *s, double groups)
 	return cost;
 }
 
+/* the group table of the scan being planned outgrows hash memory */
+static bool ord_table_big;
+
 /* the node's paths with the groups sorted by ord[0..n), promised as `pathkeys` (the pathkeys of this query level) */
 static void
 ordered_add(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist,
@@ -91,6 +112,13 @@ ordered_add(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output
 	s->nord = n;
 	/* the paths keep the spec, which is packed when the plan is made: the array outlives this call (the caller's is on its stack) */
 	s->ord = memcpy(palloc(n * sizeof(SiftAggOrd)), ord, n * sizeof(SiftAggOrd));
+	/* the groups come out of a table that stays in memory (a spilling scan emits them by partition, in the order of the first key when it can) */
+	if (ord_table_big && !sift_aggspec_ord_range(s))
+	{
+		s->nord = 0;
+		s->ord = NULL;
+		return;
+	}
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, pathkeys);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, pathkeys);
@@ -114,6 +142,7 @@ ordered_prefix(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *out
 
 		if (j < 0 || n >= SIFT_AGG_MAX_KEYS)
 			break;
+		memset(&ord[n], 0, sizeof(SiftAggOrd));
 		ord[n].key = j;
 		ord[n].sortop = sortop;
 		ord[n].collation = pk->pk_eclass->ec_collation;
@@ -180,7 +209,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		Const	   *subst;
 
 		/* the column of this sub-select the pathkey is on: the entry's Var, or for an arm of a UNION ALL the member the class got for the arm */
-		foreach_node(EquivalenceMember, em, pk->pk_eclass->ec_members)
+		foreach_node(EquivalenceMember, em, class_members(pk->pk_eclass, rti))
 		{
 			Node	   *x = key_relabel((Node *) em->em_expr);
 
@@ -235,6 +264,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		sortop = sift_pathkey_sortop(pk, exprType((Node *) tle->expr));
 		if (!found || !OidIsValid(sortop) || n >= SIFT_AGG_MAX_KEYS)
 			break;
+		memset(&ord[n], 0, sizeof(SiftAggOrd));
 		ord[n].key = j;
 		ord[n].sortop = sortop;
 		ord[n].collation = pk->pk_eclass->ec_collation;
@@ -286,14 +316,14 @@ agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *inpu
 	Query	   *parse = root->parse;
 	List	   *seen = NIL;
 
-	/* the groups come out of a table that stays in memory (a spilling scan emits them by partition), and a node that keeps only some of them has nothing to sort */
-	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0) ||
-		table > (double) get_hash_memory_limit())
+	/* a node that keeps only some of the groups has nothing to sort */
+	if (s->topn != NULL || s->gtopn_k > 0 || parse->hasDistinctOn || s->nkeys == 0 || list_length(keys) != s->nkeys - s->nhidden - (s->nsets > 0))
 		return;
-	/* grouping sets: a key a set leaves out is NULL in its groups, which the keys of this level (the columns themselves) do not say; the parent's pathkeys, on the columns of the sub-select, do */
-	if (root->sort_pathkeys != NIL && s->nsets == 0)
+	ord_table_big = table > (double) get_hash_memory_limit();
+	/* grouping sets: the group keys of the query are the columns as the sets null them, which is what its pathkeys name, and a key a set leaves out has the id of NULL */
+	if (root->sort_pathkeys != NIL)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->sort_pathkeys, nworkers, &seen);
-	if (root->window_pathkeys != NIL && s->nsets == 0)
+	if (root->window_pathkeys != NIL)
 		ordered_prefix(c, s, input_rel, output_rel, target, scan_tlist, keys, root->window_pathkeys, nworkers, &seen);
 	ordered_parent(c, s, root, input_rel, output_rel, target, scan_tlist, keys, nworkers, &seen);
 }

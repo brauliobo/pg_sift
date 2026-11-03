@@ -60,7 +60,7 @@ INSERT INTO io_q VALUES
  (10, 'SELECT u FROM io WHERE s = ''s11'' AND d > date ''2021-06-01'''),
  (11, 'SELECT coalesce(n, -1) FROM io WHERE a IN (5, 77, 1234, 9000)'),
  (12, 'SELECT a.id, b.s FROM io a JOIN io b ON b.id = a.id + 1 WHERE a.a BETWEEN 100 AND 130'),
- (13, 'SELECT a.n, b.d FROM io a JOIN io b ON b.a = a.a WHERE a.id BETWEEN 100 AND 130'),
+ (13, 'SELECT a.n, b.d FROM io a JOIN io b ON b.a = a.a WHERE a.id BETWEEN 100 AND 130 AND b.id < 2000'),
  (14, 'SELECT id FROM io WHERE a BETWEEN 100 AND 400 UNION ALL SELECT id FROM io WHERE a BETWEEN 5000 AND 5050');
 SELECT n, left(q, 70) AS q, (io_check(q)).* FROM io_q ORDER BY n;
 

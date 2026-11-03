@@ -6,6 +6,7 @@ CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE pt (id int, k int, s text, u uuid, pad text DEFAULT repeat('x', 400));
 ALTER TABLE pt ALTER COLUMN pad SET STORAGE PLAIN;
@@ -73,10 +74,12 @@ UNION ALL SELECT format('k IN (%s)', string_agg(((i * 7919) % 9000 + (i % 3) * 2
 UNION ALL SELECT format('s IN (%s)', string_agg(quote_literal('s' || (i * 31) % 6500), ',' ORDER BY i)) FROM generate_series(1, 200) i
 UNION ALL SELECT format('u IN (%s)', string_agg(quote_literal(md5((i % 6000)::text)::uuid), ',' ORDER BY i)) FROM generate_series(1, 100) i
 UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORDER BY i)) FROM generate_series(1, 1000) i;
--- the directory: the segments are minor 16, verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
+-- the directory: the segments are minor 33 or more, which 3.7 is the first to read (the NOTICE says so), verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
 CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u');
+NOTICE:  sift_col index "pt_t" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "pt_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
@@ -85,10 +88,10 @@ SELECT sift.col_verify('pt_t', true);
  
 (1 row)
 
-SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
- segments | format | units 
-----------+--------+-------
- t        |     15 | t
+SELECT count(*) > 0 AS segments, least(min(format), 15) AS format, min(format) >= 33 AS from_37, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
+ segments | format | from_37 | units 
+----------+--------+---------+-------
+ t        |     15 | t       | t
 (1 row)
 
 SELECT p.units AS units_with_addresses, f.units > 2 AS units_without, p.rows = 0 AS no_row_read
@@ -397,7 +400,7 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all
  t            | t    | t           |         0
 (1 row)
 
-SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 997);
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 9973);
  has_sections | many | some_refused 
 --------------+------+--------------
  t            | t    | t
@@ -406,6 +409,8 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
 SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
+NOTICE:  sift_col index "pt_r" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
@@ -450,6 +455,8 @@ ALTER INDEX pt_r RESET (point_tid_columns);
 ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 SET sift.col_format_minor = 14;
 REINDEX INDEX pt_r;
+NOTICE:  sift_col index "pt_r" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
@@ -492,8 +499,10 @@ SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_
 (1 row)
 
 REINDEX INDEX pt_r;
+NOTICE:  sift_col index "pt_r" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "pt_r": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
  commands 
@@ -543,8 +552,10 @@ SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_
 CREATE TABLE pb (id int, k int);
 INSERT INTO pb SELECT i, i % 7 FROM generate_series(1, 200000) i;
 CREATE INDEX pb_t ON pb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
+NOTICE:  sift_col index "pb_t" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "pb_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT sift.col_verify('pb_t', true);
  col_verify 
@@ -576,8 +587,10 @@ FROM (SELECT count(*) AS listed FROM sift._test_col_tids('pb_t', '0:eq:3;1:ge:10
 CREATE TABLE pbs (id int, k int);
 INSERT INTO pbs SELECT i, i % 7 FROM generate_series(1, 60000) i;
 CREATE INDEX pbs_t ON pbs USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
+NOTICE:  sift_col index "pbs_t" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 NOTICE:  sift_col index "pbs_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are of a column format that a library before 3.7 cannot read, and the build sorts the keys of the column.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 INSERT INTO pbs SELECT i, i % 7 FROM generate_series(60001, 90000) i;
 SELECT sift.col_promote('pbs_t'::regclass) >= 0 AS promoted;

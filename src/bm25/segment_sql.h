@@ -38,6 +38,8 @@ kind_name(uint8 kind)
 			return "buffer";
 		case SIFT_SEG_WBUF_SEALED:
 			return "sealed buffer";
+		case SIFT_SEG_TOMB:
+			return "tombstones";
 	}
 	return "unknown";
 }

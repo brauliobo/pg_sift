@@ -1,0 +1,55 @@
+-- The point directory by default for a key that follows the order of the table (an id from a sequence, no primary key): an equality reads the one unit of its range, and a unit is up to
+-- 47,000 rows, so once it costs 500,000 instructions more than the directory (about 42,000 rows; 1,000,000 rows, 60 keys: 0.72 ms of SiftAgg, 0.06 ms with the directory) the
+-- build writes point_tid_columns = 'auto: id'. 60,000 rows is the smallest table the floor lets through, and so the size of this test. Below it, a primary key (a b-tree of its own) and a
+-- key of few values get none; the aggregate over a few of its keys then has the index paths beside SiftAgg, and the answers are the heap's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE 'point_tid_columns=%'), '-') $$;
+
+CREATE TABLE po AS SELECT g AS id, g % 997 AS v, g % 7 AS w FROM generate_series(1, 60000) g;
+CREATE TABLE po_small AS SELECT g AS id, g % 997 AS v, g % 7 AS w FROM generate_series(1, 20000) g;
+CREATE TABLE po_pk (id int PRIMARY KEY, v int, w int);
+INSERT INTO po_pk SELECT g, g % 997, g % 7 FROM generate_series(1, 60000) g;
+CREATE TABLE po_few AS SELECT g AS id, g % 30 AS v, g % 7 AS w FROM generate_series(1, 60000) g;
+VACUUM (FREEZE, ANALYZE) po, po_small, po_pk, po_few;
+CREATE INDEX po_i ON po USING sift_col (id, v, w);
+CREATE INDEX po_small_i ON po_small USING sift_col (id, v, w);
+CREATE INDEX po_pk_i ON po_pk USING sift_col (id, v, w);
+CREATE INDEX po_few_i ON po_few USING sift_col (v, w);
+SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['po_i', 'po_small_i', 'po_pk_i', 'po_few_i']) i ORDER BY 1;
+
+-- the paths the index offers for the aggregate over a few keys (SiftAgg off: an index or bitmap scan, or the sequential scan their absence leaves)
+CREATE FUNCTION path_of(sql text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE l text; r text := 'seq';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Index Scan|Bitmap Index Scan' THEN r := 'index'; EXIT; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT t AS tbl, path_of(format('SELECT count(*), sum(v) FROM %s WHERE id IN (7, 1008, 30001, 59999)', t)) AS path FROM unnest(ARRAY['po', 'po_small']) t ORDER BY 1;
+
+-- the answers: the directory and the scan against the heap, over keys in the table, out of it, NULL, and after DML
+CREATE FUNCTION answer(sql text, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	PERFORM set_config('sift.enable_col_scan', agg::text, true);
+	EXECUTE sql INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE shapes (w text);
+INSERT INTO shapes VALUES ('id = 7'), ('id = 0'), ('id = 60001'), ('id IN (7, 1008, 30001, 59999, 60000)'), ('id = ANY (ARRAY[5, 5, 6, NULL])'), ('id IN (7, 8) AND v > 100');
+CREATE FUNCTION check_all() RETURNS TABLE (shapes bigint, differ bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE answer(format('SELECT count(*) || %L || coalesce(sum(v), 0) || %L || coalesce(min(id), 0) FROM po WHERE %s', '/', '/', w), true)
+		IS DISTINCT FROM answer(format('SELECT count(*) || %L || coalesce(sum(v), 0) || %L || coalesce(min(id), 0) FROM po WHERE %s', '/', '/', w), false)) FROM shapes $$;
+SELECT * FROM check_all();
+DELETE FROM po WHERE id % 13 = 0;
+UPDATE po SET id = id + 1000000 WHERE id % 17 = 0;
+INSERT INTO po SELECT g, g % 997, 1 FROM generate_series(60001, 60300) g;
+SELECT * FROM check_all();
+
+DROP TABLE po, po_small, po_pk, po_few, shapes;
+DROP FUNCTION popt(regclass), path_of(text), answer(text, boolean), check_all();
+DROP EXTENSION pg_sift;

@@ -20,6 +20,7 @@
 #define SIFT_MAINT_LOCK_BLKNO	0	/* LockPage() target for maintenance */
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
 #define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
+#define SIFT_LOAD_LOCK_BLKNO	5	/* LockPage() target: a load whose segments are written and not yet in the directory shares it, the orphan sweep tries for it exclusive */
 
 typedef enum SiftPageType
 {
@@ -53,7 +54,7 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
 /*
- * Metapage (block 0). The failure note at its end needs no format minor: a build that does not know it keeps the page as it is (pd_lower
+ * Metapage (block 0). The failure note and the analyzer configuration at its end need no format minor: a build that does not know it keeps the page as it is (pd_lower
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
  */
 #define SIFT_MAINT_ERRMSG_LEN	192
@@ -77,10 +78,12 @@ typedef struct SiftMetaPageData
 	TimestampTz maint_failed_at;	/* 0: no note */
 	uint32		maint_errcode;		/* the SQLSTATE, packed by MAKE_SQLSTATE */
 	char		maint_errmsg[SIFT_MAINT_ERRMSG_LEN];	/* NUL-terminated, cut to fit */
+	/* The text search configuration of the stemmer option, as given at build time, "" for the built-in analyzers; pd_lower covers it like the note */
+	char		analyzer_config[SIFT_TSCONFIG_BYTES];
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
-/* The bytes of a metapage of a build without the note */
+/* The bytes of a metapage of a build without the note and the configuration */
 #define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
 
 /* Segment directory (block 1) */
@@ -88,13 +91,17 @@ typedef enum SiftSegKind
 {
 	SIFT_SEG_IMMUTABLE = 1,
 	SIFT_SEG_WBUF_OPEN,
-	SIFT_SEG_WBUF_SEALED
+	SIFT_SEG_WBUF_SEALED,
+	SIFT_SEG_TOMB				/* the tombstone log of a heap sift_col index (core/tomb.h): a lane chain that is no write buffer */
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
+#define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/seg/net.c); no format minor: a reader that does not know the flag does not look there */
+#define SIFT_SEG_XSTAMP	0x4000	/* a segment of a heap sift_col index with track_changes whose entries were all inserted by transactions that committed before the xid in reserved (sift_seg_xstamp): a snapshot whose xmin is not below it sees every inserter as committed and finished; not with SIFT_SEG_VERS */
+#define SIFT_SEG_UNIT	0x8000	/* independently owned one-unit generation; ordinary maintenance preserves its allocation boundary */
 #define SIFT_SEG_VERS	0x0400	/* a column segment with unfrozen rows: reserved = the smallest xid (docs/COL-TAM.md section 7); cleared when the rows are frozen */
 
 typedef struct SiftSegEntry
@@ -111,6 +118,13 @@ typedef struct SiftSegEntry
 	uint64		sum_dl;
 	uint64		bytes;
 } SiftSegEntry;
+
+/* A write buffer (open or sealed): the segments that are neither this nor immutable are lane chains of another use (the tombstone log) */
+static inline bool
+sift_seg_is_wbuf(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
+}
 
 typedef struct SiftDirectoryData
 {
@@ -194,7 +208,7 @@ typedef struct SiftLive2HeaderData
 	uint32		ndead;			/* docs vacuumed */
 	uint64		dead_dl;		/* their dl */
 	uint32		nslots;
-	uint32		tbl_ndead;		/* docs the table of dead postings counts: ndead, unless a crash cut a VACUUM short */
+	uint32		tbl_ndead;		/* docs the table of dead postings counts: ndead, unless VACUUM left it short (under 5% cleared since) or a crash cut it short */
 	uint64		reg_off;
 	uint64		rows_off;
 	uint64		tbl_off;

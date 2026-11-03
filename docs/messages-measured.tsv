@@ -1,0 +1,59 @@
+# verdict: the NOTICE that the primary key of a referenced table is not a column of the index was discarded: in the three join shapes of join_keys (primary key in the index or not) the plan is the aggregate scan and the instructions differ by 3.1% at most, while the key adds 19% to 131% to the index
+# case	state	statement	result	instructions	buffers	index_bytes	plan (bench/messages_measure.py: one backend, perf stat -e instructions:u, warm, tmpfs; rows in the statement column of the case)
+cube_dim_no_histogram	sift, histogram (7 groups)	SELECT few, count(*) FROM caps GROUP BY few	7 rows	230142	7	57344	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+cube_dim_no_histogram	b-tree on few	SELECT few, count(*) FROM caps GROUP BY few	7 rows	62846233	87	712704	GroupAggregate / ->  Index Only Scan using m_bt on caps
+cube_dim_no_histogram	sift, no histogram (50,000 groups a unit, cap 256)	SELECT many, count(*) FROM caps GROUP BY many	50000 rows	66354457	39	253952	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+cube_dim_no_histogram	b-tree on many	SELECT many, count(*) FROM caps GROUP BY many	50000 rows	159218533	249	2039808	GroupAggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	sift bloom filter (400 keys a unit), equality mid	SELECT count(*) FROM caps WHERE mid = 3	250	676343	22	98304	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift bloom filter (400 keys a unit), count(DISTINCT mid)	SELECT count(DISTINCT mid) FROM caps	400	302293	19	98304	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT mid)
+keys_columns	sift key_columns off, equality mid	SELECT count(*) FROM caps WHERE mid = 3	250	666853	22	98304	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift key_columns off, count(DISTINCT mid)	SELECT count(DISTINCT mid) FROM caps	400	5443188	20	98304	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT mid)
+keys_columns	b-tree on mid, equality	SELECT count(*) FROM caps WHERE mid = 3	250	246120	3	745472	Aggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	b-tree on mid, count(DISTINCT)	SELECT count(DISTINCT mid) FROM caps	400	53068323	91	745472	Aggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	sift no key list (50,000 keys a unit), equality many	SELECT count(*) FROM caps WHERE many = 3	2	544884	34	376832	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift no key list (50,000 keys a unit), count(DISTINCT many)	SELECT count(DISTINCT many) FROM caps	50000	5432649	61	376832	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT many)
+keys_columns	sift key_columns off, equality many	SELECT count(*) FROM caps WHERE many = 3	2	588088	41	253952	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift key_columns off, count(DISTINCT many)	SELECT count(DISTINCT many) FROM caps	50000	5395510	39	253952	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT many)
+keys_columns	b-tree on many, equality	SELECT count(*) FROM caps WHERE many = 3	2	126340	3	2039808	Aggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	b-tree on many, count(DISTINCT)	SELECT count(DISTINCT many) FROM caps	50000	64190372	249	2039808	Aggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	sift no summary (every integer of a range), equality id	SELECT count(*) FROM caps WHERE id = 3	1	531358	7	49152	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift no summary (every integer of a range), count(DISTINCT id)	SELECT count(DISTINCT id) FROM caps	100000	6093271	13	49152	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT id)
+keys_columns	sift key_columns off, equality id	SELECT count(*) FROM caps WHERE id = 3	1	549152	7	49152	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+keys_columns	sift key_columns off, count(DISTINCT id)	SELECT count(DISTINCT id) FROM caps	100000	6090622	13	49152	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT id)
+keys_columns	b-tree on id, equality	SELECT count(*) FROM caps WHERE id = 3	1	125802	3	2260992	Aggregate / ->  Index Only Scan using m_bt on caps
+keys_columns	b-tree on id, count(DISTINCT)	SELECT count(DISTINCT id) FROM caps	100000	72618889	276	2260992	Aggregate / ->  Index Only Scan using m_bt on caps
+rollup_not_written	sift rollup written (2,800 combinations)	SELECT few, mid, count(*) FROM caps GROUP BY few, mid	2800 rows	15520503	31	172032	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+rollup_not_written	b-tree on (few, mid)	SELECT few, mid, count(*) FROM caps GROUP BY few, mid	2800 rows	77231672	93	761856	GroupAggregate / ->  Index Only Scan using m_bt on caps
+rollup_not_written	sift no rollup (350,000 combinations)	SELECT few, many, count(*) FROM caps GROUP BY few, many	100000 rows	179106565	38	253952	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+rollup_not_written	b-tree on (few, many)	SELECT few, many, count(*) FROM caps GROUP BY few, many	100000 rows	289843245	276	2260992	GroupAggregate / ->  Index Only Scan using m_bt on caps
+cube_columns_left_out	sift, GROUP BY c3 inside the 16 dimensions	SELECT c3, count(*) FROM wide20 GROUP BY c3	4 rows	300508	9	204800	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+cube_columns_left_out	sift, GROUP BY c19 left out of the cube	SELECT c19, count(*) FROM wide20 GROUP BY c19	20 rows	2752792	27	204800	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+cube_columns_left_out	b-tree on c3	SELECT c3, count(*) FROM wide20 GROUP BY c3	4 rows	62845229	87	712704	GroupAggregate / ->  Index Only Scan using m_bt on wide20
+cube_columns_left_out	b-tree on c19	SELECT c19, count(*) FROM wide20 GROUP BY c19	20 rows	62892003	87	712704	GroupAggregate / ->  Index Only Scan using m_bt on wide20
+array_elements	sift elements kept (paths auto), tg @> {t17}	SELECT count(*) FROM tags WHERE tg @> ARRAY['t17']	20	420103	14	1826816	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+array_elements	sift elements kept (paths auto), GROUP BY tg	SELECT count(*) FROM (SELECT tg FROM tags GROUP BY tg) x	100000	1495004087	1195	1826816	Aggregate / ->  Seq Scan on tags
+array_elements	sift arrays kept (paths auto:), tg @> {t17}	SELECT count(*) FROM tags WHERE tg @> ARRAY['t17']	20	131539088	1195	1163264	Aggregate / ->  Seq Scan on tags
+array_elements	sift arrays kept (paths auto:), GROUP BY tg	SELECT count(*) FROM (SELECT tg FROM tags GROUP BY tg) x	100000	254197205	16	1163264	Aggregate / ->  Custom Scan (SiftAgg)
+array_elements	gin on tg, tg @> {t17}	SELECT count(*) FROM tags WHERE tg @> ARRAY['t17']	20	348604	23	2981888	Aggregate / ->  Bitmap Heap Scan on tags / ->  Bitmap Index Scan on m_g
+array_elements	gin on tg, GROUP BY tg	SELECT count(*) FROM (SELECT tg FROM tags GROUP BY tg) x	100000	1497453365	1195	2981888	Aggregate / ->  Seq Scan on tags
+string_overflow	sift no overflow (budget 1 GB), count(DISTINCT payload)	SELECT count(DISTINCT payload) FROM so	30000	32847029	27	786432	Custom Scan (SiftAgg) / Pushed Aggregates: count(DISTINCT payload)
+string_overflow	sift no overflow (budget 1 GB), payload = x	SELECT count(*) FROM so WHERE payload = repeat(md5('777'), 6)	1	363845	13	786432	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+string_overflow	sift overflow (budget 64 kB a unit), count(DISTINCT payload)	SELECT count(DISTINCT payload) FROM so	30000	66058129	883	106496	Aggregate / ->  Seq Scan on so
+string_overflow	sift overflow (budget 64 kB a unit), payload = x	SELECT count(*) FROM so WHERE payload = repeat(md5('777'), 6)	1	16231470	883	106496	Aggregate / ->  Seq Scan on so
+string_overflow	b-tree on payload, payload = x	SELECT count(*) FROM so WHERE payload = repeat(md5('777'), 6)	1	153774	5	7536640	Aggregate / ->  Index Only Scan using m_bt on so
+hot_update_columns	sift covers views, sum(views) by g	SELECT g, sum(views) FROM hu GROUP BY g	50 rows	357257	8	131072	Custom Scan (SiftAgg) / Pushed Aggregates: sum(views)
+hot_update_columns	sift covers views, UPDATE of 10,000 rows	UPDATE hu SET views = views + 1 WHERE id % 10 = 0	wal_bytes=978032			434176	hot updates: 0 of 10000
+hot_update_columns	sift does not cover views, sum(views) by g	SELECT g, sum(views) FROM hu GROUP BY g	50 rows	110040967	776	139264	HashAggregate / ->  Seq Scan on hu
+hot_update_columns	sift does not cover views, UPDATE of 10,000 rows	UPDATE hu SET views = views + 1 WHERE id % 10 = 0	wal_bytes=728400			139264	hot updates: 10000 of 10000
+hot_update_columns	b-tree on (g) INCLUDE (views), sum(views) by g	SELECT g, sum(views) FROM hu GROUP BY g	50 rows	79327569	277	2277376	GroupAggregate / ->  Index Only Scan using m_bt on hu
+join_keys	sift: both keys are columns of the indexes (customers index 40960 B, orders index 344064 B)	SELECT c.region, sum(o.amt) FROM orders o JOIN customers c ON c.id = o.cust_id GROUP BY c.region	20 rows	17854263	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: sum(amt)
+join_keys	sift: the primary key is not a column of customers index (customers index 40960 B, orders index 344064 B)	SELECT c.region, sum(o.amt) FROM orders o JOIN customers c ON c.id = o.cust_id GROUP BY c.region	20 rows	17772906	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: sum(amt)
+join_keys	sift, customers of one region: both keys are columns of the indexes	SELECT sum(o.amt) FROM orders o WHERE o.cust_id IN (SELECT id FROM customers WHERE region = 3)	2540000	1597549	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: sum(amt)
+join_keys	sift, customers of one region joined: both keys are columns of the indexes	SELECT count(*), sum(o.amt) FROM customers c JOIN orders o ON o.cust_id = c.id WHERE c.region = 3	5000|2540000	1617241	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: count(*), sum(amt)
+join_keys	sift, customers of one region: the primary key is not a column of customers index	SELECT sum(o.amt) FROM orders o WHERE o.cust_id IN (SELECT id FROM customers WHERE region = 3)	2540000	1549691	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: sum(amt)
+join_keys	sift, customers of one region joined: the primary key is not a column of customers index	SELECT count(*), sum(o.amt) FROM customers c JOIN orders o ON o.cust_id = c.id WHERE c.region = 3	5000|2540000	1598880	72	385024	Custom Scan (SiftAgg) / Pushed Aggregates: count(*), sum(amt)
+join_keys	sift: the foreign key is not a column of orders index (customers index 40960 B, orders index 180224 B)	SELECT c.region, sum(o.amt) FROM orders o JOIN customers c ON c.id = o.cust_id GROUP BY c.region	20 rows	181543272	564	221184	HashAggregate / ->  Seq Scan on orders o / ->  Seq Scan on customers c
+join_keys	b-tree: primary keys and a b-tree on orders(cust_id)	SELECT c.region, sum(o.amt) FROM orders o JOIN customers c ON c.id = o.cust_id GROUP BY c.region	20 rows	299406037	100134	794624	HashAggregate / ->  Index Scan using m_bo on orders o / ->  Index Scan using customers_pke
+wildcard_keys	sift under the limit (60,000 keys)	SELECT count(*) FROM wk WHERE (d->>'k77')::int = 77	1	1646813	76	557056	Custom Scan (SiftAgg) / Pushed Aggregates: count(*)
+wildcard_keys	sift over the limit (80,000 keys, 2 of 4 units overflow)	SELECT count(*) FROM wk WHERE (d->>'k77')::int = 77	1	55699006	825	696320	Aggregate / ->  Seq Scan on wk
+wildcard_keys	gin (jsonb_path_ops), 80,000 keys	SELECT count(*) FROM wk WHERE d @> '{"k77": 77}'	1	226849	5	4734976	Aggregate / ->  Bitmap Heap Scan on wk / ->  Bitmap Index Scan on m_gin

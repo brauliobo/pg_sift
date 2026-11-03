@@ -60,7 +60,14 @@ struct SiftStreamWriter
 	uint32		grow;
 	uint64		blocks;			/* blocks taken for this stream */
 	SiftExtentList ext;
+	BufFile    *spool;			/* a stream of a range of a parallel build: the bytes go to this file, not to pages */
 };
+
+Relation
+sift_wt_index(const SiftWriteTarget *wt)
+{
+	return wt->index;
+}
 
 SiftWriteTarget *
 sift_wt_begin(Relation index, SiftWriteMode mode)
@@ -141,9 +148,24 @@ extents_subtract(SiftWriteTarget *wt, SiftExtent *a, int *na, SiftExtent *b, int
 }
 
 void
-sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash)
+sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash, const char *analyzer_config)
 {
 	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
+	strlcpy(wt->meta.analyzer_config, analyzer_config, sizeof(wt->meta.analyzer_config));
+	if (analyzer_config[0])
+		wt->meta.format_minor = SIFT_FORMAT_MINOR;
+}
+
+/* The blocks taken from the store, in the order of the target: adjacent runs are one */
+static void
+wt_note_taken(SiftWriteTarget *wt, BlockNumber start, uint32 got)
+{
+	SiftExtent *last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
+
+	if (last && last->start + last->nblocks == start)
+		last->nblocks += got;
+	else
+		wt->taken[wt->ntaken++] = (SiftExtent) {start, got};
 }
 
 /* Takes want blocks (at least min): spare runs first, then fresh ones */
@@ -152,7 +174,6 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 {
 	Buffer		metabuf;
 	BlockNumber start;
-	SiftExtent *last;
 
 	for (int i = 0; i < wt->nspare; i++)
 	{
@@ -194,16 +215,28 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
 	start = alloc_blocks(wt->index, metabuf, want, min, got);
 	UnlockReleaseBuffer(metabuf);
-	last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
-	if (last && last->start + last->nblocks == start)
-		last->nblocks += *got;
-	else
-		wt->taken[wt->ntaken++] = (SiftExtent) {start, *got};
+	wt_note_taken(wt, start, *got);
 #ifdef SIFT_TESTING
 	/* another backend allocating in between: the next run is not adjacent to this one */
 	if (sift_test_run_gap)
 		UnlockReleaseBuffer(sift_alloc_page(wt->index, SIFT_PT_FREE, 0));
 #endif
+	return start;
+}
+
+BlockNumber
+sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got)
+{
+	Buffer		metabuf;
+	BlockNumber start;
+
+	Assert(wt->mode == SIFT_WRITE_SHARED);
+	wt->taken = wt_list_room(wt, wt->taken, wt->ntaken, &wt->maxtaken);
+	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
+	start = alloc_blocks_below(wt->index, metabuf, want, min, limit, got);
+	UnlockReleaseBuffer(metabuf);
+	if (BlockNumberIsValid(start))
+		wt_note_taken(wt, start, *got);
 	return start;
 }
 
@@ -284,6 +317,9 @@ sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 	charged += pages;
 	for (; charged >= THROTTLE_PAGES; charged -= THROTTLE_PAGES)
 	{
+#ifdef SIFT_TESTING
+		elog(LOG, "sift test: throttle nap");	/* maint_cost_delay counts the naps of the worker: they follow from the pages it wrote, not from the clock */
+#endif
 		sift_nap(wt->delay_ms);
 	}
 }
@@ -351,7 +387,7 @@ bulk_put_meta(SiftWriteTarget *wt)
 
 	sift_page_init(page, SIFT_PT_META, 0);
 	*META(page) = wt->meta;
-	SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
+	SiftPageSetUsed(page, wt->meta.analyzer_config[0] ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
 	wt_put(wt, SIFT_METAPAGE_BLKNO, page);
 	page = wt_page(wt, NULL);
 	sift_page_init(page, SIFT_PT_DIRECTORY, 0);
@@ -465,6 +501,15 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	return sw;
 }
 
+SiftStreamWriter *
+sift_sw_begin_spool(BufFile *file)
+{
+	SiftStreamWriter *sw = palloc0(sizeof(SiftStreamWriter));
+
+	sw->spool = file;
+	return sw;
+}
+
 uint64
 sift_sw_tell(const SiftStreamWriter *sw)
 {
@@ -550,6 +595,12 @@ sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len)
 {
 	const char *p = data;
 
+	if (sw->spool)
+	{
+		BufFileWrite(sw->spool, data, len);
+		sw->pos += len;
+		return;
+	}
 	while (len > 0)
 	{
 		size_t		n;

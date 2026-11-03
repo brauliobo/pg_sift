@@ -8,6 +8,8 @@ SET random_page_cost = 10000;
 CREATE TABLE ev (id int PRIMARY KEY, n int, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 500, i % 100 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (n, amount);
+NOTICE:  sift_col index "ev_col" does not track changes: the index does not hold the primary key column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE TABLE bigdim (id int, k int) WITH (autovacuum_enabled = false);
 INSERT INTO bigdim SELECT i, i % 7 FROM generate_series(0, 999) i;
 VACUUM (FREEZE, ANALYZE) ev, bigdim;

@@ -214,6 +214,20 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 	return fz_stream_buf + off;
 }
 
+/* No cache between statements: every blob is read from the stream */
+bool
+sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
+{
+	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+	*handle = NULL;
+	return false;
+}
+
+void
+sift_segcache_ready(void *handle)
+{
+}
+
 void
 sift_sr_release(SiftStreamReader *sr)
 {

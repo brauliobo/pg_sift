@@ -4,6 +4,7 @@
 -- the btree plan reads them in a fraction of a millisecond; the index is not cut by a key (key_cut = 'off'), which is the layout that statement is about: cut by
 -- parent_id (the default) the scan reads 1 of 40 units and takes 0.095 ms against the btree plan's 0.305. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;	-- the NOTICE of the order array of the index gives bytes a row that follow the sample of ANALYZE
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE cs_dims (id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL);

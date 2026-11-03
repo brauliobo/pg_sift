@@ -514,8 +514,8 @@ sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *t
 	const SiftKey *keys;
 	uint32		k = 0;
 
-	/* a point lookup selects a row or two of thousands: only the pages that hold them are decoded */
-	if (cu->keys == NULL && sel->count <= sel->n / 64)
+	/* up to a quarter of the rows of a unit: only the pages that hold them are decoded (the keys of every row of the unit cost 12 instructions a row, 4 a row of a page of gaps more than the selected ones: the break-even is a quarter) */
+	if (cu->keys == NULL && sel->count <= sel->n / 4)
 	{
 		uint32	   *ords = palloc(Max(sel->count, 1) * sizeof(uint32));
 

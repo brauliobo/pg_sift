@@ -7,6 +7,8 @@ CREATE TABLE ew (id int, k int, grp int, note text);
 INSERT INTO ew SELECT i, (hashint4(i) & 1023), i % 10, 'n' || i FROM generate_series(1, 100000) i;
 CREATE TABLE ew_plain AS SELECT * FROM ew;
 CREATE INDEX ew_col ON ew USING sift_col (id, k, grp);
+NOTICE:  sift_col index "ew_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) ew;
 VACUUM (FREEZE, ANALYZE) ew_plain;
 CREATE FUNCTION why(q text) RETURNS TABLE (arm text, used bool, slug text, has_scan_cost bool, has_normal_cost bool, scan_below_normal bool) LANGUAGE sql AS

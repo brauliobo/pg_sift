@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "bm25/analyze.h"
 #include "bm25/kernels.h"
 #include "core/live.h"
 #include "core/popcount.h"
@@ -21,6 +22,7 @@ typedef struct Walk
 	SiftSegment *seg;
 	SiftScoreRef ref;
 	bool		verify;
+	bool		stops;			/* the index's text search configuration drops stop words, which keep a position: positions may pass dl */
 	SiftSegStats *st;
 	SiftTermVisit visit;
 	void	   *arg;
@@ -273,7 +275,7 @@ term_positions(Walk *w, SiftPostingCursor *c, const char *term, int len, const S
 			uint16		dl = w->tdl[j];
 
 			if ((ck && j % SIFT_POS_EVERY == 0 && ck[j / SIFT_POS_EVERY] != (uint32) (p - rec)) ||
-				(w->ttf[j] < SIFT_MAX_TF ? cnt != w->ttf[j] : cnt < SIFT_MAX_TF) || (dl < SIFT_MAX_DL && last >= dl))
+				(w->ttf[j] < SIFT_MAX_TF ? cnt != w->ttf[j] : cnt < SIFT_MAX_TF) || (dl < SIFT_MAX_DL && last >= dl && !w->stops))
 				corrupt(seg, "Posting (%u,%u) of \"%.*s\" has %u positions ending at %u for tf %u, dl %u.",
 						sift_key_block(w->tkeys[j]), (uint32) (w->tkeys[j] & 0xFFFF), len, term, cnt, last, w->ttf[j], dl);
 		}
@@ -478,6 +480,7 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.ref = *ref;
 	w.ref.avgdl = seg->hdr->avgdl_ref;
 	w.verify = verify;
+	w.stops = seg->index && sift_analyze_stemmer(sift_options_stemmer(sift_index_options(seg->index))) == SIFT_STEM_TS;
 	w.st = st;
 	w.visit = visit;
 	w.arg = arg;
@@ -494,7 +497,13 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
 	if (!w.stopped && st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
-	st->parts.docmap_dir = (uint64) docmap(seg)->nsb * sizeof(SiftDocSBRef) + sizeof(uint32);
+	{
+		DocMap	   *dm = docmap(seg);
+
+		st->parts.docmap_attr = dm->dir_off - dm->recs_end;
+		st->parts.docmap_dir = (uint64) dm->nsb * sizeof(SiftDocSBRef) +
+			(seg->fmt >= SIFT_SEGFMT_ATTR ? (uint64) dm->nsb * sizeof(SiftAttrRef) + 16 : sizeof(uint32));
+	}
 	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -
 		st->parts.dict_inline_pos;

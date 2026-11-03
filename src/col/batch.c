@@ -51,7 +51,6 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 		if (v->otag)
 			memset(v->otag, 0, v->n);
 		v->n = 0;
-		v->noted = false;
 		if (v->eoff)
 			v->eoff[0] = 0;
 		if (v->voff)
@@ -258,7 +257,7 @@ batch_group_end(SiftColBatch *b, int group, uint32 count)
 
 /*
  * Whether a string of len bytes still fits the byte budget of leaf id in this unit (a value the leaf's dictionary holds costs nothing).
- * Past it the value is stored as an overflow, as a value the leaf cannot store is, and the first one is announced.
+ * Past it the value is stored as an overflow, as a value the leaf cannot store is, and the first one of the batch (of a statement) is announced.
  */
 static bool
 leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len)
@@ -275,8 +274,8 @@ leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len)
 
 		v->noted = true;
 		ereport(NOTICE,
-				(errmsg("sift_col: the strings of leaf %d (attribute %d%s%s) in superblock %u pass %lld bytes: the values after them are stored as overflow and read from the heap",
-						id, d->attno, d->path[0] ? " path " : "", d->path, b->sb, (long long) budget),
+				(errmsg("sift_col: the strings of leaf %d (attribute %d%s%s) pass %lld bytes in a unit, first in superblock %u: the values after them are stored as overflow and read from the heap",
+						id, d->attno, d->path[0] ? " path " : "", d->path, (long long) budget, b->sb),
 				 errhint("Index an expression that keeps the part of the value that is used, such as left(column, 255).")));
 	}
 	return false;

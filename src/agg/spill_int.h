@@ -17,12 +17,17 @@ void spill_floor(AggExec *ex);
 void spill_check(AggExec *ex);
 void spill_finish(AggExec *ex);
 bool spill_more(AggExec *ex);
+bool gstream_begin(AggExec *ex);
 TupleTableSlot *spill_output(AggExec *ex, TupleTableSlot *slot, bool (*next) (AggExec *, TupleTableSlot *));
 bool spill_rescan(AggExec *ex);
 void spill_end(AggExec *ex);
 bool spill_presize_ok(const AggExec *ex);
 uint32 spill_keep(const AggExec *ex);
 bool spill_started(const AggExec *ex);
+void spill_pass_end(AggExec *ex);
+bool pass_restart(AggExec *ex);
+bool pass_forced(AggExec *ex);
+void pass_scan(AggExec *ex);
 bool spill_would(AggExec *ex, struct AggSpill *sp);
 
 #pragma GCC visibility pop

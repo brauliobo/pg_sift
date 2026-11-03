@@ -308,6 +308,7 @@ rrd_owner | ALTER TABLE rrd.child INHERIT rrd.base
 rrd_owner | DROP TABLE rrd.child
 rrd_owner | DROP TABLE rrd.base
 $$);
+NOTICE:  sift_col index "part_1_id_g_idx" does not track changes: the table has no primary key of one column
  n  |    role    |                                             stmt                                              |                    result                    
 ----+------------+-----------------------------------------------------------------------------------------------+----------------------------------------------
   1 | rrd_owner  | CREATE TABLE rrd.part (id int, body text, g int) PARTITION BY RANGE (id)                      | ok
@@ -423,9 +424,12 @@ INSERT INTO rrd.conc SELECT i, 'alpha ' || i, i % 3, i FROM generate_series(1, 3
 CREATE INDEX CONCURRENTLY conc_btree ON rrd.conc (g);
 CREATE INDEX CONCURRENTLY conc_idx ON rrd.conc USING sift (body);
 CREATE INDEX CONCURRENTLY conc_col ON rrd.conc USING sift_col (id, g, v);
+NOTICE:  sift_col index "conc_col" does not track changes: the table has no primary key of one column
 REINDEX INDEX CONCURRENTLY rrd.conc_idx;
 REINDEX INDEX CONCURRENTLY rrd.conc_col;
+NOTICE:  sift_col index "conc_col_ccnew" does not track changes: the table has no primary key of one column
 REINDEX TABLE CONCURRENTLY rrd.conc;
+NOTICE:  sift_col index "conc_col_ccnew" does not track changes: the table has no primary key of one column
 SELECT count(*) FROM rrd.conc WHERE body @@> 'alpha';
  count 
 -------

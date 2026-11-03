@@ -21,7 +21,10 @@
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
-typedef enum SiftScanMode
+typedef /* Rows of a table whose keys a ranked scan tests an INCLUDE column against (SIFT_PRIV_SEMI) */
+#define SIFT_SEMI_MAX_SET	65536
+
+enum SiftScanMode
 {
 	SIFT_MODE_UNORDERED,		/* heap order, optional scores */
 	SIFT_MODE_RANKED,			/* descending score, k hint; with leading sort keys, by them and then descending score */
@@ -38,6 +41,9 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_GATE_TO,			/* float8: ... and up to which, infinity = to the end */
 	SIFT_PRIV_LATE,				/* int32: rows the scan takes through its quals when it checks them on the rows it hands out (planner.c late_quals), the k hint then holds the hits they take; 0 = every candidate is checked */
 	SIFT_PRIV_KEYOPS,			/* List of Const, three per leading sort key: its ordering operator, collation and NULLS FIRST (nil: ranked by score alone) */
+	SIFT_PRIV_ATTR,				/* List of int8 Const, per test of an INCLUDE column the ranker applies: column, SiftAttrOp, value, n and the n values of a list (nil: none; planner_attr.c) */
+	SIFT_PRIV_SEMI,				/* List, per small table that an inner join keys to an INCLUDE column: its Oid, the column's position, the attribute of the table's key and its own quals (planner_attr.c); nil: none */
+	SIFT_PRIV_TIES,				/* int32: 1 = the scan's rows go to an incremental sort under a LIMIT of exactly the k hint rows (planner_ties.c), 0 otherwise */
 	SIFT_NPRIV
 } SiftPrivateField;
 
@@ -50,6 +56,9 @@ extern PGDLLIMPORT const CustomScanMethods sift_count_plan_methods;
 
 /* bm25/cscan.c: CreateCustomScanState callback */
 extern Node *sift_create_scan_state(CustomScan *cscan);
+
+/* An INCLUDE value of an integer-like type as the int64 a segment holds (bm25/attr.c) */
+extern int64 sift_attr_datum(Oid type, Datum d);
 
 /* true if expr (a Var or an expression, RelabelTypes ignored) is the key of the sift index */
 extern bool sift_index_matches_key(IndexOptInfo *index, Node *expr);

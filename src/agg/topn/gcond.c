@@ -5,7 +5,13 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
+#include "access/visibilitymap.h"
+#include "miscadmin.h"
+
 #include "port/pg_bitutils.h"
+#include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
 #include "agg/gord.h"
@@ -24,13 +30,6 @@ typedef struct SBox
 	uint32		hilen;
 } SBox;
 
-/*
- * More keys than the first: the array gives the rows in the order of the first key only, so the scan takes the whole groups of rows that share a value of it
- * (the heap row says what the others hold, and whether it passes the condition) until the groups make the n rows, and puts each group in order. A scan that
- * reads more entries than GORD_SCAN_MIN, or 64 for each row wanted, before the n are in has a first key that many rows share: the units read it better.
- */
-#define GORD_SCAN_MIN	4096
-
 static GBox
 gcond_box(const SiftTopGPred *p)
 {
@@ -39,6 +38,8 @@ gcond_box(const SiftTopGPred *p)
 	if (p->kind == STG_STR)
 		return r;
 	/* a value is not NULL: the entries of the values, whatever the key (those of the NULLs come after them) */
+	if (p->kind == STG_ISNULL || p->kind == STG_BOOL)
+		return r;
 	if (p->kind == STG_NOTNULL)
 	{
 		r.has_lo = p->lead;
@@ -106,23 +107,6 @@ gcond_box(const SiftTopGPred *p)
 	return r;
 }
 
-/* the least string after every string that starts with s, in the order of the bytes (the C collation); NULL when there is none (no byte left to carry into) */
-static char *
-prefix_end(const char *s, uint32 len, uint32 *olen)
-{
-	char	   *e;
-
-	while (len > 0 && (uint8) s[len - 1] == 0xFF)
-		len--;
-	if (len == 0)
-		return NULL;
-	e = palloc(len);
-	memcpy(e, s, len);
-	e[len - 1]++;
-	*olen = len;
-	return e;
-}
-
 static SBox
 gcond_sbox(const SiftTopGPred *p, Oid collid)
 {
@@ -130,6 +114,9 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 
 	if (p->kind == STG_STR)
 	{
+		/* a string of another column bounds nothing: the heap row decides */
+		if (!p->lead)
+			return r;
 		switch (p->sop)
 		{
 			case SSTR_EQ:
@@ -155,14 +142,14 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
-				r.hi = prefix_end(p->str, p->slen, &r.hilen);
+				r.hi = sift_cgord_prefix_end(p->str, p->slen, &r.hilen);
 				r.has_hi = r.hi != NULL;
 				r.hi_excl = true;
 				break;
 		}
 		return r;
 	}
-	if (p->kind == STG_CMP || p->kind == STG_NOTNULL)
+	if (p->kind == STG_CMP || p->kind == STG_NOTNULL || p->kind == STG_ISNULL || p->kind == STG_BOOL)
 		return r;
 	r = gcond_sbox(p->child[0], collid);
 	for (int i = 1; i < p->nchild; i++)
@@ -208,12 +195,12 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 	return r;
 }
 
-/* is every condition on a text string one that compares under the collation the array ranks by */
+/* is every condition on the text key one that compares under the collation the array ranks by (another column's string is tested on the heap row, under its own) */
 static bool
 gcond_coll_ok(const SiftTopGPred *p, Oid collid)
 {
 	if (p->kind == STG_STR)
-		return p->collid == collid;
+		return !p->lead || p->collid == collid;
 	for (int i = 0; i < p->nchild; i++)
 		if (!gcond_coll_ok(p->child[i], collid))
 			return false;
@@ -259,12 +246,19 @@ sift_topn_key_range(SiftTopN *t, const SiftTopGPred *cond)
 bool
 gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 {
-	if (p->kind == STG_NOTNULL)
+	if (p->kind == STG_BOOL)
+	{
+		bool		isnull;
+		Datum		d = slot_getattr(slot, p->attno, &isnull);
+
+		return p->tab[isnull ? 2 : DatumGetBool(d)];
+	}
+	if (p->kind == STG_NOTNULL || p->kind == STG_ISNULL)
 	{
 		bool		isnull;
 
 		(void) slot_getattr(slot, p->attno, &isnull);
-		return !isnull;
+		return p->kind == STG_NOTNULL ? !isnull : isnull;
 	}
 	if (p->kind == STG_CMP || p->kind == STG_STR)
 	{
@@ -286,13 +280,20 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
  * block are all of the group gl that the top of the conjunction pins.
  */
 int
-gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
+gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull, const GEntVals *ev)
 {
 	int			r = p->kind == STG_AND ? 1 : 0;
+	int			c = -1;
 
+	/* a column other than the key, when the units gave its value */
+	for (int i = 0; ev != NULL && !p->lead && i < ev->n; i++)
+		if (ev->leaf[i] == p->leaf && ev->st[i] != 0 && (p->kind == STG_NOTNULL || p->kind == STG_ISNULL || p->kind == STG_CMP))
+			return p->kind == STG_NOTNULL ? ev->st[i] == 1 : p->kind == STG_ISNULL ? ev->st[i] == 2 : ev->st[i] == 1 && gcond_cmp(p->op, ev->val[i], p->val);
 	if (p->kind == STG_NOTNULL)
 		return p->lead ? !isnull : -1;
-	if (p->kind == STG_STR)
+	if (p->kind == STG_ISNULL)
+		return p->lead ? isnull : -1;
+	if (p->kind == STG_STR || p->kind == STG_BOOL)
 		return -1;				/* the string is the heap row's: the entry holds a rank */
 	if (p->kind == STG_CMP)
 	{
@@ -302,8 +303,7 @@ gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
 	}
 	for (int i = 0; i < p->nchild; i++)
 	{
-		int			c = gcond_entry(p->child[i], gl, top && p->kind == STG_AND, key, isnull);
-
+		c = gcond_entry(p->child[i], gl, top && p->kind == STG_AND, key, isnull, ev);
 		if (c == (p->kind == STG_OR))
 			return c;
 		if (c < 0)
@@ -312,93 +312,6 @@ gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
 	return r;
 }
 
-/* the keys after the first, then the address */
-static int
-grow_cmp(const void *a, const void *b, void *arg)
-{
-	const SiftTopN *t = arg;
-	const GRow *x = a,
-			   *y = b;
-
-	for (int j = 1; j < t->nkey; j++)
-	{
-		const TopKey *k = &t->key[j];
-
-		if (x->isnull[j] != y->isnull[j])
-			return x->isnull[j] == k->nulls_first ? -1 : 1;
-		if (!x->isnull[j] && x->key[j] != y->key[j])
-			return (x->key[j] < y->key[j]) != k->desc ? -1 : 1;
-	}
-	return ItemPointerCompare(unconstify(ItemPointerData *, &x->tid), unconstify(ItemPointerData *, &y->tid));
-}
-
-static bool
-gord_prep(SiftTopN *t)
-{
-	TopFetch   *f = &t->pf[0];
-	int64		cap = Max(GORD_SCAN_MIN, 64 * (int64) t->limit),
-				scanned = 0,
-				gkey = 0,
-				key;
-	bool		isnull,
-				gnull = false,
-				have = false,
-				closed = false;
-	int			gstart = 0,
-				room = 64;
-	ItemPointerData tid;
-
-	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), room * sizeof(GRow));
-	while (sift_gord_next(t->go, &key, &isnull, &tid))
-	{
-		bool		call_again = false,
-					all_dead,
-					hnull;
-		Datum		d;
-		GRow	   *r;
-		ItemPointerData entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
-
-		if (++scanned > cap)
-			return false;
-		if (have && (key != gkey || isnull != gnull))
-		{
-			qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
-			if (t->gqn >= t->limit)
-			{
-				closed = true;
-				break;
-			}
-			gstart = t->gqn;
-		}
-		have = true;
-		gkey = key;
-		gnull = isnull;
-		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
-			continue;
-		t->fetched++;
-		d = slot_getattr(f->slot, t->gatt[0], &hnull);
-		if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
-			continue;
-		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
-			continue;
-		if (t->gqn == room)
-		{
-			room *= 2;
-			t->gq = repalloc(t->gq, room * sizeof(GRow));
-		}
-		r = &t->gq[t->gqn++];
-		r->tid = entry;
-		for (int j = 0; j < t->nkey; j++)
-		{
-			d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
-			r->key[j] = r->isnull[j] ? 0 : heap_key(t->gtyp[j], d);
-		}
-	}
-	/* the end of the array closes the last group; a group that ended the scan above is sorted already */
-	if (!closed && t->gqn - gstart > 1)
-		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
-	return true;
-}
 
 /* an OR of equalities of the group leaf gl with constants (its IN list): a global order grouped by gl reads the entries of each of the groups */
 static bool
@@ -418,7 +331,7 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 {
 	int			n = 0;
 
-	if (p->kind == STG_NOTNULL)
+	if (p->kind == STG_NOTNULL || p->kind == STG_ISNULL || p->kind == STG_BOOL)
 		return p->lead || p->pinned ? 0 : 1;
 	if (p->kind == STG_STR)
 		return p->lead ? 0 : 1;
@@ -431,12 +344,32 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 	return n;
 }
 
+/* The condition is nothing but bounds on the first key (a conjunction of =, <, <=, >, >= and IS NOT NULL on it): every value entry between the bounds the array was opened with passes it */
+static bool
+gcond_bounds_only(const SiftTopGPred *p)
+{
+	if (p->kind == STG_ISNULL || p->kind == STG_BOOL)
+		return false;
+	if (p->kind == STG_NOTNULL)
+		return p->lead;
+	if (p->kind == STG_CMP)
+		return p->lead && (p->op == SCMP_EQ || p->op == SCMP_LT || p->op == SCMP_LE || p->op == SCMP_GT || p->op == SCMP_GE);
+	if (p->kind != STG_AND)
+		return false;
+	for (int i = 0; i < p->nchild; i++)
+		if (!gcond_bounds_only(p->child[i]))
+			return false;
+	return true;
+}
+
 /* the leaves of a condition, into t->rleaf: false when there are more than it holds */
 static bool
 resid_leaves(SiftTopN *t, const SiftSrcLayout *lay, const SiftTopGPred *p)
 {
 	int			j = 0;
 
+	if (p->kind == STG_BOOL)
+		return false;
 	if (p->kind != STG_AND && p->kind != STG_OR)
 	{
 		while (j < t->nresid && t->rleaf[j] != p->leaf)
@@ -526,12 +459,26 @@ bool
 sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 {
 	SiftGBound	b = {0};
-	bool		bounds = false;
+	bool		bounds = false,
+				loose;
 	int			gl;
 
 	/* past the cap of the heap only a walk that throws the OFFSET away unread gives the rows */
 	if (!t->gok || t->nogord || (t->all && (t->skip == 0 || t->nkey > 1 || t->gwant == 0)))
 		return false;
+	/* a partitioned scan that reads one partition walks that partition's array and fetches from its heap; more than one has no array to walk */
+	if (t->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		t->gpart = sift_aggpart_only(src);
+		if (t->gpart < 0)
+		{
+			t->gpart = 0;
+			return false;
+		}
+		src = sift_aggpart_source(src, t->gpart);
+		if (t->pf[t->gpart].fetch == NULL)
+			fetch_begin(t, t->gpart);
+	}
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
 	if (cond != NULL && t->gtext)
 	{
@@ -559,15 +506,38 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	if (t->go == NULL)
 		return false;
 	gl = sift_gord_group(t->go);
-	/* a condition that leaves no bound on the key and no group is a filter of the whole array: the units, with their zones, read less */
-	if (cond != NULL && ((!bounds && gl < 0) || gcond_loose(cond, gl, true) > 0))
+	/*
+	 * A condition that leaves no bound on the key and no group, or that another column decides, is a filter of the whole array: the walk fetches the heap row of every entry
+	 * to test it, and gives the rows to the units when the fetches it needs are more than they cost (gord_giveup).
+	 */
+	loose = cond != NULL && ((!bounds && gl < 0) || gcond_loose(cond, gl, true) > 0);
+	t->gcond = t->nkey == 1 && !t->gtext && cond != NULL && gcond_bounds_only(cond) ? NULL : cond;
+	t->limit = t->all ? t->gwant : t->limit;
+	/* the walk queues every row of the LIMIT and the OFFSET before the first goes out, outside work_mem: a longer page reads the units */
+	if (loose && (t->all || (uint64) t->limit * sizeof(GRow) > (uint64) work_mem * 1024))
 	{
 		t->go = NULL;
 		return false;
 	}
-	t->gcond = cond;
-	t->limit = t->all ? t->gwant : t->limit;
-	if (t->nkey > 1 && !gord_prep(t))
+	t->gprep = t->nkey > 1 || loose;
+	t->gtried = t->gpass = 0;
+	if (loose)
+	{
+		Relation	rel = t->pf[t->gpart].fetch->rel;
+		BlockNumber allvis;
+
+		t->gbudget = Max(4 * (int64) t->limit, t->pf[t->gpart].nblocks / GORD_BUDGET_DIV);
+		visibilitymap_count(rel, &allvis, NULL);
+		t->gdirty = Max((int64) t->pf[t->gpart].nblocks - allvis, 0);
+		t->grpp = rel->rd_rel->reltuples > 0 && t->pf[t->gpart].nblocks > 0 ? rel->rd_rel->reltuples / t->pf[t->gpart].nblocks : 100;
+		if (sift_topn_gbudget > 0)
+			t->gbudget = sift_topn_gbudget, t->gdirty = 0;
+	}
+	else
+		t->gbudget = 0;
+	if (t->gprep && !gord_prep(t))
+		t->go = NULL;
+	else if (!t->gprep && sift_gord_ends(t->go) && !gord_probe(t))
 		t->go = NULL;
 	return t->go != NULL;
 }

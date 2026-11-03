@@ -5,11 +5,50 @@
  */
 #include "core/host.h"
 
+#include "bm25/analyze.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "col/seg_int.h"
 
-/* ---------- docmap directories (bm25/docdir.c): not kept between queries ---------- */
+/* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
+
+SiftTsStem *
+sift_ts_open(const char *config, MemoryContext mcxt)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("unknown sift stemmer \"%s\"", config),
+					errhint("Valid stemmers are \"en\" and \"none\".")));
+	return NULL;
+}
+
+int
+sift_ts_stem(SiftTsStem *ts, char *w, int len)
+{
+	return len;
+}
+
+/* ---------- INCLUDE columns (bm25/attr.c): the hosts keep none ---------- */
+
+SiftAttrSrc *
+sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
+{
+	return NULL;
+}
+
+/* ---------- bytes of a segment (bm25/segcache.c) and docmap directories (bm25/docdir.c): not kept between queries ---------- */
+
+bool
+sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
+{
+	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+	*handle = NULL;
+	return false;
+}
+
+void
+sift_segcache_ready(void *handle)
+{
+}
+
 
 bool
 sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_base, void **handle)
@@ -99,6 +138,17 @@ sift_cseg_zones_find(SiftColSegment *seg, int col)
 
 void
 sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
+{
+}
+
+void *
+sift_cseg_sets_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets)
 {
 }
 

@@ -19,6 +19,9 @@ SELECT sift._test_kern_digest(1, 300) = :scalar_digest AS auto_same;
 -- Every level the CPU supports against scalar, case by case
 SELECT sift._test_kern_equiv(42, 3000) AS mismatches;
 
+-- The test of an INCLUDE column on a page of codes, the same
+SELECT sift._test_kern_attr_equiv(42, 3000) AS attr_mismatches;
+
 -- The kernels equal the float4 SQL evaluation of the documented formula:
 -- K = k1 * (1 - b) + ((k1 * b) / avgdl) * dl, score = w * (tf / (tf + K))
 CREATE TEMP TABLE params AS

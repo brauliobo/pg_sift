@@ -50,6 +50,7 @@
 #include "core/parbuild.h"
 #include "core/sql.h"
 #include "core/build_id.h"
+#include "core/eval.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
@@ -77,6 +78,8 @@ PG_FUNCTION_INFO_V1(sift_index_format);
 PG_FUNCTION_INFO_V1(sift_worker_state);
 PG_FUNCTION_INFO_V1(sift_col_handler);
 PG_FUNCTION_INFO_V1(sift_col_index_info);
+PG_FUNCTION_INFO_V1(sift_col_extents);
+PG_FUNCTION_INFO_V1(sift_col_space);
 PG_FUNCTION_INFO_V1(sift_col_segments);
 PG_FUNCTION_INFO_V1(sift_col_leaves);
 PG_FUNCTION_INFO_V1(sift_col_sections);
@@ -109,6 +112,7 @@ static bool catalog_valid;
 static void
 define_gucs(void)
 {
+	sift_eval_init();
 	DefineCustomIntVariable("sift.max_expansions",
 							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
 							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",
@@ -211,7 +215,7 @@ define_reloptions(void)
 					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "merge_fanin",
 					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
-					  SIFT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
+					  SIFT_DEFAULT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
 					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
@@ -351,6 +355,10 @@ sift_amoptions(Datum reloptions, bool validate)
 	SiftOptions *o = (SiftOptions *) build_reloptions(reloptions, validate, sift_relopt_kind,
 													  sizeof(SiftOptions), sift_relopt_tab, lengthof(sift_relopt_tab));
 
+	/* given, even as its default: relopt_parse_elt has no isset_offset in PostgreSQL 19, so the list says it on every version */
+	if (o != NULL)
+		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+			o->accent_folding_set |= strcmp(def->defname, "accent_folding") == 0;
 	/* the alias counts when write_buffer_limit is left at its default */
 	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
@@ -409,6 +417,8 @@ sift_test_reloptions(PG_FUNCTION_ARGS)
 					type = "string";
 					dflt = *(const int *) p ? base[a] + *(const int *) p : "";
 					break;
+				default:		/* PostgreSQL 19 has RELOPT_TYPE_TERNARY: none of ours is one */
+					break;
 			}
 			vals[0] = CStringGetTextDatum(ams[a]);
 			vals[1] = CStringGetTextDatum(e->optname);
@@ -430,7 +440,7 @@ sift_index_options(Relation index)
 		.accent_folding = true,
 		.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT,
 		.vacuum_segments = SIFT_DEFAULT_VACUUM_SEGMENTS,
-		.merge_fanin = SIFT_MERGE_FANIN,
+		.merge_fanin = SIFT_DEFAULT_MERGE_FANIN,
 		.positions = true,
 		.dead_rewrite_pct = SIFT_MERGE_DEAD_PCT,
 		.vacuum_truncate = true,
@@ -487,6 +497,7 @@ sift_handler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *am = sift_am_routine(1, 0, false);
 
+	am->amcaninclude = true;
 	am->ambuild = sift_ambuild;
 	am->ambuildempty = sift_ambuildempty;
 	am->aminsert = sift_aminsert;

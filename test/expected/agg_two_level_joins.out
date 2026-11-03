@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+-- the scan is asked for: its price against the normal plan's is a tie at times (a gap of a few percent), the test is of its answers and of the plans it refuses
+SET sift.agg_force = on;
 CREATE TABLE items (id int PRIMARY KEY, kind text, enabled bool) WITH (autovacuum_enabled = false);
 INSERT INTO items SELECT i, 'k' || i % 5, i % 7 <> 3 FROM generate_series(0, 599) i;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, doc jsonb) WITH (autovacuum_enabled = false);
@@ -16,9 +18,12 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, 'k' || i % 5, date '2
                                                                                  'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j)) END
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}');
-NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "events_col": key_columns = 'auto' keeps the keys of parent_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 192 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+HINT:  To turn it off, run ALTER INDEX events_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE lookup (kind text, cat text, derived_cat text) WITH (autovacuum_enabled = false);
 INSERT INTO lookup SELECT 'k' || k, 'cat_' || c, 'm' || (k + c) % 3 FROM generate_series(0, 4) k, generate_series(0, 5) c WHERE (k + c) % 5 <> 0;
 CREATE TABLE lookup_empty (kind text, cat text, derived_cat text);

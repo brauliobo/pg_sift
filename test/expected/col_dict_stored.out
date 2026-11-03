@@ -58,6 +58,8 @@ INSERT INTO ds_q (preds, heapwhere) VALUES
  ('0:eq:ab;1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 's = ''ab'' AND u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b''');
 -- the stored form: the segment is minor 14, the dictionaries are not parsed by an equality, an IN list or a prefix, and every answer is the heap's
 CREATE INDEX ds_new ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
+NOTICE:  sift_col index "ds_new" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (ANALYZE) ds;
 SELECT sift.col_verify('ds_new', true);
  col_verify 
@@ -160,8 +162,12 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
 -- the option off (blocks for the dictionaries that pay, without the order) and the compact form (the setting 13): the same answers, the dictionaries are parsed
 CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = off);
+NOTICE:  sift_col index "ds_off" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SET sift.col_format_minor = 13;
 CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
+NOTICE:  sift_col index "ds_13" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT index, min(format) AS format FROM (SELECT 'off' AS index, format FROM sift.col_segments('ds_off') WHERE kind = 'immutable'
 	UNION ALL SELECT '13', format FROM sift.col_segments('ds_13') WHERE kind = 'immutable') x GROUP BY index ORDER BY index;
@@ -224,6 +230,8 @@ DROP INDEX ds_off, ds_13;
 -- a dictionary under the minimum is kept compact (the minimum is a limit)
 CREATE TABLE dfew AS SELECT i AS id, 'few' || i % 300 AS s FROM generate_series(1, 6000) i;
 CREATE INDEX dfew_i ON dfew USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+NOTICE:  sift_col index "dfew_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT min(format) AS format FROM sift.col_segments('dfew_i') WHERE kind = 'immutable';
  format 
 --------
@@ -242,7 +250,11 @@ INSERT INTO dt SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN 'one' WHEN 2 TH
 CREATE TABLE dt1 (id int, s text);
 INSERT INTO dt1 SELECT i, 'same' FROM generate_series(1, 100) i;
 CREATE INDEX dt_i ON dt USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+NOTICE:  sift_col index "dt_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX dt1_i ON dt1 USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+NOTICE:  sift_col index "dt1_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT (SELECT min(format) FROM sift.col_segments('dt_i') WHERE kind = 'immutable') AS format,
 	   (SELECT min(format) FROM sift.col_segments('dt1_i') WHERE kind = 'immutable') AS format_one_string;
  format | format_one_string 
@@ -471,6 +483,8 @@ RESET sift.test_limits;
 SELECT sum(bytes) AS with_order FROM sift.col_sections('ds_new') WHERE section = 'dict' \gset
 ALTER INDEX ds_new SET (dict_lookup = off);
 REINDEX INDEX ds_new;
+NOTICE:  sift_col index "ds_new" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT sum(bytes) < :with_order AS without_order FROM sift.col_sections('ds_new') WHERE section = 'dict';
  without_order 
 ---------------
@@ -479,6 +493,8 @@ SELECT sum(bytes) < :with_order AS without_order FROM sift.col_sections('ds_new'
 
 ALTER INDEX ds_new SET (dict_lookup = on);
 REINDEX INDEX ds_new;
+NOTICE:  sift_col index "ds_new" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SELECT min(format) AS format FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
  format 
 --------
@@ -519,17 +535,31 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 -- the default (auto) stores the order of the strings of a leaf that a lookup structure reads (set_columns, point_columns, return_columns) and of no other; on stores every one, off none
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+NOTICE:  sift_col index "ds_on" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = off);
+NOTICE:  sift_col index "ds_off2" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off');
+NOTICE:  sift_col index "ds_auto" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', key_columns = 's');
-NOTICE:  sift_col index ds_auto_set: the keys of "s" are a bloom filter, not a list, in 50% of 4 units, which hold more than 32 distinct keys
-DETAIL:  The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to 2898 distinct keys.
-NOTICE:  sift_col index ds_auto_set: key_columns wrote no summary of "s" in 50% of 4 units, whose keys are one value, or every integer of a range, or inline text
-DETAIL:  A summary that could not skip a unit is not stored; a query that filters by the column scans those units.
-HINT:  Leave "s" out of key_columns, or sort the table by it before REINDEX.
+NOTICE:  sift_col index "ds_auto_set" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ds_auto_set": the keys of "s" are a bloom filter, not a list, in 10% or more of the units, which hold more than 32 distinct keys
+DETAIL:  The share of the 4 units: "s" 50% (up to 2898 keys a unit). The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them.
+NOTICE:  sift_col index "ds_auto_set": key_columns writes no summary of "s" in 10% or more of the units, whose keys are one value, or every integer of a range, or inline text
+DETAIL:  The share of the 4 units: "s" 50%. A summary that could not skip a unit is not stored; a query that filters by the column scans those units.
+HINT:  Leave them out of key_columns, or sort the table by them before REINDEX.
 CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 'u');
+NOTICE:  sift_col index "ds_auto_point" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', return_columns = 's, v');
+NOTICE:  sift_col index "ds_auto_ret" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's, u', dict_lookup = off);
+NOTICE:  sift_col index "ds_auto_off" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET max_parallel_maintenance_workers;
 SELECT i.idx, d.leaf, d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_on') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS with_order
 FROM (VALUES ('ds_on'), ('ds_off2'), ('ds_auto'), ('ds_auto_set'), ('ds_auto_point'), ('ds_auto_ret'), ('ds_auto_off')) i(idx), LATERAL sift.col_sections(i.idx::regclass) d
@@ -569,6 +599,8 @@ CREATE INDEX ds_bad ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_
 ERROR:  invalid value for enum option "dict_lookup": sometimes
 DETAIL:  Valid values are "auto", "on" and "off".
 CREATE INDEX ds_bool ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = true);
+NOTICE:  sift_col index "ds_bool" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 DROP INDEX ds_bool;
 -- the default stores a dictionary in blocks (read in place) only where that adds little to the segment: uuids and hashes compress as well in blocks as whole,
 -- short strings that repeat their words (titles) do not and keep the compact form; the answers are the same
@@ -577,8 +609,12 @@ CREATE TABLE dw AS SELECT i AS id, md5((i % 5000)::text)::uuid AS u,
 FROM generate_series(1, 20000) i;
 -- (dict_lookup = 'off': the blocks alone, the hash they carry by default is 5 bytes a string more: col_dict_blocks_hash)
 CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off', dict_lookup = 'off');
+NOTICE:  sift_col index "dw_i" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 SET sift.col_format_minor = 13;
 CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
+NOTICE:  sift_col index "dw_13" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 RESET sift.col_format_minor;
 SELECT d.leaf, d.bytes <= x.bytes * 1.03 AS within_3_percent, d.bytes > x.bytes AS blocks
 FROM sift.col_sections('dw_i') d JOIN sift.col_sections('dw_13') x ON x.section = d.section AND x.leaf = d.leaf WHERE d.section = 'dict' ORDER BY d.leaf;

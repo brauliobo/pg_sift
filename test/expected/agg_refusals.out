@@ -12,9 +12,12 @@ SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6,
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
+NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "events_col": key_columns = 'auto' keeps the keys of parent_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 192 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+HINT:  To turn it off, run ALTER INDEX events_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i FROM generate_series(0, 599) i;
 CREATE TABLE plain (id int, kind text, val int);
@@ -25,9 +28,11 @@ CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
-NOTICE:  sift_col index parted_0_col writes a rollup of the rows by kind, val
+NOTICE:  sift_col index "parted_0_col": rollup_dims = 'auto' writes a rollup of the rows by kind, val
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX parted_0_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+HINT:  To drop it, run ALTER INDEX parted_0_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "parted_0_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 -- a series longer than a spine can be
 CREATE TABLE ticks (a int, b int);
 INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 12000) i;
@@ -36,10 +41,15 @@ CREATE TABLE facts (id int, metrics jsonb);
 INSERT INTO facts SELECT i, jsonb_build_object('m_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
 INSERT INTO facts VALUES (5001, '{"m_total": "abc"}');
 CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 -- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
 CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
 INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
 CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
+NOTICE:  sift_col index "guarded_col" installed two statement triggers on table "guarded" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
@@ -80,7 +90,7 @@ INSERT INTO shapes VALUES
  ('volatile filter', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
  ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''m_total'''),
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
- ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id FROM events ORDER BY kind, parent_id'),
+ ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id, ARRAY[id] FROM events ORDER BY kind, parent_id'),
  ('top n', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3'),
  ('top n order', 'topn', 'SELECT id FROM events ORDER BY id + extract(year FROM now())::int LIMIT 3'),
  ('top n where', 'topn', 'SELECT id FROM events WHERE length(doc::text) > 3 ORDER BY parent_id LIMIT 3'),
@@ -151,6 +161,8 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
 CREATE TABLE narrow (id int, kind text, note int);
 INSERT INTO narrow SELECT i, 'k' || i % 5, i % 7 FROM generate_series(1, 2000) i;
 CREATE INDEX narrow_col ON narrow USING sift_col (id, kind);
+NOTICE:  sift_col index "narrow_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 ANALYZE narrow;
 SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM narrow WHERE note > 3 GROUP BY 1');
   arm   | used | slug  |                                                     reason                                                     
@@ -296,6 +308,8 @@ FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL
 -- a min() planned as a LIMIT 1 sub-select leaves nothing behind for the next statement of the session (the next plan used the freed list of its arms)
 CREATE TABLE minmax_leftover AS SELECT i AS v FROM generate_series(1, 20000) i;
 CREATE INDEX minmax_leftover_col ON minmax_leftover USING sift_col (v);
+NOTICE:  sift_col index "minmax_leftover_col" does not track changes: the table has no primary key of one column
+HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
 VACUUM (FREEZE, ANALYZE) minmax_leftover;
 SET sift.explain_refusals = on;
 SET client_min_messages = error;

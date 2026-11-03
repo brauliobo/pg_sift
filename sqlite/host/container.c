@@ -13,6 +13,15 @@ initStringInfo(StringInfo str)
 	resetStringInfo(str);
 }
 
+StringInfo
+makeStringInfo(void)
+{
+	StringInfo	str = palloc(sizeof(StringInfoData));
+
+	initStringInfo(str);
+	return str;
+}
+
 void
 resetStringInfo(StringInfo str)
 {

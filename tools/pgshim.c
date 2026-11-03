@@ -11,6 +11,7 @@
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 
+#include "bm25/analyze.h"
 #include "core/sift.h"
 #include "pgshim.h"
 
@@ -397,6 +398,18 @@ const char *
 sift_options_stemmer(const SiftOptions *opts)
 {
 	pgshim_unreached("sift_options_stemmer");
+}
+
+SiftTsStem *
+sift_ts_open(const char *config, MemoryContext mcxt)
+{
+	pgshim_unreached("sift_ts_open");
+}
+
+int
+sift_ts_stem(SiftTsStem *ts, char *w, int len)
+{
+	pgshim_unreached("sift_ts_stem");
 }
 
 const char *
