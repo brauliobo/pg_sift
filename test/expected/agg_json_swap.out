@@ -9,6 +9,9 @@ CREATE INDEX jt_col ON jt USING sift_col (id, g, label, price, day);
 NOTICE:  sift_col index "jt_col": rollup_dims = 'auto' writes a rollup of the rows by g, label
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
 HINT:  To drop it, run ALTER INDEX jt_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "jt_col" installed a statement trigger on table "jt"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 CREATE TABLE jp AS SELECT * FROM jt;
 VACUUM ANALYZE jt;
 SET max_parallel_workers_per_gather = 0;

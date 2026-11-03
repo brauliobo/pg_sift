@@ -30,6 +30,9 @@ DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each u
 HINT:  To drop it, run ALTER INDEX tb_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col: the strings of leaf 12 (attribute 13) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
+NOTICE:  sift_col index "tb_col" installed a statement trigger on table "tb"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;

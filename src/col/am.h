@@ -79,9 +79,9 @@ extern void sift_col_row_key_prepare(Relation heap, Relation index);
 extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 /* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
-/* The option track_deletes (col/track.c): the check of the table, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+/* The options track_updates and track_deletes (col/track.c): the check of the table, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern void sift_col_track_check(Relation heap, Relation index);
-extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
+extern void sift_col_track_install(Relation heap, Relation index, bool concurrent, bool say);
 extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
@@ -93,6 +93,7 @@ extern PGDLLIMPORT bool sift_test_no_supersede;
 extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
+extern PGDLLIMPORT bool sift_test_trust_updates;
 extern PGDLLIMPORT bool sift_test_no_log_reap;
 extern PGDLLIMPORT bool sift_test_no_log_hide;
 extern PGDLLIMPORT uint64 sift_test_col_log_hidden_count;

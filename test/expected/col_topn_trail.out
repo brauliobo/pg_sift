@@ -20,6 +20,9 @@ SELECT tt_rows(1, 6000);
 (1 row)
 
 CREATE INDEX tt_col ON tt USING sift_col (id, k, k2, t);
+NOTICE:  sift_col index "tt_col" installed a statement trigger on table "tt"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (ANALYZE) tt;
 CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+ties' when the pushed plan is the scan under a Sort (or '+all' when it keeps every row), '+restarts N' when it started again N times, and the number of rows

@@ -8,6 +8,9 @@ INSERT INTO gs_events
 SELECT g, 1 + g % 40, date '2025-01-01' + g % 60, jsonb_build_object('total', g % 10, 'grade_a', g % 7, 'grade', g % 5, 'size_b', g % 3)
 FROM generate_series(1, 20000) g;
 CREATE INDEX gs_events_col ON gs_events USING sift_col (id, dim_a_id, d, metrics_a) WITH (paths = 'metrics_a.* float8');
+NOTICE:  sift_col index "gs_events_col" installed a statement trigger on table "gs_events"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) gs_events;
 CREATE FUNCTION gs_query(entity int) RETURNS text LANGUAGE sql AS $f$
 	SELECT format($q$WITH days AS (SELECT DISTINCT d AS date FROM gs_events WHERE d >= DATE '2025-01-01'),

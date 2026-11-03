@@ -201,6 +201,9 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE tw (id int PRIMARY KEY, g int, s text COLLATE "C", pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
 INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(1, 200) i;
 CREATE INDEX tw_col ON tw USING sift_col (id, g, s);
+NOTICE:  sift_col index "tw_col" installed a statement trigger on table "tw"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) tw;
 INSERT INTO tw (id, g, s) SELECT i, i % 7, md5(i::text) FROM generate_series(201, 3000) i;
 CREATE FUNCTION tw_check(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -251,6 +254,9 @@ DROP EXTENSION pg_sift_helpers;
 CREATE TABLE wn (id int PRIMARY KEY, g int NOT NULL, kind int NOT NULL, ts timestamp NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
 INSERT INTO wn SELECT i, 1 + i % 4650, i % 9, timestamp '2024-01-01' + (i % 100000) * interval '10 minutes', i % 1000 FROM generate_series(1, 60000) i;
 CREATE INDEX wn_col ON wn USING sift_col (id, g, kind, ts, amount) WITH (key_cut = 'g');
+NOTICE:  sift_col index "wn_col" installed a statement trigger on table "wn"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 NOTICE:  sift_col index "wn_col": key_columns = 'auto' keeps the keys of id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 136 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  To turn it off, run ALTER INDEX wn_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.

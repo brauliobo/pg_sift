@@ -14,6 +14,7 @@ INSERT INTO od (id, n, s) SELECT i, (i * 7919) % 1000, 'k' || lpad(((i::bigint *
 DELETE FROM od WHERE id % 5 = 2;
 VACUUM od;
 CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s');
+NOTICE:  sift_col index "od_i" installed a statement trigger on table "od"
 NOTICE:  sift_col index "od_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 3 columns
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
 SET sift.test_topn_heads = off;

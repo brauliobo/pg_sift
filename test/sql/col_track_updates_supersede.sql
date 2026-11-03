@@ -90,11 +90,16 @@ COMMIT;
 INSERT INTO expected VALUES (:'first_version');
 SELECT log_matches() AS matches;
 
--- inserts, copy, deletes and a change of the key write none
+-- inserts, copy and deletes write none (a delete is the DELETE trigger's, track_deletes)
 INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(8001, 8300) i;
 COPY (SELECT i, i % 10, i, 0 FROM generate_series(9001, 9100) i) TO '/dev/null';
 DELETE FROM t WHERE id BETWEEN 2001 AND 2020;
+SELECT log_matches() AS matches;
+-- a change of the key is the UPDATE trigger's of track_updates: one tombstone for the address each old key had
+DROP TABLE before;
+CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 2021 AND 2030;
 UPDATE t SET id = id + 100000 WHERE id BETWEEN 2021 AND 2030;
+INSERT INTO expected SELECT old FROM before;
 SELECT log_matches() AS matches;
 
 -- the reads are the heap's, by the index and by a scan of the table
@@ -106,14 +111,16 @@ RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 SELECT h.c = i.c AND h.s = i.s AND h.p = i.p AS same_answers, h.p AS points FROM by_heap h, by_index i;
 SELECT sift.col_verify('t_c');
 
--- the mutant: with the supersede off an update writes none, and the oracle sees it
+-- the mutant: with the supersede off an update writes none (the UPDATE trigger would find the entries: it is silenced too), and the oracle sees it
 SET sift.test_no_supersede = on;
+SET sift.test_no_track = on;
 DROP TABLE before;
 CREATE TEMP TABLE before AS SELECT id, ctid AS old FROM t;
 UPDATE t SET v = v + 1 WHERE id BETWEEN 1101 AND 1110;
 INSERT INTO expected SELECT old FROM before WHERE id BETWEEN 1101 AND 1110;
 SELECT log_matches() AS matches_with_mutant;
 RESET sift.test_no_supersede;
+RESET sift.test_no_track;
 
 -- VACUUM removes the old versions, and with their entries the tombstones of them; the tombstones of the rolled back updates (their old versions live) go too
 SELECT log_entries() > 0 AS has_entries;

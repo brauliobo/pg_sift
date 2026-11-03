@@ -101,6 +101,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_track",
 							 "Testing: the statement triggers of track_deletes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_trust_updates",
+							 "Testing: a heap-free read takes the log for complete with the UPDATE trigger alone, as if the owner promised no hard DELETE (a DELETE then gives wrong rows: why the DELETE trigger is required); a build or ALTER INDEX with it on writes the baseline.",
+							 NULL, &sift_test_trust_updates, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

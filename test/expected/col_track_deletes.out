@@ -1,4 +1,4 @@
--- track_deletes (needs track_updates; off by default): two internal statement triggers tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
+-- track_deletes (needs track_updates; off by default) adds the AFTER DELETE statement trigger to the AFTER UPDATE one of track_updates: they tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
 -- transaction that installs them first writes a tombstone for every version of the table that is dead then (the baseline). The log can be taken for complete (heap_free of
 -- sift.col_tracking) only while the triggers are the ones that made it so. The oracle is the heap: the address each row had before the statement.
 CREATE EXTENSION pg_sift;
@@ -15,18 +15,18 @@ CREATE FUNCTION log_matches(idx regclass) RETURNS bool LANGUAGE sql AS $$
 CREATE FUNCTION sift_triggers() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(regexp_replace(tgname, '_[0-9]+$', '') || ':' || tgenabled::text || ':' || tgisinternal::text, ' ' ORDER BY tgname), 'none')
     FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%' $$;
--- off by default, and with track_updates alone: no trigger, nothing complete, a delete is not heard
+-- off by default, and with track_updates alone: the UPDATE trigger only, nothing complete, a delete is not heard
 CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_updates = 'id');
 SELECT * FROM sift.col_tracking('t_c');
  track_deletes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
- f             | f        | f        | f
+ f             | t        | f        | f
 (1 row)
 
 SELECT sift_triggers();
- sift_triggers 
----------------
- none
+        sift_triggers         
+------------------------------
+ sift_track_update_t_c:A:true
 (1 row)
 
 CREATE TEMP TABLE b_deleted AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 1 AND 10;
@@ -64,9 +64,9 @@ ERROR:  track_deletes: table "t" is a partition or has inheritance children
 DETAIL:  A statement trigger does not fire for a statement on the parent, so the deletes would not be heard.
 HINT:  Leave track_deletes off: reads of the index check the heap.
 SELECT sift_triggers();
- sift_triggers 
----------------
- none
+        sift_triggers         
+------------------------------
+ sift_track_update_t_c:A:true
 (1 row)
 
 DROP TABLE child;
@@ -104,18 +104,18 @@ SELECT count(*) AS table_locks_above_row_exclusive FROM pg_locks WHERE relation 
 (1 row)
 
 ROLLBACK;
--- turned off: no trigger, nothing complete, the log stays
+-- turned off: the UPDATE trigger only, nothing complete, the log stays
 ALTER INDEX t_c RESET (track_deletes);
 SELECT sift_triggers();
- sift_triggers 
----------------
- none
+        sift_triggers         
+------------------------------
+ sift_track_update_t_c:A:true
 (1 row)
 
 SELECT * FROM sift.col_tracking('t_c');
  track_deletes | triggers | complete | heap_free 
 ---------------+----------+----------+-----------
- f             | f        | f        | f
+ f             | t        | f        | f
 (1 row)
 
 DROP INDEX t_c;

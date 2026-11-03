@@ -24,6 +24,9 @@ FROM generate_series(1, 6000) i;
 UPDATE events SET payload = jsonb_set(payload, '{catg_a}', '"9"') WHERE id IN (100, 6000);
 UPDATE events SET payload = jsonb_set(payload, '{score}', '"n/a"') WHERE id = 3001;
 CREATE INDEX events_col ON events USING sift_col (id, kind, day, payload) WITH (paths = 'payload.* float8');
+NOTICE:  sift_col index "events_col" installed a statement trigger on table "events"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE events;
 CREATE FUNCTION eq(keep text, sel text DEFAULT 'avg(CAST(e.value AS float8))', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t JOIN LATERAL jsonb_each(t.payload) e ON true WHERE ' || keep || ' GROUP BY ' || grp
@@ -192,6 +195,9 @@ FROM generate_series(1, 2000) i;
 UPDATE facts SET payload = jsonb_set(payload, '{parts,0,score}', '"-0"') WHERE id IN (100, 1500);
 UPDATE facts SET payload = jsonb_set(payload, '{parts,1,score}', '"-0"') WHERE id = 7;
 CREATE INDEX facts_col ON facts USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
+NOTICE:  sift_col index "facts_col" installed a statement trigger on table "facts"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE facts;
 SELECT pushed('SELECT r.kind, avg(r.score) FROM facts t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true GROUP BY 1') AS recordset_pushed;
  recordset_pushed 
@@ -227,6 +233,9 @@ INSERT INTO lists SELECT i, 'cat_' || chr(97 + i % 3), i / 10,
 FROM generate_series(1, 2000) i;
 INSERT INTO lists SELECT 5000, 'cat_a', 500, jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('kind', 'cat_a', 'score', g % 5)) FROM generate_series(1, 1100000) g));
 CREATE INDEX lists_col ON lists USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
+NOTICE:  sift_col index "lists_col" installed a statement trigger on table "lists"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE lists;
 SELECT pushed('SELECT r.kind, avg(r.score), count(*) FROM lists t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true GROUP BY 1') AS long_list_pushed;
  long_list_pushed 

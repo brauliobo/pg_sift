@@ -414,7 +414,7 @@ sift_col_init(void)
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "track_deletes",
-					   "Needs track_updates. Two internal statement triggers on the table (AFTER DELETE, AFTER UPDATE; transition table of the old rows) write a tombstone for the entries of deleted rows and of rows whose key changed, so that the log is complete (default off; the triggers are the object this option creates, the index drops them)",
+					   "Needs track_updates. An internal AFTER DELETE statement trigger on the table (transition table of the old rows) writes a tombstone for the entries of deleted rows, so that the log is complete with the AFTER UPDATE trigger of track_updates (default off; the trigger is the object this option creates, the index drops it)",
 					   false, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
 					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",

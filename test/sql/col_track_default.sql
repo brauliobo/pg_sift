@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
 
--- the default: the primary key, the log segment, the key in the point directory beside what the formula chooses; track_deletes is not on (no trigger)
+-- the default: the primary key, the log segment, the key in the point directory beside what the formula chooses; track_deletes is not on (the UPDATE trigger only, one NOTICE)
 CREATE INDEX t_dflt ON t USING sift_col (id, g, v);
 SELECT split_part(o, '=', 1) AS opt, split_part(o, '=', 2) AS val FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^(track_updates|point_tid_columns|track_deletes)' ORDER BY 1;
 SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstones';

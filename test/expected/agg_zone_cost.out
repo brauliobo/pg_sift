@@ -9,6 +9,9 @@ INSERT INTO zc_facts SELECT i, 1 + (i - 1) / 250, date '2024-01-01' + (i - 1) / 
 	jsonb_build_object('a', 1 + i % 10, 'b', 1 + (i * 7) % 10, 'c', 1 + (i * 3) % 10) FROM generate_series(1, 120000) i;
 CREATE INDEX zc_facts_parent ON zc_facts (parent_id, ts);
 CREATE INDEX zc_facts_col ON zc_facts USING sift_col (id, parent_id, ts, deleted_at, payload) WITH (paths = 'payload.* float8');
+NOTICE:  sift_col index "zc_facts_col" installed a statement trigger on table "zc_facts"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) zc_facts;
 CREATE FUNCTION query_of(scope text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT e.key, count(DISTINCT r.id) AS ids, round(avg(e.value::float8)::numeric, 6) AS score

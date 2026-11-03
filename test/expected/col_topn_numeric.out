@@ -29,6 +29,9 @@ SELECT nm_rows(1, 6000);
 (1 row)
 
 CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
+NOTICE:  sift_col index "nm_col" installed a statement trigger on table "nm"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (ANALYZE) nm;
 CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -350,6 +353,9 @@ CREATE TABLE nv (id int PRIMARY KEY, a numeric(30,4));
 INSERT INTO nv SELECT i, (hashint4(i) % 5000)::numeric * 100000000000000 FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX nv_col ON nv USING sift_col (id, a);
+NOTICE:  sift_col index "nv_col" installed a statement trigger on table "nv"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 RESET sift.test_limits;
 ANALYZE nv;
 SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lanes_overflow;

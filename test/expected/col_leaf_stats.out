@@ -12,6 +12,9 @@ INSERT INTO ls_facts SELECT i, i % 50, CASE WHEN i % 7 = 0 THEN NULL ELSE (i % 1
 	jsonb_build_object('a', i % 9, 'b', 'x' || i % 5), repeat('p', 150) FROM generate_series(1, 60000) i;
 -- below the default size, no block
 CREATE INDEX ls_small ON ls_facts USING sift_col (id, grp, amount, label, ts, tags) WITH (paths = 'tags.a int8');
+NOTICE:  sift_col index "ls_small" installed a statement trigger on table "ls_facts"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 SELECT count(*) > 1 AS several_segments_or_units, bool_or(lstats) AS with_block FROM sift._test_col_formats('ls_small'::regclass) ;
  several_segments_or_units | with_block 
 ---------------------------+------------
@@ -27,6 +30,9 @@ SELECT sift.col_verify('ls_small', true);
 DROP INDEX ls_small;
 SET sift.test_limits = 'par_build_rows=1,lst_min_units=2';
 CREATE INDEX ls_col ON ls_facts USING sift_col (id, grp, amount, label, ts, tags) WITH (paths = 'tags.a int8');
+NOTICE:  sift_col index "ls_col" installed a statement trigger on table "ls_facts"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) ls_facts;
 SELECT bool_and(lstats) AS every_segment_has_the_block, count(*) AS segments FROM sift._test_col_formats('ls_col'::regclass);
  every_segment_has_the_block | segments 

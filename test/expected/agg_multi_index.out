@@ -21,7 +21,13 @@ END $$;
 CREATE TABLE mi (id int PRIMARY KEY, grp int, amount float8, doc jsonb);
 INSERT INTO mi SELECT i, i % 7, i % 100, jsonb_build_object('n', i % 13, 'kind', 'k' || i % 3) FROM generate_series(1, 20000) i;
 CREATE INDEX mi_amount ON mi USING sift_col (id, grp, amount);
+NOTICE:  sift_col index "mi_amount" installed a statement trigger on table "mi"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 CREATE INDEX mi_doc ON mi USING sift_col (id, grp, doc) WITH (paths = 'doc.n float8, doc.kind text');
+NOTICE:  sift_col index "mi_doc" installed a statement trigger on table "mi"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE mi;
 -- each query only one of the two indexes can answer, whichever the planner lists first
 SELECT used_index('SELECT grp, sum(amount) FROM mi GROUP BY grp') AS amount_only;

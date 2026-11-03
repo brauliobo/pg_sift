@@ -9,6 +9,9 @@ SELECT i, 1 + i % 200, date '2024-01-01' + (i % 900), (ARRAY['A', 'b', 'C'])[1 +
        jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (ARRAY['a', 'b', 'c'])[1 + (i + j) % 3], 'n', (i + j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 60000) i;
 CREATE INDEX g_t_col ON g_t USING sift_col (id, grp, created, kind, doc) WITH (key_cut = 'off', paths = 'doc.lines[]{k text, n float8}');
+NOTICE:  sift_col index "g_t_col" installed a statement trigger on table "g_t"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) g_t;
 CREATE FUNCTION plan_uses_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;

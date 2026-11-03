@@ -40,6 +40,9 @@ UPDATE items SET doc = '{"parts": "str"}' WHERE id = 1200;
 UPDATE items SET doc = '{"parts": [1]}' WHERE id = 1201;
 UPDATE items SET doc = '{"parts": null}' WHERE id = 1202;
 CREATE INDEX items_col ON items USING sift_col (id, kind, day, doc) WITH (paths = 'doc.parts[]{kind text, score float8}');
+NOTICE:  sift_col index "items_col" installed a statement trigger on table "items"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE items;
 CREATE FUNCTION iq(rng text, keep text, sel text DEFAULT 't.kind, count(*), sum(t.id)') RETURNS text LANGUAGE sql AS $f$
 	SELECT 'SELECT ' || sel || ' FROM items t WHERE ' || rng || ' AND ' || keep || ' GROUP BY t.kind'
@@ -323,6 +326,9 @@ UPDATE events SET doc = jsonb_set(doc, '{m_a}', '{"a": 1}') WHERE id = 1106;
 UPDATE events SET doc = doc - 'm_a' WHERE id = 1107;
 UPDATE events SET doc = jsonb_set(doc, '{m_a}', '1e300') WHERE id = 1108;
 CREATE INDEX events_col ON events USING sift_col (id, kind, day, doc) WITH (paths = 'doc.* float8');
+NOTICE:  sift_col index "events_col" installed a statement trigger on table "events"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE events;
 CREATE FUNCTION kq(rng text, sel text, key text DEFAULT 'm_a', grp text DEFAULT 't.kind') RETURNS text LANGUAGE sql AS $f$
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t LEFT JOIN LATERAL jsonb_each(t.doc) r ON r.key = ' || quote_literal(key) || ' WHERE ' || rng || ' GROUP BY ' || grp
@@ -597,6 +603,9 @@ INSERT INTO nulls SELECT i, 'cat_' || chr(97 + i % 3), i / 10, jsonb_build_objec
 UPDATE nulls SET doc = jsonb_set(doc, '{m_a}', 'null') WHERE id = 100;
 UPDATE nulls SET doc = jsonb_set(doc, '{m_b}', '"x"') WHERE id = 200;
 CREATE INDEX nulls_col ON nulls USING sift_col (id, kind, day, doc) WITH (paths = 'doc.* float8');
+NOTICE:  sift_col index "nulls_col" installed a statement trigger on table "nulls"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM ANALYZE nulls;
 SELECT answers('SELECT t.kind, sum(CAST(r.value AS float8)), count(*) FROM nulls t LEFT JOIN LATERAL jsonb_each(t.doc) r ON r.key = $$m_a$$ WHERE t.id BETWEEN 90 AND 110 GROUP BY 1') AS json_null_member;
  json_null_member 

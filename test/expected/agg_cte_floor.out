@@ -13,6 +13,9 @@ SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360),
 FROM generate_series(1, 20000) g;
 CREATE TABLE plain_events AS SELECT * FROM events;
 CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts, doc) WITH (paths = 'doc.parts[]{cat astext, score float8}');
+NOTICE:  sift_col index "events_col" installed a statement trigger on table "events"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE plain_events; ANALYZE kinds;
 CREATE FUNCTION series_query(t text, extra text DEFAULT '') RETURNS text LANGUAGE sql AS $f$

@@ -105,7 +105,7 @@ check "the three tables hold the same rows" agree
 HA=$(hid p a idx QF); HB=$(hid p b idx QF); HC=$(hid p c idx QF)
 check "the control table hides nothing" test "${HC##* }" == 0
 check "a hides the entries its updates replaced" test "${HA##* }" -gt 0
-check "b hides more: the deletes and key changes it heard" test "${HB##* }" -gt "${HA##* }"
+check "b hides more: the deletes it heard (a hears the key changes too)" test "${HB##* }" -gt "${HA##* }"
 check "the index-only and the bitmap scans hide too" test "$(hid p a bmp QF | awk '{print $NF}')" -gt 0 -a "$(hid p a idx QI | awk '{print $NF}')" -gt 0
 check "the hiding is the log's: switched off, nothing is hidden and the answer is the same" \
 	test "$(sql p "SET sift.test_no_log_hide = on" "SELECT sift._test_col_log_hidden(true)" "$MODE_idx" "$(QF a)" "SELECT sift._test_col_log_hidden()" | tail -2 | tr '\n' ' ' | sed 's/ $//')" == "$(rd p a heap QF) 0"
@@ -119,6 +119,7 @@ sql p "ALTER INDEX b_c RESET (track_deletes)" "ALTER INDEX b_c SET (track_delete
 check "recreated triggers, new baseline: complete again, and the reads are the heap's" test "$(sql p "SELECT heap_free FROM sift.col_tracking('b_c')")" == t -a "$(rd p b bmp QF)" == "$(rd p c heap QF)"
 
 # a transaction in progress hides nothing; committed, it does
+HA=$(hid p a idx QF)   # the key changes above reached a too (its UPDATE trigger), so the count to hold is the one now
 sql p "SELECT sift._test_col_log_hidden(true)" >/dev/null
 for t in a b; do sql p "BEGIN; UPDATE $t SET v = v + 1000 WHERE id % 53 = 0; DELETE FROM $t WHERE id % 59 = 0; PREPARE TRANSACTION 'hf_$t'" >/dev/null; done
 sql p "UPDATE c SET v = v + 1000 WHERE id % 53 = 0" "DELETE FROM c WHERE id % 59 = 0" >/dev/null

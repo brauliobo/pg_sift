@@ -7,6 +7,9 @@ CREATE TABLE events (id int PRIMARY KEY, ts date NOT NULL, memo text NOT NULL, d
 INSERT INTO events (id, ts, memo, deleted_at) SELECT g, date '2024-01-01' + (hashint4(g) & 1023) % 730, (ARRAY['cable', 'wire', 'plug', 'adapter', 'switch', 'panel', 'socket', 'fuse'])[1 + g % 8] || ' ' || (ARRAY['relay', 'cord', 'clamp', 'bolt', 'valve'])[1 + (g * 7) % 5],
 	CASE WHEN g % 37 = 0 THEN now() END FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, ts, deleted_at);
+NOTICE:  sift_col index "events_col" installed a statement trigger on table "events"
+DETAIL:  track_updates = auto: AFTER UPDATE, FOR EACH STATEMENT, with a transition table of the old rows; it tombstones the entries of the old key when an UPDATE changes the key, and is dropped with the index.
+HINT:  WITH (track_updates = 'off') builds the index without it.
 CREATE INDEX events_memo ON events USING sift (memo);
 VACUUM (FREEZE, ANALYZE) events;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""The reads a sift index answers without the heap, on a table whose rows were updated and not yet vacuumed, for one configuration of the index: no tracking, track_updates alone, or
-track_updates with track_deletes (the only one whose log is complete, so the only one that can leave the heap check out).
+"""The reads a sift index answers without the heap, on a table whose rows were updated and not yet vacuumed, for one configuration of the index: no tracking, track_updates alone (the
+UPDATE trigger; the reader is strict: it needs the delete coverage), track_updates alone with the testing switch sift.test_trust_updates (the reader trusts the log with the UPDATE trigger,
+as a promise of no hard DELETE would), or track_updates with track_deletes (both triggers: the log is complete for the strict reader).
 
-    python3 -I bench/churn/heapfree_churn_reads.py --host DIR --port N --out FILE --track off|updates|on [--rows 300000] [--shares 1,5,20] [--patterns recent,random] [--reps 3] [--reference]
+    python3 -I bench/churn/heapfree_churn_reads.py --host DIR --port N --out FILE --track off|updates|trust|on [--rows 300000] [--shares 1,5,20] [--patterns recent,random] [--reps 3] [--reference]
 
 For each (which rows, share) a table `w` with a sift_col index is loaded, updated in a covered column (a new entry, and with track_updates a tombstone for the old one) and read in four states:
 fresh (VACUUM FREEZE), updated and promoted, merged, vacuumed. Every class is a read that the index answers by itself when the table is clean (aggregates and top-N of SiftAgg, an Index Only
 Scan); the plan of each (state, class) is written to FILE.plans.tsv and compared with the shape the class has (`plan_ok`), so a mode that changes the plan says so in the sidecar and in the summary.
-Records of the records library; the update is declared in `churn` and the mode in `variant`. --temps cold,warm adds the run after the table was emptied from shared buffers; a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
+Every (state, class) also compares the rows of the arm with those of the heap plan (rows_equal in the sidecar). Records of the records library; the update is declared in `churn` and the mode in `variant`. --temps cold,warm adds the run after the table was emptied from shared buffers; a RAM disk shows no device time, the blocks (heap_hit, heap_read) are in every row.
 --reference adds, with --track on, the arms that read the heap for every page (sift.test_no_heapfree) and no sift plan; --twin the b-tree twin.
 """
 import argparse
@@ -51,7 +52,7 @@ def main():
     ap.add_argument('--shares', default='1,5,20')
     ap.add_argument('--patterns', default='recent,random')
     ap.add_argument('--reps', type=int, default=3)
-    ap.add_argument('--track', choices=('on', 'updates', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone; off: no tracking
+    ap.add_argument('--track', choices=('on', 'updates', 'trust', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone; trust: that with the testing switch on; off: no tracking
     ap.add_argument('--reference', action='store_true', help='with --track on: also the heap-checked and the heap-only arms')
     ap.add_argument('--twin', action='store_true', help='with --track on: the b-tree twin')
     ap.add_argument('--temps', default='warm', help='warm, or cold,warm (cold empties the table from shared buffers first: blocks hit/read and MB are in every row)')
@@ -67,19 +68,19 @@ def main():
     t = tip(a)
     harness = 'heapfree churn reads' + (' (%s)' % a.note if a.note else '')
     env = collect.Env(t, harness, schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='disabled')
-    opts = {'on': "track_updates = 'id', track_deletes = on, ", 'updates': "track_updates = 'id', ", 'off': "track_updates = 'off', "}[a.track]
-    arm_name = {'on': 'heap_free', 'updates': 'track_updates', 'off': 'track_off'}[a.track]
+    opts = {'on': "track_updates = 'id', track_deletes = on, ", 'updates': "track_updates = 'id', ", 'trust': "track_updates = 'id', ", 'off': "track_updates = 'off', "}[a.track]
+    arm_name = {'on': 'heap_free', 'updates': 'track_updates', 'trust': 'track_updates_trust', 'off': 'track_off'}[a.track]
     twin = a.twin and a.track == 'on'
     out, plans = [], []
 
     def run(sql):
         _, _, err, *_ = s.run(sql)
-        if err:
+        if err and 'ERROR' in err:
             raise RuntimeError('%s: %s' % (sql, err))
 
     def settings_of(forcing):
         base = BASE if forcing is None else ['SET max_parallel_workers_per_gather = 0'] + forcing
-        return base + (['SET sift.test_no_heapfree = off'] if a.track == 'on' else [])
+        return base + (['SET sift.test_no_heapfree = off'] if a.track == 'on' else []) + (['SET sift.test_trust_updates = on'] if a.track == 'trust' else [])
 
     def arms(forcing):
         out_ = [collect.Arm('sift', arm_name, settings=settings_of(forcing))]
@@ -94,12 +95,22 @@ def main():
         run('RESET ALL')
         return ' | '.join(l.strip() for l in lines)
 
+    HEAP = ['SET sift.enable_agg = off', 'SET max_parallel_workers_per_gather = 0', 'SET enable_indexscan = off', 'SET enable_bitmapscan = off', 'SET enable_indexonlyscan = off']
+
+    def rows_of(sql, settings):
+        for st in settings:
+            run(st)
+        out_ = s.run('SELECT string_agg(x::text, \',\' ORDER BY x::text) FROM (%s) x' % sql)[1]
+        run('RESET ALL')
+        return '\n'.join(out_)
+
     def measure(pattern, share, stage, state, settled):
         churn = None if stage == 'fresh' else 'upd=%g;ins=0;del=0;rounds=1' % share
         for name, sql, forcing, shape in STATEMENTS:
             text = sql.format(t='w')
             plan = plan_of(text, settings_of(forcing))
-            plans.append((pattern, share, stage, name, a.track, shape in plan, plan))
+            equal = rows_of(text, settings_of(forcing)) == rows_of(text, HEAP)
+            plans.append((pattern, share, stage, name, a.track, shape in plan, equal, plan))
             subject = collect.Subject('heapfree_%s%d_%s' % (pattern, share, stage), a.rows, 'arrival', state, 'w', key='tenant_id', keys=10, churn=churn, settled=settled, structures='constraint,heap,sift',
                                       variant='track_%s' % a.track)
             out.extend(collect.measure_statement(s, name, text, subject, arms(forcing), env, temps=tuple(a.temps.split(',')), hash_text=sql))
@@ -118,7 +129,10 @@ def main():
                 run('DROP TABLE IF EXISTS %s' % t_)
                 run(LOAD.format(t=t_))
                 run(FILL.format(t=t_, rows=a.rows))
+            if a.track == 'trust':   # the baseline of the log is written by the build with the switch on
+                run('SET sift.test_trust_updates = on')
             run('CREATE INDEX w_c ON w USING sift_col (id, ts, tenant_id, counter_a) WITH (%skey_cut = \'off\')' % opts)
+            run('RESET sift.test_trust_updates')
             if twin:
                 run('CREATE INDEX wb_ts ON wb (ts)')
                 run('CREATE INDEX wb_tc ON wb (tenant_id, counter_a)')
@@ -142,13 +156,13 @@ def main():
             measure(pattern, share, 'vacuumed', 'churned_vacuumed', True)
             schema.write(a.out, out)
     with open(a.out + '.plans.tsv', 'w') as f:
-        f.write('pattern\tshare\tstate\tclass\tmode\tplan_is_the_class_shape\tplan\n')
+        f.write('pattern\tshare\tstate\tclass\tmode\tplan_is_the_class_shape\trows_equal\tplan\n')
         for p in plans:
             f.write('\t'.join(map(str, p)) + '\n')
     off_shape = [p for p in plans if not p[5]]
-    print('plans: %d of %d are not the shape of their class' % (len(off_shape), len(plans)))
+    print('plans: %d of %d are not the shape of their class; rows differ from the heap plan in %d' % (len(off_shape), len(plans), sum(1 for p in plans if not p[6])))
     for p in off_shape[:20]:
-        print('  ', p[:5], p[6][:160])
+        print('  ', p[:5], p[7][:160])
     from records import check
     for p in check.check(schema.read(a.out)):
         print(p)

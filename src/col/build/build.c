@@ -138,9 +138,12 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (res == NULL)
 		res = serial_build(heap, index, info);
 	if (sift_col_row_key_on(index))
+	{
 		sift_col_log_create(index);
-	if (sift_col_options(index)->track_deletes)
-		sift_col_track_install(heap, index, info->ii_Concurrent);
+		sift_col_track_install(heap, index, info->ii_Concurrent, true);
+	}
+	else
+		sift_col_track_reconcile(index);
 	if (sift_eval_on(SIFT_EVAL_UNIT_REWRITE))
 	{
 		(void) sift_maint_lock(index, true);

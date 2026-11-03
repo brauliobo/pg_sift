@@ -1,4 +1,4 @@
--- track_deletes (needs track_updates; off by default): two internal statement triggers tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
+-- track_deletes (needs track_updates; off by default) adds the AFTER DELETE statement trigger to the AFTER UPDATE one of track_updates: they tell the tombstone log of the rows a DELETE removed and of the rows an UPDATE gave another key, and the
 -- transaction that installs them first writes a tombstone for every version of the table that is dead then (the baseline). The log can be taken for complete (heap_free of
 -- sift.col_tracking) only while the triggers are the ones that made it so. The oracle is the heap: the address each row had before the statement.
 CREATE EXTENSION pg_sift;
@@ -16,7 +16,7 @@ CREATE FUNCTION sift_triggers() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(regexp_replace(tgname, '_[0-9]+$', '') || ':' || tgenabled::text || ':' || tgisinternal::text, ' ' ORDER BY tgname), 'none')
     FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%' $$;
 
--- off by default, and with track_updates alone: no trigger, nothing complete, a delete is not heard
+-- off by default, and with track_updates alone: the UPDATE trigger only, nothing complete, a delete is not heard
 CREATE INDEX t_c ON t USING sift_col (id, g, v) WITH (track_updates = 'id');
 SELECT * FROM sift.col_tracking('t_c');
 SELECT sift_triggers();
@@ -54,7 +54,7 @@ BEGIN;
 ALTER INDEX t_c SET (cluster_advice = off);
 SELECT count(*) AS table_locks_above_row_exclusive FROM pg_locks WHERE relation = 't'::regclass AND pid = pg_backend_pid() AND mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock');
 ROLLBACK;
--- turned off: no trigger, nothing complete, the log stays
+-- turned off: the UPDATE trigger only, nothing complete, the log stays
 ALTER INDEX t_c RESET (track_deletes);
 SELECT sift_triggers();
 SELECT * FROM sift.col_tracking('t_c');
