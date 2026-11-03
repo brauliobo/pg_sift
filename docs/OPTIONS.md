@@ -2189,7 +2189,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **What it does:** selects developer evaluation methods: the ones named are on; skip_trigger_lookup, which leaves out the statement-trigger look at an UPDATE that kept the key, is on unless -skip_trigger_lookup is named, and an empty list is that default
 - **Gain:** **not measured**
 - **Impact:** index size: **not measured**; build, merge and writes: **not measured**; other: Experimental methods can add maintenance work and backend memory; latest_hint's entry array uses at most 16 KiB per backend, plus fixed callback bookkeeping
-- **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint.
+- **When:** Developer evaluation of track_updates indexes. Names: skip_trigger_lookup, penalty_maintenance, snapshot_masks, unit_rewrite, latest_hint. penalty_maintenance (priced vacuum and rewrite of units that reads found dirty) is off: in 12 cells of one 300,000-row churn matrix its net cost is negative in 10, it pays only for random changes of 5% with at most 2 reads/s, and each cell is one window without repetition; the 0.6 G-instruction per MB of WAL it is priced with is an assumption, not a measurement.
 - **Default:** '' — Empty: only skip_trigger_lookup (an exact-coverage skip) is on; the other experiments require explicit selection and are not enabled by an upgrade.
 - **Turn off:** RESET sift.eval_methods returns the empty list.
 - **Upgrade from 3.7:** Available after the extension library is loaded; no REINDEX for the setting itself.

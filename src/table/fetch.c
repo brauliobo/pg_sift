@@ -518,10 +518,11 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
  * A bitmap's rows of the column groups are not decoded when the page is read: they wait, and the slot decodes the columns the plan reads when it reads them. Two ways to wait:
  * the place of each row in the unit of g, the scan's group scan (one pass over the page: the superblock's TIDs are read once for its pages, and the visibility of a row is tested from
  * the versions of the unit), or the TID alone, fetched as an index scan fetches it (fetch_visible: the units that the statements before kept decoded cost nothing; each row is found
- * by its TID: 10,000 instructions a row against 2,900 for a row of g, which pays about 3 M instructions to read the TIDs of the superblock once, so g is cheaper from about 400 selected rows of a superblock
- * (records on 300,000 and 1,000,000 rows)
+ * by its TID: 10,000 instructions a row against 2,900 for a row of g, which pays 0.8 to 2.4 M instructions to read the TIDs of the superblock once). Records of eight statements on 300,000 and
+ * 1,000,000 rows, the rows of a superblock from which g is used swept from 0 to never: 50 is within 5% of the best way of each statement on average and 23% at worst; 25 pays the superblock for
+ * 25 rows (3 times the best), 400 costs 2 times the best in the middle (150 parents of 300,000 rows: 92 M instructions against 49 M)
  */
-#define BITMAP_BULK_ROWS	400		/* and the default of sift.test_bitmap_bulk_rows (core/handler_test.c) */
+#define BITMAP_BULK_ROWS	50		/* and the default of sift.test_bitmap_bulk_rows (core/handler_test.c) */
 
 #ifdef SIFT_TESTING
 int			sift_test_bitmap_bulk_rows = BITMAP_BULK_ROWS;
