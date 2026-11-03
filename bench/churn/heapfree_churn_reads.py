@@ -29,6 +29,9 @@ STATEMENTS = (('group_all_tenants', 'SELECT tenant_id, count(*), sum(counter_a) 
               ('top_n', 'SELECT id, ts FROM {t} ORDER BY ts DESC LIMIT 20'),
               ('index_only', 'SELECT count(ts), min(ts) FROM {t} WHERE ts BETWEEN 400000 AND 410000'))
 BASE = ['SET max_parallel_workers_per_gather = 0', 'SET sift.enable_agg = on']
+# --scans index: the reads of the access method itself (a plain Index Scan and a Bitmap Heap Scan, no SiftAgg), where the log hides the dead entries before the heap is asked
+SCANS = (('index_scan', 'SELECT count(*), sum(counter_a) FROM {t} WHERE tenant_id = 7 AND counter_a = 123', ['SET sift.enable_agg = off', 'SET enable_seqscan = off', 'SET enable_bitmapscan = off']),
+         ('bitmap_scan', 'SELECT count(*), sum(counter_a) FROM {t} WHERE tenant_id = 7 AND counter_a = 123', ['SET sift.enable_agg = off', 'SET enable_seqscan = off', 'SET enable_indexscan = off']))
 LOAD = """CREATE TABLE {t} (id int PRIMARY KEY, ts int NOT NULL, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)"""
 FILL = "INSERT INTO {t} SELECT i, i, i % 10, i % 1000, md5(i::text) FROM generate_series(1, {rows}) i"
 
@@ -47,6 +50,7 @@ def main():
     ap.add_argument('--patterns', default='recent,random')
     ap.add_argument('--reps', type=int, default=3)
     ap.add_argument('--track', choices=('on', 'updates', 'off'), default='on')   # on: track_updates and track_deletes; updates: track_updates alone
+    ap.add_argument('--scans', choices=('agg', 'index'), default='agg')
     ap.add_argument('--db', default='heapfree_churn_reads')
     ap.add_argument('--tip')
     ap.add_argument('--note')
@@ -67,7 +71,9 @@ def main():
         if err:
             raise RuntimeError('%s: %s' % (sql, err))
 
-    def arms():
+    def arms(forcing=None):
+        if forcing is not None:
+            return [collect.Arm('sift', 'track_' + a.track, settings=['SET max_parallel_workers_per_gather = 0'] + forcing)]
         if a.track != 'on':
             return [collect.Arm('sift', 'track_' + a.track, settings=BASE)]
         return [collect.Arm('sift', 'heap_free', settings=BASE + ['SET sift.test_no_heapfree = off']),
@@ -76,11 +82,11 @@ def main():
 
     def measure(pattern, share, stage, state, settled):
         churn = None if stage == 'fresh' else 'upd=%g;ins=0;del=0;rounds=1' % share
-        for name, sql in STATEMENTS:
+        for name, sql, *forcing in (SCANS if a.scans == 'index' else STATEMENTS):
             subject = collect.Subject('heapfree_%s%d_%s' % (pattern, share, stage), a.rows, 'arrival', state, 'w', key='tenant_id', keys=10, churn=churn, settled=settled, structures='constraint,heap,sift',
                                       variant='track_%s' % a.track)
-            out.extend(collect.measure_statement(s, name, sql.format(t='w'), subject, arms(), env, temps=('warm',), hash_text=sql))
-            if a.track == 'on':   # the twin: the same statement on b-trees, one record set of its own
+            out.extend(collect.measure_statement(s, name, sql.format(t='w'), subject, arms(forcing[0] if forcing else None), env, temps=('warm',), hash_text=sql))
+            if a.track == 'on' and a.scans == 'agg':   # the twin: the same statement on b-trees, one record set of its own
                 twin = collect.Subject('heapfree_%s%d_%s' % (pattern, share, stage), a.rows, 'arrival', state, 'wb', key='tenant_id', keys=10, churn=churn, settled=settled, structures='constraint,btree,heap',
                                        variant='btree')
                 out.extend(collect.measure_statement(s, name, sql.format(t='wb'), twin, [collect.Arm('btree')], env, temps=('warm',), hash_text=sql))

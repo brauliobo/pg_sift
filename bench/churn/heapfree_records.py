@@ -59,7 +59,10 @@ B_INDEX = "sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track
 VARIANTS = (('heap_only', None, []), ('plain', 'sift_col (id, tenant_id, counter_a)', []), ('track_updates', A_INDEX, []), ('track_updates_track_deletes', B_INDEX, []),
             ('point_tid_only', "sift_col (id, tenant_id, counter_a) WITH (point_tid_columns = 'id')", []),
             ('track_updates_no_supersede', A_INDEX, ['SET sift.test_no_supersede = on']),
-            ('track_updates_track_deletes_trigger_idle', B_INDEX, ['SET sift.test_no_track = on']))
+            ('track_updates_track_deletes_trigger_idle', B_INDEX, ['SET sift.test_no_track = on']),
+            ('plain_row_trigger_floor', 'sift_col (id, tenant_id, counter_a)', []))
+# a trigger the table would have anyway: the cost of calling one C row trigger for each updated row (it compares old and new and returns the new row), the least a design that fires per row pays
+EXTRA = {'plain_row_trigger_floor': 'CREATE TRIGGER floor BEFORE UPDATE ON w FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()'}
 WRITES = (('insert_5pct', 'INSERT INTO {t} SELECT i, i % 10, i % 1000, md5(i::text) FROM generate_series({n} + 1, {n} + {n} / 20) i'),
           ('update_1_row', 'UPDATE {t} SET counter_a = counter_a + 1 WHERE id = {n} / 2'),
           ('update_100_rows', 'UPDATE {t} SET counter_a = counter_a + 1 WHERE id BETWEEN {n} / 2 AND {n} / 2 + 99'),
@@ -94,6 +97,8 @@ def write_mode(a):
             run("INSERT INTO w SELECT i, i %% 10, i %% 1000, md5(i::text) FROM generate_series(1, %d) i" % n)
             if index:
                 run('CREATE INDEX w_c ON w USING ' + index)
+            if name in EXTRA:
+                run(EXTRA[name])
             run('VACUUM (FREEZE, ANALYZE) w')
             s.run('CHECKPOINT')
         return prepare
