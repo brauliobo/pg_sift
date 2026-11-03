@@ -62,7 +62,7 @@ FIELDS = [
     ('rep', 'i', True, 'the repetition, from 1'),
     ('est_cost', 'f', False, 'the planner total cost of the plan that ran'),
     ('plan_ms', 'f', False, 'planning time (EXPLAIN SUMMARY), apart from the execution'),
-    ('exec_ms', 'f', False, 'execution time (EXPLAIN ANALYZE), planning not included'),
+    ('exec_ms', 'f', False, 'execution time (EXPLAIN ANALYZE, per-node timing on), planning not included; compares only plans of similar row flow (the clock reads of a node that moves many rows inflate it), `wall_ms` is the figure across join methods'),
     ('wall_ms', 'f', True, 'the statement from the client: planning, execution and the transfer of the rows'),
     ('instr_m', 'f', False, 'millions of user instructions of the statement'),
     ('cycles_m', 'f', False, 'millions of user cycles'),

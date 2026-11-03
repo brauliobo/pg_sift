@@ -5,7 +5,8 @@
 
 One table for each comparison (statement, dataset, rows) with the run, the table state and the settings above it: a row for each arm and for the plan the planner chooses (marked `*`),
 absolute figures only: planning, execution and whole-statement ms, millions of instructions (workers included), blocks of the heap and of each kind of index, the planner's cost and
-the microseconds the execution took for each unit of it. Then the cold rows: the blocks read after the shared buffers were evicted and whether the OS cache was too.
+the microseconds the execution took for each unit of it. `exec ms` compares only plans of similar row flow (EXPLAIN's per-node clock reads inflate a plan that moves many rows through
+one node, a hash join over a million rows reads twice its wall time); `wall ms` is the figure across join methods. Then the cold rows: the blocks read after the shared buffers were evicted and whether the OS cache was too.
 A median, the CV of the runs and a `noisy` mark where it is above NOISY_CV or the host pressure above NOISY_PSI.
 """
 import os
