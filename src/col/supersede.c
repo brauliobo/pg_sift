@@ -104,62 +104,103 @@ is_speculative(Relation heap, ItemPointer newtid)
 /*
  * The tombstones a statement writes are held back and go to the log by the page (sift_tomb_append_many): written before the log is read by this backend (sift_col_log), before the
  * commit record and before a savepoint starts (col/am/am.c), dropped when the transaction or the savepoint aborts, as the rows of the write buffer are: no other backend can see
- * what they hide before then, since the heap versions they name are of a transaction that has not committed. One index at a time: a tombstone of another one flushes these first.
+ * what they hide before then, since the heap versions they name are of a transaction that has not committed. Each index of the table has its own buffer (an UPDATE gives every
+ * one of them its entry for each row, one after the other), so that the tombstones of a statement still go by the page whatever the number of indexes.
  */
 #define TOMB_HOLD	2048
+#define TOMB_SLOTS	8
 
-static struct
+typedef struct HeldTombs
 {
 	Oid			index;
 	RelFileNumber relnumber;
 	int			n;
 	SiftTomb   *ents;
-} held;
+} HeldTombs;
 
-void
-sift_col_tombs_flush(void)
+static HeldTombs held[TOMB_SLOTS];
+
+static void
+flush_slot(HeldTombs *h)
 {
-	int			n = held.n;
+	int			n = h->n;
+	Relation	index;
 
 	if (n == 0)
 		return;
-	held.n = 0;
-	if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(held.index)))
+	h->n = 0;
+	if ((index = try_relation_open(h->index, RowExclusiveLock)) != NULL)
 	{
-		Relation	index = relation_open(held.index, RowExclusiveLock);
-
 		/* a rebuilt index is another file with a log of its own, which holds nothing of these */
-		if (index->rd_locator.relNumber == held.relnumber)
-			sift_tomb_append_many(index, sift_col_log_appender(index), held.ents, n);
+		if (index->rd_locator.relNumber == h->relnumber)
+			sift_tomb_append_many(index, sift_col_log_appender(index), h->ents, n);
 		relation_close(index, NoLock);
 	}
 }
 
 void
+sift_col_tombs_flush(void)
+{
+	for (int i = 0; i < TOMB_SLOTS; i++)
+		flush_slot(&held[i]);
+}
+
+void
 sift_col_tombs_discard(void)
 {
-	held.n = 0;
+	for (int i = 0; i < TOMB_SLOTS; i++)
+		held[i].n = 0;
 }
 
 static void
 tomb_hold(Relation index, const SiftTomb *ent)
 {
-	if (held.n > 0 && (held.index != RelationGetRelid(index) || held.relnumber != index->rd_locator.relNumber))
-		sift_col_tombs_flush();
-	if (held.ents == NULL)
-		held.ents = MemoryContextAlloc(TopMemoryContext, TOMB_HOLD * sizeof(SiftTomb));
-	if (held.n == 0)
+	HeldTombs  *h = NULL;
+
+	for (int i = 0; i < TOMB_SLOTS && h == NULL; i++)
+		if (held[i].n > 0 && held[i].index == RelationGetRelid(index) && held[i].relnumber == index->rd_locator.relNumber)
+			h = &held[i];
+	if (h == NULL)
+	{
+		for (int i = 0; i < TOMB_SLOTS && h == NULL; i++)
+			if (held[i].n == 0)
+				h = &held[i];
+		if (h == NULL)
+		{
+			sift_col_tombs_flush();
+			h = &held[0];
+		}
+		if (h->ents == NULL)
+			h->ents = MemoryContextAlloc(TopMemoryContext, TOMB_HOLD * sizeof(SiftTomb));
 		(void) sift_col_log_appender(index);	/* the segment exists (an index that got the option later has none yet) */
-	held.index = RelationGetRelid(index);
-	held.relnumber = index->rd_locator.relNumber;
-	held.ents[held.n++] = *ent;
-	if (held.n == TOMB_HOLD
+		h->index = RelationGetRelid(index);
+		h->relnumber = index->rd_locator.relNumber;
+	}
+	h->ents[h->n++] = *ent;
+	if (h->n == TOMB_HOLD
 #ifdef SIFT_TESTING
 		|| sift_test_tombs_at_once
 #endif
 		)
-		sift_col_tombs_flush();
+		flush_slot(h);
 }
+
+/*
+ * The entry a new version replaces is the same for every sift index of the table that has the key column: the first one finds it with the probe of the unique index, the others
+ * of the same row version take it from here (the new address, the transaction and the command say which row version it is).
+ */
+static struct
+{
+	Oid			heap;
+	AttrNumber	att;
+	ItemPointerData newtid;
+	TransactionId xid;
+	CommandId	cid;
+	bool		found;
+	ItemPointerData old;
+} probed;
+static bool probed_found;
+static ItemPointerData probed_old;
 
 /* The key of the version in slot is the key (the point directory lists the fingerprint of a key: another key of the same fingerprint is not the row's), and the entry is not the new version's own: its tombstone */
 static bool
@@ -172,6 +213,8 @@ tomb_replaced(Relation index, TupleTableSlot *slot, AttrNumber hatt, Form_pg_att
 	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
 		return false;
 	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	probed_found = true;
+	probed_old = *entry;
 	return true;
 }
 
@@ -269,6 +312,14 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 #endif
 	if (speculative_stmt && is_speculative(heap, newtid))
 		return;
+	if (probed.heap == RelationGetRelid(heap) && probed.att == hatt && ItemPointerEquals(&probed.newtid, newtid) && probed.xid == GetCurrentTransactionId() &&
+		probed.cid == GetCurrentCommandId(true))
+	{
+		if (probed.found)
+			tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(&probed.old), .xid = probed.xid, .cid = probed.cid, .succ = succ, .kind = SIFT_TOMB_UPDATE});
+		return;
+	}
+	probed_found = false;
 	uoid = sift_col_row_key_unique(heap, hatt);
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	hint = OidIsValid(uoid) ? latest_slot(index, tc, att->attcollation, key) : NULL;
@@ -302,4 +353,11 @@ done:
 	if (hint != NULL)
 		*hint = (LatestHint){RelationGetRelid(index), hash, *newtid};
 	UnregisterSnapshot(snap);
+	probed.heap = RelationGetRelid(heap);
+	probed.att = hatt;
+	probed.newtid = *newtid;
+	probed.xid = GetCurrentTransactionId();
+	probed.cid = GetCurrentCommandId(true);
+	probed.found = probed_found;
+	probed.old = probed_old;
 }
