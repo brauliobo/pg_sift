@@ -4,6 +4,11 @@
 #include "col/maint/maint_int.h"
 #include "core/eval.h"
 #include "core/tomb.h"
+#include "core/visibility.h"
+
+#ifdef SIFT_TESTING
+bool		sift_test_col_unit_gate = false;
+#endif
 
 /* A child owns a complete segment, including dictionaries and liveness; no parent allocation is shared. */
 static bool
@@ -95,41 +100,58 @@ maint_unit_layout(Relation index, bool strict)
 	pfree(snap);
 }
 
-/* Called only after the standard VACUUM callback has cleared globally dead entries. Tombstones retire later in the same index pass. */
+/* Capture ownership before clearing: a closed TID may have been reused by a row of another unit. */
 void
-maint_unit_rewrite(Relation index, SiftColSegment *seg)
+maint_unit_bulkdelete(Relation index, SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
 	SiftTombLog *log;
-	uint64 *bits;
-	SiftKey *keys;
-	uint32 n, owned = 0;
+	uint64 *bits = NULL, *now;
+	uint32 n = 0, owned = 0;
 	uint64 live, row_cost, scan;
 	SiftSegEntry out;
 	SiftMaintInputs mi;
 	bool written;
 
-	if (!sift_eval_on(SIFT_EVAL_UNIT_REWRITE) || !(seg->entry.flags & SIFT_SEG_UNIT) || seg->nsb != 1 || (log = sift_col_log(index)) == NULL || (log->nents == 0 && log->nrecent == 0))
-		return;
-	n = seg->sbdir[0].nrows;
-	keys = palloc(n * sizeof(*keys));
-	bits = palloc(SIFT_COL_NWORDS(n) * sizeof(*bits));
-	sift_cseg_unit_keys(seg, 0, keys);
-	sift_cseg_live(seg, 0, bits);
-	for (uint32 i = 0; i < n; i++)
+	if (sift_eval_on(SIFT_EVAL_UNIT_REWRITE) && (seg->entry.flags & SIFT_SEG_UNIT) && seg->nsb == 1 &&
+		(log = sift_col_log(index)) != NULL && (log->nents > 0 || log->nrecent > 0))
 	{
-		int nt;
-		const SiftTomb *t = sift_tomb_find(log, keys[i], &nt);
-		if ((bits[i / 64] >> (i % 64)) & 1)
-			continue;
-		for (int j = 0; j < nt; j++)
-			if (t[j].xid != FrozenTransactionId)
-			{
-				owned++;
-				break;
-			}
+		SiftKey *keys;
+
+		n = seg->sbdir[0].nrows;
+		keys = palloc(n * sizeof(*keys));
+		bits = palloc(SIFT_COL_NWORDS(n) * sizeof(*bits));
+		sift_cseg_unit_keys(seg, 0, keys);
+		sift_cseg_live(seg, 0, bits);
+		for (uint32 i = 0; i < n; i++)
+		{
+			int nt;
+			const SiftTomb *t;
+			bool found = false;
+
+			if (!((bits[i / 64] >> (i % 64)) & 1))
+				continue;
+			t = sift_tomb_find(log, keys[i], &nt);
+			for (int j = 0; j < nt; j++)
+				if (t[j].xid != FrozenTransactionId)
+				{
+					found = true;
+					break;
+				}
+			if (!found)
+				bits[i / 64] &= ~(UINT64CONST(1) << (i % 64));
+		}
+		pfree(keys);
 	}
+	/* This callback remains the only authority to clear liveness; tombstones retire later in the index pass. */
+	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
+	if (bits == NULL)
+		return;
+	now = palloc(SIFT_COL_NWORDS(n) * sizeof(*now));
+	sift_cseg_live(seg, 0, now);
+	for (uint32 w = 0; w < SIFT_COL_NWORDS(n); w++)
+		owned += pg_popcount64(bits[w] & ~now[w]);
+	pfree(now);
 	pfree(bits);
-	pfree(keys);
 	if (owned == 0)
 		return;
 	live = sift_cseg_live_rows(seg);
@@ -140,6 +162,7 @@ maint_unit_rewrite(Relation index, SiftColSegment *seg)
 	mi = sift_maint_inputs(index, &seg->entry, 1);
 	written = write_unit(index, seg, 0, &out);
 	sift_maint_replace_n(index, mi.gens, 1, &out, written ? 1 : 0, mi.release, mi.nrelease, "rewrote a column unit generation of", GetCurrentTimestamp(), live);
+	SIFT_TEST_GATE(sift_test_col_unit_gate, 5);
 	pfree(mi.gens);
 	pfree(mi.release);
 }

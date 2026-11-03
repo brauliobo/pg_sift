@@ -12,9 +12,17 @@ CREATE INDEX events_c ON events USING sift_col (id,tenant_id,counter_a,label)
  WITH (track_updates = 'id', key_cut = 'id', key_cut_rows = 1024, dead_rewrite_pct = 100, vacuum_truncate = false);
 VACUUM (FREEZE, ANALYZE) events;
 -- A different unit is already mostly dead, without any owned tombstones.
+CREATE TEMP TABLE closed_roots AS SELECT gen FROM sift.col_segments('events_c') WHERE kind = 'immutable';
+CREATE TEMP TABLE closed_tids AS SELECT ctid AS tid FROM events WHERE id >= 7300;
 DELETE FROM events WHERE id >= 7300;
 VACUUM (INDEX_CLEANUP ON) events;
 SELECT bool_and(units = 1) AND count(*) > 2 AS independently_owned FROM sift.col_segments('events_c') WHERE kind = 'immutable';
+INSERT INTO events SELECT i,i%10,i,repeat('y',64) FROM generate_series(10000,10700) i;
+SELECT EXISTS(SELECT FROM closed_tids d JOIN events e ON e.ctid=d.tid WHERE e.id>=10000) AS closed_tids_reused;
+UPDATE events SET counter_a=counter_a+1 WHERE id>=10000;
+VACUUM (INDEX_CLEANUP ON) events;
+SELECT count(*)=(SELECT count(*) FROM closed_roots) AS reused_tid_not_a_new_owner
+ FROM closed_roots JOIN sift.col_segments('events_c') USING(gen);
 SELECT bool_and(stamp::text::bigint > 3) AS inherited_committed_stamp FROM sift.col_stamps('events_c');
 CREATE TEMP TABLE before AS SELECT gen FROM sift.col_segments('events_c') WHERE kind = 'immutable';
 UPDATE events SET counter_a = counter_a + 1 WHERE id = 7000;

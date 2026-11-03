@@ -104,6 +104,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_cleanup_gate",
 							 "Testing: a VACUUM waits for advisory lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables.",
 							 NULL, &sift_test_cleanup_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_unit_gate",
+							 "Testing: a unit rewrite waits for advisory lock (0x51F7, 5) after publication, before VACUUM returns to the heap.",
+							 NULL, &sift_test_col_unit_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_shrink_gate",
 							 "Testing: the online shrink waits for advisory lock (0x51F7, 3) once it reserved the header page of a segment, before it reserves the runs of its data.",
 							 NULL, &sift_test_shrink_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

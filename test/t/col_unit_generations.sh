@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/lib.bash"
-plan 14
+plan 15
 node_init p 31 "wal_level = replica
 max_wal_senders = 4
 max_replication_slots = 4
@@ -50,11 +50,29 @@ DS=$(dir s)
 { echo 'BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT pg_backend_pid();'; echo "\\! touch '$DS/held'; while [ ! -e '$DS/release' ]; do sleep 0.05; done"; echo "$A; COMMIT;"; } | sql s >"$DS/old.out" 2>"$DS/old.err" &
 sp=$!
 until [[ -e $DS/held ]]; do sleep 0.05; done
-sql p "SET sift.eval_methods='unit_rewrite'" "VACUUM (INDEX_CLEANUP ON) events" >/dev/null
-catchup p s || bail "rewrite replay failed"
+{ echo "SELECT pg_advisory_lock(20983,5);"; echo "\\! touch '$D/unit.locked'; while [ ! -e '$D/unit.release' ]; do sleep 0.05; done"; } | sql p >/dev/null &
+gp=$!
+until [[ -e $D/unit.locked ]]; do sleep 0.05; done
+sql p "SET sift.eval_methods='unit_rewrite'" "SET sift.test_col_unit_gate=on" "VACUUM (INDEX_CLEANUP ON) events" >"$D/vacuum.out" 2>&1 &
+vp=$!
+at_gate=false
+for _ in $(seq 400); do
+	if [[ $(sql p "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted") == 1 ]]; then at_gate=true; break; fi
+	sleep 0.05
+done
+if ! $at_gate; then
+	touch "$D/unit.release" "$D/release" "$DS/death.release" "$DS/release"
+	wait "$gp" "$vp" "$hp" "$dp" "$sp" || true
+	bail "unit publication did not reach the gate"
+fi
+check "VACUUM is still vacuuming indexes at unit publication" test "$(sql p "SELECT count(*)=1 FROM pg_stat_progress_vacuum WHERE phase='vacuuming indexes'")" == t
+sql p "CHECKPOINT" >/dev/null
+catchup p s || bail "partial VACUUM replay failed"
 touch "$DS/death.release"; wait "$dp" || true
-check "publication cannot bypass a standby snapshot predating the update" grep -Eq "recovery|conflict|terminating connection" "$DS/death.err"
-check "post-update standby snapshot survives heap cleanup" test "$(sql s "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid=$(head -1 "$DS/old.out"))")" == t
+check "heap pruning cancels an old standby snapshot before index publication" grep -Eq "recovery|conflict|terminating connection" "$DS/death.err"
+check "post-update standby snapshot survives index publication" test "$(sql s "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid=$(head -1 "$DS/old.out"))")" == t
+touch "$D/unit.release"; wait "$gp" "$vp" || bail "VACUUM failed"
+catchup p s || bail "rewrite replay failed"
 check "only the owning generation retired after the snapshot horizon" test "$(sql p "SELECT count(*)=(SELECT count(*)-1 FROM before) FROM before JOIN sift.col_segments('events_c') USING(gen)")" == t
 check "every retired unit extent is pending while its reader lives" test "$(sql p "SELECT count(*)>0 AND bool_and(EXISTS(SELECT FROM sift.col_extents('events_c') f WHERE f.pending AND e.first_block>=f.first_block AND e.first_block+e.nblocks<=f.first_block+f.nblocks)) FROM old_extents e WHERE NOT EXISTS(SELECT FROM sift.col_segments('events_c') s WHERE s.gen=e.gen)")" == t
 touch "$D/release"; wait "$hp"

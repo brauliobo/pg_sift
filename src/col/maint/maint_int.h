@@ -82,7 +82,7 @@ extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal
 extern bool	maint_is_col(Relation index);
 
 extern void maint_unit_layout(Relation index, bool strict);
-extern void maint_unit_rewrite(Relation index, SiftColSegment *seg);
+extern void maint_unit_bulkdelete(Relation index, SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
