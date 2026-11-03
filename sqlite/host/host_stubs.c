@@ -141,6 +141,17 @@ sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays 
 {
 }
 
+void *
+sift_cseg_sets_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets)
+{
+}
+
 /* no cache of the positions a dictionary search bisected: every search reads the dictionary */
 SiftCBisect *
 sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)

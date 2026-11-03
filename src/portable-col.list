@@ -39,6 +39,7 @@ col/seg/dictkeep.c
 col/seg/pagg.c
 col/seg/points.c
 col/seg/sets.c
+col/seg/net.c
 col/seg/test.c
 col/seg/zone.c
 col/seg_write/seg_write.c
@@ -61,6 +62,7 @@ col/ktab.c
 col/gorder.c
 col/gquant.c
 col/gorder_opt.c
+col/gorder_read.c
 col/point.c
 col/runs.c
 col/hll.c
