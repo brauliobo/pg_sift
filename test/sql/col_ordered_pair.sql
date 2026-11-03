@@ -89,7 +89,7 @@ END $$;
 
 -- sorts is 0 where the scan gives the order: queries 1 to 3, 5 to 7 and 9. Query 4 asks k the other way round than g: the scan gives g and the sort is incremental, by group. Queries 8 and
 -- 10 to 12 have no whole order of the pair (a compact order, a g that may be NULL, an order grouped by another column) and sort the rows of the plain scan; 13 reads a third column. Queries 14 to 18 have
--- g = value (the scan reads that group alone; 17 is three rows, which the heap plan reads cheaper), 19 and 20 are the Merge Append of the scans of 3 partitions, 21 and 22 a merge join of the scans of two tables (no Materialize)
+-- g = value (the scan reads that group alone; 17 is three rows, which the heap plan reads cheaper), 19 and 20 are the Merge Append of the scans of 3 partitions, 21 and 22 a merge join of the scans of two tables (no Materialize); 23 to 41 have conditions (on k, on g, both, NULL tests, an IN list, a cross-type g = value, LIMIT and OFFSET, partitions), each against the heap plan: the group walk is for the scan without conditions on a key, and a condition is a filter of the rows it gives
 CREATE TABLE pa_q (n int, q text);
 INSERT INTO pa_q VALUES
  (1, 'SELECT g, k FROM pa ORDER BY g, k'),
@@ -113,7 +113,26 @@ INSERT INTO pa_q VALUES
  (19, 'SELECT g, k FROM pt ORDER BY g, k'),
  (20, 'SELECT g, k FROM pt ORDER BY g DESC, k DESC'),
  (21, 'SELECT a.g, a.k FROM pa a JOIN pe b ON a.g = b.g AND a.k = b.k ORDER BY a.g, a.k'),
- (22, 'SELECT a.g, a.k FROM pf a JOIN pf b ON a.g = b.g AND a.k = b.k ORDER BY a.g, a.k');
+ (22, 'SELECT a.g, a.k FROM pf a JOIN pf b ON a.g = b.g AND a.k = b.k ORDER BY a.g, a.k'),
+ (23, 'SELECT g, k FROM pa WHERE k > 0 ORDER BY g, k'),
+ (24, 'SELECT g, k FROM pa WHERE k IS NULL ORDER BY g DESC, k DESC'),
+ (25, 'SELECT g, k FROM pa WHERE k IS NOT NULL AND g < 20 ORDER BY g, k'),
+ (26, 'SELECT g, k FROM pa WHERE g = 17 AND k > 0 ORDER BY k DESC'),
+ (27, 'SELECT g, k FROM pa WHERE g IN (3, 5, 17) ORDER BY g, k'),
+ (28, 'SELECT g, k FROM pa WHERE g <> 17 ORDER BY g DESC, k DESC'),
+ (29, 'SELECT g, k FROM pa WHERE g = 17 ORDER BY g, k'),
+ (30, 'SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k'),
+ (31, 'SELECT g, k FROM pa WHERE k % 7 = 0 ORDER BY g, k LIMIT 50 OFFSET 20'),
+ (32, 'SELECT g, k FROM pa ORDER BY g, k OFFSET 5000'),
+ (33, 'SELECT g, k FROM pa ORDER BY g DESC, k DESC LIMIT 100'),
+ (34, 'SELECT g, k FROM pb WHERE k < 0 ORDER BY g, k'),
+ (35, 'SELECT g, k FROM pb WHERE g > 0 AND k IS NULL ORDER BY g DESC, k DESC'),
+ (36, 'SELECT g, k FROM pd WHERE k > timestamp ''2024-03-01'' ORDER BY g, k'),
+ (37, 'SELECT g, k FROM pd WHERE g = date ''2024-01-05'' ORDER BY k DESC'),
+ (38, 'SELECT g, k FROM pt WHERE k > 100 ORDER BY g, k'),
+ (39, 'SELECT g, k FROM pt WHERE g = 7 ORDER BY k'),
+ (40, 'SELECT g, k FROM pt WHERE k IS NULL ORDER BY g DESC, k DESC LIMIT 30'),
+ (41, 'SELECT g, k FROM pt WHERE g BETWEEN 10 AND 20 AND k < 3000 ORDER BY g DESC, k DESC OFFSET 10');
 SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
 
 -- rows deleted, updated (k, and g: the row goes to another group, or to a group of its own) and inserted (the write buffer: groups that have rows in the segments, and one that has not)
