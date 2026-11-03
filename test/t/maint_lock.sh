@@ -6,7 +6,7 @@
 # waits for advisory lock (0x51F7, 4), which the test holds, so no timing is involved.
 . "$(dirname "$0")/lib.bash"
 
-plan 5
+plan 6
 node_init lock 9 "autovacuum = off"
 node_start lock || bail "start failed"
 D=$(dir lock)
@@ -35,6 +35,8 @@ for _ in $(seq 120); do
 	sleep 0.25
 done
 check "the worker is merging claimed segments" test "$(sql lock "$CLAIMS")" -ge 2
+# the exclusive SQL functions keep the steps out: with a step in flight, sift.merge waits for it and gives up at the lock timeout
+check "an exclusive SQL function waits for the step in flight" grep -q "lock timeout" <(sql lock "SET lock_timeout = '1s'" "SELECT sift.merge('t_idx')" 2>&1)
 
 t0=$SECONDS
 # a stall ends in the timeout, not in a hang: the gate is open only after this
