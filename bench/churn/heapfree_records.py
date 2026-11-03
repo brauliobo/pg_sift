@@ -52,8 +52,14 @@ def measure(s, env, rows, state, settled, churn, reps):
     return out
 
 
-VARIANTS = (('heap_only', None), ('plain', 'sift_col (id, tenant_id, counter_a)'), ('track_updates', "sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id')"),
-            ('track_updates_track_deletes', "sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on)"))
+A_INDEX = "sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id')"
+B_INDEX = "sift_col (id, tenant_id, counter_a) WITH (track_updates = 'id', track_deletes = on)"
+# (name, index, settings of the statement): the last three isolate what the options cost: the directory of heap addresses that track_updates turns on, the option without the replacement of the older
+# entry (sift.test_no_supersede), and the trigger of track_deletes without its work (sift.test_no_track: it fires, captures the old rows and returns)
+VARIANTS = (('heap_only', None, []), ('plain', 'sift_col (id, tenant_id, counter_a)', []), ('track_updates', A_INDEX, []), ('track_updates_track_deletes', B_INDEX, []),
+            ('point_tid_only', "sift_col (id, tenant_id, counter_a) WITH (point_tid_columns = 'id')", []),
+            ('track_updates_no_supersede', A_INDEX, ['SET sift.test_no_supersede = on']),
+            ('track_updates_track_deletes_trigger_idle', B_INDEX, ['SET sift.test_no_track = on']))
 WRITES = (('insert_5pct', 'INSERT INTO {t} SELECT i, i % 10, i % 1000, md5(i::text) FROM generate_series({n} + 1, {n} + {n} / 20) i'),
           ('update_1_row', 'UPDATE {t} SET counter_a = counter_a + 1 WHERE id = {n} / 2'),
           ('update_100_rows', 'UPDATE {t} SET counter_a = counter_a + 1 WHERE id BETWEEN {n} / 2 AND {n} / 2 + 99'),
@@ -94,11 +100,11 @@ def write_mode(a):
 
     for stmt, text in WRITES:
         sql = text.format(t='w', n=n)
-        for variant, index in VARIANTS:
+        for variant, index, sets in VARIANTS:
             if a.variants and variant not in a.variants.split(','):
                 continue
             subject = collect.Subject('heapfree_write', n, 'arrival', 'fresh_vacuumed', 'w', kind='load', key='tenant_id', keys=10, structures='constraint,heap' + (',sift' if index else ''), variant=variant)
-            arm = collect.Arm('sift' if index else 'heap', variant, settings=[], prepare=fresh(variant, index), structures=subject.structures)
+            arm = collect.Arm('sift' if index else 'heap', variant, settings=sets, prepare=fresh(variant, index), structures=subject.structures)
             out += collect.measure_statement(s, stmt, sql, subject, [arm], env, temps=('warm',), hash_text=text)
     schema.write(a.out, out)
     from records import check
