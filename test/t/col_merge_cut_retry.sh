@@ -19,6 +19,7 @@ before=$(size)
 
 # a transaction that has planned a query on the table: its locks are held until it ends, its snapshot is not
 coproc HOLD { psql -X -q -At -h "$(dir mc)/sock" -p "$(port mc)" -U postgres -d postgres 2>&1; }
+holder=$HOLD_PID   # bash unsets HOLD_PID when it reaps the coprocess, which is at the first wait or at its exit
 echo "BEGIN; SELECT count(*) FROM t;" >&"${HOLD[1]}"
 read -r -t 20 _ <&"${HOLD[0]}"
 check "the holder has locked the index" test "$(sql mc "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = 't_idx' AND l.mode = 'AccessShareLock'")" -ge 1
@@ -30,7 +31,7 @@ check "the lock held the cut off: the file is as long as the merge left it" test
 
 echo "COMMIT;" >&"${HOLD[1]}"
 echo "\\q" >&"${HOLD[1]}"
-wait "$HOLD_PID" 2>/dev/null
+wait "$holder" 2>/dev/null || true
 check "the next call has nothing to merge" test "$(sql mc "SELECT sift.col_merge('t_idx')")" == 0
 free=$(size)
 check "... and cuts the end: $busy -> $free blocks" test "$free" -lt "$((busy * 3 / 4))"
