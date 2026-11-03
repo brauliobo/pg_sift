@@ -108,7 +108,7 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 				kfam,
 				gcls,
 				kcls;
-	IndexOptInfo *oi;
+	IndexOptInfo *oi = NULL;
 	RestrictInfo *eq;
 	List	   *clauses = NIL;
 
@@ -120,25 +120,12 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 	used = bms_del_member(bms_del_member(bms_copy(used), ii->indexkeys[0] - FirstLowInvalidHeapAttributeNumber), ii->indexkeys[1] - FirstLowInvalidHeapAttributeNumber);
 	if (!bms_is_empty(used))
 		return;
-	if (!column_not_null(planner_rt_fetch(rel->relid, root)->relid, ii->indexkeys[0]) || sift_col_ordered_pair_mode(ii->indexoid, rel->tuples) == 0)
-		return;
 	gcls = GetDefaultOpClass(gvar->vartype, BTREE_AM_OID);
 	kcls = GetDefaultOpClass(kvar->vartype, BTREE_AM_OID);
 	if (!OidIsValid(gcls) || !OidIsValid(kcls))
 		return;
 	gfam = get_opclass_family(gcls);
 	kfam = get_opclass_family(kcls);
-	oi = makeNode(IndexOptInfo);
-	memcpy(oi, ii, sizeof(IndexOptInfo));
-	oi->amhasgettuple = true;
-	oi->indextlist = NIL;
-	foreach_node(TargetEntry, te, ii->indextlist)
-	{
-		te = flatCopyTargetEntry(te);
-		if (oi->indextlist == NIL)
-			te->resname = pstrdup(COL_ORDERED_PAIR_MARK);
-		oi->indextlist = lappend(oi->indextlist, te);
-	}
 	/* WHERE g = x: the one group is read, in the order of k (g is the same in every row, so the order asked is k alone) */
 	eq = group_equality(rel, gvar, gfam);
 	if (eq != NULL)
@@ -152,6 +139,7 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 		ic->indexcols = NIL;
 		clauses = list_make1(ic);
 	}
+	/* the paths whose order the query can use come first: the catalog and the statistics are read for those only (planning every statement that reads two columns of the index pays for them otherwise) */
 	for (int d = 0; d < 2; d++)
 	{
 		ScanDirection dir = d == 0 ? ForwardScanDirection : BackwardScanDirection;
@@ -173,6 +161,22 @@ add_pair_paths(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Var *gvar, 
 		pathkeys = truncate_useless_pathkeys(root, rel, pathkeys);
 		if (pathkeys == NIL)
 			continue;
+		if (oi == NULL)
+		{
+			if (!column_not_null(planner_rt_fetch(rel->relid, root)->relid, ii->indexkeys[0]) || sift_col_ordered_pair_mode(ii->indexoid, rel->tuples) == 0)
+				return;
+			oi = makeNode(IndexOptInfo);
+			memcpy(oi, ii, sizeof(IndexOptInfo));
+			oi->amhasgettuple = true;
+			oi->indextlist = NIL;
+			foreach_node(TargetEntry, te, ii->indextlist)
+			{
+				te = flatCopyTargetEntry(te);
+				if (oi->indextlist == NIL)
+					te->resname = pstrdup(COL_ORDERED_PAIR_MARK);
+				oi->indextlist = lappend(oi->indextlist, te);
+			}
+		}
 		*added = lappend(*added, create_index_path(root, oi, clauses, NIL, NIL, pathkeys, dir, true, NULL, 1.0, false));
 	}
 }
