@@ -175,7 +175,8 @@ def emit_load(case, csv, rows, runs, build, workers):
         build_case = case.opt.get('kind') == 'build'   # a build is the sift index alone: no twin lane, and the leader, the workers and the segments are recorded
         declared = int(case.opt['segments']) if 'segments' in case.opt else None
         lanes = ([] if build_case else [(native_structure(case), 'default', 'heap', [])]) + [('sift', 'default', 'sift_table', [])] + [('sift', name, 'sift_table', ['SET %s' % x for x in sets.split(';')]) for name, sets in case.variants]
-        arms = [collect.Arm(arm, option=option, settings=sets, sql=fill(text(am)), prepare=preparer(am), structures=','.join(sorted({'heap', arm})), segments=declared if arm == 'sift' else None) for arm, option, am, sets in lanes]
+        keyed = re.search(r'PRIMARY KEY|UNIQUE', '\n'.join(case.sec.get(k, '') for k in ('prepare', 'load', 'load_sift')))   # a key or unique constraint is the table's definition in every lane: its index is listed as `constraint`
+        arms = [collect.Arm(arm, option=option, settings=sets, sql=fill(text(am)), prepare=preparer(am), structures=','.join(sorted({'heap', arm} | ({'constraint'} if keyed else set()))), segments=declared if arm == 'sift' else None) for arm, option, am, sets in lanes]
         state = table_state(case, ('prepare', 'load'))
         subject = collect.Subject(case.dataset, rows, 'other', state, case.schema(), kind='build' if build_case else 'load', protocol='single')
         hash_text = '\n'.join(case.sec[k] for k in ('prepare', 'load', 'load_sift') if k in case.sec)
