@@ -75,7 +75,6 @@ commit 4c1f89e29	a test-only setting of the table load that lets the tests of th
 
 figure Improved: pg_sift: a join that looks up a `sift_col` index with one eq	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: a `LATERAL` top-N (or a correlated sub-select) over a table partitioned by r	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
-figure Improved: pg_sift: a `LATERAL` top-N (or a correlated sub-select) over a table partitioned by h	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: `count(*)`, `GROUP BY` and `IN` on a `key_columns` 	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: `order_array_group = 'auto'` builds the grouped ord	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
 figure Improved: pg_sift: `WHERE tenant_id = x ORDER BY event_date DESC LIMIT	stated before the records library: its row in bench/claims.tsv waits for a run at the size the line gives, then this waiver goes
