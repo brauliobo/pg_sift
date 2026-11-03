@@ -317,6 +317,9 @@ sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 	charged += pages;
 	for (; charged >= THROTTLE_PAGES; charged -= THROTTLE_PAGES)
 	{
+#ifdef SIFT_TESTING
+		elog(LOG, "sift test: throttle nap");	/* maint_cost_delay counts the naps of the worker: they follow from the pages it wrote, not from the clock */
+#endif
 		sift_nap(wt->delay_ms);
 	}
 }
