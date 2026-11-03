@@ -235,7 +235,7 @@ supersede_by_scan(Relation index, Relation heap, Snapshot snap, int attno, AttrN
 	if (ncand == 0)
 		return;
 	slot = table_slot_create(heap, NULL);
-	fetch = table_index_fetch_begin(heap);
+	fetch = sift_table_index_fetch_begin(heap);
 	for (int i = 0; i < ncand; i++)
 	{
 		ItemPointerData t = cand[i];
@@ -277,7 +277,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 		hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, att->attcollation, key));
 		if (hint->index == RelationGetRelid(index) && hint->hash == hash && !ItemPointerEquals(&hint->tid, newtid))
 		{
-			IndexFetchTableData *fetch = table_index_fetch_begin(heap);
+			IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
 			TupleTableSlot *slot = table_slot_create(heap, NULL);
 			ItemPointerData tid = hint->tid;
 			bool again = false, dead = false, found;

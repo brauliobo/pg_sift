@@ -44,6 +44,7 @@ CHECKS=(
 	'scaling-triggers	scripts/check-scaling-triggers.sh'
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
 	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
+	'compat-calls	scripts/check-compat-calls.sh && scripts/check-compat-calls.sh --selftest'
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
 	'affected-untracked	scripts/test-affected-untracked.sh'

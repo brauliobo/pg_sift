@@ -212,7 +212,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	eq = get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber));
 	InitDirtySnapshot(dirty);
 	scan = sift_index_beginscan(heap, uidx, SnapshotAny, 1);
-	fetch = table_index_fetch_begin(heap);
+	fetch = sift_table_index_fetch_begin(heap);
 	old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
 	seen = table_slot_create(heap, NULL);
 	chunk_cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead keys", ALLOCSET_DEFAULT_SIZES);
