@@ -14,7 +14,9 @@
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_index.h"
 #include "executor/tuptable.h"
+#include "utils/array.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/tuplestore.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -170,10 +172,13 @@ own_entry(const SiftTombLog *log, uint64 key)
 	return false;
 }
 
+#define DEAD_KEYS_CHUNK	8192
+
 /*
  * A tombstone for each address the table's unique index lists for the key of each old row that no version is live for (a dirty snapshot: a version of an open transaction,
  * this one included, is live): the entries a delete or a key change left. An address that holds no entry of this index is harmless, VACUUM drops its tombstone when it
- * frees the address. The index is opened and scanned once for all the rows.
+ * frees the address. The index is opened once for all the rows, which are looked up a chunk at a time with one array key (the b-tree sorts it and walks the leaves
+ * once: the keys of a page share its descent), and the tombstones of a chunk go to the log by the page.
  */
 void
 sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows)
@@ -183,11 +188,17 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	SiftTombLog *log;
 	Relation	uidx;
 	IndexScanDesc scan;
+	IndexFetchTableData *fetch;
 	ScanKeyData sk;
 	SnapshotData dirty;
 	Oid			intype;
 	Oid			eq;
-	TupleTableSlot *slot;
+	TupleTableSlot *old,
+			   *seen;
+	MemoryContext chunk_cxt;
+	SiftTomb   *ents;
+	int			cap = 1024;
+	bool		more = true;
 
 	if (!OidIsValid(uoid))
 		return;
@@ -201,28 +212,60 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	eq = get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber));
 	InitDirtySnapshot(dirty);
 	scan = sift_index_beginscan(heap, uidx, SnapshotAny, 1);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
+	fetch = table_index_fetch_begin(heap);
+	old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
+	seen = table_slot_create(heap, NULL);
+	chunk_cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead keys", ALLOCSET_DEFAULT_SIZES);
+	ents = palloc(cap * sizeof(SiftTomb));
 	tuplestore_rescan(old_rows);
-	while (tuplestore_gettupleslot(old_rows, true, false, slot))
+	while (more)
 	{
-		bool		isnull;
-		Datum		key = slot_getattr(slot, hatt, &isnull);
-		ItemPointer t;
+		ArrayBuildState *keys = NULL;
+		int			nents = 0;
+		int			nkeys = 0;
 
-		if (isnull)
-			continue;
-		ScanKeyEntryInitialize(&sk, 0, 1, BTEqualStrategyNumber, InvalidOid, uidx->rd_indcollation[0], eq, key);
-		index_rescan(scan, &sk, 1, NULL, 0);
-		while ((t = index_getnext_tid(scan, ForwardScanDirection)) != NULL)
+		while (nkeys < DEAD_KEYS_CHUNK)
 		{
-			ItemPointerData tid = *t;
-			bool		all_dead;
+			bool		isnull;
+			Datum		key;
 
-			if (!table_index_fetch_tuple_check(heap, &tid, &dirty, &all_dead) && !own_entry(log, sift_key_from_tid(&tid)))
-				sift_tomb_append(index, log, sift_key_from_tid(&tid), GetCurrentTransactionId(), GetCurrentCommandId(true), SIFT_TOMB_DELETE, 0, 0);
+			if (!(more = tuplestore_gettupleslot(old_rows, true, false, old)))
+				break;
+			key = slot_getattr(old, hatt, &isnull);
+			if (isnull)
+				continue;
+			keys = accumArrayResult(keys, key, false, intype, chunk_cxt);
+			nkeys++;
 		}
+		if (nkeys > 0)
+		{
+			Datum		arr = makeArrayResult(keys, chunk_cxt);
+
+			ScanKeyEntryInitialize(&sk, SK_SEARCHARRAY, 1, BTEqualStrategyNumber, intype, uidx->rd_indcollation[0], eq, arr);
+			index_rescan(scan, &sk, 1, NULL, 0);
+			for (ItemPointer t; (t = index_getnext_tid(scan, ForwardScanDirection)) != NULL;)
+			{
+				ItemPointerData tid = *t;
+				bool		again = false,
+							all_dead;
+
+				if (!table_index_fetch_tuple(fetch, &tid, &dirty, seen, &again, &all_dead) && !own_entry(log, sift_key_from_tid(t)))
+				{
+					if (nents == cap)
+						ents = repalloc(ents, (cap *= 2) * sizeof(SiftTomb));
+					ents[nents++] = (SiftTomb) {.key = sift_key_from_tid(t), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE};
+				}
+			}
+		}
+		MemoryContextReset(chunk_cxt);
+		if (nents > 0)
+			sift_tomb_append_many(index, log, ents, nents);
 	}
-	ExecDropSingleTupleTableSlot(slot);
+	pfree(ents);
+	MemoryContextDelete(chunk_cxt);
+	ExecDropSingleTupleTableSlot(seen);
+	ExecDropSingleTupleTableSlot(old);
+	table_index_fetch_end(fetch);
 	index_endscan(scan);
 	index_close(uidx, NoLock);
 }

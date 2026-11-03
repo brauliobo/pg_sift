@@ -414,6 +414,28 @@ SELECT count(*) FILTER (WHERE (r.root::text::point)[0] = (h.ctid::text::point)[0
 (1 row)
 
 DROP TABLE h;
+-- a delete, and a change of the key, of more rows than one look-up of the trigger takes (8192 keys), with a key of a type passed by reference: every dead address has its tombstone, once
+CREATE TABLE big (k text PRIMARY KEY, g int NOT NULL, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO big SELECT 'key' || lpad(i::text, 6, '0'), i % 10, 0 FROM generate_series(1, 30000) i;
+CREATE INDEX big_c ON big USING sift_col (k, g) WITH (track_updates = 'k', track_deletes = on);
+TRUNCATE expected;
+INSERT INTO expected SELECT ctid FROM big WHERE g <> 3;
+DELETE FROM big WHERE g <> 3;
+SELECT (SELECT count(*) FROM expected) AS deleted, log_matches('big_c') AS matches;
+ deleted | matches 
+---------+---------
+   27000 | t
+(1 row)
+
+INSERT INTO expected SELECT ctid FROM big WHERE k < 'key015000';
+UPDATE big SET k = 'x' || k WHERE k < 'key015000';
+SELECT (SELECT count(*) FROM expected) AS deleted_or_moved, log_matches('big_c') AS matches;
+ deleted_or_moved | matches 
+------------------+---------
+            28500 | t
+(1 row)
+
+DROP TABLE big;
 DROP FUNCTION log_matches(regclass);
 DROP FUNCTION sift_triggers();
 DROP TABLE t;
