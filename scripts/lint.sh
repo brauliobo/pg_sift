@@ -30,6 +30,7 @@ CHECKS=(
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
+	'pg-includes	scripts/check-pg-includes.sh && scripts/check-pg-includes.sh --selftest'
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'bench-resume	bash bench/test/test_resume.sh'
 	'bench-coverage	bench/bench cases --check'

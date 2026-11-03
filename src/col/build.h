@@ -7,6 +7,7 @@
 #define SIFT_COL_BUILD_H
 
 #include "access/genam.h"
+#include "datatype/timestamp.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/s_lock.h"

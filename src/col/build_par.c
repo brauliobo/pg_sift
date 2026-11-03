@@ -11,6 +11,7 @@
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
+#include "datatype/timestamp.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
 #include "optimizer/paths.h"

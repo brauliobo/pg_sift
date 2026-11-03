@@ -6,6 +6,7 @@
 #define SIFT_STORE_INT_H
 
 #include "access/transam.h"
+#include "datatype/timestamp.h"
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 

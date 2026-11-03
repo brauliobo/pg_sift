@@ -6,6 +6,7 @@
  * segment does. A crash before the switch leaves the new pages unreferenced (the orphan sweep returns them); after it the segment has the new sidecar whole.
  */
 #include "postgres.h"
+#include "utils/timestamp.h"
 #include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "bm25/maint_int.h"
