@@ -411,6 +411,7 @@ part_source(AggCtx *c)
 			c->partheap[i] = planner_rt_fetch(leaf->relid, c->root)->relid;
 			c->partindex[i] = pc->indexoid;
 			c->part_pages += leaf->pages;
+			c->part_tuples += leaf->tuples;
 			sift_aggpart_add_stats(&c->stats, pc->stats);
 		}
 		c->lay = f->lay;

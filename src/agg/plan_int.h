@@ -123,6 +123,7 @@ typedef struct AggCtx
 	Oid		   *partindex;
 	List	   *partprune;		/* the conditions on the partition key that the scan evaluates when it starts (part_prune_clauses) */
 	double		part_pages;		/* ... and the pages of their heaps */
+	double		part_tuples;	/* ... and their rows (rel->tuples counts every partition of the table, the ones pruning left out too) */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
 	Index		func_rti;
