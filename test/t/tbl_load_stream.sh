@@ -67,7 +67,7 @@ reset
 # the load waits after a quarter of its rows; a writer takes the superblocks after the first reservation, the second one does not follow the segment, and a VACUUM leaves the blocks alone
 GATEAT=$((ROWS / 4))
 rm -f "$D/reached" "$D/go"
-PROG="head -n $GATEAT $D/load.csv; touch $D/reached; while [ ! -e $D/go ]; do sleep 0.05; done; tail -n +$((GATEAT + 1)) $D/load.csv"
+PROG="unset LD_PRELOAD; head -n $GATEAT $D/load.csv; touch $D/reached; while [ ! -e $D/go ]; do sleep 0.05; done; tail -n +$((GATEAT + 1)) $D/load.csv"
 sql primary "${SERIAL[@]}" "COPY lt FROM PROGRAM '$PROG' CSV" >"$D/load.out" 2>&1 &
 LOADER=$!
 for _ in $(seq 1200); do [[ -e $D/reached ]] && break; sleep 0.05; done
