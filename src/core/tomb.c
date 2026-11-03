@@ -611,6 +611,34 @@ sift_tomb_deleted_blocks(const SiftTombLog *t, Snapshot snapshot, BlockNumber fi
 	return deleted_blocks(r, nr, snapshot, first, mask, memo, &run) || a;
 }
 
+static bool
+deleted_in(const SiftTomb *f, uint32 n, Snapshot snapshot, BlockNumber first, const uint64 *pages, SiftTombMemo *memo, VerdictRun *run)
+{
+	for (; n > 0; f++, n--)
+	{
+		uint64		b = (f->key >> 16) - first;
+
+		if (f->kind != SIFT_TOMB_LOCK && (pages[b / 64] >> (b % 64) & 1) && verdict_next(snapshot, f, memo, run) != SIFT_TOMB_KEEPS)
+			return true;
+	}
+	return false;
+}
+
+/* Does a tombstone delete (for the snapshot) a row of a block of pages (bit i: block first + i)? The entries of the range are walked once, where one question for each block bisects the log each time */
+bool
+sift_tomb_deleted_in(const SiftTombLog *t, Snapshot snapshot, BlockNumber first, uint32 nblocks, const uint64 *pages, SiftTombMemo *memo)
+{
+	uint64		lo = (uint64) first << 16,
+				hi = ((uint64) first + nblocks) * 65536 - 1;
+	uint32		nm,
+				nr;
+	const SiftTomb *m = range_entries(t->ents, t->nents, lo, hi, &nm),
+			   *r = range_entries(t->recent, t->nrecent, lo, hi, &nr);
+	VerdictRun	run = {.own = TransactionIdIsValid(GetTopTransactionIdIfAny())};
+
+	return deleted_in(m, nm, snapshot, first, pages, memo, &run) || deleted_in(r, nr, snapshot, first, pages, memo, &run);
+}
+
 bool
 sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask, SiftTombMemo *memo)
 {

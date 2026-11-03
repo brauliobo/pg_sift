@@ -181,6 +181,7 @@ typedef struct SiftTombMemo
  */
 extern bool sift_tomb_deleted_blocks(const SiftTombLog *t, Snapshot snapshot, BlockNumber first, uint32 nblocks, uint64 *mask, SiftTombMemo *memo);
 /* Sets the bit of the offset of each row of block that a tombstone deletes for the snapshot (an MVCC one): the page's tombstones are read once, where a lookup bisects the log for each row. false, mask unusable, when the page has more than budget entries or a tombstone of a transaction beyond the commit log */
+extern bool sift_tomb_deleted_in(const SiftTombLog *t, Snapshot snapshot, BlockNumber first, uint32 nblocks, const uint64 *pages, SiftTombMemo *memo);
 extern bool sift_tomb_deleted_offsets(const SiftTombLog *t, Snapshot snapshot, BlockNumber block, uint32 budget, uint64 *mask, SiftTombMemo *memo);
 
 #ifdef SIFT_TESTING

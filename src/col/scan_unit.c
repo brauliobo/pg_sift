@@ -275,14 +275,15 @@ col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av
 }
 
 /*
- * Is every page of pm all-visible for the snapshot: by the visibility map, or by the log for the pages it does not hold (none of them has a tombstone). The log is asked about
- * those pages one by one and the first tombstone ends it, where col_sb_mask reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
+ * Is every page of pm all-visible for the snapshot: by the visibility map, or by the log for the pages it does not hold (none of them has a tombstone). The tombstones of the
+ * superblock are walked once and the first on one of those pages ends it, where col_sb_mask reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
  * read it now.
  */
 bool
 col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm)
 {
-	uint64		mine[SIFT_PAGEMASK_WORDS];
+	uint64		mine[SIFT_PAGEMASK_WORDS],
+				lacking[SIFT_PAGEMASK_WORDS];
 	const uint64 *av = vm;
 	bool		missing = false;
 
@@ -298,9 +299,12 @@ col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const ui
 	if (!hf_seg(src, seg))
 		return false;
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-		for (uint64 m = pm[w] & ~av[w]; m != 0; m &= m - 1)
-			if (hf_deleted(src, sb * SIFT_SB_PAGES + w * 64 + pg_rightmost_one_pos64(m), 1, NULL))
-				return false;
+		lacking[w] = pm[w] & ~av[w];
+#ifdef SIFT_TESTING
+	if (!sift_test_hf_ignore_tombs)
+#endif
+		if (sift_tomb_deleted_in(src->hflog, src->snap, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, lacking, &src->hfmemo))
+			return false;
 	sift_col_hf_taken++;
 	return true;
 }
