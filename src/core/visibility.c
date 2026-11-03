@@ -36,6 +36,7 @@ bool		sift_test_count_gate = false;
 bool		sift_test_cleanup_gate = false;
 bool		sift_test_shrink_gate = false;
 bool		sift_test_merge_gate = false;
+bool		sift_test_release_gate = false;
 static int	test_masks = 0;
 
 /* Waits until the test lets go of advisory lock (0x51F7, key) */

@@ -34,6 +34,7 @@
 #include "core/ops.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/visibility.h"
 
 bool		sift_standby_conflicts = true;
 
@@ -350,8 +351,8 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	bool		pending = publish && chg->nrelease > 0 && !chg->immediate && !space_exclusive;
 	FullTransactionId safexid = pending && xid_safexid() ?
 		GetTopFullTransactionId() : InvalidFullTransactionId;
-	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	Buffer		dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
+	Buffer		metabuf;
+	Buffer		dirbuf;
 	FreePlan	plan = {.flbuf = InvalidBuffer, .newhead = InvalidBlockNumber};
 	GenericXLogState *state;
 	SiftMetaPageData before;
@@ -360,6 +361,10 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Page		fp = NULL;
 	Page		xp = NULL;
 
+	/* a test lets a reader start between the xid and the locks: its snapshot is later than the xid and reads the directory as it is before this change */
+	SIFT_TEST_GATE(pending && sift_test_release_gate, 6);
+	metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
+	dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
 	SIFT_DIR_TEST_POINT(false);
 	if (pending && !FullTransactionIdIsValid(safexid))
 		safexid = ReadNextFullTransactionId();
