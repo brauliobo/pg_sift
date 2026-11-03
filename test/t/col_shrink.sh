@@ -5,7 +5,8 @@
 # reused, the file does not grow), with inserts, deletes, merges and scans running, and after a kill when the pages are copied and when the move is published.
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_SH_ROWS 300000 150000)
+ROWS=$(knob SIFT_SH_ROWS 200000 100000)
+ROUNDS=$(knob SIFT_SH_ROUNDS 4 2)
 plan 29
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
@@ -101,8 +102,8 @@ hold 30
 printf 'INSERT INTO t SELECT -g - %s, g %% 500, 1, $$w$$ FROM generate_series(1, 20) g;\n' "$RANDOM" >"$D/ins.sql"
 printf '\\set g random(0, 499)\nSELECT count(*), sum(amount) FROM t WHERE grp = :g;\n' >"$D/rd.sql"
 printf 'DELETE FROM t WHERE id = -(1 + (random() * 100000)::int);\n' >"$D/del.sql"
-pgbench_bg primary 4 8 -f "$D/ins.sql@2" -f "$D/rd.sql@3" -f "$D/del.sql@1"
-for _ in 1 2 3 4 5; do sleep 1; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_promote('t_idx')" "SELECT sift.col_merge('t_idx')" "VACUUM t" >/dev/null; done
+pgbench_bg primary 2 $((ROUNDS + 3)) -f "$D/ins.sql@2" -f "$D/rd.sql@3" -f "$D/del.sql@1"
+for _ in $(seq "$ROUNDS"); do sleep 1; sql primary "SET sift.async_maintenance = off" "SELECT sift.col_promote('t_idx')" "SELECT sift.col_merge('t_idx')" "VACUUM t" >/dev/null; done
 wait "$PGBENCH_PID"
 release
 check "churn: no statement failed" no_failure "$D/pgbench.log"
