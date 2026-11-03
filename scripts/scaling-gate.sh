@@ -18,15 +18,27 @@ paths=(Makefile 'pg_sift*.control' sql src tools scripts/harden.mk)
 key=$({ git -C "$REPO" ls-files -s -- "${paths[@]}"; git -C "$REPO" diff HEAD -- "${paths[@]}"; echo "shift=$SHIFT $(pg_config --version)"; } | "$REPO/scripts/sha256.sh" | cut -c1-16)
 DIR=${SIFT_SB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/sb-flavour/$key}
 
+# Two jobs of a CI run build it at the same time (scaling_slope, sb_mask_small): the one that starts second removes the directory of the first, and both fail. One builds under a
+# lock directory (mkdir: macOS has no flock) and the others wait for its .flavor; a lock whose owner is gone is taken over.
 build() {
+	local owner
 	[[ -f $DIR/root/.flavor ]] && { echo "$DIR/root"; return; }
-	rm -rf "$DIR"; mkdir -p "$DIR/src" || return 1
+	mkdir -p "$(dirname "$DIR")" || return 1
+	until mkdir "$DIR.lock" 2>/dev/null; do
+		[[ -f $DIR/root/.flavor ]] && { echo "$DIR/root"; return; }
+		owner=$(cat "$DIR.lock/pid" 2>/dev/null)
+		if [[ -n $owner ]] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$DIR.lock"; fi
+		sleep 1
+	done
+	echo $$ >"$DIR.lock/pid"
+	[[ -f $DIR/root/.flavor ]] && { rm -rf "$DIR.lock"; echo "$DIR/root"; return; }
+	rm -rf "$DIR"; mkdir -p "$DIR/src" || { rm -rf "$DIR.lock"; return 1; }
 	git -C "$REPO" ls-files -z -c -o --exclude-standard -- "${paths[@]}" | tar -C "$REPO" --null -T - -cf - | tar -C "$DIR/src" -xf -
 	local flavor=(USE_PGXS=1 SIFT_TESTING=1 SIFT_SB_SHIFT=$SHIFT)
 	{ nice make -C "$DIR/src" -j4 "${flavor[@]}" && make -C "$DIR/src" "${flavor[@]}" DESTDIR="$DIR/root" install; } >"$DIR/build.log" 2>&1 \
-		|| { tail -20 "$DIR/build.log" >&2; rm -rf "$DIR"; return 1; }
+		|| { tail -20 "$DIR/build.log" >&2; rm -rf "$DIR" "$DIR.lock"; return 1; }
 	echo "testing sb-shift-$SHIFT" >"$DIR/root/.flavor"
-	rm -rf "$DIR/src"
+	rm -rf "$DIR/src" "$DIR.lock"
 	echo "$DIR/root"
 }
 
