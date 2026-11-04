@@ -80,11 +80,24 @@ primary_key_att(Relation heap)
 	return pk;
 }
 
-/* The copy of pg_repack (repack.table_<oid>) is built without the constraints and the NOT NULL of its table, and takes them by the swap: its indexes cannot ask for them */
+/*
+ * The copy of pg_repack (repack.table_<oid>) and that of pg_squeeze (tmp_<oid>, in the schema of its table) are built without the constraints and the NOT NULL of their table, and take
+ * them by the swap: their indexes cannot ask for them. The log of such an index is never complete for the table after the swap: pg_squeeze applies what the writers did meanwhile
+ * without statements, so no trigger hears it, and the witnesses of the log are those of triggers that go with the copy (REINDEX gives the table its baseline back).
+ */
 static bool
 repack_copy(Relation heap)
 {
-	return strcmp(get_namespace_name(RelationGetNamespace(heap)), "repack") == 0 && strncmp(RelationGetRelationName(heap), "table_", 6) == 0;
+	const char *name = RelationGetRelationName(heap);
+	char	   *end;
+	unsigned long oid;
+
+	if (strcmp(get_namespace_name(RelationGetNamespace(heap)), "repack") == 0 && strncmp(name, "table_", 6) == 0)
+		return true;
+	if (strncmp(name, "tmp_", 4) != 0)
+		return false;
+	oid = strtoul(name + 4, &end, 10);
+	return *end == '\0' && oid != 0 && oid != RelationGetRelid(heap) && get_rel_relkind(oid) == RELKIND_RELATION && get_rel_namespace(oid) == RelationGetNamespace(heap);
 }
 
 /* The oid of the table or index that a table (repack.table_<oid>) or an index (repack.index_<oid>) of pg_repack replaces by the swap, InvalidOid for any other relation */

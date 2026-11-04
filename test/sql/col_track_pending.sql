@@ -53,6 +53,24 @@ ALTER TABLE c ADD PRIMARY KEY (id);
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('c_c');
 SELECT same_groups('c') AS groups_differing_c;
 
+-- the copy of a rewriting extension has no NOT NULL and no key (pg_squeeze: tmp_<oid of the table>, in its schema, indexes named ind_<n>): its index must be made
+CREATE TABLE e (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
+INSERT INTO e SELECT i, i % 5, i FROM generate_series(1, 200) i;
+CREATE INDEX e_c ON e USING sift_col (id, g, v);
+DO $$
+DECLARE t text := 'tmp_' || 'e'::regclass::oid;
+BEGIN
+  EXECUTE format('CREATE TABLE %I (id int, g int, v int) WITH (autovacuum_enabled = false)', t);
+  EXECUTE format('INSERT INTO %I SELECT i, i %% 5, i FROM generate_series(1, 200) i', t);
+  EXECUTE format('CREATE INDEX ind_1 ON %I USING sift_col (id, g, v) WITH (track_changes = ''id'')', t);
+  EXECUTE format('DROP TABLE %I', t);
+END $$;
+-- a table of that name that copies no table of the schema is refused as any other
+CREATE TABLE tmp_0 (id int, g int, v int);
+CREATE INDEX tmp_0_c ON tmp_0 USING sift_col (id, g, v) WITH (track_changes = 'id');
+DROP TABLE tmp_0;
+DROP TABLE e;
+
 -- still refused: ALTER INDEX with a column that has no unique index, a column that can be NULL, a column the table does not have
 CREATE TABLE d (id int NOT NULL, g int NOT NULL, v int, n int);
 CREATE INDEX d_c ON d USING sift_col (id, g, v, n) WITH (track_changes = 'off');

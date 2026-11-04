@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/relation.h"
 #include "utils/relfilenumbermap.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "col/am.h"
 #include "col/wbuf/wbuf_int.h"
@@ -72,6 +73,15 @@ sift_cwbuf_pending(Oid *index)
 	for (int i = 0; i < PEND_SLOTS; i++)
 		if (OidIsValid(pend[i].index))
 		{
+			/*
+			 * pg_squeeze applies the changes it decodes while the decoding session reads the catalogs as of the past: the copy it buffered for is not in them and no
+			 * file has an owner there, so neither says the slot is dead (the rows are lost if it is cleared). The slot is flushed under the OID it was buffered under.
+			 */
+			if (HistoricSnapshotActive())
+			{
+				*index = pend[i].index;
+				return true;
+			}
 			*index = pend_file_index(&pend[i]);
 			if (OidIsValid(*index))
 				return true;
