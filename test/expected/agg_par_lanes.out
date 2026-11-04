@@ -18,8 +18,9 @@ INSERT INTO fl SELECT i, i % 6000, i % 7, CASE WHEN i % 5 = 0 THEN 1e16 * (1 + i
                      CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 53) * 1e-3 + 1e8 END
 FROM generate_series(1, 60000) i;
 CREATE INDEX fl_col ON fl USING sift_col (id, g, h, v, w);
-NOTICE:  sift_col index "fl_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "fl_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fl_col');
 VACUUM ANALYZE fl;
 CREATE FUNCTION l_rows(q text, push bool, workers int, leader bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

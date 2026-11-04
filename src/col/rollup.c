@@ -422,12 +422,6 @@ stale_segments(Relation index, uint64 *gens)
 
 #define CAPS_REPORT_PCT		10		/* a cap that costs this share of the units, or more, is worth a notice */
 
-static int
-share_pct(uint32 n, uint32 units)
-{
-	return (int) Max(1, (n * UINT64CONST(100) + units - 1) / units);
-}
-
 static const char *
 leaf_label(Relation index, const SiftColDef *d)
 {
@@ -453,11 +447,10 @@ leaf_names(Relation index, const SiftColSchema *schema, const int16 *leaf, int n
 	return buf.data;
 }
 
-/* The leaves one kind of cap hit: their names for the message, and the share of the units each lost for the DETAIL */
+/* The leaves one kind of cap hit */
 typedef struct CapKind
 {
-	StringInfoData names,
-				shares;
+	StringInfoData names;
 	int			n;
 } CapKind;
 
@@ -465,54 +458,32 @@ static void
 cap_init(CapKind *k)
 {
 	initStringInfo(&k->names);
-	initStringInfo(&k->shares);
 	k->n = 0;
 }
 
 static void
-cap_add(CapKind *k, const char *item, uint32 hits, uint32 units, const char *extra)
+cap_add(CapKind *k, const char *item)
 {
-	appendStringInfo(&k->names, "%s\"%s\"", k->n ? ", " : "", item);
-	appendStringInfo(&k->shares, "%s\"%s\" %d%%%s", k->n ? ", " : "", item, share_pct(hits, units), extra);
+	appendStringInfo(&k->names, "%s%s", k->n ? ", " : "", item);
 	k->n++;
 }
 
-/* The columns the 16 dimensions of the cube leave out: plain columns without a histogram (the default cube) and date columns without calendar cells (calendar_columns = 'all'), one NOTICE */
+/* The columns the 16 dimensions of the cube leave out: plain columns without a histogram (the default cube) and date columns without calendar cells (calendar_columns = 'all') */
 static void
-cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft)
+cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft, SiftChoiceFn add, void *ctx)
 {
 	const SiftCPaggSpec *spec = &rel->pagg;
 	int			missing[SIFT_COL_MAX_COLS];
 	int			ncal = spec->cal_all ? sift_cpagg_cal_missing(rel->schema, spec, missing, lengthof(missing)) : 0;
-	StringInfoData cal,
-				what,
-				detail,
-				hint;
+	StringInfoData what;
 
 	if (nleft == 0 && ncal == 0)
 		return;
-	initStringInfo(&cal);
 	initStringInfo(&what);
-	initStringInfo(&detail);
-	initStringInfo(&hint);
+	appendStringInfoString(&what, left);
 	for (int i = 0; i < ncal && i < lengthof(missing); i++)
-		appendStringInfo(&cal, "%s\"%s\"", i ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
-	if (nleft > 0)
-	{
-		appendStringInfo(&what, "the histograms of %d column%s: %s", nleft, nleft == 1 ? "" : "s", left);
-		appendStringInfo(&detail, "The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",
-						 strncmp(sift_col_options_preagg(index), "auto:", 5) == 0 ? "the columns in the order chosen at CREATE INDEX, those whose histograms fit first" : "the columns in their order");
-		appendStringInfoString(&hint, "Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.");
-	}
-	if (ncal > 0)
-	{
-		appendStringInfo(&what, "%sthe calendar cells of %d date or timestamp column%s (calendar_columns = 'all'): %s", nleft > 0 ? " and " : "", ncal, ncal == 1 ? "" : "s", cal.data);
-		appendStringInfo(&detail, "%sThe other columns of the index take the dimensions that the calendar cells of the dates leave; a query that groups by a date left out scans the units.", nleft > 0 ? " " : "");
-		appendStringInfo(&hint, "%sName the columns the queries group by in calendar_columns (the list must fit the %d dimensions), or give preagg = 'cube(...)' only the dims they need.", nleft > 0 ? " " : "", SIFT_PAGG_MAX_DIMS);
-	}
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube holds %d dimensions and leaves out %s", RelationGetRelationName(index), SIFT_PAGG_MAX_DIMS, what.data),
-					 errdetail_internal("%s", detail.data),
-					 errhint("%s", hint.data)));
+		appendStringInfo(&what, "%s%s", what.len ? ", " : "", leaf_label(index, &rel->schema->cols[missing[i]]));
+	add(ctx, "cube-columns-left-out", what.data);
 }
 
 /*
@@ -524,12 +495,11 @@ cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft
  * the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
  */
 void
-sift_col_report_caps(Relation index)
+sift_col_caps(Relation index, SiftChoiceFn add, void *ctx)
 {
 	/* check-memory: allow the loop reads segments (buffer locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
 	const SiftColRel *rel = sift_col_rel(index);
 	const SiftCPaggSpec *spec = &rel->pagg;
-	const char *name = RelationGetRelationName(index);
 	SiftDirSnapshot *snap;
 	MemoryContext cx;
 	uint32		units = 0,
@@ -539,7 +509,6 @@ sift_col_report_caps(Relation index)
 				with_dim[SIFT_PAGG_MAX_DIMS] = {0},
 				with_roll[SIFT_PAGG_MAX_ROLLUPS] = {0},
 				bloom[SIFT_COL_MAX_COLS] = {0},
-				keys[SIFT_COL_MAX_COLS] = {0},
 				no_set[SIFT_COL_MAX_COLS] = {0},
 				no_pres[SIFT_COL_MAX_COLS] = {0};
 	bool		any = spec->fixed && spec->ndims > 0;
@@ -605,10 +574,7 @@ sift_col_report_caps(Relation index)
 				bool		open = blob != NULL && sift_cset_open(blob, len, &s);
 
 				if (open && s.kind == SIFT_CSET_BLOOM)
-				{
 					bloom[l]++;
-					keys[l] = Max(keys[l], s.n);
-				}
 				if (spec->set[l] && sets_ok && !open)
 					no_set[l]++;
 				if (spec->pres[l] && pres_ok && !(open && (s.kind == SIFT_CSET_PRES || s.kind == SIFT_CSET_PLIST || s.kind == SIFT_CSET_RUNS)))
@@ -624,39 +590,30 @@ sift_col_report_caps(Relation index)
 	cap_init(&no_rolls);
 	for (int d = 0; units > 0 && spec->fixed && d < spec->ndims; d++)
 		if ((units - with_dim[d]) * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			cap_add(&dims, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]), units - with_dim[d], units, "");
+			cap_add(&dims, leaf_label(index, &rel->schema->cols[spec->dim[d].leaf]));
 	for (int l = 0; units > 0 && !spec->keyauto && l < rel->schema->ncols; l++)
 	{
 		if (!spec->pres[l] && bloom[l] * 100 >= (uint64) units * CAPS_REPORT_PCT)
-			cap_add(&blooms, leaf_label(index, &rel->schema->cols[l]), bloom[l], units, psprintf(" (up to %u keys a unit)", keys[l]));
+			cap_add(&blooms, leaf_label(index, &rel->schema->cols[l]));
 		if (cap_hits(no_set[l], sets_units))
-			cap_add(&no_sums, leaf_label(index, &rel->schema->cols[l]), no_set[l], sets_units, "");
+			cap_add(&no_sums, leaf_label(index, &rel->schema->cols[l]));
 		if (cap_hits(no_pres[l], pres_units))
-			cap_add(&no_lists, leaf_label(index, &rel->schema->cols[l]), no_pres[l], pres_units, "");
+			cap_add(&no_lists, leaf_label(index, &rel->schema->cols[l]));
 	}
 	for (int r = 0; rows_units > 0 && r < spec->nrollups; r++)
 		if (spec->rollup[r].list < 0 && cap_hits(rows_units - with_roll[r], rows_units))
-			cap_add(&no_rolls, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims), rows_units - with_roll[r], rows_units, "");
+			cap_add(&no_rolls, leaf_names(index, rel->schema, spec->rollup[r].dim, spec->rollup[r].ndims));
 	if (dims.n > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": the cube has no histogram of %s in %d%% or more of the units, which hold more than %u groups of a dim", name, dims.names.data, CAPS_REPORT_PCT, spec->max_groups),
-						 errdetail("The share of the %u units without it: %s. A query that groups or filters by one of them scans those units (sift.col_rollup_misses counts them).", units, dims.shares.data),
-						 errhint("Group by leaves with fewer values per unit, or sort the table by them before REINDEX.")));
+		add(ctx, "cube-dim-no-histogram", dims.names.data);
 	if (blooms.n > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": the keys of %s are a bloom filter, not a list, in %d%% or more of the units, which hold more than %d distinct keys", name, blooms.names.data, CAPS_REPORT_PCT, SIFT_CSET_LIMIT),
-						 errdetail("The share of the %u units: %s. The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them.", units, blooms.shares.data)));
+		add(ctx, "keys-bloom-filter", blooms.names.data);
 	if (no_sums.n > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no summary of %s in %d%% or more of the units, whose keys are one value, or every integer of a range, or inline text", name, no_sums.names.data, CAPS_REPORT_PCT),
-						 errdetail("The share of the %u units: %s. A summary that could not skip a unit is not stored; a query that filters by the column scans those units.", sets_units, no_sums.shares.data),
-						 errhint("Leave them out of key_columns, or sort the table by them before REINDEX.")));
+		add(ctx, "keys-no-summary", no_sums.names.data);
 	if (no_lists.n > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns writes no key list or bitmap of %s in %d%% or more of the units, where it would take more than %d%% of the bytes of the unit", name, no_lists.names.data, CAPS_REPORT_PCT, SIFT_CSET_PRES_PCT),
-						 errdetail("The share of the %u units: %s. A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than %d, else exact or, where they fill their range, nothing.", pres_units, no_lists.shares.data, SIFT_CSET_LIMIT),
-						 errhint("Leave them out of key_columns, or sort the table by them before REINDEX.")));
+		add(ctx, "keys-no-list", no_lists.names.data);
 	if (no_rolls.n > 0)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims writes no rollup of %s in %d%% or more of the units, which hold more combinations of them than a unit may keep", name, no_rolls.names.data, CAPS_REPORT_PCT),
-						 errdetail("The share of the %u units: %s. A unit keeps at most a tenth of its rows as cells, and at most %d; a query that groups by those columns scans the others.", rows_units, no_rolls.shares.data, SIFT_PAGG_ROWS_CELLS),
-						 errhint("Name fewer columns, or columns with fewer values per unit.")));
-	cube_left_out(index, rel, left.data, nleft);
+		add(ctx, "rollup-not-written", no_rolls.names.data);
+	cube_left_out(index, rel, left.data, nleft, add, ctx);
 	MemoryContextDelete(cx);
 	pfree(snap);
 }
@@ -708,7 +665,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 			done++;
 		}
 	}
-	sift_col_report_caps(index);
+	sift_col_choices_say(NULL, index, SIFT_CHOICE_CAP, false);
 	index_close(index, RowExclusiveLock);
 	v[0] = Int32GetDatum(done);
 	v[1] = Int32GetDatum(n - visited);

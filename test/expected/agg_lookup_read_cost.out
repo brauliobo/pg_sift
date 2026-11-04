@@ -5,8 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 20000, i % 7 FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
-NOTICE:  sift_col index "ev_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ev_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 -- twenty rows to a page: a table of a thousand pages
 CREATE TABLE dims (k int, label text, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dims SELECT i, 'label' || i, repeat('x', 350) FROM generate_series(0, 19999) i;

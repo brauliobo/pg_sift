@@ -486,3 +486,7 @@ CREATE FUNCTION sift._test_xid_state(xid) RETURNS text
 
 CREATE FUNCTION sift._test_tomb_header(rel regclass, legacy bool DEFAULT false, stale bool DEFAULT false, OUT covered bool, OUT flags int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_tomb_header' LANGUAGE C STRICT;
+
+-- The participants the weighted choice gives a parallel CREATE INDEX of a sift_col index (src/col/build_par.c): rows, columns, whether the index has a point directory, the most the server allows.
+CREATE FUNCTION sift._test_par_participants(rows int8, cols int, point_dir bool, maxp int) RETURNS int
+	AS 'MODULE_PATHNAME', 'sift_test_par_participants' LANGUAGE C STRICT;

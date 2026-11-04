@@ -16,8 +16,8 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops)
 	WITH (order_columns = 'id, a, b, t', order_array_columns = 'id, a, b, t');
-NOTICE:  sift_col index "ot_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ot_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 4 columns
+NOTICE:  sift_col index "ot_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+NOTICE:  sift_col index "ot_i" is column format minor 38, which a library before 3.7 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
 -- the rows are the plan's without the extension, in order (id breaks every tie); the answer says 'skipped' when the scan fetched no more than the LIMIT and the largest group of ties

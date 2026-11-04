@@ -26,6 +26,8 @@ def main(doc):
     ap.add_argument('--timeout', type=int, default=runcfg.TIMEOUT, help='seconds a statement may run (the large points need more)')
     ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large setting is 4GB): written to the file as the work_mem meta')
     ap.add_argument('--lane-budget', type=float, default=runcfg.LANE_BUDGET, help='seconds of timed runs after which a lane stops repeating, with at least %d runs (0: always the full rounds x runs); a case whose statement takes seconds is not run fifteen times' % MIN_RUNS)
+    ap.add_argument('--headline', action='store_true', help='only the cases marked `headline` in bench/cases.tsv (the quick release profile: bench/bench release-quick)')
+    ap.add_argument('--arm-budget', type=int, default=300, help='with --records: seconds one arm may take over all its repetitions; an arm over it, or one that reaches --timeout, is recorded as unavailable with its reason and the run goes on (0: no budget)')
     ap.add_argument('--any-plan', action='store_true', help='the planner\'s plan at this size is what the rows show, not a failure (a smoke run: at a few thousand rows it keeps PostgreSQL\'s plan)')
     ap.add_argument('--io', choices=['cold', 'warm', 'off'], default='cold', help='the IO rows of every lane (steps/iolib.py): cold empties the case\'s tables from the shared buffers and the OS cache first (io_cold_*, then io_warm_*), warm measures the warm run only, '
                     'off writes no io_* rows. A run of a case replaces all of its rows in bench/results, so --io off (or warm) drops the io_cold_* rows the file had')

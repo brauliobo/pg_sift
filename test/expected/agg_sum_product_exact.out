@@ -17,11 +17,9 @@ INSERT INTO p VALUES (10001, 9, 9999999999999999, 9999999999999999, 999999999999
                      (10008, 5, 'NaN', 2, 3, 'NaN', 0.1, 0.2), (10009, 5, 1, 2, 3, 1, 0.1, 0.2);
 INSERT INTO p SELECT 20000 + i, 4, 1234567890123456, 8765432109876543, 12345 + i, 1234567890123.45, 0.01 * (i % 90), 0.01 * (i % 70) FROM generate_series(1, 3000) i;
 CREATE INDEX p_col ON p USING sift_col (g, a, b, c, price, disc, tax);
-NOTICE:  sift_col index "p_col": rollup_dims = 'auto' writes a rollup of the rows by g, b
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 28 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX p_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "p_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "p_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = g, b
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('p_col');
 VACUUM (FREEZE, ANALYZE) p;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE d bigint;
@@ -112,8 +110,9 @@ WITH t AS (SELECT power(2::numeric, 127) - 1 AS top, 9999999999999999999::numeri
 INSERT INTO tm (id, g, c, d) SELECT 11, 11, q, q FROM t UNION ALL SELECT 12, 11, floor((top - q * q) / q), q FROM t
 	UNION ALL SELECT 13, 11, top - q * q - floor((top - q * q) / q) * q, 1 FROM t UNION ALL SELECT 14, 12, 3, 2;
 CREATE INDEX tm_col ON tm USING sift_col (g, a, b, c, d);
-NOTICE:  sift_col index "tm_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "tm_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tm_col');
 VACUUM (FREEZE, ANALYZE) tm;
 SELECT scanned('SELECT g, sum(a * b) FROM tm GROUP BY g') AS wide_pair_scanned, scanned('SELECT g, sum(c * d) FROM tm GROUP BY g') AS narrow_pair_scanned;
  wide_pair_scanned | narrow_pair_scanned 
@@ -164,8 +163,9 @@ CREATE TABLE rnd (id int PRIMARY KEY, g int NOT NULL, x numeric(16, 0), y numeri
 INSERT INTO rnd SELECT i, i % 37, rnum(16, 0), rnum(16, 5), rnum(16, 10), rnum(17, 0), rnum(24, 0), rnum(24, 12), rnum(16, 8) FROM generate_series(1, 8000) i;
 INSERT INTO rnd SELECT 10000 + i, 99, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) i;
 CREATE INDEX rnd_col ON rnd USING sift_col (g, x, y, z, u, a, b, c);
-NOTICE:  sift_col index "rnd_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "rnd_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rnd_col');
 VACUUM (FREEZE, ANALYZE) rnd;
 SELECT count(*) = 8020 AS rows, count(x * y * z) > 6000 AS d48_rows, count(u * y * z) > 6000 AS d49_rows, count(a * b * c) > 6000 AS d64_rows, min(u * y * z) < -1e30 AS d49_wide FROM rnd;
  rows | d48_rows | d49_rows | d64_rows | d49_wide 

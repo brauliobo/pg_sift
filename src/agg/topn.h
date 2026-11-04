@@ -41,8 +41,8 @@ extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
  * btree comparison function (only a key of byte strings is compared by it) and collation; out: the heap
  * attribute of each column of the scan tuple), the LIMIT and the OFFSET (NULL: none) as the expressions of the query, int8 with no
  * Var, volatile function or sub-plan: constants, or parameters of the statement that the scan evaluates when it starts.
- * flags: TOPN_SKIP_OFFSET: the scan tuple is the output as it is (plain columns), so the Limit node above, which throws the first OFFSET rows
- * away unread, is given rows of NULLs for them and the heap is read for the rows it takes only; TOPN_SORT: the plan is priced as a sort of
+ * flags: TOPN_SKIP_OFFSET: the scan tuple is the output as it is (plain columns), so the scan skips the first OFFSET rows itself, reading nothing
+ * of the heap for them, and the Limit node above has no OFFSET (agg/order/drop.c takes it off the plan; a negative one raises its error here); TOPN_SORT: the plan is priced as a sort of
  * every row that passes, whatever the bound is (a heap of many rows costs more than the sort). TOPN_TOTALS: the plan also computes aggregates
  * of the whole set of rows that pass (the window functions over (), SiftAggSpec.agg), after the columns of the heap in the scan tuple: no unit
  * is left out for the sort key's zone, and the scan is serial. TOPN_RAWKEY: the first key is a uuid or bytea leaf that nothing else of the scan reads: the
@@ -85,6 +85,10 @@ extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const b
 
 /* The columns of the joined tables the rows of the page read: for each, the combination of its table, its column there, and the position and the type of the key in the row (sift_topn_spec) */
 extern List *sift_topn_lookups(Node *spec);
+
+/* The Limit node above has this OFFSET: does the scan skip it (TOPN_SKIP_OFFSET, the same OFFSET)? If the Limit keeps it, sift_topn_keep_offset: the scan returns those rows too */
+extern bool sift_topn_skips_offset(Node *spec, const Node *limit_offset);
+extern void sift_topn_keep_offset(Node *spec);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);

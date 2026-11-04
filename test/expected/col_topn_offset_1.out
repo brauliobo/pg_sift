@@ -17,8 +17,8 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
 	WITH (order_columns = 'id, a, b, c, t', order_array_columns = 'id, a, b, c, t, s');
-NOTICE:  sift_col index "ot_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ot_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 6 columns
+NOTICE:  sift_col index "ot_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+NOTICE:  sift_col index "ot_i" is column format minor 38, which a library before 3.7 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
 -- the answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key; the second field is the heap fetches
@@ -135,7 +135,6 @@ SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
 (3 rows)
 
 SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
-NOTICE:  sift_col index "ot_i": point_tid_columns = 'auto' chooses "c" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +19%, 4 bytes a row, benefit 11 against cost 7)
 NOTICE:  sift_col index "ot_i": the rewrite chooses again from the data: point_tid_columns = 'auto: c' (was '')
  merged 
 --------
@@ -178,8 +177,8 @@ RESET sift.test_limits;
 -- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
-NOTICE:  sift_col index "ot_k" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ot_k": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+NOTICE:  sift_col index "ot_k": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+NOTICE:  sift_col index "ot_k" is column format minor 38, which a library before 3.7 cannot read
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
  result  | count 

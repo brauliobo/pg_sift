@@ -19,8 +19,8 @@ INSERT INTO gg (id, g, k, t) SELECT 20000 + i, 100, NULL, NULL FROM generate_ser
 INSERT INTO gg (id, g, k, t) VALUES (20100, 101, 5, TIMESTAMP '2001-01-01');
 CREATE INDEX gg_i ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops, t sift.col_timestamp_ops)
 	WITH (order_columns = 'k, t', order_array_columns = 'k, t', order_array_group = 'g');
-NOTICE:  sift_col index "gg_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "gg_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+NOTICE:  sift_col index "gg_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+NOTICE:  sift_col index "gg_i" is column format minor 38, which a library before 3.7 cannot read
 SELECT sift.col_verify('gg_i');
  col_verify 
 ------------
@@ -283,8 +283,8 @@ NOTICE:  cursor: forward is the heap's backward is the same
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
 DROP INDEX gg_i;
 CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k');
-NOTICE:  sift_col index "gg_p" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "gg_p": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
+NOTICE:  sift_col index "gg_p": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+NOTICE:  sift_col index "gg_p" is column format minor 38, which a library before 3.7 cannot read
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;
  plain_array  
 --------------

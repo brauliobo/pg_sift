@@ -22,6 +22,7 @@ from .server import Fresh, server_session
 import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 
+ARM_BUDGET = None   # seconds one arm may take (--arm-budget): past it the arm is unavailable, with the reason
 ROWS = []
 RUN = {}
 SKIPPED = []
@@ -88,7 +89,7 @@ def run_env(session, runs):
         RUN.update(tip=tip(), run=schema.run_id(tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
     # the cluster of the cases is a test cluster (scripts/pgtest.sh: no autovacuum, no automatic merge, so a state is the one the setup made): the records say so, and the report shows it
     off = 'disabled' if schema.maintenance_switches(collect.settings_of(session)) else 'default'
-    return collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off)
+    return collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off, arm_budget=ARM_BUDGET)
 
 
 def emit(case, lanes, rows, runs):
@@ -113,7 +114,7 @@ def emit(case, lanes, rows, runs):
         extra = None if fresh else native_arm(session, case, sql, table)
         try:
             ROWS.extend(collect.measure_statement(session, case.id, sql, subject, forced + ([extra] if extra else []), env, fresh=fresh, unavailable=missed))
-        except collect.PerfUnavailable as e:
+        except (collect.PerfUnavailable, collect.ArmTimeout) as e:
             SKIPPED.append((case.id, str(e)))
             return
         UNAVAILABLE.extend((case.id,) + m for m in missed)
@@ -182,11 +183,17 @@ def emit_load(case, csv, rows, runs, build, workers):
         hash_text = '\n'.join(case.sec[k] for k in ('prepare', 'load', 'load_sift') if k in case.sec)
         try:
             ROWS.extend(collect.measure_statement(session, case.id, fill(text('heap')), subject, arms, env, monitor=monitor, temps=('warm',), hash_text=hash_text))
-        except collect.PerfUnavailable as e:
+        except (collect.PerfUnavailable, collect.ArmTimeout) as e:
             SKIPPED.append((case.id, str(e)))
     finally:
         session.close()
         monitor.close()
+
+
+def flush(path):
+    """the records of the cases measured so far, written whole beside PATH and moved over it: a run that stops, or a case that never ends, keeps what the earlier cases gave"""
+    schema.write(path + '.part', ROWS)
+    os.replace(path + '.part', path)
 
 
 def write(path):
@@ -199,6 +206,9 @@ def write(path):
     for case, why in SKIPPED:
         print('RECORDS NO RECORDS FOR CASE %s: %s' % (case, why))
     for case, arm, option, named in UNAVAILABLE:
-        print('RECORDS ARM NOT FORCEABLE %s: %s %s is not a plan of its statement (the plans name %s); the default row and the other arms stand' % (case, arm, option, named))
+        if named.startswith('timeout: '):
+            print('RECORDS ARM TIMED OUT %s: %s %s is unavailable, %s; the default row and the other arms stand' % (case, arm, option, named[len('timeout: '):]))
+        else:
+            print('RECORDS ARM NOT FORCEABLE %s: %s %s is not a plan of its statement (the plans name %s); the default row and the other arms stand' % (case, arm, option, named))
     print('records: %d rows written to %s, %d problems, %d cases without records' % (len(ROWS), path, len(problems), len(SKIPPED)))
     return not problems and not SKIPPED

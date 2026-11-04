@@ -509,6 +509,15 @@ store benchmark, a parallel normal plan can beat the scan on the planner's cost 
 
 ## Release run
 
+### The quick release profile (`bench/bench release-quick`)
+
+One command, a budget of 60 minutes on one slot, for the numbers a release needs to show and nothing that only checks a size: the cases marked `headline` in `bench/cases.tsv` at 300,000 rows (stage `headline`) and
+again at 100,000 (stage `slope`, which prints each case's time at both sizes and the growth of pg_sift and of PostgreSQL's plan against the growth of the rows: a pg_sift time that grows faster than the rows is marked), the cost of the
+default `track_changes` on UPDATE, DELETE, INSERT and CREATE INDEX at 100,000 rows (stage `cost`, `bench/churn/heapfree_default.py`), and the `store` and `updates` stages, whose competitor cells come from the cache. It
+prints the plan before it starts and refuses a plan over the budget, and at the end the planned and the measured minutes of each stage with the total; a pass that took longer than the budget exits with status 4.
+Measured on the shared benchmark host (two passes, one slot, in memory): headline 12.7 and 17.5 min, slope 8.2 and 13.9, cost 6.0 and 6.2, store 8.9 with the cache of competitor cells and 26 without it (the cache is on a disk, `~/.cache/pg_sift/store-cache` or `--cache-dir`, `S_CACHE_DIR`, `BENCH_CACHE`; it was under `/tmp` and a reboot emptied it, and the table says `cache cold` for the store stage of such a pass), updates 4.5; 46 min planned, 51 and 68 measured (the second without the cache, so over the budget, status 4). 1,000,000 and 10,000,000 rows are named runs (`bench/bench cases --rows 1000000`, `bench/bench final --size full`), not part of this pass. `--stages LIST` runs some of the stages; the records of the cases are written after every case, and an
+arm that reaches its statement timeout or `--arm-budget` is recorded as unavailable with its reason instead of ending the pass.
+
 The numbers of a release are one pass on the release host, about 120 minutes in all (the 200 cases are 40 of them). Nothing of it runs before the release commit exists. `bench/bench final --size standard --dry-run` prints the plan and the preconditions and starts nothing; on a host without docker it ends with `MISSING docker works`, and this is what the plan prints today:
 
 ```

@@ -100,7 +100,7 @@ def main():
         cache_args(p)
 
     def cache_args(p):
-        p.add_argument('--cache-dir', default=os.environ.get('STORE_CACHE', '/tmp/sift-store-cache'), help='the cache of the cells of the servers that are not under test')
+        p.add_argument('--cache-dir', default=os.environ.get('STORE_CACHE', os.path.join(os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache')), 'pg_sift', 'store-cache')), help='the cache of the cells of the servers that are not under test')
         p.add_argument('--no-cache', action='store_true', help='read nothing from the cache and write nothing to it')
         p.add_argument('--cache-max-age', type=int, default=30, help='days after which a cached cell is measured again')
     for name in ('gen', 'load', 'run', 'cold', 'updates', 'section', 'verify', 'plan', 'datakey', 'interference'):

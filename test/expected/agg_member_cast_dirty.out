@@ -23,9 +23,9 @@ UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', 'true') WHERE id = 5990;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', '{"a": 1}') WHERE id = 5980;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', '[1]') WHERE id = 5970;
 CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "m_col" installed two statement triggers on table "m_t" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "m_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('m_col');
 VACUUM ANALYZE m_t;
 CREATE FUNCTION mq(sel text, keep text DEFAULT 'true', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || sel || ' FROM m_t t JOIN LATERAL jsonb_each(t.metrics) e ON true WHERE ' || keep || ' GROUP BY ' || grp

@@ -7,14 +7,10 @@ INSERT INTO aa SELECT i, ARRAY['a' || i, 'b' || i % 50, 'c' || i % 7], ARRAY['r'
 FROM generate_series(1, 12000) i;
 ANALYZE aa;
 CREATE INDEX aa_col ON aa USING sift_col (id, uniq, rep, mid, ids);
-NOTICE:  sift_col index "aa_col": array_lengths = 'auto' keeps the lengths of the arrays uniq, rep, mid, ids
-DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  To drop them, run ALTER INDEX aa_col SET (array_lengths = 'off') and REINDEX.
-NOTICE:  sift_col index "aa_col": paths = 'auto' keeps the elements of the arrays uniq, ids, mid
-DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
-HINT:  To keep the arrays and leave the elements out, run ALTER INDEX aa_col SET (paths = 'auto:') and REINDEX.
-NOTICE:  sift_col index "aa_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "aa_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids;
+array_elements = uniq, mid, ids
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('aa_col');
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'aa_col';
                             options                            
 ---------------------------------------------------------------
@@ -88,11 +84,9 @@ SELECT rep, count(*) FROM aa GROUP BY 1 ORDER BY 1 LIMIT 3;
 -- a table too small for a sample gets neither
 CREATE TABLE ab AS SELECT i AS id, ARRAY['a' || i] AS uniq FROM generate_series(1, 500) i;
 CREATE INDEX ab_col ON ab USING sift_col (id, uniq);
-NOTICE:  sift_col index "ab_col": array_lengths = 'auto' keeps the lengths of the arrays uniq
-DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  To drop them, run ALTER INDEX ab_col SET (array_lengths = 'off') and REINDEX.
-NOTICE:  sift_col index "ab_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ab_col": 1 automatic choice (array_lengths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ab_col');
 SELECT leaf, path FROM sift.col_leaves('ab_col') ORDER BY leaf;
  leaf |  path  
 ------+--------
@@ -112,14 +106,10 @@ SELECT reltuples FROM pg_class WHERE relname = 'ac';
 (1 row)
 
 CREATE INDEX ac_col ON ac USING sift_col (id, uniq, rep);
-NOTICE:  sift_col index "ac_col": array_lengths = 'auto' keeps the lengths of the arrays uniq, rep
-DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
-HINT:  To drop them, run ALTER INDEX ac_col SET (array_lengths = 'off') and REINDEX.
-NOTICE:  sift_col index "ac_col": paths = 'auto' keeps the elements of the arrays uniq
-DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.
-HINT:  To keep the arrays and leave the elements out, run ALTER INDEX ac_col SET (paths = 'auto:') and REINDEX.
-NOTICE:  sift_col index "ac_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ac_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep;
+array_elements = uniq
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ac_col');
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'ac_col';
                options               
 -------------------------------------
@@ -143,8 +133,9 @@ SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
 -- the HINT of the NOTICE: paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again)
 ALTER INDEX aa_col SET (paths = 'auto:');
 REINDEX INDEX aa_col;
-NOTICE:  sift_col index "aa_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "aa_col": 1 automatic choice (array_lengths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('aa_col');
 SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
  leaf |  path  
 ------+--------
@@ -165,11 +156,10 @@ SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
 
 ALTER INDEX aa_col SET (paths = '');
 REINDEX INDEX aa_col;
-NOTICE:  sift_col index "aa_col": paths = 'auto' keeps the elements of the arrays uniq, ids, mid
-DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
-HINT:  To keep the arrays and leave the elements out, run ALTER INDEX aa_col SET (paths = 'auto:') and REINDEX.
-NOTICE:  sift_col index "aa_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "aa_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids;
+array_elements = uniq, mid, ids
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('aa_col');
 SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
  leaf |  path  
 ------+--------

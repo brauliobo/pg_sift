@@ -20,9 +20,9 @@ SELECT i, 9999999999999999.99 - i % 7,
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 5000) i;
 CREATE INDEX r_t_col ON r_t USING sift_col (id, amt, doc) WITH (paths = 'doc.lines[]{k text, h int2, n int4, b int8, f float4, d float8}');
-NOTICE:  sift_col index "r_t_col" installed two statement triggers on table "r_t" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "r_t_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_t_col');
 VACUUM (FREEZE, ANALYZE) r_t;
 \ir test/agg_helpers.sql
 \set ECHO none

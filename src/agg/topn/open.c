@@ -117,6 +117,18 @@ sift_topn_lookups(Node *spec)
 	return SPEC_LOOKUPS(spec);
 }
 
+bool
+sift_topn_skips_offset(Node *spec, const Node *limit_offset)
+{
+	return (llast_int(SPEC_KEYS(spec)) & TOPN_SKIP_OFFSET) && equal(SPEC_OFFSET(spec), limit_offset);
+}
+
+void
+sift_topn_keep_offset(Node *spec)
+{
+	llast_int(SPEC_KEYS(spec)) &= ~TOPN_SKIP_OFFSET;
+}
+
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
 char *
 sift_topn_limit_text(Node *spec)
@@ -438,7 +450,14 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			bounded = false;
 	}
 	if (flags & TOPN_SKIP_OFFSET)
+	{
+		/* the Limit above has no OFFSET of its own to check */
+		if (offset < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE),
+					 errmsg("OFFSET must not be negative")));
 		t->skip = offset;
+	}
 	t->all = !bounded;
 	t->totals = (flags & TOPN_TOTALS) != 0;
 	t->nogord = (flags & TOPN_NOGORD) != 0;

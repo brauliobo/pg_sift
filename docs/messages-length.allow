@@ -1,0 +1,9 @@
+# id	cell: the cells of docs/messages.tsv over the limit of scripts/gen-messages.sh (first line 100 characters, detail 200, hint 100), until their source is reworded.
+# These are in the scripts of released versions (sql/pg_sift--3.2--3.3.sql, sql/pg_sift--3.3--3.4.sql), which are frozen: the text of ALTER EXTENSION UPDATE does not change.
+upgrade-format-minor	message
+upgrade-reindex-text	message
+upgrade-reindex-text	hint
+upgrade-reindex-column	hint
+upgrade-rewrite-table	hint
+upgrade-check-failed	message
+table-paths-column-groups	message

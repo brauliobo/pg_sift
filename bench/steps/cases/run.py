@@ -18,6 +18,11 @@ from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck,
 from .measure import PerfFailed, expand, host, io_load, measure_load, measure_query, minstr, stats, summarize
 
 
+def selected(args):
+    """the cases of the run: those --cases names (all without it), the ones marked `headline` in the registry with --headline (the quick release profile)"""
+    return [c for c in read_registry() if (not args.cases or c.id in args.cases) and (not args.headline or c.headline)]
+
+
 def release(c, left, rows, scaled):
     """drop the tables of C that no later case of the run reads (a copy of the table for each of the 30 cases at 20 million rows is not room the host has; nor is each dataset of a run at 1,000,000 rows)"""
     if c.share or c.dataset in DATASETS:
@@ -95,6 +100,7 @@ def run_point(args, cases, rows, engines, results, failed, known):
             TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
             if args.records:
                 recs.emit_load(c, csv, rows, args.runs, build, os.environ.get('CASES_WORKERS', '2'))
+                recs.flush(args.records)
             settle(c, tag, out, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: True)
             for lane, ms in out.items():
                 for metric, xs in ms.items():
@@ -108,6 +114,7 @@ def run_point(args, cases, rows, engines, results, failed, known):
         times, notes, errors, texts = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
         if args.records:
             recs.emit(c, lanes, rows, args.runs)
+            recs.flush(args.records)
         TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         settle(c, tag, lanes, errors, not scaled and not args.any_plan, failed, known, lambda lane, e: lane in ('sift', 'native') or e.startswith(('PLAN', 'RESULT')))
         for lane in lanes:
@@ -145,13 +152,14 @@ def run_point(args, cases, rows, engines, results, failed, known):
 
 def cmd_run(args):
     runcfg.LANE_BUDGET = args.lane_budget
-    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    cases = selected(args)
     if not cases:
         die('no case matches %s' % ','.join(args.cases))
     if args.no_share:
         for c in cases:
             c.share = None
     runcfg.TIMEOUT = args.timeout
+    recs.ARM_BUDGET = args.arm_budget
     engines = args.engines.split(',')
     results, failed, known = [], [], []
     for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
@@ -183,7 +191,7 @@ def cmd_run(args):
 
 def cmd_plan(args):
     """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates fitted to the 1,000,000-row run of 2026-10-24, 86 cases in 17 min with shared tables: linear in the rows, a floor on a loaded host)"""
-    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    cases = selected(args)
     scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
     events = sum(c.dataset in DATASETS for c in cases)
     tmp = os.environ.get('CASES_TMP', '/dev/shm/sift-cases')
@@ -260,7 +268,7 @@ def cmd_cpus(args):
     """the quota the selected cases need (steps/cases.sh starts the cluster under it): one line, `CPUS WHO`"""
     if args.selftest:
         return selftest_cpus()
-    cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
+    cases = selected(args)
     need, who = lane_cpus(cases, args.cpus)
     print(need, who or '-')
 

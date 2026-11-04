@@ -17,7 +17,7 @@
 Name:           pg_sift_%{pgmajor}
 Version:        %{pkg_version}
 Release:        1%{?dist}
-Summary:        CTID-bitmap full-text search index with BM25 ranking for PostgreSQL
+Summary:        Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search
 License:        PostgreSQL
 URL:            https://github.com/brauliobo/pg_sift
 Source0:        pg_sift-%{version}.tar.gz
@@ -26,8 +26,14 @@ BuildRequires:  gcc, make, redhat-rpm-config, %{pgdevel}, lz4-devel, libzstd-dev
 Requires:       postgresql%{pgmajor}-server, lz4-libs, libzstd
 
 %description
-pg_sift adds the sift index access method (CREATE INDEX ... USING sift) with boolean, phrase, prefix, wildcard, regex and fuzzy
-queries, exact BM25 ranking, count(*) from the index and parallel index builds.
+pg_sift answers counts, sums, distinct counts, group-bys and top-N from compressed columns, with the queries you already have: a
+sift_col index on a table, or the sift_table table access method, is picked by the planner through the SiftAgg aggregate scan, and a
+query the planner cannot prove equal keeps PostgreSQL's own plan.
+
+It also adds BM25 full-text search: a sift index answers boolean, phrase, prefix, wildcard, regex and fuzzy queries with exact
+ranking, through its own query syntax.
+
+One CREATE EXTENSION, no shared_preload_libraries. For PostgreSQL 17, 18 and 19.
 
 %prep
 %autosetup -n pg_sift-%{version}

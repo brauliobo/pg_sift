@@ -274,8 +274,8 @@ leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len)
 
 		v->noted = true;
 		ereport(NOTICE,
-				(errmsg("sift_col: the strings of leaf %d (attribute %d%s%s) pass %lld bytes in a unit, first in superblock %u: the values after them are stored as overflow and read from the heap",
-						id, d->attno, d->path[0] ? " path " : "", d->path, (long long) budget, b->sb),
+				(errmsg("sift_col: leaf %d (attribute %d%s%s) holds strings over %lld bytes; the rest stay in the heap",
+						id, d->attno, d->path[0] ? " path " : "", d->path, (long long) budget),
 				 errhint("Index an expression that keeps the part of the value that is used, such as left(column, 255).")));
 	}
 	return false;

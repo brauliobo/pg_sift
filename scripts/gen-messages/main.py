@@ -11,9 +11,14 @@ from genlib import call_end, esc, norm, split_args, strip_comments, testing_line
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
-COLS = ['id', 'group', 'level', 'source', 'message', 'detail', 'hint', 'fires', 'when', 'title', 'decision', 'default', 'gain', 'cost', 'benefit', 'tradeoff', 'switch', 'option', 'evidence', 'doc']
+COLS = ['id', 'group', 'level', 'source', 'message', 'detail', 'hint', 'fires', 'when', 'title', 'decision', 'default', 'gain', 'cost', 'benefit', 'tradeoff', 'switch', 'option', 'evidence', 'doc', 'kind', 'choice', 'why', 'off']
+CHOICE_KINDS = ('auto', 'advice', 'limit', 'action')    # a row of the summary of a build, derived from the index by src/col/build/choices.c (kind empty: a message raised where the source says)
+DERIVED_KINDS = ('auto', 'advice', 'limit')             # no emitter of its own: the summary NOTICE and sift.index_choices() are the places it appears
+CHOICES_C = 'src/col/build/choices.c'
+CHOICES_H = 'src/col/build/choices_gen.h'
+LINE_MAX = 100
 GROUPS = {
-    'create': ('CREATE INDEX and REINDEX: choices and advice', 'What the build of a `sift_col` index chose by itself, and what it advises without changing anything. Each choice is made from the statistics and a sample of the table, is written into the options of the index (`auto: ...`), and is kept by a later `REINDEX`.'),
+    'create': ('CREATE INDEX and REINDEX: choices and advice', 'What the build of a `sift_col` index chose by itself, and what it advises without changing anything. Each choice is made from the statistics and a sample of the table, is written into the options of the index (`auto: ...`), and is kept by a later `REINDEX`. The build says them all in one NOTICE (row `index-choices-summary`); the rows of kind CHOICE, ADVICE and LIMIT are the ones `sift.index_choices` returns, with their value on the index.'),
     'limits': ('Limits reached by a build: units without what was asked', 'Where a cap of an option left units without a summary, a list or a dictionary, so a query scans them. The build changed no answer; it says how much of the index is affected.'),
     'maint': ('Maintenance, VACUUM and background workers', 'What the merges, the vacuums and the background workers did or failed to do. A WARNING says a step failed and is retried; `VACUUM VERBOSE` adds the INFO lines.'),
     'planning': ('Planning and execution', 'Why a query kept the normal plan, what the aggregate scan does when a resource it asked for is missing, and the optional GPU path.'),
@@ -92,6 +97,27 @@ def option_text(keys, errors, where):
     return text
 
 
+def derive_ids():
+    """the choices src/col/build/choices.c derives: the first field of each line of its table, {"id", function}"""
+    return set(re.findall(r'^\t\{"([a-z0-9-]+)", ', read(CHOICES_C), re.M))
+
+
+def length_cells(r):
+    """the cells a person reads in the terminal, with their limit: a first line of LINE_MAX characters, a DETAIL of two lines, a HINT of one"""
+    out = [('message', r['message'].split('\n')[0], LINE_MAX), ('detail', r['detail'], 2 * LINE_MAX), ('hint', r['hint'], LINE_MAX)]
+    if r['kind']:
+        out += [('why', r['why'], LINE_MAX), ('off', r['off'], 2 * LINE_MAX)]
+    return out
+
+
+def length_allow():
+    """docs/messages-length.allow: id and cell of the older rows over the limit, until their source is reworded (one per line, tab separated)"""
+    path_ = os.path.join(ROOT, 'docs/messages-length.allow')
+    if not os.path.exists(path_):
+        return set()
+    return {tuple(x.split('\t')[:2]) for x in read('docs/messages-length.allow').split('\n') if x and not x.startswith('#')}
+
+
 def check(rows, emitters, errors):
     seen, ids = {}, set()
     for r in rows:
@@ -108,12 +134,26 @@ def check(rows, emitters, errors):
             errors.append('%s: level %s is none of %s' % (where, r['level'], ', '.join(LEVELS_OK)))
         if r['title'] and not (r['default'] and r['gain'] and r['cost']):
             errors.append('%s: a row with a title (decisions at a glance) needs default, gain and cost' % where)
+        derived = r['kind'] in DERIVED_KINDS
+        if r['kind'] and r['kind'] not in CHOICE_KINDS:
+            errors.append('%s: kind %s is none of %s' % (where, r['kind'], ', '.join(CHOICE_KINDS)))
+        if r['kind']:
+            for c in ('choice', 'why', 'off'):
+                if not r[c]:
+                    errors.append('%s: a row of kind %s needs the cell %s (sift.index_choices shows it)' % (where, r['kind'], c))
+            if derived and r['source'] != CHOICES_C:
+                errors.append('%s: a row of kind %s is derived in %s, not in %s' % (where, r['kind'], CHOICES_C, r['source']))
+        elif r['choice'] or r['why'] or r['off']:
+            errors.append('%s: choice, why and off belong to a row with a kind' % where)
         k = key(r['level'], r['message'])
-        if k in seen:
-            errors.append('%s: the message is also the one of %s' % (where, seen[k]['id']))
-        seen[k] = r
-        e = emitters.get(k)
-        if e is None:
+        if not derived:
+            if k in seen:
+                errors.append('%s: the message is also the one of %s' % (where, seen[k]['id']))
+            seen[k] = r
+        e = None if derived else emitters.get(k)
+        if derived:
+            pass
+        elif e is None:
             errors.append('%s: no %s with this message in src/ or sql/ (stale row; the text of the source: scripts/gen-messages.sh --skeleton)' % (where, r['level']))
         else:
             if r['source'] not in e['files']:
@@ -134,13 +174,31 @@ def check(rows, emitters, errors):
             else:
                 errors.append('%s: evidence %s is not a file' % (where, p))
         have = numbers(evid)
-        for c in ('gain', 'cost', 'benefit', 'tradeoff'):
+        for c in ('gain', 'cost', 'benefit', 'tradeoff', 'why'):
             if not r[c]:
+                continue
+            if c == 'why':
+                for n in sorted(numbers(r[c]) - have):
+                    errors.append('%s: the number %s of why is in no row of docs/options.tsv named in option and in no file of evidence' % (where, n))
                 continue
             for n in sorted(numbers(r[c]) - have):
                 errors.append('%s: the number %s of %s is in no row of docs/options.tsv named in option and in no file of evidence' % (where, n, c))
             if not numbers(r[c]) and NONE not in r[c] and not r[c].startswith('n/a:'):
                 errors.append('%s: %s has no number: give one from the evidence, say "%s", or "n/a: reason"' % (where, c, NONE))
+    code = derive_ids()
+    want = {r['id'] for r in rows if r['kind']}
+    for i in sorted(code - want):
+        errors.append('%s derives "%s", which has no row of a kind in docs/messages.tsv' % (CHOICES_C, i))
+    for i in sorted(want - code):
+        errors.append('docs/messages.tsv: %s has a kind, and %s derives no such choice' % (i, CHOICES_C))
+    allow = length_allow()
+    for r in rows:
+        for what, text, limit in length_cells(r):
+            if len(text) > limit and (r['id'], what) not in allow:
+                errors.append('docs/messages.tsv: %s: %s is %d characters, the limit is %d (plain words, one short line; docs/messages-length.allow lists the old ones)' % (r['id'], what, len(text), limit))
+        for what in ('message', 'detail', 'hint', 'why', 'off', 'decision'):
+            if re.search(r'(^|[\s(])\.\.($|[\s,;)])', r[what]) and (r['id'], what + ' ..') not in allow:
+                errors.append('docs/messages.tsv: %s: %s says ".." for "..."-style shorthand; write the words out' % (r['id'], what))
     for k, e in emitters.items():
         if k not in seen:
             errors.append('no row for the %s of %s: %s (add one to docs/messages.tsv; scripts/gen-messages.sh --skeleton prints it)' % (k[0], ', '.join(sorted(e['files'])), k[1][:100]))
@@ -162,7 +220,8 @@ def unmeasured(rows):
 
 # ---- the document ----
 def msg_cell(r):
-    return '<a id="%s"></a>**%s** `%s`' % (r['id'], r['level'], esc(r['message'].replace('%%', '%')))
+    label = {'auto': 'CHOICE', 'advice': 'ADVICE', 'limit': 'LIMIT', 'action': r['level']}.get(r['kind'], r['level'])
+    return '<a id="%s"></a>**%s** `%s`' % (r['id'], label, esc(r['message'].replace('%%', '%')))
 
 
 def doc_link(r):
@@ -178,6 +237,7 @@ def render(rows):
            'pg_sift tells what it chose on its own and what it advises, in the message levels the client shows by default: **%d NOTICE**, **%d WARNING** and **%d INFO** (the lines `VACUUM VERBOSE` adds). Every message has one row below: the exact text (`%%s`, `%%d`, `%%u`, `%%.0f` are the values it fills in), where and when it appears, the decision pg_sift took, the benefit and the trade-off of that decision with a measured number, and how to change it or switch it off. A cell that says *%s* is a measurement nobody made yet.' % (levels['NOTICE'], levels['WARNING'], levels['INFO'], NONE),
            '',
            '- `SET client_min_messages = warning` hides the NOTICEs and the INFO lines for the session; the choice they report is made either way. `ALTER DATABASE .. SET client_min_messages = warning` or `ALTER ROLE` keeps it.',
+           '- `CREATE INDEX` and `REINDEX` of a `sift_col` index print ONE NOTICE for all the choices they made, the advice and the limits they reached: the count, the values on two lines, and a HINT that names `SELECT * FROM sift.index_choices(\'index\')`. That function returns one row of this page for each choice (the **CHOICE**, **ADVICE** and **LIMIT** rows below): its value on the index, the cost measured on it, the reason and the command that turns it off. `SELECT * FROM sift.help(\'slug\')` returns any row of this page by its anchor, and `sift.help()` all of them.',
            '- The DETAIL and HINT of a message are listed in full [at the end](#detail-and-hint-in-full). An ERROR with its HINT is not in this table: the refusals of the aggregate scan are in [USAGE](USAGE.md#why-a-query-kept-the-normal-plan) and the limits in [LIMITS](LIMITS.md). LOG and DEBUG messages go to the server log, not to the client, and are not listed.',
            '- Numbers are in the units of their source: instructions of one backend, milliseconds, bytes, percent of the index; the conditions (rows, columns, version) are in the cited option case of [OPTIONS](OPTIONS.md).',
            '', '## Decisions at a glance', '',
@@ -199,6 +259,24 @@ def render(rows):
     return '\n'.join(out) + '\n'
 
 
+def cstr(t):
+    return '"' + t.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+
+
+def render_header(rows):
+    """src/col/build/choices_gen.h: the rows as the table sift.help() and sift.index_choices() read, so that the text of a message is written once (docs/messages.tsv)"""
+    out = ['/* Generated by scripts/gen-messages.sh from docs/messages.tsv; do not edit. */', '',
+           'typedef struct SiftMsgRow', '{']
+    out += ['\tconst char *%s;' % c for c in ('id', 'kind', 'choice', 'level', 'message', 'detail', 'hint', 'decision', 'why', 'off', 'typical', 'doc')]
+    out += ['} SiftMsgRow;', '', 'static const SiftMsgRow sift_msg_rows[] = {']
+    for r in rows:
+        typical = r['cost'] if r['title'] and not r['cost'].startswith('n/a') and NONE not in r['cost'] else ''
+        cells = [r['id'], r['kind'], r['choice'], r['level'], r['message'], r['detail'], r['hint'], r['decision'], r['why'], r['off'], typical, r['doc']]
+        out.append('\t{' + ', '.join(cstr(c) for c in cells) + '},')
+    out += ['};', '']
+    return '\n'.join(out)
+
+
 # ---- the selftest ----
 def selftest():
     errors = []
@@ -215,6 +293,10 @@ def selftest():
         ('a changed hint', lambda r: [dict(next(x for x in r if x['hint']), hint='another hint')] + [x for x in r if not x['hint']], 'in the source'),
         ('an invented number', lambda r: [dict(r[0], benefit=r[0]['benefit'] + ' and 987654.321 times')] + r[1:], 'is in no row'),
         ('an unknown option', lambda r: [dict(r[0], option='sift.no_such_setting')] + r[1:], 'has no row in docs/options.tsv'),
+        ('a derived choice without a row', lambda r: [x for x in r if x['kind'] != 'auto'], 'derives'),
+        ('a row with a kind that nothing derives', lambda r: r + [dict(r[0], id='nothing-derives', kind='auto', source=CHOICES_C, choice='x', why='x', off='x', message='nothing derives')], 'derives no such choice'),
+        ('a first line over the limit', lambda r: [dict(r[0], message='x' * 130)] + r[1:], 'characters'),
+        ('a shorthand with two dots', lambda r: [dict(r[0], decision='run ALTER INDEX .. SET (x)')] + r[1:], 'shorthand'),
     ]
     for name, mutate, want in cases:
         errs = []
@@ -248,12 +330,13 @@ else:
             print('%s\t%s' % (i, ' '.join(cs)))
         print('messages: %d of %d rows have a cell without a measured number' % (len(unmeasured(rows)), len(rows)), file=sys.stderr)
     elif not errors:
-        text = render(rows)
-        if mode == '--check' and read('docs/MESSAGES.md') != text:
-            errors.append('docs/MESSAGES.md is not what docs/messages.tsv generates: run scripts/gen-messages.sh')
-        elif mode == 'write':
-            with open(os.path.join(ROOT, 'docs/MESSAGES.md'), 'w', encoding='utf-8') as f:
-                f.write(text)
+        outputs = {'docs/MESSAGES.md': render(rows), CHOICES_H: render_header(rows)}
+        for name, text in outputs.items():
+            if mode == '--check' and read(name) != text:
+                errors.append('%s is not what docs/messages.tsv generates: run scripts/gen-messages.sh' % name)
+            elif mode == 'write':
+                with open(os.path.join(ROOT, name), 'w', encoding='utf-8') as f:
+                    f.write(text)
         if not errors:
             by = {l: sum(r['level'] == l for r in rows) for l in LEVELS_OK}
             print('messages: ok, %d messages (%s)' % (len(rows), ', '.join('%d %s' % (by[l], l) for l in LEVELS_OK)))

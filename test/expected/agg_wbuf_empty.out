@@ -11,9 +11,9 @@ SET enable_indexonlyscan = off;
 CREATE TABLE we (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = off);
 INSERT INTO we SELECT i, i % 5, i FROM generate_series(1, 20000) i;
 CREATE INDEX we_col ON we USING sift_col (id, g, v);
-NOTICE:  sift_col index "we_col" installed two statement triggers on table "we" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "we_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('we_col');
 BEGIN;
 INSERT INTO we VALUES (500000, 1, 1);
 ROLLBACK;

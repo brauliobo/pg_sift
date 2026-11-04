@@ -7,23 +7,58 @@
 
 #include "catalog/pg_statistic.h"
 #include "catalog/index.h"
+#include "access/htup_details.h"
 #include "executor/spi.h"
+#include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "col/keycols/keycols_int.h"
 
 
-/* the rows of the heap: pg_class's estimate, the planner's from the pages when the table was never vacuumed or analyzed (reltuples -1: a table loaded and indexed in one go) */
+/* the live rows per page of a table that no VACUUM or ANALYZE has counted: those of up to 32 pages spread over it. The planner's guess from the widths of the columns is 16 times too many for a table of 1,000-byte strings,
+ * and what an earlier CREATE INDEX leaves in pg_class differs between PostgreSQL 17 (the count of that build) and 18 (nothing), so the same table was analyzed by one and not by the other */
+static double
+keycols_sampled_density(Relation heap, BlockNumber nblocks)
+{
+	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKREAD);
+	BlockNumber step = Max(nblocks / 32, 1);
+	double		rows = 0;
+	int			pages = 0;
+
+	for (BlockNumber blkno = 0; blkno < nblocks && pages < 32; blkno += step, pages++)
+	{
+		Buffer		buf = ReadBufferExtended(heap, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
+		Page		page;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		if (!PageIsNew(page))
+			for (OffsetNumber off = FirstOffsetNumber; off <= PageGetMaxOffsetNumber(page); off++)
+			{
+				ItemId		lp = PageGetItemId(page, off);
+
+				/* a deleted row has lost the flag that an insert sets */
+				if (ItemIdIsNormal(lp) && (((HeapTupleHeader) PageGetItem(page, lp))->t_infomask & HEAP_XMAX_INVALID))
+					rows++;
+			}
+		UnlockReleaseBuffer(buf);
+	}
+	FreeAccessStrategy(strategy);
+	return pages > 0 ? rows / pages : 0;
+}
+
+/* the rows of the heap: the planner's estimate (the rows pg_class holds per page, times the pages now), or the density of a sample of the pages when the table was never vacuumed or analyzed (reltuples -1: a table loaded and indexed in one go) */
 double
 keycols_heap_rows(Relation heap)
 {
 	BlockNumber pages;
 	double		tuples,
 				allvis;
+	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
-	if (heap->rd_rel->reltuples >= 0)
-		return heap->rd_rel->reltuples;
+	if (heap->rd_rel->reltuples < 0 || heap->rd_rel->relpages == 0)
+		return nblocks * keycols_sampled_density(heap, nblocks);
 	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvis);
 	return tuples;
 }

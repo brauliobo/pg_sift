@@ -1,5 +1,5 @@
 /*
- * agg/order/drop.c - a Sort the scan below it can do without
+ * agg/order/drop.c - a Sort the scan below it can do without, the OFFSET of a Limit it takes over
  *
  * A scan under a window emits its groups in the order of the window (agg/plan_ord.c), but an ORDER BY above the window (of a sub-select or a CTE that
  * keeps the rows of one period) is another order and PostgreSQL puts a Sort there, of rows that are all there is. PostgreSQL asks the scan for one order
@@ -7,6 +7,9 @@
  * chain from the Sort down to the scan is known: sub-selects that pass the columns through, and at most one window. The window needs its partitions
  * together and the rows of a partition in its own order, so a scan that emits the Sort's keys, then the rest of the partition keys, then the window's
  * keys, serves both; the Sort goes. The rows a filter above the window drops leave the others in the Sort's order.
+ *
+ * A top-N scan that is the output as it is skips the OFFSET rows without reading them (TOPN_SKIP_OFFSET): the Limit above it has no OFFSET to throw
+ * them away, so the scan neither returns nor makes a row for each.
  */
 #include "postgres.h"
 
@@ -18,6 +21,7 @@
 
 #include "agg/agg.h"
 #include "agg/spec.h"
+#include "agg/topn.h"
 
 static Node *
 unrelabel(Node *n)
@@ -262,6 +266,29 @@ sort_scan(Sort *srt, SiftAggOrd *ord, int *n)
 
 static Plan *drop_sorts(Plan *p);
 
+/* the scan under a Limit skips its OFFSET, so the Limit has none; else the scan returns those rows for the Limit to throw away */
+static void
+take_offset(Limit *lim)
+{
+	Plan	   *in = lim->plan.lefttree;
+	CustomScan *cs = (CustomScan *) in;
+	SiftAggSpec *s;
+
+	if (lim->limitOffset == NULL || !sift_scan(in))
+		return;
+	s = sift_aggspec_unpack(cs->custom_private);
+	if (s->topn == NULL)
+		return;
+	if (lim->limitOption == LIMIT_OPTION_COUNT && sift_topn_skips_offset(s->topn, lim->limitOffset))
+	{
+		lim->limitOffset = NULL;
+		in->plan_rows = lim->plan.plan_rows;
+	}
+	else
+		sift_topn_keep_offset(s->topn);
+	cs->custom_private = sift_aggspec_pack(s);
+}
+
 /* the Sort goes when the scan below it can emit its order: the plan under it, or NULL */
 static Plan *
 drop_sort(Sort *srt)
@@ -316,6 +343,9 @@ drop_sorts(Plan *p)
 		case T_Sort:
 			if ((below = drop_sort((Sort *) p)) != NULL)
 				return below;
+			break;
+		case T_Limit:
+			take_offset((Limit *) p);
 			break;
 		default:
 			break;

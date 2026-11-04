@@ -165,22 +165,38 @@ sift_col_row_key_check(Relation index)
 	table_close(heap, NoLock);
 }
 
-/* The partitions of one CREATE INDEX on a partitioned table have the same reason: said for the first only (by the start of the statement) */
-static bool
-quiet_partition(Relation index, const char *why)
+/*
+ * Why an index whose track_changes is 'auto' tracks nothing, NULL when it can (a short phrase for the summary of the build): the table has no primary key of one column, the index
+ * does not hold it, point_tid_columns is off, a statement trigger cannot hear the table, or sift.col_format_minor lets an older library read the index (the log is a directory kind that a library before 4.0
+ * refuses: a rewrite at a lowered minor, the rollback of docs/UPGRADING.md, drops what an earlier build chose). *pk is the key column when there is one.
+ */
+const char *
+sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk)
 {
-	static TimestampTz stmt;
-	static const char *last;
-	bool		same = index->rd_rel->relispartition && stmt == GetCurrentStatementStartTimestamp() && last == why;
+	const char *why = NULL;
+	bool		held = false;
 
-	stmt = GetCurrentStatementStartTimestamp();
-	last = why;
-	return same;
+	*pk = primary_key_att(heap);
+	if (*pk == InvalidAttrNumber)
+		return "the table has no one-column primary key";
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		held |= index->rd_index->indkey.values[i] == *pk;
+	if (!held)
+		return "the index lacks the primary key column";
+	if (strcmp(sift_col_options_point_tid_columns(index), "off") == 0)
+		return "point_tid_columns is off";
+	why = sift_col_track_deaf(heap);
+	if (why != NULL)
+		return strstr(why, "partition") ? "the table is a partition or a parent" : "the table is a subscription target";
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+		return "sift.col_format_minor is below 15";
+	return NULL;
 }
 
 /*
- * Before a build: 'auto' (the default) becomes the primary key, or off with a NOTICE that says why when there is none of one column, the index does not hold it, or a statement trigger
- * cannot hear the table (a column the user named has no such way out: a table the triggers cannot hear is an error, in sift_col_track_check). The column is checked, and the point directory of heap addresses that finds its entries lists it (the option
+ * Before a build: 'auto' (the default) becomes the primary key, or stays 'auto' when there is none of one column, the index does not hold it, or a statement trigger
+ * cannot hear the table (the summary of the build says why; a column the user named has no such way out: a table the triggers cannot hear is an error, in
+ * sift_col_track_check). The column is checked, and the point directory of heap addresses that finds its entries lists it (the option
  * point_tid_columns gets the column when it does not name it, and keeps its automatic choice).
  */
 void
@@ -189,8 +205,6 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 	const char *rk = sift_col_options_row_key(index);
 	const char *tid;
 	StringInfoData v;
-
-	const char *why = NULL;
 	bool		autokey = strcmp(rk, "auto") == 0;
 	AttrNumber	pk = InvalidAttrNumber;
 
@@ -198,39 +212,17 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 		return;
 	if (autokey)
 	{
-		pk = primary_key_att(heap);
-		if (pk == InvalidAttrNumber)
-			why = "the table has no primary key of one column";
-		else
-		{
-			bool		held = false;
-
-			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-				held |= index->rd_index->indkey.values[i] == pk;
-			if (!held)
-				why = "the index does not hold the primary key column";
-			else if (strcmp(sift_col_options_point_tid_columns(index), "off") == 0)
-				why = "point_tid_columns is 'off', and the key is found through its directory";
-			else
-				why = sift_col_track_deaf(heap);
-		}
-	}
-	/* the log is a directory kind that a library before 4.0 refuses: a rewrite at a lowered minor (the rollback of docs/UPGRADING.md) drops what an earlier build chose */
-	if (why == NULL && sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
-		why = "sift.col_format_minor is below 15, so that an older library can read the index";
-	if (why != NULL)
-	{
-		if (!quiet_partition(index, why))
-			ereport(NOTICE, (errmsg("sift_col index \"%s\" does not track changes: %s", RelationGetRelationName(index), why),
-							 errhint("Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.")));
-		if (!autokey)
-			sift_col_set_option(index, "track_changes", "off");
-		return;
-	}
-	if (autokey)
-	{
+		if (sift_col_row_key_why(heap, index, &pk) != NULL)
+			return;
 		sift_col_set_option(index, "track_changes", get_attname(RelationGetRelid(heap), pk, false));
 		rk = sift_col_options_row_key(index);
+	}
+	else if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+	{
+		ereport(NOTICE, (errmsg("sift_col index \"%s\" does not track changes: sift.col_format_minor is below 15", RelationGetRelationName(index)),
+						 errhint("Raise sift.col_format_minor to 15 or more to track changes, or write WITH (track_changes = 'off').")));
+		sift_col_set_option(index, "track_changes", "off");
+		return;
 	}
 	check_column(heap, index, rk, true);
 	tid = sift_col_options_point_tid_columns(index);
@@ -261,6 +253,72 @@ own_entry(const SiftTombLog *log, uint64 key)
 }
 
 #define DEAD_KEYS_CHUNK	8192
+#define DEAD_SHARE_MAX	(4 << 20)
+
+/*
+ * The dead addresses one statement found, for the next index of the table whose trigger asks for the same keys of the same old rows: they are a fact of the table, so the
+ * unique index is probed once for all the indexes that track it. Kept in the backend until the transaction ends (at most DEAD_SHARE_MAX addresses, 32 MB; a statement
+ * with more is probed again by each index), and only when another index of the table is going to ask.
+ */
+static struct
+{
+	Oid			heap;
+	Oid			uoid;
+	Tuplestorestate *old;
+	CommandId	cid;
+	SubTransactionId sub;
+	MemoryContext cxt;
+	uint64	   *keys;
+	int			n;
+	int			cap;
+	bool		whole;			/* the probe finished and kept every address */
+} dead_share;
+
+static void
+dead_share_reset(XactEvent event, void *arg)
+{
+	if (dead_share.cxt != NULL)
+		MemoryContextDelete(dead_share.cxt);
+	memset(&dead_share, 0, sizeof(dead_share));
+}
+
+static bool
+dead_share_is(Relation heap, Oid uoid, Tuplestorestate *old)
+{
+	return dead_share.whole && dead_share.heap == RelationGetRelid(heap) && dead_share.uoid == uoid && dead_share.old == old &&
+		dead_share.cid == GetCurrentCommandId(false) && dead_share.sub == GetCurrentSubTransactionId();
+}
+
+/* Does another index of the table track the same key (its trigger will ask for the same addresses)? */
+static bool
+other_tracker(Relation index, Relation heap, AttrNumber hatt)
+{
+	foreach_oid(oid, RelationGetIndexList(heap))
+	{
+		Relation	other;
+		bool		same;
+
+		if (oid == RelationGetRelid(index))
+			continue;
+		other = index_open(oid, AccessShareLock);
+		same = sift_col_is_index(other) && sift_col_row_key_on(other) && other->rd_index->indkey.values[sift_col_rel(other)->rowkey_attno - 1] == hatt;
+		index_close(other, AccessShareLock);
+		if (same)
+			return true;
+	}
+	return false;
+}
+
+/* The tombstone of an address the log does not hold from this transaction yet, in the chunk */
+static void
+add_dead(SiftTomb **ents, int *nents, int *cap, const SiftTombLog *log, uint64 key)
+{
+	if (own_entry(log, key))
+		return;
+	if (*nents == *cap)
+		*ents = repalloc(*ents, (*cap *= 2) * sizeof(SiftTomb));
+	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE};
+}
 
 /*
  * A tombstone for each address the table's unique index lists for the key of each old row that no version is live for (a dirty snapshot: a version of an open transaction,
@@ -287,6 +345,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	SiftTomb   *ents;
 	int			cap = 1024;
 	bool		more = true;
+	bool		keep;
 
 	if (!OidIsValid(uoid))
 	{
@@ -300,6 +359,34 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 		sift_col_log_create(index);
 		log = sift_col_log(index);
 	}
+	ents = palloc(cap * sizeof(SiftTomb));
+	if (dead_share_is(heap, uoid, old_rows))
+	{
+		for (int done = 0; done < dead_share.n;)
+		{
+			int			nents = 0;
+
+			for (int end = Min(done + DEAD_KEYS_CHUNK, dead_share.n); done < end; done++)
+				add_dead(&ents, &nents, &cap, log, dead_share.keys[done]);
+			if (nents > 0)
+				sift_tomb_append_many(index, log, ents, nents);
+		}
+		pfree(ents);
+		return;
+	}
+	keep = other_tracker(index, heap, hatt);
+	if (keep)
+	{
+		static bool registered;
+
+		if (!registered)
+		{
+			RegisterXactCallback(dead_share_reset, NULL);
+			registered = true;
+		}
+		dead_share_reset(XACT_EVENT_COMMIT, NULL);
+		dead_share.cxt = AllocSetContextCreate(TopMemoryContext, "sift dead share", ALLOCSET_DEFAULT_SIZES);
+	}
 	uidx = index_open(uoid, AccessShareLock);
 	intype = uidx->rd_opcintype[0];
 	eq = get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber));
@@ -309,7 +396,6 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
 	seen = table_slot_create(heap, NULL);
 	chunk_cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead keys", ALLOCSET_DEFAULT_SIZES);
-	ents = palloc(cap * sizeof(SiftTomb));
 	tuplestore_rescan(old_rows);
 	while (more)
 	{
@@ -342,11 +428,25 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 				bool		again = false,
 							all_dead;
 
-				if (!table_index_fetch_tuple(fetch, &tid, &dirty, seen, &again, &all_dead) && !own_entry(log, sift_key_from_tid(t)))
+				if (table_index_fetch_tuple(fetch, &tid, &dirty, seen, &again, &all_dead))
+					continue;
+				add_dead(&ents, &nents, &cap, log, sift_key_from_tid(t));
+				if (keep)
 				{
-					if (nents == cap)
-						ents = repalloc(ents, (cap *= 2) * sizeof(SiftTomb));
-					ents[nents++] = (SiftTomb) {.key = sift_key_from_tid(t), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE};
+					if (dead_share.n == DEAD_SHARE_MAX)
+						keep = false;
+					else
+					{
+						if (dead_share.n == dead_share.cap)
+						{
+							MemoryContext oldcxt = MemoryContextSwitchTo(dead_share.cxt);
+
+							dead_share.cap = dead_share.cap ? dead_share.cap * 2 : 1024;
+							dead_share.keys = dead_share.keys ? repalloc(dead_share.keys, dead_share.cap * sizeof(uint64)) : palloc(dead_share.cap * sizeof(uint64));
+							MemoryContextSwitchTo(oldcxt);
+						}
+						dead_share.keys[dead_share.n++] = sift_key_from_tid(t);
+					}
 				}
 			}
 		}
@@ -354,6 +454,17 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 		if (nents > 0)
 			sift_tomb_append_many(index, log, ents, nents);
 	}
+	if (keep)
+	{
+		dead_share.heap = RelationGetRelid(heap);
+		dead_share.uoid = uoid;
+		dead_share.old = old_rows;
+		dead_share.cid = GetCurrentCommandId(false);
+		dead_share.sub = GetCurrentSubTransactionId();
+		dead_share.whole = true;
+	}
+	else
+		dead_share_reset(XACT_EVENT_COMMIT, NULL);
 	pfree(ents);
 	MemoryContextDelete(chunk_cxt);
 	ExecDropSingleTupleTableSlot(seen);

@@ -17,10 +17,8 @@ INSERT INTO ag VALUES (200000, 100000, 1, timestamp '2024-02-02', 'one');
 ANALYZE ag;
 -- no key_cut: the default formula (key_cut 'auto') now cuts this table by ts, which this test is not about (col_key_cut_auto and col_key_cut_narrow are)
 CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad) WITH (key_cut = 'off');
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 82.0% of 467 chunks, exact in the rest, 3.4 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------
@@ -104,7 +102,6 @@ SELECT sift.col_promote('ag_i'::regclass) >= 0 AS promoted;
 (1 row)
 
 SELECT sift.col_merge('ag_i'::regclass, true) >= 0 AS merged;
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
  merged 
 --------
  t
@@ -123,10 +120,8 @@ SELECT sift.col_verify('ag_i');
 (1 row)
 
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 78.0% of 477 chunks, exact in the rest, 3.5 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------
@@ -142,10 +137,8 @@ SELECT ag_chk('SELECT id, ts FROM ag WHERE g = 7 ORDER BY ts, id LIMIT 20') AS r
 -- the user's: off keeps the plain order only; a column named groups every array and keeps no plain order (a scan that does not pin it reads the units)
 ALTER INDEX ag_i SET (order_array_group = 'off');
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 73.8% of 240 chunks, exact in the rest, 3.3 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                            reloptions                                            
 -------------------------------------------------------------------------------------------------
@@ -160,10 +153,8 @@ SELECT ag_chk('SELECT id, ts FROM ag WHERE g = 7 ORDER BY ts, id LIMIT 20') AS o
 
 ALTER INDEX ag_i SET (order_array_group = 'v', order_array_columns = 'ts', order_columns = 'ts');
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 95.8% of 240 chunks, exact in the rest, 3.1 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                reloptions                                               
 --------------------------------------------------------------------------------------------------------
@@ -180,10 +171,8 @@ ALTER INDEX ag_i RESET (order_array_group);
 ALTER INDEX ag_i RESET (order_array_columns);
 ALTER INDEX ag_i RESET (order_columns);
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of ts
-NOTICE:  sift_col index "ag_i": order_layout: ts: rounded keys in 78.0% of 477 chunks, exact in the rest, 3.5 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                 reloptions                                                 
 -----------------------------------------------------------------------------------------------------------
@@ -194,11 +183,8 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 UPDATE ag SET g = id;
 ANALYZE ag;
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i" does not track changes: the table has no primary key of one column
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": point_tid_columns = 'auto' chooses "g" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +3%, 3 bytes a row, benefit 28 against cost 5)
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' keeps sorted arrays of id, g, ts
-NOTICE:  sift_col index "ag_i": order_layout: id: exact keys, 2.6 bytes a row; g: exact keys, 2.6 bytes a row; ts: rounded keys in 70.8% of 240 chunks, exact in the rest, 3.4 bytes a row
+NOTICE:  sift_col index "ag_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                                  reloptions                                                 
 ------------------------------------------------------------------------------------------------------------

@@ -17,6 +17,7 @@ Reads are repeated in place; a maintenance statement or a load (kind != read) ch
 `monitor`, a second session that counts the parallel workers while the statement runs.
 """
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,7 +71,8 @@ class Arm:
 class Env:
     """the build and the harness: the commit (12 hex digits), the harness name, the run id, the cpu quota, the repetitions and whether the server runs with the maintenance disabled"""
 
-    def __init__(self, tip, harness, run, cpus, reps=3, cool=None, maintenance='default'):
+    def __init__(self, tip, harness, run, cpus, reps=3, cool=None, maintenance='default', arm_budget=None):
+        self.arm_budget = arm_budget   # seconds one arm may take over all its repetitions: past it the arm is recorded as unavailable (ArmTimeout) and the run goes on
         self.maintenance = maintenance   # 'disabled' declares that the server runs with the maintenance off (a test cluster's configuration): check.py refuses the set otherwise
         self.tip, self.harness, self.run_id, self.cpus, self.reps, self.cool = tip, '%s %s' % (harness, schema.LIBRARY), run, cpus, reps, cool
 
@@ -133,6 +136,24 @@ def plan_facts(doc, index_am, table=None, index_table=None):
     gathers = [n for n in plan_nodes(plan) if n.get('Node Type') in ('Gather', 'Gather Merge')]
     return (doc.get('Planning Time'), doc.get('Execution Time'), plan.get('Total Cost'), plan_structure(plan, index_am, table, index_table),
             sum(n.get('Workers Planned', 0) for n in gathers), sum(n.get('Workers Launched', 0) for n in gathers))
+
+
+def plan_shape(plan):
+    """the shape of a plan as text: the node type (with its join type, aggregate strategy and parallel mode), the relation, index or custom scan provider it reads, and its children in
+    parentheses; no cost, row count or time, so two runs of one plan have one shape"""
+    label = ('Parallel ' if plan.get('Parallel Aware') else '') + plan.get('Node Type', '?')
+    for key in ('Join Type', 'Strategy', 'Partial Mode'):
+        if plan.get(key) and plan[key] not in ('Plain', 'Simple'):
+            label += '[%s]' % plan[key]
+    what = plan.get('Index Name') or plan.get('Relation Name') or plan.get('Custom Plan Provider')
+    label += ' %s' % what if what else ''
+    kids = [plan_shape(p) for p in plan.get('Plans', [])]
+    return label + ('(%s)' % ', '.join(kids) if kids else '')
+
+
+def plan_hash(shape):
+    """twelve hex digits of a plan shape"""
+    return hashlib.sha1(shape.encode()).hexdigest()[:12]
 
 
 def cache_dropped(how):
@@ -409,9 +430,18 @@ def run_all(s, sql):
     for st in [sql] if isinstance(sql, str) else sql:
         took, _, err, *_ = s.run(st)
         if err:
-            raise RuntimeError('%s: %s' % (st[:80], err))
+            raise failed(st[:80], err)
         ms += took
     return ms
+
+
+class ArmTimeout(RuntimeError):
+    """a statement of an arm reached the statement timeout, or the arm used its time budget: the reason. The arm is recorded as unavailable and the other arms and the run go on"""
+
+
+def failed(what, err):
+    """the exception for the error ERR of a statement: the statement timeout belongs to the arm (ArmTimeout), any other error stops the run"""
+    return (ArmTimeout if 'statement timeout' in err else RuntimeError)('%s: %s' % (what, err))
 
 
 class PerfUnavailable(RuntimeError):
@@ -573,6 +603,13 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
             if unavailable is not None:
                 unavailable.append((arm.arm, arm.option, e.structure))
             continue
+        except ArmTimeout as e:
+            if mode == 'default':
+                raise   # the plan the planner chooses is what the others are compared with: no arm to put in its place
+            out.append(dict(base, mode='unavailable', arm=arm.arm, arm_option=arm.option, picked=0, structure=arm.arm, temp='warm', rep=1, workers_requested=0, workers_launched=0))
+            if unavailable is not None:
+                unavailable.append((arm.arm, arm.option, 'timeout: %s' % e))
+            continue
         finally:
             s.run('RESET ALL')
             for st in restore:
@@ -585,7 +622,31 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
             for r in rows:
                 r['picked'] = 1 if (r['arm'], r['arm_option']) == default else 0
         out += rows
+    if read:
+        match_default(out)
     return out
+
+
+def match_default(rows):
+    """the arms that ran the plan the planner chose, matched by plan hash: their rows are picked, the others are not, and the default rows name the option of the arm that ran their plan
+    (the one of the structure the plan names, `default` first). Without hashes, or when the planner's plan changed between its repetitions, the structure and option rule stands"""
+    hashes = {r['plan_hash'] for r in rows if r['mode'] == 'default' and r.get('plan_hash')}
+    if len(hashes) != 1:
+        return
+    ran = defaultdict(set)
+    for r in rows:
+        if r['mode'] == 'forced' and r.get('plan_hash'):
+            ran[(r['arm'], r['arm_option'])].add(r['plan_hash'])
+    matched = {k for k, h in ran.items() if h == hashes}
+    for r in rows:
+        if r['mode'] == 'forced':
+            r['picked'] = int((r['arm'], r['arm_option']) in matched)
+    structure = next((r['structure'] for r in rows if r['mode'] == 'default'), None)
+    options = sorted((k[1] != 'default', k[1]) for k in matched if k[0] == structure)
+    if options:
+        for r in rows:
+            if r['mode'] == 'default':
+                r['arm_option'] = options[0][1]
 
 
 class NotForced(Exception):
@@ -624,11 +685,12 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
         run_all(s, sql)
         _, rows, err, *_ = s.run(explain())
         if err:
-            raise RuntimeError('EXPLAIN: %s' % err)
+            raise failed('EXPLAIN', err)
         _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
         if mode == 'forced' and structure != arm.arm:
             raise NotForced(structure)   # the plan without ANALYZE named the arm, the executed one does not: a node that falls back to the heap when it runs
     out = []
+    began = time.monotonic()
 
     @contextlib.contextmanager
     def on_session():   # the session of a repetition: S, or a backend of its own for a fresh lane
@@ -667,14 +729,16 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                 if held is not None and set(held.split(',')) != set(declared.split(',')):
                     raise RuntimeError('%s holds %s after the statement, the harness declared %s' % (subject.table, held, declared))
             p1 = pressure()
-            plan_ms = exec_ms = None
+            plan_ms = exec_ms = shape = None
             if read:
                 with on_session() as t:
                     _, rows, err, *_ = t.run(explain())
                 if err:
-                    raise RuntimeError('EXPLAIN: %s' % err)
-                plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
+                    raise failed('EXPLAIN', err)
+                doc = json.loads('\n'.join(rows))[0]
+                plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(doc, *catalog)
                 cost = cost2 if cost2 is not None else cost
+                shape = plan_shape(doc['Plan'])
                 if mode == 'forced' and structure != arm.arm:
                     raise NotForced(structure)
             table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
@@ -695,7 +759,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                 requested = launched   # a maintenance statement has no plan that asks for workers: the cap is the setting, the workers it started are what the record can say
             if temp == 'cold':
                 plan_ms = exec_ms = None   # the EXPLAIN ran on a warm table after the statement
-            r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
+            r = dict(base, mode=mode, arm=arm.arm, arm_option=arm.option, picked=0, structure=structure, plan_hash=plan_hash(shape) if shape else None, plan_shape=shape[:1000] if shape else None, temp=temp, rep=rep, est_cost=cost, plan_ms=plan_ms, exec_ms=exec_ms, wall_ms=ms,
                      instr_m=instr, cycles_m=cycles, instr_scope='cluster' if instr is not None else None, instr_n=repeats if instr is not None and temp == 'warm' else None, instr_leader_m=leader, instr_workers_m=workers_m,
                      workers_requested=requested, workers_launched=launched, os_cache_dropped=cache_dropped(how) if how else None, wal_bytes=lsn1 - lsn0, table_bytes=table_bytes, index_bytes=index_bytes,
                      segments_declared=arm.segments, **facts, noise=int(max(x or 0 for x in p0 + p1) > check.NOISY_PSI), psi_cpu_start=p0[0], psi_io_start=p0[1], psi_cpu_end=p1[0], psi_io_end=p1[1])
@@ -705,4 +769,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
             if arm.keep and fresh:
                 r['protocol'] = 'single'
             out.append(r)
+            used = time.monotonic() - began
+            if env and env.arm_budget and used > env.arm_budget and (temp, rep) != (temps[-1], env.reps):
+                raise ArmTimeout('the time budget of %d s is used (%.0f s) after %d repetitions of %d' % (env.arm_budget, used, len(out), len(temps) * env.reps))
     return out

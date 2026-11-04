@@ -9,20 +9,17 @@ INSERT INTO ordered SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_se
 CREATE INDEX ordered_k ON ordered (k);
 -- point_tid_columns is named: the default chooses id by the statistics of the table, which PostgreSQL 17 and 18 do not give alike at this point
 CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v) WITH (point_tid_columns = 'id');
-NOTICE:  sift_col index "ordered_col": rollup_dims = 'auto' writes a rollup of the rows by k, v
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX ordered_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ordered_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ordered_col": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
+NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, v; point_tid_columns = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
+NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CLUSTER ordered USING ordered_k;
-NOTICE:  sift_col index "ordered_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ordered_col": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
+NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, v; point_tid_columns = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
+NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 -- the statistics of every row, not of a random sample: the cost of the normal plan moved by 15% from one ANALYZE to the next, and the refusals below
 -- are decided by a few percent. k < 3 sits 23% above the btree's price with the empty map (k < 4 is below it).
 SET default_statistics_target = 1000;

@@ -8,3 +8,6 @@ bench/steps/builds.sh	the releases of the product built once each for the benchm
 scripts/lint-cache.sh	the passes of the lint, a few kB, read to skip a check that passed
 scripts/pg-assert.sh	the PostgreSQL build with assertions and the Perl modules, built once and read afterwards
 scripts/old-lib-check.sh	the older release library, built once; its clusters are under /dev/shm
+bench/steps/lib.sh	the cells of the servers that are not under test, a few MB of JSON, written once per pass and read by the next (a reboot emptied the tmpfs they were on)
+bench/steps/store.py	the default of the same cache directory
+bench/README.md	the text that names the cache directory

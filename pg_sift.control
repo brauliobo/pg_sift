@@ -1,5 +1,5 @@
-comment = 'pg_sift: CTID-bitmap full-text search index with BM25 ranking'
-default_version = '4.0'
+comment = 'Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search'
+default_version = '4.0.3'
 module_pathname = '$libdir/pg_sift'
 schema = sift
 relocatable = false

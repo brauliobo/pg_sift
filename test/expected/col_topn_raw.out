@@ -23,9 +23,9 @@ SELECT oc_rows(1, 6000);
 (1 row)
 
 CREATE INDEX oc_col ON oc USING sift_col (id, g, u, b, w);
-NOTICE:  sift_col index "oc_col" installed two statement triggers on table "oc" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "oc_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oc_col');
 VACUUM (ANALYZE) oc;
 CREATE FUNCTION oc_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -314,9 +314,9 @@ SELECT sift.col_verify('oc_col', true);
 CREATE TABLE ob (id int PRIMARY KEY, b bytea, pad text DEFAULT repeat('x', 1500));
 INSERT INTO ob (id, b) SELECT i, decode(substr(md5(i::text) || md5((i * 7)::text), 1, 2 * (i % 41)), 'hex') FROM generate_series(1, 4000) i;
 CREATE INDEX ob_col ON ob USING sift_col (id, b);
-NOTICE:  sift_col index "ob_col" installed two statement triggers on table "ob" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ob_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ob_col');
 VACUUM (ANALYZE) ob;
 SELECT r, count(*) AS runs FROM (
 	SELECT oc_check($q$SELECT id, b FROM ob ORDER BY b, id LIMIT 900$q$) AS r FROM generate_series(1, 8)) x GROUP BY r;
@@ -338,8 +338,12 @@ CREATE TABLE op_a PARTITION OF op FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE op_b PARTITION OF op FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO op (id, g, u, b, w) SELECT id, g, u, b, w FROM oc WHERE id <= 5000;
 CREATE INDEX op_col ON op USING sift_col (id, g, u, b, w);
-NOTICE:  sift_col index "op_a_id_g_u_b_w_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "op_a_id_g_u_b_w_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('op_a_id_g_u_b_w_idx');
+NOTICE:  sift_col index "op_b_id_g_u_b_w_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('op_b_id_g_u_b_w_idx');
 VACUUM (ANALYZE) op;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM op ')) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'uuid_filter', 'uuid_same_leaf', 'bytea_asc', 'bytea_desc', 'bytea_filter', 'two_keys') ORDER BY tag COLLATE "C";
       tag       |      oc_check       
@@ -359,11 +363,11 @@ CREATE TABLE ov (id int PRIMARY KEY, b bytea);
 INSERT INTO ov SELECT i, decode(repeat(md5(i::text), 6) || md5((i % 40)::text), 'hex') FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX ov_col ON ov USING sift_col (id, b);
-NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: leaf 1 (attribute 2) holds strings over 65536 bytes; the rest stay in the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col index "ov_col" installed two statement triggers on table "ov" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ov_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ov_col');
 RESET sift.test_limits;
 ANALYZE ov;
 SELECT oc_check($q$SELECT id, b FROM ov ORDER BY b DESC, id LIMIT 10$q$) AS overflow_key;

@@ -12,8 +12,9 @@ SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE (g % 4000)::int8 * 7919 + 10000000
 	   CASE WHEN g % 977 = 0 THEN 'NaN'::numeric ELSE g::numeric * 123456789012345678901234567 / 1000 END, g::numeric(30,5) * 1000000000000000000 + 0.12345, 'cb' || g % 900
 FROM generate_series(1, 30000) g;
 CREATE INDEX dc_plain ON dc USING sift_col (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, iv, nn, nb, cb);
-NOTICE:  sift_col index "dc_plain" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_plain": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_plain');
 VACUUM (ANALYZE) dc;
 CREATE FUNCTION dc_scan(w text, via text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE r text;
@@ -87,8 +88,9 @@ SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11 ORDER BY small LIMI
 
 -- the same table with the classes named: the same plans, the same rows
 CREATE INDEX dc_typed ON dc USING sift_col (id sift.col_int4_ops, big sift.col_int8_ops, t sift.col_text_ops, u sift.col_uuid_ops);
-NOTICE:  sift_col index "dc_typed" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_typed": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_typed');
 DROP INDEX dc_plain;
 SELECT n, w FROM dc_q WHERE dc_rows(w, true) IS DISTINCT FROM dc_rows(w, false) AND w ~ '^(id|big|t|u) ' ORDER BY n;
  n | w 
@@ -103,8 +105,9 @@ SELECT dc_scan('SELECT * FROM dc WHERE id = 777', '') AS id_eq, dc_scan('SELECT 
 
 -- a multicolumn index with one class named and one not
 CREATE INDEX dc_mixed ON dc USING sift_col (small sift.col_int2_ops, d);
-NOTICE:  sift_col index "dc_mixed" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_mixed": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_mixed');
 SELECT dc_scan('SELECT * FROM dc WHERE d = date ''2000-01-01'' + 4999 AND small = 7', '') <> 'seq' AS uses_mixed;
  uses_mixed 
 ------------

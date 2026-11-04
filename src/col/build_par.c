@@ -6,6 +6,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/parallel.h"
 #include "access/table.h"
 #include "access/tableam.h"
@@ -33,14 +35,43 @@
 #define MAX_WORKERS		15
 
 /*
- * The rows a participant takes at the least. Every participant writes segments of its own, interleaved with the others' (a superblock is claimed at a time), so each
- * further one costs the index 4 to 5% of its bytes, a unit's worth of instructions in the floor of every statement (+0.025 M of 0.22 M for the count of one value, +11%)
- * and a merge afterwards that is dearer (0.65 to 0.8 of the build) than the build saved: 300,000 rows, 0.22 s alone, 0.15 s with 1 worker, 0.13 s with 2, 0.12 s with 4;
- * 1,000,000 rows 0.64, 0.41, 0.29, 0.27 s. The weighted formula (log2(speedup of the build) / log2(1.05) against the bytes / 3 and the statements' floor, as for the arrays)
- * pays from 150,000 rows to a participant: +3.9 for 300,000 rows with 1 worker, -0.2 with 2 (100,000 each), negative with 4. The 150,000 are for the default
- * min_parallel_table_scan_size (8 MB) and go down with it, to none at 0; a table that sets parallel_workers has its participants.
+ * How many participants a build has is a weighted choice, not a size: B = log2(S) / log2(1.05) against C = G / 3 + W / 5, as for the arrays. Every participant writes segments of its
+ * own, interleaved with the others' (a superblock is claimed at a time), and each segment is read by every statement: the floor of a statement grows by a unit's worth (+11% for the
+ * count of one value), a lookup of 500 scattered keys through the point directory probes each segment (300,000 rows of 3 columns: 0.315 ms and 1,517 blocks in one segment, 0.577
+ * and 2,527 in two; 600,000: 0.288 ms and 1,538, 1.049 and 3,553 in three), the index takes 4.3% more bytes, and the merge that restores one segment (0.24 s for 1,000,000 rows) costs
+ * more than the build saved. What a participant saves is the build time: alone 107, 206 and 345 ms for 300,000, 600,000 and 1,000,000 rows of 3 columns (0.115 us a value), with
+ * participants p about T / p + 25 ms a participant (94, 141 and 190 ms for 2, 3 and 3). Scored in the log scale of the formula, the build counts once (B of its speedup), a further
+ * segment costs the floor (2.2) and its bytes (1.5) and, where the index has a point directory, one class of ten, the lookups (1.3): 300,000 rows of 3 columns are built alone, 600,000
+ * and 1,000,000 by two, 1,000,000 rows of 13 columns by three, and a table of 10,000,000 rows of 13 columns by four where the server allows them. A table that sets parallel_workers,
+ * a server that lowers min_parallel_table_scan_size and a test that lowers the limit below have the participants they ask for.
  */
 #define PAR_BUILD_ROWS	150000
+#define PAR_NS_VALUE	115.0		/* the serial build of one value of one column, ns */
+#define PAR_MS_PART		25.0		/* what a participant costs the build: its start, its share of the publication, ms */
+#define PAR_B_FLOOR		2.2			/* a further segment: the floor of a statement, +11%, in the steps of 5% */
+#define PAR_B_BYTES		1.5			/* ... its bytes, 4.3% / 3 */
+#define PAR_B_LOOKUP	1.3			/* ... and the lookups of a point directory, one class of ten */
+
+/* the participants (the leader included) that the weighted choice gives a build of rows rows of cols columns, at most maxp; 1 builds alone */
+static int
+par_participants(double rows, int cols, bool point_dir, int maxp)
+{
+	double		serial = rows * cols * PAR_NS_VALUE / 1e6,
+				best = 0;
+	int			chosen = 1;
+
+	for (int p = 2; p <= maxp; p++)
+	{
+		double		score = log2(serial / (serial / p + PAR_MS_PART * p)) / log2(1.05) - (p - 1) * (PAR_B_FLOOR + PAR_B_BYTES + (point_dir ? PAR_B_LOOKUP : 0));
+
+		if (score > best)
+		{
+			best = score;
+			chosen = p;
+		}
+	}
+	return chosen;
+}
 
 typedef struct ColShared
 {
@@ -199,11 +230,16 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	double		tuples,
 				allvisfrac;
 
-	/* a table that sets parallel_workers, or a server that lowers min_parallel_table_scan_size, asks for its participants: the rows are the rule of the others */
 	if (RelationGetParallelWorkers(heap, -1) < 0)
 	{
+		int			limit = sift_limit(par_build_rows, PAR_BUILD_ROWS);
+
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		nworkers = Min(nworkers, (int) Min(tuples / (sift_limit(par_build_rows, PAR_BUILD_ROWS) * Min(1.0, min_parallel_table_scan_size / 1024.0)), MAX_WORKERS) - 1);
+		if (limit != PAR_BUILD_ROWS || min_parallel_table_scan_size < 1024)
+			nworkers = Min(nworkers, (int) Min(tuples / (limit * Min(1.0, min_parallel_table_scan_size / 1024.0)), MAX_WORKERS) - 1);
+		else
+			nworkers = par_participants(tuples, index->rd_index->indnatts, *sift_col_options_point_tid_columns(index) != '\0' || *sift_col_options_point_columns(index) != '\0',
+										Min(nworkers, MAX_WORKERS) + 1) - 1;
 	}
 	if (nworkers < 1)
 		return NULL;
@@ -362,3 +398,12 @@ sift_col_build_worker(dsm_segment *seg, shm_toc *toc)
 	participate(w.shared, w.parts, ParallelWorkerNumber, w.heap, w.index, w.info, w.snapshot);
 	sift_par_worker_end(&w);
 }
+
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_par_participants);
+Datum
+sift_test_par_participants(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(par_participants((double) PG_GETARG_INT64(0), PG_GETARG_INT32(1), PG_GETARG_BOOL(2), PG_GETARG_INT32(3)));
+}
+#endif

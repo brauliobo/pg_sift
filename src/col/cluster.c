@@ -294,12 +294,12 @@ leaf_rows_per_value(Relation index, const SiftColDef *def, double rows)
 }
 
 /*
- * After a build: the key a workload looks rows up by (a leaf of point_columns, point_tid_columns or key_columns that is not unique) whose equality reads
- * many units, when no other leaf is ordered by the table: key_cut then keeps the key ordered through writes and merges and widens nothing. The same
- * rule as the key_cut note of sift.cluster_advice(), which also reads the state of an index that was built before.
+ * The key a workload looks rows up by (a leaf of point_columns, point_tid_columns or key_columns that is not unique) whose equality reads many units, when no
+ * other leaf is ordered by the table: key_cut then keeps the key ordered through writes and merges and widens nothing. The same rule as the key_cut note of
+ * sift.cluster_advice(). Returns the name of the leaf, or NULL.
  */
-void
-sift_col_report_key_cut(Relation index)
+char *
+sift_col_key_cut_note(Relation index)
 {
 	const SiftColRel *rel;
 	const SiftColSchema *sc;
@@ -313,6 +313,7 @@ sift_col_report_key_cut(Relation index)
 	LeafClust	kc = {0};
 	double		rows = 0;
 	bool		competing = false;
+	char	   *found = NULL;
 
 	if (!sift_cluster_advice || !sift_col_options(index)->cluster_advice || sift_col_key_cut(sift_col_rel(index)))
 		goto done;
@@ -360,11 +361,9 @@ sift_col_report_key_cut(Relation index)
 	if (key >= 0 && !competing)
 	{
 		const char *leaf = NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[key].attno - 1)->attname);
-		double		per_value = leaf_rows_per_value(index, &sc->cols[key], rows);
 
 		MemoryContextSwitchTo(old);
-		sift_col_key_cut_advice(index, "an equality on", leaf, kc.point, (double) units, Max(1, ceil(per_value * units / rows)), leaf,
-								psprintf("No other leaf of the index follows the order of the table. key_cut = '%s' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units. sift.cluster_advice() says the same for an index built before.", leaf));
+		found = pstrdup(leaf);
 		MemoryContextSwitchTo(cx);
 	}
 close:
@@ -373,4 +372,5 @@ close:
 done:
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+	return found;
 }

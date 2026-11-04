@@ -1,0 +1,20 @@
+-- The participants of a parallel CREATE INDEX are a weighted choice (src/col/build_par.c): the build time another participant saves, against the floor of every statement, the bytes and,
+-- where the index has a point directory, the lookups that probe one more segment. The function is the choice itself; the default server settings allow 2 workers (3 participants).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test;
+
+-- rows and columns of the index, whether it has a point directory, the most participants the server allows
+SELECT rows, cols, dir, maxp, sift._test_par_participants(rows, cols, dir, maxp) AS participants
+FROM (VALUES (100000, 3, true, 3), (300000, 3, true, 3), (450000, 3, true, 3), (450000, 3, false, 3), (600000, 3, true, 3), (1000000, 3, true, 3),
+	(300000, 13, true, 3), (300000, 13, false, 3), (1000000, 13, true, 3), (10000000, 13, true, 3), (10000000, 13, true, 16), (10000000, 13, true, 1)) AS t(rows, cols, dir, maxp);
+
+-- a table that the choice builds alone has one segment, and its 500-key lookup probes one
+CREATE TABLE pc AS SELECT g AS id, g % 1000 AS v, g % 97 AS w FROM generate_series(1, 300000) g ORDER BY md5((g * 31 + 7)::text);
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX pc_i ON pc USING sift_col (id, v, w) WITH (point_tid_columns = 'id');
+SELECT current_setting('sift.test_col_workers') AS workers, count(*) AS segments FROM sift.col_segments('pc_i');
+
+DROP TABLE pc;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

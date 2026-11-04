@@ -8,9 +8,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int PRIMARY KEY, day date NOT NULL, amount int NOT NULL);
 INSERT INTO ev SELECT g, date '2024-01-01' + (g * 7919) % 300, g % 17 FROM generate_series(1, 50000) g;
 CREATE INDEX ev_col ON ev USING sift_col (id, day, amount);
-NOTICE:  sift_col index "ev_col" installed two statement triggers on table "ev" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 CREATE FUNCTION days_query(keyed boolean) RETURNS text LANGUAGE sql AS $$

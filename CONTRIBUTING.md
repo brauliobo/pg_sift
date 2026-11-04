@@ -89,6 +89,6 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Releasing
 
-Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
+Write `docs/releases/vX.Y.Z.md` from the notes of the previous release (`docs/releases/v4.0.2.md` has the sections the release workflow checks), keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
 `scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`. It takes the green full CI run of the commit, checks the upgrade from the previous release and
 `AUR_SSH_KEY`).

@@ -403,12 +403,9 @@ sift_col_auto_cube(Relation heap, Relation index)
 	const SiftColRel *rel;
 	CubeCand	cand[SIFT_COL_MAX_COLS];
 	int			n,
-				slots,
-				nst;
+				slots;
 	StringInfoData list,
-				first,
 				v;
-	bool		moved = false;
 
 	/* the default order, off, cube(...) and the list an earlier build chose stay: only preagg = 'auto' asks for the ranking */
 	if (pg_strcasecmp(opt, "auto") != 0)
@@ -416,27 +413,16 @@ sift_col_auto_cube(Relation heap, Relation index)
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	n = cube_cands(index, rel->schema, cand);
 	slots = SIFT_PAGG_MAX_DIMS - sift_cpagg_cal_count(rel->schema);
-	if (n <= slots || slots <= 0 || (nst = cube_sample(heap, cand, n)) == 0)
+	if (n <= slots || slots <= 0 || cube_sample(heap, cand, n) == 0)
 		return;
 	qsort(cand, n, sizeof(CubeCand), cmp_cube_cand);
 
 	initStringInfo(&list);
-	initStringInfo(&first);
 	for (int i = 0; i < n && i < SIFT_PAGG_MAX_DIMS; i++)
-	{
 		keycols_append_name(&list, keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]));
-		if (i < slots && cand[i].fit * 2 > (uint32) nst)
-			keycols_append_name(&first, keycols_leaf_name(index, &rel->schema->cols[cand[i].leaf]));
-		moved |= i < slots && cand[i].fit * 2 > (uint32) nst && cand[i].rank >= slots;
-	}
 	initStringInfo(&v);
 	appendStringInfo(&v, "auto: %s", list.data);
 	sift_col_set_option(index, "preagg", v.data);
-	if (moved)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": preagg = 'auto' gives the dimensions of its cube to the columns whose histograms fit: %s", RelationGetRelationName(index), first.data),
-						 errdetail("The cube holds at most %d dimensions, the calendar cells of the dates among them. A column with more than %d distinct values in a unit has no histogram there, so a dimension given to it holds nothing. Stretches of about a unit (%d of them, spread over the table) were read, and the columns that fit most of them come first.",
-								   SIFT_PAGG_MAX_DIMS, SIFT_PAGG_DEF_GROUPS, nst),
-						 errhint("To give them in the order of the columns, run ALTER INDEX %s SET (preagg = 'default') and REINDEX; preagg = 'cube(...)' names them.", quote_identifier(RelationGetRelationName(index)))));
 }
 
 /*
@@ -562,9 +548,6 @@ sift_col_auto_arrlen(Relation index)
 	if (names.len == 0)
 		return;
 	sift_col_set_option(index, "array_lengths", "on");
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": array_lengths = 'auto' keeps the lengths of the arrays %s", RelationGetRelationName(index), names.data),
-					 errdetail("cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each."),
-					 errhint("To drop them, run ALTER INDEX %s SET (array_lengths = 'off') and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 }
 
 void
@@ -620,8 +603,4 @@ sift_col_auto_rows(Relation heap, Relation index)
 	else
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]));
 	sift_col_set_option(index, "rollup_dims", v.data);
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": rollup_dims = 'auto' writes a rollup of the rows by %s", RelationGetRelationName(index), v.data + 6),
-					 errdetail("A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most %d) in at least %d%% of %d sampled stretches of about a unit, about %d of them a unit; the cells add to the index and to its build.",
-							   SIFT_PAGG_ROWS_CELLS, ROWS_AGREE_PCT, nst, (int) (pr[bx * m + by].cells / pr[bx * m + by].ok)),
-					 errhint("To drop it, run ALTER INDEX %s SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.", quote_identifier(RelationGetRelationName(index)))));
 }

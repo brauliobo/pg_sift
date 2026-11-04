@@ -16,6 +16,7 @@ REPO=$(dirname "$BENCH")
 . "$BENCH/presets.env"                       # the dataset ladder: smoke, quick, standard, full
 command -v pg_config >/dev/null && PATH=$(pg_config --bindir):$PATH   # Debian keeps the server tools off PATH
 ROOT=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}   # the work directory: clusters, scratch, engine builds (SIFT_BENCH_ROOT is the old name)
+STORE_CACHE=${S_CACHE_DIR:-${BENCH_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/pg_sift/store-cache}}   # the cells of the servers that are not under test: records, on a disk (the work directory is tmpfs and a reboot empties it); --cache-dir, S_CACHE_DIR or BENCH_CACHE name another
 STORE=${BENCH_STORE:-$ROOT}                  # datasets, downloads, dumps and the cache of lanes: inputs and caches only, they can live on a disk while ROOT is tmpfs
 TIER=${TIER:-Q}
 declare -A TIER_PORT=([Q]=56040 [F]=56050)

@@ -547,16 +547,3 @@ sift_topn_gordered(const SiftTopN *t)
 {
 	return t->go != NULL;
 }
-
-/* a row the Limit above throws away: NULLs, the heap row is not read */
-bool
-skipped_row(SiftTopN *t, TupleTableSlot *slot)
-{
-	/* the rows the Limit throws away come first, and it does not touch them: the slot of the last one is the NULLs of the next */
-	if (TTS_EMPTY(slot))
-	{
-		memset(slot->tts_isnull, true, t->nout * sizeof(bool));
-		ExecStoreVirtualTuple(slot);
-	}
-	return true;
-}

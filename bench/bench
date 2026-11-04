@@ -76,6 +76,8 @@ Commands
   release    the one authoritative run after a release, every table of the docs, one command: `release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN]` (steps/release.sh;
              bench/out/BENCHMARKS.md, "Time budget of the release pass")
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
+  release-quick  the quick release profile, one command, a budget of 60 min on one slot: the cases marked `headline` at 300,000 rows and at 100,000 (a slope), the cost of the default `track_changes` at 100,000,
+             and the store and updates stages from the cache of competitor cells; prints planned against measured minutes and fails over budget (`release-quick [--dry-run] [--budget MIN] [--stages LIST]`; 1M and 10M stay named runs)
   clean      destroy the clusters and remove scratch; `--cache` also the dumps and the cache of lanes, `--build` the engine builds,
              `--all` everything including the datasets and downloads
 
@@ -663,7 +665,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases records compare final release resume clean\n'
+  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases records compare final release release-quick resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -682,6 +684,7 @@ case $cmd in
   -h|--help|help) usage; exit 0 ;;
   refresh) exec "$STEPS/refresh.sh" "$@" ;;   # its own options, the rest goes to `final`
   final) exec "$STEPS/final.sh" "$@" ;;   # its own options, the rest goes to the stages
+  release-quick) exec "$STEPS/final.sh" --quick "$@" ;;   # the quick release profile: a budget of 60 min on one slot
   release) exec "$STEPS/release.sh" "$@" ;;   # the authoritative run: `final --size release --docs`, its own options
   sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options

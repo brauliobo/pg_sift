@@ -8,8 +8,9 @@ CREATE TABLE dc (id int, s text, n int) WITH (autovacuum_enabled = off);
 INSERT INTO dc SELECT g, 'key ' || md5((g % 12000)::text), g FROM generate_series(1, 30000) g;
 INSERT INTO dc VALUES (30001, 'a_b1', 1), (30002, 'a_bc', 2), (30003, 'axb', 3), (30004, '100%x', 4), (30005, '100abc', 5), (30006, '', 6), (30007, NULL, 7), (30008, 'key ', 8);
 CREATE INDEX dc_idx ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, n sift.col_int4_ops) WITH (count_columns = 's', write_buffer_limit = 4096);
-NOTICE:  sift_col index "dc_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_idx');
 VACUUM dc;
 SELECT format FROM sift._test_col_formats('dc_idx'::regclass) ORDER BY gen;
  format 
@@ -211,8 +212,9 @@ SELECT dc_check('few dead rows');
 (1 row)
 
 REINDEX INDEX dc_idx;
-NOTICE:  sift_col index "dc_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_idx');
 SELECT dc_check('reindexed');
             dc_check             
 ---------------------------------
@@ -261,8 +263,9 @@ SELECT sift.col_verify('dc_idx', true);
 -- the option off, the setting below 15, a leaf of too few strings: the format is the hash's (25: the blocks of the large dictionaries carry it), not the counts' (24), and the counts are the heap's
 ALTER INDEX dc_idx RESET (count_columns);
 REINDEX INDEX dc_idx;
-NOTICE:  sift_col index "dc_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_idx');
 SELECT max(format) AS format_without_the_option FROM sift._test_col_formats('dc_idx'::regclass);
  format_without_the_option 
 ---------------------------
@@ -284,8 +287,9 @@ SELECT dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" LIKE 'key 0
 ALTER INDEX dc_idx SET (count_columns = 's');
 SET sift.col_format_minor = 14;
 REINDEX INDEX dc_idx;
-NOTICE:  sift_col index "dc_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_idx');
 SELECT max(format) AS format_under_setting_14 FROM sift._test_col_formats('dc_idx'::regclass);
  format_under_setting_14 
 -------------------------
@@ -302,8 +306,9 @@ RESET sift.col_format_minor;
 CREATE TABLE dcs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO dcs SELECT g, 'k' || (g % 50) FROM generate_series(1, 20000) g;
 CREATE INDEX dcs_idx ON dcs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 's');
-NOTICE:  sift_col index "dcs_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dcs_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dcs_idx');
 SELECT max(format) AS format_of_few_strings FROM sift._test_col_formats('dcs_idx'::regclass);
  format_of_few_strings 
 -----------------------
@@ -331,8 +336,11 @@ INSERT INTO dk SELECT 100000 + g, 'c' || to_char(g % 200, 'FM000') FROM generate
 INSERT INTO dk SELECT 200000 + g, 'd' || to_char(CASE WHEN g <= 70000 THEN 5 ELSE g % 100 END, 'FM000') FROM generate_series(1, 70100) g;
 INSERT INTO dk SELECT 300000 + g, 'e' || to_char(g, 'FM00000') FROM generate_series(1, 3000) g;
 CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
-NOTICE:  sift_col index "dk_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
+NOTICE:  sift_col index "dk_idx" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM dk;
 SELECT max(format) >= 25 AS format_by_default_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
  format_by_default_is_the_hashs_or_later 
@@ -388,8 +396,11 @@ SELECT sift.col_verify('dk_idx', true);
 
 ALTER INDEX dk_idx SET (count_columns = 'off');
 REINDEX INDEX dk_idx;
-NOTICE:  sift_col index "dk_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
+NOTICE:  sift_col index "dk_idx" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT max(format) >= 25 AS format_with_count_columns_off_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
  format_with_count_columns_off_is_the_hashs_or_later 
 -----------------------------------------------------

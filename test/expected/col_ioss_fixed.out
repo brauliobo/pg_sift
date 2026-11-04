@@ -15,8 +15,9 @@ SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 20000 - 10000 END, CASE
 FROM generate_series(1, 9000) i;
 CREATE INDEX fx_i ON fx USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int8_ops, f sift.col_bool_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
 	z sift.col_timestamptz_ops, r sift.col_float4_ops, x sift.col_float8_ops) WITH (count_columns = 'off', write_buffer_limit = 256);
-NOTICE:  sift_col index "fx_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "fx_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fx_i');
 VACUUM (ANALYZE) fx;
 CREATE FUNCTION fx_mode(ios bool) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

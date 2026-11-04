@@ -24,12 +24,9 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s);
-NOTICE:  sift_col index "ta_col": rollup_dims = 'auto' writes a rollup of the rows by g, k
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 77 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX ta_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ta_col" installed two statement triggers on table "ta" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ta_col": 2 automatic choices (rollup_dims, track_changes)
+DETAIL:  rollup_dims = g, k; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ta_col');
 RESET sift.test_limits;
 VACUUM (ANALYZE) ta;
 CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
@@ -314,11 +311,11 @@ CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
-NOTICE:  sift_col: the strings of leaf 1 (attribute 2) pass 65536 bytes in a unit, first in superblock 0: the values after them are stored as overflow and read from the heap
+NOTICE:  sift_col: leaf 1 (attribute 2) holds strings over 65536 bytes; the rest stay in the heap
 HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col index "tv_col" installed two statement triggers on table "tv" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "tv_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tv_col');
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT ta_check($q$SELECT id, w FROM tv ORDER BY w::text, id LIMIT 10$q$) AS overflow_key;
@@ -333,8 +330,9 @@ CREATE TABLE tq (id int, kn int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE tq ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO tq SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END, repeat('x', 1500) FROM generate_series(1, 12000) g;
 CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (order_columns = 'kn', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "tq_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "tq_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tq_col');
 ANALYZE tq;
 CREATE FUNCTION tq_runs(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text;

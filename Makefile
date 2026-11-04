@@ -5,7 +5,7 @@ SRC = src
 include $(SRC)/areas.mk
 OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c))
 DATA = $(wildcard sql/pg_sift--*.sql)
-PGFILEDESC = "pg_sift - CTID-bitmap full-text search index"
+PGFILEDESC = "pg_sift - Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search"
 
 # New SQL tests are registered automatically; the test-only patterns below apply to them too.
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
@@ -49,7 +49,7 @@ TESTING_REGRESS += col_unit_generations
 TESTING_REGRESS += col_latest_hint
 TESTING_REGRESS += col_wide_values agg_par_split col_vet_lazy_offsets build_ranges merge_ranges
 TESTING_REGRESS += lang_chain lang_memo col_wbuf_order_cache col_wbuf_big_set
-TESTING_REGRESS += col_read_penalty_counters tbl_wide_rows col_wildcard_keys col_read_ahead col_dead_rewrite col_tomb_log col_track_updates_supersede col_track_default col_track_reads col_track_deletes col_tomb_log_cache tbl_tomb_legacy_header col_tomb_log_cache
+TESTING_REGRESS += col_read_penalty_counters tbl_wide_rows col_wildcard_keys col_read_ahead col_dead_rewrite col_tomb_log col_track_updates_supersede col_track_shared_probe col_track_default col_track_reads col_track_deletes col_tomb_log_cache tbl_tomb_legacy_header col_tomb_log_cache
 TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks rank_page_live rank_or_union list_slice_seek
 TESTING_REGRESS += col_topn_unit_ends col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func col_topn_trail
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths col_cost_selectivity_once col_cost_keys_sorted_once agg_source_cache agg_prepass_const_list
@@ -75,7 +75,7 @@ TESTING_REGRESS += col_gorder_autogroup_kinds
 TESTING_REGRESS += col_gorder_group_count
 TESTING_REGRESS += col_gorder_count_big_group
 TESTING_REGRESS += col_gorder_group_range col_build_same_options
-TESTING_REGRESS += col_build_par_rows col_preagg
+TESTING_REGRESS += col_build_par_rows col_build_par_choice col_preagg
 TESTING_REGRESS += col_gorder_group_points
 TESTING_REGRESS += col_gorder_group_walk col_gorder_group_compact
 TESTING_REGRESS += agg_explain_why_scan

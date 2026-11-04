@@ -11,11 +11,11 @@ INSERT INTO lz (id, k, s, t)
 SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'q' || to_char(i, 'FM00000') END
 FROM generate_series(1, 8000) i;
 CREATE INDEX lz_t ON lz USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops, t sift.col_text_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'id, k, s, t', cube_minmax = false);
-NOTICE:  sift_col index "lz_t" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "lz_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
+NOTICE:  sift_col index "lz_t": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, k, s, t
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_t');
+NOTICE:  sift_col index "lz_t" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT sift.col_promote('lz_t'::regclass) >= 0 AS promoted;
  promoted 
 ----------
@@ -391,11 +391,11 @@ CREATE TABLE lzc (id int, k int, pad text DEFAULT repeat('x', 300));
 ALTER TABLE lzc ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO lzc (id, k) SELECT ks.k % 1000 * 100 + i, ks.k FROM (SELECT unnest(ARRAY[2077, 4082] || ARRAY(SELECT generate_series(2100, 2167))) AS k) ks, generate_series(1, 20) i;
 CREATE INDEX lzc_t ON lzc USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k', cube_minmax = false);
-NOTICE:  sift_col index "lzc_t" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "lzc_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 or more, which a library before 3.7 cannot read, and the build sorts the keys of the column.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
+NOTICE:  sift_col index "lzc_t": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lzc_t');
+NOTICE:  sift_col index "lzc_t" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT sift.col_promote('lzc_t'::regclass) >= 0 AS promoted;
  promoted 
 ----------

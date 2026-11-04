@@ -1,4 +1,4 @@
--- a request for one key of a lookup (a CTE of ids joined to the table) grouped over the members of a jsonb object: the normal plan, a btree probe for the key, is priced as it is planned and wins, where 3.4.0 charged it as a lost estimate and took the scan
+-- a request for one key of a lookup (a CTE of ids joined to the table) grouped over the members of a jsonb object: the planner prices the aggregate scan and the b-tree probe for the key and takes the cheaper, the scan up to 1,000,000 rows (a unit holds the key's rows), the b-tree probe where the key's rows are in most units
 -- label: `WITH ids AS (one parent)`, `events JOIN ids ON ids.id = e.parent_id, jsonb_each(e.doc -> 'metrics')`, `count`, `avg` by member, a btree on `(parent_id, ts, deleted_at)`
 -- ordered: yes
 --@ pg

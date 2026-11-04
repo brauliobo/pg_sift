@@ -53,6 +53,11 @@
 #define load_parallel_bytes()	LOAD_PARALLEL_BYTES
 #endif
 
+#ifdef SIFT_TESTING
+/* the phase a participant waits in for the advisory lock of sift.test_phase_gate + this, so that a test finds a worker that is writing a group */
+#define SIFT_TBL_PHASE_LOAD	4
+#endif
+
 /* A row in the buffer of a run: this header, then the tuple in heap format (the fields of the transaction unset), each record at a MAXALIGN */
 typedef struct LoadRec
 {
@@ -73,6 +78,18 @@ typedef struct LoadRun
 	Size		uoff[LOAD_MAX_UNITS + 1];
 } LoadRun;
 
+/* The writer of a segment that takes the units of runs, in the superblock order (write.c): in the backend of a load without workers' groups, in the worker of the ring */
+typedef struct LoadEnc
+{
+	SealWriter	sw;
+	TupleDesc	desc;
+	MemoryContext rowcx;
+	Datum	   *values;
+	bool	   *isnull;
+	Size		budget;			/* memory the writer of a segment may hold before the segment ends */
+	uint64		next;			/* the vblock after the last unit of the open segment */
+} LoadEnc;
+
 typedef struct Load
 {
 	Oid			relid;
@@ -87,14 +104,11 @@ typedef struct Load
 	int			maxunits;		/* units of a run: LOAD_SBS for each group written at once */
 	uint32		n;				/* rows of the current unit */
 	Size		bytes;			/* their size in row format: a unit stops at the bytes of a write buffer */
-	bool		ring_ok;		/* the rows come from COPY: the workers may outlive a run */
+	bool		ring_ok;		/* the rows come from COPY: the worker may outlive a run */
 	bool		noring;
-	struct LoadRingLeader *rl;	/* the ring of the workers that write the groups while the command reads on */
+	struct LoadRingLeader *rl;	/* the ring of the worker that writes the groups while the command reads on */
 	bool		stream;			/* no workers: a unit is encoded into the open segment as it fills, no buffer of rows, a segment ends at the memory budget (load.c) */
-	SealWriter	sw;
-	MemoryContext rowcx;
-	Size		budget;			/* memory the writer of a segment may hold */
-	uint64		seg_next;		/* the vblock after the last unit of the open segment */
+	LoadEnc		enc;
 	SiftSegEntry *segs;			/* the segments written and not yet in the directory */
 	int			nsegs;
 	int			maxsegs;
@@ -111,6 +125,9 @@ bool		load_row_work_unsafe_in_parallel_mode(Relation rel);
 
 void		load_end_unit(Load *ld);
 
+void		load_enc_begin(LoadEnc *e, Relation rel, MemoryContext cx, bool vers, Size budget);
+void		load_enc_end(LoadEnc *e, SiftSegEntry *seg);
+void		load_enc_units(LoadEnc *e, const LoadRun *r, const char *rows, int u0, int u1, SiftSegEntry *segs, int *nsegs, bool final);
 void		load_publish_groups(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg);
 int			load_lock_with_room(Relation rel, SiftTblRel *st, int n);
 void		load_publish_all(Relation rel, SiftTblRel *st, Published *pub);

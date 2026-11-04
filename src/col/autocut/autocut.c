@@ -509,28 +509,53 @@ decide(Relation heap, Relation index, bool dry, CutVerdict *v)
 	decide_stage(heap, index, dry, v, false);
 }
 
-/*
- * Before a build of an index with no key_cut of its own: reads the sample and writes 'auto: col' to the option when the rule above holds (and 'auto' when
- * an earlier build chose a key and this one does not). Returns what it did.
- */
-void
-sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail)
+/* The keys CREATE INDEX advised for key_cut, kept for the summary the build ends with, which would otherwise decide again */
+static struct
 {
-	if (!sift_cluster_advice || !sift_col_options(index)->cluster_advice)
-		return;
-	ereport(NOTICE,
-			(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that",
-					RelationGetRelationName(index), how, leaf, reads, units, ideal, keys),
-			 errdetail_internal("%s", detail),
-			 errhint("If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX; to silence this advice, SET sift.cluster_advice = off.",
-					 keys, quote_identifier(RelationGetRelationName(index)), keys)));
+	Oid			index;
+	char		keys[2 * NAMEDATALEN + 4];
+} advised;
+
+static void
+advise_keys(const CutVerdict *v, char *out)
+{
+	snprintf(out, sizeof(advised.keys), "%s%s%s", v->leaf, v->second[0] ? ", " : "", v->second);
 }
 
+/* The keys the build of the index advised for key_cut (the advice is off with sift.cluster_advice or the option cluster_advice), or NULL */
+const char *
+sift_col_key_cut_advised(Relation index)
+{
+	return advised.index == RelationGetRelid(index) ? advised.keys : NULL;
+}
+
+/* The same, decided now from a sample of the table (sift.key_cut_decision): for an index that was built before */
+char *
+sift_col_key_cut_advised_now(Relation heap, Relation index)
+{
+	CutVerdict	v;
+	const char *have = sift_col_options_key_cut(index);
+	char		keys[sizeof(advised.keys)];
+
+	if (!sift_cluster_advice || !sift_col_options(index)->cluster_advice || (have[0] != '\0' && strcmp(have, "auto") != 0))
+		return NULL;
+	decide(heap, index, true, &v);
+	if (v.res != SIFT_AUTOCUT_ADVISED)
+		return NULL;
+	advise_keys(&v, keys);
+	return pstrdup(keys);
+}
+
+/*
+ * Before a build of an index with no key_cut of its own: reads the sample and writes 'auto: col' to the option when the rule above holds (and 'auto' when
+ * an earlier build chose a key and this one does not). Returns what it did; the summary of the build says it (col/build/choices.c).
+ */
 SiftAutoCut
 sift_col_auto_cut(Relation heap, Relation index)
 {
 	CutVerdict	v;
 
+	advised.index = InvalidOid;
 	decide(heap, index, false, &v);
 	if (v.res == SIFT_AUTOCUT_CUT)
 	{
@@ -539,28 +564,15 @@ sift_col_auto_cut(Relation heap, Relation index)
 		initStringInfo(&opt);
 		appendStringInfo(&opt, "auto: %s%s%s", v.leaf, v.second[0] ? ", " : "", v.second);
 		sift_col_set_option(index, "key_cut", opt.data);
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": key_cut = 'auto' chooses '%s': %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%, benefit %.0f against cost %.0f)",
-						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth, v.benefit, v.cost),
-				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table%s. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
-						   v.sampled, v.leaf,
-						   v.widened[0] ? psprintf(" but \"%s\", whose zones the cut widens and whose lookups a unique b-tree of the table answers", v.widened) : "",
-						   v.range ? "a range" : "an equality",
-						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
-						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to grow by at most %d%% more than with the key alone, counting the units of 4,096 rows into which a key of 8,192 rows or more is cut), so a range of its values skips the units outside it.", v.second, AUTOCUT_SECOND_SLACK) : ""),
-				 errhint("To keep the units by block range, run ALTER INDEX %s SET (key_cut = 'off') and REINDEX.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else
 	{
 		if (v.decided && sift_col_options_key_cut(index)[0] != '\0')
 			sift_col_set_option(index, "key_cut", "auto");
-		if (v.res == SIFT_AUTOCUT_ADVISED)
+		if (v.res == SIFT_AUTOCUT_ADVISED && sift_cluster_advice && sift_col_options(index)->cluster_advice)
 		{
-			const char *keys = v.second[0] ? psprintf("%s, %s", v.leaf, v.second) : v.leaf;
-
-			sift_col_key_cut_advice(index, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys,
-									psprintf("The index would grow by %.1f%%. The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5%% in a lookup is one unit of benefit, 3%% of growth and 5%% of build instructions one of cost). No other leaf follows the order of the table.",
-											 v.growth, v.sampled, v.benefit, v.cost));
+			advised.index = RelationGetRelid(index);
+			advise_keys(&v, advised.keys);
 		}
 	}
 	return v.res;

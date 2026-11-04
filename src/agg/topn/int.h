@@ -423,7 +423,6 @@ typedef struct GEntVals
 extern bool gord_prep(SiftTopN *t);
 extern bool gord_probe(SiftTopN *t);
 extern int gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull, const GEntVals *ev);
-extern bool skipped_row(SiftTopN *t, TupleTableSlot *slot);
 extern bool res_take(SiftTopN *t, int n);
 
 extern void fetch_begin(SiftTopN *t, int part);

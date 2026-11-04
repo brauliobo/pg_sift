@@ -11,15 +11,9 @@ SET enable_indexonlyscan = off;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date);
 INSERT INTO events SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts);
-NOTICE:  sift_col index "events_col": rollup_dims = 'auto' writes a rollup of the rows by kind, ts
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 30 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX events_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "events_col" installed two statement triggers on table "events" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
-NOTICE:  sift_col index "events_col": key_columns = 'auto' keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  To turn it off, run ALTER INDEX events_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
+NOTICE:  sift_col index "events_col": 3 automatic choices (key_columns, rollup_dims, track_changes)
+DETAIL:  key_columns = parent_id; rollup_dims = kind, ts; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i % 7 FROM generate_series(0, 599) i;
 CREATE TABLE ticks (a int);
@@ -29,14 +23,13 @@ CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
-NOTICE:  sift_col index "parted_0_col": rollup_dims = 'auto' writes a rollup of the rows by kind, val
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX parted_0_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "parted_0_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "parted_0_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, val
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parted_0_col');
 CREATE INDEX parted_1_col ON parted_1 USING sift_col (id, kind, val);
-NOTICE:  sift_col index "parted_1_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "parted_1_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parted_1_col');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE dims; ANALYZE ticks; ANALYZE parted;
 -- the arms of a two level aggregate, joined to a spine of ticks

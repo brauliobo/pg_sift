@@ -128,7 +128,7 @@ warn_analyzer_options(Relation index)
 		ereport(WARNING,
 				(errmsg("sift index \"%s\": it was built with other analyzer options", RelationGetRelationName(index)),
 				 errdetail("Queries and inserts on its table fail until the index is rebuilt with REINDEX."),
-				 errhint("To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.")));
+				 errhint("For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.")));
 }
 
 /* The reloptions of an index as the catalog holds them now (a copy), NULL when it has none */

@@ -9,9 +9,9 @@ SET sift.test_ahead_cold = on;
 CREATE TABLE ev (id int PRIMARY KEY, grp int, amount int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, (i * 31) % 1000, 'p' FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, amount);
-NOTICE:  sift_col index "ev_col" installed two statement triggers on table "ev" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN

@@ -12,7 +12,7 @@ name: release
 #     files, LICENSE, NOTICE, README, BUILD-INFO), each library built in the stock mariadb:<series> image against that server's headers and
 #     loaded into a server of that image (scripts/package-mariadb.sh). The version is the tag and must equal mariadb/VERSION. A tag without
 #     mariadb/VERSION has no MariaDB asset.
-# The text of the release is docs/releases/<tag>.md: write it before tagging, from docs/releases/TEMPLATE.md (a PostgreSQL part and, when the
+# The text of the release is docs/releases/<tag>.md: write it before tagging, from the notes of a previous release (a PostgreSQL part and, when the
 # SQLite or the MariaDB tarball is attached, a "## SQLite extension" or "## MariaDB extension" part; the publish job refuses a missing file or section).
 # workflow_dispatch rebuilds and republishes the assets of an existing tag with the recipes of the selected ref.
 # Dry run: a pull request or a push to main builds and tests the assets of its commit and publishes nothing; it builds only the assets whose recipes
@@ -194,14 +194,14 @@ jobs:
         run: |
           shopt -s nullglob
           notes=docs/releases/$TAG.md
-          [ -f "$notes" ] || { echo "write $notes first (see docs/releases/TEMPLATE.md)" >&2; exit 1; }
+          [ -f "$notes" ] || { echo "write $notes first (see the notes of a previous release)" >&2; exit 1; }
           sqlite=(dist/sift-sqlite-*.tar.gz)
           if [ ${#sqlite[@]} -gt 0 ] && ! grep -q '^## SQLite extension' "$notes"; then
-            echo "$notes has no '## SQLite extension' section (see docs/releases/TEMPLATE.md)" >&2; exit 1
+            echo "$notes has no '## SQLite extension' section (see the notes of a previous release)" >&2; exit 1
           fi
           mariadb=(dist/sift-mariadb-*.tar.gz)
           if [ ${#mariadb[@]} -gt 0 ] && ! grep -q '^## MariaDB extension' "$notes"; then
-            echo "$notes has no '## MariaDB extension' section (see docs/releases/TEMPLATE.md)" >&2; exit 1
+            echo "$notes has no '## MariaDB extension' section (see the notes of a previous release)" >&2; exit 1
           fi
           scripts/package.sh verify dist
           # one checksum file for every asset (the build jobs' own are not uploaded or are rewritten here)

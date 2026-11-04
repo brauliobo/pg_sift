@@ -29,9 +29,9 @@ SELECT ev_rows(1, 6000);
 (1 row)
 
 CREATE INDEX ev_col ON ev USING sift_col (id, g, s, w, b);
-NOTICE:  sift_col index "ev_col" installed two statement triggers on table "ev" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (ANALYZE) ev;
 CREATE FUNCTION ev_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -300,8 +300,12 @@ CREATE TABLE ep_a PARTITION OF ep FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE ep_b PARTITION OF ep FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ep (id, g, s, w, b) SELECT id, g, s, w, b FROM ev WHERE id <= 5000;
 CREATE INDEX ep_col ON ep USING sift_col (id, g, s, w, b);
-NOTICE:  sift_col index "ep_a_id_g_s_w_b_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ep_a_id_g_s_w_b_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ep_a_id_g_s_w_b_idx');
+NOTICE:  sift_col index "ep_b_id_g_s_w_b_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ep_b_id_g_s_w_b_idx');
 VACUUM (ANALYZE) ep;
 SELECT tag, ev_check(replace(q, 'FROM ev ', 'FROM ep ')) FROM ev_q WHERE tag IN ('s_asc', 's_desc', 's_filter', 's_then_w', 'b_asc') ORDER BY tag COLLATE "C";
    tag    |   ev_check   

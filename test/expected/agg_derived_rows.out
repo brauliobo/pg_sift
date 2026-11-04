@@ -8,8 +8,9 @@ CREATE TABLE facts (id int, grp int, period text, score float8);
 INSERT INTO facts SELECT i, i % 500, CASE WHEN i % 2 = 0 THEN 'cur' ELSE 'prev' END, i % 10 FROM generate_series(1, 40000) i;
 CREATE TABLE plain_facts AS SELECT * FROM facts;
 CREATE INDEX facts_col ON facts USING sift_col (id, grp, period, score);
-NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 ANALYZE facts; ANALYZE plain_facts;
 -- the rows PostgreSQL expects of the node with an alias
 CREATE FUNCTION node_rows(q text, alias text) RETURNS float8 LANGUAGE plpgsql AS $$

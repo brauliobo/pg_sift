@@ -1,0 +1,143 @@
+-- ORDER BY .. LIMIT n OFFSET m over a top-N scan whose output is its own tuple: the scan skips the OFFSET rows itself and the Limit above it has none (it neither receives nor discards
+-- rows). The rows are the plan's without the extension, and the scan returns the LIMIT rows only, through ties, NULLs, ASC and DESC, an OFFSET of none, one, a few, thousands (the order array
+-- cuts the front of those) and past the end, the order array and the heap, a partitioned table, sub-selects, CTEs, UNION ALL arms, parameters, a NULL and a negative OFFSET, a scroll
+-- cursor (a Material between the scan and the Limit keeps the OFFSET in the Limit), and a second pass of the same scan.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE TABLE sk (id int PRIMARY KEY, k int, t text COLLATE "C", pad text DEFAULT repeat('x', 100));
+ALTER TABLE sk ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sk (id, k, t)
+SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i % 43 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 1500)::text, 5, '0') END
+FROM generate_series(1, 20000) i;
+-- the same rows with the order array (the walk, and the cut of a large OFFSET) and without it (the heap of the best rows)
+CREATE TABLE sh AS TABLE sk;
+CREATE INDEX sk_i ON sk USING sift_col (id, k, t) WITH (track_changes = 'off', order_columns = 'k', order_array_columns = 'k, t');
+CREATE INDEX sh_i ON sh USING sift_col (id, k, t) WITH (track_changes = 'off', order_columns = 'k');
+CREATE TABLE sp (id int, k int, pad text DEFAULT repeat('x', 100)) PARTITION BY RANGE (id);
+CREATE TABLE sp_1 PARTITION OF sp FOR VALUES FROM (0) TO (7000);
+CREATE TABLE sp_2 PARTITION OF sp FOR VALUES FROM (7000) TO (14000);
+CREATE TABLE sp_3 PARTITION OF sp FOR VALUES FROM (14000) TO (21000);
+INSERT INTO sp SELECT id, k FROM sk;
+CREATE INDEX sp_i ON sp USING sift_col (id, k) WITH (track_changes = 'off', order_columns = 'k', order_array_columns = 'k');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) sk, sh, sp;
+
+-- 'DIFFERS' when the rows are not the plan's without the extension; else the rows the custom scan returned (the LIMIT rows it was asked for, or what is left past the OFFSET) and whether
+-- the Limit above it kept an OFFSET; 'native' when the statement does not run the scan
+CREATE FUNCTION sk_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; seen text := 'native'; ra text; rb text;
+	rows text := 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (%s) r) x';
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		IF pl ~ 'Custom Scan \(SiftAgg\)' THEN seen := 'rows=' || substring(pl from 'actual rows=([0-9]+)'); END IF;
+	END LOOP;
+	EXECUTE format(rows, q) INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE format(rows, q) INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q ELSE seen END;
+END $$;
+
+SELECT sk_chk('SELECT id, k FROM sk ORDER BY k, id LIMIT 10 OFFSET 5') AS plan_global_order,
+	   sk_chk('SELECT id, k FROM sh ORDER BY k, id LIMIT 10 OFFSET 5') AS plan_heap,
+	   sk_chk('SELECT id, k FROM sp ORDER BY k, id LIMIT 10 OFFSET 5') AS plan_partitioned;
+
+-- the matrix: rows that agree with the plan without the extension, and the scan's own rows
+CREATE FUNCTION sk_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT sk_chk(format('SELECT id, %s AS v FROM %s ORDER BY %s %s NULLS %s, id LIMIT %s OFFSET %s', c, tb, c, d, nl, l, o)) AS result, count(*)
+   FROM unnest(ARRAY['sk', 'sh']) tb, unnest(ARRAY['k', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 20]) l,
+	    unnest(ARRAY[0, 1, 5, 2100, 7000, 19990, 25000]) o GROUP BY 1 ORDER BY 1 $$;
+SELECT * FROM sk_all();
+SELECT sk_chk(format('SELECT id, k FROM sp ORDER BY k %s, id LIMIT %s OFFSET %s', d, l, o)) AS result, count(*)
+FROM unnest(ARRAY['ASC', 'DESC NULLS LAST']) d, unnest(ARRAY[1, 20]) l, unnest(ARRAY[0, 5, 2100, 7000, 25000]) o GROUP BY 1 ORDER BY 1;
+
+-- the Limit is not the scan's own, or is another one
+SELECT sk_chk('SELECT * FROM (SELECT id, k FROM sk ORDER BY k, id LIMIT 100 OFFSET 7) s LIMIT 10 OFFSET 7') AS inner_and_outer_same,
+	   sk_chk('SELECT * FROM (SELECT id, k FROM sk ORDER BY k, id LIMIT 100 OFFSET 3) s ORDER BY k DESC, id LIMIT 10 OFFSET 2') AS inner_then_resorted,
+	   sk_chk('WITH c AS (SELECT id, k FROM sk ORDER BY k, id LIMIT 10 OFFSET 2100) SELECT * FROM c') AS cte,
+	   sk_chk('(SELECT id, k FROM sk ORDER BY k, id LIMIT 4 OFFSET 2100) UNION ALL (SELECT id, k FROM sh ORDER BY k DESC, id LIMIT 4 OFFSET 30)') AS union_arms,
+	   sk_chk('SELECT id, k FROM sk WHERE id % 3 = 0 ORDER BY k, id LIMIT 10 OFFSET 2100') AS condition,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id LIMIT 10 OFFSET 5 + 6') AS offset_expression,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id LIMIT 10 OFFSET NULL') AS offset_null,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id LIMIT NULL OFFSET 19990') AS limit_null,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id OFFSET 19990') AS no_limit,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id FETCH FIRST 10 ROWS WITH TIES OFFSET 20') AS with_ties,
+	   sk_chk('SELECT id, k FROM sk ORDER BY k, id + 0 LIMIT 10 OFFSET 2100') AS ties_sorted_above;
+
+-- a parameter: the OFFSET of each execution is the one in force, in a custom plan and in a generic one, and a negative one raises the error of the Limit node
+CREATE FUNCTION sk_param(l int, o int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; seen text := 'native'; ra text; rb text;
+	q text := 'SELECT id, k FROM sk ORDER BY k, id LIMIT $1 OFFSET $2';
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra USING l, o;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb USING l, o;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS' ELSE 'agree' END;
+END $$;
+CREATE FUNCTION sk_generic(l int, o int, on_ bool) RETURNS text LANGUAGE plpgsql SET plan_cache_mode = force_generic_plan AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', on_::text, true); PERFORM set_config('sift.agg_force', on_::text, true);
+	PERFORM set_config('enable_seqscan', (NOT on_)::text, true); PERFORM set_config('enable_sort', (NOT on_)::text, true);
+	SELECT string_agg(z::text, ',') INTO r FROM (SELECT id, k FROM sk ORDER BY k, id LIMIT l OFFSET o) z;
+	RETURN r;
+END $$;
+SELECT l, o, sk_param(l, o) AS custom, sk_generic(l, o, true) IS NOT DISTINCT FROM sk_generic(l, o, false) AS generic
+FROM (VALUES (3, 0), (3, 4), (3, 3000), (3, 19999), (3, 40000), (3, NULL), (NULL, 5)) t(l, o);
+SET sift.enable_agg = on; SET sift.agg_force = on; SET enable_seqscan = off; SET enable_sort = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
+PREPARE sk_p(int, int) AS SELECT id, k FROM sk ORDER BY k, id LIMIT $1 OFFSET $2;
+EXECUTE sk_p(3, -1);
+EXECUTE sk_p(-1, 4);
+SELECT id FROM sk ORDER BY k, id LIMIT 3 OFFSET -1;
+SELECT id FROM sh ORDER BY k, id LIMIT 3 OFFSET -1;
+SELECT id FROM sk ORDER BY k, id LIMIT 3 OFFSET 19990 - 20000;
+DO $$ BEGIN EXECUTE 'EXPLAIN (COSTS off) SELECT id FROM sk ORDER BY k, id LIMIT 3 OFFSET -1'; RAISE WARNING 'EXPLAIN does not run the statement'; END $$;
+DEALLOCATE sk_p;
+RESET sift.enable_agg; RESET sift.agg_force; RESET enable_seqscan; RESET enable_sort; RESET enable_indexscan; RESET enable_bitmapscan;
+
+-- the scan read again by the join that needs it twice, and a scroll cursor, read both ways
+CREATE FUNCTION sk_twice(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_material = off;
+	SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;
+	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO b;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERS ' || q END;
+END $$;
+SELECT sk_twice('SELECT id, k FROM sk ORDER BY k, id LIMIT 7 OFFSET 2100') AS global_order, sk_twice('SELECT id, k FROM sh ORDER BY k, id LIMIT 7 OFFSET 40') AS heap;
+DO $$
+DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; want text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	OPEN c SCROLL FOR SELECT id, k FROM sk ORDER BY k, id LIMIT 6 OFFSET 2100;
+	LOOP FETCH NEXT FROM c INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r::text; END LOOP;
+	LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; bwd := r::text || bwd; END LOOP;
+	CLOSE c;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	SELECT string_agg(x::text, '' ORDER BY x.k, x.id) INTO want FROM (SELECT id, k FROM sk ORDER BY k, id LIMIT 6 OFFSET 2100) x;
+	RAISE WARNING 'cursor: % %', CASE WHEN fwd = want THEN 'forward is the plan''s' ELSE 'DIFFERS forward' END, CASE WHEN bwd = want THEN 'backward is the same' ELSE 'DIFFERS backward' END;
+END $$;
+
+-- the rows of the write buffer, deleted and updated rows, a VACUUM
+INSERT INTO sk (id, k, t) SELECT 30000 + i, (i * 13) % 300 - 20, 't' || lpad((i % 3000)::text, 5, '0') FROM generate_series(1, 2500) i;
+INSERT INTO sh SELECT * FROM sk WHERE id >= 30000;
+SELECT * FROM sk_all();
+DELETE FROM sk WHERE id % 11 = 0;
+DELETE FROM sh WHERE id % 11 = 0;
+UPDATE sk SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
+UPDATE sh SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
+SELECT * FROM sk_all();
+VACUUM sk, sh;
+SELECT * FROM sk_all();
+
+DROP FUNCTION sk_chk(text), sk_all(), sk_param(int, int), sk_generic(int, int, bool), sk_twice(text);
+DROP TABLE sk, sh, sp;
+DROP EXTENSION pg_sift;

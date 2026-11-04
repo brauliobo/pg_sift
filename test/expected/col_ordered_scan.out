@@ -9,36 +9,33 @@ ALTER TABLE os ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO os (id, k, d) SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 3001 - 1500 END, CASE WHEN i % 17 = 0 THEN NULL ELSE date '2020-01-01' + (i * 31) % 700 END
 FROM generate_series(1, 9000) i;
 CREATE INDEX os_i ON os USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_columns = 'k', order_array_columns = 'k', order_layout = 'whole');
-NOTICE:  sift_col index "os_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "os_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
-DETAIL:  1.6 bytes a row for each column, 0.0 MB together; the segments are column format minor 38, which a library before 3.7 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
-NOTICE:  sift_col index "os_i": order_layout: k: exact keys, 1.6 bytes a row
-DETAIL:  A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of 8 equal keys or more. The segments with a compact chunk are column format minor 41, which a library before 4.0 cannot read.
-HINT:  To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.
+NOTICE:  sift_col index "os_i": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = k; order_layout = k exact
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('os_i');
+NOTICE:  sift_col index "os_i" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
 CREATE INDEX ot_i ON ot USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_layout = 'whole');
-NOTICE:  sift_col index "ot_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ot_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ot_i');
 CREATE TABLE oa (k int4, id int4, b int8);
 INSERT INTO oa SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE i % 700 END, i, i FROM generate_series(1, 3000) i;
 CREATE INDEX oa_i ON oa USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, b sift.col_int8_ops);
-NOTICE:  sift_col index "oa_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "oa_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oa_i');
 CREATE TABLE oc (id int, k int4);
 INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
 CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
-NOTICE:  sift_col index "oc_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "oc_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
-DETAIL:  2.8 bytes a row for each column, 0.1 MB together; the segments are column format minor 41, which a library before 4.0 cannot read. ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit.
-HINT:  Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
-NOTICE:  sift_col index "oc_i": order_layout: k: rounded keys in 49.3% of 71 chunks, exact in the rest, 2.8 bytes a row
-DETAIL:  A compact chunk of an order array keeps the heap address of each row and its key rounded to a bucket of a few bits; the heap settles ties and gives the exact key of the rows a scan needs. The build keeps a chunk compact where that is at least a fifth smaller than keeping the exact keys and it has no run of 8 equal keys or more. The segments with a compact chunk are column format minor 41, which a library before 4.0 cannot read.
-HINT:  To write exact keys only, run ALTER INDEX .. SET (order_layout = 'whole') and REINDEX, or a merge; 'compact: column' and 'whole: column' choose it for a column.
+NOTICE:  sift_col index "oc_i": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = k;
+order_layout = k compact in 49% of chunks
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oc_i');
+NOTICE:  sift_col index "oc_i" is column format minor 41, which a library before 4.0 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) oa;
 VACUUM (ANALYZE) os;

@@ -14,9 +14,9 @@ SELECT setseed(0.42);
 
 INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), random() * 100 FROM generate_series(1, 200000) g;
 CREATE INDEX items_col ON items USING sift_col (id, tag, cat, amount) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "items_col" installed two statement triggers on table "items" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "items_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION why(q text) RETURNS TABLE (used boolean, normal_priced_for_groups boolean) LANGUAGE sql AS
 $$ SELECT used, normal_cost::numeric > 20000 FROM sift.explain_why(q) LIMIT 1 $$;

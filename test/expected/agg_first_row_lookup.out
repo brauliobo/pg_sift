@@ -12,11 +12,9 @@ SELECT i, i % 200, i % 101, 'k' || (i % 200), 'v' || (i % 101), 't' || ((i % 200
 INSERT INTO facts VALUES (20001, NULL, 1, 'k1', 'v1', 't1', 1), (20002, 1, NULL, 'k1', NULL, 't1', 2), (20003, 500, 1, 'zz', 'v1', 't1', 3),
  (20004, 1, 500, 'k1', 'zz', 'zz', 4), (20005, NULL, NULL, NULL, NULL, NULL, 5);
 CREATE INDEX facts_col ON facts USING sift_col (id, a, b, k, v, t, amount, w);
-NOTICE:  sift_col index "facts_col": rollup_dims = 'auto' writes a rollup of the rows by b, v
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 103 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX facts_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "facts_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = b, v
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 CREATE TABLE dims (a int, b int, label text, score int);
 INSERT INTO dims SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 199) x, generate_series(0, 100) y;
 CREATE UNIQUE INDEX dims_key ON dims (a, b);
@@ -538,9 +536,9 @@ DROP FUNCTION explain_first(text);
 CREATE TABLE fr_docs (id int PRIMARY KEY, kind text NOT NULL, parts jsonb NOT NULL);
 INSERT INTO fr_docs SELECT i, 'k' || (i % 3), (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || ((i + j) % 8), 'sub', 's' || ((i * 7 + j * 13) % 3000), 'score', (i + j) % 5)) FROM generate_series(1, 4) j) FROM generate_series(1, 1500) i;
 CREATE INDEX fr_docs_col ON fr_docs USING sift_col (id, kind, parts) WITH (paths = 'parts[]{cat astext, sub astext, score float8}');
-NOTICE:  sift_col index "fr_docs_col" installed two statement triggers on table "fr_docs" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "fr_docs_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fr_docs_col');
 CREATE TABLE fr_map (id int PRIMARY KEY, kind text NOT NULL, cat text NOT NULL, sub text NOT NULL, label text);
 INSERT INTO fr_map SELECT g, 'k' || (g % 3), 'c' || (g % 8), 's' || (g % 3000), 'm' || (g % 11) FROM generate_series(1, 24000) g;
 CREATE INDEX fr_map_key ON fr_map (kind, cat, sub);

@@ -12,7 +12,9 @@ from the records that pass. No figure of a document, a CHANGELOG line or a hand-
                                          `btree` variant and each other variant as a sift arm named by it (an arm that no setting makes the plan of its name is listed as not forceable and
                                          left out); a `-- fresh: yes` case runs every repetition in a new backend. A load case has no plan to pick: its lanes (the sift table with its index,
                                          the heap with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares its table again, the statements are timed and added, a
-                                         second session counts the parallel workers. The file is checked on the way out and a case without records fails the run. The cluster of the cases is
+                                         second session counts the parallel workers. The file is written after every case (a run that stops keeps the cases before it) and checked on the
+                                         way out; a case without records fails the run. An arm whose statement reaches `--timeout`, or that uses `--arm-budget` seconds (300) over its
+                                         repetitions, is recorded as unavailable and named with its reason (RECORDS ARM TIMED OUT); the other arms and the cases after it are measured. The cluster of the cases is
                                          a test cluster (no autovacuum, no automatic merge), so its records say `maintenance` = `disabled`.
     steps/records/collect.py             the library any other harness calls (`measure_statement`) with its subject, arms and environment.
 
@@ -62,9 +64,11 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `protocol` | text | yes | what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve |
 | `mode` | text | yes | forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were) |
 | `arm` | text | yes | heap, btree, gin or sift; `default` rows carry the structure the plan named |
-| `arm_option` | text | yes | the option of the structure: default, key_order=ts, key_cut, ... |
-| `picked` | 0 or 1 | yes | 1 when this structure and option are the plan the planner chooses by default |
+| `arm_option` | text | yes | the option of the structure: default, key_order=ts, key_cut, ...; a default row names the option of the forced arm that ran the plan the planner chose (default when none did) |
+| `picked` | 0 or 1 | yes | 1 when this arm ran the plan the planner chooses by default: the same plan_hash (schema 7 on), before it the same structure and option |
 | `structure` | text | yes | the structure the EXPLAIN of this run names: heap, btree, gin, sift or mixed |
+| `plan_hash` | text |  | twelve hex digits of the shape of the plan that ran (node types, join types, relations and indexes; no cost, row count or time): rows with one hash ran one plan, so the pick of the planner among arms of one structure that differ in the join method is matched by it (a read, schema 7 on) |
+| `plan_shape` | text |  | the shape the hash is of, as text (`Hash Join[Inner](Seq Scan orders, Custom Scan SiftAgg orders_col)`), cut at 1,000 characters |
 | `temp` | text | yes | warm or cold |
 | `rep` | integer | yes | the repetition, from 1 |
 | `est_cost` | number |  | the planner total cost of the plan that ran |

@@ -12,6 +12,7 @@ One comparison is the rows of one statement on one dataset and size (`statement`
                   sift.async_maintenance, sift.test_*) is refused unless the set is labelled `maintenance disabled`, and the label without a switch is refused
   true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
   a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option); a maintenance or a load has no plan to pick: forced, picked 0
+  true plans      (schema 7 on) a read has the shape of its plan and the hash of it; the repetitions of an arm ran one plan; a forced arm is picked when it ran the plan the planner chose (the same hash), and the default row names an arm that ran it
   instructions    every warm row has a count
   a true churn    a churned read says what was applied; 'settled' needs a VACUUM or a pass on record
   whole counts    instructions say their scope: a backend count with workers launched is refused, so is a plan whose workers did not all start or a quota under the processes
@@ -23,6 +24,7 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   true segments   a sift arm that has index bytes has its segment, immutable and write buffer counts and its option set (schema 6 on); a count the case declares is the one measured
   a true build    a build has index bytes and WAL, the instructions of its leader and of its workers (their sum the cluster count) and was measured on a cluster with no sift.test_* setting
 """
+import hashlib
 import os
 import re
 import statistics
@@ -110,6 +112,19 @@ def segment_problems(name, r):
     return out
 
 
+def plan_problems(name, r):
+    """the shape of the plan and its hash (schema 7 on): a read that ran has both, and the hash is of the shape"""
+    if r.get('_schema', schema.VERSION) < 7 or r['mode'] == 'unavailable' or r['kind'] != 'read':
+        return []
+    if (r.get('plan_shape') or '').startswith('not recorded'):
+        return []
+    if not r.get('plan_shape') or not r.get('plan_hash'):
+        return ['%s: PLAN MISSING at %s: a read of schema 7 has the shape of its plan and the hash of it' % (name, where(r))]
+    if len(r['plan_shape']) < 1000 and hashlib.sha1(r['plan_shape'].encode()).hexdigest()[:12] != r['plan_hash']:
+        return ['%s: PLAN HASH at %s: %s is not the hash of the shape "%s"' % (name, where(r), r['plan_hash'], r['plan_shape'][:80])]
+    return []
+
+
 def comparison_problems(key, rs, min_reps):
     name = '%s on %s, %s rows' % (key[0], key[1], format(key[2], ',') if isinstance(key[2], int) else key[2])
     out = []
@@ -172,9 +187,18 @@ def comparison_problems(key, rs, min_reps):
                 out.append('%s: DEFAULT ROW %s has picked = %s, not 1' % (label, where(r), r.get('picked')))
         for r in vs:
             if r['mode'] == 'forced':
+                if r.get('plan_hash') and d.get('plan_hash'):
+                    want = int(r['plan_hash'] == d['plan_hash'])
+                    if r.get('picked') != want:
+                        out.append('%s: PICKED FLAG of %s is %s but its plan %s is %s the default plan %s' % (label, where(r), r.get('picked'), r['plan_hash'], 'not' if not want else 'the same as', d['plan_hash']))
+                    continue
                 want = 1 if (r['arm'], r['arm_option']) == (d['arm'], d['arm_option']) else 0
                 if r.get('picked') != want:
                     out.append('%s: PICKED FLAG of %s is %s but the default plan is %s %s' % (label, where(r), r.get('picked'), d['arm'], d['arm_option']))
+        if d.get('plan_hash'):
+            named = [r for r in vs if r['mode'] == 'forced' and (r['arm'], r['arm_option']) == (d['arm'], d['arm_option'])]
+            if named and not any(r.get('plan_hash') == d['plan_hash'] for r in named):
+                out.append('%s: DEFAULT OPTION: the default row %s names %s %s but that arm ran another plan (%s, the planner chose %s)' % (label, where(d), d['arm'], d['arm_option'], named[0].get('plan_hash'), d['plan_hash']))
     for r in rs:
         corr = r.get('heap_corr')
         if corr is not None and ((r['heap_order'] == 'sorted' and abs(corr) < 0.9) or (r['heap_order'] == 'hash' and abs(corr) > 0.1)):
@@ -196,6 +220,7 @@ def comparison_problems(key, rs, min_reps):
             out.append('%s: PLANNING NOT SEPARATE at %s: plan_ms and exec_ms are both required for a read' % (name, where(r)))
         if r['temp'] == 'cold' and r.get('os_cache_dropped') is None:
             out.append('%s: COLD WITHOUT os_cache_dropped at %s' % (name, where(r)))
+        out += plan_problems(name, r)
         out += segment_problems(name, r)
         if r['kind'] in schema.WRITES:
             extra = set(filter(None, (r.get('structures') or '').split(','))) - {'heap', 'constraint', r['arm']}   # `constraint`: the indexes of a primary key or a unique constraint, the table's definition
@@ -208,6 +233,8 @@ def comparison_problems(key, rs, min_reps):
     for r in rs:
         cells[(r['variant'], r['mode'], r['arm'], r['arm_option'], r['temp'])].append(r)
     for k, v in sorted(cells.items()):
+        if len({r.get('plan_hash') for r in v if r.get('plan_hash')}) > 1:
+            out.append('%s: PLAN CHANGED in %s: the repetitions of one arm ran %d different plans (%s)' % (name, ' '.join(k), len({r.get('plan_hash') for r in v if r.get('plan_hash')}), ', '.join(sorted({r['plan_hash'] for r in v if r.get('plan_hash')}))))
         if len(v) < min_reps:
             out.append('%s: TOO FEW RUNS: %s has %d repetitions, %d are required' % (name, ' '.join(k), len(v), min_reps))
         if len({r['rep'] for r in v}) != len(v):

@@ -140,7 +140,7 @@ RESET sift.enable_agg;
 RESET plan_cache_mode;
 SELECT (SELECT count(*) FROM cd_g_on) AS generic_rows, NOT EXISTS (TABLE cd_g_on EXCEPT TABLE cd_g_off) AND NOT EXISTS (TABLE cd_g_off EXCEPT TABLE cd_g_on) AS generic_same;
 
--- a scroll cursor over the sort reads the rows forward and back (the rows the OFFSET skips are rows of NULLs each time)
+-- a scroll cursor over the sort reads the rows forward and back (the scan skips the OFFSET each time)
 DO $$
 DECLARE
 	c SCROLL CURSOR FOR SELECT id, ts FROM cd ORDER BY ts DESC, id LIMIT 5 OFFSET 150000;

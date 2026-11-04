@@ -59,7 +59,7 @@ def rows_of(rs, temp):
 def label(k, rs):
     variant, mode, arm, option = k[:4]
     mark = '*' if rs[0].get('picked') == 1 else ''
-    text = 'default plan: %s' % arm if mode == 'default' else '%s%s' % (arm, '' if option == 'default' else ' ' + option)
+    text = 'default plan: %s%s' % (arm, '' if option == 'default' else ' ' + option) if mode == 'default' else '%s%s' % (arm, '' if option == 'default' else ' ' + option)
     named = ' (%s)' % rs[0]['structure'] if mode == 'default' and rs[0]['structure'] != arm else ''
     return ('' if variant == 'main' else '%s: ' % variant) + text + mark + named
 

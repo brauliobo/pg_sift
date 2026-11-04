@@ -17,24 +17,51 @@ INSERT INTO pr SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 500
                       CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 211 END, date '2024-01-01' + i % 90, (i % 50)::float8 / 3
 FROM generate_series(1, 6000) i;
 CREATE INDEX pr_col ON pr USING sift_col (id, k, g, u, d, v);
-NOTICE:  sift_col index "pr_1_id_k_g_u_d_v_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pr_1_id_k_g_u_d_v_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_1_id_k_g_u_d_v_idx');
+NOTICE:  sift_col index "pr_2_id_k_g_u_d_v_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_2_id_k_g_u_d_v_idx');
+NOTICE:  sift_col index "pr_3_id_k_g_u_d_v_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_3_id_k_g_u_d_v_idx');
+NOTICE:  sift_col index "pr_4_id_k_g_u_d_v_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_4_id_k_g_u_d_v_idx');
+NOTICE:  sift_col index "pr_x_id_k_g_u_d_v_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_x_id_k_g_u_d_v_idx');
 CREATE TABLE ph (id int, k int, u int) PARTITION BY HASH (k);
 CREATE TABLE ph_0 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 0);
 CREATE TABLE ph_1 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 1);
 CREATE TABLE ph_2 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 2);
 INSERT INTO ph SELECT i, i % 150, (i * 17) % 301 FROM generate_series(1, 4000) i;
 CREATE INDEX ph_col ON ph USING sift_col (id, k, u);
-NOTICE:  sift_col index "ph_0_id_k_u_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ph_0_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_0_id_k_u_idx');
+NOTICE:  sift_col index "ph_1_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_1_id_k_u_idx');
+NOTICE:  sift_col index "ph_2_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_2_id_k_u_idx');
 CREATE TABLE pl (id int, k text, u int) PARTITION BY LIST (k);
 CREATE TABLE pl_a PARTITION OF pl FOR VALUES IN ('a', 'b');
 CREATE TABLE pl_b PARTITION OF pl FOR VALUES IN ('c', NULL);
 CREATE TABLE pl_c PARTITION OF pl FOR VALUES IN ('d');
 INSERT INTO pl SELECT i, (ARRAY['a', 'b', 'c', 'd', NULL])[1 + i % 5], (i * 7) % 101 FROM generate_series(1, 3000) i;
 CREATE INDEX pl_col ON pl USING sift_col (id, k, u);
-NOTICE:  sift_col index "pl_a_id_k_u_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pl_a_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_a_id_k_u_idx');
+NOTICE:  sift_col index "pl_b_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_b_id_k_u_idx');
+NOTICE:  sift_col index "pl_c_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_c_id_k_u_idx');
 -- a partition of a partition: the groups of a partition go on in the next leaf
 CREATE TABLE pm (id int, k int, s int, u int) PARTITION BY RANGE (k);
 CREATE TABLE pm_1 PARTITION OF pm FOR VALUES FROM (0) TO (100) PARTITION BY HASH (s);
@@ -43,16 +70,27 @@ CREATE TABLE pm_1b PARTITION OF pm_1 FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 CREATE TABLE pm_2 PARTITION OF pm FOR VALUES FROM (100) TO (200);
 INSERT INTO pm SELECT i, i % 200, i % 9, (i * 3) % 77 FROM generate_series(1, 3000) i;
 CREATE INDEX pm_col ON pm USING sift_col (id, k, s, u);
-NOTICE:  sift_col index "pm_1a_id_k_s_u_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pm_1a_id_k_s_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_1a_id_k_s_u_idx');
+NOTICE:  sift_col index "pm_1b_id_k_s_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_1b_id_k_s_u_idx');
+NOTICE:  sift_col index "pm_2_id_k_s_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_2_id_k_s_u_idx');
 -- an expression as the partition key
 CREATE TABLE pe (id int, k int, u int) PARTITION BY RANGE ((k % 100));
 CREATE TABLE pe_1 PARTITION OF pe FOR VALUES FROM (0) TO (50);
 CREATE TABLE pe_2 PARTITION OF pe FOR VALUES FROM (50) TO (100);
 INSERT INTO pe SELECT i, i % 300, (i * 5) % 61 FROM generate_series(1, 2000) i;
 CREATE INDEX pe_col ON pe USING sift_col (id, k, u);
-NOTICE:  sift_col index "pe_1_id_k_u_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pe_1_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_1_id_k_u_idx');
+NOTICE:  sift_col index "pe_2_id_k_u_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_2_id_k_u_idx');
 VACUUM (FREEZE, ANALYZE) pr, ph, pl, pm, pe;
 -- whether the scan answers the query, finishes the groups per partition, and the rows it differs by from the plan without it
 CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, finished bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$

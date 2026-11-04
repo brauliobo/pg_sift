@@ -5,7 +5,7 @@ A `sift_col` index keeps every column in units of a few thousand rows. Beside th
 - **What**: the query it helps, in one sentence.
 - **Default**: what it is when you set nothing, and why.
 - **Off**: how to turn it off (a build or a setting).
-- **Measured**: one absolute figure, with the benchmark case (`bench/cases.tsv`), the regression test or the results table (`docs/results/`) it comes from. A figure is one backend, warm, on the rows named.
+- **Measured**: one absolute figure, with the benchmark case (`bench/cases.tsv`), or the regression test it comes from. A figure is one backend, warm, on the rows named.
 - **Message**: the NOTICE or HINT of `CREATE INDEX` that names it (the id in [docs/MESSAGES.md](MESSAGES.md)).
 
 Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the byte layout of each structure, by column format minor, is in [docs/FORMATS.md](FORMATS.md). `ALTER INDEX .. SET (option = ..)` applies to the segments written afterwards; a `REINDEX` (or the next merge) rewrites the older ones, and the older ones keep answering meanwhile.

@@ -192,7 +192,7 @@ keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by defaul
 sum_product_47	each pair is multiplied in 256 bits	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (Only )?Scan using orders_sc_col|Bitmap Heap Scan on orders_sc	native	-	ms	faster33	no	-
 cube_wide_dims	the byte budget of the cube of a `sift_col` unit counts what the cube holds	events	-	[1-9][0-9]* from pre-aggregates	native	scan:sift.agg_preagg = off	ms	faster33	no	-
-few_keys_lookup	keeps its btree probes at the price they are planned for	events	-	fallback:Index Scan using events_pkey	native	-	ms	faster33	no	-
+few_keys_lookup	keeps its btree probes at the price they are planned for	events	-	Custom Scan \(SiftAgg\)|Index Scan using events_pkey	native	-	ms	faster33	no	-
 keycut_or_ranges	no longer starts the setup of a scan for each morsel	orders	default WITH (key_cut = 'customer_id')	[1-9][0-9]* pruned	native	-	ms	faster33	no	-
 topn_keyset_run	reads a unit from the first entry of the range without running the unit's filters	orders	default	Global Order: true	native	no_run:search_path = topn_keyset_run_plain	ms	faster33	no	-
 topn_desc_window	reads the superblocks of each window of the walk from the window's best end	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-

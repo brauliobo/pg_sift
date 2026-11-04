@@ -285,8 +285,8 @@ segment_create(Size size)
 		FlushErrorState();
 		shm_failed = true;
 		ereport(NOTICE,
-				(errmsg("sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %zu bytes", size),
-				 errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set sift.agg_lookup_shared_kb to 0.")));
+				(errmsg("sift: no dynamic shared memory for %zu bytes, so a joined table is not shared between backends", size),
+				 errhint("Free dynamic shared memory (the size of /dev/shm), or SET sift.agg_lookup_shared_kb = 0.")));
 	}
 	PG_END_TRY();
 	return seg;

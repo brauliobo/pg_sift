@@ -256,14 +256,6 @@ sift_col_auto_point(Relation heap, Relation index)
 			continue;
 		keycols_append_name(&list, keycols_leaf_name(index, d));
 		base += dir_bytes;
-		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": point_tid_columns = 'auto' chooses \"%s\" by the default formula: %s; predicted index size %+.0f%%, %.0f bytes a row, benefit %.0f against cost %.0f)",
-						RelationGetRelationName(index), keycols_leaf_name(index, d),
-						ordered ? psprintf("an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ORDER_ROW * Min(rows, POINT_AUTO_UNIT_ROWS)) / 1e6, POINT_AUTO_LOOKUP / 1e6) :
-						inord ? psprintf("an equality on its nearly unique values takes %.1f times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows", S) :
-						psprintf("an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory", (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6),
-						G, dir_bytes, B, C),
-				 errhint("To keep the index without it, run ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX.", RelationGetRelationName(index))));
 	}
 	/* the key of track_changes stays in the directory: the supersede finds the older entry of a key by it */
 	if (sift_col_row_key_on(index) && !sift_col_list_has(list.data, sift_col_options_row_key(index)))

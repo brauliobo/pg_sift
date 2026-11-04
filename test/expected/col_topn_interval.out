@@ -29,9 +29,9 @@ SELECT iv_rows(1, 6000);
 (1 row)
 
 CREATE INDEX iv_col ON iv USING sift_col (id, g, a, w);
-NOTICE:  sift_col index "iv_col" installed two statement triggers on table "iv" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "iv_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('iv_col');
 VACUUM (ANALYZE) iv;
 CREATE FUNCTION iv_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -275,8 +275,12 @@ CREATE TABLE ip_a PARTITION OF ip FOR VALUES FROM (0) TO (3) WITH (autovacuum_en
 CREATE TABLE ip_b PARTITION OF ip FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ip (id, g, a, w) SELECT id, g, a, w FROM iv WHERE id <= 5000;
 CREATE INDEX ip_col ON ip USING sift_col (id, g, a, w);
-NOTICE:  sift_col index "ip_a_id_g_a_w_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ip_a_id_g_a_w_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_a_id_g_a_w_idx');
+NOTICE:  sift_col index "ip_b_id_g_a_w_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_b_id_g_a_w_idx');
 VACUUM (ANALYZE) ip;
 SELECT tag, iv_check(replace(q, 'FROM iv ', 'FROM ip ')) FROM iv_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
    tag    |   iv_check   

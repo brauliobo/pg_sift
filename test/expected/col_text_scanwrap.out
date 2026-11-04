@@ -20,12 +20,9 @@ INSERT INTO sw VALUES (6001, '', '', ''), (6002, NULL, NULL, NULL), (6003, 'shor
 SET client_min_messages = notice;
 -- the text takes LZ4, the hex strings (LZ4 cannot shrink them) keep zstd without a word, mid keeps it and says how close LZ4 came
 CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops, mid sift.col_text_ops);
-NOTICE:  sift_col index "sw_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "sw_idx": compression = 'auto' takes lz4 for 1 and keeps zstd for 1 of the 2 text columns
-DETAIL:  txt (long strings): lz4; a test reads 17.1 M instructions a MB of text with zstd and 5.2 M with lz4 (3.3 times fewer), lz4 takes about 350 kB more (+54%): benefit 24 against cost 18.
-mid (long strings): zstd kept; a test reads 19.7 M instructions a MB of text with zstd and 6.3 M with lz4 (3.1 times fewer), lz4 takes about 640 kB more (+82%): benefit 23 against cost 27.
-HINT:  To keep zstd for a column, run ALTER INDEX sw_idx SET (compression = 'auto; txt=zstd') and REINDEX; 'auto; txt=lz4' takes lz4.
+NOTICE:  sift_col index "sw_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_idx');
 SET client_min_messages = warning;
 VACUUM sw;
 CREATE TABLE sw_pat (pat text);
@@ -58,11 +55,13 @@ SELECT sw_check('lz4');
 -- the off switch keeps zstd and says nothing; the explicit algorithm and none are the user's
 SET client_min_messages = notice;
 CREATE INDEX sw_zstd ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'auto; txt=zstd');
-NOTICE:  sift_col index "sw_zstd" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "sw_zstd": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_zstd');
 CREATE INDEX sw_lz4 ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'lz4');
-NOTICE:  sift_col index "sw_lz4" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "sw_lz4": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_lz4');
 SET client_min_messages = warning;
 SELECT pg_relation_size('sw_zstd') < pg_relation_size('sw_idx') AS zstd_smaller_than_formula_choice;
  zstd_smaller_than_formula_choice 
@@ -130,12 +129,9 @@ CREATE TABLE sw_dict (id int, w text) WITH (autovacuum_enabled = off);
 INSERT INTO sw_dict SELECT i, (SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ') FROM (SELECT floor(400 * power((hashint8extended(i * 7 + g, 0) & 65535) / 65536.0, 2))::int AS k FROM generate_series(1, 12) g) x) || ' ' || i FROM generate_series(1, 20000) i;
 SET client_min_messages = notice;
 CREATE INDEX sw_dict_idx ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops);
-NOTICE:  sift_col index "sw_dict_idx" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "sw_dict_idx": compression = 'auto' takes lz4 for 1 and keeps zstd for 0 of the 1 text column
-DETAIL:  w (dictionary): lz4; a test reads 17.0 M instructions a MB of text with zstd and 5.3 M with lz4 (3.2 times fewer), lz4 takes about 280 kB more (+60%): benefit 24 against cost 20.
-LZ4 blocks of dictionaries need column format minor 29, which releases before 3.6 refuse.
-HINT:  To keep zstd for a column, run ALTER INDEX sw_dict_idx SET (compression = 'auto; w=zstd') and REINDEX; 'auto; w=lz4' takes lz4. To write no LZ4 blocks of dictionaries, SET sift.col_format_minor = 14 before CREATE INDEX.
+NOTICE:  sift_col index "sw_dict_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_dict_idx');
 SET client_min_messages = warning;
 VACUUM sw_dict;
 CREATE INDEX sw_dict_zstd ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops) WITH (compression = 'auto; w=zstd');

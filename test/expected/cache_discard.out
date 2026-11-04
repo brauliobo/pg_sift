@@ -271,11 +271,9 @@ CREATE TABLE keyed (id int, parent_id int, set_id int, ext_id int, kind int) WIT
 INSERT INTO keyed SELECT g, g % 400, g % 300, g, g % 5 FROM generate_series(1, 1500) g;
 SET client_min_messages = notice;
 CREATE INDEX keyed_col ON keyed USING sift_col (id, parent_id, set_id, ext_id, kind);
-NOTICE:  sift_col index "keyed_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "keyed_col": key_columns = 'auto' keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 53 bytes); ext_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 203 bytes).
-HINT:  To turn it off, run ALTER INDEX keyed_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
+NOTICE:  sift_col index "keyed_col": 1 automatic choice (key_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = parent_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('keyed_col');
 SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'keyed_col' AND o LIKE 'key_columns=%';
               o              
 -----------------------------
@@ -283,11 +281,9 @@ SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'keyed_col' A
 (1 row)
 
 REINDEX INDEX keyed_col;
-NOTICE:  sift_col index "keyed_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "keyed_col": key_columns = 'auto' keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  To turn it off, run ALTER INDEX keyed_col SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.
+NOTICE:  sift_col index "keyed_col": 1 automatic choice (key_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = parent_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('keyed_col');
 SET client_min_messages = warning;
 SELECT count(DISTINCT parent_id) FROM keyed;
  count 

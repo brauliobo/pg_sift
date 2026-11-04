@@ -27,8 +27,9 @@ INSERT INTO events VALUES
  (24, '{"entries":[{"value":2},{"value":2},{"value":8}]}', '{}');
 CREATE INDEX events_col ON events USING sift_col (id, document, metrics)
  WITH (paths = 'document.entries[]{value astext,bucket text}, metrics.* astext');
-NOTICE:  sift_col index "events_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "events_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
 CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE result text;

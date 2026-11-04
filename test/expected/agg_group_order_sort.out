@@ -11,11 +11,9 @@ INSERT INTO s
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 11) END, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 9 END, DATE '2024-01-01' + (i % 12), i % 5, i * 0.5
 FROM generate_series(1, 20000) i;
 CREATE INDEX s_col ON s USING sift_col (id, a, e, d, j, x);
-NOTICE:  sift_col index "s_col": rollup_dims = 'auto' writes a rollup of the rows by e, d
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 48 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX s_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "s_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "s_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = e, d
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('s_col');
 VACUUM ANALYZE s;
 CREATE FUNCTION s_keys(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

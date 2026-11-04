@@ -10,12 +10,9 @@ CREATE TABLE ul_map (id serial PRIMARY KEY, kind int NOT NULL, label text NOT NU
 INSERT INTO ul_map (kind, label) SELECT k, 'label ' || k || '/' || n FROM generate_series(1, 30) k, generate_series(1, 2) n;
 CREATE INDEX ul_map_kind ON ul_map (kind);
 CREATE INDEX ul_fact_col ON ul_fact USING sift_col (id, dim_a_id, kind, v);
-NOTICE:  sift_col index "ul_fact_col": rollup_dims = 'auto' writes a rollup of the rows by dim_a_id, kind
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX ul_fact_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ul_fact_col" installed two statement triggers on table "ul_fact" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "ul_fact_col": 2 automatic choices (rollup_dims, track_changes)
+DETAIL:  rollup_dims = dim_a_id, kind; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ul_fact_col');
 ANALYZE ul_fact;
 ANALYZE ul_map;
 -- the plan keeps the map table or not: the number of plan lines that name it

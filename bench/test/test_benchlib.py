@@ -77,6 +77,15 @@ class CacheRules(unittest.TestCase):
         entry, why = self.cache.lookup('cells', 'es', self.inputs)
         self.assertEqual((why, entry['rows'], entry['fp']), ('', [{'tier': 't'}], self.fp['id']))
 
+    def test_a_cache_directory_that_is_missing_is_made_and_filled_by_the_pass(self):
+        root = os.path.join(self.tmp.name, 'not', 'there', 'store-cache')   # a reboot emptied the tmpfs it used to live on
+        cache = benchlib.Cache(root, self.fp, max_age_days=30, now=lambda: self.now)
+        entry, why = cache.lookup('cells', 'es', self.inputs)
+        self.assertEqual((entry, why), (None, 'not cached'))
+        cache.put('cells', 'es', self.inputs, dict(rows=[{'tier': 't'}]))
+        self.assertEqual(cache.lookup('cells', 'es', self.inputs)[0]['rows'], [{'tier': 't'}])
+        self.assertTrue(os.path.isdir(os.path.join(root, 'cells', 'es')))
+
     def test_any_input_is_part_of_the_key(self):
         self.cache.put('cells', 'es', self.inputs, dict(rows=[]))
         for changed in ({**self.inputs, 'image_id': 'sha256:bb'}, {**self.inputs, 'method': {'runs': 7}}):

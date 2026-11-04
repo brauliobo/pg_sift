@@ -82,6 +82,8 @@ extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
+extern const char *sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk);
+extern bool sift_col_track_incomplete(Relation index);
 extern void sift_col_track_check(Relation heap, Relation index);
 extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
 extern void sift_col_track_remove(Relation heap, Relation index);
@@ -122,8 +124,19 @@ extern bool sift_cluster_advice;
 extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
-extern void sift_col_report_caps(Relation index);
-extern void sift_col_report_key_cut(Relation index);
+/* What the build says about an index, in one NOTICE (col/build/choices.c): the kinds of rows it derives, as bits */
+#define SIFT_CHOICE_AUTO	1
+#define SIFT_CHOICE_ADVICE	2
+#define SIFT_CHOICE_CAP	4
+#define SIFT_CHOICE_ACTION	8
+#define SIFT_CHOICE_ALL		15
+typedef void (*SiftChoiceFn) (void *ctx, const char *id, const char *value);
+extern void sift_col_choices_say(Relation heap, Relation index, int kinds, bool build);
+extern const char *sift_col_final_name(Relation index);
+extern void sift_col_caps(Relation index, SiftChoiceFn add, void *ctx);
+extern char *sift_col_key_cut_note(Relation index);
+extern const char *sift_col_key_cut_advised(Relation index);
+extern char *sift_col_key_cut_advised_now(Relation heap, Relation index);
 /* The default of key_columns (col/keycols/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
@@ -137,7 +150,6 @@ extern bool sift_col_options_order_columns_set(Relation index);
 extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 /* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
-extern void sift_col_key_cut_advice(Relation index, const char *how, const char *leaf, double reads, double units, double ideal, const char *keys, const char *detail);
 extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
 extern bool sift_col_options_key_cut_auto(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */
@@ -157,7 +169,6 @@ extern void sift_col_auto_rows(Relation heap, Relation index);
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index, bool layout);
-extern char *sift_col_gorder_lines(Relation index);	/* what the last choice for the index said about the columns it weighed by the default formula (for the NOTICE of the build), or NULL */
 extern void sift_col_auto_point(Relation heap, Relation index);
 extern bool sift_col_list_has(const char *list, const char *name);	/* an option list of column names ('a, b' or 'auto: a, b') names the column */
 extern void sift_col_set_option(Relation index, const char *name, const char *value);

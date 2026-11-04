@@ -31,6 +31,8 @@ done
 # A tag is never cut without the wording gate: a vocabulary that is not readable stops the release (a dry run too: one that passes is one that can be released), and the lint of
 # the release commit requires it. The CI of the repository has no such vocabulary and checks only the structure of the wording.
 vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} && -r $NEUTRAL_VOCAB_FILE ]]; }; }
+# the extension version of a release is its MAJOR.MINOR, or MAJOR.MINOR.N when a patch release carries SQL (an update script into it): ext_version_ok CONTROL_VERSION MAJOR.MINOR
+ext_version_ok() { [[ $1 == "$2" || $1 == "$2".[0-9]* ]]; }
 lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
@@ -44,6 +46,19 @@ selftest() {
 	chk fail "an unreadable file is none" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/missing" bash -c "$(declare -f vocabulary); vocabulary"
 	chk pass "a readable file is one" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f vocabulary); vocabulary"
 	chk pass "the text of a vocabulary is one" env -u NEUTRAL_VOCAB_FILE NEUTRAL_VOCAB="$(cat "$t/voc")" bash -c "$(declare -f vocabulary); vocabulary"
+	# the extension version of a release: its minor, or a patch of it (an update script goes into it); not another minor, a prefix of the digits, or a non-number
+	local c mm want
+	while IFS=' ' read -r c mm want; do
+		chk "$want" "ext_version_ok $c $mm" bash -c "$(declare -f ext_version_ok); ext_version_ok \"\$1\" \"\$2\"" _ "$c" "$mm"
+	done <<<"4.0 4.0 pass
+4.0.3 4.0 pass
+4.0.12 4.0 pass
+4.1 4.0 fail
+4.00 4.0 fail
+4.01 4.0 fail
+4.0. 4.0 fail
+4.0.x 4.0 fail
+4 4.0 fail"
 	# the release itself, without a vocabulary: it stops at once, before any scratch clone or state exists
 	v=$(env -u NEUTRAL_VOCAB -u NEUTRAL_VOCAB_FILE RELEASE_STATE="$t/state" RELEASE_TMP="$t" SIFT_RELEASE_SCOPED=1 "$0" 9.9.9 --dry-run 2>&1); local rc=$?
 	chk pass "a dry run without a vocabulary exits 1 and says why" bash -c '[[ $1 == 1 && $2 == *vocabulary* && ! -e $3/state ]]' _ "$rc" "$v" "$t"
@@ -99,23 +114,24 @@ control_version() { sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$R/pg_sift.co
 
 # ---------- preflight
 preflight() {
-	local notes=docs/releases/$TAG.md f pm
+	local notes=docs/releases/$TAG.md f pm ext
 	[[ -z $(g status --porcelain) ]] || { g status --short; die "the tree is not clean"; }
 	g fetch -q --tags origin main
 	g rev-parse -q --verify "refs/tags/$TAG" >/dev/null && [[ -z $RESUME ]] && die "$TAG exists"
 	[[ $(g rev-parse --abbrev-ref HEAD) == main ]] || soft "not on main"
 	# HEAD is origin/main; a resumed release may be one commit ahead (the bump) or already pushed
 	[[ -n $RESUME ]] || [[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || soft "HEAD is not origin/main: push or pull first"
-	[[ -f $R/$notes ]] || soft "write $notes first (docs/releases/TEMPLATE.md)"
+	[[ -f $R/$notes ]] || soft "write $notes first (copy the notes of a previous release)"
 	! grep -qsE 'X\.Y\.Z|<one line|<feature>' "$R/$notes" || soft "$notes still has template text"
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
-	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
-	[[ -f $R/sql/pg_sift--$MM.sql ]] || compgen -G "$R/sql/pg_sift--*--$MM.sql" >/dev/null || die "sql/pg_sift--$MM.sql is missing, and no update script goes into $MM"
+	ext=$(control_version)
+	ext_version_ok "$ext" "$MM" || die "pg_sift.control default_version is $ext, not $MM or $MM.N"
+	[[ -f $R/sql/pg_sift--$ext.sql ]] || compgen -G "$R/sql/pg_sift--*--$ext.sql" >/dev/null || die "sql/pg_sift--$ext.sql is missing, and no update script goes into $ext"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
-	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
+	# the upgrade script from the previous release's version to this one (a patch release keeps the version unless it carries SQL)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
-	[[ $pm == "$MM" ]] || [[ -f $R/sql/pg_sift--$pm--$MM.sql ]] || die "sql/pg_sift--$pm--$MM.sql is missing: the upgrade from $PREV has no script"
+	[[ $pm == "$ext" ]] || [[ -f $R/sql/pg_sift--$pm--$ext.sql ]] || die "sql/pg_sift--$pm--$ext.sql is missing: the upgrade from $PREV has no script"
 }
 
 # ---------- the checks
@@ -173,7 +189,7 @@ check_upgrade() {
 	pgt "$W/new" "$U" $port install >/dev/null && pgt "$W/new" "$U" $port start >/dev/null || return 1
 	q "$sock" $port sift -c "ALTER EXTENSION pg_sift UPDATE"
 	ver=$(q "$sock" $port sift -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
-	[[ $ver == "$MM" ]] || { echo "extversion is $ver, not $MM"; return 1; }
+	[[ $ver == "$(control_version)" ]] || { echo "extversion is $ver, not $(control_version)"; return 1; }
 	[[ $(q "$sock" $port sift <<<"$ANS") == "$a" ]] || { echo "the answers changed by the update"; return 1; }
 	q "$sock" $port sift -c "SELECT sift.verify('docs_idx', true), sift.col_verify('docs_col', true)" -c "REINDEX INDEX docs_idx" -c "REINDEX INDEX docs_col" >/dev/null
 	[[ $(q "$sock" $port sift <<<"$ANS") == "$a" ]] || { echo "the answers changed by REINDEX"; return 1; }
@@ -196,7 +212,7 @@ check_upgrade() {
 	else echo "no sift.col_format_minor: the previous-format check is skipped"; pgt "$W/new" "$U" $port stop >/dev/null; fi
 }
 check_package() {
-	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver=$MM
+	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver=$(control_version)
 	tree HEAD "$W/pkg"
 	( cd "$W/pkg" && nice make -j2 USE_PGXS=1 SIFT_TESTING= >/dev/null && make USE_PGXS=1 SIFT_TESTING= DESTDIR="$root" install >/dev/null ) || { echo "make install failed"; return 1; }
 	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql; do
@@ -213,7 +229,7 @@ check_package() {
 # versions: every place that names the release agrees (VERSION: the check after the bump, where the files carry it)
 check_versions() {
 	local f bad=()
-	[[ $(control_version) == "$MM" ]] || bad+=("pg_sift.control")
+	ext_version_ok "$(control_version)" "$MM" || bad+=("pg_sift.control")
 	[[ $(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") == "$VERSION" ]] || bad+=("packaging/PKGBUILD pkgver")
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ $(<"$R/$f/VERSION") == "$VERSION" ]] || bad+=("$f/VERSION"); done
 	grep -q "release-$VERSION-blue" "$R/README.md" || bad+=("README.md badge")

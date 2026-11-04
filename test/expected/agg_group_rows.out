@@ -13,8 +13,9 @@ SET hash_mem_multiplier = 1;
 CREATE TABLE gr_facts (id int, parent_id int, kind text, ts date, amount float8) WITH (autovacuum_enabled = false);
 INSERT INTO gr_facts SELECT i, i, 'cat_' || chr(97 + i % 4), date '2024-01-01' + i % 365, i % 13 + 0.5 FROM generate_series(1, 12000) i;
 CREATE INDEX gr_facts_col ON gr_facts USING sift_col (id, parent_id, kind, ts, amount);
-NOTICE:  sift_col index "gr_facts_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "gr_facts_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gr_facts_col');
 CREATE TABLE gr_dims (id int PRIMARY KEY, settings jsonb NOT NULL, grp int NOT NULL);
 INSERT INTO gr_dims SELECT p, jsonb_build_object('kind', 'cat_' || chr(97 + p % 3), 'slot', p % 6), p % 3 FROM generate_series(1, 12000) p;
 VACUUM (FREEZE, ANALYZE) gr_facts, gr_dims;

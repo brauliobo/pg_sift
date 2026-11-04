@@ -43,4 +43,12 @@ gin_hit gin_read sift_hit sift_read other_hit other_read os_cache_dropped table_
 segments_declared index_options wal_bytes fpw cpus noise psi_cpu_start psi_cpu_end psi_io_start psi_io_end shared_buffers_mb work_mem_mb pg_version
 settings settings_hash maintenance
 '''.split(),
+    7: '''
+run_id tip harness dataset rows keys rows_per_key heap_order heap_corr table_state allvisible_pct churn_history vacuums autovacuums settled settled_s
+dead_pct tombstone_pct structures statement sql_hash variant kind protocol mode arm arm_option picked structure plan_hash plan_shape temp rep est_cost plan_ms exec_ms
+wall_ms instr_m cycles_m instr_scope instr_n instr_leader_m instr_workers_m workers_requested workers_launched heap_hit heap_read btree_hit btree_read
+gin_hit gin_read sift_hit sift_read other_hit other_read os_cache_dropped table_bytes index_bytes segments immutable_segments buffer_segments
+segments_declared index_options wal_bytes fpw cpus noise psi_cpu_start psi_cpu_end psi_io_start psi_io_end shared_buffers_mb work_mem_mb pg_version
+settings settings_hash maintenance
+'''.split(),
 }

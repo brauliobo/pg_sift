@@ -121,7 +121,6 @@ sift_colb_scan_report(Relation index, ColScanAcc *acc)
 {
 	TupleDesc	desc = RelationGetDescr(index);
 	StringInfoData detail;
-	const char *iname = quote_identifier(RelationGetRelationName(index));
 	const char *first = NULL;
 	int			nlz4 = 0,
 				nkept = 0;
@@ -157,9 +156,8 @@ sift_colb_scan_report(Relation index, ColScanAcc *acc)
 		return;
 	if (dict)
 		appendStringInfoString(&detail, "\nLZ4 blocks of dictionaries need column format minor 29, which releases before 3.6 refuse.");
-	ereport(NOTICE,
+	/* the figures of each column are for whoever reads the server log at DEBUG1: nothing recorded in the index says them afterwards */
+	ereport(DEBUG1,
 			(errmsg("sift_col index \"%s\": compression = 'auto' takes lz4 for %d and keeps zstd for %d of the %d text column%s", RelationGetRelationName(index), nlz4, nkept, nlz4 + nkept, nlz4 + nkept == 1 ? "" : "s"),
-			 errdetail_internal("%s", detail.data),
-			 errhint("To keep zstd for a column, run ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX; 'auto; %s=lz4' takes lz4.%s", iname, first, first,
-					 dict ? " To write no LZ4 blocks of dictionaries, SET sift.col_format_minor = 14 before CREATE INDEX." : "")));
+			 errdetail_internal("%s", detail.data)));
 }

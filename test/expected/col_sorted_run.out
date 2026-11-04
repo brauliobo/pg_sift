@@ -35,6 +35,10 @@ INSERT INTO sr_o SELECT * FROM sr ORDER BY id;
 CREATE TABLE sr_t (LIKE sr) WITH (autovacuum_enabled = off);
 ALTER TABLE sr_t ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sr_t SELECT * FROM sr ORDER BY id;
+-- analyzed first: the build chooses from the statistics, and a table it counts under the rows that it analyzes by itself has none
+ANALYZE sr;
+ANALYZE sr_o;
+ANALYZE sr_t;
 CREATE INDEX sr_off ON sr_o USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SET sift.col_format_minor = 12;
 CREATE INDEX sr_twelve ON sr_t USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0, calendar_columns = 'off');

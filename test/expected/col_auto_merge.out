@@ -15,14 +15,17 @@ INSERT INTO facts_b SELECT * FROM facts_a ORDER BY id;
 CREATE TABLE facts_c (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_c SELECT * FROM facts_a ORDER BY id;
 CREATE INDEX facts_a_col ON facts_a USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
-NOTICE:  sift_col index "facts_a_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_a_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_a_col');
 CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
-NOTICE:  sift_col index "facts_b_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_b_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_b_col');
 CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
-NOTICE:  sift_col index "facts_c_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_c_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_c_col');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 -- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
 CREATE FUNCTION fa_state(tbl text) RETURNS TABLE (units int, from_preagg int, same bool) LANGUAGE plpgsql AS $$
@@ -159,8 +162,9 @@ SELECT sift.col_maintain('facts_a_col') AS rewritten_again;
 (1 row)
 
 REINDEX INDEX facts_c_col;
-NOTICE:  sift_col index "facts_c_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_c_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_c_col');
 SELECT 'maintained' AS step, * FROM fa_state('facts_a');
     step    | units | from_preagg | same 
 ------------+-------+-------------+------
@@ -225,8 +229,9 @@ SELECT sift.col_maintain('facts_b_col') AS rewritten, sift.col_maintenance_due('
 CREATE TABLE facts_d (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_d SELECT * FROM facts_a ORDER BY id LIMIT 40000;
 CREATE INDEX facts_d_col ON facts_d USING sift_col (id, key, kind, amount);
-NOTICE:  sift_col index "facts_d_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_d_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_d_col');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_d;
 UPDATE facts_d SET amount = amount + 1 WHERE id % 100 = 1;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_d;
@@ -254,8 +259,9 @@ DROP FUNCTION fa_churn_due(regclass, numeric, bool);
 CREATE TABLE facts_e (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_e SELECT * FROM facts_a ORDER BY id LIMIT 40000;
 CREATE INDEX facts_e_col ON facts_e USING sift_col (id, key, kind, amount);
-NOTICE:  sift_col index "facts_e_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_e_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_e_col');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_e;
 CREATE TEMP TABLE base_gen AS SELECT gen FROM sift.col_segments('facts_e_col') WHERE kind = 'immutable';
 INSERT INTO facts_e SELECT 1000000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 1500) g;
@@ -313,8 +319,9 @@ SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.col_auto_merge', 'si
 SET sift.col_auto_merge = on;
 CREATE TABLE facts_f (LIKE facts_a);
 CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
-NOTICE:  sift_col index "facts_f_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "facts_f_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_f_col');
 RESET sift.col_auto_merge;
 DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f;
 DROP FUNCTION fa_state(text);

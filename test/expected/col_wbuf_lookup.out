@@ -14,8 +14,9 @@ SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7919) % 900 END,
 	   timestamp '2024-01-01' + i * interval '1 minute'
 FROM generate_series(1, 4000) i;
 CREATE INDEX wl_i ON wl USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, ts sift.col_timestamp_ops);
-NOTICE:  sift_col index "wl_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "wl_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wl_i');
 VACUUM (FREEZE, ANALYZE) wl;
 -- rows that are only in the write buffer
 INSERT INTO wl (id, k, s, u, ts)
@@ -171,8 +172,9 @@ INSERT INTO wl_q (w) VALUES ('id = 8100'), ('k = 100'), ('s = ''s100'''), ('u = 
 -- (a text of 20,000 characters) and rows left by an aborted insert included
 CREATE TABLE wl2 (id int, s text);
 CREATE INDEX wl2_i ON wl2 USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
-NOTICE:  sift_col index "wl2_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "wl2_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wl2_i');
 CREATE FUNCTION wl2_check() RETURNS TABLE (batch int, idx_ok boolean, seq_ok boolean) LANGUAGE plpgsql AS $$
 DECLARE a bigint[]; b bigint[]; w text;
 BEGIN

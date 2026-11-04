@@ -8,8 +8,9 @@ ALTER TABLE pdn ALTER COLUMN pad SET STORAGE PLAIN;
 -- u: a key of one row; d: 100 keys of 300 rows each, in every unit (a list of 10 of them expects 3,000 rows for each of the few units)
 INSERT INTO pdn (id, u, d, v) SELECT i, (i::bigint * 7919 % 30011)::int, i % 100, i % 7 FROM generate_series(1, 30000) i;
 CREATE INDEX pdn_ix ON pdn USING sift_col (id, u, d, v) WITH (key_columns = 'off', point_columns = 'u, d');
-NOTICE:  sift_col index "pdn_ix" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "pdn_ix": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pdn_ix');
 ANALYZE pdn;
 CREATE FUNCTION pdn_from_point(w text) RETURNS text LANGUAGE plpgsql
 	SET sift.agg_force = on SET max_parallel_workers_per_gather = 0 SET jit = off AS $$

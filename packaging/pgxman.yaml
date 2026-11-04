@@ -4,7 +4,7 @@ version: "4.0.2"
 homepage: https://github.com/brauliobo/pg_sift
 repository: https://github.com/brauliobo/pg_sift
 source: https://github.com/brauliobo/pg_sift/archive/refs/tags/v4.0.2.tar.gz
-description: Exact BM25 full-text index and column-store aggregates for PostgreSQL.
+description: Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search
 license: PostgreSQL
 keywords:
   - full-text-search

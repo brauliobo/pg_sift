@@ -308,9 +308,8 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	what.data[what.len - 2] = '\0';
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": the rewrite chooses again from the data: %s", RelationGetRelationName(index), what.data),
-			 errdetail("Rows appended since the build, or a different spread of the values, change what the default formulas choose for key_cut, order_array_columns and point_tid_columns "
-					   "(an option you wrote is never changed); the segments written now are the ones a REINDEX would write."),
-			 errhint("To keep a choice off, run ALTER INDEX %s SET (key_cut = 'off') (and the same for the others).", quote_identifier(RelationGetRelationName(index)))));
+			 errdetail("Rows appended since the build change what the defaults choose; an option you wrote is never changed."),
+			 errhint("ALTER INDEX %s SET (key_cut = 'off') keeps a choice off, and the same for the other options.", quote_identifier(RelationGetRelationName(index)))));
 	return changed;
 }
 
@@ -424,43 +423,23 @@ sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSp
 	}
 }
 
-#define SIFT_POINT_BYTES_ROW	20		/* what the point directory of a unique column takes a row: 8-byte slots, a power of two of them for the keys */
-
-static void
-append_bytes(StringInfo s, uint64 n)
-{
-	appendStringInfo(s, UINT64_FORMAT " bytes", n);
-}
-
 /*
  * After a build that is the build's choice: the columns that hold a key list or a bitmap in SIFT_COL_AUTO_KEEP_PCT of the units stay in the option, the others go out
- * of it (the cube answers a column it holds in as many units; a column whose keys fit no share of a unit is scanned), and a NOTICE says which, how many bytes
- * the lists take, what a filter of a column left out would take at most, and how to turn the default off.
+ * of it (the cube answers a column it holds in as many units; a column whose keys fit no share of a unit is scanned). The summary of the build says which stay.
  */
 void
 sift_col_auto_keys_report(Relation index)
 {
 	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the relcache frees the cached state on a reload, and the loop calls into readers */
 	const SiftCPaggSpec *spec = &rel->pagg;
-	const char *name = quote_identifier(RelationGetRelationName(index));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col auto keys", ALLOCSET_DEFAULT_SIZES);
 	uint32		units = 0,
 				have[SIFT_COL_MAX_COLS] = {0},
-				filters[SIFT_COL_MAX_COLS] = {0},
 				cubed[SIFT_COL_MAX_COLS] = {0};
-	uint64		bytes[SIFT_COL_MAX_COLS] = {0};
-	SiftColLeafStats ls[SIFT_COL_MAX_COLS];
 	StringInfoData kept,
-				left,
-				why,
-				filtered;
-	uint64		kept_bytes = 0,
-				point_bytes = 0;
-	bool		cube_left = false;
+				left;
 
-	for (int l = 0; l < SIFT_COL_MAX_COLS; l++)
-		sift_col_leaf_stats_init(&ls[l]);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -479,18 +458,13 @@ sift_col_auto_keys_report(Relation index)
 		{
 			if (!spec->pres[l])
 				continue;
-			sift_cseg_leaf_stats(seg, l, &ls[l]);
 			for (uint32 u = 0; u < seg->nsb; u++)
 			{
 				uint32		len;
 				const uint8 *blob = sift_cseg_set(seg, l, u, &len);
 
 				if (blob != NULL && len > 0 && (blob[0] == SIFT_CSET_PRES || blob[0] == SIFT_CSET_PLIST || blob[0] == SIFT_CSET_RUNS || blob[0] == SIFT_CSET_BLOOM))
-				{
 					have[l]++;
-					bytes[l] += len;
-					filters[l] += blob[0] == SIFT_CSET_BLOOM;
-				}
 			}
 		}
 		sift_cseg_close(seg);
@@ -498,66 +472,17 @@ sift_col_auto_keys_report(Relation index)
 	}
 	initStringInfo(&kept);
 	initStringInfo(&left);
-	initStringInfo(&why);
-	initStringInfo(&filtered);
 	for (int l = 0; l < rel->schema->ncols; l++)
 	{
 		if (!spec->pres[l])
 			continue;
-		if (units > 0 && cubed[l] * 100 >= (uint64) units * SIFT_COL_AUTO_KEEP_PCT)
-		{
-			cube_left = true;
+		if (units > 0 && (cubed[l] * 100 >= (uint64) units * SIFT_COL_AUTO_KEEP_PCT || have[l] * 100 < (uint64) units * SIFT_COL_AUTO_KEEP_PCT))
 			keycols_append_name(&left, keycols_leaf_name(index, &rel->schema->cols[l]));
-			appendStringInfo(&why, "%s%s (the cube holds it in %u%% of the units)", why.len ? "; " : "", keycols_leaf_name(index, &rel->schema->cols[l]),
-							 (uint32) ((uint64) cubed[l] * 100 / units));
-		}
-		else if (units > 0 && have[l] * 100 < (uint64) units * SIFT_COL_AUTO_KEEP_PCT)
-		{
-			/* what a filter of the column would take at most in a unit: a bit for every integer of its range, or 10 bits for every row */
-			double		rows = Max(ls[l].nvals - ls[l].nnull, 0) / Max(units, 1);
-			double		range = ls[l].has_range ? (double) ls[l].max - (double) ls[l].min + 1 : rows * 8 * 2;
-			uint64		per_unit = (uint64) Min(range / 8, rows * SIFT_CSET_BLOOM_BITS / 8) + SIFT_CSET_HDR;
-
-			keycols_append_name(&left, keycols_leaf_name(index, &rel->schema->cols[l]));
-			appendStringInfo(&why, "%s%s (no key list or bitmap within %d%% of a unit in %u%% of the units; a filter would take up to about " UINT64_FORMAT " bytes)",
-							 why.len ? "; " : "", keycols_leaf_name(index, &rel->schema->cols[l]), SIFT_CSET_PRES_PCT,
-							 (uint32) ((uint64) (units - have[l]) * 100 / units), per_unit * units);
-		}
 		else
-		{
 			keycols_append_name(&kept, keycols_leaf_name(index, &rel->schema->cols[l]));
-			if (filters[l] > 0)
-			{
-				keycols_append_name(&filtered, keycols_leaf_name(index, &rel->schema->cols[l]));
-				point_bytes += (uint64) Max(ls[l].nvals - ls[l].nnull, 0) * SIFT_POINT_BYTES_ROW;
-			}
-			kept_bytes += bytes[l];
-		}
 	}
 	if (left.len > 0)
 		set_chosen(index, &kept);
-	/* an empty index has measured nothing, and an index that keeps nothing costs nothing: neither says anything */
-	if (kept.len > 0 && units > 0)
-	{
-		StringInfoData detail;
-
-		initStringInfo(&detail);
-		appendStringInfoString(&detail, "They are foreign key columns and columns named *_id of type " SIFT_KEY_TYPES " that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, ");
-		append_bytes(&detail, kept_bytes);
-		appendStringInfoString(&detail, " together, which a count(DISTINCT) of one reads instead of its rows.");
-		if (filtered.len > 0)
-			appendStringInfo(&detail, " %s: where no list fits, a bloom filter of what the share has left (%d to 10 bits a key, within %d%% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = '%s' lists the rows of each key, so that an equality reads one unit, for about ", filtered.data, SIFT_CSET_BLOOM_MIN_BITS, SIFT_CSET_FILTER_PCT, filtered.data);
-		if (filtered.len > 0)
-		{
-			appendStringInfo(&detail, "%.1f MB", point_bytes / 1048576.0);
-			appendStringInfoString(&detail, " more (a b-tree is about as large).");
-		}
-		if (left.len > 0)
-			appendStringInfo(&detail, " Left out: %s.%s", why.data,
-							 cube_left ? " The units written now keep the lists of a column the cube holds; a REINDEX drops them." : "");
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": key_columns = 'auto' keeps the keys of %s in every unit", RelationGetRelationName(index), kept.data), errdetail_internal("%s", detail.data),
-						 errhint("To turn it off, run ALTER INDEX %s SET (key_columns = 'off') and REINDEX; key_columns = 'a, b' on CREATE INDEX names the columns.", name)));
-	}
 	MemoryContextDelete(cx);
 	pfree(snap);
 }
@@ -597,28 +522,14 @@ sift_col_auto_paths(Relation heap, Relation index)
 	{
 		StringInfoData arrs,
 					only,
-					both,
-					detail;
+					both;
 
 		initStringInfo(&arrs);
 		initStringInfo(&only);
 		initStringInfo(&both);
-		initStringInfo(&detail);
 		keycols_auto_array_specs(heap, index, &arrs, &only, &both);
 		if (arrs.len > 0)
-		{
-			const char *name = quote_identifier(RelationGetRelationName(index));
-
 			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", arrs.data);
-			appendStringInfoString(&detail, "An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array.");
-			if (only.len > 0)
-				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
-			if (both.len > 0)
-				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' keeps the elements of the arrays %s", RelationGetRelationName(index), only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
-							 errdetail_internal("%s", detail.data),
-							 errhint("To keep the arrays and leave the elements out, run ALTER INDEX %s SET (paths = 'auto:') and REINDEX.", name)));
-		}
 	}
 	if (spec.len == 0)
 		return;
@@ -628,11 +539,6 @@ sift_col_auto_paths(Relation heap, Relation index)
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", spec.data);
 		sift_col_set_option(index, "paths", v.data);
-		if (ncols + ngroups > 0)
-			ereport(NOTICE, (errmsg("sift_col index \"%s\": paths = 'auto' reads the jsonb paths %s", RelationGetRelationName(index), spec.data),
-							 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
-									   SIFT_COL_AUTO_PATHS_SAMPLE),
-							 errhint("Write paths = '...' to fix them by hand.")));
 	}
 }
 

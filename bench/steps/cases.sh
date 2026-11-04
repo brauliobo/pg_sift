@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--io cold|warm|off] [--minstr] [--records FILE] [--budget FILE [--budget-update]] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--no-share] [--any-plan] [--no-wait] [--profile DIR] [--keep]
+# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--io cold|warm|off] [--minstr] [--records FILE] [--budget FILE [--budget-update]] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--arm-budget S] [--headline] [--no-share] [--any-plan] [--no-wait] [--profile DIR] [--keep]
 #        bench/bench cases --list | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
 #        bench/bench cases --check [--strict] [--host-plan] [--since TAG]   every claim of the release has a case, rows of this version, rows of its peers and a block (steps/cases/coverage.py; --strict is the release gate)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
@@ -31,10 +31,10 @@ while (( $# )); do
     --engines) ENGINES=$2; shift ;;
     --docs) DOCS=1 ;;
     --keep) KEEP=1 ;;
-    --cases|--out|--wait|--scales|--timeout|--work-mem|--times|--lane-budget|--io|--profile|--records) PY+=("$1" "$2"); shift ;;
+    --cases|--out|--wait|--scales|--timeout|--work-mem|--times|--lane-budget|--io|--profile|--records|--arm-budget) PY+=("$1" "$2"); shift ;;
     --minstr|--budget-update) PY+=("$1") ;;
     --budget) BUDGET=$2; PY+=("$1" "$2"); shift ;;
-    --no-wait|--no-share|--any-plan) PY+=("$1") ;;
+    --no-wait|--no-share|--any-plan|--headline) PY+=("$1") ;;
     *) sed -n '2,11p' "$0"; exit 1 ;;
   esac
   shift

@@ -11,9 +11,9 @@ INSERT INTO nn
 SELECT i, i % 7, CASE WHEN i % 97 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE round(((i * 37) % 4001 - 2000) / 7.0, 2) END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 500 - 250 END
 FROM generate_series(1, 6000) i;
 CREATE INDEX nn_col ON nn USING sift_col (id, g, n, w);
-NOTICE:  sift_col index "nn_col" installed two statement triggers on table "nn" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "nn_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nn_col');
 VACUUM (FREEZE, ANALYZE) nn;
 -- the lists: the values of the table, ones it does not have, NaN, NULL, a scale the column lacks, a number beyond its digits
 CREATE TABLE lists (name text, items text);

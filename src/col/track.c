@@ -345,15 +345,11 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	create_trigger(heap, index, false);
 	create_trigger(heap, index, true);
 	CommandCounterIncrement();
-	ereport(NOTICE, (errmsg("sift_col index \"%s\" installed two statement triggers on table \"%s\" and tracks its changes", RelationGetRelationName(index), RelationGetRelationName(heap)),
-					 errdetail("track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index."),
-					 errhint("WITH (track_changes = 'off') builds the index without them.")));
 	/* writers run beside a concurrent build: what they ended before the triggers is not known, so the log is not complete */
 	if (concurrent)
 	{
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes tracks the changes from now on, but the log is not complete after a concurrent build", RelationGetRelationName(index)),
-						 errhint("To make it complete, run ALTER INDEX %s SET (track_changes = 'off') and then ALTER INDEX %s SET (track_changes = '%s'), or REINDEX.",
-								 RelationGetRelationName(index), RelationGetRelationName(index), sift_col_options_row_key(index))));
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes log is not complete after a concurrent build", sift_col_final_name(index)),
+						 errhint("Run REINDEX INDEX %s without CONCURRENTLY to make the log complete.", sift_col_final_name(index))));
 		return;
 	}
 	baseline(index, heap, log);
@@ -534,6 +530,15 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 	sift_col_tomb_dead_keys(index, heap, td->tg_oldtable);
 	index_close(index, NoLock);
 	return PointerGetDatum(NULL);
+}
+
+/* Whether the index tracks changes and its log is not complete: after a concurrent build only the triggers hear, so no read can rely on the log */
+bool
+sift_col_track_incomplete(Relation index)
+{
+	SiftTombLog *log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
+
+	return log != NULL && log->chan.flags != SIFT_TOMB_COMPLETE;
 }
 
 /* sift.col_tracking(index): what the log can be taken for, and which part is missing */

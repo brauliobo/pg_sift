@@ -15,8 +15,8 @@ SELECT n, CASE WHEN n % 29 = 0 THEN NULL ELSE (n * 7919) % 5003 - 2000 END, CASE
 FROM generate_series(1, 12000) n;
 CREATE INDEX ko_i ON ko USING sift_col (id sift.col_int4_ops, i sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops)
 	WITH (order_columns = 'id, i, b, d, t', order_array_columns = 'id, i, b, d, t', order_layout = 'whole', track_changes = 'off');
-NOTICE:  sift_col index "ko_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 5 columns
-NOTICE:  sift_col index "ko_i": order_layout: id: exact keys, 0.4 bytes a row; i: exact keys, 1.8 bytes a row; b: exact keys, 2.7 bytes a row; d: exact keys, 2.1 bytes a row; t: exact keys, 2.6 bytes a row
+NOTICE:  sift_col index "ko_i": 2 automatic choices (order_array_columns, order_layout)
+NOTICE:  sift_col index "ko_i" is column format minor 38, which a library before 3.7 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ko;
 SET sift.test_topn_heads = off;
 -- the rows are the plan's without the extension, in order; the answer says 'index' when the scan fetched no heap row, 'fetched' when it fetched more than the rows it gave out, 'units' when
@@ -104,7 +104,6 @@ SELECT * FROM ko_all();
 (1 row)
 
 SELECT sift.col_merge('ko_i'::regclass, true) >= 0 AS merged;
-NOTICE:  sift_col index "ko_i": point_tid_columns = 'auto' chooses "b" by the default formula: an equality on its nearly unique values takes 1.7 times the instructions through the order array of the column that it takes through the directory (0.24 M against 0.14 M for a key at 1,000,000 rows; predicted index size +26%, 4 bytes a row, benefit 11 against cost 8)
 NOTICE:  sift_col index "ko_i": the rewrite chooses again from the data: point_tid_columns = 'auto: b' (was '')
  merged 
 --------

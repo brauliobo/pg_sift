@@ -136,11 +136,9 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "ka_auto": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 92 of 123 units, where 1 hold its rows (predicted index size +10.2%, benefit 18 against cost 7)
-DETAIL:  A sample of 31 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
-HINT:  To keep the units by block range, run ALTER INDEX ka_auto SET (key_cut = 'off') and REINDEX.
-NOTICE:  sift_col index "ka_auto" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "ka_auto": 1 automatic choice (key_cut), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_cut = tenant_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ka_auto');
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 -- (small rows, 20 to a page: the prediction counts the addresses of the rows, not what the cut saves in the pre-aggregates, so it is an upper bound)
 DROP INDEX ka_auto;
@@ -156,11 +154,9 @@ INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random(
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "kg_narrow": key_cut = 'auto' chooses 'tenant_id': an equality on "tenant_id" would read about 63 of 66 units, where 1 hold its rows (predicted index size +14.1%, benefit 31 against cost 12)
-DETAIL:  A sample of 17 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
-HINT:  To keep the units by block range, run ALTER INDEX kg_narrow SET (key_cut = 'off') and REINDEX.
-NOTICE:  sift_col index "kg_narrow" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "kg_narrow": 1 automatic choice (key_cut), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_cut = tenant_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kg_narrow');
 -- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
 SET client_min_messages = warning;
 CREATE TABLE kf (id int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
@@ -174,16 +170,15 @@ INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 SET client_min_messages = notice;
 CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
-NOTICE:  sift_col index "kf_few": an equality on "tenant_id" reads about 43 of 45 units, where 22 hold its rows; key_cut = 'tenant_id' would cut that
-DETAIL:  The index would grow by 29.6%. The predicted size comes from a sample of 16 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 10 against 23: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
-HINT:  If the lookups of this key matter more than the size, run CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX kf_few SET (key_cut = 'tenant_id') and REINDEX; to silence this advice, SET sift.cluster_advice = off.
-NOTICE:  sift_col index "kf_few" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "kf_few": 2 advice (track_changes, key_cut)
+DETAIL:  advice: track_changes = the table has no one-column primary key; advice: key_cut = tenant_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kf_few');
 -- the setting silences the advice
 SET sift.cluster_advice = off;
 CREATE INDEX kf_quiet ON kf USING sift_col (tenant_id);
-NOTICE:  sift_col index "kf_quiet" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "kf_quiet": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kf_quiet');
 RESET sift.cluster_advice;
 DROP INDEX kf_quiet;
 SET client_min_messages = warning;

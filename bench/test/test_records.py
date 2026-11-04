@@ -18,12 +18,20 @@ import collect  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402
 
+SHAPES = {'sift': 'Custom Scan SiftAgg t', 'btree': 'Index Scan t_ix', 'heap': 'Seq Scan t'}
+
+
+def shape(structure):
+    """the plan columns of a read whose plan names STRUCTURE"""
+    return dict(plan_shape=SHAPES[structure], plan_hash=collect.plan_hash(SHAPES[structure]))
+
+
 BASE = dict(run_id='abc123456789-20261101T000000Z-0001', tip='abc123456789', harness='test records-1', dataset='orders', variant='main', rows=300000, keys=3000, rows_per_key=100.0, heap_order='arrival',
             heap_corr=0.01, table_state='fresh_vacuumed', allvisible_pct=100.0, structures='btree,heap,sift', statement='top20', sql_hash='aaaaaaaaaaaa', kind='read', protocol='single', mode='forced',
             arm='sift', arm_option='default', picked=1, structure='sift', temp='warm', rep=1, est_cost=100.0, plan_ms=0.1, exec_ms=1.0, wall_ms=1.3, instr_m=5.0, cycles_m=4.0,
             instr_scope='cluster', workers_requested=0, workers_launched=0, heap_hit=10, heap_read=0, btree_hit=0, btree_read=0, gin_hit=0, gin_read=0, sift_hit=30, sift_read=0,
             other_hit=0, other_read=0, os_cache_dropped=None, wal_bytes=0, fpw=1, cpus=4.0, psi_cpu_start=1.0, psi_cpu_end=2.0, psi_io_start=0.0, psi_io_end=0.0, shared_buffers_mb=256.0,
-            work_mem_mb=64.0, pg_version='18.1', settings='', settings_hash='da39a3ee5e', maintenance='default')
+            work_mem_mb=64.0, pg_version='18.1', settings='', settings_hash='da39a3ee5e', maintenance='default', **shape('sift'))
 
 CHURN = 'upd=5;ins=0;del=0;rounds=1'
 
@@ -34,7 +42,7 @@ def clean():
                                                      ('sift', 'default', 'sift', 1, 'default', 1.0)):
         for temp in ('warm', 'cold'):
             for rep in (1, 2, 3):
-                r = dict(BASE, arm=arm, arm_option=option, structure=structure, picked=picked, mode=mode, temp=temp, rep=rep, exec_ms=ms, wall_ms=ms * 1.3, _file='t.tsv', _line=len(rs) + 2)
+                r = dict(BASE, arm=arm, arm_option=option, structure=structure, picked=picked, mode=mode, temp=temp, rep=rep, exec_ms=ms, wall_ms=ms * 1.3, _file='t.tsv', _line=len(rs) + 2, **shape(structure))
                 if temp == 'cold':
                     r.update(os_cache_dropped=0, sift_read=30 if arm == 'sift' else 0, btree_read=4 if arm == 'btree' else 0, heap_read=2000 if arm == 'heap' else 0)
                 rs.append(r)
@@ -80,7 +88,7 @@ class Schema(unittest.TestCase):
             p = os.path.join(d, 'r.tsv')
             with open(p, 'w') as f:
                 f.write('case\tarm\tmetric\n')
-            with self.assertRaisesRegex(ValueError, 'none of the 6 schema versions'):
+            with self.assertRaisesRegex(ValueError, 'none of the 7 schema versions'):
                 schema.read(p)
 
     def test_the_statement_hash_ignores_white_space(self):
@@ -500,6 +508,49 @@ class WriteInventory(unittest.TestCase):
         records = self.measure(['CREATE INDEX w_k ON w (k)'], 'btree,constraint,heap', arm='heap')
         self.assertTrue(any('OTHER STRUCTURES' in p and 'btree' in p for p in problems(records)), problems(records))
 
+    def test_an_arm_that_reaches_the_statement_timeout_or_its_budget_is_unavailable_and_the_rest_goes_on(self):
+        prepare = lambda: self.run_sql('DROP TABLE IF EXISTS w', 'CREATE TABLE w (id int PRIMARY KEY, k int, label text)')   # noqa: E731
+        subject = collect.Subject('write', 100, 'arrival', 'fresh_vacuumed', 'w', kind='load', key='k', keys=10, structures='constraint,heap')
+        fast = collect.Arm('heap', 'fast', settings=[], prepare=prepare, structures='constraint,heap', sql=['INSERT INTO w SELECT g, g, g::text FROM generate_series(1, 100) g'])
+        for slow, budget, reason in [(collect.Arm('btree', 'slow', settings=['SET statement_timeout = 100'], prepare=prepare, structures='constraint,heap', sql=['SELECT pg_sleep(1)']), None, 'statement timeout'),
+                                     (collect.Arm('btree', 'slow', settings=[], prepare=prepare, structures='constraint,heap', sql=['SELECT pg_sleep(0.6)']), 1, 'time budget of 1 s')]:
+            with self.subTest(reason=reason):
+                env = collect.Env('0e767cbf3944', 'test timeout', schema.run_id('0e767cbf3944'), 4.0, reps=3, cool=None, maintenance='disabled', arm_budget=budget)
+                missed = []
+                with patch.object(collect, 'count_instructions', return_value=(1.0, 1.0)), patch.object(collect, 'check_perf_free'):
+                    records = collect.measure_statement(self.s, 'ins', fast.sql, subject, [fast, slow], env, temps=('warm',), unavailable=missed)
+                self.assertEqual(sorted({(r['arm_option'], r['mode']) for r in records}), [('fast', 'forced'), ('slow', 'unavailable')])
+                self.assertEqual(len([r for r in records if r['arm_option'] == 'fast']), 3)   # the arm before it is whole
+                self.assertEqual([(a, o) for a, o, _ in missed], [('btree', 'slow')])
+                self.assertRegex(missed[0][2], '^timeout: .*' + reason)
+        self.assertEqual(self.s.run('SELECT 1')[2], '')   # the session is usable after the cancelled statement
+
+    def test_the_timeout_of_a_statement_is_the_arms_and_any_other_error_stops_the_run(self):
+        class Failing:
+            def run(self, sql):
+                return (1.0, [], self.err)
+        s = Failing()
+        s.err = 'ERROR:  canceling statement due to statement timeout'
+        with self.assertRaises(collect.ArmTimeout):
+            collect.run_all(s, 'SELECT 1')
+        s.err = 'ERROR:  relation "t" does not exist'
+        with self.assertRaises(RuntimeError) as caught:
+            collect.run_all(s, 'SELECT 1')
+        self.assertNotIsInstance(caught.exception, collect.ArmTimeout)
+
+
+class CaseFlush(unittest.TestCase):
+    def test_the_records_of_the_cases_so_far_are_in_the_file_after_each_case(self):
+        from cases import recs
+        rows = [{k: v for k, v in r.items() if not k.startswith('_')} for r in clean()]
+        with tempfile.TemporaryDirectory() as d, patch.object(recs, 'ROWS', []):
+            path = os.path.join(d, 'r.tsv')
+            for n, part in enumerate((rows[:12], rows[12:])):
+                recs.ROWS.extend(part)
+                recs.flush(path)
+                self.assertEqual(len(schema.read(path)), len(recs.ROWS), n)
+                self.assertEqual(os.listdir(d), ['r.tsv'])   # no half-written file is left beside it
+
 
 class SiftIndexFacts(unittest.TestCase):
     """the segments of a sift index and the leader of a build, from stand-ins for the extension on a plain cluster: access methods that are the hash index under the names sift and sift_col (the b-tree handler refuses a build under another access method on PostgreSQL 16 and 17), and the two
@@ -675,12 +726,12 @@ class Versions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'x.tsv')
             open(path, 'w').write('a\tb\n1\t2\n')
-            with self.assertRaisesRegex(ValueError, 'none of the 6 schema versions'):
+            with self.assertRaisesRegex(ValueError, 'none of the 7 schema versions'):
                 schema.read(path)
         said = []
-        schema.read_files([os.path.join(SAMPLES, 'v1.tsv'), os.path.join(SAMPLES, 'v6.tsv')], say=said.append)
+        schema.read_files([os.path.join(SAMPLES, 'v1.tsv'), os.path.join(SAMPLES, 'v7.tsv')], say=said.append)
         self.assertEqual(len(said), 1)
-        self.assertIn('schema 1, read as schema 6', said[0])
+        self.assertIn('schema 1, read as schema 7', said[0])
         self.assertIn('bench records migrate', said[0])
 
 
@@ -750,7 +801,7 @@ class Checker(unittest.TestCase):
                 self.assertTrue(any(reason in p for p in problems(rs)), '%s was not refused: %s' % (reason, problems(rs)))
 
     def test_a_default_plan_that_mixes_structures_is_a_row_of_its_own_and_no_arm(self):
-        rs = [dict(r, picked=0) if r['mode'] == 'forced' else dict(r, arm='mixed', structure='mixed') for r in clean()]
+        rs = [dict(r, picked=0) if r['mode'] == 'forced' else dict(r, arm='mixed', structure='mixed', plan_shape='Nested Loop(Seq Scan t, Seq Scan u)', plan_hash=collect.plan_hash('Nested Loop(Seq Scan t, Seq Scan u)')) for r in clean()]
         self.assertEqual(problems(rs), [])
         rs.append(dict(rs[0], arm='mixed', structure='mixed', rep=9))
         self.assertTrue(any('is none of' in p for p in problems(rs)))

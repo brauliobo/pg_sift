@@ -1,0 +1,388 @@
+-- Each partition a scan reads is opened, its first unit decoded: 39 to 51 us measured, 17 units, for each (count(*) of 20,000 rows over 16 and 64 partitions 0.70 and 2.56 ms against
+-- 1.79 and 2.0 ms for the normal plan). 64 partitions of 300 rows are a normal plan's (the Append of their sequential scans), 4 of 50,000 rows the scan's; the rows are the same either way.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE pp_few (id int NOT NULL, kind text NOT NULL, ts date NOT NULL, amount float8) PARTITION BY RANGE (ts);
+CREATE TABLE pp_many (id int NOT NULL, kind text NOT NULL, ts date NOT NULL, amount float8) PARTITION BY RANGE (ts);
+SELECT format('CREATE TABLE pp_few_%s PARTITION OF pp_few FOR VALUES FROM (%L) TO (%L)', i, date '2020-01-01' + (i - 1) * 100, date '2020-01-01' + i * 100) FROM generate_series(1, 4) i \gexec
+CREATE TABLE pp_few_1 PARTITION OF pp_few FOR VALUES FROM ('01-01-2020') TO ('04-10-2020')
+CREATE TABLE pp_few_2 PARTITION OF pp_few FOR VALUES FROM ('04-10-2020') TO ('07-19-2020')
+CREATE TABLE pp_few_3 PARTITION OF pp_few FOR VALUES FROM ('07-19-2020') TO ('10-27-2020')
+CREATE TABLE pp_few_4 PARTITION OF pp_few FOR VALUES FROM ('10-27-2020') TO ('02-04-2021')
+SELECT format('CREATE TABLE pp_many_%s PARTITION OF pp_many FOR VALUES FROM (%L) TO (%L)', i, date '2020-01-01' + (i - 1) * 5, date '2020-01-01' + i * 5) FROM generate_series(1, 64) i \gexec
+CREATE TABLE pp_many_1 PARTITION OF pp_many FOR VALUES FROM ('01-01-2020') TO ('01-06-2020')
+CREATE TABLE pp_many_2 PARTITION OF pp_many FOR VALUES FROM ('01-06-2020') TO ('01-11-2020')
+CREATE TABLE pp_many_3 PARTITION OF pp_many FOR VALUES FROM ('01-11-2020') TO ('01-16-2020')
+CREATE TABLE pp_many_4 PARTITION OF pp_many FOR VALUES FROM ('01-16-2020') TO ('01-21-2020')
+CREATE TABLE pp_many_5 PARTITION OF pp_many FOR VALUES FROM ('01-21-2020') TO ('01-26-2020')
+CREATE TABLE pp_many_6 PARTITION OF pp_many FOR VALUES FROM ('01-26-2020') TO ('01-31-2020')
+CREATE TABLE pp_many_7 PARTITION OF pp_many FOR VALUES FROM ('01-31-2020') TO ('02-05-2020')
+CREATE TABLE pp_many_8 PARTITION OF pp_many FOR VALUES FROM ('02-05-2020') TO ('02-10-2020')
+CREATE TABLE pp_many_9 PARTITION OF pp_many FOR VALUES FROM ('02-10-2020') TO ('02-15-2020')
+CREATE TABLE pp_many_10 PARTITION OF pp_many FOR VALUES FROM ('02-15-2020') TO ('02-20-2020')
+CREATE TABLE pp_many_11 PARTITION OF pp_many FOR VALUES FROM ('02-20-2020') TO ('02-25-2020')
+CREATE TABLE pp_many_12 PARTITION OF pp_many FOR VALUES FROM ('02-25-2020') TO ('03-01-2020')
+CREATE TABLE pp_many_13 PARTITION OF pp_many FOR VALUES FROM ('03-01-2020') TO ('03-06-2020')
+CREATE TABLE pp_many_14 PARTITION OF pp_many FOR VALUES FROM ('03-06-2020') TO ('03-11-2020')
+CREATE TABLE pp_many_15 PARTITION OF pp_many FOR VALUES FROM ('03-11-2020') TO ('03-16-2020')
+CREATE TABLE pp_many_16 PARTITION OF pp_many FOR VALUES FROM ('03-16-2020') TO ('03-21-2020')
+CREATE TABLE pp_many_17 PARTITION OF pp_many FOR VALUES FROM ('03-21-2020') TO ('03-26-2020')
+CREATE TABLE pp_many_18 PARTITION OF pp_many FOR VALUES FROM ('03-26-2020') TO ('03-31-2020')
+CREATE TABLE pp_many_19 PARTITION OF pp_many FOR VALUES FROM ('03-31-2020') TO ('04-05-2020')
+CREATE TABLE pp_many_20 PARTITION OF pp_many FOR VALUES FROM ('04-05-2020') TO ('04-10-2020')
+CREATE TABLE pp_many_21 PARTITION OF pp_many FOR VALUES FROM ('04-10-2020') TO ('04-15-2020')
+CREATE TABLE pp_many_22 PARTITION OF pp_many FOR VALUES FROM ('04-15-2020') TO ('04-20-2020')
+CREATE TABLE pp_many_23 PARTITION OF pp_many FOR VALUES FROM ('04-20-2020') TO ('04-25-2020')
+CREATE TABLE pp_many_24 PARTITION OF pp_many FOR VALUES FROM ('04-25-2020') TO ('04-30-2020')
+CREATE TABLE pp_many_25 PARTITION OF pp_many FOR VALUES FROM ('04-30-2020') TO ('05-05-2020')
+CREATE TABLE pp_many_26 PARTITION OF pp_many FOR VALUES FROM ('05-05-2020') TO ('05-10-2020')
+CREATE TABLE pp_many_27 PARTITION OF pp_many FOR VALUES FROM ('05-10-2020') TO ('05-15-2020')
+CREATE TABLE pp_many_28 PARTITION OF pp_many FOR VALUES FROM ('05-15-2020') TO ('05-20-2020')
+CREATE TABLE pp_many_29 PARTITION OF pp_many FOR VALUES FROM ('05-20-2020') TO ('05-25-2020')
+CREATE TABLE pp_many_30 PARTITION OF pp_many FOR VALUES FROM ('05-25-2020') TO ('05-30-2020')
+CREATE TABLE pp_many_31 PARTITION OF pp_many FOR VALUES FROM ('05-30-2020') TO ('06-04-2020')
+CREATE TABLE pp_many_32 PARTITION OF pp_many FOR VALUES FROM ('06-04-2020') TO ('06-09-2020')
+CREATE TABLE pp_many_33 PARTITION OF pp_many FOR VALUES FROM ('06-09-2020') TO ('06-14-2020')
+CREATE TABLE pp_many_34 PARTITION OF pp_many FOR VALUES FROM ('06-14-2020') TO ('06-19-2020')
+CREATE TABLE pp_many_35 PARTITION OF pp_many FOR VALUES FROM ('06-19-2020') TO ('06-24-2020')
+CREATE TABLE pp_many_36 PARTITION OF pp_many FOR VALUES FROM ('06-24-2020') TO ('06-29-2020')
+CREATE TABLE pp_many_37 PARTITION OF pp_many FOR VALUES FROM ('06-29-2020') TO ('07-04-2020')
+CREATE TABLE pp_many_38 PARTITION OF pp_many FOR VALUES FROM ('07-04-2020') TO ('07-09-2020')
+CREATE TABLE pp_many_39 PARTITION OF pp_many FOR VALUES FROM ('07-09-2020') TO ('07-14-2020')
+CREATE TABLE pp_many_40 PARTITION OF pp_many FOR VALUES FROM ('07-14-2020') TO ('07-19-2020')
+CREATE TABLE pp_many_41 PARTITION OF pp_many FOR VALUES FROM ('07-19-2020') TO ('07-24-2020')
+CREATE TABLE pp_many_42 PARTITION OF pp_many FOR VALUES FROM ('07-24-2020') TO ('07-29-2020')
+CREATE TABLE pp_many_43 PARTITION OF pp_many FOR VALUES FROM ('07-29-2020') TO ('08-03-2020')
+CREATE TABLE pp_many_44 PARTITION OF pp_many FOR VALUES FROM ('08-03-2020') TO ('08-08-2020')
+CREATE TABLE pp_many_45 PARTITION OF pp_many FOR VALUES FROM ('08-08-2020') TO ('08-13-2020')
+CREATE TABLE pp_many_46 PARTITION OF pp_many FOR VALUES FROM ('08-13-2020') TO ('08-18-2020')
+CREATE TABLE pp_many_47 PARTITION OF pp_many FOR VALUES FROM ('08-18-2020') TO ('08-23-2020')
+CREATE TABLE pp_many_48 PARTITION OF pp_many FOR VALUES FROM ('08-23-2020') TO ('08-28-2020')
+CREATE TABLE pp_many_49 PARTITION OF pp_many FOR VALUES FROM ('08-28-2020') TO ('09-02-2020')
+CREATE TABLE pp_many_50 PARTITION OF pp_many FOR VALUES FROM ('09-02-2020') TO ('09-07-2020')
+CREATE TABLE pp_many_51 PARTITION OF pp_many FOR VALUES FROM ('09-07-2020') TO ('09-12-2020')
+CREATE TABLE pp_many_52 PARTITION OF pp_many FOR VALUES FROM ('09-12-2020') TO ('09-17-2020')
+CREATE TABLE pp_many_53 PARTITION OF pp_many FOR VALUES FROM ('09-17-2020') TO ('09-22-2020')
+CREATE TABLE pp_many_54 PARTITION OF pp_many FOR VALUES FROM ('09-22-2020') TO ('09-27-2020')
+CREATE TABLE pp_many_55 PARTITION OF pp_many FOR VALUES FROM ('09-27-2020') TO ('10-02-2020')
+CREATE TABLE pp_many_56 PARTITION OF pp_many FOR VALUES FROM ('10-02-2020') TO ('10-07-2020')
+CREATE TABLE pp_many_57 PARTITION OF pp_many FOR VALUES FROM ('10-07-2020') TO ('10-12-2020')
+CREATE TABLE pp_many_58 PARTITION OF pp_many FOR VALUES FROM ('10-12-2020') TO ('10-17-2020')
+CREATE TABLE pp_many_59 PARTITION OF pp_many FOR VALUES FROM ('10-17-2020') TO ('10-22-2020')
+CREATE TABLE pp_many_60 PARTITION OF pp_many FOR VALUES FROM ('10-22-2020') TO ('10-27-2020')
+CREATE TABLE pp_many_61 PARTITION OF pp_many FOR VALUES FROM ('10-27-2020') TO ('11-01-2020')
+CREATE TABLE pp_many_62 PARTITION OF pp_many FOR VALUES FROM ('11-01-2020') TO ('11-06-2020')
+CREATE TABLE pp_many_63 PARTITION OF pp_many FOR VALUES FROM ('11-06-2020') TO ('11-11-2020')
+CREATE TABLE pp_many_64 PARTITION OF pp_many FOR VALUES FROM ('11-11-2020') TO ('11-16-2020')
+INSERT INTO pp_few SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 400, i % 97 FROM generate_series(1, 200000) i;
+INSERT INTO pp_many SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 320, i % 97 FROM generate_series(1, 20000) i;
+SELECT format('CREATE INDEX %s_col ON %s USING sift_col (id, kind, ts, amount)', c.relname, c.relname) FROM pg_class c WHERE c.relname ~ '^pp_(few|many)_[0-9]+$' ORDER BY 1 \gexec
+CREATE INDEX pp_few_1_col ON pp_few_1 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_few_1_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_1_col');
+CREATE INDEX pp_few_2_col ON pp_few_2 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_few_2_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_2_col');
+CREATE INDEX pp_few_3_col ON pp_few_3 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_few_3_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_3_col');
+CREATE INDEX pp_few_4_col ON pp_few_4 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_few_4_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_4_col');
+CREATE INDEX pp_many_10_col ON pp_many_10 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_10_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_10_col');
+CREATE INDEX pp_many_11_col ON pp_many_11 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_11_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_11_col');
+CREATE INDEX pp_many_12_col ON pp_many_12 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_12_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_12_col');
+CREATE INDEX pp_many_13_col ON pp_many_13 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_13_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_13_col');
+CREATE INDEX pp_many_14_col ON pp_many_14 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_14_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_14_col');
+CREATE INDEX pp_many_15_col ON pp_many_15 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_15_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_15_col');
+CREATE INDEX pp_many_16_col ON pp_many_16 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_16_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_16_col');
+CREATE INDEX pp_many_17_col ON pp_many_17 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_17_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_17_col');
+CREATE INDEX pp_many_18_col ON pp_many_18 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_18_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_18_col');
+CREATE INDEX pp_many_19_col ON pp_many_19 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_19_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_19_col');
+CREATE INDEX pp_many_1_col ON pp_many_1 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_1_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_1_col');
+CREATE INDEX pp_many_20_col ON pp_many_20 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_20_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_20_col');
+CREATE INDEX pp_many_21_col ON pp_many_21 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_21_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_21_col');
+CREATE INDEX pp_many_22_col ON pp_many_22 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_22_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_22_col');
+CREATE INDEX pp_many_23_col ON pp_many_23 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_23_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_23_col');
+CREATE INDEX pp_many_24_col ON pp_many_24 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_24_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_24_col');
+CREATE INDEX pp_many_25_col ON pp_many_25 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_25_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_25_col');
+CREATE INDEX pp_many_26_col ON pp_many_26 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_26_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_26_col');
+CREATE INDEX pp_many_27_col ON pp_many_27 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_27_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_27_col');
+CREATE INDEX pp_many_28_col ON pp_many_28 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_28_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_28_col');
+CREATE INDEX pp_many_29_col ON pp_many_29 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_29_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_29_col');
+CREATE INDEX pp_many_2_col ON pp_many_2 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_2_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_2_col');
+CREATE INDEX pp_many_30_col ON pp_many_30 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_30_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_30_col');
+CREATE INDEX pp_many_31_col ON pp_many_31 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_31_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_31_col');
+CREATE INDEX pp_many_32_col ON pp_many_32 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_32_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_32_col');
+CREATE INDEX pp_many_33_col ON pp_many_33 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_33_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_33_col');
+CREATE INDEX pp_many_34_col ON pp_many_34 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_34_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_34_col');
+CREATE INDEX pp_many_35_col ON pp_many_35 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_35_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_35_col');
+CREATE INDEX pp_many_36_col ON pp_many_36 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_36_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_36_col');
+CREATE INDEX pp_many_37_col ON pp_many_37 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_37_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_37_col');
+CREATE INDEX pp_many_38_col ON pp_many_38 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_38_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_38_col');
+CREATE INDEX pp_many_39_col ON pp_many_39 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_39_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_39_col');
+CREATE INDEX pp_many_3_col ON pp_many_3 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_3_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_3_col');
+CREATE INDEX pp_many_40_col ON pp_many_40 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_40_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_40_col');
+CREATE INDEX pp_many_41_col ON pp_many_41 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_41_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_41_col');
+CREATE INDEX pp_many_42_col ON pp_many_42 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_42_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_42_col');
+CREATE INDEX pp_many_43_col ON pp_many_43 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_43_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_43_col');
+CREATE INDEX pp_many_44_col ON pp_many_44 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_44_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_44_col');
+CREATE INDEX pp_many_45_col ON pp_many_45 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_45_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_45_col');
+CREATE INDEX pp_many_46_col ON pp_many_46 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_46_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_46_col');
+CREATE INDEX pp_many_47_col ON pp_many_47 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_47_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_47_col');
+CREATE INDEX pp_many_48_col ON pp_many_48 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_48_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_48_col');
+CREATE INDEX pp_many_49_col ON pp_many_49 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_49_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_49_col');
+CREATE INDEX pp_many_4_col ON pp_many_4 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_4_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_4_col');
+CREATE INDEX pp_many_50_col ON pp_many_50 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_50_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_50_col');
+CREATE INDEX pp_many_51_col ON pp_many_51 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_51_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_51_col');
+CREATE INDEX pp_many_52_col ON pp_many_52 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_52_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_52_col');
+CREATE INDEX pp_many_53_col ON pp_many_53 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_53_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_53_col');
+CREATE INDEX pp_many_54_col ON pp_many_54 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_54_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_54_col');
+CREATE INDEX pp_many_55_col ON pp_many_55 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_55_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_55_col');
+CREATE INDEX pp_many_56_col ON pp_many_56 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_56_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_56_col');
+CREATE INDEX pp_many_57_col ON pp_many_57 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_57_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_57_col');
+CREATE INDEX pp_many_58_col ON pp_many_58 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_58_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_58_col');
+CREATE INDEX pp_many_59_col ON pp_many_59 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_59_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_59_col');
+CREATE INDEX pp_many_5_col ON pp_many_5 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_5_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_5_col');
+CREATE INDEX pp_many_60_col ON pp_many_60 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_60_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_60_col');
+CREATE INDEX pp_many_61_col ON pp_many_61 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_61_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_61_col');
+CREATE INDEX pp_many_62_col ON pp_many_62 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_62_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_62_col');
+CREATE INDEX pp_many_63_col ON pp_many_63 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_63_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_63_col');
+CREATE INDEX pp_many_64_col ON pp_many_64 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_64_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_64_col');
+CREATE INDEX pp_many_6_col ON pp_many_6 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_6_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_6_col');
+CREATE INDEX pp_many_7_col ON pp_many_7 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_7_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_7_col');
+CREATE INDEX pp_many_8_col ON pp_many_8 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_8_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_8_col');
+CREATE INDEX pp_many_9_col ON pp_many_9 USING sift_col (id, kind, ts, amount)
+NOTICE:  sift_col index "pp_many_9_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_9_col');
+VACUUM ANALYZE pp_few, pp_many;
+CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION pp_same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (%s) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (%s) x', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN a = b;
+END $$;
+SELECT t, pp_plan(q) AS plan, pp_same(q) AS rows_same FROM (VALUES
+	('4 partitions of 50,000 rows: count', 'SELECT count(*) FROM pp_few'),
+	('4 partitions of 50,000 rows: group', 'SELECT kind, count(*) FROM pp_few GROUP BY 1'),
+	('64 partitions of 300 rows: count', 'SELECT count(*) FROM pp_many'),
+	('64 partitions of 300 rows: group', 'SELECT kind, count(*) FROM pp_many GROUP BY 1')) v(t, q) ORDER BY 1;
+                 t                  |  plan  | rows_same 
+------------------------------------+--------+-----------
+ 4 partitions of 50,000 rows: count | scan   | t
+ 4 partitions of 50,000 rows: group | scan   | t
+ 64 partitions of 300 rows: count   | normal | t
+ 64 partitions of 300 rows: group   | normal | t
+(4 rows)
+
+DROP TABLE pp_few, pp_many;
+DROP FUNCTION pp_plan(text), pp_same(text);
+DROP EXTENSION pg_sift;

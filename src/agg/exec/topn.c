@@ -533,7 +533,7 @@ topn_lookups(AggExec *ex, TupleTableSlot *slot)
 				   *rows;
 		int			found;
 
-		/* a row the Limit above throws away is NULLs (skipped_row) */
+		/* a NULL key joins no row */
 		if (slot->tts_isnull[kpos])
 			continue;
 		found = map_find(ex->cs[ci].map, ptr, len, &key, &rows);

@@ -12,9 +12,9 @@ SELECT i, i % 7, 1 + i % 5,
             ELSE jsonb_build_object('weight', i % 10, 'parts', coalesce((SELECT jsonb_agg(jsonb_build_object('score', CASE WHEN (i + j) % 5 = 0 THEN NULL ELSE (i * j) % 10 END)) FROM generate_series(1, i % 5) j), '[]'::jsonb)) END
 FROM generate_series(1, 6000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, grp, dim_id, doc) WITH (paths = 'doc.parts[]{score float8}, doc.weight float8');
-NOTICE:  sift_col index "docs_col" installed two statement triggers on table "docs" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "docs_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('docs_col');
 CREATE TABLE dims (id int PRIMARY KEY, kind text) WITH (autovacuum_enabled = false);
 INSERT INTO dims SELECT i, 'k' || i % 3 FROM generate_series(1, 5) i;
 CREATE TABLE tags (dim_id int, tag text) WITH (autovacuum_enabled = false);

@@ -4,7 +4,7 @@ Every harness writes this record and nothing else is quoted as a number: a table
 when check.py finds one dataset, one table state and one set of settings in it. The columns are the definitions: what a figure means is written once, here.
 
     ARM         the structure that answered, chosen by forcing it on the same data (heap: sequential scan, btree, gin, sift), with its option (`default`, `key_order=ts`, ...)
-    DEFAULT     the plan the planner chooses with no setting forced (mode `default`); a forced arm has `picked` = 1 when its structure and option are the default plan's
+    DEFAULT     the plan the planner chooses with no setting forced (mode `default`); a forced arm has `picked` = 1 when it ran the default plan (the same `plan_hash`; before schema 7: the same structure and option), and the default row's `arm_option` is that arm's
     STRUCTURE   the structure the EXPLAIN of the run names (heap, btree, gin, sift, mixed): the arm must equal it
     TEMP        warm: the statement ran before in this session; cold: the shared buffers of its relations were evicted first (`os_cache_dropped` says whether the OS cache was too)
 """
@@ -55,9 +55,11 @@ FIELDS = [
     ('protocol', 's', True, 'what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve'),
     ('mode', 's', True, 'forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were)'),
     ('arm', 's', True, 'heap, btree, gin or sift; `default` rows carry the structure the plan named'),
-    ('arm_option', 's', True, 'the option of the structure: default, key_order=ts, key_cut, ...'),
-    ('picked', 'b', True, '1 when this structure and option are the plan the planner chooses by default'),
+    ('arm_option', 's', True, 'the option of the structure: default, key_order=ts, key_cut, ...; a default row names the option of the forced arm that ran the plan the planner chose (default when none did)'),
+    ('picked', 'b', True, '1 when this arm ran the plan the planner chooses by default: the same plan_hash (schema 7 on), before it the same structure and option'),
     ('structure', 's', True, 'the structure the EXPLAIN of this run names: heap, btree, gin, sift or mixed'),
+    ('plan_hash', 's', False, 'twelve hex digits of the shape of the plan that ran (node types, join types, relations and indexes; no cost, row count or time): rows with one hash ran one plan, so the pick of the planner among arms of one structure that differ in the join method is matched by it (a read, schema 7 on)'),
+    ('plan_shape', 's', False, 'the shape the hash is of, as text (`Hash Join[Inner](Seq Scan orders, Custom Scan SiftAgg orders_col)`), cut at 1,000 characters'),
     ('temp', 's', True, 'warm or cold'),
     ('rep', 'i', True, 'the repetition, from 1'),
     ('est_cost', 'f', False, 'the planner total cost of the plan that ran'),
@@ -111,7 +113,7 @@ TYPE = {f[0]: f[1] for f in FIELDS}
 REQUIRED = [f[0] for f in FIELDS if f[2]]
 BLOCKS = [f[0] for f in FIELDS if f[0].endswith(('_hit', '_read'))]
 LIBRARY = 'records-1'
-VERSION = 6   # the schema of the file: history.py keeps the columns of each version, MIGRATIONS the step from it to the next
+VERSION = 7   # the schema of the file: history.py keeps the columns of each version, MIGRATIONS the step from it to the next
 MARK = '#records-schema '
 
 
@@ -182,7 +184,13 @@ def _from_5(r):
     """the segments, the leader/worker split and the options were not recorded: they stay empty (a count cannot be rebuilt from a row), which the checker accepts for a row of schema 5"""
 
 
-MIGRATIONS = {1: _from_1, 2: _from_2, 3: _from_3, 4: _from_4, 5: _from_5}
+def _from_6(r):
+    """the shape of the plan was not recorded (a plan cannot be rebuilt from a row): a read that ran says so in its plan_shape, as churn_history does, and the checker accepts it"""
+    if r.get('kind') == 'read' and r.get('mode') != 'unavailable':
+        r['plan_shape'] = 'not recorded (schema 6)'
+
+
+MIGRATIONS = {1: _from_1, 2: _from_2, 3: _from_3, 4: _from_4, 5: _from_5, 6: _from_6}
 
 
 def header_of(path):

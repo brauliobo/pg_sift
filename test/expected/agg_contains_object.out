@@ -15,8 +15,9 @@ SELECT i, i % 5,
                        'o', jsonb_build_object('a', i % 3, 't', 'u' || i % 2), 'tags', jsonb_build_array('t' || i % 4, 't' || i % 6))) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX co_clean_col ON co_clean USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.s text, doc.b bool, doc.o.a int4, doc.o.t text, doc.tags[] text');
-NOTICE:  sift_col index "co_clean_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "co_clean_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('co_clean_col');
 CREATE TABLE co_dirty (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO co_dirty
 SELECT i, i % 5,
@@ -36,8 +37,9 @@ SELECT i, i % 5,
        END
 FROM generate_series(1, 3000) i;
 CREATE INDEX co_dirty_col ON co_dirty USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.s text, doc.b bool, doc.o.a int4, doc.o.t text, doc.tags[] text');
-NOTICE:  sift_col index "co_dirty_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "co_dirty_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('co_dirty_col');
 VACUUM (FREEZE, ANALYZE) co_clean, co_dirty;
 CREATE FUNCTION scan_same(q text) RETURNS TABLE (scan bool, same bool) LANGUAGE plpgsql AS $$
 DECLARE l text; got bigint; want bigint;

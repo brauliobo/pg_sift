@@ -21,13 +21,13 @@ END $$;
 CREATE TABLE mi (id int PRIMARY KEY, grp int, amount float8, doc jsonb);
 INSERT INTO mi SELECT i, i % 7, i % 100, jsonb_build_object('n', i % 13, 'kind', 'k' || i % 3) FROM generate_series(1, 20000) i;
 CREATE INDEX mi_amount ON mi USING sift_col (id, grp, amount);
-NOTICE:  sift_col index "mi_amount" installed two statement triggers on table "mi" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "mi_amount": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mi_amount');
 CREATE INDEX mi_doc ON mi USING sift_col (id, grp, doc) WITH (paths = 'doc.n float8, doc.kind text');
-NOTICE:  sift_col index "mi_doc" installed two statement triggers on table "mi" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "mi_doc": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mi_doc');
 VACUUM ANALYZE mi;
 -- each query only one of the two indexes can answer, whichever the planner lists first
 SELECT used_index('SELECT grp, sum(amount) FROM mi GROUP BY grp') AS amount_only;

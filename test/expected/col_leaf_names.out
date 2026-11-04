@@ -6,12 +6,11 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ln (j jsonb, id int PRIMARY KEY, t int) WITH (autovacuum_enabled = false);
 INSERT INTO ln SELECT jsonb_build_object('a', i % 50, 'b', hashint4(i) & 1023), i, hashint4(i + 5) & 4095 FROM generate_series(1, 30000) i;
 CREATE INDEX ln_ix ON ln USING sift_col (j, id, t) WITH (paths = 'j.a int4, j.b int4', order_array_columns = 'auto: id');
-NOTICE:  sift_col index "ln_ix" installed two statement triggers on table "ln" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
-NOTICE:  sift_col index "ln_ix": order_array_columns = 'auto' keeps sorted arrays of id
-DETAIL:  0.4 bytes a row for each whole array, 0.0 MB together. The segments are column format minor 38, which a library before 3.7 cannot read. The build chose the columns from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values and a correlation with the heap order under 0.99 (the zones cannot skip units), at most 8 of them, and for a text column or a column of few values that the default formula pays (a table with no statistics is analyzed first). A column keeps the whole order when a scan with a bound in the middle of its values would read more cold blocks than the order's bytes are worth (64 kB of index a block), else the ends. The choice of each column: id: the whole order (a bound in the middle of its values reads many units). ORDER BY column [DESC] LIMIT n, and the same with a bound at the end of the order (column >= x ORDER BY column DESC LIMIT n), read n entries of an end, whatever the number of units, for n and an OFFSET up to the entries of the end; a range of a whole-order column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit; a range in the middle of an ends-only column reads the units.
-HINT:  To drop them, run ALTER INDEX ln_ix SET (order_array_columns = 'off') and REINDEX; order_array_columns = 'column' keeps the whole order of a column; set sift.col_format_minor to 14 to write none.
+NOTICE:  sift_col index "ln_ix": 2 automatic choices (order_array_columns, track_changes)
+DETAIL:  order_array_columns = id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ln_ix');
+NOTICE:  sift_col index "ln_ix" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT sift.col_verify('ln_ix');
  col_verify 
 ------------

@@ -17,11 +17,9 @@ SELECT i, i % 50,
        i % 100
 FROM generate_series(1, 120000) i;
 CREATE INDEX lz_col ON lz USING sift_col (grp, word, other, amount) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "lz_col": rollup_dims = 'auto' writes a rollup of the rows by grp, amount
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 7 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX lz_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "lz_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "lz_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = grp, amount
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_col');
 VACUUM (FREEZE, ANALYZE) lz;
 SELECT count(*) AS segments FROM sift.col_segments('lz_col') WHERE kind = 'immutable';
  segments 
@@ -94,8 +92,9 @@ SELECT loads = 0 AS found_in_the_cache FROM sift._test_col_dict_cache(true);
 
 -- the readers of the whole dictionary
 REINDEX INDEX lz_col;
-NOTICE:  sift_col index "lz_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "lz_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = grp, amount
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_col');
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
 -------

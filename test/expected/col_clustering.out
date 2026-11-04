@@ -11,15 +11,9 @@ INSERT INTO ev
 SELECT i, date '2020-01-01' + i / 300, (i / 10000) * 1000 + i % 100, i % 50, abs(hashint4(i)) % 100000, 'k' || i % 7, repeat('x', 1000)
 FROM generate_series(0, 59999) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, day, blk, grp, rnd, lbl);
-NOTICE:  sift_col index "ev_col": rollup_dims = 'auto' writes a rollup of the rows by day, lbl
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
-HINT:  To drop it, run ALTER INDEX ev_col SET (rollup_dims = 'off') and REINDEX; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "ev_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ev_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +25%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ev_col SET (point_tid_columns = 'off') and REINDEX.
-NOTICE:  sift_col index "ev_col": point_tid_columns = 'auto' chooses "rnd" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +20%, 3 bytes a row, benefit 18 against cost 11)
-HINT:  To keep the index without it, run ALTER INDEX ev_col SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = day, lbl
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) ev;
 SELECT leaf, path, units > 20 AS several_units, zoned_units = units AS all_zoned, round(useful_pct::numeric) AS useful_pct,
@@ -52,8 +46,9 @@ FROM sift.col_clustering('ev_col') WHERE depth_max IS NOT NULL ORDER BY leaf;
 CREATE TABLE evd (id int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO evd SELECT i, repeat('x', 1000) FROM generate_series(0, 19999) i;
 CREATE INDEX evd_col ON evd USING sift_col (id);
-NOTICE:  sift_col index "evd_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "evd_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('evd_col');
 SELECT depth_max FROM sift.col_clustering('evd_col');
  depth_max 
 -----------
@@ -141,8 +136,9 @@ SELECT * FROM sift.col_clustering('ev_col', 101);
 ERROR:  width_pct must be between 0 and 100
 CREATE TABLE empty_t (id int);
 CREATE INDEX empty_col ON empty_t USING sift_col (id);
-NOTICE:  sift_col index "empty_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "empty_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('empty_col');
 SELECT leaf, path, units, zoned_units, verdict FROM sift.col_clustering('empty_col');
  leaf | path | units | zoned_units | verdict 
 ------+------+-------+-------------+---------
@@ -154,15 +150,15 @@ SELECT leaf, path, units, zoned_units, verdict FROM sift.col_clustering('empty_c
 CREATE TABLE evs (id int PRIMARY KEY, grp int, rnd int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO evs SELECT i, abs(hashint4(i)) % 300, abs(hashint4(i + 7)) % 100000, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX evs_col ON evs USING sift_col (grp, rnd);
-NOTICE:  sift_col index "evs_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "evs_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('evs_col');
 CREATE TABLE evo (id int, day date, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO evo SELECT i, date '2020-01-01' + i / 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX evo_col ON evo USING sift_col (id, day);
-NOTICE:  sift_col index "evo_col" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "evo_col": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +86%, 3 bytes a row, benefit 28 against cost 8)
-HINT:  To keep the index without it, run ALTER INDEX evo_col SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "evo_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('evo_col');
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) evs, evo;
 SELECT tbl, order_by, round(units_now) AS now, round(units_after) AS after, verdict, split_part(reason, ':', 1) AS why, command IS NOT NULL AS has_command
@@ -230,8 +226,9 @@ ERROR:  key must be a list of leaf names, such as 'a, b'
 CREATE TABLE evv (id int PRIMARY KEY, grp int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO evv SELECT i, abs(hashint4(i)) % 300, repeat('x', 1000) FROM generate_series(0, 59999) i;
 CREATE INDEX evv_col ON evv USING sift_col (grp);
-NOTICE:  sift_col index "evv_col" does not track changes: the index does not hold the primary key column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "evv_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('evv_col');
 ANALYZE evv;
 SELECT reason ~ 'VACUUM \(ANALYZE\) public.evv first' AS vm_note FROM sift.cluster_advice('evv', 10000);
  vm_note 

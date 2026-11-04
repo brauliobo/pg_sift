@@ -86,12 +86,8 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		if (!t->gprep)
 			t->bulk = gord_skip(t);
 	}
-	if (t->bulk > 0)
-	{
-		t->bulk--;
-		t->emitted++;
-		return skipped_row(t, slot);
-	}
+	t->emitted += t->bulk;
+	t->bulk = 0;
 	while (t->emitted < t->limit && (t->gprep ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
 	{
 		bool		call_again = false,
@@ -103,11 +99,11 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		{
 			const GRow *r = &t->gq[t->gqpos++];
 
-			/* the Limit above throws away the rows before the OFFSET: the group fetch has confirmed them, they do not go out */
+			/* the rows before the OFFSET do not go out: the group fetch has confirmed them */
 			if (r->exact || t->emitted < t->skip)
 			{
 				t->emitted++;
-				return skipped_row(t, slot);
+				continue;
 			}
 			tid = r->tid;
 		}
@@ -115,7 +111,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		else if ((t->emitted < t->skip || t->gkeyout) && gord_entry_state(t, &tid, key, isnull) == SIFT_GORD_EXACT)
 		{
 			if (t->emitted++ < t->skip)
-				return skipped_row(t, slot);
+				continue;
 			ExecClearTuple(slot);
 			for (int c = 0; c < t->nout; c++)
 			{
@@ -149,7 +145,7 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		}
 		t->fetched++;
 		if (t->emitted++ < t->skip)
-			return skipped_row(t, slot);
+			continue;
 		ExecClearTuple(slot);
 		for (int c = 0; c < t->nout; c++)
 			slot->tts_values[c] = slot_getattr(f->slot, f->attno[c], &slot->tts_isnull[c]);
@@ -166,16 +162,20 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	ItemPointerData tid;
 	uint16		part;
 	TopFetch   *f;
-	const TopEnt *e = !t->all && t->pos < t->n ? &t->res[t->pos] : NULL;
+	const TopEnt *e;
 	bool		call_again = false,
 				all_dead;
 
 	if (t->go)
 		return gord_next(t, slot);
+	/* the OFFSET: the rows are counted and the heap is not asked for them */
+	for (; t->emitted < t->skip; t->emitted++)
+		if (!next_tid(t, &tid, &part))
+			return false;
+	e = !t->all && t->pos < t->n ? &t->res[t->pos] : NULL;
 	if (!next_tid(t, &tid, &part))
 		return false;
-	if (t->emitted++ < t->skip)
-		return skipped_row(t, slot);
+	t->emitted++;
 	if (e != NULL && e->hasv)
 	{
 		/* the row came from a unit: its columns are the heap row's (an update that keeps the TID's chain keeps the columns of the index) */

@@ -252,7 +252,7 @@ SELECT sift.parse_query('Häuser AND "Hund und Katze" OR Wet*', 'dg_idx'::regcla
 ALTER INDEX dg_idx SET (stemmer = 'french');
 WARNING:  sift index "dg_idx": it was built with other analyzer options
 DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.
+HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
 SELECT sift.verify('dg_idx');
 ERROR:  sift index "dg_idx" was built with other options
 DETAIL:  The index was built with text search configuration "german", the stemmer option names "french".

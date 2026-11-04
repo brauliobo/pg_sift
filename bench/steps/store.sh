@@ -41,7 +41,7 @@ LOAD_SEC=${S_LOAD_SEC:-$P_LOAD_SEC} PROBES=${S_PROBES:-$P_PROBES} RATES=${S_RATE
 [[ $CHECK != none ]] || CHECK=''
 UPDATE_SIZES=${S_UPDATE_SIZES:-${SIZES%%,*}}
 DATA=${S_DATA:-$STORE/store}
-CACHE_DIR=${S_CACHE_DIR:-$STORE/store-cache}   # the measured cells of the servers that are not under test (steps/benchlib.py)
+CACHE_DIR=$STORE_CACHE   # the measured cells of the servers that are not under test (steps/benchlib.py)
 OUT=${OUT:-$BENCH/out/store}
 PG_IMAGE=$NAME-pg:latest
 CITUS_PORT=$((PORT + 4))

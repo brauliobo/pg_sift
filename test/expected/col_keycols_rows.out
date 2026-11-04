@@ -1,0 +1,42 @@
+-- The defaults the build chooses from the statistics of the table count its rows first. pg_class holds what the last VACUUM or ANALYZE counted, and a CREATE INDEX before the
+-- sift_col one left its own count on PostgreSQL 17 and nothing on 18, so the same table was one of 100,000 rows to one version and 1,000,000 to the other and the defaults
+-- differed. The rows are now those of the pages and the density of a sample of them, and both versions choose alike.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+-- 60,000 rows of 1,000 bytes, a b-tree built first and never analyzed: under the 100,000 rows from which the build analyzes, so no statistics and no point directory
+CREATE TABLE kw (id int, k int, v int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO kw SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_series(0, 59999) i;
+CREATE INDEX kw_k ON kw (k);
+CREATE INDEX kw_col ON kw USING sift_col (id, k, v);
+SELECT reloptions FROM pg_class WHERE relname = 'kw_col';
+         reloptions         
+----------------------------
+ {"rollup_dims=auto: k, v"}
+(1 row)
+
+-- 120,000 narrow rows, the same steps: the build analyzes them and chooses the directory of the id
+CREATE TABLE kn (id int, k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO kn SELECT i, i / 300, i % 7 FROM generate_series(0, 119999) i;
+CREATE INDEX kn_k ON kn (k);
+CREATE INDEX kn_col ON kn USING sift_col (id, k, v);
+SELECT reloptions FROM pg_class WHERE relname = 'kn_col';
+                       reloptions                        
+---------------------------------------------------------
+ {"rollup_dims=auto: k, v","point_tid_columns=auto: id"}
+(1 row)
+
+-- analyzed at 30,000 rows and grown to 120,000 since: the rows are counted from the pages, the statistics are the old ones
+CREATE TABLE kg (id int, k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO kg SELECT i, i / 300, i % 7 FROM generate_series(0, 29999) i;
+ANALYZE kg;
+INSERT INTO kg SELECT i, i / 300, i % 7 FROM generate_series(30000, 119999) i;
+CREATE INDEX kg_k ON kg (k);
+CREATE INDEX kg_col ON kg USING sift_col (id, k, v);
+SELECT reloptions FROM pg_class WHERE relname = 'kg_col';
+                       reloptions                        
+---------------------------------------------------------
+ {"rollup_dims=auto: k, v","point_tid_columns=auto: id"}
+(1 row)
+
+DROP TABLE kw, kn, kg;
+DROP EXTENSION pg_sift;

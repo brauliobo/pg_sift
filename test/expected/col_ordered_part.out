@@ -10,15 +10,18 @@ CREATE TABLE op_b1 PARTITION OF op_b FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO op SELECT i, date '2024-01-01' + (i * 7) % 360, 'x' FROM generate_series(1, 3000) i;
 CREATE INDEX op_i ON ONLY op USING sift_col (id, d);
 CREATE INDEX op_a_i ON op_a USING sift_col (id, d);
-NOTICE:  sift_col index "op_a_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "op_a_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('op_a_i');
 CREATE INDEX op_b_i ON ONLY op_b USING sift_col (id, d);
 CREATE INDEX op_b0_i ON op_b0 USING sift_col (id, d);
-NOTICE:  sift_col index "op_b0_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "op_b0_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('op_b0_i');
 CREATE INDEX op_b1_i ON op_b1 USING sift_col (id, d);
-NOTICE:  sift_col index "op_b1_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "op_b1_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('op_b1_i');
 ALTER INDEX op_b_i ATTACH PARTITION op_b0_i;
 ALTER INDEX op_b_i ATTACH PARTITION op_b1_i;
 ALTER INDEX op_i ATTACH PARTITION op_a_i;
@@ -103,11 +106,13 @@ CREATE TABLE oi_c () INHERITS (oi);
 INSERT INTO oi VALUES (5, '2024-01-01'), (1, '2024-01-02');
 INSERT INTO oi_c SELECT i, date '2024-02-01' + i FROM generate_series(10, 40) i;
 CREATE INDEX oi_i ON oi USING sift_col (id, d);
-NOTICE:  sift_col index "oi_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "oi_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oi_i');
 CREATE INDEX oi_c_i ON oi_c USING sift_col (id, d);
-NOTICE:  sift_col index "oi_c_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "oi_c_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oi_c_i');
 VACUUM ANALYZE oi;
 SELECT max(id), min(id) FROM oi;
  max | min 

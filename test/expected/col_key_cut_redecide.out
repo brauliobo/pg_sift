@@ -30,7 +30,6 @@ VACUUM ANALYZE rc;
 SET client_min_messages = notice;
 \set VERBOSITY terse
 SELECT sift.col_maintain('rc_ix');
-NOTICE:  sift_col index "rc_ix": point_tid_columns = 'auto' chooses "counter_a" by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +23%, 3 bytes a row, benefit 29 against cost 12)
 NOTICE:  sift_col index "rc_ix": the rewrite chooses again from the data: key_cut = 'auto: foreign_id' (was '')
  col_maintain 
 --------------

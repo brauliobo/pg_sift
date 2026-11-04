@@ -94,7 +94,6 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
 	bool		chosen;
-	SiftAutoCut autocut;
 
 	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
 	sift_cwbuf_discard(RelationGetRelid(index));
@@ -128,7 +127,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_auto_cube(heap, index);
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
-	autocut = sift_col_auto_cut(heap, index);
+	(void) sift_col_auto_cut(heap, index);
 	sift_col_auto_gorder(heap, index, true);
 	sift_col_row_key_prepare(heap, index);
 	sift_col_track_check(heap, index);
@@ -150,19 +149,10 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		maint_unit_layout(index, true);
 		sift_maint_unlock(index);
 	}
-	colb_notice_key_order(index);
-	colb_notice_key_overflow(index);
-	colb_notice_point_tid(index);
-	colb_notice_order_array(index);
-	colb_notice_order_layout(index);
-	colb_notice_fk(heap, index);
-	colb_notice_volatile(heap, index);
-	sift_col_report_caps(index);
-	sift_col_vacuum_notice(heap, index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
-	if (autocut != SIFT_AUTOCUT_ADVISED)
-		sift_col_report_key_cut(index);
+	sift_col_vacuum_notice(heap, index);
+	sift_col_choices_say(heap, index, SIFT_CHOICE_AUTO | SIFT_CHOICE_ADVICE | SIFT_CHOICE_CAP, true);
 	return res;
 }
 

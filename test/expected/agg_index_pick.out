@@ -24,30 +24,25 @@ SELECT ip_fill('ip_a'), ip_fill('ip_b'), ip_fill('ip_one');
 (1 row)
 
 CREATE INDEX ip_a_page ON ip_a USING sift_col (id, tenant, day, v);
-NOTICE:  sift_col index "ip_a_page" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ip_a_page": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +35%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ip_a_page SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ip_a_page": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_a_page');
 CREATE INDEX ip_a_key ON ip_a USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
-NOTICE:  sift_col index "ip_a_key" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ip_a_key": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +35%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ip_a_key SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ip_a_key": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_a_key');
 CREATE INDEX ip_b_key ON ip_b USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
-NOTICE:  sift_col index "ip_b_key" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ip_b_key": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +35%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ip_b_key SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ip_b_key": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_b_key');
 CREATE INDEX ip_b_page ON ip_b USING sift_col (id, tenant, day, v);
-NOTICE:  sift_col index "ip_b_page" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ip_b_page": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +35%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ip_b_page SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ip_b_page": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_b_page');
 CREATE INDEX ip_one_page ON ip_one USING sift_col (id, tenant, day, v);
-NOTICE:  sift_col index "ip_one_page" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
-NOTICE:  sift_col index "ip_one_page": point_tid_columns = 'auto' chooses "id" by the default formula: an equality on its nearly unique values, which follow the order of the table, reads the unit of its range (about 0.8 M instructions against 0.2 M with the directory; predicted index size +35%, 3 bytes a row, benefit 28 against cost 7)
-HINT:  To keep the index without it, run ALTER INDEX ip_one_page SET (point_tid_columns = 'off') and REINDEX.
+NOTICE:  sift_col index "ip_one_page": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ip_one_page');
 VACUUM (FREEZE, ANALYZE) ip_a, ip_b, ip_one;
 -- a key: the cut by key reads 1 or 2 units, the other all of them; a date range: the cut by block range reads a few, the other all; both in either creation order
 SELECT t, ip_index(format('SELECT count(*) FROM %s WHERE tenant = 7', t)) AS key_lookup,

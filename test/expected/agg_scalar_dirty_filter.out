@@ -24,9 +24,9 @@ INSERT INTO f_t
 SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'n', i % 9, 'c', i % 3)
 FROM generate_series(1, 3000) i;
 CREATE INDEX f_t_col ON f_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.c int4');
-NOTICE:  sift_col index "f_t_col" installed two statement triggers on table "f_t" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "f_t_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('f_t_col');
 -- numeric strings in the paths the filters cast, none in doc.c
 UPDATE f_t SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE f_t SET doc = jsonb_set(doc, '{n}', to_jsonb((id % 9)::text)) WHERE id % 29 = 5;
@@ -166,9 +166,9 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM (VALUES
 CREATE TABLE f_p (id int PRIMARY KEY, grp int, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO f_p SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'c', i % 3) FROM generate_series(1, 20000) i;
 CREATE INDEX f_p_col ON f_p USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.c int4');
-NOTICE:  sift_col index "f_p_col" installed two statement triggers on table "f_p" and tracks its changes
-DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
-HINT:  WITH (track_changes = 'off') builds the index without them.
+NOTICE:  sift_col index "f_p_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('f_p_col');
 UPDATE f_p SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE f_p SET doc = jsonb_set(doc, '{v}', '"abc"') WHERE id = 15001;
 VACUUM ANALYZE f_p;

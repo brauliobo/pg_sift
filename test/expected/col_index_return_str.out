@@ -26,8 +26,9 @@ CREATE INDEX rs_bad4 ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text
 ERROR:  invalid return_columns option "s,": empty column name
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256);
-NOTICE:  sift_col index "rs_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "rs_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_i');
 VACUUM (ANALYZE) rs;
 SELECT min(format) AS format FROM sift.col_segments('rs_i'::regclass) WHERE kind = 'immutable';
  format 
@@ -243,8 +244,9 @@ DROP INDEX rs_i;
 SET sift.col_format_minor = 13;
 CREATE INDEX rs_p ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off, compression = 'none');
-NOTICE:  sift_col index "rs_p" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "rs_p": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_p');
 SELECT min(format) < 14 AS not_in_blocks FROM sift.col_segments('rs_p'::regclass) WHERE kind = 'immutable';
  not_in_blocks 
 ---------------
@@ -289,8 +291,9 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_p;
 CREATE INDEX rs_c ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off);
-NOTICE:  sift_col index "rs_c" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "rs_c": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_c');
 RESET sift.col_format_minor;
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
  n  | rows  | agree |    scan    
@@ -312,8 +315,9 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_c;
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256);
-NOTICE:  sift_col index "rs_i" does not track changes: the table has no primary key of one column
-HINT:  Name a column that has a unique index of its own and that the index holds: WITH (track_changes = 'id'); WITH (track_changes = 'off') silences this.
+NOTICE:  sift_col index "rs_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_i');
 -- strings the index could not keep (the strings of a leaf in a unit passed unit_bytes: the value is overflow and comes from the heap; conditions on the id only,
 -- as a row with an overflow value is a candidate of every test of its leaf), and an expression
 SELECT set_config('sift.test_limits', 'unit_bytes=3000', false) IS NOT NULL AS lowered;

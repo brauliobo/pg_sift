@@ -208,6 +208,8 @@ DROP TABLE kp_w;
 CREATE TABLE ka (id int, k int, val int, ts date, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 2000, g % 1000, date '2024-01-01' + g / 150, repeat('x', 200) FROM generate_series(1, 30000) g;
+-- analyzed first, as the other tables are: the build chooses from the statistics, and a table it counts under the rows that it analyzes by itself has none
+ANALYZE ka;
 CREATE INDEX ka_idx ON ka USING sift_col (id, k, val, ts) WITH (rollup_dims = 'off', write_buffer_limit = 4096);
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'k');
