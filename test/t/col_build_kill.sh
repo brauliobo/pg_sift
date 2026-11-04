@@ -100,14 +100,20 @@ for n in "${points[@]}"; do
 	(( done_points < POINTS )) || break
 	seen[$n]=1
 	done_points=$((done_points + 1))
-	# the participants claim the heap by superblock, so the leader publishes 4 or 5 updates, build after build of one table: a build that ends before the n-th one is dropped and run again
+	# the participants claim the heap by superblock, so the leader publishes 4 to 6 updates, and the number follows the state the kills before left: a build that ends before the point
+	# is dropped and the point moves to the update count that build had (its last, or the one before its last), so that a kill always lands, whatever the speed of the runner
 	crashed=
+	k=$n
 	for _ in $(seq 8); do
 		PM=$(head -1 "$(dir primary)/data/postmaster.pid")
 		SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
-		if sql primary "${OPTS[@]}" "SET sift.test_crash_dir = $n" "$BUILD" >/dev/null 2>&1; then sql primary "DROP INDEX t_idx" >/dev/null; else crashed=1; break; fi
+		if sql primary "${OPTS[@]}" "SET sift.test_crash_dir = $k" "$BUILD" "SELECT sift._test_dir_updates()" >"$D/k.out" 2>&1; then
+			c=$(tail -1 "$D/k.out")
+			sql primary "DROP INDEX t_idx" >/dev/null
+			(( c >= 1 && c < ${k#-} )) && k=$(( k < 0 ? -c : c ))
+		else crashed=1; break; fi
 	done
-	what="leader killed $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $updates"
+	what="leader killed $([[ $k -gt 0 ]] && echo before || echo after) update ${k#-} of $updates"
 	if [[ -z $crashed ]]; then not_ok "$what: eight builds ended before it"
 	elif restart; then recovered "$what" || true
 	else not_ok "$what: restart"; fi

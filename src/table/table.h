@@ -525,6 +525,7 @@ extern PGDLLIMPORT bool sift_tbl_bulk_groups;
 extern PGDLLIMPORT bool sift_tbl_load_from_copy;
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_load_publish;
+extern PGDLLIMPORT bool sift_test_load_reap_late;
 extern PGDLLIMPORT int sift_test_load_unit_bytes;
 extern PGDLLIMPORT int sift_test_load_segment_kb;
 extern PGDLLIMPORT bool sift_test_bitmap_no_visible;

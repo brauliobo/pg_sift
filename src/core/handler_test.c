@@ -55,6 +55,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_load_publish",
 							"Testing: segments of a COPY's ring the backend takes before it publishes them (0 = the default of 8).",
 							NULL, &sift_test_load_publish, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_load_reap_late",
+							 "Testing: the backend of a COPY's ring waits, after it handed a group over, until the workers have written every group handed over (the workers of a loaded host finish before the backend looks).",
+							 NULL, &sift_test_load_reap_late, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_load_unit_bytes",
 							"Testing: kB of rows a unit of a COPY into a sift_table holds, and the start of its workers at eight times that (0 = the write buffer limit and 16 MB).",
 							NULL, &sift_test_load_unit_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

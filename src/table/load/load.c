@@ -21,6 +21,7 @@ bool		sift_tbl_bulk_groups = true;
 bool		sift_tbl_load_from_copy = false;
 #ifdef SIFT_TESTING
 int			sift_test_load_publish = 0;
+bool		sift_test_load_reap_late = false;
 int			sift_test_load_unit_bytes = 0;
 int			sift_test_load_segment_kb = 0;
 #endif

@@ -11,12 +11,14 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_LR_ROWS 300000 20000)
+# backtrace_functions: a request of an impossible size (the rerun after a power loss failed once on arm64 with one) logs the stack that made it, in the log of the node the report prints
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 32MB
 autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8
+backtrace_functions = 'MemoryContextSizeFailure,palloc,repalloc,MemoryContextAlloc'
 wal_consistency_checking = 'generic'"
 node_start primary || bail "primary start failed"
 D=$(dir primary)
@@ -70,6 +72,13 @@ reset
 sql primary "${OPTS[@]}" "COPY lt FROM '$D/big.csv' CSV" >/dev/null
 bigrows=$(rows primary)
 check "the load of three times the rows" test "$(sql primary "SELECT count(*) FROM lt")" == "$((3 * ROWS))"
+reset
+# a backend that looks late (a loaded host: the workers have written every group handed over before it takes their segments) takes those and no more: it took the slots past the last one handed over,
+# added their old segments to its list again and again until its array asked for 2^25 entries ("invalid memory alloc request size 1879048192")
+out=$(sql primary "${OPTS[@]}" "SET sift.test_load_reap_late = on" "COPY lt FROM '$D/big.csv' CSV" "SELECT current_setting('sift.test_par_workers')" 2>&1)
+check "the workers have written every group before the backend looks: the load ends, with its workers" test "${out:-0}" -gt 0
+check "... the rows" test "$(rows primary)" == "$bigrows"
+check "... no block left over" test "$(orphans)" == 0
 reset
 
 # a default that calls nextval cannot run in the parallel mode of the ring: the groups of that table are written without it

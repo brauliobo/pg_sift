@@ -143,7 +143,7 @@ slot_done(LoadSlot *sl)
 	return pg_atomic_read_u32(&sl->done) == ((c >> 8) & 0xff);
 }
 
-/* Takes the segments of the oldest slot once it is written (waits for it, writing groups meanwhile, when wait); false if it is not */
+/* Takes the segments of the oldest slot once it is written (waits for it, writing groups meanwhile, when wait); false if it is not, or none is handed over and not taken */
 static bool
 ring_reap(Load *ld, Relation rel, bool wait)
 {
@@ -153,6 +153,9 @@ ring_reap(Load *ld, Relation rel, bool wait)
 	int			g;
 	int			ng;
 
+	/* a slot that was not handed over (or was taken) has as many groups written as it has groups: it must not be taken again */
+	if (rl->tail == rl->head)
+		return false;
 	if (!wait && !slot_done(sl))
 		return false;
 	ConditionVariablePrepareToSleep(&rg->cv);
@@ -243,6 +246,19 @@ load_ring_hand_over(Load *ld, Relation rel, SiftTblRel *st, bool last)
 	ConditionVariableBroadcast(&rg->cv);
 	if (last)
 		return;
+#ifdef SIFT_TESTING
+	/* a leader that looks late (a loaded host): the workers have written every group handed over before it takes their segments */
+	if (sift_test_load_reap_late)
+		for (uint64 t = rl->tail; t < rl->head; t++)
+		{
+			LoadSlot   *late = &rg->slots[t % rg->nslots];
+
+			ConditionVariablePrepareToSleep(&rg->cv);
+			while (!slot_done(late))
+				ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+			ConditionVariableCancelSleep();
+		}
+#endif
 	while (ring_reap(ld, rel, false))
 		;
 	sift_dir_read(rel, &st->dir);
