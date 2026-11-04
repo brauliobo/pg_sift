@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a `sift_col` index with `track_changes` of a table that became a partition (`ATTACH PARTITION`) or an inheritance child (`INHERIT`) keeps a log that is not complete after `DETACH PARTITION` or `NO INHERIT`: the event trigger of ALTER TABLE ends the completeness when the table becomes a child, so the statements of the parent that it did not hear no longer make a read after the detach leave rows out. A table attached before this release still needs `REINDEX INDEX` at the detach.
+
 ## 4.0.1 - 2026-11-04
 
 - Fixed: pg_sift: a `sift_col` table with a primary key could not be restored by `pg_restore -j` or `pg_upgrade`: `track_changes` is stored as the key's name (`track_changes=id`, which pg_dump writes) and `CREATE INDEX` refused it with `column "id" has no unique index of its own` whenever the index was made before the key, which a parallel restore does for most tables and the restore of `pg_upgrade` did for all of them. `CREATE INDEX` and `REINDEX` now accept the column with a NOTICE (`ALTER INDEX` keeps the error): reads check the heap until the key exists. A statement that finds no unique index to look its rows up by (not made yet, dropped) now ends the completeness of the log; before, a key dropped, rows deleted and the key made again left a log that reads took for complete, and a grouped read counted the deleted rows.

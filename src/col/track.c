@@ -364,6 +364,34 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	sift_tomb_set_chan(index, log, &chan);
 }
 
+/*
+ * The table became a partition (ATTACH PARTITION) or an inheritance child (INHERIT): a statement on its parent fires none of its statement triggers, so what the parent's statements delete or
+ * re-key is not in the log of its indexes, and stays missing once the table is a plain table again (DETACH, NO INHERIT): the log is not complete until a new baseline (REINDEX). Called by the
+ * event trigger of ALTER TABLE, which runs in every session whether the library was loaded before or not, and in the transaction that holds the lock of the table.
+ */
+void
+sift_col_track_deafened(Oid relid)
+{
+	Relation	heap;
+
+	if (!OidIsValid(relid) || (heap = try_relation_open(relid, NoLock)) == NULL)
+		return;
+	foreach_oid(ioid, RelationGetIndexList(heap))
+	{
+		Relation	index = index_open(ioid, RowExclusiveLock);
+
+		if (sift_col_is_index(index) && sift_col_row_key_on(index))
+		{
+			SiftTombLog *log = sift_col_log(index);
+
+			if (log != NULL && log->chan.flags != 0)
+				sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
+		}
+		index_close(index, NoLock);
+	}
+	relation_close(heap, NoLock);
+}
+
 /* The option is off: no trigger and no completeness */
 void
 sift_col_track_remove(Relation heap, Relation index)

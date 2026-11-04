@@ -1,5 +1,6 @@
 -- A table whose index tracks its changes becomes a partition, or a child of an inheritance parent: a statement on the parent fires none of its statement triggers, so the deletes and key changes it
--- makes are not in the log. A read must not take the log for complete while the table is a child (the log is not rebuilt by DETACH: REINDEX gives the index a new baseline).
+-- makes are not in the log. The log ends its completeness when the table becomes a child (the event trigger of ALTER TABLE), so that a read does not take it for complete while the table is a child
+-- or after DETACH and NO INHERIT; REINDEX gives the index a new baseline.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -29,6 +30,8 @@ UPDATE pa SET id = id + 500 WHERE id % 5 = 1;
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('pa1_c');
 SELECT same_groups('pa1') AS groups_differing_attached;
 ALTER TABLE pa DETACH PARTITION pa1;
+SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('pa1_c');
+SELECT same_groups('pa1') AS groups_differing_detached;
 REINDEX INDEX pa1_c;
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('pa1_c');
 DELETE FROM pa1 WHERE id % 3 = 0;
@@ -45,6 +48,8 @@ UPDATE ih SET id = id + 500 WHERE id % 5 = 1;
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('ih1_c');
 SELECT same_groups('ih1') AS groups_differing_child;
 ALTER TABLE ih1 NO INHERIT ih;
+SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('ih1_c');
+SELECT same_groups('ih1') AS groups_differing_after_no_inherit;
 REINDEX INDEX ih1_c;
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('ih1_c');
 SELECT same_groups('ih1') AS groups_differing_after_reindex;

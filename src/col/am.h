@@ -85,6 +85,7 @@ extern const char *sift_col_track_deaf(Relation heap);
 extern void sift_col_track_check(Relation heap, Relation index);
 extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
 extern void sift_col_track_remove(Relation heap, Relation index);
+extern void sift_col_track_deafened(Oid relid);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
