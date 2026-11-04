@@ -34,7 +34,7 @@ vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} &&
 lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
-drop_figure_waivers() { sed -i '/^figure /d' "$1"; }
+drop_figure_waivers() { awk '!/^figure /' "$1" >"$1.new" && mv "$1.new" "$1"; }   # not sed -i: BSD sed reads the expression as the backup suffix
 selftest() {
 	local bad=0 v
 	t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT   # global: the trap runs after the function
