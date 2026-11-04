@@ -2,9 +2,8 @@
 
 [![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#postgresql-versions) [![release](https://img.shields.io/badge/release-4.0.0-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
-pg_sift adds ranked full-text search and column-store analytics to PostgreSQL with one `CREATE EXTENSION pg_sift`: no search server, no separate analytics database, no `shared_preload_libraries`.
-It is for applications that keep their data in PostgreSQL and serve dashboards, reports and search from the same rows. A `sift` index answers BM25 queries (boolean, phrase, prefix, regex, fuzzy, facets); a `sift_col` index
-or a `sift_table` answers counts, sums, distinct counts, group-bys and top-N from compressed columns; a query the planner cannot prove equal keeps PostgreSQL's own plan. It supports PostgreSQL 17, 18 and 19[^pg19]; the search engine also runs as a SQLite extension and a MariaDB library.
+pg_sift makes analytics on PostgreSQL fast: you keep your queries and add an index. A `sift_col` index, or a `sift_table`, answers counts, sums, distinct counts, group-bys and top-N from compressed columns; the planner picks it, and a query it cannot prove equal keeps PostgreSQL's own plan. It also adds ranked BM25 full-text search (boolean, phrase, prefix, regex, fuzzy, facets) with a `sift` index, which has its own query syntax. One `CREATE EXTENSION pg_sift`: no separate analytics database, no search server, no `shared_preload_libraries`.
+It is for applications that keep their data in PostgreSQL and serve dashboards, reports and search from the same rows. It supports PostgreSQL 17, 18 and 19[^pg19]; the search engine also runs as a SQLite extension and a MariaDB library.
 
 [^pg19]: PostgreSQL 19 is tested on its release candidate (a server built from `REL_19_STABLE`, the same jobs as for 17 and 18); see [docs/SUPPORT.md](docs/SUPPORT.md#postgresql-versions).
 
@@ -48,11 +47,11 @@ Medians of six runs, warm, PostgreSQL 18.6 on a shared x86-64 host (2026-10-24),
 
 The last column is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen and still wins, but 4 to 19 times less than with the precision ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
 
-**Use it** when the data stays in PostgreSQL and you want dashboards, reports or ranked search from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
+**Use it** when the data stays in PostgreSQL and you want fast dashboards and reports from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table (your queries stay as they are; you add an index), and ranked search as a second kind of index. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
 
 ## At a glance
 
-**Use it** when the question reads many rows and the answer is small, or when ranked search should sit next to the data:
+**Use it** when the question reads many rows and the answer is small (your queries stay as they are; you add an index), or when ranked search should sit next to the data (it has its own query syntax):
 
 - **Aggregates over a filtered table:** counts, sums, distinct counts, group-bys, time buckets, top-N and window reports over hundreds of thousands to millions of rows, answered from pre-aggregates and compressed columns; the time grows slower than the rows.
 - **Ranked search next to the data:** BM25 with filters, counts and facets in the same transaction as the rows and no second system to keep in step; updates, deletes, VACUUM and replicas are PostgreSQL's.
@@ -99,9 +98,20 @@ The 26 cases of [bench/cases.tsv](bench/cases.tsv) marked `headline`, measured o
 | `topn_scattered_time`: the n best rows by a time column whose rows are in no order, for an n above the longest head of a run: a superblock ... | heap plan | 0.176 ms · 1.89 M · 27 | 24.6 ms · 163 M · 1,911 | 140x |
 | `key_table_point`: the rows of three keys of a foreign key column (6,313 values): one record of each segment's key table, not the units of ... | heap plan | 0.077 ms · 0.748 M · 28 | 19.3 ms · 273 M · 4,107 | 250x |
 
-### What `track_changes` costs
+### Tables that change: `track_changes`
 
-`track_changes` is on by default (`'auto'`: the primary key; `WITH (track_changes = 'off')` keeps an index as it was before 4.0). It writes tombstones for the entries an UPDATE, a key change or a DELETE ended and installs two statement triggers, so a write does more than without it. 100,000 rows, a table with a primary key and one `sift_col` index, vacuumed, medians of 3 (`bench/churn/heapfree_default.py`, run fb9b4acd6f58-20261103T182341Z-00ce on the tree of the commit that merged the option); each cell is the time, the millions of instructions, the MB of WAL and the buffers touched:
+`track_changes` is on by default (`'auto'`: the primary key of the table; `WITH (track_changes = 'off')` keeps an index as it was before 4.0). It writes a tombstone for each entry an UPDATE, a key change or a DELETE ended and installs two statement triggers (AFTER UPDATE and AFTER DELETE; one NOTICE says so).
+
+**What a table that changes ends as.** 100,000 rows, a primary key and one `sift_col` index, 10 rounds of an UPDATE of every row (1,000,000 updates) with no VACUUM, then autovacuum (naptime 1 s) and the worker of `sift.col_auto_merge`, both on as by default, until the index keeps one state for 30 s; `track_changes` as it is (the default) and `'off'` (`bench/churn/heapfree_settle.py`, run 2783fcb3884a-20261104T000858Z-444e, 3 repetitions of a grouped count of 10 tenants; the REINDEX column is the index built again over the same rows):
+
+| `track_changes` | fresh | after the updates, before the VACUUM | settled | REINDEX | settled over REINDEX | grouped count before the VACUUM: ms · M instr · heap blocks | settled |
+|---|---:|---|---|---:|---:|---|---|
+| default | 0.57 MB | 47.6 MB (999,038 entries in the log) | 0.71 MB, 1 segment | 0.63 MB | +13.0% | 14.8 ms · 161 M · 1,406 | 0.029 ms · 0.40 M · 2 |
+| `'off'` | 0.26 MB | 20.2 MB | 0.47 MB, 6 segments | 0.28 MB | +67.7% | 27.2 ms · 253 M · 10,280 | 0.043 ms · 0.50 M · 3 |
+
+So the index does not end within 1% of a rebuilt one: the settled index is 13.0% over its REINDEX with the default and 67.7% with `'off'`, the log is empty after the vacuum, and a grouped count after it reads 2 heap blocks (3 with `'off'`), as on the fresh table. The updates take 4.7 s and write 338 MB of WAL with the default, 2.7 s and 288 MB with `'off'`. At 300,000 rows (3,000,000 updates, run 2783fcb3884a-20261104T001112Z-3429) the default index was 55.7 MB 30 s after the VACUUM, its rewrite not yet run (1.8 MB after a REINDEX), and the one with `'off'` 1.39 MB (+91.0% over 0.73 MB).
+
+What it costs a write: 100,000 rows, a table with a primary key and one `sift_col` index, vacuumed, medians of 3 (`bench/churn/heapfree_default.py`, run fb9b4acd6f58-20261103T182341Z-00ce on the tree of the commit that merged the option); each cell is the time, the millions of instructions, the MB of WAL and the buffers touched:
 
 | statement | `track_changes = 'off'`: ms · M instr · WAL · blocks | default (`auto`): ms · M instr · WAL · blocks | instructions |
 |---|---|---|---:|
@@ -114,7 +124,10 @@ The 26 cases of [bench/cases.tsv](bench/cases.tsv) marked `headline`, measured o
 | CREATE INDEX | 44.8 ms · 672 M · 0.32 MB · 3,763 | 61.1 ms · 858 M · 0.64 MB · 104,713 | +27.8% |
 | REINDEX | 48.1 ms · 672 M · 0.26 MB · 3,763 | 58.9 ms · 858 M · 0.60 MB · 104,713 | +27.8% |
 
-What it buys: on a table whose rows were changed and not yet vacuumed (300,000 rows, the recent 20% updated), a grouped count reads 2 heap blocks instead of 1,241 (21.77 to 10.66 M instructions, 2.28 to 0.84 ms) and one tenant's rows 0.41 MB instead of 10.09 MB read cold; after a `VACUUM` no read differs. The triggers of several indexes of one table each look the key up in the unique index: with 2 and 3 indexes an UPDATE of the key of 1% of the rows takes 99.8 and 111.9 M instructions (86.9 with one), a DELETE of 2% 88.5 and 104.9 M (72.3 with one).
+
+The triggers of several indexes of one table each look the key up in the unique index: with 2 and 3 indexes an UPDATE of the key of 1% of the rows takes 99.8 and 111.9 M instructions (86.9 with one), a DELETE of 2% 88.5 and 104.9 M (72.3 with one). A table that no read touches between its writes and its `VACUUM` pays that and gains nothing, which is what `'off'` is for.
+
+**A table changed and not yet vacuumed (the case the option is for).** 300,000 rows, the recent 20% updated (`bench/churn/heapfree_churn_reads.py`): a grouped count reads 2 heap blocks instead of 1,241 (21.8 to 10.7 M instructions, 1.87 to 0.77 ms) and one tenant's rows 0.41 MB instead of 10.09 MB read cold. After a `VACUUM` no read differs, and point reads and index-only scans gain nothing either way.
 
 ### Limitations and trade-offs
 
@@ -161,7 +174,24 @@ CI builds the stable formula and the HEAD one, runs `brew style`, `brew audit --
 
 </details>
 
+### Try it: analytics
+
+Your queries stay as they are: add the index, and the planner uses it when it can prove the answer equal; otherwise PostgreSQL's own plan runs.
+
+```sql
+CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
+CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at);
+
+SELECT category, count(*), sum(amount) FROM orders
+WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;          -- Custom Scan (SiftAgg) on orders_col
+CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) USING sift_table;   -- the table itself in column format
+```
+
+`SET sift.enable_agg = off` gives the plan PostgreSQL has without sift. Types, options and limits: [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table).
+
 ### Try it: full-text search
+
+Search has its own query syntax (`@@>`, `sift.score`): a search query is written for the `sift` index.
 
 ```sql
 CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
@@ -180,36 +210,22 @@ SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3
 
 Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `frendly~1` and `^3` boosts combine them: [docs/USAGE.md](docs/USAGE.md#queries).
 
-### Try it: analytics
-
-```sql
-CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
-CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at);
-
-SELECT category, count(*), sum(amount) FROM orders
-WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;          -- Custom Scan (SiftAgg) on orders_col
-CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) USING sift_table;   -- the table itself in column format
-```
-
-`SET sift.enable_agg = off` gives the plan PostgreSQL has without sift. Types, options and limits: [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table).
-
 ## Features
 
-- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan (the columns of `INCLUDE (...)` are tested before a document is scored, and a join with a small table adds its keys as one more test: [docs/USAGE.md](docs/USAGE.md)), counts from the index, facets, autocomplete.
 - **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
+- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan (the columns of `INCLUDE (...)` are tested before a document is scored, and a join with a small table adds its keys as one more test: [docs/USAGE.md](docs/USAGE.md)), counts from the index, facets, autocomplete.
 - **Pre-aggregates, top-N and lookups:** units whose rows are all visible answer from the exact count/sum/min/max stored with them (on by default); `ORDER BY ... LIMIT n` stops after the first rows of the units that can hold them; an equality or `IN` lookup on a key column reads only the units that hold it (`point_columns`, `point_tid_columns`; opt-in per index).
-- **Reading a heap table's index without the heap (4.0; `track_changes`, on by default):** `track_changes` (default `'auto'`: the primary key; `WITH (track_changes = 'off')` turns it off) keeps a log of the entries an UPDATE, a key change or a DELETE ended: it installs two statement triggers on the table (AFTER UPDATE and AFTER DELETE; one NOTICE says so) and writes a baseline in a pass over the heap, and a grouped count or top-N over rows changed and not yet vacuumed reads 2 heap blocks instead of 1,241 (300,000 rows, the recent 20% updated: 21.77 to 10.66 M instructions, 2.28 to 0.84 ms, 10.09 to 0.41 MB read cold; the top 20 2.28 to 0.80 M). It costs writes (100,000 rows: an UPDATE of 5% of the rows +44%, a key change +31%, a DELETE of 2% +35%, CREATE INDEX +187 M instructions) and gains nothing on point reads, index-only scans or after a VACUUM, so it pays when a table is read many times for each write while rows are unvacuumed ([docs/USAGE.md](docs/USAGE.md#reading-without-the-heap-track_changes)).
+- **Reading a heap table's index without the heap (4.0; `track_changes`, on by default):** `track_changes` (default `'auto'`: the primary key; `WITH (track_changes = 'off')` turns it off) keeps a log of the entries an UPDATE, a key change or a DELETE ended and installs two statement triggers on the table (one NOTICE says so), and a grouped count or top-N over rows changed and not yet vacuumed reads 2 heap blocks instead of 1,241 (300,000 rows, the recent 20% updated: 21.8 to 10.7 M instructions, 1.87 to 0.77 ms, 10.09 to 0.41 MB read cold; the top 20 2.3 to 0.8 M). After 1,000,000 updates of 100,000 rows and the vacuums the log is empty and the index 13.0% over a REINDEX (67.7% with `'off'`). It costs writes (100,000 rows: an UPDATE of 5% of the rows +44%, a key change +31%, a DELETE of 2% +35%, CREATE INDEX +187 M instructions) and gains nothing on point reads, index-only scans or after a VACUUM, so it pays when a table is read many times for each write while rows are unvacuumed ([docs/USAGE.md](docs/USAGE.md#reading-without-the-heap-track_changes)).
 - **Faster paths of 3.4**:
   - *Top-N by a float key, or by a column that follows the table:* a float sort key goes through the same min/max and compare kernels as an integer one, so units whose best value cannot pass the n-th are not read: `ORDER BY value DESC LIMIT 10` over 1,000,000 readings 47.5 to 0.80 ms (`ts_top_value`, 60x); the newest 10 rows of a time column with no btree 80.6 to 0.22 ms (`hits_latest_time`, 367x).
-  - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off, 20.0 ms on the second and 20.9 ms on PostgreSQL (`verdict_shared_report`, still 1.4x slower than PostgreSQL on its first run); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
-  - *Where the planner is right:* the first rows of each group by a window function (`window_first_rows`: 24.7 ms on PostgreSQL's plan, 30.3 ms with the scan forced), the lookup of one key (`few_keys_lookup`: 0.75 ms on PostgreSQL's plan, 3.05 ms with the scan forced) and the newest 100 rows of one device by its btree (`ts_latest_device`, 0.064 ms) are decisions of the planner, not speed-ups. In 3.4.0 the planner takes the scan for the window shape (33.2 ms against 26.8 ms for PostgreSQL's plan, back to back on the same host) and for the lookup of one key (2.22 ms against 0.63 ms); 3.4.1 restores PostgreSQL's plan for both.
+  - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off (`verdict_shared_report`); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
 
 ## Compared with
 
-Feature facts checked against each project's own documentation on 2026-10-18; `?` is not verified. Search (pg_sift against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch) and analytics (against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB) tables, a note per row, sources and the unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
+Feature facts checked against each project's own documentation on 2026-10-18; `?` is not verified. Analytics (pg_sift against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB) and search (against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch) tables, a note per row, sources and the unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
 
 pg_sift is weaker in text analysis (one key per index; case and accent folding, a `keyword` analyzer, `term*` prefixes and the stemmers and stop words of any PostgreSQL text search configuration, `stemmer = 'german'`, are there; n-gram and CJK tokenizers are not) and where its column engine is narrow: joins are accelerated for small tables only, and `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates ([where it is weaker](docs/COMPARISON.md#where-pg_sift-is-weaker)).
 
