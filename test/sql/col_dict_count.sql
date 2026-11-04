@@ -140,7 +140,9 @@ INSERT INTO dk SELECT 1000 + g, 'b' || to_char(g % 200, 'FM000') FROM generate_s
 INSERT INTO dk SELECT 100000 + g, 'c' || to_char(g % 200, 'FM000') FROM generate_series(1, 800) g WHERE g % 200 < 40 OR g % 200 > 100;
 INSERT INTO dk SELECT 200000 + g, 'd' || to_char(CASE WHEN g <= 70000 THEN 5 ELSE g % 100 END, 'FM000') FROM generate_series(1, 70100) g;
 INSERT INTO dk SELECT 300000 + g, 'e' || to_char(g, 'FM00000') FROM generate_series(1, 3000) g;
-CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
+-- order_array_columns is named: the formula weighs a text column by its distinct values, which ANALYZE estimates from a sample of 30,000 of the 134,000 rows (3,600 distinct, estimated 1,005 to 1,106
+-- in 40 samples), and below 1,000 it takes the column for one of ties; the test is about the dictionary counts and builds the index the formula builds for most samples
+CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', order_array_columns = 's', write_buffer_limit = 4096);
 VACUUM dk;
 SELECT max(format) >= 25 AS format_by_default_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
 SELECT bool_and(counted) AS every_segment_counts FROM sift._test_col_dict_count('dk_idx'::regclass, 1, 'prefix', 'b');
