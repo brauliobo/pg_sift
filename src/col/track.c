@@ -424,7 +424,7 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 	if (!sift_col_row_key_on(index))
 		return false;
 	r = sift_col_rel(index);
-	if (!OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1])) || subscribed(RelationGetRelid(heap)))
+	if (!OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1])) || sift_col_track_deaf(heap) != NULL)
 		return false;
 	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_COMPLETE)
 		return false;
