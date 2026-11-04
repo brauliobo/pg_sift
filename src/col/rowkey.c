@@ -167,7 +167,8 @@ sift_col_row_key_check(Relation index)
 
 /*
  * Why an index whose track_changes is 'auto' tracks nothing, NULL when it can (a short phrase for the summary of the build): the table has no primary key of one column, the index
- * does not hold it, point_tid_columns is off, a statement trigger cannot hear the table, or sift.col_format_minor lets an older library read the index (the log is a directory kind that a library before 4.0
+ * does not hold it, point_tid_columns is off, a statement trigger cannot hear the table (or the extension is not updated to the release that has its function: the restore of
+ * pg_upgrade makes the indexes before ALTER EXTENSION UPDATE), or sift.col_format_minor lets an older library read the index (the log is a directory kind that a library before 4.0
  * refuses: a rewrite at a lowered minor, the rollback of docs/UPGRADING.md, drops what an earlier build chose). *pk is the key column when there is one.
  */
 const char *
@@ -187,7 +188,7 @@ sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk)
 		return "point_tid_columns is off";
 	why = sift_col_track_deaf(heap);
 	if (why != NULL)
-		return strstr(why, "partition") ? "the table is a partition or a parent" : "the table is a subscription target";
+		return strstr(why, "extension") ? "the extension is not updated yet" : strstr(why, "partition") ? "the table is a partition or a parent" : "the table is a subscription target";
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return "sift.col_format_minor is below 15";
 	return NULL;

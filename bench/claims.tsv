@@ -108,16 +108,6 @@ the top 20 0.3 M instead of 6.3 M	topn20	300000	sift	key_order=off	instr_m	6.3	2
 `ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	wall_ms	48	25	the b-tree twin
 `ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10optb	1000000	btree	default	instr_m	784	25	
 `ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	ordered_group_key_g10	1000000	heap	default	wall_ms	318	25	run efd3b66c2e19-20261103T103741Z-6d39 (aggscan-as3i-ordgk_1000000_g10-20261103.rec), the default build: no order grouped by g, the sort stays
-`bulk_copy_wal` of 3,000,000 rows with the default workers, the COPY and the `sift.table_maintain` that followed, 4,366	bulk_copy_wal_before	3000000	sift	default	wall_ms	4366	25	run fb9b4acd6f58-20261103T202136Z-3c07, records in program-scale/records/copy-ring-before-3m-20261103.rec
-to 2,772 ms	bulk_copy_wal	3000000	sift	default	wall_ms	2772	25	run fb9b4acd6f58-20261103T203701Z-3b76, records in program-scale/records/copy-ring-after-3m-20261103.rec
-(a heap table 2,711 ms	bulk_copy_wal	3000000	heap	default	wall_ms	2711	25	run fb9b4acd6f58-20261103T203701Z-3b76, records in program-scale/records/copy-ring-after-3m-20261103.rec
-and 76,893 to 53,474 M instructions	bulk_copy_wal_before	3000000	sift	default	instr_m	76893	25	run fb9b4acd6f58-20261103T202136Z-3c07, records in program-scale/records/copy-ring-before-3m-20261103.rec
-53,474 M instructions	bulk_copy_wal	3000000	sift	default	instr_m	53474	25	run fb9b4acd6f58-20261103T203701Z-3b76, records in program-scale/records/copy-ring-after-3m-20261103.rec
-(a heap table 31,942 M)	bulk_copy_wal	3000000	heap	default	instr_m	31942	25	run fb9b4acd6f58-20261103T203701Z-3b76, records in program-scale/records/copy-ring-after-3m-20261103.rec
-of 1,000,000 rows 1,060 to 897 ms	bulk_copy_wal_before	1000000	sift	default	wall_ms	1060	25	run fb9b4acd6f58-20261103T191351Z-c3bc, records in program-scale/records/copy-ring-before-1m-20261103.rec
-to 897 ms and 19,154 to 18,046 M instructions	bulk_copy_wal	1000000	sift	default	wall_ms	897	25	run fb9b4acd6f58-20261103T201844Z-762e, records in program-scale/records/copy-ring-after-1m-20261103.rec
-19,154 to 18,046 M instructions	bulk_copy_wal_before	1000000	sift	default	instr_m	19154	25	run fb9b4acd6f58-20261103T191351Z-c3bc, records in program-scale/records/copy-ring-before-1m-20261103.rec
-18,046 M instructions	bulk_copy_wal	1000000	sift	default	instr_m	18046	25	run fb9b4acd6f58-20261103T201844Z-762e, records in program-scale/records/copy-ring-after-1m-20261103.rec
 no longer makes the `Limit` node pull `m` rows	order_layout_ties_offset	1000000	picked	default	wall_ms	1.82		the change (aggscan-offskip-after-order_layout_ties_offset-1000000-20261103.rec)
 no longer makes the `Limit` node pull `m` rows	order_layout_ties_offset	1000000	picked	default	instr_m	20.9		
 no longer makes the `Limit` node pull `m` rows	order_layout_ties_offset_before	1000000	picked	default	wall_ms	2.86		the tip before it (aggscan-offskip-before-order_layout_ties_offset-1000000-20261103.rec), a statement of its own name

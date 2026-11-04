@@ -150,10 +150,15 @@ channel_read(Relation heap, Relation index, bool present[2], bool ok[2], uint32 
 
 static bool subscribed(Oid heapoid);
 
-/* Why a statement trigger of the table cannot hear what happens to its rows, NULL when it can (a statement on the parent fires no trigger of a child; the apply worker of a subscription fires none) */
+/*
+ * Why a statement trigger of the table cannot hear what happens to its rows, NULL when it can (a statement on the parent fires no trigger of a child; the apply worker of a
+ * subscription fires none; pg_upgrade restores the indexes of an older release into an extension that is not updated yet, which has no function for the trigger).
+ */
 const char *
 sift_col_track_deaf(Relation heap)
 {
+	if (!OidIsValid(track_function(true)))
+		return "the extension is not updated to the release that has sift.col_track_old_rows(): run ALTER EXTENSION pg_sift UPDATE";
 	if (heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL)
 		return "the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent";
 	if (subscribed(RelationGetRelid(heap)))

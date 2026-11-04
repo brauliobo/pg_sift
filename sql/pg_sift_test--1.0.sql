@@ -57,6 +57,9 @@ CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 -- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
 CREATE FUNCTION sift._test_dir_updates() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
+-- everything inserted into the WAL so far is flushed
+CREATE FUNCTION sift._test_flush_wal() RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_flush_wal' LANGUAGE C STRICT;
 -- copied pages of VACUUM's bounded relocation (with the current sift.vacuum_rewrite_limit)
 CREATE FUNCTION sift._test_space(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_space' LANGUAGE C STRICT;

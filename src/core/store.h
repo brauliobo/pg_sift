@@ -110,6 +110,7 @@ extern void sift_store_test_init(void);
 
 /* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in core/freelist.c) */
 extern PGDLLIMPORT bool sift_standby_conflicts;
+extern void sift_wal_flush_inserted(void);
 
 /* Page helpers: zeroes the page, standard header, special type/gen */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);

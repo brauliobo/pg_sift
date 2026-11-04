@@ -144,6 +144,11 @@ INSERT INTO trk SELECT g, g % 7, g FROM generate_series(1, 3000) g;
 CREATE INDEX trk_c ON trk USING sift_col (id, g, v) $TRKOPT;
 UPDATE trk SET id = id + 10000 WHERE id % 10 = 0;
 DELETE FROM trk WHERE id % 13 = 0;
+-- pg_dump restores an index after its table's key when its name sorts after the key's (before it on PostgreSQL 18, which sorts the statistics in: the other order): the build then
+-- meets a key while the extension is still at the old version
+CREATE TABLE trk_late (id int PRIMARY KEY, g int NOT NULL);
+INSERT INTO trk_late SELECT g, g % 3 FROM generate_series(1, 300) g;
+CREATE INDEX trk_late_z ON trk_late USING sift_col (id, g);
 CREATE FUNCTION trkq() RETURNS text LANGUAGE sql RETURN (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT g, count(*) c, sum(v) s FROM trk GROUP BY g) x);
 CREATE FUNCTION trkq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN trkq();
 CREATE FUNCTION trkq_off() RETURNS text LANGUAGE sql SET sift.enable_agg = off RETURN trkq();
@@ -187,7 +192,7 @@ SQL
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
 # stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
 q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE postgres IN DATABASE postgres SET sift.enable_agg = on" >/dev/null || bail "stored settings"
-VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true), sift.col_verify('trk_c', true)"
+VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true), sift.col_verify('trk_c', true), sift.col_verify('trk_late_z', true)"
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
 VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")

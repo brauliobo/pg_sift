@@ -1,0 +1,58 @@
+-- track_changes needs sift.col_track_old_rows(), which the extension has from 4.0 on. pg_upgrade restores a cluster of an older release with the extension at its old version
+-- (ALTER EXTENSION UPDATE is the user's next step) and the library already this release's, and the restore makes the indexes: the default (auto) must leave the index without
+-- the log, as it does when the table has no key, and a column the user names must be refused with the way out, not fail on a missing function. The state of that extension is made
+-- in a transaction that ends in a rollback: the function dropped from it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = notice;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
+INSERT INTO a SELECT i, i % 5, i FROM generate_series(1, 200) i;
+BEGIN;
+ALTER EXTENSION pg_sift DROP FUNCTION sift.col_track_old_rows();
+DROP FUNCTION sift.col_track_old_rows();
+CREATE INDEX a_auto ON a USING sift_col (id, g, v);
+NOTICE:  sift_col index "a_auto": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the extension is not updated yet
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('a_auto');
+SELECT track_changes, triggers FROM sift.col_tracking('a_auto');
+ track_changes | triggers 
+---------------+----------
+ f             | f
+(1 row)
+
+SELECT tgname FROM pg_trigger WHERE tgrelid = 'a'::regclass AND NOT tgisinternal;
+ tgname 
+--------
+(0 rows)
+
+SAVEPOINT named;
+CREATE INDEX a_named ON a USING sift_col (id, g, v) WITH (track_changes = 'id');
+ERROR:  track_changes: table "a" cannot be tracked
+DETAIL:  the extension is not updated to the release that has sift.col_track_old_rows(): run ALTER EXTENSION pg_sift UPDATE.
+HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
+ROLLBACK TO named;
+CREATE INDEX a_off ON a USING sift_col (id, g, v) WITH (track_changes = 'off');
+REINDEX INDEX a_auto;
+NOTICE:  sift_col index "a_auto": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the extension is not updated yet
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('a_auto');
+SELECT track_changes, triggers FROM sift.col_tracking('a_auto');
+ track_changes | triggers 
+---------------+----------
+ f             | f
+(1 row)
+
+ROLLBACK;
+-- the extension as it is: the same statements track
+CREATE INDEX a_auto ON a USING sift_col (id, g, v);
+NOTICE:  sift_col index "a_auto": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('a_auto');
+SELECT track_changes, triggers FROM sift.col_tracking('a_auto');
+ track_changes | triggers 
+---------------+----------
+ t             | t
+(1 row)
+
+DROP TABLE a;
+DROP EXTENSION pg_sift;

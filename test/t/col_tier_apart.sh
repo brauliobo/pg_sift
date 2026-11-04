@@ -2,6 +2,8 @@
 # The tier merge leaves clean segments that hold no superblock in common alone when they total more than sift.vacuum_rewrite_limit: the segments of a
 # parallel build and of the promotions of appended rows, whose merge gains a reader nothing and writes all their bytes. Eight such segments stay eight
 # after a VACUUM; a dead row in one of them makes the merge worth its bytes and they become one.
+# order_array_columns is off: the table is analyzed by the build and the formula gives the index order arrays (key, amount), which make a rewrite cost twice the instructions per row
+# (sift_col_mostly_dead, rewrite_pays), so that the 800 dead rows of 800,000 do not pay for it and the tier stays as it is: the test is about the tier, not about that price.
 . "$(dirname "$0")/lib.bash"
 
 plan 4
@@ -11,7 +13,7 @@ sift.vacuum_rewrite_limit = 1"
 node_start ta || bail "start failed"
 sql ta "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2))" \
 	"INSERT INTO facts SELECT g, (hashint8(g) & 1048575)::int, 'cat_' || (g % 8), (hashint8(g + 1) & 65535) / 100.0 FROM generate_series(1, 100000) g" \
-	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
+	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount) WITH (order_array_columns = 'off')" "VACUUM facts" >/dev/null || bail "setup failed"
 # eight appended batches, each promoted to a segment of its own over superblocks no other segment holds
 for b in 1 2 3 4 5 6 7 8; do
 	sql ta "INSERT INTO facts SELECT g, (hashint8(g) & 1048575)::int, 'cat_' || (g % 8), (hashint8(g + 1) & 65535) / 100.0 FROM generate_series($b * 100000 + 1, $b * 100000 + 100000) g" \

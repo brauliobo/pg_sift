@@ -17,7 +17,7 @@
 Name:           pg_sift_%{pgmajor}
 Version:        %{pkg_version}
 Release:        1%{?dist}
-Summary:        Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search
+Summary:        Fast analytics for PostgreSQL: just add an index, plus BM25 full-text search
 License:        PostgreSQL
 URL:            https://github.com/brauliobo/pg_sift
 Source0:        pg_sift-%{version}.tar.gz

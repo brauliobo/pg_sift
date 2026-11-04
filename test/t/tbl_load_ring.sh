@@ -7,7 +7,7 @@
 # second COPY and an INSERT during the load change nothing for it; and a load that dies at each stage of the ring leaves nothing: power loss while a worker writes the first group,
 # while groups are written and none is published, and while some are published and the last are not, a COPY that fails on a row after the workers started, a savepoint rolled back
 # after the ring ran. After each the table is empty on the primary and the standby, VACUUM leaves the file as small as the empty table's and no orphan block, the store verifies,
-# and the same load works. The worker of the ring keeps one segment writer over its groups (a load that fits the writer's memory is one segment); sift.test_load_segment_kb makes it end segments so that the stages that need some do. SIFT_LR_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LR_UNIT) so that rows of 3 MB are enough for the ring).
+# and the same load works. SIFT_LR_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LR_UNIT) so that rows of 3 MB are enough for the ring).
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_LR_ROWS 300000 20000)
@@ -35,7 +35,7 @@ wal_consistency_checking = 'generic'"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LR_UNIT 0 128)" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1" "SET sift.test_load_segment_kb = $(knob SIFT_LR_SEG 4096 256)")
+OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LR_UNIT 0 128)" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id, ctid)) FROM lt" | tail -1; }
@@ -66,11 +66,6 @@ check "... and gives the same rows at the same TIDs as the load with the ring" t
 reset
 sql primary "${OPTS[@]}" "SET sift.test_load_publish = 0" "$COPYSQL" >/dev/null
 check "the segments published at the default pace: the same rows at the same TIDs" test "$(digest primary)" == "$with"
-reset
-# the worker keeps one writer over the groups: a load that fits the memory budget of the writer is one segment, which no merge has to rewrite afterwards
-sql primary "${OPTS[@]}" "SET sift.test_load_segment_kb = 0" "$COPYSQL" >/dev/null
-check "the load with the default budget is one segment" test "$(sql primary "SELECT count(*) FROM sift.table_segments('lt') WHERE kind = 'columns'")" == 1
-check "... the same rows at the same TIDs" test "$(digest primary)" == "$with"
 reset
 sql primary "${OPTS[@]}" "COPY lt FROM '$D/big.csv' CSV" >/dev/null
 bigrows=$(rows primary)

@@ -38,6 +38,13 @@
 
 bool		sift_standby_conflicts = true;
 
+/* Everything inserted into the WAL so far is on disk. GetXLogInsertRecPtr is the position of the next record: when the last one ended with a page it is the one after the header of the next page, which nothing has reached and XLogFlush refuses */
+void
+sift_wal_flush_inserted(void)
+{
+	XLogFlush(GetXLogInsertEndRecPtr());
+}
+
 #ifdef SIFT_TESTING
 int			sift_test_space_crash = 0;
 bool		sift_test_space_error = false;
@@ -57,7 +64,7 @@ sift_store_space_test_point(int phase)
 	if (sift_test_space_crash == phase)
 	{
 		ereport(LOG, (errmsg("sift test: space crash phase %d", phase)));
-		XLogFlush(GetXLogInsertRecPtr());
+		sift_wal_flush_inserted();
 		kill(MyProcPid, SIGKILL);
 	}
 }

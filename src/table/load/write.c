@@ -92,103 +92,58 @@ load_publish_all(Relation rel, SiftTblRel *st, Published *pub)
 	}
 }
 
-/* The rows of unit u of the run encoded into the segment the writer holds (begun with the unit's rows): the rows of a unit are one batch, the unit of its superblock */
-static void
-enc_unit(LoadEnc *e, const LoadRun *r, const char *rows, int u)
-{
-	uint64		vblock = r->first + (uint64) u * SIFT_TBL_VBLOCKS_SB;
-	const char *p = rows + r->uoff[u];
+#ifdef SIFT_TESTING
+/* the phase a participant waits in for the advisory lock of sift.test_phase_gate + this, so that a test finds a worker that is writing a group */
+#define SIFT_TBL_PHASE_LOAD	4
+#endif
 
-	CHECK_FOR_INTERRUPTS();
-	sift_cbatch_reset(e->sw.batch, vblock / SIFT_SB_PAGES);
-	for (uint32 n = 0; n < r->urows[u]; n++)
-	{
-		const LoadRec *rec = (const LoadRec *) p;
-		HeapTupleData tup = {.t_len = rec->len - sizeof(LoadRec),.t_data = (HeapTupleHeader) (p + sizeof(LoadRec))};
-		ItemPointerData tid;
-		SiftColRow	row;
-		MemoryContext old;
-
-		ItemPointerSet(&tid, vblock + n / SIFT_TBL_MAX_OFF, n % SIFT_TBL_MAX_OFF + 1);
-		old = MemoryContextSwitchTo(e->rowcx);
-		heap_deform_tuple(&tup, e->desc, e->values, e->isnull);
-		row_in(e->sw.l, e->desc, &tid, e->values, e->isnull, &row);
-		if (r->vers)
-			sift_cbatch_add_ver(e->sw.batch, &row, r->xid, rec->cid);
-		else
-			sift_cbatch_add(e->sw.batch, &row);
-		MemoryContextSwitchTo(old);
-		MemoryContextReset(e->rowcx);
-		p += MAXALIGN(rec->len);
-	}
-	seal_flush(&e->sw);
-	e->next = vblock + SIFT_TBL_VBLOCKS_SB;
-}
-
-void
-load_enc_begin(LoadEnc *e, Relation rel, MemoryContext cx, bool vers, Size budget)
-{
-	const SiftTblLayout *l = layout_of(rel, sift_tbl_rel(rel));
-	MemoryContext old = MemoryContextSwitchTo(cx);
-
-	e->sw = (SealWriter) {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, 0, tbl_col_format(vers)};
-	e->desc = RelationGetDescr(rel);
-	e->rowcx = AllocSetContextCreate(cx, "sift_table load row", ALLOCSET_SMALL_SIZES);
-	e->values = palloc(e->desc->natts * sizeof(Datum));
-	e->isnull = palloc(e->desc->natts * sizeof(bool));
-	e->budget = budget;
-	MemoryContextSwitchTo(old);
-}
-
-/* The segment the writer holds is closed: its blocks are in no directory until a publication */
-void
-load_enc_end(LoadEnc *e, SiftSegEntry *seg)
-{
-	MemoryContext old = MemoryContextSwitchTo(e->sw.cxt);
-
-	sift_colw_finish(e->sw.w, seg);
-	sift_wt_finish(e->sw.wt);
-	e->sw.w = NULL;
-	MemoryContextSwitchTo(old);
-}
-
-/*
- * The units of the run from u0 to u1 into the writer. A segment goes on over the runs while their superblocks follow each other (a writer of the table that took the superblocks
- * between two runs ends it) and ends at the memory budget; the segments closed are put in segs, at nsegs, in the order of their superblocks. final: the load ends, so does the segment.
- */
-void
-load_enc_units(LoadEnc *e, const LoadRun *r, const char *rows, int u0, int u1, SiftSegEntry *segs, int *nsegs, bool final)
-{
-	for (int u = u0; u < u1; u++)
-	{
-		if (e->sw.w && r->first + (uint64) u * SIFT_TBL_VBLOCKS_SB != e->next)
-			load_enc_end(e, &segs[(*nsegs)++]);
-		enc_unit(e, r, rows, u);
-		if (e->sw.w && sift_colw_memory(e->sw.w) > e->budget)
-			load_enc_end(e, &segs[(*nsegs)++]);
-	}
-	if (final && e->sw.w)
-		load_enc_end(e, &segs[(*nsegs)++]);
-}
-
-/* The units of group g of the run as one segment */
+/* The units of group g of the run as one segment: the rows of a unit are one batch, written as the unit of its superblock */
 void
 load_write_group(const LoadRun *r, const char *rows, Relation rel, int g, SiftSegEntry *seg)
 {
+	const SiftTblLayout *l = layout_of(rel, sift_tbl_rel(rel));
+	TupleDesc	desc = RelationGetDescr(rel);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table load group", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table load row", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	LoadEnc		e;
-	SiftSegEntry done;
-	int			ndone = 0;
+	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL,
+		(uint64) LOAD_SBS * sift_tbl_write_buffer_limit * 1024, tbl_col_format(r->vers)};
+	Datum	   *values = palloc(desc->natts * sizeof(Datum));
+	bool	   *isnull = palloc(desc->natts * sizeof(bool));
 
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_TBL_PHASE_LOAD);
 #endif
-	load_enc_begin(&e, rel, cx, r->vers, PG_UINT64_MAX);
-	e.sw.expect = (uint64) LOAD_SBS * sift_tbl_write_buffer_limit * 1024;
-	load_enc_units(&e, r, rows, g * r->per, Min(r->units, (g + 1) * r->per), &done, &ndone, true);
-	Assert(ndone == 1);
-	*seg = done;
+	for (int u = g * r->per; u < Min(r->units, (g + 1) * r->per); u++)
+	{
+		uint64		vblock = r->first + (uint64) u * SIFT_TBL_VBLOCKS_SB;
+		const char *p = rows + r->uoff[u];
+
+		CHECK_FOR_INTERRUPTS();
+		sift_cbatch_reset(sw.batch, vblock / SIFT_SB_PAGES);
+		for (uint32 n = 0; n < r->urows[u]; n++)
+		{
+			const LoadRec *rec = (const LoadRec *) p;
+			HeapTupleData tup = {.t_len = rec->len - sizeof(LoadRec),.t_data = (HeapTupleHeader) (p + sizeof(LoadRec))};
+			ItemPointerData tid;
+			SiftColRow	row;
+
+			ItemPointerSet(&tid, vblock + n / SIFT_TBL_MAX_OFF, n % SIFT_TBL_MAX_OFF + 1);
+			MemoryContextSwitchTo(rowcx);
+			heap_deform_tuple(&tup, desc, values, isnull);
+			row_in(l, desc, &tid, values, isnull, &row);
+			if (r->vers)
+				sift_cbatch_add_ver(sw.batch, &row, r->xid, rec->cid);
+			else
+				sift_cbatch_add(sw.batch, &row);
+			MemoryContextSwitchTo(cx);
+			MemoryContextReset(rowcx);
+			p += MAXALIGN(rec->len);
+		}
+		seal_flush(&sw);
+	}
+	sift_colw_finish(sw.w, seg);
+	sift_wt_finish(sw.wt);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

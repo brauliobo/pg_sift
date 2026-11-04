@@ -101,7 +101,7 @@ $$);
 -- the diagnostics: counters of the session, the indexes the role can read, why a query was not pushed down; what an update leaves to do and the
 -- declared paths are listed for the tables the role owns or may maintain, and for no other
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm_non', 'rm_nos'], $$
-SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
+SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
@@ -135,7 +135,7 @@ SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1
 $$);
                                      stmt                                      |                     result                      |                       by_role                       
 -------------------------------------------------------------------------------+-------------------------------------------------+-----------------------------------------------------
- SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'                                   | ok: (t)                                         | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'                                | ok: (t)                                         | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.stats()                                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT sift.stats_reset()                                                     | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.refusal_slugs()                                            | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
@@ -179,21 +179,21 @@ $$);
 REVOKE USAGE ON SCHEMA sift FROM PUBLIC;
 GRANT USAGE ON SCHEMA sift TO rm_own;
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_rd', 'rm_nos'], $$
-SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
+SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 !SELECT sift.promote('rm.docs_idx')
 !SELECT * FROM sift.stats()
 !SELECT * FROM sift.workers
 $$);
-                    stmt                     |                  result                  |    by_role    
----------------------------------------------+------------------------------------------+---------------
- SELECT sift.version() ~ '^[0-9]+[.][0-9]+$' | ok: (t)                                  | rm_own
- SELECT sift.version() ~ '^[0-9]+[.][0-9]+$' | ERROR: permission denied for schema sift | rm_rd, rm_nos
- SELECT sift.promote('rm.docs_idx')          | ok                                       | rm_own
- SELECT sift.promote('rm.docs_idx')          | ERROR: permission denied for schema sift | rm_rd, rm_nos
- SELECT * FROM sift.stats()                  | ok                                       | rm_own
- SELECT * FROM sift.stats()                  | ERROR: permission denied for schema sift | rm_rd, rm_nos
- SELECT * FROM sift.workers                  | ok                                       | rm_own
- SELECT * FROM sift.workers                  | ERROR: permission denied for schema sift | rm_rd, rm_nos
+                      stmt                      |                  result                  |    by_role    
+------------------------------------------------+------------------------------------------+---------------
+ SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$' | ok: (t)                                  | rm_own
+ SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$' | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT sift.promote('rm.docs_idx')             | ok                                       | rm_own
+ SELECT sift.promote('rm.docs_idx')             | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT * FROM sift.stats()                     | ok                                       | rm_own
+ SELECT * FROM sift.stats()                     | ERROR: permission denied for schema sift | rm_rd, rm_nos
+ SELECT * FROM sift.workers                     | ok                                       | rm_own
+ SELECT * FROM sift.workers                     | ERROR: permission denied for schema sift | rm_rd, rm_nos
 (8 rows)
 
 REVOKE USAGE ON SCHEMA sift FROM rm_own;

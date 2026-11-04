@@ -363,7 +363,7 @@ sift.async_maintenance = off'
 		# and forward again: the library of this tree on the same files, the event triggers enabled, the setting reset
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree after the downgrade"
-		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()" | cut -d. -f1-2)" == "$cur"
+		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()")" == "$cur"
 		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.col_format_minor" "SELECT pg_reload_conf()" >/dev/null
 		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT string_agg(evtenabled::text, '') FROM pg_event_trigger WHERE evtname IN ('sift_table_ddl_check', 'sift_table_repack_guard')")" == OO
 		check "3.2 downgrade: forward again: ALTER TABLE works with this tree's library" q "ALTER TABLE dgb DROP COLUMN extra"

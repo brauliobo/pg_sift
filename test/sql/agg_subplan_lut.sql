@@ -33,10 +33,11 @@ VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE tenants; ANALYZE blocked; ANALYZE blocked_null; ANALYZE nothing; ANALYZE regions_off; ANALYZE regions_off_null; ANALYZE holidays;
 
 -- the shape of the plan: SiftAgg with the sub-plan under it, or the normal plan; with the workers the plan launched
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+-- run = false: the plan only (a statement that would take minutes to run, as a SubPlan that is evaluated for each row does)
+CREATE FUNCTION plan_of(q text, run bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (' || CASE WHEN run THEN 'ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF, ' ELSE '' END || 'COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
 		IF trim(l) LIKE 'SubPlan %' THEN r := r || ' with ' || trim(l); END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
@@ -130,7 +131,7 @@ SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT id 
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT id FROM tenants FOR UPDATE) GROUP BY kind$$) AS locking;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE big_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS int8_leaf;
 SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
-SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT i FROM generate_series(1, 400000) i WHERE i % 7 = 0) GROUP BY kind$$) AS not_hashed;
+SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT i FROM generate_series(1, 4000000) i WHERE i % 7 = 0) GROUP BY kind$$, false) AS not_hashed;
 RESET work_mem; RESET hash_mem_multiplier;
 -- the same ones run: the rows are those of the normal plan
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev e WHERE dim_a_id NOT IN (SELECT b.dim_a_id FROM blocked b WHERE b.dim_a_id IS NOT NULL AND b.dim_a_id % 5 = e.tenant_id % 5) GROUP BY kind$$);
@@ -236,7 +237,7 @@ ROLLBACK;
 
 DEALLOCATE ALL;
 DROP FUNCTION same(text);
-DROP FUNCTION plan_of(text);
+DROP FUNCTION plan_of(text, bool);
 DROP FUNCTION shape_of(text);
 DROP TABLE ev, tenants, blocked, blocked_null, nothing, regions_off, regions_off_null, holidays, dropme, tags, wide;
 DROP EXTENSION pg_sift_helpers;

@@ -61,7 +61,7 @@ ru_own | CREATE INDEX docs_col ON ru.docs USING sift_col (id, g)
 ru_own | !SELECT sift.promote('ru.docs_idx')
 ru_own | !SELECT sift.col_verify('ru.docs_col', true)
 ru_rd | !SELECT * FROM sift.workers
-ru_new | SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
+ru_new | SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 ru_rd | DROP TABLE ru.docs
 ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i
 ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'

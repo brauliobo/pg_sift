@@ -9,7 +9,7 @@ Homepage: https://github.com/brauliobo/pg_sift
 Package: postgresql-@PG@-pg-sift
 Architecture: any
 Depends: postgresql-@PG@, ${misc:Depends}, ${shlibs:Depends}
-Description: Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search
+Description: Fast analytics for PostgreSQL: just add an index, plus BM25 full-text search
  pg_sift answers counts, sums, distinct counts, group-bys and top-N from
  compressed columns, with the queries you already have: a sift_col index on a
  table, or the sift_table table access method, is picked by the planner through

@@ -31,10 +31,11 @@ INSERT INTO holidays SELECT date '2024-01-01' + i * 7 FROM generate_series(0, 12
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE tenants; ANALYZE blocked; ANALYZE blocked_null; ANALYZE nothing; ANALYZE regions_off; ANALYZE regions_off_null; ANALYZE holidays;
 -- the shape of the plan: SiftAgg with the sub-plan under it, or the normal plan; with the workers the plan launched
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+-- run = false: the plan only (a statement that would take minutes to run, as a SubPlan that is evaluated for each row does)
+CREATE FUNCTION plan_of(q text, run bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (' || CASE WHEN run THEN 'ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF, ' ELSE '' END || 'COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
 		IF trim(l) LIKE 'SubPlan %' THEN r := r || ' with ' || trim(l); END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
@@ -350,10 +351,10 @@ SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE big_id NOT IN (SELECT dim_a
 (1 row)
 
 SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
-SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT i FROM generate_series(1, 400000) i WHERE i % 7 = 0) GROUP BY kind$$) AS not_hashed;
-       not_hashed       
-------------------------
- SiftAgg with SubPlan 1
+SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT i FROM generate_series(1, 4000000) i WHERE i % 7 = 0) GROUP BY kind$$, false) AS not_hashed;
+      not_hashed       
+-----------------------
+ normal with SubPlan 1
 (1 row)
 
 RESET work_mem; RESET hash_mem_multiplier;
@@ -658,7 +659,7 @@ CLOSE c_on; CLOSE c_off;
 ROLLBACK;
 DEALLOCATE ALL;
 DROP FUNCTION same(text);
-DROP FUNCTION plan_of(text);
+DROP FUNCTION plan_of(text, bool);
 DROP FUNCTION shape_of(text);
 DROP TABLE ev, tenants, blocked, blocked_null, nothing, regions_off, regions_off_null, holidays, dropme, tags, wide;
 DROP EXTENSION pg_sift_helpers;

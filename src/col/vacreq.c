@@ -315,7 +315,7 @@ vacuum_heap(Oid heapoid)
 	 * record is not flushed: the pages that hold only its new row versions stay out of the visibility map, and the index checks their rows in the heap
 	 * until the next VACUUM (a fifth of the pages after 3% of the rows changed). The flush costs the WAL writer's next one.
 	 */
-	XLogFlush(GetXLogInsertRecPtr());
+	sift_wal_flush_inserted();
 	vacuum(rels, &params, strategy, cx, true);
 	FreeAccessStrategy(strategy);
 	MemoryContextDelete(cx);

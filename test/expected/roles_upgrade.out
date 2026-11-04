@@ -85,7 +85,7 @@ ru_own | CREATE INDEX docs_col ON ru.docs USING sift_col (id, g)
 ru_own | !SELECT sift.promote('ru.docs_idx')
 ru_own | !SELECT sift.col_verify('ru.docs_col', true)
 ru_rd | !SELECT * FROM sift.workers
-ru_new | SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'
+ru_new | SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 ru_rd | DROP TABLE ru.docs
 ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i
 ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'
@@ -106,7 +106,7 @@ $$);
  10 | ru_own | SELECT sift.promote('ru.docs_idx')                                                           | ok
  11 | ru_own | SELECT sift.col_verify('ru.docs_col', true)                                                  | ok
  12 | ru_rd  | SELECT * FROM sift.workers                                                                   | ok
- 13 | ru_new | SELECT sift.version() ~ '^[0-9]+[.][0-9]+$'                                                  | ok: (t)
+ 13 | ru_new | SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'                                               | ok: (t)
  14 | ru_rd  | DROP TABLE ru.docs                                                                           | ERROR: must be owner of table docs
  15 | ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i | ok (20)
  16 | ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'                                          | ok: (320)

@@ -165,23 +165,28 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 static void
 stream_end_segment(Load *ld)
 {
+	MemoryContext old = MemoryContextSwitchTo(ld->sw.cxt);
+
 	if (ld->nsegs == ld->maxsegs)
 		ld->segs = repalloc(ld->segs, (ld->maxsegs *= 2) * sizeof(SiftSegEntry));
-	load_enc_end(&ld->enc, &ld->segs[ld->nsegs++]);
+	sift_colw_finish(ld->sw.w, &ld->segs[ld->nsegs++]);
+	sift_wt_finish(ld->sw.wt);
+	ld->sw.w = NULL;
+	MemoryContextSwitchTo(old);
 }
 
 /* The current unit is full (or the load ends): it is encoded into the open segment, which ends at the memory budget or when the next unit is not the superblock after it */
 static void
 stream_end_unit(Load *ld)
 {
-	seal_flush(&ld->enc.sw);
+	seal_flush(&ld->sw);
 	ld->run.units++;
 	ld->n = 0;
 	ld->bytes = 0;
-	ld->enc.next = ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB;
+	ld->seg_next = ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB;
 	if (ld->run.units == ld->maxunits)
 		ld->open = false;
-	if (ld->enc.sw.w && sift_colw_memory(ld->enc.sw.w) > ld->enc.budget)
+	if (ld->sw.w && sift_colw_memory(ld->sw.w) > ld->budget)
 		stream_end_segment(ld);
 }
 
@@ -196,21 +201,21 @@ stream_row(Load *ld, Relation rel, SiftTblRel *st, const Datum *values, const bo
 	if (!ld->open)
 	{
 		reserve_run(ld, rel, st);
-		if (ld->enc.sw.w && ld->run.first != ld->enc.next)
+		if (ld->sw.w && ld->run.first != ld->seg_next)
 			stream_end_segment(ld);
 	}
 	ItemPointerSet(tid, ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
-	ld->enc.sw.rel = rel;
+	ld->sw.rel = rel;
 	if (ld->n == 0)
-		sift_cbatch_reset(ld->enc.sw.batch, ItemPointerGetBlockNumber(tid) / SIFT_SB_PAGES);
-	old = MemoryContextSwitchTo(ld->enc.rowcx);
-	row_in(ld->enc.sw.l, ld->desc, tid, values, isnull, &row);
+		sift_cbatch_reset(ld->sw.batch, ItemPointerGetBlockNumber(tid) / SIFT_SB_PAGES);
+	old = MemoryContextSwitchTo(ld->rowcx);
+	row_in(ld->sw.l, ld->desc, tid, values, isnull, &row);
 	if (ld->run.vers)
-		sift_cbatch_add_ver(ld->enc.sw.batch, &row, GetCurrentTransactionId(), cid);
+		sift_cbatch_add_ver(ld->sw.batch, &row, GetCurrentTransactionId(), cid);
 	else
-		sift_cbatch_add(ld->enc.sw.batch, &row);
+		sift_cbatch_add(ld->sw.batch, &row);
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(ld->enc.rowcx);
+	MemoryContextReset(ld->rowcx);
 }
 
 /* The rows of the open unit and the segment are written, and the segments published (they are all in the directory when the lock that kept the orphan sweep from them goes) */
@@ -219,10 +224,10 @@ stream_flush(Load *ld, Relation rel, SiftTblRel *st)
 {
 	Published	pub;
 
-	ld->enc.sw.rel = rel;
+	ld->sw.rel = rel;
 	if (ld->n > 0)
 		stream_end_unit(ld);
-	if (ld->enc.sw.w)
+	if (ld->sw.w)
 		stream_end_segment(ld);
 	ld->open = false;
 	pub = (Published) {ld->segs, ld->nsegs};
@@ -311,13 +316,16 @@ load_subxact_event(SubXactEvent event, SubTransactionId mysubid, SubTransactionI
 static void
 stream_begin(Load *ld, Relation rel, SiftTblRel *st)
 {
+	const SiftTblLayout *l = layout_of(rel, st);
 	MemoryContext cx;
 
 	if (load_groups(rel) > 1 || !ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
 		return;
 	cx = AllocSetContextCreate(ld->cxt, "sift_table load stream", ALLOCSET_DEFAULT_SIZES);
 	ld->stream = true;
-	load_enc_begin(&ld->enc, rel, cx, ld->run.vers, load_budget());
+	ld->sw = (SealWriter) {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL, 0, tbl_col_format(ld->run.vers)};
+	ld->rowcx = AllocSetContextCreate(cx, "sift_table load row", ALLOCSET_SMALL_SIZES);
+	ld->budget = load_budget();
 	ld->maxsegs = 8;
 	ld->segs = palloc(ld->maxsegs * sizeof(SiftSegEntry));
 }

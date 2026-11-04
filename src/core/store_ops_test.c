@@ -22,6 +22,7 @@ PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
+PG_FUNCTION_INFO_V1(sift_test_flush_wal);
 PG_FUNCTION_INFO_V1(sift_test_relcache_burn);
 Datum
 sift_test_alloc(PG_FUNCTION_ARGS)
@@ -157,6 +158,14 @@ Datum
 sift_test_dir_updates_count(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(sift_test_dir_updates);
+}
+
+/* sift._test_flush_wal(): the flush of everything inserted, as the maintenance worker does before a VACUUM and the injected crash of a space step does */
+Datum
+sift_test_flush_wal(PG_FUNCTION_ARGS)
+{
+	sift_wal_flush_inserted();
+	PG_RETURN_VOID();
 }
 
 static void
