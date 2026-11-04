@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: after `pg_repack` of a table `sift.col_tracking` of a `sift_col` index with `track_changes` said its triggers and heap-free reads were off until the next `REINDEX`: the log of the index built on the copy of pg_repack held the identities of the triggers of the copy, which go with it. The index now takes those of the table's own triggers, which pg_repack leaves in place and the swap does not touch (the copy is a full rewrite under a snapshot, and what the writers do meanwhile is applied to it by statements the copy's triggers hear), so the log is complete at the swap and a read of rows changed and not yet vacuumed stays out of the heap.
 - Fixed: pg_sift: `REINDEX INDEX CONCURRENTLY` and `REINDEX TABLE CONCURRENTLY` of a `sift_col` index with `track_changes` (the default since 4.0.0) left the two statement triggers with the oid of the index they were made for, which the swap drops, and every UPDATE and DELETE of the table failed with `could not open relation with OID n` (INSERT and reads went on): a trigger now serves the index it depends on, and the swap moves that dependency to the new index. A table that ran it is repaired by `REINDEX INDEX` of the index, or by `ALTER INDEX x SET (track_changes = 'off')` and then `SET (track_changes = 'auto')`; the log of the new index is not complete after a concurrent build, as for `CREATE INDEX CONCURRENTLY` (`sift.col_tracking`).
 
 ## 4.0.0 - 2026-11-03

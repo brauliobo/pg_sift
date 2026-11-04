@@ -87,6 +87,21 @@ repack_copy(Relation heap)
 	return strcmp(get_namespace_name(RelationGetNamespace(heap)), "repack") == 0 && strncmp(RelationGetRelationName(heap), "table_", 6) == 0;
 }
 
+/* The oid of the table or index that a table (repack.table_<oid>) or an index (repack.index_<oid>) of pg_repack replaces by the swap, InvalidOid for any other relation */
+Oid
+sift_col_repack_origin(Relation rel)
+{
+	const char *name = RelationGetRelationName(rel);
+	const char *prefix = rel->rd_rel->relkind == RELKIND_INDEX ? "index_" : "table_";
+	char	   *end;
+	unsigned long oid;
+
+	if (strcmp(get_namespace_name(RelationGetNamespace(rel)), "repack") != 0 || strncmp(name, prefix, strlen(prefix)) != 0)
+		return InvalidOid;
+	oid = strtoul(name + strlen(prefix), &end, 10);
+	return *end == '\0' && oid != 0 ? (Oid) oid : InvalidOid;
+}
+
 static void
 check_column(Relation heap, Relation index, const char *name)
 {

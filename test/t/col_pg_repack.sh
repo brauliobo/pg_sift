@@ -4,12 +4,12 @@
 # Skipped where the pg_repack binary and extension are not installed (postgresql-NN-repack).
 . "$(dirname "$0")/lib.bash"
 
-plan 13
-command -v pg_repack >/dev/null || { skip 13 "pg_repack is not installed"; finish; }
+plan 16
+command -v pg_repack >/dev/null || { skip 16 "pg_repack is not installed"; finish; }
 node_init rp 28 "autovacuum = off"
 node_start rp || bail "start failed"
 sql rp "CREATE EXTENSION pg_sift CASCADE" >/dev/null || bail "pg_sift"
-sql rp "CREATE EXTENSION pg_repack" >/dev/null 2>&1 || { skip 13 "the pg_repack extension is not available"; finish; }
+sql rp "CREATE EXTENSION pg_repack" >/dev/null 2>&1 || { skip 16 "the pg_repack extension is not available"; finish; }
 sql rp "CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), title text, doc jsonb, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO facts SELECT g, (g * 7919) % 200, 'cat_' || (g % 8), g % 997, 'alpha beta ' || (g % 50), jsonb_build_object('score', g % 11), repeat('x', 100 + g % 400) FROM generate_series(1, 40000) g" \
 	"CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, doc) WITH (paths = 'doc.score float8')" \
@@ -51,6 +51,12 @@ check "the new order tightens the zones of grp (units an equality touches: $befo
 check "the rewrite left the visibility map empty (the doc tells to VACUUM)" test "$(sql rp "SELECT relallvisible FROM pg_class WHERE oid = 'facts'::regclass")" == 0
 # an aggressive VACUUM waits for a page another backend has pinned (the bgwriter writing the rewritten heap, say); a plain one skips it and leaves it out of the map
 sql rp "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) facts" >/dev/null
+# the copy is a full rewrite under a snapshot and the writers of the run were applied to it by statements, so its log is complete: the triggers of the table are the ones that keep it so
+check "the rebuilt sift_col index tracks its changes again (track_changes, triggers, complete, heap_free)" test "$(sql rp "SELECT concat_ws(',', track_changes, triggers, complete, heap_free) FROM sift.col_tracking('facts_col')")" == "t,t,t,t"
+check "a grouped read of the rebuilt index is a SiftAgg scan that visits no heap page" test "$(sql rp "SET max_parallel_workers_per_gather = 0" "SET seq_page_cost = 1000" "SET sift.enable_agg = on" \
+	"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $SCAN" | grep -cE 'SiftAgg|Heap Pages' | tr '\n' ' ')" == "1 "
+sql rp "DELETE FROM facts WHERE id % 97 = 3" "UPDATE facts SET id = id + 500000 WHERE id % 89 = 5" >/dev/null
+check "rows deleted and keys changed after the rewrite are heard by the triggers of the table: the column scan answers as the heap does" test "$(answers on)" == "$(answers off)" -a "$(sql rp "SELECT heap_free FROM sift.col_tracking('facts_col')")" == t
 check "after VACUUM the visibility map is set again" test "$(sql rp "SELECT relallvisible = relpages AND relpages > 0 FROM pg_class WHERE oid = 'facts'::regclass")" == t
 check "pg_repack refuses the sift_table and leaves it readable" test "$(repack -t st 2>&1 | grep -c 'cannot rewrite the sift_table')|$(sql rp "SELECT count(*), sum(v) FROM st")" == "1|1000|500500"
 check "pg_repack --only-indexes of the sift_table is fine" test "$(repack -t st --only-indexes >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM st")" == "0|1000"

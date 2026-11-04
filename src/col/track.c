@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "access/htup_details.h"
 #include "access/skey.h"
 #include "access/sysattr.h"
@@ -295,6 +296,34 @@ sift_col_track_check(Relation heap, Relation index)
 }
 
 /*
+ * The index of the copy of pg_repack (repack.index_<oid>) takes the place of the index of the table by the swap, and the log it ends with is complete for the table: the copy is a
+ * full rewrite of the rows visible to a snapshot, and what the writers do meanwhile pg_repack applies to the copy by statements, which its own triggers hear. The triggers that
+ * keep it complete from the swap on are those of the table, which pg_repack leaves in place and the swap does not touch: their identities are the log's witnesses, not those of the
+ * triggers of the copy, which go with it.
+ */
+static void
+repack_witness(Relation heap, Relation index, uint32 witness[2])
+{
+	Oid			oheap = sift_col_repack_origin(heap),
+				oindex = sift_col_repack_origin(index);
+	Relation	orig;
+	HearTrig	t[2];
+
+	if (!OidIsValid(oheap) || !OidIsValid(oindex) || (orig = try_relation_open(oindex, AccessShareLock)) == NULL)
+		return;
+	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == oheap)
+	{
+		find_triggers(oheap, orig, t);
+		if (t[0].ok && t[0].n == 1 && t[1].ok && t[1].n == 1)
+		{
+			witness[0] = t[0].witness;
+			witness[1] = t[1].witness;
+		}
+	}
+	relation_close(orig, AccessShareLock);
+}
+
+/*
  * Installs the two triggers and makes the log complete: unless all is in place already (a new baseline whenever a trigger is new or another row). A NOTICE says it.
  */
 void
@@ -330,6 +359,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	baseline(index, heap, log);
 	channel_read(heap, index, present, ok, chan.witness);
 	SIFT_INVARIANT(ok[0] && ok[1], "the triggers of index %u were not created", RelationGetRelid(index));
+	repack_witness(heap, index, chan.witness);
 	chan.base_xid = GetCurrentTransactionId();
 	sift_tomb_set_chan(index, log, &chan);
 }
