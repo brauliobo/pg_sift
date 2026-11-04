@@ -13,6 +13,10 @@ autovacuum = off"
 node_start d || bail "start failed"
 export PGOPTIONS="-c client_min_messages=warning"
 
+# test_decoding is a contrib module that some builds (a PostgreSQL built from git without contrib) lack: a throwaway slot tells
+sql d "SELECT pg_create_logical_replication_slot('probe', 'test_decoding')" >/dev/null 2>&1 || { skip 6 "the test_decoding module is not installed"; finish; }
+sql d "SELECT pg_drop_replication_slot('probe')" >/dev/null || bail "the probe slot was not dropped"
+
 same() { # the groups of the table by the index and by the heap
 	sql d "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "SET seq_page_cost = 10000" \
 		"SELECT md5(string_agg(g || ':' || c || ':' || s, ',' ORDER BY g)) FROM (SELECT g, count(*) c, sum(v) s FROM $1 GROUP BY g) x" | tail -n 1
