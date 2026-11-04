@@ -71,32 +71,32 @@ The 26 cases of [bench/cases.tsv](bench/cases.tsv) marked `headline`, measured o
 
 | case | against | pg_sift: ms · M instr · blocks | the other: ms · M instr · blocks | other ÷ pg_sift |
 |---|---|---|---|---:|
-| `topn_page_totals`: A page of rows with the total of its set | heap plan | 0.543 ms · 7.69 M · 473 | 29 ms · 374 M · 4,107 | 53x |
-| `topn_coalesce`: ORDER BY coalesce(column, constant) LIMIT n | heap plan | 0.387 ms · 5.58 M · 98 | 32.1 ms · 299 M · 4,105 | 83x |
-| `key_presence_distinct`: count(DISTINCT key) of a whole table from the key lists and bitmaps of its units | heap plan | 0.129 ms · 2.09 M · 26 | 56.7 ms · 410 M · 4,105 | 440x |
+| `topn_page_totals`: A page of rows with the total of its set | heap plan | 0.61 ms · 7.69 M · 473 | 29 ms · 374 M · 4,107 | 48x |
+| `topn_coalesce`: ORDER BY coalesce(column, constant) LIMIT n | heap plan | 0.4 ms · 5.58 M · 98 | 32.1 ms · 299 M · 4,105 | 80x |
+| `key_presence_distinct`: count(DISTINCT key) of a whole table from the key lists and bitmaps of its units | heap plan | 0.14 ms · 2.09 M · 26 | 56.7 ms · 410 M · 4,105 | 405x |
 | `bulk_copy_wal`: COPY into a sift_table, written as column groups, against a heap COPY | heap plan | 422 ms · 5,210 M · 802 | 229 ms · 3,164 M · 12,061 | 0.5x |
-| `topn_sorted_runs`: ORDER BY an unsorted integer column LIMIT n from the sorted run of each unit (order_columns) | heap plan | 0.114 ms · 0.873 M · 281 | 22.4 ms · 150 M · 4,105 | 196x |
-| `lateral_first_row`: a LIMIT 1 child with an ORDER BY, read as a first-row lookup when a unique index holds the key and the order columns | heap plan | 5.5 ms · 65.6 M · 2,973 | 1,449 ms · 25,536 M · 455,241 | 264x |
-| `cte_two_readers`: a common table expression that two aggregates read is planned inline when the scans are the cheaper part | heap plan | 2.25 ms · 25.8 M · 500 | 68.4 ms · 542 M · 13,639 | 30x |
-| `list_elements`: the elements of a jsonb array leaf counted with a filter on them (the decoded list lengths are kept for the backend) | heap plan | 3.46 ms · 35.9 M · 623 | 113 ms · 781 M · 13,639 | 33x |
-| `cte_series_arms`: three UNION ALL arms over the elements of a jsonb array, counted DISTINCT above a spine: the shared common table ... | heap plan | 9.4 ms · 132 M · 768 | 858 ms · 8,283 M · 13,731 | 91x |
-| `grouping_sets_report`: a report with four levels in one statement: GROUPING SETS over two dimensions, a date filter and three aggregates | heap plan | 2.58 ms · 38.9 M · 198 | 65.9 ms · 744 M · 4,107 | 26x |
-| `ranked_top_per_group`: the three best categories of every country by revenue: a window function over the groups of an aggregate, filtered by ... | heap plan | 2.62 ms · 33.1 M · 248 | 63.2 ms · 645 M · 4,105 | 24x |
-| `window_json_report`: a ranked report as one document per category: the rank of the category, its share of the total, and the top 3 countries ... | heap plan | 4.73 ms · 61.8 M · 298 | 71.5 ms · 724 M · 4,105 | 15x |
-| `two_level_spend`: the distribution of spend per customer: an aggregate of an aggregate, 200,000 customers at 1,000,000 orders | heap plan | 22.5 ms · 245 M · 338 | 153 ms · 748 M · 4,105 | 6.8x |
-| `group_by_id_top`: one group per row: the 10 largest orders by value, as a GROUP BY of the primary key (1,000,000 groups at 1,000,000 ... | heap plan | 15 ms · 103 M · 253 | 162 ms · 1,936 M · 4,105 | 11x |
-| `count_distinct_unique`: count(DISTINCT) of a key that is unique: the set holds one entry per row | heap plan | 1.11 ms · 14.7 M · 126 | 238 ms · 2,962 M · 4,105 | 214x |
-| `semi_exists_self`: a semi join on the same table: the orders of the customers that have a cancelled order | heap plan | 2.15 ms · 19.3 M · 4,381 | 57.2 ms · 468 M · 8,212 | 27x |
+| `topn_sorted_runs`: ORDER BY an unsorted integer column LIMIT n from the sorted run of each unit (order_columns) | heap plan | 0.115 ms · 0.873 M · 281 | 22.4 ms · 150 M · 4,105 | 195x |
+| `lateral_first_row`: a LIMIT 1 child with an ORDER BY, read as a first-row lookup when a unique index holds the key and the order columns | heap plan | 4.17 ms · 65.6 M · 2,973 | 1,449 ms · 25,536 M · 455,241 | 347x |
+| `cte_two_readers`: a common table expression that two aggregates read is planned inline when the scans are the cheaper part | heap plan | 2.48 ms · 25.8 M · 500 | 68.4 ms · 542 M · 13,639 | 28x |
+| `list_elements`: the elements of a jsonb array leaf counted with a filter on them (the decoded list lengths are kept for the backend) | heap plan | 3.36 ms · 35.9 M · 623 | 113 ms · 781 M · 13,639 | 34x |
+| `cte_series_arms`: three UNION ALL arms over the elements of a jsonb array, counted DISTINCT above a spine: the shared common table ... | heap plan | 8.76 ms · 133 M · 768 | 858 ms · 8,283 M · 13,731 | 98x |
+| `grouping_sets_report`: a report with four levels in one statement: GROUPING SETS over two dimensions, a date filter and three aggregates | heap plan | 2.85 ms · 38.9 M · 198 | 65.9 ms · 744 M · 4,107 | 23x |
+| `ranked_top_per_group`: the three best categories of every country by revenue: a window function over the groups of an aggregate, filtered by ... | heap plan | 2.82 ms · 33.1 M · 248 | 63.2 ms · 645 M · 4,105 | 22x |
+| `window_json_report`: a ranked report as one document per category: the rank of the category, its share of the total, and the top 3 countries ... | heap plan | 4.53 ms · 61.8 M · 298 | 71.5 ms · 724 M · 4,105 | 16x |
+| `two_level_spend`: the distribution of spend per customer: an aggregate of an aggregate, 200,000 customers at 1,000,000 orders | heap plan | 24.4 ms · 245 M · 338 | 153 ms · 748 M · 4,105 | 6.3x |
+| `group_by_id_top`: one group per row: the 10 largest orders by value, as a GROUP BY of the primary key (1,000,000 groups at 1,000,000 ... | heap plan | 13 ms · 103 M · 253 | 162 ms · 1,936 M · 4,105 | 12x |
+| `count_distinct_unique`: count(DISTINCT) of a key that is unique: the set holds one entry per row | heap plan | 1.13 ms · 14.7 M · 126 | 238 ms · 2,962 M · 4,105 | 211x |
+| `semi_exists_self`: a semi join on the same table: the orders of the customers that have a cancelled order | heap plan | 2.77 ms · 19.3 M · 4,381 | 57.2 ms · 468 M · 8,212 | 21x |
 | `anti_not_in_self`: an anti join as NOT IN (SELECT ..) on the same table: the orders of the customers that never cancelled | heap plan | 10.1 ms · 76.6 M · 4,464 | 56.1 ms · 577 M · 8,212 | 5.6x |
 | `keyset_page`: keyset pagination: the page after a (created_at, id) bar, a row comparison with a two-column order | b-tree | 0.104 ms · 0.997 M · 91 | 0.039 ms · 0.491 M · 56 | 0.4x |
-| `point_agg_fk`: a lookup of the rows of one foreign key with no btree on it: the aggregate of one customer | heap plan | 0.054 ms · 0.391 M · 95 | 10.7 ms · 121 M · 4,107 | 198x |
+| `point_agg_fk`: a lookup of the rows of one foreign key with no btree on it: the aggregate of one customer | heap plan | 0.063 ms · 0.391 M · 95 | 10.7 ms · 121 M · 4,107 | 170x |
 | `point_agg_id`: a lookup by the primary key through the aggregate scan, against the btree of the key | b-tree | 0.035 ms · 0.339 M · 25 | 0.012 ms · 0.173 M · 5 | 0.3x |
-| `keycut_customer_agg`: a lookup of the rows of one customer when the heap is in order of arrival and the index cuts its units by the customer: ... | heap plan | 0.061 ms · 0.718 M · 34 | 10.3 ms · 121 M · 4,107 | 170x |
-| `jsonb_each_member`: one member of a JSON object read through jsonb_each: a LEFT JOIN LATERAL that keeps the rows without it | heap plan | 3 ms · 35.8 M · 673 | 117 ms · 916 M · 13,639 | 39x |
-| `softdel_live_groupby`: a report over the rows that are not soft-deleted: the units with no deleted row are answered from their pre-aggregates, ... | heap plan | 0.052 ms · 0.667 M · 32 | 50.8 ms · 596 M · 4,107 | 976x |
-| `point_in_100`: an IN list of 100 ids through the access method: the point directory looks each key up (up to 64 keys it did; a longer ... | heap plan | 0.081 ms · 1.07 M · 143 | 14.8 ms · 161 M · 4,107 | 183x |
-| `topn_scattered_time`: the n best rows by a time column whose rows are in no order, for an n above the longest head of a run: a superblock ... | heap plan | 0.176 ms · 1.89 M · 27 | 24.6 ms · 163 M · 1,911 | 140x |
-| `key_table_point`: the rows of three keys of a foreign key column (6,313 values): one record of each segment's key table, not the units of ... | heap plan | 0.077 ms · 0.748 M · 28 | 19.3 ms · 273 M · 4,107 | 250x |
+| `keycut_customer_agg`: a lookup of the rows of one customer when the heap is in order of arrival and the index cuts its units by the customer: ... | heap plan | 0.069 ms · 0.719 M · 34 | 10.3 ms · 121 M · 4,107 | 150x |
+| `jsonb_each_member`: one member of a JSON object read through jsonb_each: a LEFT JOIN LATERAL that keeps the rows without it | heap plan | 3.35 ms · 35.9 M · 673 | 117 ms · 916 M · 13,639 | 35x |
+| `softdel_live_groupby`: a report over the rows that are not soft-deleted: the units with no deleted row are answered from their pre-aggregates, ... | heap plan | 0.057 ms · 0.667 M · 32 | 50.8 ms · 596 M · 4,107 | 891x |
+| `point_in_100`: an IN list of 100 ids through the access method: the point directory looks each key up (up to 64 keys it did; a longer ... | heap plan | 0.076 ms · 1.07 M · 143 | 14.8 ms · 161 M · 4,107 | 195x |
+| `topn_scattered_time`: the n best rows by a time column whose rows are in no order, for an n above the longest head of a run: a superblock ... | heap plan | 0.188 ms · 1.89 M · 27 | 24.6 ms · 163 M · 1,911 | 131x |
+| `key_table_point`: the rows of three keys of a foreign key column (6,313 values): one record of each segment's key table, not the units of ... | heap plan | 0.075 ms · 0.748 M · 28 | 19.3 ms · 273 M · 4,107 | 257x |
 
 ### Tables that change: `track_changes`
 
