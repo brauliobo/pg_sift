@@ -216,7 +216,7 @@ def claim_figures(root, records=None, strict=False):
     waived = {k[len(FIGURE):]: why for k, why in allow_list(root).items() if k.startswith(FIGURE)}
     problems, used = [], set()
     for line in figure_lines(root):
-        covered = any(c['phrase'] in line for c in rows)
+        covered = any(c['phrase'] in line for c in rows if c['phrase'] != claims.NO_LINE)   # a row of no CHANGELOG line has the phrase `-`, which every line contains
         waiver = next((k for k in waived if k in line), None)
         if waiver and covered:
             problems.append(f'{ALLOW}: "{FIGURE}{waiver}" waives a line that has a row in bench/claims.tsv: remove the waiver')

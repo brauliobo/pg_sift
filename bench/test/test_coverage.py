@@ -253,6 +253,12 @@ class Figures(Fixture):
         self.t.write('scripts/bench-cases.allow', 'figure a sentence nobody wrote\treason\n')
         self.assertIn('matches no line', self.figures()[0])
 
+    def test_a_row_of_no_changelog_line_covers_no_line(self):
+        self.line()
+        self.t.write('scripts/bench-cases.allow', 'figure a top-N over a text key\tthe row waits for a run\n')
+        self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW.replace('a top-N over a text key', '-'))
+        self.assertEqual(self.figures(), [])
+
     def test_a_row_is_checked_when_the_records_have_its_statement_and_size_and_waits_otherwise(self):
         self.line()
         self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW)
