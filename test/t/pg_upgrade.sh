@@ -65,7 +65,7 @@ if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *= *\([0-9]*\).*/\1/p' "$REPO/Makefil
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan $((21 + (${#OLD_REF} ? 3 : 0)))
+plan $((25 + (${#OLD_REF} ? 3 : 0)))
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
@@ -112,6 +112,8 @@ FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g',
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'
 [[ ! ${OLD_REF#v} =~ ^3\.[01]\. ]] || FACTS_COLS='id, g, n'
+# an index of a release before 4.0 has no track_changes option and no triggers; this tree's builds the default (a primary key, two statement triggers)
+TRKOPT=
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
 CREATE EXTENSION pg_sift;
@@ -137,6 +139,14 @@ DELETE FROM tbl WHERE id % 25 = 0;
 CREATE TABLE tbl_ts (id int, g int, n int) USING sift_table $TSC;
 INSERT INTO tbl_ts SELECT g, g % 9, g % 100 FROM generate_series(1, 5000) g;
 VACUUM tbl_ts;
+CREATE TABLE trk (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
+INSERT INTO trk SELECT g, g % 7, g FROM generate_series(1, 3000) g;
+CREATE INDEX trk_c ON trk USING sift_col (id, g, v) $TRKOPT;
+UPDATE trk SET id = id + 10000 WHERE id % 10 = 0;
+DELETE FROM trk WHERE id % 13 = 0;
+CREATE FUNCTION trkq() RETURNS text LANGUAGE sql RETURN (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT g, count(*) c, sum(v) s FROM trk GROUP BY g) x);
+CREATE FUNCTION trkq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN trkq();
+CREATE FUNCTION trkq_off() RETURNS text LANGUAGE sql SET sift.enable_agg = off RETURN trkq();
 CREATE FUNCTION bm25q() RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS \$\$
 DECLARE q text; r text; o text := ''; s record;
 BEGIN
@@ -177,11 +187,12 @@ SQL
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
 # stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
 q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE postgres IN DATABASE postgres SET sift.enable_agg = on" >/dev/null || bail "stored settings"
-VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true)"
+VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true), sift.col_verify('trk_c', true)"
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
 VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")
 BEFORE=$(fingerprint old)
+TRK_BEFORE=$(q old postgres "SELECT trkq_off()")
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
 FILES_BEFORE=$(q old postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')")
 if [[ -n $TSC ]]; then
@@ -233,6 +244,16 @@ else
 	# the objects of a release name what the update leaves to REINDEX or VACUUM FULL (warnings), and nothing blocks
 	check "the preflight lists nothing that blocks" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" postgres
 fi
+
+# an index that tracks its changes: pg_upgrade restores the table before its indexes, so the triggers are made again, and they must hear what the upgraded cluster writes
+if [[ -z $OLD_REF ]]; then
+	check "the tracked index keeps its two internal statement triggers" test "$(q new postgres "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'trk'::regclass AND tgname LIKE 'sift_track_%' AND tgisinternal")" == 2
+else skip 1 "an index of a release has no triggers"; fi
+check "the tracked index answers as before and as the normal plan" test "$(q new postgres "SELECT trkq_off()")|$(q new postgres "SELECT trkq_on() = trkq_off()")" == "$TRK_BEFORE|t"
+q new postgres "UPDATE trk SET id = id + 20000 WHERE id % 7 = 3" "DELETE FROM trk WHERE id % 11 = 0" "INSERT INTO trk SELECT g, g % 7, g FROM generate_series(5001, 5200) g" >/dev/null
+check "the tracked index agrees with the normal plan after UPDATE, DELETE and INSERT" test "$(q new postgres "SELECT trkq_on() = trkq_off()")" == t
+q new postgres "REINDEX INDEX trk_c" >/dev/null
+check "REINDEX gives the tracked index its baseline: complete, heap-free, the answer unchanged" test "$(q new postgres "SELECT trkq_on() = trkq_off()" "SELECT track_changes AND triggers AND complete AND heap_free FROM sift.col_tracking('trk_c')" | tr '\n' ' ')" == "t t "
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \

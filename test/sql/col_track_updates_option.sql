@@ -41,12 +41,15 @@ CREATE INDEX t_unique ON t USING sift_col (u, g, v) WITH (track_changes = 'u');
 SELECT count(*) AS logs FROM sift.col_segments('t_unique') WHERE kind = 'tombstones';
 DROP INDEX t_unique;
 
--- refused, each with what to do
+-- refused, each with what to do (a column without its unique index is let through with a NOTICE: a dump restores the index before the key)
 CREATE INDEX t_bad ON t USING sift_col (g, v) WITH (track_changes = 'g');
+DROP INDEX t_bad;
 CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'v');
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'v');
 CREATE INDEX t_bad ON t USING sift_col (id, g, p) WITH (track_changes = 'p');
+DROP INDEX t_bad;
 CREATE INDEX t_bad ON t USING sift_col (id, g, d) WITH (track_changes = 'd');
+DROP INDEX t_bad;
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'nope');
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'id, g');
 CREATE INDEX t_bad ON t USING sift_col (g, v) WITH (track_changes = 'id');

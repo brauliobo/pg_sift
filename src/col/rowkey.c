@@ -102,8 +102,14 @@ sift_col_repack_origin(Relation rel)
 	return *end == '\0' && oid != 0 ? (Oid) oid : InvalidOid;
 }
 
+/*
+ * build: the key may come later. A dump restores the index before the primary key when pg_restore runs in parallel and when pg_upgrade does, and the dumps of 4.0.0 name the
+ * column ('auto' is stored as the key's name), so CREATE INDEX and REINDEX accept a column without a unique index, with a NOTICE. That cannot give a wrong row: a read takes
+ * the log only with a valid unique index of the column (sift_col_track_ok), and a statement that finds none ends the completeness (sift_col_tomb_dead_keys). ALTER INDEX is
+ * the user's word and keeps the error.
+ */
 static void
-check_column(Relation heap, Relation index, const char *name)
+check_column(Relation heap, Relation index, const char *name, bool build)
 {
 	AttrNumber	att = get_attnum(RelationGetRelid(heap), name);
 	bool		covered = false;
@@ -120,6 +126,13 @@ check_column(Relation heap, Relation index, const char *name)
 	if (!TupleDescAttr(RelationGetDescr(heap), att - 1)->attnotnull)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_changes: column \"%s\" can be NULL", name),
 						errhint("A row is found by its key: declare the column NOT NULL, or use its primary key.")));
+	if (build && !OidIsValid(unique_on(heap, att, false, NULL)))
+	{
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes column \"%s\" has no unique index of its own yet", RelationGetRelationName(index), name),
+						 errdetail("Reads check the heap until the table has a UNIQUE or PRIMARY KEY constraint on the column alone, and a row written before that is not in the log, so the log stays incomplete after it."),
+						 errhint("REINDEX INDEX %s gives it a baseline once the constraint exists.", RelationGetRelationName(index))));
+		return;
+	}
 	if (!OidIsValid(unique_on(heap, att, false, NULL)))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("track_changes: column \"%s\" has no unique index of its own", name),
 						errdetail("The index replaces the older entries of a key when the row is updated, which is exact only when no two live rows share the key."),
@@ -135,7 +148,7 @@ sift_col_row_key_check(Relation index)
 	if (!sift_col_row_key_on(index))
 		return;
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	check_column(heap, index, sift_col_options_row_key(index));
+	check_column(heap, index, sift_col_options_row_key(index), false);
 	table_close(heap, NoLock);
 }
 
@@ -206,7 +219,7 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 		sift_col_set_option(index, "track_changes", get_attname(RelationGetRelid(heap), pk, false));
 		rk = sift_col_options_row_key(index);
 	}
-	check_column(heap, index, rk);
+	check_column(heap, index, rk, true);
 	tid = sift_col_options_point_tid_columns(index);
 	if (sift_col_list_has(tid, rk))
 		return;
@@ -263,7 +276,12 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	bool		more = true;
 
 	if (!OidIsValid(uoid))
+	{
+		/* no unique index to find the rows by (not made yet, dropped, being built): what this statement removed is not heard, so the log is no longer complete */
+		if ((log = sift_col_log(index)) != NULL && log->chan.flags != 0)
+			sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
 		return;
+	}
 	if ((log = sift_col_log(index)) == NULL)
 	{
 		sift_col_log_create(index);

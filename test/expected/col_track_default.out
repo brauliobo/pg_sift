@@ -126,12 +126,15 @@ SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones
 (1 row)
 
 DROP INDEX t_off;
--- a column named for a table with no unique index on it is an error that says what to do
+-- a column named for a table with no unique index on it yet is let through with a NOTICE (a dump restores the index before the key), reads check the heap until it has one
 CREATE TABLE nk (a int NOT NULL, b int);
 CREATE INDEX nk_d ON nk USING sift_col (a, b) WITH (track_changes = 'a');
-ERROR:  track_changes: column "a" has no unique index of its own
-DETAIL:  The index replaces the older entries of a key when the row is updated, which is exact only when no two live rows share the key.
-HINT:  Create a UNIQUE or PRIMARY KEY constraint on the column alone: not deferrable, not partial, not on an expression, not on several columns.
+NOTICE:  sift_col index "nk_d": track_changes column "a" has no unique index of its own yet
+DETAIL:  Reads check the heap until the table has a UNIQUE or PRIMARY KEY constraint on the column alone, and a row written before that is not in the log, so the log stays incomplete after it.
+HINT:  REINDEX INDEX nk_d gives it a baseline once the constraint exists.
+NOTICE:  sift_col index "nk_d" installed two statement triggers on table "nk" and tracks its changes
+DETAIL:  track_changes: AFTER UPDATE and AFTER DELETE, FOR EACH STATEMENT, with a transition table of the old rows; they tombstone the entries of the old key of an UPDATE that changes the key and of every DELETE, after a pass over the heap for the versions already dead. They are dropped with the index.
+HINT:  WITH (track_changes = 'off') builds the index without them.
 DROP TABLE nk;
 -- a partitioned table: one NOTICE for the partitions of a statement
 CREATE TABLE p (a int, b int) PARTITION BY HASH (a);

@@ -49,7 +49,7 @@ DROP INDEX t_pt_off;
 CREATE INDEX t_off ON t USING sift_col (id, g, v) WITH (track_changes = 'off');
 SELECT count(*) AS logs FROM sift.col_segments('t_off') WHERE kind = 'tombstones';
 DROP INDEX t_off;
--- a column named for a table with no unique index on it is an error that says what to do
+-- a column named for a table with no unique index on it yet is let through with a NOTICE (a dump restores the index before the key), reads check the heap until it has one
 CREATE TABLE nk (a int NOT NULL, b int);
 CREATE INDEX nk_d ON nk USING sift_col (a, b) WITH (track_changes = 'a');
 DROP TABLE nk;
