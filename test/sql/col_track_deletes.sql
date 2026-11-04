@@ -162,6 +162,14 @@ SELECT sift_triggers();
 ALTER INDEX t_cic SET (track_changes = 'off');
 ALTER INDEX t_cic SET (track_changes = 'id');
 SELECT * FROM sift.col_tracking('t_cic');
+-- REINDEX CONCURRENTLY swaps what depends on the old index and the new one: the triggers follow the index that stays, and the writes of the table go on
+REINDEX INDEX CONCURRENTLY t_cic;
+SELECT sift_triggers();
+BEGIN;
+UPDATE t SET id = id + 1000000 WHERE id = (SELECT min(id) FROM t);
+DELETE FROM t WHERE id = (SELECT max(id) FROM t);
+ROLLBACK;
+SELECT track_changes, triggers FROM sift.col_tracking('t_cic');
 DROP INDEX t_cic;
 SELECT sift_triggers();
 

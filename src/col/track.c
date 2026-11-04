@@ -407,7 +407,35 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 		(TransactionIdIsCurrentTransactionId(log->chan.base_xid) || (!XidInMVCCSnapshot(log->chan.base_xid, snap) && sift_xid_state(log->chan.base_xid) == SIFT_XID_COMMITTED));
 }
 
-/* sift.col_track_old_rows(): the statement trigger of the option; its argument is the oid of the index */
+/*
+ * The index a trigger serves: the one it depends on. REINDEX CONCURRENTLY swaps what depends on the old index and on the new one before it drops the old, so the oid in the
+ * arguments (the one the trigger was made for) names an index that is gone afterwards.
+ */
+static Oid
+trigger_index(Trigger *trig)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	Oid			index = InvalidOid;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(TriggerRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(trig->tgoid));
+	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
+	while (!OidIsValid(index) && HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0 && get_rel_relkind(d->refobjid) == RELKIND_INDEX)
+			index = d->refobjid;
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return OidIsValid(index) ? index : atooid(trig->tgargs[0]);
+}
+
+/* sift.col_track_old_rows(): the statement trigger of the option; its argument is the oid of the index it was made for (trigger_index says which one it serves now) */
 Datum
 sift_col_track_old_rows(PG_FUNCTION_ARGS)
 {
@@ -420,7 +448,7 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 						errmsg("sift.col_track_old_rows is the statement trigger of an index option: AFTER, FOR EACH STATEMENT, with an old table")));
 	heap = td->tg_relation;
-	index = index_open(atooid(td->tg_trigger->tgargs[0]), RowExclusiveLock);
+	index = index_open(trigger_index(td->tg_trigger), RowExclusiveLock);
 #ifdef SIFT_TESTING
 	if (sift_test_no_track)
 	{

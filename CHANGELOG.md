@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: `REINDEX INDEX CONCURRENTLY` and `REINDEX TABLE CONCURRENTLY` of a `sift_col` index with `track_changes` (the default since 4.0.0) left the two statement triggers with the oid of the index they were made for, which the swap drops, and every UPDATE and DELETE of the table failed with `could not open relation with OID n` (INSERT and reads went on): a trigger now serves the index it depends on, and the swap moves that dependency to the new index. A table that ran it is repaired by `REINDEX INDEX` of the index, or by `ALTER INDEX x SET (track_changes = 'off')` and then `SET (track_changes = 'auto')`; the log of the new index is not complete after a concurrent build, as for `CREATE INDEX CONCURRENTLY` (`sift.col_tracking`).
+
 ## 4.0.0 - 2026-11-03
 
 - Improved: sift_table: a COPY, CREATE TABLE AS or REFRESH MATERIALIZED VIEW without parallel workers encodes each unit into one open segment as it fills, instead of buffering eight units of rows as heap records and writing a segment for each run, and the segments of a load are the few large ones a merge used to make afterwards: `bulk_copy_wal` of 10,000,000 rows, the COPY and the `sift.table_maintain` that followed, 24,534 to 13,836 ms and 255,160 to 167,908 M instructions (a heap table 8,050 ms and 106,902 M), WAL 47.7 to 14.2 bytes a row, 28 segments to 2 and the table 196 to 137 MB; of 1,000,000 rows 18,772 to 17,068 M instructions, the time unchanged (1,375 and 1,440 ms, the runs overlap), WAL 19.4 to 16.4 bytes a row. A load with workers is not changed.
