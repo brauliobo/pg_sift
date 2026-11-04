@@ -221,8 +221,8 @@ check_package() {
 	[[ -f $root$(pg_config --pkglibdir)/pg_sift.so && ! -e $root$(pg_config --sharedir)/extension/pg_sift_test.control && ! -e $root$(pg_config --sharedir)/extension/pg_sift_helpers.control ]] || { echo "the library is missing, or a test-only extension is installed"; return 1; }
 	( cd "$W/pkg" && SIFT_TMP=$U SIFT_ROOT=$root SIFT_PORT=$port scripts/pgtest.sh start >/dev/null ) || return 1
 	for from in "$ver" 1.0; do
-		q "$sock" $port postgres -c "CREATE DATABASE smoke_${from/./_}"
-		q "$sock" $port "smoke_${from/./_}" -v from="$from" -v to="$ver" -f "$R/packaging/smoke.sql" >/dev/null || { echo "packaging/smoke.sql failed from $from"; return 1; }
+		q "$sock" $port postgres -c "CREATE DATABASE smoke_${from//./_}"
+		q "$sock" $port "smoke_${from//./_}" -v from="$from" -v to="$ver" -f "$R/packaging/smoke.sql" >/dev/null || { echo "packaging/smoke.sql failed from $from"; return 1; }
 	done
 	( cd "$W/pkg" && SIFT_TMP=$U SIFT_PORT=$port scripts/pgtest.sh stop >/dev/null ) && echo "package ok: the installed files create $ver and update from 1.0"
 }
