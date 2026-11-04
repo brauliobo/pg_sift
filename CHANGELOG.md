@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.0.2 - 2026-11-04
+
 - Fixed: pg_sift: `pg_squeeze` of a table with a `sift_col` index lost rows of the index when writers inserted during the squeeze (about one run in three, `sift.col_verify` said `Heap tuple (..) is not in the index`; the index answered with fewer rows until `REINDEX`), with `track_changes` on or off: the squeeze applies the changes it decodes while the decoding session reads the catalogs as of the past, where the copy it buffered rows for does not exist, and the buffer of those rows was taken for the one of a dropped index and cleared. The buffer is flushed under its own OID there.
 - Fixed: pg_sift: `pg_squeeze` of a table with a `sift_col` index with `track_changes` (the default since 4.0.0) failed with `track_changes: column "id" can be NULL`: its copy (`tmp_<oid>`) has no NOT NULL and no key while the index is built. The index is made and the log of the table is not complete after the squeeze (`REINDEX INDEX`), as the changes it applied are heard by no trigger.
 - Fixed: pg_sift: a `sift_col` index with `track_changes` of a table that became a partition (`ATTACH PARTITION`) or an inheritance child (`INHERIT`) keeps a log that is not complete after `DETACH PARTITION` or `NO INHERIT`: the event trigger of ALTER TABLE ends the completeness when the table becomes a child, so the statements of the parent that it did not hear no longer make a read after the detach leave rows out. A table attached before this release still needs `REINDEX INDEX` at the detach.
