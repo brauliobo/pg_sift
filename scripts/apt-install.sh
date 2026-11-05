@@ -47,13 +47,22 @@ apt_bounded() {
 	return "$rc"
 }
 
+# The runner image lists azure.archive.ubuntu.com first, and it served the 14 MB libclang-cpp19 (a dependency of the server development files) at a trickle that no apt timeout
+# cuts, on two jobs of a run of 32 at once. A try that failed or was cut puts archive.ubuntu.com in its place for the next one; a host without the list is left alone.
+apt_mirror_fallback() {
+	local f=${APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
+	[[ -f $f ]] || return 0
+	sudo sed -i 's#//azure\.archive\.ubuntu\.com/#//archive.ubuntu.com/#' "$f"
+	echo "apt-install: the next try reads from $(grep -m1 -o 'http[^[:space:]]*' "$f")"
+}
+
 # apt_get TRIES SECS ARGS...: apt-get under the bound; a failed try lets dpkg finish what the cut one left half configured
 apt_get() {
 	local tries=$1 secs=$2 n
 	shift 2
 	for ((n = 1; n <= tries; n++)); do
 		apt_bounded "$secs" apt-get "${APT_OPTS[@]}" "$@" && return 0
-		(( n == tries )) || apt_bounded $((APT_UNIT * 2)) dpkg --configure -a || true
+		(( n == tries )) || { apt_mirror_fallback; apt_bounded $((APT_UNIT * 2)) dpkg --configure -a || true; }
 	done
 	echo "apt-install: apt-get $* failed after $tries tries"
 	return 1
@@ -71,7 +80,9 @@ apt_archives_done() {
 apt_install() {
 	local rc=0
 	apt_archives_ready
-	apt_get 3 $((APT_UNIT * 2)) install -y --download-only "$@" || true
+	# four tries of a minute, each resuming the partial file of the last, the first from the mirror of the image and the others from the next: 100 MB takes seconds from a mirror that works
+	apt_get 4 "$APT_UNIT" install -y --download-only "$@" || true
+	echo "apt-install: download step ended after $SECONDS s of the script"
 	apt_get 3 $((APT_UNIT * 2)) install -y "$@" || rc=$?
 	apt_archives_done
 	return "$rc"
@@ -94,12 +105,14 @@ esac
 exit "${FAIL:-0}"
 FAKE
 	chmod +x "$d"/bin/*
-	local run="env PATH=$d/bin:$PATH APT_UNIT=3 LOG=$d/log FAIL= bash $self pkg"
+	printf 'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://security.ubuntu.com/ubuntu/\tpriority:3\n' >"$d/mirrors"
+	local run="env PATH=$d/bin:$PATH APT_UNIT=3 LOG=$d/log FAIL= APT_MIRRORS=$d/mirrors bash $self pkg"
 	# a hang in the download: cut, diagnosed (the stuck call is in the process list), retried, then the install
 	out=$($run 2>&1) || { echo "FAIL: apt-install does not recover from a hung download: $(tail -n 5 <<<"$out")"; bad=1; }
-	[[ $out == *'still running after'* && $out == *'timeout -k 10 6 apt-get'* && $out == *'cut after 6 s'* ]] || { echo "FAIL: apt-install does not print the diagnostics of a hung call: $(tail -n 5 <<<"$out")"; bad=1; }
+	[[ $out == *'still running after'* && $out == *'timeout -k 10 3 apt-get'* && $out == *'cut after 3 s'* ]] || { echo "FAIL: apt-install does not print the diagnostics of a hung call: $(tail -n 5 <<<"$out")"; bad=1; }
 	[[ $(grep -c 'download-only' "$d/log") == 2 && $(grep -c ' install -y --no-install-recommends pkg$' "$d/log") == 1 && $(grep -c '^dpkg --configure -a$' "$d/log") == 1 ]] ||
 		{ echo "FAIL: apt-install retry path differs from one cut download, one reconfigure, one install: $(cat "$d/log")"; bad=1; }
+	[[ $out == *'next try reads from http://archive.ubuntu.com/'* && $(grep -c azure "$d/mirrors") == 0 ]] || { echo "FAIL: apt-install does not move to the other mirror after a cut try: $(cat "$d/mirrors")"; bad=1; }
 	# an install that keeps failing is retried three times and fails the step
 	: >"$d/log"
 	out=$(env FAIL=1 PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" bash "$self" pkg 2>&1) && { echo "FAIL: apt-install exits 0 when the install fails: $(tail -n 5 <<<"$out")"; bad=1; }
