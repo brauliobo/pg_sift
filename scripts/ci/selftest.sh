@@ -206,6 +206,11 @@ if [[ $MODE == --selftest ]]; then
 		[[ $all == "$(awk 'NF {print $1}' <<<"$got" | sort)" ]] || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are not the plan, each job once"; bad=1; }
 		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
+	# the budget of a job: the slowest job of a hosted run is the floor of its shard, so a job over the ceiling is sliced or shrunk (CI_JOB_TIMEOUT kills it at 3 times the ceiling of its tier)
+	for tier in quick:420 full:2100; do
+		over=$(awk -F'\t' -v max="${tier#*:}" '!/^#/ && ($2 > max || $3 > max) {print $1 " " $2 "/" $3}' "$REPO/scripts/weights-${tier%:*}.tsv")
+		[[ -z $over ]] || { echo "FAIL: scripts/weights-${tier%:*}.tsv: a job takes more than ${tier#*:} lane seconds (PostgreSQL 17/18): $over"; bad=1; }
+	done
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
 	for k in 3 9; do
 		plan_of full 18 1 $k/9

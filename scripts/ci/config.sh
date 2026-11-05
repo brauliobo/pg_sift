@@ -16,7 +16,7 @@ if [[ $MODE == full ]]; then
 else
 	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-4096}
 fi
-# CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 3000, full 7200; the slowest job of a shard takes 2100 and 4700 on a loaded runner), so that a
+# CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 900, full 3600; the slowest job takes 283 and 2016 s in hosted runs 42084189989 and 42064806680), so that a
 # stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
 JOB_TIMEOUT=()
-for tm in timeout gtimeout; do command -v $tm >/dev/null && { JOB_TIMEOUT=($tm -k 20 "${CI_JOB_TIMEOUT:-$([[ $MODE == full ]] && echo 7200 || echo 3000)}"); break; }; done
+for tm in timeout gtimeout; do command -v $tm >/dev/null && { JOB_TIMEOUT=($tm -k 20 "${CI_JOB_TIMEOUT:-$([[ $MODE == full ]] && echo 3600 || echo 900)}"); break; }; done
