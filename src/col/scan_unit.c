@@ -57,7 +57,12 @@ unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c)
 		return false;
 	if (c->enc == SIFT_COLENC_ISTR)
 	{
-		ColInline  *in = &cu->istr[col];
+		ColInline  *in;
+
+		/* only a unit with an inline string chunk needs the table: it is not zeroed for every unit of every scan */
+		if (cu->istr == NULL)
+			cu->istr = MemoryContextAllocZero(cu->src->arena, cu->src->schema->ncols * sizeof(ColInline));
+		in = &cu->istr[col];
 
 		if (in->dict != NULL && in->have != NULL)
 		{
@@ -115,7 +120,7 @@ unit_dict(ColUnit *cu, int col)
 	if (!unit_inline(cu, col))
 		return sift_cseg_dict(cu->seg, col);
 	unit_chunk(cu, col, &c);
-	return cu->istr[col].dict;
+	return cu->istr != NULL ? cu->istr[col].dict : NULL;
 }
 
 /*

@@ -636,7 +636,6 @@ load_stored(ColUnit *cu, ColCursor *c, uint32 u)
 	}
 	src->units_loaded++;
 	cu->loaded = MemoryContextAllocZero(src->arena, seg->schema->ncols);
-	cu->istr = MemoryContextAllocZero(src->arena, seg->schema->ncols * sizeof(ColInline));
 }
 
 static void
