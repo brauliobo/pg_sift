@@ -172,6 +172,11 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 void
 sift_cseg_close(SiftColSegment *seg)
 {
+	SegPriv    *pv = PRIV(seg);
+
+	if (BufferIsValid(pv->live_pin))
+		ReleaseBuffer(pv->live_pin);
+	pv->live_pin = InvalidBuffer;
 	sift_sr_release(&seg->sr);
 }
 
@@ -590,15 +595,12 @@ bool
 unit_dirty(SiftColSegment *seg, uint32 u)
 {
 	uint32		i;
-	Buffer		buf = InvalidBuffer;
 	uint8		b;
 
 	if (u >= seg->nsb || seg->sbdir[u].id < seg->hdr->sb_lo)
 		corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, u < seg->nsb ? seg->sbdir[u].id : 0, seg->hdr->sb_lo);
 	i = seg->sbdir[u].id - seg->hdr->sb_lo;
-	b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
-
-	UnlockReleaseBuffer(buf);
+	b = sift_live_byte_kept(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &PRIV(seg)->live_pin);
 	return (b >> (i % 8)) & 1;
 }
 

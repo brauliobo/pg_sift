@@ -165,7 +165,7 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return removed;
@@ -212,7 +212,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	pfree(dead);
 	pfree(keys);
 	pfree(live);
@@ -800,7 +800,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	verify_hll_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	pfree(keys);
 	return live;
 }

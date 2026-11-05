@@ -38,6 +38,9 @@ extern void sift_live_check(const SiftLive *l);
 /* Byte b of the run (logical offset over the page payloads); *buf is the share-locked page kept between calls (release it with UnlockReleaseBuffer when valid) */
 extern uint8 sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf);
 
+/* The same byte, read under a share lock taken for the read: *pin is the page kept pinned (not locked) between calls, which the caller releases with ReleaseBuffer when valid */
+extern uint8 sift_live_byte_kept(const SiftLive *l, uint64 b, Buffer *pin);
+
 /* len bytes of the run from logical byte b, a page at a time */
 extern void sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out);
 
