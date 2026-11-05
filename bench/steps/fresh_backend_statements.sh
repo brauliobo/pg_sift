@@ -42,7 +42,7 @@ stmt() {  # I: the events of KEYS consecutive parents from parent I
 }
 settings() { case $1 in native) echo "set sift.enable_agg = off;" ;; *) echo "set sift.enable_agg = on;" ;; esac; }
 
-# the backend of a script waits at "ready N" until the harness has attached perf to it and says "go N"
+# the backend of a script waits at "ready N" until the harness has attached perf to it and says "go N"; after the statement it waits for "fin N" so that the exit of the process is outside the count
 script() {  # ARM FIRST LAST: the statements FIRST..LAST of one session
   local arm=$1 first=$2 last=$3 i
   echo '\set ON_ERROR_STOP 1'
@@ -58,6 +58,7 @@ script() {  # ARM FIRST LAST: the statements FIRST..LAST of one session
     echo "explain (analyze, buffers, costs off, format json) $(stmt "$i");"
     echo '\o'
     echo "\\! touch $W/done.$i"
+    echo "\\! while [ ! -f $W/fin.$i ]; do sleep 0.01; done"
   done
 }
 
@@ -75,6 +76,7 @@ measure() {  # ARM I PID: perf attached to PID around statement I; one record
   touch "$W/go.$i"
   waitfor "$W/done.$i"
   if [ -n "${pp:-}" ]; then kill -INT "$pp" 2>/dev/null || true; wait "$pp" 2>/dev/null || true; fi
+  touch "$W/fin.$i"   # the backend stays until perf is done, so the exit of the process is not counted
   python3 -I - "$arm" "$i" "$W/plan.$i" "$W/perf.$i" <<'PY'
 import json, os, sys
 arm, i, plan, perf = sys.argv[1:]
