@@ -84,6 +84,9 @@ typedef struct ColCursor
 	uint64	   *ppend;
 } ColCursor;
 
+/* a cursor moved, or its kept units changed, other than by the unit sift_col_next read from it: the heap of heads is made again */
+#define COL_HEAD_RESET(src)	((src)->hvalid = false)
+
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
 #define MEM_BATCH_ID	0x40000000
 
@@ -252,6 +255,10 @@ struct SiftColSource
 	uint64	   *ahead_kept;		/* the superblocks of the units the whole scan reads (sift_col_kept_map), for the read-ahead of its cursors; NULL: none */
 	int			nseg;
 	ColCursor  *seg;
+	uint64	   *chead;			/* [nseg] the cursors that have a kept unit left, as a min-heap of (superblock of the next, cursor) (scan.c, cursor_heap_pop); NULL before the first unit */
+	int			nchead;
+	bool		hvalid;			/* chead holds the heads of every cursor */
+	bool		hstale;			/* the cursor on top gave the last unit: its next head is not looked up yet */
 	ColMem	   *mem;
 	int			nmem;
 	int			capmem;

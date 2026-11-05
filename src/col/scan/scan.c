@@ -672,24 +672,74 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->clean = cu->clean_ready = true;
 }
 
+/*
+ * The cursors with a unit left, in the order of the superblock of their next one (and the cursor on a tie): the units of the segments of a key-cut table are numbered from 0, so
+ * the segments take turns, and a pass over every cursor for each unit costs more than the unit's own bookkeeping.
+ */
+static void
+heap_down(uint64 *h, int n, int i)
+{
+	uint64		x = h[i];
+
+	for (int c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && h[c + 1] < h[c])
+			c++;
+		if (h[c] >= x)
+			break;
+		h[i] = h[c];
+	}
+	h[i] = x;
+}
+
+/* The heap with the next head of the cursor that gave the last unit, or made again after a cursor moved otherwise */
+static void
+cursor_heap_top(SiftColSource *src)
+{
+	uint32		sb;
+
+	if (src->chead == NULL)
+		src->chead = MemoryContextAlloc(GetMemoryChunkContext(src->seg), Max(src->nseg, 1) * sizeof(uint64));
+	if (!src->hvalid)
+	{
+		src->nchead = 0;
+		for (int i = 0; i < src->nseg; i++)
+			if (cursor_head(src, &src->seg[i], &sb))
+				src->chead[src->nchead++] = (uint64) sb << 32 | (uint32) i;
+		for (int i = src->nchead / 2 - 1; i >= 0; i--)
+			heap_down(src->chead, src->nchead, i);
+		src->hvalid = true;
+	}
+	else if (src->hstale)
+	{
+		int			i = (uint32) src->chead[0];
+
+		if (cursor_head(src, &src->seg[i], &sb))
+			src->chead[0] = (uint64) sb << 32 | (uint32) i;
+		else
+			src->chead[0] = src->chead[--src->nchead];
+		heap_down(src->chead, src->nchead, 0);
+	}
+	src->hstale = false;
+}
+
 bool
 sift_col_next(SiftColSource *src, SiftColUnit *unit)
 {
 	ColUnit    *cu = &src->cu;
 	ColCursor  *best = NULL;
-	uint32		sb,
-				bsb = PG_UINT32_MAX;
+	uint32		bsb = PG_UINT32_MAX;
 	bool		mem = false;
 	MemoryContext old;
 
 	MemoryContextReset(src->arena);
 	old = MemoryContextSwitchTo(src->arena);
-	for (int i = 0; i < src->nseg; i++)
-		if (cursor_head(src, &src->seg[i], &sb) && sb < bsb)
-		{
-			best = &src->seg[i];
-			bsb = sb;
-		}
+	cursor_heap_top(src);
+	if (src->nchead > 0)
+	{
+		best = &src->seg[(uint32) src->chead[0]];
+		bsb = src->chead[0] >> 32;
+	}
 	if (src->ocur < src->norder && src->order[src->ocur]->b->sb < bsb)
 	{
 		mem = true;
@@ -743,7 +793,10 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		best->cur++;
 	}
 	if (!mem)
+	{
 		best->full = false;
+		src->hstale = true;
+	}
 	SIFT_COL_JITTER();
 	if (cu->nsu == 0)
 	{
@@ -893,6 +946,7 @@ sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
 		if (src->seg[i].seg == cu->seg)
 		{
 			src->seg[i].cur = cu->u;
+			COL_HEAD_RESET(src);
 			src->seg[i].full = false;
 			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
 		}

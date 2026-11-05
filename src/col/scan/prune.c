@@ -483,6 +483,7 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	PruneRange	zr = pr;
 
 	c->nosuper_to = 0;
+	COL_HEAD_RESET(src);
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
