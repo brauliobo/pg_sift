@@ -1,0 +1,124 @@
+-- An inner or semi lookup join on a text field of the elements of an array (jsonb_to_recordset(tags->'items') joined to a table by o.sub) of Custom Scan (SiftAgg)
+-- keeps, in each unit, the rows with an element that holds a key of the table, on the encoded form (sift.agg_join_filter; "text key filters" of EXPLAIN ANALYZE).
+-- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- rows with no array, an empty array, an array holding an empty object, an element with a missing field and one with a NULL field; elements with short strings (the dictionary), the empty string,
+-- strings that share their first eight bytes, multibyte text, and long strings (over 255 bytes)
+CREATE TABLE ev (id int PRIMARY KEY, grp int, tags jsonb, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, i % 7,
+       CASE WHEN i % 19 = 0 THEN NULL
+            WHEN i % 23 = 0 THEN '{}'::jsonb
+            WHEN i % 29 = 0 THEN '{"items": []}'::jsonb
+            WHEN i % 31 = 0 THEN '{"items": [{}]}'::jsonb
+            ELSE jsonb_build_object('items', (
+                   SELECT jsonb_agg(CASE WHEN (i + e) % 53 = 0 THEN '{"w": 1}'::jsonb
+                                         WHEN (i + e) % 47 = 0 THEN jsonb_build_object('sub', NULL, 'w', e)
+                                         WHEN (i + e) % 43 = 0 THEN jsonb_build_object('sub', '', 'w', e)
+                                         WHEN (i + e) % 11 = 0 THEN jsonb_build_object('sub', 'same-prefix-' || (i + e) % 40, 'w', e)
+                                         WHEN (i + e) % 13 = 0 THEN jsonb_build_object('sub', 'é' || 'ü' || 'ß' || '日本語' || (i + e) % 30, 'w', e)
+                                         WHEN (i + e) % 17 = 0 THEN jsonb_build_object('sub', 'long-' || (i + e) % 60 || repeat('z', 300), 'w', e)
+                                         ELSE jsonb_build_object('sub', 'item' || (i + e) % 3000, 'w', e) END)
+                   FROM generate_series(1, 1 + i % 4) e)) END,
+       i % 1000
+FROM generate_series(1, 30000) i;
+CREATE INDEX ev_col ON ev USING sift_col (grp, tags, amount) WITH (paths = 'tags.items[]{sub astext, w float8}');
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- keys: present, duplicated, NULL, empty, sharing the prefix of present strings, one cut short, a case variant, multibyte, long, absent
+CREATE TABLE ks (k text, w int);
+INSERT INTO ks VALUES ('item7', 1), ('item7', 2), ('item2999', 3), ('item3000', 4), (NULL, 5), ('', 6), ('same-prefix-3', 7), ('same-prefix-39', 8), ('same-prefix-', 9),
+       ('item', 10), ('ITEM7', 11), ('item12', 12), ('éüß日本語7', 13), ('éüß日本', 14), ('long-5' || repeat('z', 300), 15), ('long-5' || repeat('z', 299), 16), ('long-', 17);
+CREATE TABLE k10 (k text);
+INSERT INTO k10 SELECT 'item' || i * 97 FROM generate_series(1, 10) i;
+CREATE TABLE k200 (k text);
+INSERT INTO k200 SELECT 'item' || i * 13 FROM generate_series(1, 200) i;
+-- more keys than a table of this size takes (a sixteenth of its rows), every value of the field (the test drops itself), and no key
+CREATE TABLE kmany (k text);
+INSERT INTO kmany SELECT 'item' || i FROM generate_series(0, 2999) i;
+CREATE TABLE kall (k text);
+INSERT INTO kall SELECT DISTINCT o.sub FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IS NOT NULL;
+CREATE TABLE knone (k text);
+ANALYZE ks; ANALYZE k10; ANALYZE k200; ANALYZE kmany; ANALYZE kall; ANALYZE knone;
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l ~ '(\d+) text key filters' THEN r := r || ' text key filters ' || substring(l from '(\d+) text key filters'); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_filter bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_join_filter = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_join_filter;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_no_filter := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- an inner join that returns a column of the table (the duplicated key repeats its elements), a join by a sub-select, EXISTS
+SELECT * FROM same($$SELECT k.w, count(*) AS n, sum(ev.amount) AS s FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text, w int) JOIN ks k ON k.k = o.sub GROUP BY 1$$);
+SELECT * FROM same($$SELECT ev.grp, count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT o.sub, count(*) AS n, sum(o.w) AS w FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text, w int) JOIN k10 k ON k.k = o.sub GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN k200 k ON k.k = o.sub$$);
+SELECT * FROM same($$SELECT count(DISTINCT ev.id) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN k200 k ON k.k = o.sub$$);
+-- the key that is one string, strings that share the prefix, the empty string and the NULL key, one cut short, a case variant, multibyte and long
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w = 3)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w IN (7, 8, 9))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w IN (5, 6))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w IN (10, 11, 17))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w IN (13, 14))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w IN (15, 16))$$);
+-- a join and the rows' own conditions; two joins
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN ks k ON k.k = o.sub WHERE ev.amount > 100 AND ev.grp < 4$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN k200 a ON a.k = o.sub JOIN ks b ON b.k = o.sub$$);
+-- more keys than the filter takes, every value (the test drops itself after its first units), no key, keys that match nothing
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN kmany k ON k.k = o.sub$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN kall k ON k.k = o.sub$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN knone k ON k.k = o.sub$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks WHERE w = 11)$$);
+-- a LEFT join and an anti join keep the elements without a match: no filter
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) LEFT JOIN ks k ON k.k = o.sub GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE NOT EXISTS (SELECT 1 FROM ks k WHERE k.k = o.sub)$$);
+-- the rows with no element are the NULL rows of a LEFT lateral
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM ev LEFT JOIN LATERAL jsonb_to_recordset(ev.tags->'items') AS o(sub text) ON true LEFT JOIN ks k ON k.k = o.sub GROUP BY 1$$);
+
+-- a nondeterministic collation compares by more than bytes: the keys are not a filter
+CREATE COLLATION ci_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN ks k ON k.k COLLATE ci_nd = o.sub COLLATE ci_nd$$);
+
+-- parallel workers narrow their own units
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SELECT * FROM same($$SELECT ev.grp, count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks) GROUP BY 1$$);
+RESET max_parallel_workers_per_gather;
+
+-- rows written after the index was built (the write buffer), rows changed or deleted since, and after VACUUM
+INSERT INTO ev SELECT 100000 + i, i % 7, '{"items": [{"sub": "item7"}, {"sub": "same-prefix-3"}, {"w": 2}]}', i FROM generate_series(1, 300) i;
+UPDATE ev SET tags = '{"items": [{"sub": "item2999"}]}' WHERE id % 1500 = 0;
+UPDATE ev SET tags = NULL WHERE id % 1700 = 0;
+DELETE FROM ev WHERE id % 1000 = 1;
+SELECT * FROM same($$SELECT ev.grp, count(*) AS n, sum(ev.amount) AS s FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) JOIN ks k ON k.k = o.sub GROUP BY 1$$);
+VACUUM ev;
+SELECT * FROM same($$SELECT ev.grp, count(*) AS n, sum(ev.amount) AS s FROM ev, jsonb_to_recordset(ev.tags->'items') AS o(sub text) WHERE o.sub IN (SELECT k FROM ks) GROUP BY 1$$);
+
+DROP FUNCTION same(text), plan_of(text);
+DROP TABLE ev, ks, k10, k200, kmany, kall, knone;
+DROP COLLATION ci_nd;
+DROP EXTENSION pg_sift;

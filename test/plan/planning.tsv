@@ -9,7 +9,16 @@ count_by_kind	299
 count_live	267
 count_of_groups	411
 deleted_rows	354
-dirty_pages_set	640
+dimexpr_dim_c	1043	1.15
+dimexpr_few_sets	1878	1.15
+dimexpr_two	1828	1.4
+dimfull_dim_b	526	1.25
+dimrate_one	988	2.1
+dimrate_two	1833
+dimright_dim_c	1144	1.15
+dimright_filtered	1149
+dimsum_two	1531
+dirty_pages_set	594
 distinct_by_kind	622
 distinct_by_month	543	1.5
 distinct_global	327
@@ -18,7 +27,7 @@ distinct_one_parent	470
 elements_counted	791
 exists_by_parent_month	1034
 exists_element	630
-exists_in_table	935
+exists_in_table	1298	1.6
 expression_key	725
 filter_clauses	761
 flat_list	1029
@@ -33,9 +42,9 @@ join_active_filter	1021
 join_filter_on_lookup_column	1004
 join_month	1201
 join_other_fact_filter	1571
-join_spans_values	1838	1.8
+join_spans_values	1661	1.8
 join_tier	1003
-join_two_lookups	1695
+join_two_lookups	2126	1.5
 jsonpath_element	1840
 lag_of_months	710	1.5
 lateral_dim_limit_one	987
@@ -44,21 +53,34 @@ lateral_latest_fact	1344	1.5
 lateral_recordset	1343
 lateral_series	875
 left_join_active	923
+# linkanti_*: the plain form of the NOT EXISTS is planned as the native planner plans it (eqjoinsel over the MCV lists of both columns: 31 M instructions at statistics target 1000, 1.75 M at the default 100); the probe rewrite, when it is cheaper by price, skips that join (docs/AGG.md)
+linkanti_2000_parents	126676
+linkanti_200_parents	40976
+linkanti_all_parents	31217
+linkjoin_2000_parents	106441
+linkjoin_200_parents	21113
+linkjoin_all_parents	11409
+linkleft_2000_parents	117268
+linkleft_200_parents	30809
+linkleft_all_parents	21150
+linksemi_2000_parents	127953
+linksemi_200_parents	41107
+linksemi_all_parents	31374
 mean_of_counts	603
 mean_of_means	581
 min_max	820	2.1
 not_exists_element	572
-not_exists_in_table	768
+not_exists_in_table	1122	1.7
 one_day	512	1.3
 one_key	630
 one_parent_narrow	710	1.3
 parent_key	668
 partition_pruned	435
-partitions_count	415
-partitions_group	636
-partitions_join	1205
-partitions_top	684
-point_day_count	397
+partitions_count	370
+partitions_group	607
+partitions_join	1158
+partitions_top	654
+point_day_count	382
 point_days_ten	744
 point_days_three	466
 range_only_by_month	679
@@ -67,18 +89,18 @@ running_total	666
 scope_expression_filter	1002
 scope_path_filter_in	1046
 scope_path_filter_join	1055
-search_count	234
+search_count	221
 search_group	473
 search_join	796
 search_latest_rows	420
-search_one_parent	501	1.15
+search_one_parent	460	1.15
 search_or_by_month	555
 select_distinct	576
 share_of_total	512
 skew_heaviest_parents	1031
 skew_rarest_parents	1037
 spine_derived_cells	888
-spine_dims_cross	1179
+spine_dims_cross	1557	1.4
 spine_expression_key	714
 spine_range_join	863
 spine_series	1295
@@ -103,4 +125,4 @@ two_distincts	480
 two_keys_month	783
 two_keys_parent_kind	725
 two_level_join_outer	705
-skew_join_rows_read	1790	1.5
+skew_join_rows_read	1734	1.5

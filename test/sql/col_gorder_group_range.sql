@@ -22,13 +22,16 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gr;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gs;
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('gr_i', 'gs_i') ORDER BY 1;
 
--- the answer is the heap's; 'counted' says no unit was read (a count from the entries), 'narrowed' that units were read for the rows of the entries only
+-- a scalar sub-select that gives one row (created = (SELECT min(created) ...)) is a constant of the scan, so its group is narrowed like a literal one
+-- the answer is the heap's; 'counted' says no unit was read by the scan of the statement (a count from the entries), 'narrowed' that units were read for the rows of the entries only
 CREATE FUNCTION gr_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; counted bool := false; narrowed bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		-- the scan of the statement only: the sub-select's own scan (an InitPlan, printed after it) is not what is asked: after the rows are read (an INSERT .. SELECT of them) PostgreSQL 19 has set the visibility bits of their pages while pruning, and its units answer min() from pre-aggregates, where 17 and 18 do that only after a VACUUM
+		EXIT WHEN pl ~ 'InitPlan';
 		counted := counted OR coalesce(substring(pl from 'Rows: ([0-9]+) scanned')::int < 5000, false);
 		narrowed := narrowed OR pl ~ 'from point directory';
 	END LOOP;

@@ -31,7 +31,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	Snapshot	snap = RegisterSnapshot(RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)));
 	WorkerDone	done = {DONE_MAGIC};
 	ParamListInfo wparams;
-	char	   *subtxt;
+	char	   *subtxt,
+			   *inittxt;
 
 	if (shm_toc_lookup(toc, KEY_DICTSHM, true) != NULL)
 		sift_dictshm_join();
@@ -52,6 +53,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	PushActiveSnapshot(snap);
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
 	wparams = RestoreParamList(&params);
+	if ((inittxt = shm_toc_lookup(toc, KEY_INITVALS, true)) != NULL)
+		ex->initvals = (List *) stringToNode(inittxt);
 	/* the statements below may hold the nodes of this extension in their other sub-plans (SiftAgg scans, SiftAggRows) */
 	RegisterCustomScanMethods(&sift_agg_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_rows_plan_methods);

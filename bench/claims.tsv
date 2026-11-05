@@ -319,3 +319,39 @@ a key change of 1% 92.3 M	update_key_1pct@heapfree_default#pk/def3	100000	sift	d
 -	key_table_point	300000	heap	default	exec_ms	19.3	26	README headline table, the other plan (the heap plan), run 3c5e625dfb80-20261103T202442Z-8ca1, records in program-scale/bench-resume-20261102/host-window/H26/rec-H26.tsv
 -	key_table_point	300000	heap	default	instr_m	273	10	README headline table, the other plan (the heap plan), run 3c5e625dfb80-20261103T202442Z-8ca1, records in program-scale/bench-resume-20261102/host-window/H26/rec-H26.tsv
 -	key_table_point	300000	heap	default	blocks	4107	10	README headline table, the other plan (the heap plan), run 3c5e625dfb80-20261103T202442Z-8ca1, records in program-scale/bench-resume-20261102/host-window/H26/rec-H26.tsv
+606 M instructions	lateral_probe_direct	200000	sift	default	instr_m	606	5	default arm, run 6020cf6157fb-20261105T000229Z-40e8
+1,657 M instructions	lateral_probe_direct	200000	sift	executor	instr_m	1657	5	executor arm (sift.agg_probe_direct = off), run 6020cf6157fb-20261105T000229Z-40e8
+45.2 M instructions	lateral_probe_index_only	300000	sift	default	instr_m	45.2	5	default arm, run 4b5f2936992d-20261105T010647Z-2a17
+57.3 M instructions	lateral_probe_index_only	300000	sift	executor	instr_m	57.3	5	executor arm (sift.agg_probe_direct = off), run 4b5f2936992d-20261105T010647Z-2a17
+107.5 M instructions	float_step_buckets	1000000	sift	default	instr_m	107.5	5	default arm, run b22e09174d01-20261105T024548Z-9d05
+624 M instructions	float_step_buckets	1000000	sift	executor	instr_m	624	5	executor arm (sift.agg_float_step = off), run b22e09174d01-20261105T024548Z-9d05
+-	lookup_probe_join	300000	picked	default	exec_ms	2.42	16	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	lookup_probe_join	300000	picked	default	instr_m	26.4	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	lookup_probe_join	300000	picked	default	blocks	232	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	lookup_probe_join	300000	heap	default	exec_ms	129	16	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	lookup_probe_join	300000	heap	default	instr_m	1470	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	lookup_probe_join	300000	heap	default	blocks	12000	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	picked	default	exec_ms	0.546	16	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	picked	default	instr_m	5.21	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	picked	default	blocks	149	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	heap	default	exec_ms	23.2	16	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	heap	default	instr_m	140	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	float_sum_ungrouped	300000	heap	default	blocks	1910	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	picked	default	exec_ms	106	16	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	picked	default	instr_m	831	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	picked	default	blocks	303	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	heap	default	exec_ms	180	16	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	heap	default	instr_m	1970	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_spill_two_keys	300000	heap	default	blocks	4100	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	picked	default	exec_ms	40.1	16	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	picked	default	instr_m	392	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	picked	default	blocks	5060	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	heap	default	exec_ms	162	16	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	heap	default	instr_m	1640	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_direct_arrays_passes	300000	heap	default	blocks	4100	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	picked	default	exec_ms	14.3	16	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	picked	default	instr_m	107	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	picked	default	blocks	1190	10	README 4.1 table, pg_sift (the planner's row), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	heap	default	exec_ms	94.5	16	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	heap	default	instr_m	849	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv
+-	group_passes_upfront	300000	heap	default	blocks	4100	10	README 4.1 table, the other plan (the heap plan), run a8be5fa5be36-20261105T122909Z-aec6, records in program-scale/b410/rec-410-cases.tsv

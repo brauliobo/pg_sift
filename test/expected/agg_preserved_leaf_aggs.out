@@ -1,0 +1,78 @@
+-- The aggregates of a column of the scanned table under a RIGHT or FULL join to a lookup run on the column's own kernels: the rows of the lookup that nothing matched join a unit whose leaves are NULL,
+-- which a count does not count and a sum, min or max does not see, and a group made of them has count 0 and NULL for the rest, as in the normal plan. The rows must be those of the normal plan, with no worker and
+-- with three, for columns that hold NULL, keys that are NULL, keys with no row in the lookup and lookup rows with no key in the table.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dims (id int PRIMARY KEY, grp int, label text);
+INSERT INTO dims SELECT g, 1 + g % 6, 'label_' || g FROM generate_series(1, 400) g;
+-- facts: dim_id 1 to 300 and 401 to 420 (no such row in dims) and NULL; dims 301 to 400 have no fact
+CREATE TABLE facts (id bigint PRIMARY KEY, dim_id int, k int NOT NULL, v numeric(10,2), f float8, w bigint, t text) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT g, CASE WHEN g % 17 = 0 THEN NULL WHEN g % 13 = 0 THEN 401 + g % 20 ELSE 1 + (g * 7919) % 300 END, g % 9, CASE WHEN g % 7 = 0 THEN NULL ELSE (g % 500) / 4.0 END,
+       CASE WHEN g % 5 = 0 THEN NULL ELSE (g % 97) / 3.0 END, CASE WHEN g % 11 = 0 THEN NULL ELSE g::bigint * 1000003 END, CASE WHEN g % 3 = 0 THEN NULL ELSE 'text_' || (g % 40) END FROM generate_series(1, 20000) g;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, k, v, f, w, t);
+VACUUM (FREEZE, ANALYZE) facts, dims;
+CREATE TABLE pres_q (n int, label text, q text);
+INSERT INTO pres_q SELECT row_number() OVER (), 'right: ' || a, format('SELECT d.grp, %s AS x FROM facts f RIGHT JOIN dims d ON d.id = f.dim_id GROUP BY 1 ORDER BY 1', a)
+  FROM unnest(ARRAY['count(f.id)', 'count(f.k)', 'count(f.v)', 'count(*)', 'sum(f.v)', 'sum(f.w)', 'avg(f.k)', 'min(f.t)', 'max(f.t)', 'sum(f.f)', 'count(DISTINCT f.k)', 'min(f.id)', 'max(f.w)']) a;
+INSERT INTO pres_q SELECT 100 + row_number() OVER (), 'full: ' || a, format('SELECT d.grp, %s AS x FROM facts f FULL JOIN dims d ON d.id = f.dim_id GROUP BY 1 ORDER BY 1 NULLS LAST', a)
+  FROM unnest(ARRAY['count(f.id)', 'count(f.v)', 'count(*)', 'sum(f.v)', 'sum(f.w)', 'max(f.t)']) a;
+INSERT INTO pres_q VALUES
+	(200, 'several at once, grouped by the lookup row', 'SELECT d.id, count(f.id) AS a, count(f.v) AS b, sum(f.v) AS c, max(f.w) AS e FROM facts f RIGHT JOIN dims d ON d.id = f.dim_id WHERE d.id % 50 = 0 GROUP BY 1 ORDER BY 1'),
+	(201, 'a condition on the lookup',  'SELECT d.grp, count(f.id) AS a, sum(f.v) AS c FROM facts f RIGHT JOIN dims d ON d.id = f.dim_id AND f.k > 3 GROUP BY 1 ORDER BY 1'),
+	(202, 'an aggregate filter',        'SELECT d.grp, count(f.id) FILTER (WHERE f.k > 4) AS a, sum(f.v) FILTER (WHERE f.v > 20) AS c FROM facts f RIGHT JOIN dims d ON d.id = f.dim_id GROUP BY 1 ORDER BY 1'),
+	(203, 'grouped by a column of the table', 'SELECT f.k, d.grp, count(f.id) AS a FROM facts f FULL JOIN dims d ON d.id = f.dim_id GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2 NULLS LAST');
+CREATE FUNCTION pres_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scans int := 0;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+	END LOOP;
+	PERFORM set_config('sift.agg_force', 'off', true);
+	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans ELSE 'normal' END;
+END $$;
+CREATE FUNCTION pres_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.agg_force', 'off', true);
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+SELECT n, label, pres_plan(q) AS plan, pres_rows(q, false, 0) <> '' AS has_rows, pres_rows(q, true, 0) = pres_rows(q, false, 0) AS same, pres_rows(q, true, 3) = pres_rows(q, false, 0) AS same_workers FROM pres_q ORDER BY n;
+  n  |                   label                    |  plan   | has_rows | same | same_workers 
+-----+--------------------------------------------+---------+----------+------+--------------
+   1 | right: count(f.id)                         | scan x1 | t        | t    | t
+   2 | right: count(f.k)                          | scan x1 | t        | t    | t
+   3 | right: count(f.v)                          | scan x1 | t        | t    | t
+   4 | right: count(*)                            | scan x1 | t        | t    | t
+   5 | right: sum(f.v)                            | scan x1 | t        | t    | t
+   6 | right: sum(f.w)                            | scan x1 | t        | t    | t
+   7 | right: avg(f.k)                            | scan x1 | t        | t    | t
+   8 | right: min(f.t)                            | scan x1 | t        | t    | t
+   9 | right: max(f.t)                            | scan x1 | t        | t    | t
+  10 | right: sum(f.f)                            | scan x1 | t        | t    | t
+  11 | right: count(DISTINCT f.k)                 | scan x1 | t        | t    | t
+  12 | right: min(f.id)                           | scan x1 | t        | t    | t
+  13 | right: max(f.w)                            | scan x1 | t        | t    | t
+ 101 | full: count(f.id)                          | scan x1 | t        | t    | t
+ 102 | full: count(f.v)                           | scan x1 | t        | t    | t
+ 103 | full: count(*)                             | scan x1 | t        | t    | t
+ 104 | full: sum(f.v)                             | scan x1 | t        | t    | t
+ 105 | full: sum(f.w)                             | scan x1 | t        | t    | t
+ 106 | full: max(f.t)                             | scan x1 | t        | t    | t
+ 200 | several at once, grouped by the lookup row | scan x1 | t        | t    | t
+ 201 | a condition on the lookup                  | scan x1 | t        | t    | t
+ 202 | an aggregate filter                        | scan x1 | t        | t    | t
+ 203 | grouped by a column of the table           | scan x1 | t        | t    | t
+(23 rows)
+
+DROP FUNCTION pres_plan(text);
+DROP FUNCTION pres_rows(text, bool, int);
+DROP TABLE pres_q, facts, dims;
+DROP EXTENSION pg_sift;

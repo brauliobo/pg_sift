@@ -112,12 +112,12 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index), r->ncut > 0 ? r->cut[0] : -1);
-			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx);
+			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx, 0);
 		}
 		else if (maint_unit_floor_applies(unit, nbrows, nb))
 		{
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index), -1);
-			sift_colk_write(w, batches, nb, schema, NULL, 0, unit, cx);
+			sift_colk_write(w, batches, nb, schema, NULL, 0, unit, cx, 0);
 		}
 		else
 			for (int i = 0; i < nb; i++)

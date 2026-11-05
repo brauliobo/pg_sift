@@ -89,3 +89,19 @@ CREATE INDEX events_dirty_col ON events_dirty USING sift_col (set_id, kind, ts, 
 VACUUM (FREEZE, ANALYZE) events_dirty;
 UPDATE events_dirty SET amount = amount WHERE (ctid::text::point)[1]::int = 1;
 ANALYZE events_dirty;
+
+-- numeric amounts (a distinct value for about three rows) and rates (forty values, as a price list) with two lookups of their own, for the aggregates over an expression of a column of the table and a column of a lookup:
+-- PostgreSQL evaluates it once per row (a numeric product), the scan once per distinct pair of values
+CREATE TABLE dim_b (id int PRIMARY KEY, set_id int NOT NULL);
+INSERT INTO dim_b SELECT k, 1 + k % 4 FROM generate_series(1, 30) k;
+CREATE TABLE dim_c (id int PRIMARY KEY, category_id int NOT NULL);
+INSERT INTO dim_c SELECT o, 1 + o % 6 FROM generate_series(1, greatest(60, :n / 15)) o;
+CREATE TABLE facts_b (id int PRIMARY KEY, dim_a_id int NOT NULL, foreign_id int NOT NULL, status text NOT NULL, amount numeric(12,2) NOT NULL, qty int NOT NULL, rate numeric(12,2) NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO facts_b SELECT i, 1 + (hashint4(i + :seed) & 2147483647) % greatest(60, :n / 15), 1 + (hashint4(i * 3 + :seed) & 2147483647) % 30,
+	(ARRAY['open', 'paid', 'void', 'late'])[1 + i % 4], ((hashint4(i * 7 + :seed) & 2147483647) % greatest(100, :n / 3)) / 10.0, 1 + i % 50, (1 + i % 40) / 4.0 FROM generate_series(1, :n) i;
+CREATE INDEX facts_b_dim_a ON facts_b (dim_a_id);
+CREATE INDEX facts_b_col ON facts_b USING sift_col (id, dim_a_id, foreign_id, status, amount, qty, rate);
+CREATE TABLE links_b (id int PRIMARY KEY, parent_id int NOT NULL, label text NOT NULL, weight int NOT NULL, status smallint NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO links_b SELECT i, 1 + (hashint4(i + :seed) & 2147483647) % greatest(60, :n / 15), 'lbl_' || i % 10, i / 7 % 3, i / 3 % 5 FROM generate_series(1, 4 * :n) i;
+CREATE INDEX links_b_parent ON links_b (parent_id, status);
+VACUUM (FREEZE, ANALYZE) facts_b, dim_b, dim_c, links_b;

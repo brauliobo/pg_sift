@@ -25,12 +25,7 @@
 #include "agg/agg.h"
 #include "agg/spec.h"
 #include "agg/agg_int.h"
-
-typedef struct IdVal
-{
-	uint32		id;
-	Datum		val;
-} IdVal;
+#include "agg/group_int.h"
 
 static int
 idval_cmp(const void *a, const void *b, void *arg)
@@ -62,6 +57,21 @@ idval_sort_int(IdVal *vals, uint32 nd, const SortSupportData *ssup)
 	return true;
 }
 
+
+/* the distinct values of the key are sorted by the value itself, with no call for a compare (idval_sort_int): what the planner prices the order by */
+bool
+sift_gorder_call_free(const SiftAggOrd *o)
+{
+	SortSupportData ssup = {0};
+
+	if (o->eq != NULL)
+		return false;
+	ssup.ssup_cxt = CurrentMemoryContext;
+	ssup.ssup_collation = o->collation;
+	ssup.ssup_nulls_first = o->nulls_first;
+	PrepareSortSupportFromOrderingOp(o->sortop, &ssup);
+	return ssup.comparator == ssup_datum_signed_cmp || ssup.comparator == ssup_datum_int32_cmp;
+}
 
 /*
  * jsonb keys. Comparing two jsonb values takes the comparator of the type about 400 ns (an iterator for each, allocated), and ranking the 38,000 distinct
@@ -215,13 +225,6 @@ typedef struct RankTuples
 	const uint32 *rank;			/* per group, nord ranks */
 } RankTuples;
 
-/* the ranks of a group packed into one integer, the first key in the high bits: one compare for the whole tuple */
-typedef struct PackedGroup
-{
-	uint64		key;
-	uint32		group;
-} PackedGroup;
-
 #define PACKED_LESS(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->group < (y)->group)
 SIFT_DEFINE_SORT(packed_cmp, PackedGroup, PACKED_LESS)
 
@@ -236,6 +239,12 @@ packed_copy(size_t bytes)
 #define PACKED_ZERO(x) ((int64) 0)
 #define PACKED_GROUP(x) ((x)->group)
 SIFT_DEFINE_RADIX_SORT(packed_sort, PackedGroup, PACKED_KEY, PACKED_ZERO, PACKED_GROUP, packed_copy, pfree, packed_cmp)
+
+void
+sift_packed_sort(PackedGroup *pk, uint32 n)
+{
+	packed_sort(pk, n);
+}
 
 static int
 tuple_cmp(const void *a, const void *b, void *arg)
@@ -253,45 +262,94 @@ tuple_cmp(const void *a, const void *b, void *arg)
 	return x < y ? -1 : x > y;
 }
 
-/* the rank of every id of key o among the groups of the list (0: NULL; ranks of equal values are equal) */
-static uint32 *
-key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 nord, uint32 col, uint32 *maxid_out)
+/* the values (ids with their datums) sorted by the comparator of the sort support: the integers of a type that compares the datum itself with no call for one */
+void
+sift_idval_sort(IdVal *vals, uint32 nd, SortSupport ssup)
 {
-	uint32		maxid = 0,
+	if (!idval_sort_int(vals, nd, ssup))
+		qsort_arg(vals, nd, sizeof(IdVal), idval_cmp, ssup);
+}
+
+/* the order of n rows by their ranks (nord of them each, row by row in tup), rows that tie in the order they came in: a radix sort of the packed ranks when they fit 64 bits, else a sort by tuple */
+uint32 *
+sift_rank_perm(const uint32 *tup, uint32 n, uint32 nord)
+{
+	RankTuples	t = {nord, tup};
+	uint32	   *perm = palloc(n * sizeof(uint32));
+	int			bits = 0;
+	uint32		top[SIFT_AGG_MAX_KEYS] = {0};
+
+	for (uint32 i = 0; i < n; i++)
+		for (uint32 o = 0; o < nord; o++)
+			top[o] = Max(top[o], tup[(Size) i * nord + o]);
+	for (uint32 o = 0; o < nord; o++)
+		bits += pg_leftmost_one_pos32(top[o] | 1) + 1;
+	if (bits <= 64)
+	{
+		PackedGroup *pk = palloc(n * sizeof(PackedGroup));
+
+		for (uint32 i = 0; i < n; i++)
+		{
+			uint64		k = 0;
+
+			for (uint32 o = 0; o < nord; o++)
+				k = (k << (pg_leftmost_one_pos32(top[o] | 1) + 1)) | tup[(Size) i * nord + o];
+			pk[i].key = k;
+			pk[i].group = i;
+		}
+		packed_sort(pk, n);
+		for (uint32 i = 0; i < n; i++)
+			perm[i] = pk[i].group;
+		pfree(pk);
+	}
+	else
+	{
+		for (uint32 i = 0; i < n; i++)
+			perm[i] = i;
+		qsort_arg(perm, n, sizeof(uint32), tuple_cmp, &t);
+	}
+	return perm;
+}
+
+/*
+ * The rank of every id of key o among the groups of the list (0: NULL; ranks of equal values are equal), and the id of the key in each group in ids. One pass over the
+ * groups gives the ids and the distinct values; rank doubles as the mark of the ids seen (an id is below key_used), until the ranks replace the marks. top: the
+ * largest rank a group can have.
+ */
+static uint32 *
+key_ranks(AggExec *ex, const SiftAggOrd *o, uint32 *ids, uint32 n, uint32 *top)
+{
+	uint32		used = key_used(&ex->ks[o->key]),
 				nd = 0;
-	uint32	   *rank;
-	bool	   *seen;
-	IdVal	   *vals;
+	uint32	   *rank = palloc0(used * sizeof(uint32));
+	IdVal	   *vals = palloc((Size) (Min(used, n) + 1) * sizeof(IdVal));
 	SortSupportData ssup = {0};
 	uint32		r = 0;
 	FmgrInfo	eqfn;
+	bool		nullrank = o->subst == NULL || o->subst->constisnull;
 
 	if (o->eq != NULL)
 		fmgr_info(get_opcode(o->eqop), &eqfn);
 	for (uint32 i = 0; i < n; i++)
-		maxid = Max(maxid, ids[(Size) i * nord + col]);
-	rank = palloc0((maxid + 1) * sizeof(uint32));
-	seen = palloc0((maxid + 1) * sizeof(bool));
-	vals = palloc((Size) Min((uint64) maxid, (uint64) n) * sizeof(IdVal) + sizeof(IdVal));
-	for (uint32 i = 0; i < n; i++)
 	{
-		uint32		id = ids[(Size) i * nord + col];
+		uint32		id = key_id(ex, o->key, ex->glist[i]);
 
-		if (id != 0 && !seen[id])
+		ids[i] = id;
+		if (id != 0 && rank[id] == 0)
 		{
 			bool		isnull;
 
-			seen[id] = true;
+			rank[id] = 1;
 			vals[nd].id = id;
 			vals[nd].val = key_id_datum(ex, o->key, id, &isnull);
 			nd++;
 		}
 	}
 	/* COALESCE(key, constant): the groups with no value sort as the constant */
-	if (o->subst != NULL && !o->subst->constisnull)
+	if (!nullrank)
 	{
 		for (uint32 i = 0; i < n; i++)
-			if (ids[(Size) i * nord + col] == 0)
+			if (ids[i] == 0)
 			{
 				vals[nd].id = 0;
 				vals[nd].val = o->subst->constvalue;
@@ -315,13 +373,20 @@ key_ranks(AggExec *ex, const SiftAggOrd *o, const uint32 *ids, uint32 n, uint32 
 			r++;
 		rank[vals[i].id] = r;
 	}
-	if (o->subst == NULL || o->subst->constisnull)
+	if (nullrank)
 		rank[0] = o->nulls_first ? 0 : r + 1;
-	pfree(seen);
+	*top = nullrank && !o->nulls_first ? r + 1 : r;
 	pfree(vals);
-	*maxid_out = maxid;
 	return rank;
 }
+
+/* a sort key of the groups: its id in each group, the rank of each id (NULL: the id is the rank) and the bits a rank takes */
+typedef struct OrdCol
+{
+	uint32	   *ids;
+	const uint32 *rank;
+	int			bits;
+} OrdCol;
 
 void
 groups_order(AggExec *ex)
@@ -331,81 +396,92 @@ groups_order(AggExec *ex)
 				nord = s->nord + (s->nsets > 0);
 	MemoryContext tmp,
 				old;
-	uint32	   *ids,
-			   *tup,
-			   *perm,
-			   *out;
-	RankTuples	t;
+	OrdCol	   *col;
+	int			bits = 0;
+	uint32	   *out;
 	bool		sorted = true;
 
 	if (n < 2)
 		return;
 	tmp = AllocSetContextCreate(ex->cxt, "sift agg group order", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(tmp);
-	ids = palloc((Size) n * nord * sizeof(uint32));
-	tup = palloc((Size) n * nord * sizeof(uint32));
-	for (uint32 o = 0; o < s->nord; o++)
-		for (uint32 i = 0; i < n; i++)
-			ids[(Size) i * nord + o] = key_id(ex, s->ord[o].key, ex->glist[i]);
-	/* groups of equal keys (a NULL a set leaves out, and a NULL the data has): the set with more keys first, as the rows of a rollup reach PostgreSQL's sort */
-	for (uint32 i = 0; s->nsets > 0 && i < n; i++)
-		tup[(Size) i * nord + nord - 1] = 32 - pg_popcount32(s->setmask[key_id(ex, s->nkeys - 1, ex->glist[i]) - 1]);
+	col = palloc(nord * sizeof(OrdCol));
 	for (uint32 o = 0; o < s->nord; o++)
 	{
-		uint32		maxid;
-		uint32	   *rank = key_ranks(ex, &s->ord[o], ids, n, nord, o, &maxid);
+		uint32		top;
 
-		for (uint32 i = 0; i < n; i++)
-			tup[(Size) i * nord + o] = rank[ids[(Size) i * nord + o]];
-		pfree(rank);
+		col[o].ids = palloc(n * sizeof(uint32));
+		col[o].rank = key_ranks(ex, &s->ord[o], col[o].ids, n, &top);
+		col[o].bits = pg_leftmost_one_pos32(top | 1) + 1;
+		bits += col[o].bits;
 	}
-	t.nord = nord;
-	t.rank = tup;
-	for (uint32 i = 1; i < n && sorted; i++)
-		sorted = tuple_cmp(&(uint32) {i - 1}, &(uint32) {i}, &t) <= 0;
+	/* groups of equal keys (a NULL a set leaves out, and a NULL the data has): the set with more keys first, as the rows of a rollup reach PostgreSQL's sort */
+	if (s->nsets > 0)
+	{
+		col[nord - 1].ids = palloc(n * sizeof(uint32));
+		col[nord - 1].rank = NULL;
+		col[nord - 1].bits = 6;
+		bits += 6;
+		for (uint32 i = 0; i < n; i++)
+			col[nord - 1].ids[i] = 32 - pg_popcount32(s->setmask[key_id(ex, s->nkeys - 1, ex->glist[i]) - 1]);
+	}
+	if (bits <= 64)
+	{
+		/* the ranks of a group in one integer, the first key in the high bits: one compare for the whole tuple */
+		PackedGroup *pk = palloc(n * sizeof(PackedGroup));
+
+		for (uint32 o = 0; o < nord; o++)
+		{
+			const uint32 *ids = col[o].ids,
+					   *rank = col[o].rank;
+			int			shift = col[o].bits;
+
+			if (o == 0)
+				for (uint32 i = 0; i < n; i++)
+				{
+					pk[i].key = rank ? rank[ids[i]] : ids[i];
+					pk[i].group = i;
+				}
+			else
+				for (uint32 i = 0; i < n; i++)
+					pk[i].key = (pk[i].key << shift) | (rank ? rank[ids[i]] : ids[i]);
+		}
+		for (uint32 i = 1; i < n && sorted; i++)
+			sorted = pk[i - 1].key <= pk[i].key;
+		if (!sorted)
+		{
+			sift_packed_sort(pk, n);
+			MemoryContextSwitchTo(old);
+			out = MemoryContextAlloc(ex->cxt, n * sizeof(uint32));
+			for (uint32 i = 0; i < n; i++)
+				out[i] = ex->glist[pk[i].group];
+		}
+	}
+	else
+	{
+		uint32	   *tup = palloc((Size) n * nord * sizeof(uint32)),
+				   *perm;
+		RankTuples	t = {nord, tup};
+
+		for (uint32 o = 0; o < nord; o++)
+			for (uint32 i = 0; i < n; i++)
+				tup[(Size) i * nord + o] = col[o].rank ? col[o].rank[col[o].ids[i]] : col[o].ids[i];
+		for (uint32 i = 1; i < n && sorted; i++)
+			sorted = tuple_cmp(&(uint32) {i - 1}, &(uint32) {i}, &t) <= 0;
+		if (!sorted)
+		{
+			perm = sift_rank_perm(tup, n, nord);
+			MemoryContextSwitchTo(old);
+			out = MemoryContextAlloc(ex->cxt, n * sizeof(uint32));
+			for (uint32 i = 0; i < n; i++)
+				out[i] = ex->glist[perm[i]];
+		}
+	}
+	MemoryContextSwitchTo(old);
 	if (!sorted)
 	{
-		int			bits = 0;
-		uint32		top[SIFT_AGG_MAX_KEYS] = {0};
-
-		for (uint32 i = 0; i < n; i++)
-			for (uint32 o = 0; o < nord; o++)
-				top[o] = Max(top[o], tup[(Size) i * nord + o]);
-		for (uint32 o = 0; o < nord; o++)
-			bits += pg_leftmost_one_pos32(top[o] | 1) + 1;
-		perm = palloc(n * sizeof(uint32));
-		if (bits <= 64)
-		{
-			PackedGroup *pk = palloc(n * sizeof(PackedGroup));
-
-			for (uint32 i = 0; i < n; i++)
-			{
-				uint64		k = 0;
-
-				for (uint32 o = 0; o < nord; o++)
-					k = (k << (pg_leftmost_one_pos32(top[o] | 1) + 1)) | tup[(Size) i * nord + o];
-				pk[i].key = k;
-				pk[i].group = i;
-			}
-			packed_sort(pk, n);
-			for (uint32 i = 0; i < n; i++)
-				perm[i] = pk[i].group;
-			pfree(pk);
-		}
-		else
-		{
-			for (uint32 i = 0; i < n; i++)
-				perm[i] = i;
-			qsort_arg(perm, n, sizeof(uint32), tuple_cmp, &t);
-		}
-		MemoryContextSwitchTo(old);
-		out = MemoryContextAlloc(ex->cxt, n * sizeof(uint32));
-		for (uint32 i = 0; i < n; i++)
-			out[i] = ex->glist[perm[i]];
 		pfree(ex->glist);
 		ex->glist = out;
 	}
-	else
-		MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 }

@@ -33,6 +33,14 @@ NOTICE:  sift_col index "oj_col": 1 automatic choice (rollup_dims), 1 advice (tr
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = d, e
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oj_col');
 VACUUM ANALYZE oj;
+-- five keys of about 12,000 values each: their ranks take more than 64 bits together, so the groups are sorted by the tuple of ranks and not by one packed integer
+CREATE TABLE ow (id int, k1 int, k2 int, k3 int, k4 int, k5 int) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO ow SELECT i, (i * 3) % 12007, (i * 5) % 12011, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 12013 END, (i * 11) % 12037, (i * 13) % 12041 FROM generate_series(1, 12000) i;
+CREATE INDEX ow_col ON ow USING sift_col (id, k1, k2, k3, k4, k5);
+NOTICE:  sift_col index "ow_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ow_col');
+VACUUM ANALYZE ow;
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
 CREATE FUNCTION o_keys(q text, k int, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -42,16 +50,27 @@ BEGIN
 	EXECUTE format('SELECT md5(string_agg(row(%s)::text, E''\n'')) FROM (%s) q', CASE WHEN k = 0 THEN 'q.*' ELSE (SELECT string_agg('q.c' || i, ', ') FROM generate_series(1, k) i) END, q) INTO r;
 	RETURN r;
 END $$;
--- the plan has the node and no Sort above it
+-- the plan has the node and no Sort above it; the plan is serial (the ordered groups are offered to a serial scan, and a parallel scan under a Sort can cost less on a few thousand groups, which depends on the workers the server allows)
 CREATE FUNCTION o_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scan bool := false; srt bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		scan := scan OR l LIKE '%Custom Scan (SiftAgg)%';
 		srt := srt OR l LIKE '%Sort%';
 	END LOOP;
 	RETURN CASE WHEN NOT scan THEN 'no scan' WHEN srt THEN 'sorted above' ELSE 'ordered' END;
+END $$;
+CREATE FUNCTION o_ordered(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		r := r OR l LIKE '%order keys)%';
+	END LOOP;
+	RETURN r;
 END $$;
 CREATE TABLE o_q (n int, k int, q text, want text);
 INSERT INTO o_q VALUES
@@ -69,6 +88,21 @@ INSERT INTO o_q VALUES
 	(12, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY b, c) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	-- a column of the sub-select that is a constant, a COALESCE of a key (the NULL group sorts as the constant), keys in the window's order
 	(14, 0, 'WITH g AS (SELECT COALESCE(a, ''zz'') AS c1, NULL::date AS c2, e AS c3, c AS c4, count(*) AS n FROM o GROUP BY a, e, c) SELECT c1, c2, c3, c4, n, count(*) OVER (PARTITION BY c2, c3 ORDER BY c1 DESC, c4) AS w FROM g', 'ordered'),
+	-- a group key that is itself a COALESCE (of two columns, of a column and a constant, of three columns): ordered by the whole key, NULL groups and DESC NULLS FIRST included
+	(40, 0, 'WITH g AS (SELECT COALESCE(a, c::text) AS c1, e AS c2, count(*) AS n FROM o GROUP BY COALESCE(a, c::text), e) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC NULLS FIRST) AS l FROM g', 'ordered'),
+	(41, 0, 'SELECT * FROM (SELECT COALESCE(b, e) AS c1, a AS c2, count(*) AS n FROM o GROUP BY COALESCE(b, e), a) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
+	(42, 0, 'SELECT * FROM (SELECT COALESCE(a, ''zz'') AS c1, e AS c2, count(*) AS n FROM o GROUP BY COALESCE(a, ''zz''), e) q ORDER BY c1 COLLATE "C" DESC, c2 NULLS FIRST', 'ordered'),
+	(43, 0, 'SELECT * FROM (SELECT COALESCE(a, c::text, ''x'') AS c1, COALESCE(e, 7) AS c2, COALESCE(b, 0) AS c3, count(*) AS n FROM o GROUP BY COALESCE(a, c::text, ''x''), COALESCE(e, 7), COALESCE(b, 0)) q ORDER BY c1, c2 DESC, c3', 'ordered'),
+	(44, 0, 'WITH g AS (SELECT COALESCE(a, c::text) AS c1, COALESCE(NULLIF(e, 3), b::int) AS c2, c AS c3, count(*) AS n FROM o GROUP BY 1, 2, 3) SELECT c1, c2, c3, n, row_number() OVER (PARTITION BY c1, c2 ORDER BY c3 DESC) AS r FROM g', 'ordered'),
+	-- the parent groups with an aggregate of its own that sorts (its ORDER BY or DISTINCT): PostgreSQL sorts for it and can not hash, the scan gives that order
+	(45, 0, 'WITH g AS (SELECT a AS c1, c AS c2, e AS c3, count(*) AS n FROM o GROUP BY a, c, e) SELECT c1, string_agg(c3::text || ''/'' || n, '','' ORDER BY c2 DESC, c3 NULLS FIRST) AS s FROM g GROUP BY c1', 'ordered'),
+	(46, 0, 'SELECT c1, count(DISTINCT c3) AS d, array_agg(c2 ORDER BY c2) AS arr FROM (SELECT b AS c1, c AS c2, e AS c3, count(*) AS n FROM o GROUP BY b, c, e) q GROUP BY c1', 'ordered'),
+	(47, 0, 'SELECT string_agg(c1 || ''/'' || c2::text, '','' ORDER BY c1 DESC NULLS LAST, c2) AS s FROM (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) q', 'ordered'),
+	-- many groups (30,000) with a key of as many distinct values: the values of an integer or date key are sorted by the value with no call for a compare and the groups by a radix
+	-- sort, which is much less than the Sort they replace: the scan is ordered where the cost said the Sort was cheaper
+	(50, 2, 'SELECT id AS c1, a AS c2, count(*) AS n FROM o GROUP BY id, a ORDER BY a, id DESC', 'ordered'),
+	(51, 0, 'WITH g AS (SELECT a AS c1, id AS c2, count(*) AS n FROM o GROUP BY a, id) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
+	(52, 3, 'SELECT c AS c1, id AS c2, a AS c3, count(*) AS n FROM o GROUP BY c, id, a ORDER BY c DESC NULLS LAST, id, a', 'ordered'),
 	-- grouping sets: a key a set leaves out is NULL in its groups, and sorts as NULL (a window in the query that reads them, an ORDER BY of the parent, a COALESCE of a key)
 	(20, 0, 'WITH g AS (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((b, c), (b))) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2 DESC) AS l FROM g', 'ordered'),
 	(21, 0, 'SELECT * FROM (SELECT b AS c1, c AS c2, count(*) AS n FROM o GROUP BY ROLLUP (b, c)) q ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
@@ -78,13 +112,17 @@ INSERT INTO o_q VALUES
 	(25, 2, 'SELECT a AS c1, e AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((a, e), (a), (e), ()) ORDER BY a DESC NULLS LAST, e NULLS FIRST', 'ordered'),
 	(26, 1, 'SELECT c AS c1, b AS c2, count(*) AS n FROM o GROUP BY GROUPING SETS ((c, b), (c), (b)) ORDER BY c DESC NULLS FIRST', 'ordered'),
 	(27, 0, 'SELECT b AS c1, c AS c2, count(*) AS n, lag(count(*)) OVER (PARTITION BY b ORDER BY c DESC) AS l FROM o GROUP BY GROUPING SETS ((b, c), (b))', 'ordered'),
-	(28, 0, 'SELECT a AS c1, count(*) AS n FROM o GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST', 'ordered'),
+	-- the NULL group and the grand total tie in the ORDER BY: the check reads the key column only (the order of the two rows is the executor's, and changed in PostgreSQL 19)
+	(28, 1, 'SELECT a AS c1, count(*) AS n FROM o GROUP BY ROLLUP (a) ORDER BY a NULLS FIRST', 'ordered'),
 	(23, 0, 'WITH g AS (SELECT b AS c1, c AS c2, a AS c3, count(*) AS n FROM o WHERE a IS NOT NULL GROUP BY GROUPING SETS ((b, c, a), (b, c))) SELECT c1, c2, c3, n, rank() OVER (PARTITION BY c1 ORDER BY c2, c3 NULLS FIRST) AS r FROM g', 'ordered'),
 	-- jsonb keys: the rank of the 3,000 distinct values, ascending, descending, nulls first, with a window on top
 	(30, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1', 'ordered'),
 	(31, 0, 'SELECT jsonb_build_array(a, b, c, d) AS c1, count(*) AS n FROM oj GROUP BY jsonb_build_array(a, b, c, d) ORDER BY 1 DESC', 'ordered'),
 	(32, 0, 'SELECT jsonb_build_array(jsonb_build_object(''k'', c), jsonb_build_array(b, d)) AS c1, e AS c2, count(*) AS n FROM oj GROUP BY 1, 2 ORDER BY c1 DESC NULLS FIRST, c2', 'ordered'),
 	(33, 0, 'WITH g AS (SELECT to_jsonb(b) AS c1, to_jsonb(c) AS c2, jsonb_build_object(''a'', a, ''d'', d) AS c3, count(*) AS n FROM oj GROUP BY to_jsonb(b), to_jsonb(c), jsonb_build_object(''a'', a, ''d'', d)) SELECT c1, c2, c3, n, lag(n) OVER (PARTITION BY c3 ORDER BY c1 DESC, c2) AS l FROM g', 'ordered'),
+	-- keys whose ranks do not fit 64 bits together
+	(60, 5, 'SELECT k1 AS c1, k2 AS c2, k3 AS c3, k4 AS c4, k5 AS c5, count(*) AS n FROM ow GROUP BY k1, k2, k3, k4, k5 ORDER BY k1, k2 DESC, k3 NULLS FIRST, k4, k5 DESC', 'ordered'),
+	(61, 5, 'SELECT k1 AS c1, k2 AS c2, k3 AS c3, k4 AS c4, k5 AS c5, count(*) AS n FROM ow GROUP BY k1, k2, k3, k4, k5 ORDER BY k5, k4 DESC, k3, k2, k1 DESC NULLS LAST', 'ordered'),
 	-- a CTE read twice or materialized is a scan of its own: the Sort stays
 	(13, 0, 'WITH g AS MATERIALIZED (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) SELECT c1, c2, n, lag(n) OVER (PARTITION BY c1 ORDER BY c2) AS l FROM g', 'sorted above'),
 	-- an order the keys do not decide (an Incremental Sort on the prefix, or a Sort): a Sort stays above
@@ -119,7 +157,31 @@ SELECT n, o_plan(q) = want AS plan FROM o_q ORDER BY n;
  31 | t
  32 | t
  33 | t
-(27 rows)
+ 40 | t
+ 41 | t
+ 42 | t
+ 43 | t
+ 44 | t
+ 45 | t
+ 46 | t
+ 47 | t
+ 50 | t
+ 51 | t
+ 52 | t
+ 60 | t
+ 61 | t
+(40 rows)
+
+-- the scan emits its groups in an order where a Sort above it was asked for; a parent that hashes (no sorting aggregate) gets them unordered
+SELECT n, o_ordered(q) AS group_order FROM o_q WHERE n IN (1, 40, 45, 46, 47) ORDER BY n;
+ n  | group_order 
+----+-------------
+  1 | t
+ 40 | t
+ 45 | t
+ 46 | t
+ 47 | t
+(5 rows)
 
 -- rows in the normal plan's order (key columns), with no worker and with three
 SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k, true, 3) = o_keys(q, k, false, 0) AS workers FROM o_q WHERE want = 'ordered' ORDER BY n;
@@ -149,7 +211,20 @@ SELECT n, o_keys(q, k, true, 0) = o_keys(q, k, false, 0) AS serial, o_keys(q, k,
  31 | t      | t
  32 | t      | t
  33 | t      | t
-(24 rows)
+ 40 | t      | t
+ 41 | t      | t
+ 42 | t      | t
+ 43 | t      | t
+ 44 | t      | t
+ 45 | t      | t
+ 46 | t      | t
+ 47 | t      | t
+ 50 | t      | t
+ 51 | t      | t
+ 52 | t      | t
+ 60 | t      | t
+ 61 | t      | t
+(37 rows)
 
 -- the groups are the same rows
 CREATE FUNCTION o_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -190,7 +265,28 @@ SELECT n, o_rows(q, true) = o_rows(q, false) AS rows FROM o_q ORDER BY n;
  31 | t
  32 | t
  33 | t
-(27 rows)
+ 40 | t
+ 41 | t
+ 42 | t
+ 43 | t
+ 44 | t
+ 45 | t
+ 46 | t
+ 47 | t
+ 50 | t
+ 51 | t
+ 52 | t
+ 60 | t
+ 61 | t
+(40 rows)
+
+-- a parent that hashes gets the groups unordered, and the same rows
+SELECT o_ordered('SELECT c1, sum(n) AS s FROM (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) q GROUP BY c1') AS hashing_parent_ordered,
+       o_rows('SELECT c1, sum(n) AS s FROM (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) q GROUP BY c1', true) = o_rows('SELECT c1, sum(n) AS s FROM (SELECT a AS c1, c AS c2, count(*) AS n FROM o GROUP BY a, c) q GROUP BY c1', false) AS rows;
+ hashing_parent_ordered | rows 
+------------------------+------
+ f                      | t
+(1 row)
 
 -- adversarial keys: strings that sort differently by collation (case, accents, punctuation, digits, the empty string), numeric with NaN, floats with -0, NaN and infinities,
 -- dates and timestamps with infinity, booleans, negative bigints, NULLs everywhere; every key, both directions, both nulls orders, alone and with a second key that breaks the ties
@@ -346,7 +442,7 @@ FROM (VALUES ('n', 'c1::float8'), ('f', 'c1 + 0'), ('s', 'translate(c1 COLLATE "
  s   | DESC | ordered | t
 (6 rows)
 
-DROP TABLE o_q, o, o2, o3, oj;
+DROP TABLE o_q, o, o2, o3, oj, ow;
 DROP COLLATION o3_ci;
-DROP FUNCTION o_keys(text, int, bool, int), o_plan(text), o_rows(text, bool), o2_check(text, text, text, text, text), o3_check(text, text, text);
+DROP FUNCTION o_keys(text, int, bool, int), o_plan(text), o_ordered(text), o_rows(text, bool), o2_check(text, text, text, text, text), o3_check(text, text, text);
 DROP EXTENSION pg_sift;

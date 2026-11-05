@@ -10,6 +10,7 @@
 #include "utils/fmgrprotos.h"
 
 #include "agg/blob/int.h"
+#include "agg/group/int.h"
 
 /* ids of the values of an integer key in the table (the ids of the range table, or of the wide one) */
 static void
@@ -31,7 +32,11 @@ merge_ident(AggExec *g, int j, const int64 *vals, uint32 nv, uint32 *xid)
 		if (!k->wcap)
 			ident_go_wide(g, k);
 		for (uint32 i = 0; i < nv; i++)
-			xid[i + 1] = ident_wide_id(g, k, vals[i]);
+		{
+			uint32		id = wide_find(k, vals[i]);
+
+			xid[i + 1] = id != 0 ? id : ident_wide_id(g, k, vals[i]);
+		}
 	}
 	else
 	{

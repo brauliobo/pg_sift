@@ -39,5 +39,10 @@ SELECT 'database setting ' || s FROM pg_db_role_setting, unnest(setconfig) s
 WHERE setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())
   AND s !~ '^(lc_messages|lc_monetary|lc_numeric|lc_time|bytea_output|timezone_abbreviations)='
 UNION ALL
+-- a test that recreates public (DROP SCHEMA public CASCADE; CREATE SCHEMA public) ends with GRANT USAGE ON SCHEMA public TO PUBLIC: without it the roles of the tests after it do not see their tables
+SELECT 'schema public without USAGE for PUBLIC' WHERE NOT EXISTS (
+	SELECT 1 FROM pg_namespace n, aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a
+	WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'USAGE')
+UNION ALL
 SELECT 'ALTER SYSTEM ' || name || ' = ' || setting FROM pg_file_settings WHERE :'cluster' = 'on' AND sourcefile ~ 'auto\.conf$'
 ORDER BY 1;

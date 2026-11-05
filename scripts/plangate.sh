@@ -11,7 +11,7 @@
 #                 rows (the scan costs its start and its units, the plan its rows: the median over the shapes is 0.134, 0.082 and 0.067 at 30000, 100000 and 250000 rows, the time ratio
 #                 0.109, 0.061 and 0.051), so the bands hold at 30000 only (40 of 106 shapes leave them at 50000). Another size has bands of its own, the rows `LANE@N` of test/plan/bands.tsv
 #                 (`--update --rows N` records them, as `stock@250000`, `table@250000` ...); a size with none is checked for the results and the loses only
-#   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
+#   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings; a shape tagged `-- runs: K` takes at least K)
 #   --shapes RE   only the shapes whose name matches
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane

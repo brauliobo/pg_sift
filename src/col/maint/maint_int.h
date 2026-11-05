@@ -49,9 +49,14 @@ typedef struct RewriteView
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
 	SbSpans		span[SIFT_MAX_SEGMENTS];
 	bool		over[SIFT_MAX_SEGMENTS];
+	bool		kover[SIFT_MAX_SEGMENTS];	/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
+	int			nkover;
+	int64		klo[SIFT_MAX_SEGMENTS],		/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
+				khi[SIFT_MAX_SEGMENTS];
 } RewriteView;
 
 extern int maint_merge_workers;
+extern uint64 maint_pass_bytes;
 extern bool maint_after_build;
 
 extern const SiftMaintOps maint_col_ops;

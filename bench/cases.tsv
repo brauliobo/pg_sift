@@ -172,6 +172,8 @@ topn_offset_deep	an OFFSET past the 100,000 rows a top-N heap holds is walked in
 order_layout_offset	the reloption `order_layout` of a `sift_col` index	orders	default	Global Order: true	native	whole:search_path = c_order_layout_offset__whole,btree:search_path = c_order_layout_offset__btree	ms	faster33	no	-
 order_layout_range	keeps a chunk of an order array compact where that is at least a fifth smaller	orders	default	Global Order: true	native	whole:search_path = c_order_layout_range__whole,btree:search_path = c_order_layout_range__btree	ms	faster33	no	-
 group_order_window	emits its groups in that order	orders	default	\([1-9][0-9]* order keys\)	native	-	ms	faster33	no	-
+group_order_coalesce_key	a group key that is itself a `COALESCE`	orders	default	\([1-9][0-9]* order keys\)	native	-	ms	faster33	no	-
+group_order_sorted_agg	a parent that groups the groups again with an aggregate that sorts	orders	default	\([1-9][0-9]* order keys\)	native	-	ms	faster33	no	-
 tpch_shipping_priority_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 tpch_returned_items_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 tpch_shipping_modes_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
@@ -325,7 +327,7 @@ point_scattered_60	the reloption `order_layout` of a `sift_col` index	events	-	I
 point_scattered_500	the reloption `order_layout` of a `sift_col` index	events	-	Index Scan using ps_col	native	btree:search_path = c_point_scattered_500__btree,serial:search_path = c_point_scattered_500__serial	ms	faster33	no	-
 search_open_buffer	a search reads the documents of the open write buffer of a BM25 index by their hashes	docs	-	Custom Scan \(SiftScan	native	-	ms,minstr	faster33	no	-
 col_build_default	-	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
-col_build_date_key	-	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
+col_build_date_key	takes fewer passes over its entries	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_build_cube_13cols	the cube of a unit adds the integer measures of a dimension in one pass per group	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4,workers_8:max_parallel_maintenance_workers = 8	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an integer leaf	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_churn_sidecar	the cube of a unit takes the minimum and maximum of a measure without a branch for the first value of each group	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
@@ -386,3 +388,32 @@ ordered_key_scan	the ordered index-only scan of a `sift_col` index (the first co
 ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	WindowAgg	native	btree:search_path = c_ordered_window_rank__btree	ms	faster33	no	-
 ordered_join_order	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	Merge Join	native	btree:search_path = c_ordered_join_order__btree	ms	faster33	no	-
 ordered_group_key	`ORDER BY g, k` (both ascending or both descending) and `WHERE g = x ORDER BY k` over a `sift_col` index on `(g, k)`	events	-	Index Only Scan	native	btree:search_path = c_ordered_group_key__btree	ms	faster33	no	-
+grouping_sets_subselect_keys	keys that are expressions of a sub-select	orders	default	Pushed Aggregates	native	-	ms	faster33	no	-
+lateral_probe_direct	the keys of a correlated `LIMIT 1` child are probed in its btree a batch at a time	events	-	child direct probes	native	executor:sift.agg_probe_direct = off	ms	faster33	no	-
+lateral_probe_index_only	the keys of a correlated `LIMIT 1` child that is an Index Only Scan are probed in its btree a batch at a time	events	-	child direct probes	native	executor:sift.agg_probe_direct = off	ms	faster33	no	-
+plan_cost_keys_1	-	events	-	parents	native	-	ms,minstr	faster33	no	-
+plan_cost_keys_20	-	events	-	parents	native	-	ms,minstr	faster33	no	-
+plan_cost_keys_200	-	events	-	parents	native	warm_backend:sift.enable_agg = on	ms,minstr	faster33	no	-
+plan_cost_lateral_pull_up	a statement whose lateral sub-selects can be pulled up is planned once	events	-	Limit	native	-	ms,minstr	faster33	no	-
+key_cut_overlap_few_keys	a `key_cut` index whose runs are as large as partitions is rewritten by key range	orders	default	Custom Scan \(SiftAgg\)	native	cut:search_path = c_key_cut_overlap_few_keys__cut	ms,minstr	faster33	no	-
+group_sort_ranks	a `Sort` of many rows above the groups of a scan	orders	default	Custom Scan \(SiftSort\)	native	-	ms	faster33	no	-
+group_join_limit_startup	the normal plan that gives its first group at once	events	-	Index Only Scan	native	-	ms	faster33	no	-
+group_union_limit_correlated	reads through a condition on the table	events	-	Custom Scan \(SiftAgg\)[\s\S]*Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+lookup_in_keyed	the keys of the scan's IN list that a joined btree table is keyed by are read by one scan of its btree	events	-	Lookup: .* index scans	native	whole:sift.agg_lookup_pushdown = off	ms	faster33	no	-
+group_order_many_keys	takes less work for each group	orders	default	\([1-9][0-9]* order keys\)	native	-	ms,minstr	faster33	no	-
+group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
+lookup_index_only	the rows of a table joined by the scan's IN list are taken from the entries of a btree that holds their columns	events	-	Lookup: .* index scans	native	whole:sift.agg_lookup_pushdown = off	ms	faster33	no	-
+group_lookup_scalar_key	a row of the table looked up by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+group_filter_exists_key	its `FILTER` of a grouped query	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+group_two_keys_hash	probes the table with the comparison unrolled	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+filter_scalar_subselect_bound	a scalar sub-select that gives one row	events	-	Custom Scan \(SiftAgg\)[\s\S]*InitPlan	native	-	ms	faster33	no	-
+float_step_buckets	a float column grouped by the buckets of its values is evaluated for each bucket	events	-	Group Keys: value_a: \(floor	native	executor:sift.agg_float_step = off	ms	faster33	no	-
+group_spill_two_keys	costs less for each group it writes to the partitions and merges back	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+group_direct_arrays_passes	whose direct arrays (the capacities of the keys multiply) are more than hash memory puts its groups in the hash table at once	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+lookup_probe_join	a join to a large btree table on a range of the scan's keys is a probe of the btree for each key the scan meets	events	-	Lookup Joins: sift_probe	native	whole:sift.agg_probe_rewrite = off	ms	faster33	no	-
+float_sum_ungrouped	the sum of a float column that is not grouped	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+group_right_join_leaf_agg	and no longer builds an id for each distinct value	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+lookup_probe_not_in	a NOT IN over a large btree table (neither side NULL) is a probe of the btree for each key the scan meets	events	-	Lookup Joins: .*sift_probe	native	whole:sift.agg_probe_rewrite = off	ms	faster33	no	-
+agg_sum_scalar_factor	a sum of a numeric column times a value asked once	events	-	Custom Scan \(SiftAgg\)[\s\S]*InitPlan	native	-	ms	faster33	no	-
+group_passes_upfront	chooses the number of passes from the planner's estimate of the groups and reads the table once for each pass	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+agg_sum_lookup_product	a sum of a numeric column times a value of a table joined by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

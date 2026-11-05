@@ -199,6 +199,17 @@ main(void)
 		ROW("minmax_f64 all rows", sink = k->minmax_f64(&e, &f, f64, NULL, N));
 		ROW("minmax_f64 50 %", sink = k->minmax_f64(&e, &f, f64, m50, N));
 	}
+	{
+		double	   *fv = arr(N * 8);
+		int32	   *qo = arr(N * 4);
+		int32		a,
+					b;
+
+		for (int i = 0; i < N; i++)
+			fv[i] = (sift_rng_unit(&rng) - 0.5) * 5000;
+		ROW("fstep floor(x / 5)", sink = k->fstep(qo, &a, &b, fv, N, SIFT_FSTEP_FLOOR, SIFT_FSTEP_DIV, 5));
+		ROW("fstep round(x)", sink = k->fstep(qo, &a, &b, fv, N, SIFT_FSTEP_ROUND, SIFT_FSTEP_PLAIN, 1));
+	}
 	ROW("absmax_i64 all rows", sink = k->absmax_i64(i64, N));
 	ROW("lin_i64 a + b", k->lin_i64(i64b, i64, 1, i64, 1, N));
 	ROW("lin_i64 100 * a - b", k->lin_i64(i64b, i64, 100, i64, -1, N));

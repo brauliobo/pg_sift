@@ -32,7 +32,14 @@
 #define AGG_JOIN_LUT		5.0		/* ... of a table answered from a byte table of its keys (semi_lut_build, in the cache of a core): 40 instructions a tuple measured on 985,000 tuples of a 550,000-key table */
 #define AGG_ENTRY_ROW		70.0	/* a new entry of a combo of a join that reads values beyond its key (a CASE of a lookup column and a measure): the hash insert and the id of its value, 215 ns measured with 2.8 million entries (2,040 instructions with one expression, 5,450 with seven) */
 #define AGG_ENTRY_SLOT		30.0	/* ... and each expression of the combo evaluated for it: 88 ns measured, 570 instructions of a numeric CASE */
-#define AGG_FAN_ROW			120.0	/* a joined tuple beyond the rows the scan reads (a lookup table with many rows for a key: a fact table joined from a date scan), for a lookup table past what the cache holds: the columns of the row bound and the ids of its values (1,330 instructions measured at 720,000 rows and at 2.9 million, 910 at 290,000); it grows with the square root of the rows past the cache up to AGG_FAN_CAP times */
+#define AGG_FAN_ROW			4.0	/* a joined tuple beyond the rows the scan reads (a lookup table with many rows for a key: a fact table joined from a date scan), for a lookup table past what the cache holds: the match gathered and its slots written, in operators of AGG_TUPLE's size (about 17 instructions): 59 instructions at 200,000 rows of the lookup table and 140 at 1,000,000 with no column bound, measured on 3 million joined tuples of tables of 3 to 3,000 rows for a key; it grows with the square root of the rows past the cache up to AGG_FAN_CAP times */
+#define AGG_FAN_ROW_EXPR	120.0	/* a joined tuple of a combo that evaluates an expression of a column of the lookup table: 1,330 instructions measured at 720,000 rows and at 2.9 million, 910 at 290,000, with AGG_FAN_SLOT for each slot */
+#define AGG_FAN_KEY			6.5	/* ... and the id of the value of a group key of the lookup table with few values (69 instructions more at 200,000 rows, 222 at 1,000,000) */
+#define AGG_FAN_KEY_WIDE	20.0	/* ... and with as many values as AGG_FAN_WIDE_SHARE of the rows (167 and 694) */
+#define AGG_FAN_WIDE_SHARE	4.0
+#define AGG_FAN_ARG			12.0	/* ... and the argument of an aggregate (a sum of an integer or of a numeric: 290 and 224 at 200,000 rows, 420 and 478 at 1,000,000) */
+#define AGG_FAN_FLAG		3.0	/* ... and a flag */
+#define AGG_JOIN_NS		270.0	/* what a joined tuple of the normal plan costs beyond PostgreSQL's price, in ns: a hash or nested loop join and the grouping of each take 1,700 to 2,200 instructions (5,101 and 2,196 million for 3.0 and 1.0 million joined tuples) against the 0.02 cost units, 0.13 us, it prices them at */
 #define AGG_FAN_CACHE		150000.0	/* the rows of a lookup table whose binds stay in the cache of a core: the price starts past them (a price at any size, and for correlated or CTE lookups, flipped 12 statements of the lab corpus to the normal plan, which takes more than 60 s on them) */
 #define AGG_FAN_CAP			2.0	/* ... and no more than twice: the cost per tuple measured is the same at 720,000 rows as at 2.9 million */
 #define AGG_FAN_SLOT		80.0	/* ... and each expression of the combos evaluated for it: 97 ns measured at 2.9 million rows, a numeric CASE of a column of the lookup table */
@@ -144,8 +151,8 @@
 #define AGG_PLAN_ROW		11.0	/* a row of a plan (a UNION ALL of two tables of 500,000 rows) made the lookup table: the tuple copied into the table and its key hashed, 380 instructions a row measured with a count(*) over it; each numeric column of it adds AGG_LOAD_NUMERIC */
 #define TOPN_HEADS_UNITS	16.0	/* the units a top-N walk may read for the heads of their runs to beat the order array (topn_heads_win) */
 #define AGG_ORDER_MIN_COST	1000.0	/* the cost of the normal join under which the other tables of an inner join are not tried as the scanned one: the order saves less than the 60 to 90 us the extra paths take to plan (about 2 ms of the normal plan) */
-#define AGG_LOAD_ROW		20.0	/* ... of a table read whole from its heap, not kept from an earlier query: the visibility test, the key hashed and the row stored (66 ns a row measured on a 500,000-row read, 100 ns with the first touches), beyond the pages */
-#define AGG_LOAD_KEY		10.0	/* ... of a table kept as the keys of its rows (lookup_keys_only: no dictionary of the keys, no chains): 453 instructions and 29 ns a row measured on a 550,000-row read, the pages apart */
+#define AGG_LOAD_ROW		9.0	/* ... of a table read whole from its heap, not kept from an earlier query: the visibility test, the key hashed and the row stored (66 ns a row measured on a 500,000-row read, 100 ns with the first touches), beyond the pages; the price was 20 and 10 operators until the instructions of a load were counted: 410 to 520 per row with the lookup cache off, whether the rows are kept as keys or whole, 120,000 rows of a table of 765 pages, against the 33,000 instructions per priced unit of the normal plans they were compared with (an EXISTS over all parents priced as the normal plan that takes 3.3 times the time) */
+#define AGG_LOAD_KEY		7.0	/* ... of a table kept as the keys of its rows (lookup_keys_only: no dictionary of the keys, no chains), the pages apart */
 #define AGG_LOAD_ROW_COLS	8.0	/* ... of a table read whole from the leaves of a column index that holds its columns (map_load_cols): the units are decoded a unit at a time and a tuple of the columns is made for the rows that are visible (65 ns a row against 160 ns from the heap, measured); AGG_LOAD_BIG scales it past the rows the cache holds */
 #define AGG_LOAD_BIG		250000.0	/* the rows of a table whose map stays in the cache: past them a load from the leaves costs the 0.4 power of the rows more (61 ns a row for 1,500,000 rows of 100,000 keys, 74 to 88 ns for 6,000,000 rows of 10,000 to 200,000 keys, 127 ns for 1,500,000 keys: the key dictionary outgrows the cache) */
 #define AGG_LOAD_NUMERIC	32.0	/* ... more for each numeric column of such a load: the value is built and allocated for each row (260 ns a row and column measured on 2,750,000 rows of a fact table, against 15 ns for an integer one) */
@@ -153,6 +160,12 @@
 #define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
+#define AGG_PROBE_KEY		30.0	/* a key probed in a btree of a lookup table (keyed load): the descent from the root, about 5,000 instructions */
+#define AGG_PROBE_RUN		1800.0	/* a run of a correlated child the scan probes in its btree directly (LIMIT 1 over an index scan, combo/probe.c), the entries it examines apart: 28,000 instructions measured with the first entry the match */
+#define AGG_PROBE_SCAN		42.0	/* an entry such a probe examines in an Index Only Scan, and tests: 650 instructions */
+#define AGG_PROBE_FETCH		110.0	/* ... in an Index Scan, the row fetched from the heap: 1,700 instructions */
+#define AGG_PROBE_IOS		75.0	/* ... less for a row taken from the entries of a btree that holds its columns, on an all-visible page: no heap fetch (500 instructions an entry against 1,650 measured) */
+#define AGG_PROBE_ROW		150.0	/* a row a keyed load fetches from the heap, the page visits apart (heap_visit_ops): 1,650 to 2,700 instructions a row measured over 67 to 333 rows a key, against 355 a row of the table read whole at 23 operators */
 
 /* a tuple of a bucket key: the number of its step, the lookup of the id */
 #define AGG_BUCKET_ROW		3.0

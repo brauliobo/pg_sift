@@ -194,6 +194,45 @@ share_superblock(const SbSpans *a, const SbSpans *b, int allowed)
 	return false;
 }
 
+/* The range of the key leaf over the units of a key-cut segment */
+static void
+seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 *hi)
+{
+	*lo = PG_INT64_MAX;
+	*hi = PG_INT64_MIN;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCZone	z;
+
+		sift_cseg_zone(seg, leaf, u, &z);
+		if (z.nvals == 0)
+			continue;
+		*lo = Min(*lo, z.min);
+		*hi = Max(*hi, z.max);
+	}
+}
+
+/*
+ * The segments of a key-cut index that the partitions of a rewrite are not: a rewrite cuts the key range into partitions that share at most a boundary key, so a key
+ * is in one of them; the runs of a build that outgrew the memory of a segment writer are as large as partitions but each holds rows of every key (a lookup of a key
+ * reads a unit in each). They are overlays, which the rewrite merges.
+ */
+static void
+mark_key_overlap(Relation index, RewriteView *v)
+{
+	int			leaf = sift_col_rel(index)->cut[0];
+
+	for (int i = 0; i < v->n; i++)
+		seg_key_range(v->seg[i], leaf, &v->klo[i], &v->khi[i]);
+	/* the rewrite right after a build is the build's own (its choices stand): the runs are for the next one */
+	for (int i = 0; i < v->n && !maint_after_build; i++)
+		for (int j = i + 1; j < v->n; j++)
+			if (maint_is_partition(&v->imm[i]) && maint_is_partition(&v->imm[j]) && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i])
+				v->kover[i] = v->kover[j] = true;
+	for (int i = 0; i < v->n; i++)
+		v->nkover += v->kover[i];
+}
+
 RewriteView *
 maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 {
@@ -217,6 +256,8 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 
 			v->over[i] = j != i && !v->span[j].by_tid && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(&v->span[i], &v->span[j], 0);
 		}
+	if (maint_part_kb > 0 && sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
+		mark_key_overlap(index, v);
 	return v;
 }
 
@@ -244,6 +285,55 @@ merge_par_bytes(void)
 }
 
 /*
+ * One window of the rewrite of a key-cut index in partitions: the segment with the lowest key among those whose key range overlaps another's, and the ones
+ * that overlap what the window covers so far, in the order of their lowest key, until they hold sift.col_auto_merge_pass_mb (at least two). The window is cut
+ * into partitions that do not overlap, so the overlap over the key falls wherever two of its segments met and the steps end; the segments outside it are
+ * as they were, and a crash between two steps leaves the index of the step before. Overlays are windows too: an overlay holds rows of every key, so it meets
+ * the segments one window at a time and what it holds outside a window stays an overlay for the next. False: nothing overlaps.
+ */
+static bool
+pick_key_window(const RewriteView *v, bool *take)
+{
+	int			order[SIFT_MAX_SEGMENTS];
+	int			n = 0,
+				taken = 0;
+	uint64		bytes = 0,
+				limit = sift_col_auto_merge_pass_mb > 0 ? (uint64) sift_col_auto_merge_pass_mb << 20 : UINT64_MAX;
+	int64		hi = PG_INT64_MIN;
+
+	for (int i = 0; i < v->n; i++)
+	{
+		bool		meets = false;
+
+		for (int j = 0; j < v->n && !meets; j++)
+			meets = j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
+		if (meets)
+		{
+			int			k = n++;
+
+			while (k > 0 && v->klo[order[k - 1]] > v->klo[i])
+			{
+				order[k] = order[k - 1];
+				k--;
+			}
+			order[k] = i;
+		}
+	}
+	for (int k = 0; k < n; k++)
+	{
+		int			i = order[k];
+
+		if (taken > 0 && (v->klo[i] >= hi || (taken >= 2 && bytes >= limit)))
+			break;
+		take[i] = true;
+		bytes += v->imm[i].bytes;
+		taken++;
+		hi = Max(hi, v->khi[i]);
+	}
+	return taken > 0;
+}
+
+/*
  * The segments one step of the rewrite (SIFT_GOAL_REWRITE) replaces, in sel. With no partitions (sift.col_auto_merge_partition_kb 0) all of them. Else, in
  * this order: the overlays together into one segment, when there are several or one has a dead row (cheap, and cut into partitions they would be overlays
  * again); when the units listed per superblock covered ask for it and one overlay is left, that overlay, the segments that hold a unit of a superblock
@@ -252,7 +342,7 @@ merge_par_bytes(void)
  * leaves nothing of what it picked for the next one, so the steps end. cut: the output is cut into partitions.
  */
 static int
-pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut)
+pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite pick", ALLOCSET_SMALL_SIZES);
 	RewriteView *v;
@@ -306,7 +396,11 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	}
 	if (keyed)
 	{
-		if (work || nover >= 2)
+		if (work)
+			memset(take, true, v->n);
+		else if (maint_part_kb > 0 && !maint_after_build)
+			*paced = pick_key_window(v, take);
+		else if (nover >= 2)
 			memset(take, true, v->n);
 	}
 	else if (nover >= 2 || dirty_over)
@@ -779,7 +873,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	int			n;
 	int			room;
 	int			nimm = 0;
-	bool		cut = false;
+	bool		cut = false,
+				paced = false;
 
 	sift_dir_read(index, snap);
 	int total = snap->nsegs;
@@ -793,7 +888,19 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 				snap->segs[keep++] = snap->segs[i];
 		snap->nsegs = keep;
 	}
-	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut) : pick_merge(index, snap, force, sel);
+	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut, &paced) : pick_merge(index, snap, force, sel);
+	/* a pass of the rewrite of overlapping runs does about sift.col_auto_merge_pass_mb of them: the next VACUUM, worker or sift.col_maintain call goes on from the directory this one left */
+	if (paced && n > 0)
+	{
+		uint64		bytes = 0;
+
+		for (int i = 0; i < n; i++)
+			bytes += sel[i].bytes;
+		if (sift_col_auto_merge_pass_mb > 0 && maint_pass_bytes >= ((uint64) sift_col_auto_merge_pass_mb << 20))
+			n = 0;
+		else
+			maint_pass_bytes += bytes;
+	}
 	/* the output of a merge of an index over the limit is partitions too: one segment of all the bytes of a build's tier would be larger than the space step moves */
 	if (goal != SIFT_GOAL_REWRITE)
 		cut = maint_part_kb > 0;

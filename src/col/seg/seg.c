@@ -344,6 +344,44 @@ unit_view_fill(void *seg, uint32 u, uint32 off, uint32 len)
 	sift_cseg_unit_fill(seg, u, off, len);
 }
 
+/*
+ * Reads, as one plan, the chunks of leaves `want` of unit u (its chunk table is in v) and the head of unit `next` (UINT32_MAX: none): the units of a scan ask for the
+ * same leaves in the order their code needs them, not the order of the file, and each ask is a read of a block or two where the plan is a few reads of a run of blocks.
+ * Returns the blocks it read.
+ */
+uint64
+sift_cseg_unit_plan(SiftColSegment *seg, uint32 u, const SiftCUnitView *v, const uint8 *want, uint32 next)
+{
+	int			ncols = seg->schema->ncols,
+				n = 0;
+	uint64		base = seg_sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off;
+	SiftSrRange *r = palloc((ncols + 1) * sizeof(SiftSrRange));
+	uint64		reads;
+
+	for (int col = 0; col < ncols; col++)
+		if (want[col] && v->chunk_len[col] > 0)
+		{
+			int			k = n++;
+
+			for (; k > 0 && r[k - 1].off > base + v->chunk_off[col]; k--)
+				r[k] = r[k - 1];
+			r[k] = (SiftSrRange) {base + v->chunk_off[col], v->chunk_len[col]};
+		}
+	if (next != PG_UINT32_MAX)
+	{
+		int			k = n++;
+		SiftSrRange h;
+
+		sift_cseg_unit_head_span(seg, next, &h.off, &h.len);
+		for (; k > 0 && r[k - 1].off > h.off; k--)
+			r[k] = r[k - 1];
+		r[k] = h;
+	}
+	reads = sift_sr_read_ranges(&seg->sr, r, n);
+	pfree(r);
+	return reads;
+}
+
 /* The head of unit u parsed: false when it does not parse. The offsets of the rows of a key-cut unit are read by sift_cunit_keyed_load when a scan needs the TIDs */
 bool
 sift_cseg_unit_view(SiftColSegment *seg, uint32 u, SiftCUnitView *v)

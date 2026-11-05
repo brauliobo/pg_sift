@@ -1,6 +1,6 @@
 -- ORDER BY <scanned column> LIMIT n over an inner join to a small table that only filters: the keys of the table's rows that pass its conditions
 -- are a set of the scan (`key IN (keys)`), which the top-N holds exactly, so the join has nothing left to test. That needs the table to have a
--- unique index on its join column (no row of the scan matches twice), one integer join column, and conditions that read the table's columns alone.
+-- unique index on its join column (no row of the scan matches twice), one join column of an integer or text type, and conditions that read the table's columns alone.
 -- The columns of the table that the result reads are taken from the rows the scan loaded. Everything else keeps the normal plan. A bounded differential fuzz (fixed seed, queries made from
 -- hashes) compares the pushed top-N with the plain plan (sift.enable_agg off) in order, and the refused shapes are checked one by one.
 CREATE EXTENSION pg_sift;
@@ -109,16 +109,16 @@ INSERT INTO jt_shapes VALUES
 	(6, 'SELECT f.id, f.k_rand FROM jd d JOIN jf f ON f.g = d.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(7, 'SELECT f.id, f.k_rand FROM jf f JOIN jd2 e ON e.h = f.h WHERE e.tier = 1 ORDER BY f.k_rand, f.id LIMIT 10'),
 	-- refused: a table with no unique index on the key, an outer join (to a table without a unique index: PostgreSQL 19 removes one to a unique key that nothing reads), a condition that reads the scanned row,
-	-- a text key, an expression of the scanned column as the key, a second key, a join to a sub-select, an aggregate
+	-- an expression of the scanned column as the key, a second key, a join to a sub-select, an aggregate
 	(12, 'SELECT f.id, f.k_rand FROM jf f JOIN jn d ON d.g = f.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(13, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN jn d ON d.g = f.g AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(14, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region > f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
-	(15, 'SELECT f.id, f.k_rand FROM jf f JOIN jl d ON d.label = f.lab WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(16, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g + 1 WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(17, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region = f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(18, 'SELECT f.id, f.k_rand FROM jf f JOIN (SELECT g FROM jd WHERE region = 2) d ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10'),
 	(19, 'SELECT f.id, d.region FROM jf f JOIN jd d ON d.g = f.g ORDER BY d.region, f.id LIMIT 10'),
-	-- pushed: a column of the table in the result; a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind, it needs no unique key
+	-- pushed: a text key (its keys are the conjunct `lab = ANY(keys)`); a column of the table in the result; a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind, it needs no unique key
+	(15, 'SELECT f.id, f.k_rand FROM jf f JOIN jl d ON d.label = f.lab WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(11, 'SELECT f.id, d.label FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(20, 'SELECT f.id, f.k_rand FROM jf f WHERE f.g IN (SELECT g FROM jd WHERE region = 2) ORDER BY f.k_rand, f.id LIMIT 10');
 SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LATERAL jt_run(s.q) r ORDER BY s.n;

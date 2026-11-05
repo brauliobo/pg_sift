@@ -26,6 +26,7 @@ typedef struct AgkCase
 	int64	   *i64b;
 	double	   *f64;
 	double	   *f64b;
+	double	   *fs;				/* the values of fstep: ties of rint, the ends of int32, signed zeros, NaN, infinities */
 	uint32	   *code;			/* < ncode */
 	uint64	   *mask;			/* n bits */
 	int			ncode;
@@ -182,6 +183,42 @@ agk_f64(SiftRng *r, int mode)
 	}
 }
 
+/* a value for fstep: a quarter (rint ties, negative fractions), anything within int32 and beyond it, the ends of int32, a special */
+static inline double
+agk_fstep_val(SiftRng *r)
+{
+	/* a draw to a statement of its own: the order of the calls in one expression is the compiler's, and the digest is pinned for every CPU */
+	const int	kind = sift_rng_below(r, 6);
+
+	switch (kind)
+	{
+		case 0:
+			return ((int) sift_rng_below(r, 81) - 40) * 0.25;
+		case 1:
+			return (sift_rng_unit(r) - 0.5) * 6e9;
+		case 2:
+			return agk_special(r);
+		case 3:
+			{
+				const double sign = sift_rng_below(r, 2) ? 1 : -1,
+							below = (double) sift_rng_below(r, 4),
+							half = sift_rng_below(r, 2) ? 0.5 : 0;
+
+				return sign * (2147483647.0 - below + half);
+			}
+		case 4:
+			{
+				const double sign = sift_rng_below(r, 2) ? 1 : -1,
+							mant = (double) (1 + sift_rng_below(r, 3));
+				const int	shift = (int) sift_rng_below(r, 1070);
+
+				return sign * ldexp(mant, -shift);
+			}
+		default:
+			return (sift_rng_unit(r) - 0.5) * 2000;
+	}
+}
+
 static inline double
 agk_pick_f64(SiftRng *r, const double *v, int n)
 {
@@ -266,6 +303,7 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 	c->i64b = AGK_ARR(c, r, int64, n);
 	c->f64 = AGK_ARR(c, r, double, n);
 	c->f64b = AGK_ARR(c, r, double, n);
+	c->fs = AGK_ARR(c, r, double, n);
 	c->code = AGK_ARR(c, r, uint32, n);
 	c->parent = AGK_ARR(c, r, uint32, n);
 	c->gid = AGK_ARR(c, r, uint32, n);
@@ -293,6 +331,7 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 		c->i32[i] = agk_i32(r, m32);
 		c->i64[i] = agk_i64(r, m64);
 		c->f64[i] = agk_f64(r, mf);
+		c->fs[i] = agk_fstep_val(r);
 		/* the second column equals the first in about a third of the rows (ties), is near it or is another draw */
 		switch (sift_rng_below(r, 3))
 		{
@@ -496,6 +535,30 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 	}
 
 	{
+		/* every op and form, the divisors and factors that overflow, underflow and are exact (1e-300 underflows a small value, 0.1 and 5e-4 are not exact) */
+		static const double cs[] = {5, 0.1, -2.5, 5e-4, 1e9, 1e-300, 4503599627370496.0, 1e300};
+		int32	   *q = AGK_ALLOC((size_t) (n > 0 ? n : 1) * 4);
+
+		for (int op = SIFT_FSTEP_FLOOR; op <= SIFT_FSTEP_TOINT; op++)
+			for (int form = SIFT_FSTEP_PLAIN; form <= SIFT_FSTEP_MUL; form++)
+				for (int ci = 0; ci < (form == SIFT_FSTEP_PLAIN ? 1 : 3); ci++)
+				{
+					int32		mn = 0x5A5A5A5A,
+								mx = 0x5A5A5A5A;
+					bool		ok;
+
+					memset(q, 0xA5, (size_t) n * 4);
+					ok = k->fstep(q, &mn, &mx, c->fs, n, op, form, form == SIFT_FSTEP_PLAIN ? 1 : cs[(op * 3 + form + ci * 3) % lengthof(cs)]);
+					AGK_HV(res, ok);
+					AGK_HV(res, mn);
+					AGK_HV(res, mx);
+					agk_hash(res, q, (size_t) n * 4);
+				}
+		agk_step(res, "fstep");
+		AGK_FREE(q);
+	}
+
+	{
 		/* unaligned starts (the kernels load through unaligned pointers) and the ± 1 and power of ten multipliers of the numeric programs */
 		static const int32 ks[] = {1, -1, 100, -10000, 1000000000, INT32_MIN, INT32_MAX};
 		int64	   *d = AGK_ALLOC((size_t) (n > 0 ? n : 1) * 8);
@@ -544,6 +607,21 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 			facc[g] = facc[g] != facc[g] ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : facc[g];
 		agk_hash(res, facc, (size_t) c->ngrp * 8);
 		agk_step(res, "sum_gid_f64");
+		{
+			/* the ungrouped sum: the bits of a single group's (every row of the group 0), NaN as above */
+			double		s = sift_aggk_sum_f64(c->facc0[0], c->f64, mm, n),
+						one = c->facc0[0];
+			uint32		z = 0;
+
+			for (int i = 0; i < n; i++)
+				if (mm == NULL || (mm[i >> 6] >> (i & 63) & 1))
+					k->sum_gid_f64(&one, &z, c->f64 + i, NULL, 1);
+			s = s != s ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : s;
+			one = one != one ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : one;
+			agk_hash(res, &s, 8);
+			agk_hash(res, &one, 8);
+			agk_step(res, "sum_f64");
+		}
 		{
 			int64	   *q = AGK_ALLOC((size_t) c->ngrp * 4 * 8);
 

@@ -24,6 +24,7 @@
 #include "core/cpu.h"
 #include "core/store.h"
 #include "core/visibility.h"
+#include "core/visibility_run.h"
 
 #ifdef SIFT_TESTING
 #include "common/pg_prng.h"
@@ -75,93 +76,125 @@ sift_vis_nblocks(Relation heap)
 	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
 }
 
-/* The all-visible bit of each page (not its all-frozen bit) among the n words of a map page; the contents of a page are 8-aligned. No popcnt instruction: this object is baseline x86-64 (scripts/isa_check.sh) */
-static uint32
-count_allvisible_words(const uint64 *w, uint32 n)
-{
-	uint32		count = 0;
+static const uint64 vm_zero_words[VM_MAPSIZE / sizeof(uint64)];
 
-	for (uint32 i = 0; i < n; i++)
-		count += sift_pc64(w[i] & UINT64CONST(0x5555555555555555));
-	return count;
+/* What the last counts of a heap were while a planner run lasts (sift_vis_scope): the stamp of an index and the statistics it is read for count the same map */
+#define VM_MEMO_MAX 4
+
+static struct
+{
+	Oid			relid;
+	BlockNumber nblocks,
+				visible,
+				clean;
+}			vm_memo[VM_MEMO_MAX];
+static int	vm_memo_n;
+static bool vm_memo_on;
+
+void
+sift_vis_scope(bool on)
+{
+	vm_memo_on = on;
+	vm_memo_n = 0;
+}
+
+static void
+vm_run_soft(VmPass *p, const uint64 *w, uint64 n)
+{
+	vm_run_impl(p, w, n, false);
+}
+
+static void (*vm_run) (VmPass *p, const uint64 *w, uint64 n) = vm_run_soft;
+
+static void
+vm_rebind(const SiftCpu *cpu)
+{
+#if defined(__x86_64__) || defined(SIFT_HAVE_NEON)
+	vm_run = cpu->active > SIFT_SIMD_SCALAR && (cpu->flags & (SIFT_CPU_POPCNT | SIFT_CPU_NEON)) ? sift_vm_run_hw : vm_run_soft;
+#else
+	vm_run = vm_run_soft;
+#endif
+}
+
+void
+sift_vis_init(void)
+{
+	sift_cpu_register(vm_rebind);
 }
 
 /*
- * The pages among the first nblocks that the map says are all-visible: what visibilitymap_count counts, from the bytes of the map those pages
- * use (it counts the whole 8 kB of every map page, a hundred times the work for a partition of a few pages). Not locked, as there: a bit
- * a writer sets or clears meanwhile is a page more or less.
+ * The pages among the first nblocks that the map says are all-visible (what visibilitymap_count counts, from the bytes of the map those pages use: it counts the whole
+ * 8 kB of every map page, a hundred times the work for a partition of a few pages), and the superblocks among them (SIFT_SB_PAGES pages: a unit's rows are in one) whose
+ * pages are all all-visible, the units whose pre-aggregates may answer; the last, partial one counts the pages it has. One pass over the map reads both. Not locked,
+ * as in visibilitymap_count: a bit a writer sets or clears meanwhile is a page more or less. clean may be NULL. A superblock is 8 words of the map's bytes, which a map page (1021 words)
+ * does not hold a whole number of.
  */
-BlockNumber
-sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
+void
+sift_vis_count(Relation heap, BlockNumber nblocks, BlockNumber *visible, BlockNumber *clean)
 {
 	SMgrRelation smgr = RelationGetSmgr(heap);
-	uint64		left = ((uint64) nblocks + 3) / 4;
-	BlockNumber vm_nblocks,
-				count = 0;
+	uint64		nbytes = ((uint64) nblocks + 3) / 4,
+				nw = (nbytes + 7) / 8,
+				gw = 0;
+	VmPass		p = {VM_VISIBLE_BITS, 0, 0, 0};
+	BlockNumber vm_nblocks = 0;
 
-	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
-		return 0;
-	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
-	for (BlockNumber mapblk = 0; left > 0 && mapblk < vm_nblocks; mapblk++)
-	{
-		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
-		const char *map = PageGetContents(BufferGetPage(buf));
-		uint32		len = Min(left, VM_MAPSIZE);
-		uint32		off = len / sizeof(uint64) * sizeof(uint64);
-
-		count += count_allvisible_words((const uint64 *) map, len / sizeof(uint64));
-		if (off < len)
+	for (int i = 0; vm_memo_on && i < vm_memo_n; i++)
+		if (vm_memo[i].relid == RelationGetRelid(heap) && vm_memo[i].nblocks == nblocks)
 		{
-			uint64		w = 0;
-
-			memcpy(&w, map + off, len - off);
-			count += sift_pc64(w & UINT64CONST(0x5555555555555555));
+			*visible = vm_memo[i].visible;
+			if (clean)
+				*clean = vm_memo[i].clean;
+			return;
 		}
-		ReleaseBuffer(buf);
-		left -= len;
-	}
-	return count;
-}
-
-/*
- * The superblocks (SIFT_SB_PAGES pages: a unit's rows are in one) among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer.
- * The map bytes of all the pages are read in order into one array (a map page holds VM_MAPSIZE bytes of bits), then a superblock is clean when its 64 bytes have every
- * all-visible bit; the last, partial one counts the pages it has.
- */
-BlockNumber
-sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks)
-{
-	SMgrRelation smgr = RelationGetSmgr(heap);
-	uint64		nbytes = ((uint64) nblocks + 3) / 4;
-	uint8	   *bits = palloc0(nbytes + VM_BYTES_PER_SB);
-	BlockNumber vm_nblocks,
-				clean = 0;
-
-	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
-		return 0;
-	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
-	for (BlockNumber mapblk = 0; (uint64) mapblk * VM_MAPSIZE < nbytes && mapblk < vm_nblocks; mapblk++)
+	if (smgrexists(smgr, VISIBILITYMAP_FORKNUM))
+		vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
+	for (BlockNumber mapblk = 0; gw < nw; mapblk++)
 	{
-		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+		Buffer		buf = InvalidBuffer;
+		const uint64 *w = vm_zero_words;
+		uint64		n = Min(VM_MAPSIZE / sizeof(uint64), nw - gw);
 
-		memcpy(bits + (uint64) mapblk * VM_MAPSIZE, PageGetContents(BufferGetPage(buf)), Min(VM_MAPSIZE, nbytes - (uint64) mapblk * VM_MAPSIZE));
-		ReleaseBuffer(buf);
-	}
-	for (BlockNumber sb = 0; (uint64) sb * SIFT_SB_PAGES < nblocks; sb++)
-	{
-		BlockNumber pages = Min(SIFT_SB_PAGES, nblocks - sb * SIFT_SB_PAGES);
-		bool		all = true;
-
-		for (BlockNumber p = 0; all && p < pages; p++)
+		if (mapblk < vm_nblocks)
 		{
-			uint64		blk = (uint64) sb * SIFT_SB_PAGES + p;
-
-			all = (bits[blk / 4] >> ((blk % 4) * 2) & 1) != 0;
+			buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+			w = (const uint64 *) PageGetContents(BufferGetPage(buf));
 		}
-		clean += all;
+		gw += n;
+		if (gw == nw)
+		{
+			/* the last word holds the bytes of the last pages only, and the pages of its last byte that exist: the rest of the word counts as all-visible for a superblock and as zero for the pages */
+			uint8		pages[sizeof(uint64)] = {0};
+			uint64		tail = 0,
+						real = 0;
+
+			memcpy(&tail, (const char *) &w[n - 1], nbytes - (nw - 1) * sizeof(uint64));
+			for (uint32 pg = 0; pg < nblocks - (nw - 1) * 32; pg++)
+				pages[pg / 4] |= 1 << (pg % 4 * 2);
+			memcpy(&real, pages, sizeof(real));
+			vm_run(&p, w, n - 1);
+			tail &= VM_VISIBLE_BITS;
+			p.visible += sift_pc64(tail);
+			p.acc &= tail | (VM_VISIBLE_BITS & ~real);
+			p.k++;
+			if (p.k == 8)
+			{
+				p.clean += p.acc == VM_VISIBLE_BITS;
+				p.k = 0;
+			}
+		}
+		else
+			vm_run(&p, w, n);
+		if (BufferIsValid(buf))
+			ReleaseBuffer(buf);
 	}
-	pfree(bits);
-	return clean;
+	if (p.k > 0)
+		p.clean += p.acc == VM_VISIBLE_BITS;
+	if (vm_memo_on && vm_memo_n < VM_MEMO_MAX)
+		vm_memo[vm_memo_n++] = (typeof(vm_memo[0])) {RelationGetRelid(heap), nblocks, p.visible, p.clean};
+	*visible = p.visible;
+	if (clean)
+		*clean = p.clean;
 }
 
 void

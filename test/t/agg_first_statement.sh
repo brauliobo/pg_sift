@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 16
+plan 17
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -65,9 +65,11 @@ ctas=$(session "CREATE TEMP TABLE first_ctas AS $Q" "SELECT count(*) FROM first_
 check "CREATE TABLE AS as the first statement of a session runs its query in the scan" test "$(scans "$ctas")" -ge 1
 ctasoff=$(session "SET sift.enable_agg = off" "CREATE TEMP TABLE first_ctas AS $Q" "SELECT count(*) FROM first_ctas")
 check "and creates the rows of the normal plan" test "$(grep -v '^scans|' <<<"$ctas")" == "$(grep -v '^scans|' <<<"$ctasoff")"
-# a first statement that reads no indexed table does not hand its text to the EXPLAIN after it
+# an EXPLAIN that follows other statements of its query string (psql \;) is planned again from its own text, not from the first statement of the string
 expm=$({ echo "SELECT 1 \\; EXPLAIN (COSTS OFF) $Q;"; } | sql af)
-check "EXPLAIN after another statement of the same query string shows its own plan" test "$(grep -c -E 'Sort|SiftAgg' <<<"$expm")" -ge 1
+check "EXPLAIN after another statement of the same query string shows the scan" test "$(grep -c SiftAgg <<<"$expm")" -ge 1
+expset=$({ echo "SET enable_seqscan = on \\; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q;"; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af)
+check "EXPLAIN ANALYZE after a SET of the same query string runs the scan" test "$(grep -c SiftAgg <<<"$expset")" -ge 1 -a "$(scans "$expset")" -ge 1
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir af)/postgres.log")" == 0
 
 finish

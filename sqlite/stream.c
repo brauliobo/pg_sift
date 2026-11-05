@@ -69,6 +69,13 @@ sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 {
 }
 
+/* no shared buffers to read ahead into: the ranges are read when they are asked for */
+uint64
+sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n)
+{
+	return 0;
+}
+
 void
 sift_sr_unlock(SiftStreamReader *sr)
 {

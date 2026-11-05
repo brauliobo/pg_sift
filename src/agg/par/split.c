@@ -11,6 +11,7 @@
 #include "common/hashfn.h"
 #include "optimizer/optimizer.h"
 
+#include "core/popcount.h"
 #include "agg/par/int.h"
 
 /* participants, the leader included: the shares are bits of a word */
@@ -72,11 +73,14 @@ split_run_ok(const AggExec *ex)
 		split_key_ok(ex->spec, j, &ex->lay->leaf[ex->spec->key[j].leaf]);
 }
 
+/* not the golden ratio of the tables of the ids of the values (group/int.h wide_hash): the values of one share would crowd one part of those */
+#define SPLIT_MUL 0x85EBCA6Bu
+
 /* the share of a 32-bit hash: its high bits scaled to [0, n) without a division */
 static inline uint32
 share_of(uint32 h, uint32 n)
 {
-	return (uint32) (((uint64) (h * 0x9E3779B1u) * n) >> 32);
+	return (uint32) (((uint64) (h * SPLIT_MUL) * n) >> 32);
 }
 
 #if defined(__x86_64__) && defined(__linux__) && defined(__GNUC__) && !defined(__clang__)
@@ -111,7 +115,7 @@ word_i32(const int32 *d, uint32 lo, uint32 w)
 	uint8		flag[64];
 
 	for (int b = 0; b < 64; b++)
-		flag[b] = ((uint32) d[b] * 0x9E3779B1u - lo) < w;
+		flag[b] = ((uint32) d[b] * SPLIT_MUL - lo) < w;
 	return pack_flags(flag);
 }
 
@@ -121,7 +125,7 @@ word_i64(const int64 *d, uint32 lo, uint32 w)
 	uint8		flag[64];
 
 	for (int b = 0; b < 64; b++)
-		flag[b] = (((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * 0x9E3779B1u - lo) < w;
+		flag[b] = (((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL - lo) < w;
 	return pack_flags(flag);
 }
 
@@ -172,17 +176,22 @@ code_flags(AggExec *ex, const SiftSrcDict *d)
 void
 split_begin(AggExec *ex, int key, uint32 n, uint32 mine)
 {
+	uint32		first = (uint32) __builtin_ctz(mine),
+				count = sift_pc64(mine);
+
 	ex->gp_leaf = ex->spec->key[key].leaf;
 	ex->gp_n = n;
 	ex->gp_mine = mine;
 	ex->gp_dict = NULL;
-	/* one share: the hashes in it are [lo, lo + w), the first hash of share s being ceil(s * 2^32 / n) */
-	ex->gp_one = (mine & (mine - 1)) == 0;
+	/*
+	 * Shares side by side (a pass takes some of them, a worker has one): the hashes in them are [lo, lo + w), the first hash of share s being ceil(s * 2^32 / n).
+	 * All of them are w = 0 (the range of 2^32 hashes does not fit): every row is kept.
+	 */
+	ex->gp_one = mine == (uint32) (((UINT64CONST(1) << count) - 1) << first);
 	if (ex->gp_one)
 	{
-		uint32		s = (uint32) __builtin_ctz(mine);
-		uint64		lo = ((((uint64) s) << 32) + n - 1) / n,
-					hi = ((((uint64) s + 1) << 32) + n - 1) / n;
+		uint64		lo = ((((uint64) first) << 32) + n - 1) / n,
+					hi = ((((uint64) first + count) << 32) + n - 1) / n;
 
 		ex->gp_lo = (uint32) lo;
 		ex->gp_w = (uint32) (hi - lo);
@@ -194,8 +203,11 @@ void
 split_rows(AggExec *ex, uint64 *rmask, int nrow)
 {
 	const SiftSrcLeaf *lf = &ex->lay->leaf[ex->gp_leaf];
-	const SiftSrcVec *v = get_vec(ex, ex->gp_leaf);
+	const SiftSrcVec *v;
 
+	if (ex->gp_one && ex->gp_w == 0)
+		return;
+	v = get_vec(ex, ex->gp_leaf);
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 	{
 		uint64		keep;

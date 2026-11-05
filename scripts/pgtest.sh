@@ -65,6 +65,7 @@ FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HA
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
 
 install() {
+	echo "pgtest: install: $([[ -n $SIFT_TESTING ]] && echo 'test library' || echo 'release library') (flavor ${FLAVOR% })" >&2   # SIFT_TESTING set and empty is the release library: an inherited empty value builds it
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	# on the make command line: sudo resets the environment, which would install another flavor
 	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})

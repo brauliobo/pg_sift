@@ -42,12 +42,18 @@ typedef struct SiftVis
 	int64		heap_pages;
 } SiftVis;
 
+/* Registers the choice of the counting kernel of the map with sift.simd (called from _PG_init) */
+extern void sift_vis_init(void);
+
 /* Blocks of the table in TID space (the relation size for a heap, the virtual blocks of a sift_table) */
 extern BlockNumber sift_vis_nblocks(Relation heap);
-/* The all-visible pages among the first nblocks of a heap, as visibilitymap_count counts them, reading only the map bytes they use */
-extern BlockNumber sift_vis_count_allvisible(Relation heap, BlockNumber nblocks);
-/* The superblocks among the first nblocks whose pages are all all-visible: the units whose pre-aggregates may answer */
-extern BlockNumber sift_vis_count_clean_sbs(Relation heap, BlockNumber nblocks);
+/*
+ * The all-visible pages among the first nblocks of a heap, as visibilitymap_count counts them, reading only the map bytes they use, and the superblocks among them whose pages
+ * are all all-visible (the units whose pre-aggregates may answer), in one pass over the map. Between sift_vis_scope(true) and sift_vis_scope(false) (a planner run) the counts
+ * of a heap are kept: the stamp of an index and its statistics ask for the same map.
+ */
+extern void sift_vis_count(Relation heap, BlockNumber nblocks, BlockNumber *visible, BlockNumber *clean);
+extern void sift_vis_scope(bool on);
 /*
  * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
  * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0, and so does a column

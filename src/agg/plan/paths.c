@@ -10,6 +10,8 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
+#include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
@@ -320,6 +322,73 @@ normal_under_floor(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *outpu
 int			sift_test_fail_pick;	/* sift.test_fail_pick */
 #endif
 
+/*
+ * Do the rows a path reads come off its scans with a condition the scan does not satisfy (a Filter of an index scan, of a sequential or bitmap scan)? How far
+ * the scan must read to find its first group then rests on the selectivity of that condition, which the statistics do not know for columns that move together;
+ * a path of a shape this walk does not know is taken to be filtered.
+ */
+static bool
+reads_filtered(Path *p)
+{
+	switch (nodeTag(p))
+	{
+		case T_IndexPath:
+			{
+				IndexPath  *ip = (IndexPath *) p;
+				int			indexed = 0;
+
+				foreach_node(IndexClause, ic, ip->indexclauses)
+					indexed += ic->rinfo != NULL;
+				return list_length(p->parent->baserestrictinfo) > indexed;
+			}
+		case T_AggPath:
+			return reads_filtered(((AggPath *) p)->subpath);
+		case T_GroupPath:
+			return reads_filtered(((GroupPath *) p)->subpath);
+		case T_SortPath:
+			return reads_filtered(((SortPath *) p)->subpath);
+		case T_IncrementalSortPath:
+			return reads_filtered(((IncrementalSortPath *) p)->spath.subpath);
+		default:
+			return true;
+	}
+}
+
+/*
+ * A sub-select is planned for all its rows: its rels ignore the startup cost, so the first path that costs less in total drops the normal path that
+ * starts at once, which a LIMIT or a merge join above the sub-select wants (the scan reads every unit before its first group). The rels that take
+ * the paths on keep the startup cost whenever a path of the group stage has one (the grouped rel keeps it from the first path the scan adds). The normal
+ * path kept that way is one whose first group is a sure distance away: one that reads through a filter is dropped as it was, since the cost it is kept for
+ * is an estimate that a filter on columns that move together can miss by the whole table.
+ */
+static void
+keep_startup_paths(PlannerInfo *root, RelOptInfo *grouped, bool was)
+{
+	bool		scan = false;
+
+	foreach_ptr(Path, p, grouped->pathlist)
+		scan |= IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods;
+	if (!scan)
+	{
+		grouped->consider_startup = was;
+		return;
+	}
+	foreach_ptr(Path, p, list_copy(grouped->pathlist))
+	{
+		if (IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods)
+			continue;
+		foreach_ptr(Path, q, grouped->pathlist)
+			if (IsA(q, CustomPath) && ((CustomPath *) q)->methods == &agg_path_methods && q->total_cost * 1.01 < p->total_cost &&
+				pathkeys_contained_in(p->pathkeys, q->pathkeys) && reads_filtered(p))
+			{
+				grouped->pathlist = list_delete_ptr(grouped->pathlist, p);
+				break;
+			}
+	}
+	for (UpperRelationKind k = UPPERREL_WINDOW; k <= UPPERREL_FINAL; k++)
+		fetch_upper_rel(root, k, NULL)->consider_startup = true;
+}
+
 /* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -327,6 +396,7 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	int			outer_pick = agg_index_pick,
 				outer_usable = agg_index_usable;
 	double		outer_normal = agg_stage_normal;
+	bool		startup_was = output_rel->consider_startup;
 	AggStage	st;
 
 	agg_stage_begin(&st, root);
@@ -334,8 +404,13 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	agg_stage_normal = HUGE_VAL;
 	if ((stage == UPPERREL_GROUP_AGG || stage == UPPERREL_PARTIAL_GROUP_AGG) && scans_column_source(root, input_rel))
 		foreach_ptr(Path, p, output_rel->pathlist)
-			if (IsA(p, AggPath) && ((AggPath *) p)->aggstrategy == AGG_HASHED)
-				p->total_cost += hash_agg_extra((AggPath *) p);
+			if (IsA(p, AggPath))
+			{
+				if (((AggPath *) p)->aggstrategy == AGG_HASHED)
+					p->total_cost += hash_agg_extra((AggPath *) p);
+				if (sift_enable_agg)
+					p->total_cost += join_agg_extra((AggPath *) p);
+			}
 	foreach_ptr(Path, p, output_rel->pathlist)
 		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
 			agg_stage_normal = Min(agg_stage_normal, p->total_cost);
@@ -347,6 +422,8 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 		agg_index_usable = outer_usable;
 		return;
 	}
+	if (stage == UPPERREL_GROUP_AGG && root->parent_root != NULL)
+		output_rel->consider_startup = true;
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
 #ifdef SIFT_TESTING
@@ -358,6 +435,8 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 			break;
 	}
 	agg_stage_end(&st);
+	if (stage == UPPERREL_GROUP_AGG && root->parent_root != NULL)
+		keep_startup_paths(root, output_rel, startup_was);
 	if (stage == UPPERREL_FINAL)
 		agg_final_paths(root, output_rel);
 	agg_index_pick = outer_pick;
@@ -365,12 +444,20 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	agg_stage_normal = outer_normal;
 }
 
-/* the native plans of the correlated children, made now that the plan has its place in the statement; true when the spec holds their IDs */
+/* does the path hold the plan of a correlated child? */
 static bool
+has_correlated_children(CustomPath *best)
+{
+	foreach_ptr(Path, p, ((SiftAggPath *) best)->correlated)
+		if (p != NULL)
+			return true;
+	return false;
+}
+
+/* the native plans of the correlated children, made now that the plan has its place in the statement; the spec holds their IDs */
+static void
 plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 {
-	bool		planned = false;
-
 	for (int i = 0; i < spec->njoin; i++)
 	{
 		Path	   *subpath = list_nth(((SiftAggPath *) best)->correlated, i);
@@ -390,10 +477,8 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 			root->glob->subpaths = lappend(root->glob->subpaths, subpath);
 			root->glob->subroots = lappend(root->glob->subroots, subroot);
 			spec->join[i].subplan = list_length(root->glob->subplans);
-			planned = true;
 		}
 	}
-	return planned;
 }
 
 #if PG_VERSION_NUM < 180000
@@ -435,7 +520,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	CustomScan *cs = makeNode(CustomScan);
 	List	   *pack = sift_aggspec_pack(linitial(best->custom_private));
 	List	   *scan_tlist = lsecond(best->custom_private);
-	SiftAggSpec *spec = sift_aggspec_unpack(pack);
+	const SiftAggSpec *spec = linitial(best->custom_private);
 	GroupPathExtraData *gextra = NULL;
 
 	cs->scan.plan.targetlist = root->parse->hasWindowFuncs ? (List *) topn_window_aggs((Node *) tlist, NULL) : tlist;
@@ -446,7 +531,15 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	if (root->parse->groupingSets != NIL)
 		const_keys_as_columns(root, cs);
 #endif
-	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
+	cs->custom_private = pack;
+	if (has_correlated_children(best))
+	{
+		/* the path's spec is kept as it is: a path may become a plan more than once */
+		SiftAggSpec *own = sift_aggspec_unpack(pack);
+
+		plan_correlated_children(root, best, own);
+		cs->custom_private = sift_aggspec_pack(own);
+	}
 	/* declared, so that PostgreSQL knows the plan depends on them and rescans it when the enclosing level sets new values (agg_rescan) */
 	if (list_length(best->custom_private) > 2)
 		cs->custom_exprs = copyObject(lthird(best->custom_private));

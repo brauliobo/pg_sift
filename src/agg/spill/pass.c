@@ -18,6 +18,7 @@
 #include "agg/par_int.h"
 #include "agg/plan_int.h"
 #include "agg/agg_int.h"
+#include "agg/blob/int.h"
 #include "agg/spill_int.h"
 #include "agg/spill/int.h"
 #include "agg/exec/int.h"
@@ -32,6 +33,8 @@ int			sift_test_agg_pass_w = 0;
 #define PASS_FILL		0.8
 /* the keys are cut into this many shares by hash (a word of bits: par/split.c); a pass takes some of them, side by side */
 #define PASS_SHARES		32
+/* a table the estimate puts at this many times the memory is read in passes from the first row: the first scan would be stopped for them anyway */
+#define PASS_UPFRONT	2.0
 
 /* the key a scan is split by: the first an integer, a date, a timestamp or a text leaf */
 static int
@@ -55,6 +58,13 @@ scan_done(const AggExec *ex)
 				hi = Min(ex->tid_sb_hi, sift_colsrc_nsb(ex->src));
 
 	return hi <= lo || ex->unit.sb >= hi ? 1.0 : (double) (ex->unit.sb + 1 - lo) / (hi - lo);
+}
+
+/* the shares of the keys a table of `need` bytes fits in the memory, a part of it left for the growth of the arrays */
+static double
+pass_fits(const AggExec *ex, double need)
+{
+	return PASS_SHARES * (double) ex->spill->budget * PASS_FILL / need;
 }
 
 /*
@@ -86,10 +96,10 @@ pass_restart(AggExec *ex)
 		return false;
 	if (ex->pass_w > 0)
 	{
-		/* a pass that overflowed: its shares are fewer, by how much of the scan they held memory for; one share that does not fit leaves the rest to the spill */
+		/* a pass that overflowed: its shares are fewer, by the memory it held (the groups it would have made are the rest of its shares': the memory is what it held for them); one share that does not fit leaves the rest to the spill */
 		if (ex->pass_w == 1)
 			ex->pass_all = true;
-		ex->pass_w = ex->pass_all ? PASS_SHARES : Max((uint32) (ex->pass_w * done * PASS_FILL), 1);
+		ex->pass_w = ex->pass_all ? PASS_SHARES : Max((uint32) (ex->pass_w * PASS_FILL * (double) sp->budget / Max((double) (MemoryContextMemAllocated(ex->tcxt, true) - sp->floor), 1.0)), 1);
 		ex->pass_fixed = true;
 		ex->pass_stop = true;
 		ex->n_pass_restarts++;
@@ -103,7 +113,7 @@ pass_restart(AggExec *ex)
 	per_group = group_table_bytes(ex->spec, 1.0, &state);
 	used = Max((double) (MemoryContextMemAllocated(ex->tcxt, true) - sp->floor) - held * per_group, 0.0);
 	need = Max(ex->spec->est_groups, held) * per_group + used / done;
-	fits = PASS_SHARES * (double) sp->budget * PASS_FILL / need;
+	fits = pass_fits(ex, need);
 	/* fewer than one share fits, or all of them: the spill reads the table once, as passes would not */
 	if (fits < 1.0 || fits >= PASS_SHARES)
 		return false;
@@ -111,6 +121,38 @@ pass_restart(AggExec *ex)
 	ex->pass_key = key;
 	ex->pass_stop = true;
 	ex->n_pass_restarts++;
+	return true;
+}
+
+/*
+ * Does the scan start in passes? When the planner's groups are far more than the memory holds (PASS_UPFRONT times) and some shares of them fit, the scan that
+ * starts whole is stopped for them later, after the part of it read by then: the passes start at the first row, for the shares the estimate says fit.
+ */
+bool
+pass_upfront(AggExec *ex)
+{
+	AggSpill   *sp = ex->spill;
+	double		state,
+				need,
+				fits;
+	int			key;
+
+	if (sp == NULL || sp->ranged || ex->par != NULL || ex->lane_serial || ex->lanes || ex->ndsorder > 0 || (key = pass_key(ex)) < 0)
+		return false;
+#ifdef SIFT_TESTING
+	if (sift_test_agg_pass_w != 0)
+		return false;
+#endif
+	/* the sets of a count(DISTINCT) grow with the rows read, which the estimate of the groups does not say: those scans find out by reading */
+	for (int i = 0; i < ex->spec->naggs; i++)
+		if (set_agg(&ex->spec->agg[i]))
+			return false;
+	need = group_table_bytes(ex->spec, Max(ex->spec->est_groups, 1.0), &state);
+	fits = pass_fits(ex, need);
+	if (need < PASS_UPFRONT * (double) sp->budget || fits < 1.0 || fits >= PASS_SHARES)
+		return false;
+	ex->pass_w = (uint32) fits;
+	ex->pass_key = key;
 	return true;
 }
 
@@ -156,50 +198,96 @@ pass_forced(AggExec *ex)
 }
 
 /*
- * The units are read once for each group of shares of the keys, from the beginning: what the scan did so far is forgotten. A pass whose table outgrows hash
- * memory is stopped (pass_restart) and read again with fewer shares.
+ * The units are read once for each group of shares of the keys, from the beginning: what the scan did so far is forgotten. The passes are read as the groups are
+ * asked for (pass_more, from spill_more): the groups of a pass are returned from its table, which is reset when the next pass starts, so no store holds the groups of
+ * the passes that are over. A pass whose table outgrows hash memory is stopped (pass_restart) and read again with fewer shares.
  */
 void
-pass_scan(AggExec *ex)
+pass_begin(AggExec *ex)
 {
-	PassCounts	start = {0},
-				first = {0};
-	bool		got = false;
+	PassCounts	none = {0};
 
+	ex->pass_lazy = true;
+	ex->pass_a = 0;
+	ex->pass_got = false;
 	ex->pass_stop = false;
 	table_reset(ex);
-	counts_set(ex, &start);
-	for (uint32 a = 0; a < PASS_SHARES;)
-	{
-		uint32		w = Min(ex->pass_w, PASS_SHARES - a);
+	counts_set(ex, &none);
+}
 
+/* the passes are over: the rows and units are those of the table, not of the passes */
+static void
+pass_end(AggExec *ex)
+{
+	ex->n_rows = ex->pass_rows;
+	ex->n_units = ex->pass_units;
+	ex->gp_n = ex->gp_mine = 0;
+}
+
+/* are there passes to read? */
+bool
+pass_pending(const AggExec *ex)
+{
+	return ex->pass_lazy && ex->pass_a < PASS_SHARES;
+}
+
+/*
+ * The next pass is read and its groups are listed: true. False: it was the last and it spilled (the partitions are to be returned, as a scan that spilled does),
+ * or the passes were over.
+ */
+bool
+pass_more(AggExec *ex)
+{
+	AggSpill   *sp = ex->spill;
+	PassCounts	start;
+	uint32		w;
+
+	if (!pass_pending(ex))
+		return false;
+	if (ex->pass_a > 0)
+		table_reset(ex);
+	for (;;)
+	{
+		w = Min(ex->pass_w, PASS_SHARES - ex->pass_a);
 		ex->row_base = 0;
-		split_begin(ex, ex->pass_key, PASS_SHARES, (uint32) ((UINT64CONST(1) << w) - 1) << a);
+		split_begin(ex, ex->pass_key, PASS_SHARES, (uint32) ((UINT64CONST(1) << w) - 1) << ex->pass_a);
 		start = COUNTS(ex);
 		scan_items(ex);
-		if (ex->pass_stop)
-		{
-			ex->pass_stop = false;
-			table_reset(ex);
-			counts_set(ex, &start);
-			continue;
-		}
-		/* the next pass takes the shares the memory of this one leaves room for */
-		if (!ex->pass_fixed && !ex->spill->spilled && w < PASS_SHARES - a - w)
-		{
-			double		held = Max((double) (MemoryContextMemAllocated(ex->tcxt, true) - ex->spill->floor), 1.0);
-
-			ex->pass_w = Max(w, (uint32) Min(w * (double) ex->spill->budget * PASS_FILL / held, PASS_SHARES));
-		}
-		spill_pass_end(ex);
-		ex->n_passes++;
-		/* the rows and units are those of the table, not of the passes */
-		if (!got)
-			first = COUNTS(ex);
-		got = true;
-		a += w;
+		if (!ex->pass_stop)
+			break;
+		ex->pass_stop = false;
+		table_reset(ex);
+		counts_set(ex, &start);
 	}
-	ex->n_rows = first.rows;
-	ex->n_units = first.units;
-	ex->gp_n = ex->gp_mine = 0;
+	/* the next pass takes the shares the memory of this one leaves room for */
+	if (!ex->pass_fixed && !sp->spilled && w < PASS_SHARES - ex->pass_a - w)
+	{
+		double		held = Max((double) (MemoryContextMemAllocated(ex->tcxt, true) - sp->floor), 1.0);
+
+		ex->pass_w = Max(w, (uint32) Min(w * (double) sp->budget * PASS_FILL / held, PASS_SHARES));
+	}
+	ex->n_passes++;
+	if (!ex->pass_got)
+	{
+		ex->pass_rows = ex->n_rows;
+		ex->pass_units = ex->n_units;
+		ex->pass_got = true;
+	}
+	ex->pass_a += w;
+	final_checks(ex, ex->n_tuples);
+	if (ex->pass_a >= PASS_SHARES)
+		pass_end(ex);
+	if (sp->spilled)
+	{
+		spill_finish(ex);
+		return false;
+	}
+	dist_finish_all(ex);
+	mapped_finish(ex);
+	if (ex->glist)
+		pfree(ex->glist);
+	list_groups(ex);
+	if (ex->spec->gtopn_k > 0)
+		groups_topn(ex);
+	return true;
 }

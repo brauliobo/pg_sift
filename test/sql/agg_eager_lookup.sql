@@ -1,0 +1,84 @@
+-- A sum of a numeric column times a value of a table joined by a unique key (`sum(e.amount * k.rate) .. JOIN kinds k ON k.id = e.kind_id`) adds up the amounts for each key first: a
+-- sub-select groups the rows by the keys of the query and the key of the lookup, and the query above joins it to the lookup and adds up the products of the groups. The rows must be those of
+-- the scan off, with no worker and with three, for keys that are NULL or that the lookup has no row for, columns and rates that are NULL, numerics of different scales and NaN. A sum that is not of a
+-- product of numerics, a lookup whose key repeats, a column of the lookup read in a group or a condition, a column compared with a constant (the normal plan reads those rows through an index) and a join that is not an inner one stay as they are.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE tenants (id int PRIMARY KEY, region int NOT NULL, name text NOT NULL);
+INSERT INTO tenants SELECT g, 1 + g % 6, 'tenant_' || g FROM generate_series(1, 300) g;
+-- rate: NULL for a kind, nrate: numerics of different scales
+CREATE TABLE kinds (id int PRIMARY KEY, rate numeric(8,3), nrate numeric, name text NOT NULL);
+INSERT INTO kinds SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE g / 8.0 END, CASE WHEN g % 7 = 0 THEN 'NaN'::numeric WHEN g % 5 = 0 THEN NULL ELSE g / (CASE WHEN g % 2 = 0 THEN 4.0 ELSE 400.0 END) END, 'kind_' || g FROM generate_series(1, 40) g;
+CREATE TABLE kinds_dup (id int, rate numeric(8,3));
+INSERT INTO kinds_dup SELECT g % 30, g / 8.0 FROM generate_series(1, 60) g;
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, kind_id int, status int NOT NULL, amount numeric(10,2), loose numeric, f float8) WITH (autovacuum_enabled = false);
+-- kinds 41 to 45 are not in the lookup, a tenth of the rows have no kind
+INSERT INTO events SELECT g, 1 + (g * 7919) % 300, CASE WHEN g % 10 = 0 THEN NULL ELSE 1 + (g * 31) % 45 END, 1 + g % 4, CASE WHEN g % 13 = 0 THEN NULL ELSE (g % 500) / 5.0 END,
+       CASE WHEN g % 997 = 0 THEN 'NaN'::numeric WHEN g % 7 = 0 THEN NULL ELSE (g % 300) / (CASE WHEN g % 3 = 0 THEN 7.0 ELSE 70.0 END) END, g / 3.0 FROM generate_series(1, 60000) g;
+-- a tenant with rows of kinds 41 to 45 only
+INSERT INTO events SELECT 100000 + g, 301, 41 + g % 5, 1, g, g, g FROM generate_series(1, 50) g;
+INSERT INTO tenants VALUES (301, 7, 'orphans');
+CREATE INDEX events_col ON events USING sift_col (id, tenant_id, kind_id, status, amount, loose, f) WITH (key_cut = tenant_id);
+VACUUM (FREEZE, ANALYZE) events, tenants, kinds, kinds_dup;
+
+CREATE TABLE eager_q (n int, label text, q text);
+INSERT INTO eager_q VALUES
+	(1, 'a sum by region',                 'SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(2, 'the lookup on the left',          'SELECT t.region, sum(k.rate * e.amount) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(3, 'a group of the fact table',       'SELECT e.status, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(4, 'no group',                        'SELECT sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id'),
+	(5, 'scales that differ, and NaN',     'SELECT e.status, sum(e.loose * k.nrate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(6, 'two sums of two columns',         'SELECT t.region, sum(e.amount * k.rate) AS s, sum(e.loose * k.rate) AS m FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(7, 'the same sum twice',              'SELECT e.status, sum(e.amount * k.rate) AS s, sum(e.amount * k.rate) + 1 AS s1 FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(8, 'a having and an order',           'SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1 HAVING sum(e.amount * k.rate) > 1000 ORDER BY 2 DESC'),
+	(9, 'a column compared with a constant',   'SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id WHERE e.status < 3 AND t.region <> 2 GROUP BY 1'),
+	(10, 'the tables listed with a comma',  'SELECT t.region, sum(e.amount * k.rate) AS s FROM events e, tenants t, kinds k WHERE k.id = e.kind_id AND t.id = e.tenant_id GROUP BY 1'),
+	(11, 'an expression of the factor',     'SELECT e.status, sum((e.amount + 1) * (k.rate * 2)) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(12, 'an expression of the group',      'SELECT e.status % 2 AS parity, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(13, 'tenants with kinds the lookup lacks', 'SELECT t.name, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id WHERE t.region = 7 GROUP BY 1'),
+	(14, 'an average',                      'SELECT e.status, avg(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(15, 'a count next to the sum',        'SELECT e.status, count(*) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(16, 'a lookup whose key repeats',     'SELECT e.status, sum(e.amount * k.rate) AS s FROM events e JOIN kinds_dup k ON k.id = e.kind_id GROUP BY 1'),
+	(17, 'a column of the lookup in a group', 'SELECT k.name, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(18, 'a condition on the lookup',      'SELECT e.status, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id AND k.name <> ''kind_3'' GROUP BY 1'),
+	(19, 'a left join',                    'SELECT e.status, sum(e.amount * k.rate) AS s FROM events e LEFT JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(20, 'a sum of the factor beside',      'SELECT e.status, sum(e.amount * k.rate) AS s, sum(e.amount) AS t FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(21, 'a distinct sum',                 'SELECT e.status, sum(DISTINCT e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(22, 'a count of a column with NULLs',  'SELECT e.status, count(e.amount) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(23, 'a count and no group',            'SELECT count(*) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id'),
+	(24, 'a having on the count',           'SELECT e.status, count(*) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1 HAVING count(*) > 100 ORDER BY count(*) DESC, 1'),
+	(25, 'a count of distinct values',      'SELECT e.status, count(DISTINCT e.tenant_id) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(26, 'a count with a filter',           'SELECT e.status, count(*) FILTER (WHERE e.amount > 10) AS n, sum(e.amount * k.rate) AS s FROM events e JOIN kinds k ON k.id = e.kind_id GROUP BY 1'),
+	(27, 'a sum of a column and a count',   'SELECT t.region, count(*) AS n, sum(e.amount) AS a, sum(e.loose) AS l, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1');
+-- the plan of each statement: the sums of the factors in the scan (the lookup joined above it), the products in the scan, or the normal plan
+CREATE FUNCTION eager_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scans int := 0; product int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		product := product + (l LIKE '%Pushed Aggregates:%' AND l LIKE '% * %')::int;
+	END LOOP;
+	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan, sums only' END;
+END $$;
+CREATE FUNCTION eager_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+SELECT n, label, eager_plan(q) AS plan, eager_rows(q, false, 0) <> '' AS has_rows, eager_rows(q, true, 0) = eager_rows(q, false, 0) AS same, eager_rows(q, true, 3) = eager_rows(q, false, 0) AS same_workers FROM eager_q ORDER BY n;
+-- the order of the rows of a statement with an ORDER BY, with the scan on and off
+SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1 HAVING sum(e.amount * k.rate) > 1000 ORDER BY 2 DESC LIMIT 3;
+SET sift.enable_agg = off;
+SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1 HAVING sum(e.amount * k.rate) > 1000 ORDER BY 2 DESC LIMIT 3;
+RESET sift.enable_agg;
+
+DROP FUNCTION eager_plan(text);
+DROP FUNCTION eager_rows(text, bool, int);
+DROP TABLE eager_q, events, tenants, kinds, kinds_dup;
+DROP EXTENSION pg_sift;

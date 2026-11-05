@@ -5,13 +5,16 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "utils/memutils.h"
@@ -31,7 +34,8 @@ typedef struct LeafWalk
 } LeafWalk;
 
 /*
- * The answers of the walks that look for the references to a query above (cte_owner_correlated, reads_outer) in the plan being made. The inline variant of a
+ * The answers of the walks that look for the references to a query above (cte_owner_correlated, reads_outer) in the plan being made, and the keys a
+ * list of a CTE is worth (list_keys_worth: a selectivity of the whole list, the same for every join that asks). The inline variant of a
  * statement repeats a CTE body at each of its references, and each of those walks goes through all of it again, once for each join of each arm, and into the
  * owner of every CTE it meets: the same answer 950 times over a plan of 14 G instructions. The answers hold while one planner run lasts (the nodes they are
  * keyed by are not freed before it ends); sift_agg_walks_forget drops them when a run starts and ends, as their addresses are used again afterwards.
@@ -43,7 +47,7 @@ typedef struct WalkMemo
 	const void *a,
 			   *b;
 	int			skip;
-	bool		r;
+	double		r;
 } WalkMemo;
 
 static WalkMemo *walk_memo;
@@ -61,11 +65,8 @@ sift_agg_walks_forget(void)
 }
 
 bool
-walk_memo_get(const void *a, const void *b, int skip, bool *r)
+walk_memo_get(const void *a, const void *b, int skip, double *r)
 {
-#ifdef SIFT_TESTING
-	sift_agg_outer_asks++;
-#endif
 	for (int i = 0; i < walk_memo_n; i++)
 		if (walk_memo[i].a == a && walk_memo[i].b == b && walk_memo[i].skip == skip)
 		{
@@ -76,7 +77,7 @@ walk_memo_get(const void *a, const void *b, int skip, bool *r)
 }
 
 void
-walk_memo_put(const void *a, const void *b, int skip, bool r)
+walk_memo_put(const void *a, const void *b, int skip, double r)
 {
 	if (walk_memo_n >= WALK_MEMO_MAX)
 		return;
@@ -93,18 +94,21 @@ bool
 cte_owner_correlated(PlannerInfo *owner)
 {
 	OuterRef	oref = {owner, 0, 0};
-	bool		r;
+	double		r;
 
 	if (owner->parent_root == NULL)
 		return false;
+#ifdef SIFT_TESTING
+	sift_agg_outer_asks++;
+#endif
 	if (walk_memo_get(owner, NULL, 0, &r))
-		return r;
+		return r != 0;
 #ifdef SIFT_TESTING
 	sift_agg_outer_walks++;
 #endif
 	r = query_tree_walker(owner->parse, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
 	walk_memo_put(owner, NULL, 0, r);
-	return r;
+	return r != 0;
 }
 
 /*
@@ -180,17 +184,70 @@ lut_subplan_ok(AggCtx *c, SubPlan *sp)
 
 /*
  * The output of an uncorrelated ARRAY(SELECT ..) of the query (x = ANY (ARRAY(SELECT ..)) has it as a parameter, set by an InitPlan the first time
- * the test needs it): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan (a scalar
- * sub-select raises for a second row) or one of an outer query keeps the normal plan.
+ * the test needs it), or of a scalar sub-select that gives one row whatever it reads (aggregates with no GROUP BY: it cannot raise for a second row, as the
+ * sub-select with a plain select list may): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan or one
+ * of an outer query keeps the normal plan.
  */
+/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a table read by equalities to constants that hold a whole unique key gives one or none */
+static bool
+one_row_query(Query *q)
+{
+	RangeTblEntry *t;
+	int		   *atts;
+	int			n = 0;
+
+	if (q->setOperations != NULL || q->hasTargetSRFs || q->groupingSets != NIL || q->hasWindowFuncs || q->limitOffset != NULL)
+		return false;
+	if (q->hasAggs)
+		return q->groupClause == NIL;
+	if (q->groupClause != NIL || q->distinctClause != NIL || q->jointree == NULL || list_length(q->rtable) != 1 || q->jointree->quals == NULL)
+		return false;
+	t = linitial_node(RangeTblEntry, q->rtable);
+	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION)
+		return false;
+	atts = palloc(64 * sizeof(int));
+	/* the planner has made the conditions a list of the ANDed ones */
+	foreach_ptr(Node, cl, IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : make_ands_implicit((Expr *) q->jointree->quals))
+	{
+		OpExpr	   *op;
+		Node	   *l,
+				   *r;
+		TypeCacheEntry *tc;
+
+		if (!IsA(cl, OpExpr) || list_length((op = (OpExpr *) cl)->args) != 2)
+			continue;
+		l = strip_relabel(linitial(op->args));
+		r = strip_relabel(lsecond(op->args));
+		if (IsA(r, Var))
+		{
+			Node	   *x = l;
+
+			l = r;
+			r = x;
+		}
+		if (!IsA(l, Var) || ((Var *) l)->varlevelsup != 0 || ((Var *) l)->varattno < 1 || !IsA(r, Const) || ((Const *) r)->constisnull ||
+			(tc = lookup_type_cache(((Var *) l)->vartype, TYPECACHE_EQ_OPR))->eq_opr != op->opno || exprType(r) != ((Var *) l)->vartype || n >= 64)
+			continue;
+		atts[n++] = ((Var *) l)->varattno;
+	}
+	return n > 0 && sift_agg_unique_key(t->relid, n, 0, atts, NULL);
+}
+
 bool
-array_initplan_ok(AggCtx *c, Param *prm)
+initplan_ok(AggCtx *c, Param *prm)
 {
 	if (null_input_param((Node *) prm))
 		return false;
 	foreach_ptr(SubPlan, sp, c->root->init_plans)
 		if (list_member_int(sp->setParam, prm->paramid))
-			return sp->subLinkType == ARRAY_SUBLINK && sp->parParam == NIL && sp->args == NIL && subplan_runs_at_start(c, sp);
+		{
+			Query	   *q;
+
+			if (sp->parParam != NIL || sp->args != NIL || !subplan_runs_at_start(c, sp))
+				return false;
+			q = ((PlannerInfo *) list_nth(c->root->glob->subroots, sp->plan_id - 1))->parse;
+			return sp->subLinkType == ARRAY_SUBLINK || (sp->subLinkType == EXPR_SUBLINK && one_row_query(q));
+		}
 	return false;
 }
 
@@ -226,8 +283,8 @@ leaf_walker(Node *n, LeafWalk *w)
 	}
 	if (IsA(n, SubPlan) && lut_subplan_ok(w->c, (SubPlan *) n))
 		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
-	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !list_member_int(w->subparams, ((Param *) n)->paramid) &&
-			 !array_initplan_ok(w->c, (Param *) n))
+	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM && !list_member_int(w->subparams, ((Param *) n)->paramid) &&
+			 !initplan_ok(w->c, (Param *) n))
 	{
 		w->bad = true;
 		return false;
@@ -302,12 +359,35 @@ initplan_param(AggCtx *c, Param *n)
 			Param	   *init = copyObject(n);
 
 			c->nsubplan++;
-			c->sub_serial = true;
+			/* a scalar sub-select is run by the leader before the workers start, who get its value; the rows of an ARRAY sub-select are the leader's lookup table */
+			c->sub_serial |= sp->subLinkType != EXPR_SUBLINK;
 			c->subplan_cost += sp->startup_cost;
 			init->paramid += SIFT_AGG_INIT_PARAM;
 			return init;
 		}
 	return NULL;
+}
+
+static Node *
+scalar_initplans_mutator(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM && !null_input_param(n) && initplan_ok(c, (Param *) n))
+	{
+		foreach_ptr(SubPlan, sp, c->root->init_plans)
+			if (list_member_int(sp->setParam, ((Param *) n)->paramid) && sp->subLinkType == EXPR_SUBLINK)
+				return (Node *) initplan_param(c, (Param *) n);
+	}
+	return expression_tree_mutator(n, scalar_initplans_mutator, c);
+}
+
+/* n with the outputs of its scalar InitPlans (one row whatever the data: initplan_ok) as the scan reads them: constants of the statement, evaluated when the scan starts */
+Node *
+scalar_initplans(AggCtx *c, Node *n)
+{
+	/* the mutator copies the tree, and only the InitPlans of this query level give it a constant */
+	return c->root->init_plans == NIL ? n : scalar_initplans_mutator(n, c);
 }
 
 static Node *

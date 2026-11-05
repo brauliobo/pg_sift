@@ -38,10 +38,11 @@ CREATE FUNCTION coldiff.feq(x float8, y float8, rel float8, abs_tol float8) RETU
 -- then the body, or, in the files of bench/sql/analytics, the `--@ pg` section.
 --   name shape expect(agg|plain|any) scenario(yes) sets(K10 K400 ...) key(1 2 | -) guc(name = value, repeatable) prepare((types))
 --   args(values of EXECUTE) requires(a SELECT that must return true, repeatable) wrap(subquery) error(yes | either) isolation(serializable ...)
+--   runs(the timed runs of a shape of the plan gate that its scan beats by little: at least that many, whatever --runs says)
 CREATE FUNCTION coldiff.header(txt text) RETURNS jsonb IMMUTABLE LANGUAGE plpgsql AS $$
 DECLARE
 	line text; m text[]; h jsonb := '{}'; sect text; body text[] := '{}'; inhead boolean := true; marked boolean := false;
-	tags text[] := ARRAY['sets','key','tol','name','shape','expect','scenario','guc','prepare','args','requires','wrap','error','isolation'];
+	tags text[] := ARRAY['sets','key','tol','name','shape','expect','scenario','guc','prepare','args','requires','wrap','error','isolation','runs'];
 BEGIN
 	FOREACH line IN ARRAY string_to_array(txt, E'\n') LOOP
 		IF line ~ '^--@ ' THEN

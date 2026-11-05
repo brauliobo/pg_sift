@@ -104,6 +104,43 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
+/*
+ * What a joined tuple beyond the rows the scan reads costs, before the share of a cache the lookup table's rows leave (cost_work): the match is gathered and
+ * the combo's slots written for it, and the aggregates add what each reads of it. A slot costs by what it holds: the id of a group key's value (more when
+ * the column has nearly as many values as the table has rows, so that its dictionary is as large as the table), the id of an aggregate's argument, or a flag.
+ * A statement that has PostgreSQL evaluate an expression of the lookup's columns (a numeric CASE) keeps the price it was fitted at, AGG_FAN_ROW_EXPR and
+ * AGG_FAN_SLOT for each slot of the combo, whichever combo holds the expression: its entries are where the scan's time goes there, and the estimate of those
+ * is not exact enough to take the cheaper price of the joined tuple (the scan of the small table with the large one as the lookup, dimexpr_two).
+ */
+static double
+fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc)
+{
+	double		ops = AGG_FAN_ROW,
+				rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int sl = 0; sl < s->combo[ci].nslots; sl++)
+		{
+			Node	   *e = (Node *) s->combo[ci].slot[sl].expr;
+
+			if (s->combo[ci].slot[sl].is_key && !IsA(e, Param))
+				return AGG_FAN_ROW_EXPR + cb->nslots * AGG_FAN_SLOT;
+		}
+	for (int sl = 0; sl < cb->nslots; sl++)
+	{
+		const SiftAggSlot *slot = &cb->slot[sl];
+		int			col = IsA(slot->expr, Param) ? ((Param *) slot->expr)->paramid - cb->nleaves : -1;
+
+		if (!slot->is_key)
+			ops += AGG_FAN_FLAG;
+		else if (slot->agg >= 0)
+			ops += AGG_FAN_ARG;
+		else
+			ops += col >= 0 && col < jc->j.ncol && joined_distinct(c, jc, col) * AGG_FAN_WIDE_SHARE > rows ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
+	}
+	return ops;
+}
+
 /* The aggregates, combos, keys and predicates of every tuple, less what the plain path saves, plus the bytes read */
 static void
 cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
@@ -129,7 +166,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			JoinCtx    *jc = list_nth(c->joins, s->combo[ci].join);
 			double		past = c->root->simple_rte_array[jc->rti]->rtekind == RTE_RELATION ? c->root->simple_rel_array[jc->rti]->rows - AGG_FAN_CACHE : 0.0;
 
-			k->scan_cost += Max(k->agg_rows - k->sel_rows * k->elems, 0.0) * (AGG_FAN_ROW + s->combo[ci].nslots * AGG_FAN_SLOT) * Min(sqrt(Max(past, 0.0) / AGG_FAN_CACHE), AGG_FAN_CAP);
+			k->scan_cost += Max(k->agg_rows - k->sel_rows * k->elems, 0.0) * fan_row_ops(c, s, &s->combo[ci], jc) * Min(sqrt(Max(past, 0.0) / AGG_FAN_CACHE), AGG_FAN_CAP);
 		}
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */

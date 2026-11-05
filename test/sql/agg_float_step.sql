@@ -1,0 +1,159 @@
+-- A float8 column that every expression of a key reads only through floor, ceil, trunc, round or an integer cast of x, x / c or x * c is evaluated once per bucket of
+-- the data, not once per distinct value: the bucket of a value is computed as PostgreSQL's function does, and a value that has none (NULL, NaN, an infinity, a result
+-- that raises or leaves int32, a negative zero) is a value of its own. Every query runs with and without the pushdown; the rows, or the error, must be the same.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+
+CREATE TABLE fs_t (id int, x float8, r float4, v int) USING sift_table;
+CREATE TABLE fs_h (LIKE fs_t);
+
+-- 9000 random values with three decimals (some of them near the ends of int32, in every chunk), the multiples of 0.1, 0.25 and 5 and their neighbours in the last bit (the edges of the buckets), the ties of rint, the ends of int32,
+-- the signed zeros, the values no number is made of, and NULLs
+INSERT INTO fs_t SELECT i, CASE WHEN i % 1700 = 0 THEN -2147483647.0 + i / 1700 WHEN i % 1900 = 0 THEN 2147483646.0 - i / 1900 ELSE ((hashint4(i) % 5000001) / 1000.0 - 2500)::float8 END,
+	((hashint4(i + 7) % 200001) / 100.0 - 1000)::float4, i % 17 FROM generate_series(1, 9000) i;
+INSERT INTO fs_t SELECT 10000 + i, i * 0.1, i * 0.25, i % 5 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 11000 + i, i * 0.1 * (1 + 2.220446049250313e-16), i * 0.25 * (1 - 1.1102230246251565e-16), i % 5 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 12000 + i, i * 5.0 - 1e-13 * (i % 3 - 1), i * 5.0, i % 7 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 13000 + i, i + 0.5, i + 0.5, i % 3 FROM generate_series(-40, 40) i;
+INSERT INTO fs_t VALUES
+	(14001, 0, 0, 1), (14002, '-0'::float8, '-0'::float4, 2), (14003, 0.5, 0.5, 3), (14004, -0.5, -0.5, 4), (14005, 1e-320, 1e-40, 5), (14006, -1e-320, -1e-40, 6),
+	(14007, 2147483646.5, 2147483520, 1), (14008, 2147483647, 2147483520, 2), (14009, 2147483647.5, 2147483648, 3), (14010, -2147483647, -2147483520, 4),
+	(14011, -2147483648, -2147483648, 5), (14012, 1e300, 1e30, 6), (14013, -1e300, -1e30, 7), (14014, 'NaN', 'NaN', 8), (14015, 'Infinity', 'Infinity', 9),
+	(14016, '-Infinity', '-Infinity', 10), (14017, NULL, NULL, 11), (14018, NULL, 3.5, 12), (14019, 12345678901.5, 5, 13), (14020, 4.9999999999999991, 4.9999, 14);
+INSERT INTO fs_h SELECT * FROM fs_t;
+ANALYZE fs_t;
+
+CREATE FUNCTION fs_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN sift_helpers.rows_agg(q, push);
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+
+CREATE FUNCTION fs_keys(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Group Keys:%' THEN r := r || trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- the whole table, and the rows an integer cast does not raise on
+CREATE TABLE fs_q (q text);
+INSERT INTO fs_q VALUES
+	('SELECT floor(x / 5)::int AS k, count(*), sum(v) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*), sum(v) FROM fs_t GROUP BY 1'),
+	('SELECT ceil(x / 0.1) + 0.0 AS k, count(*), min(v), max(v) FROM fs_t GROUP BY 1'),
+	('SELECT ceiling(x / 0.1) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT trunc(x * 0.25) + 0.0 AS k, count(*), sum(v) FROM fs_t GROUP BY 1'),
+	('SELECT trunc(0.25 * x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(x / 10) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the ends of int32 alone: the table of bucket numbers stops at them
+	('SELECT floor(x) + 0.0 AS k, count(*) FROM fs_t WHERE x < -2147483000 GROUP BY 1'),
+	('SELECT ceil(x) + 0.0 AS k, count(*) FROM fs_t WHERE x > 2147483000 AND x < 3e9 GROUP BY 1'),
+	('SELECT floor(x / 5) * 5 + 0.0 AS k, count(*), avg(v) FROM fs_t GROUP BY 1'),
+	('SELECT (floor(x / 5) * 5 + 0.0)::text AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 3)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e12 AND 1e12 GROUP BY 1'),
+	('SELECT (x * 2)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1000 AND 1000 GROUP BY 1'),
+	('SELECT round(x / 2)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	-- a negative zero is a value of its own (atan2 tells -0 from +0); the keys that are floats are added 0.0, which makes the zero of a group that holds both the same in every plan
+	('SELECT atan2(0.0, ceil(x / 5)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, round(x / 10)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, trunc(x)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, floor(x)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the key of a NULL is the key of the NULL, whatever the expression makes of it
+	('SELECT coalesce(floor(x / 5), -999) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) IS NULL AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the step in an aggregate, a filter and a count(DISTINCT)
+	('SELECT v % 3 AS g, sum(floor(x / 10) + 0.0), count(DISTINCT floor(x / 10) + 0.0) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t WHERE floor(x / 5) > 3 GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FILTER (WHERE round(x / 5) > 3) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1 HAVING count(*) > 100'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 7'),
+	('SELECT floor(x / 5) + 0.0 AS k, v % 4 AS g, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT count(DISTINCT floor(x / 5) + 0.0) FROM fs_t'),
+	('SELECT floor(r::float8 / 4) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(r::float8) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- not a step of one kind: the values keep their ids, the rows are the same
+	('SELECT floor(x / 5) + 0.0 AS k, round(x / 5) + 0.0 AS m, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + 0.0 AS k, floor(x / 7) + 0.0 AS m, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + 0.0 AS k, x AS m, count(*) FROM fs_t WHERE x BETWEEN 0 AND 20 GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + x + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5.5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x * 1e-300) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 1e300) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x * 1e-300) + 0.0 AS k, count(*) FROM fs_t WHERE x >= 0 GROUP BY 1'),
+	('SELECT floor(x / 1e300) + 0.0 AS k, count(*) FROM fs_t WHERE x >= 0 GROUP BY 1'),
+	('SELECT 10 / floor(x / 5)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1');
+
+CREATE FUNCTION fs_compare(OUT query text, OUT same bool, OUT keys text) RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+	FOR query IN SELECT q FROM fs_q ORDER BY q COLLATE "C" LOOP
+		keys := fs_keys(query);
+		same := fs_rows(query, true) IS NOT DISTINCT FROM fs_rows(query, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+-- in the write buffer, then sealed in a segment
+SELECT query, same, keys FROM fs_compare();
+VACUUM fs_t;
+SELECT query, same, keys FROM fs_compare();
+
+-- the errors of the queries that raise are PostgreSQL's whatever the plan (a query that does not raise shows its first row)
+CREATE TABLE fs_e (q text);
+INSERT INTO fs_e VALUES
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t WHERE x < 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1e10 AND 1e10 GROUP BY 1'),
+	('SELECT (x * 1e300)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1000 AND 1000 GROUP BY 1 ORDER BY 1 LIMIT 1');
+SELECT q, left(fs_rows(q, true), 30) AS pushed, fs_rows(q, true) = fs_rows(q, false) AS same FROM fs_e ORDER BY q COLLATE "C";
+
+-- the groups of the pushdown are the ones of the heap table
+SELECT fs_rows('SELECT round(x / 10) + 0.0 AS k, count(*), sum(v) FROM fs_t GROUP BY 1', true)
+	= fs_rows('SELECT round(x / 10) + 0.0 AS k, count(*), sum(v) FROM fs_h GROUP BY 1', false) AS vs_heap;
+
+-- the expression runs for the buckets, not for the values: with 64 entries a cache starts again for the several hundred values between -100 and 100, and never for the 41 buckets of a step of 5
+CREATE FUNCTION fs_restarted(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		r := coalesce(substring(l from '(\d+) combo caches restarted')::int, r);
+	END LOOP;
+	RETURN r;
+END $$;
+SET sift.test_limits = 'combo_entries=64';
+SELECT fs_restarted('SELECT floor(x / 5) AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') AS step_restarts;
+SELECT fs_restarted('SELECT floor(x / 5) + x AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') > 0 AS value_restarts;
+-- off: the values keep their ids (the cache starts again for the values of the same range), the rows are the same
+SET sift.agg_float_step = off;
+SELECT fs_restarted('SELECT floor(x / 5) AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') > 0 AS off_restarts;
+RESET sift.test_limits;
+SELECT count(*) FILTER (WHERE NOT same) AS differing, count(*) AS queries FROM fs_compare();
+RESET sift.agg_float_step;
+
+-- rows changed after the seal
+UPDATE fs_t SET x = x + 12.3 WHERE id % 11 = 0;
+DELETE FROM fs_t WHERE id % 13 = 0;
+INSERT INTO fs_t SELECT 20000 + i, (i % 90) * 7.5 - 300, i, i % 5 FROM generate_series(1, 500) i;
+SELECT query, same FROM fs_compare();
+
+DROP TABLE fs_t, fs_h, fs_q, fs_e;
+DROP FUNCTION fs_rows(text, bool), fs_keys(text), fs_compare(), fs_restarted(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

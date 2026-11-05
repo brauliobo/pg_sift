@@ -210,6 +210,28 @@ agk_minmax_f64_scalar(double *mn, double *mx, const double *v, const uint64 *mas
 	return any;
 }
 
+bool
+agk_fstep_scalar(int32 *q, int32 *mn, int32 *mx, const double *x, int n, int op, int form, double c)
+{
+	int32		lo = INT32_MAX,
+				hi = INT32_MIN;
+	bool		any = false;
+
+	for (int i = 0; i < n; i++)
+	{
+		q[i] = agk_fstep_one(x[i], op, form, c);
+		if (q[i] != SIFT_FSTEP_NONE)
+		{
+			lo = Min(lo, q[i]);
+			hi = Max(hi, q[i]);
+			any = true;
+		}
+	}
+	if (any)
+		*mn = lo, *mx = hi;
+	return any;
+}
+
 void
 agk_count_gid_scalar(int64 *cnt, const uint32 *gid, const uint64 *mask, int n)
 {
@@ -249,6 +271,13 @@ void
 agk_sum_gid_f64_scalar(double *acc, const uint32 *gid, const double *v, const uint64 *mask, int n)
 {
 	FOREACH_ROW(mask, n, i, acc[gid[i]] += v[i]);
+}
+
+double
+sift_aggk_sum_f64(double s, const double *v, const uint64 *mask, int n)
+{
+	FOREACH_ROW(mask, n, i, s += v[i]);
+	return s;
 }
 
 uint64

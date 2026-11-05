@@ -64,6 +64,16 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->npages = total;
 }
 
+#ifdef SIFT_TESTING
+/* blocks of this backend's segment reads that a get waited for (demand) and that read-ahead (a stream or a range read) brought in first (ahead) */
+uint64		sift_test_sr_demand = 0;
+uint64		sift_test_sr_ahead = 0;
+#define SR_COUNT(var, stmt) \
+	do { uint64 r0_ = pgBufferUsage.shared_blks_read; stmt; var += pgBufferUsage.shared_blks_read - r0_; } while (0)
+#else
+#define SR_COUNT(var, stmt) stmt
+#endif
+
 /* reads of at least this many microseconds, this many of them, start the read-ahead of a reader */
 #define SR_SLOW_US		25
 #define SR_SLOW_READS	2
@@ -169,6 +179,66 @@ sr_read_range(const SiftStreamReader *sr, uint32 first, uint32 end)
 	read_stream_end(stream);
 }
 
+/* The ranges of one plan, ascending by offset: the pages of each, once, in the order of the segment */
+typedef struct SrPlan
+{
+	const SiftStreamReader *sr;
+	const SiftSrRange *r;
+	int			n;
+	int			i;
+	uint32		page;			/* the next page to yield; the pages below it were yielded or are the end of the range being walked */
+	uint32		end;
+	int			cur;
+} SrPlan;
+
+static BlockNumber
+sr_plan_cb(ReadStream *stream, void *arg, void *per_buffer_data)
+{
+	SrPlan	   *p = arg;
+	uint64		size = (uint64) p->sr->npages * SIFT_PAGE_PAYLOAD;
+
+	while (p->page >= p->end)
+	{
+		uint64		off,
+					len;
+
+		if (p->i >= p->n)
+			return InvalidBlockNumber;
+		off = p->r[p->i].off;
+		len = p->r[p->i++].len;
+		if (len == 0 || off >= size)
+			continue;
+		len = Min(len, size - off);
+		p->page = Max((uint32) (off / SIFT_PAGE_PAYLOAD), p->end);
+		p->end = Max((uint32) ((off + len - 1) / SIFT_PAGE_PAYLOAD + 1), p->end);
+	}
+	return page_block(p->sr, p->page++, &p->cur);
+}
+
+/*
+ * Reads the pages of the ranges (ascending by offset) into shared buffers as one plan: the blocks that follow each other are one read (up to io_combine_limit), whatever
+ * the order the caller will ask for the bytes in, and a block shared by two ranges is read once. Pages that are cached are not read. Returns the blocks it read.
+ */
+uint64
+sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n)
+{
+	SrPlan		p = {sr, r, n, 0, 0, 0, sr->cur};
+	uint64		reads = pgBufferUsage.shared_blks_read;
+	ReadStream *stream;
+	Buffer		b;
+
+	if (n == 0)
+		return 0;
+	stream = read_stream_begin_relation(READ_STREAM_FULL, NULL, sr->index, MAIN_FORKNUM, sr_plan_cb, &p, 0);
+	while (BufferIsValid(b = read_stream_next_buffer(stream, NULL)))
+		ReleaseBuffer(b);
+	read_stream_end(stream);
+#ifdef SIFT_TESTING
+	sift_test_sr_ahead += pgBufferUsage.shared_blks_read - reads;
+#endif
+	return pgBufferUsage.shared_blks_read - reads;
+}
+
 /*
  * The stream only reads ahead: its buffers come in the order of its pages and go back at once, and the get reads its page through the buffer
  * manager like any other (a hit once the stream has passed the page). The buffer of the first page after lpage is held until a get reaches it.
@@ -192,7 +262,7 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 
 		if (!BufferIsValid(sr->pf_buf))
 		{
-			sr->pf_buf = read_stream_next_buffer(sr->stream, &page);
+			SR_COUNT(sift_test_sr_ahead, sr->pf_buf = read_stream_next_buffer(sr->stream, &page));
 			if (!BufferIsValid(sr->pf_buf))
 			{
 				sr->ahead = NULL;
@@ -218,10 +288,10 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 	 * reads in order, but the buffer manager asks it page by page). A page that is cached is no read: the stream finds it there.
 	 */
 	if (seq)
-		sr_read_range(sr, lpage, end);
+		SR_COUNT(sift_test_sr_ahead, sr_read_range(sr, lpage, end));
 	if (timed)
 		INSTR_TIME_SET_CURRENT(t0);
-	buf = ReadBufferExtended(sr->index, MAIN_FORKNUM, blk, RBM_NORMAL, NULL);
+	SR_COUNT(sift_test_sr_demand, buf = ReadBufferExtended(sr->index, MAIN_FORKNUM, blk, RBM_NORMAL, NULL));
 	if (pgBufferUsage.shared_blks_read != reads)
 	{
 		sr->miss_page = seq ? end - 1 : lpage;

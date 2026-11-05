@@ -9,6 +9,8 @@
 #define WHY_BUFFER	"write buffer rows"
 
 double		sift_col_auto_merge_buffer_pct = 1.0;
+int			sift_col_auto_merge_pass_mb = 1024;
+uint64		maint_pass_bytes = 0;	/* the bytes of overlapping runs the rewrite pass in hand has rewritten */
 
 /* The worker was started because the reads of a backend owe the rewrite (maint_read_due) */
 bool		maint_read_asked = false;
@@ -95,14 +97,16 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				covered;
 	XLogRecPtr	lsn[SIFT_MAX_SEGMENTS];
 	uint64		sbytes[SIFT_MAX_SEGMENTS];
-	int			nseg;
+	int			nseg,
+				key_overlap;
 
 	sift_dir_read(index, snap);
 	maint_use_partitions(snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
 	nseg = v->n;
-	build_peers = peers_overlap(v);
+	key_overlap = v->nkover;
+	build_peers = peers_overlap(v) || key_overlap >= 2;
 	for (int i = 0; i < v->n; i++)
 	{
 		const SiftSegEntry *e = &v->imm[i];
@@ -126,7 +130,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 			d = maint_dirty_units(seg);
 			dirty += d;
 		}
-		if (!v->over[i])
+		if (!v->over[i] && !v->kover[i])
 			part_dirty |= (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * seg->nsb;
 		else
 		{
@@ -150,6 +154,12 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
 		listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
 		why = "dirty units";
+	/*
+	 * Runs of a build that are as large as partitions but each hold rows of every key (a lookup of one key reads a unit in each of them) are neither overlays nor dirty,
+	 * and the units listed twice may be too few to call them fragmented. The rewrite cuts them by key, once; it is the build's, not the churn the WAL budget limits.
+	 */
+	else if (key_overlap >= 2)
+		why = "key ranges overlap";
 	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
 		why = "fragmented units";
 	else if (maint_read_asked && dirty > 0)
@@ -186,6 +196,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 const char *
 maint_rewrite_due(Relation index, bool automatic)
 {
+	maint_pass_bytes = 0;
 	return maint_rewrite_check(index, automatic, NULL);
 }
 

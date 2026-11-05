@@ -207,6 +207,14 @@ display_expr_mutator(Node *n, void *context)
 		shown->paramkind = PARAM_EXTERN;
 		return (Node *) shown;
 	}
+	/* the output of an InitPlan is named as the plan names it */
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= SIFT_AGG_INIT_PARAM)
+	{
+		Param	   *shown = copyObject((Param *) n);
+
+		shown->paramid -= SIFT_AGG_INIT_PARAM;
+		return (Node *) shown;
+	}
 	return expression_tree_mutator(n, display_expr_mutator, context);
 }
 
@@ -563,7 +571,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	/* the output of an ARRAY sub-select is read when the scan starts, as a parameter of the statement is */
 	if (!pseudo_const(r))
 	{
-		if (!IsA(r, Param) || ((Param *) r)->paramkind != PARAM_EXEC || !array_initplan_ok(c, (Param *) r))
+		if (!IsA(r, Param) || ((Param *) r)->paramkind != PARAM_EXEC || !initplan_ok(c, (Param *) r))
 			return NULL;
 		shown = r;
 	}
@@ -798,7 +806,7 @@ compile_pred(AggCtx *c, Node *n)
 	Node	   *leaf_target;
 	int			leaf;
 
-	n = strip_relabel(n);
+	n = scalar_initplans(c, strip_relabel(n));
 	if (IsA(n, Const))
 	{
 		Const	   *k = (Const *) n;

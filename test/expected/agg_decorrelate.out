@@ -363,7 +363,7 @@ SELECT * FROM check_query('a join condition of its own', $q$ SELECT o.id, x.s FR
 SELECT * FROM check_query('the outer query groups', $q$ SELECT o.grp, sum((SELECT sum(i.amt) FROM items i WHERE i.set_id = o.k)) s FROM key_sets o GROUP BY o.grp $q$);
          label          | in_scan | same | rows 
 ------------------------+---------+------+------
- the outer query groups | f       | t    |    7
+ the outer query groups | t       | t    |    7
 (1 row)
 
 SELECT * FROM check_query('an aggregate with a value over no rows', $q$ SELECT o.id, (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY i.amt) FROM items i WHERE i.set_id = o.k) m FROM key_sets o $q$);

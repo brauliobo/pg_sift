@@ -160,6 +160,16 @@ in_list_shape(AggCtx *c, const SiftAggPred *p, uint64 *span, int *nv)
 	return true;
 }
 
+/* the elements of the IN list p: the constants of a list, sift.agg_param_set_size for a parameter; 0 when not known */
+int
+in_list_keys(AggCtx *c, const SiftAggPred *p)
+{
+	uint64		span;
+	int			nv;
+
+	return in_list_shape(c, p, &span, &nv) ? nv : 0;
+}
+
 /* the bytes the scan clears to test the IN list p when it starts (agg/pred_in.c); 0 for an empty list, a list that is not constants or a hash table */
 double
 in_list_table_bytes(AggCtx *c, const SiftAggPred *p)

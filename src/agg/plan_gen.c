@@ -138,7 +138,7 @@ gen_walker(Node *n, GenWalk *w)
 		}
 		w->bad |= IsA(n, Var);
 	}
-	if ((IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC) || IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) ||
+	if ((IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM) || IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) ||
 		IsA(n, WindowFunc) || IsA(n, GroupingFunc) || IsA(n, PlaceHolderVar) || IsA(n, CurrentOfExpr) || IsA(n, NextValueExpr) ||
 		IsA(n, SetToDefault))
 		w->bad = true;

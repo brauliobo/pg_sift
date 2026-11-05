@@ -314,7 +314,7 @@ col_stamp(Relation index, SiftSrcStamp *st)
 	st->options = sift_col_pagg_hash(index);
 	st->version = sift_dir_version(index);
 	st->pages = RelationGetNumberOfBlocks(heap);
-	st->visible = sift_vis_count_allvisible(heap, st->pages);
+	sift_vis_count(heap, st->pages, &st->visible, NULL);
 	table_close(heap, AccessShareLock);
 }
 

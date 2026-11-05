@@ -127,9 +127,10 @@ range_join_clause(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 	List	   *restr = rel->baserestrictinfo;
 	double		sum,
 				alone = 0,
-				together = 0,
+				together = -1,
 				base;
-	List	   *union_conds = NIL;
+	List	   *union_conds = NIL,
+			   *cond_lists = NIL;
 
 	if (rinfo->norm_selec >= 0 || !IsA(rinfo->clause, OpExpr))
 		return;
@@ -166,21 +167,31 @@ range_join_clause(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 			return;
 		if (empty)
 			continue;
-		alone += clauselist_selectivity(root, conds, rel->relid, JOIN_INNER, NULL);
-		together += Min(clauselist_selectivity(root, list_concat(list_copy(restr), conds), rel->relid, JOIN_INNER, NULL) / base, 1.0);
+		cond_lists = lappend(cond_lists, conds);
 		union_conds = lappend(union_conds, conds == NIL ? (Node *) makeBoolConst(true, false) : (Node *) make_andclause(conds));
 	}
 	/*
 	 * The conditions of the table are no independent evidence when they already keep the rows of the ranges (the statement says the same ranges twice, as a filter
 	 * and as the join): every row it keeps is in a range, and the join returns the rows it keeps times the ranges each is in, the sum of the shares of the ranges
-	 * over the share of their union.
+	 * over the share of their union. Those rows need no estimate of the table's conditions together with each range, which is the dear one (the statistics of
+	 * several columns are read for each).
 	 */
 	if (restr != NIL && union_conds != NIL && predicate_implied_by(list_make1(make_orclause(union_conds)), restr, false))
 	{
 		double		one = clauselist_selectivity(root, list_make1(make_orclause(union_conds)), rel->relid, JOIN_INNER, NULL);
 
 		if (one > 0)
+		{
+			foreach_ptr(List, conds, cond_lists)
+				alone += clauselist_selectivity(root, conds, rel->relid, JOIN_INNER, NULL);
 			together = Max(alone / one, 1.0);
+		}
+	}
+	if (together < 0)
+	{
+		together = 0;
+		foreach_ptr(List, conds, cond_lists)
+			together += Min(clauselist_selectivity(root, list_concat(list_copy(restr), conds), rel->relid, JOIN_INNER, NULL) / base, 1.0);
 	}
 	sum = together;
 	rinfo->norm_selec = rinfo->outer_selec = Max(sum / list_length(ranges), 0.0);

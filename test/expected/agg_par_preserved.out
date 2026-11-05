@@ -74,7 +74,7 @@ FROM shapes s ORDER BY s.n;
  float sum by day  | parallel | t       | t       | t       | t
  by label and grp  | parallel | t       | t       | t       | t
  filter            | parallel | t       | t       | t       | t
- condition in ON   | serial   | t       | t       | t       | t
+ condition in ON   | parallel | t       | t       | t       | t
  matches nothing   | none     | t       | t       | t       | t
  global            | parallel | t       | t       | t       | t
  distinct          | parallel | t       | t       | t       | t

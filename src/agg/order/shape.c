@@ -119,6 +119,7 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 		const SiftAggJoin *j;
 		JoinCtx    *jc;
 		const SiftSrcLeaf *lf;
+		bool		text_key;
 
 		if (cb->join < 0)
 			continue;
@@ -129,8 +130,9 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 			(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 			return agg_refuse_on(TOPN_SHAPE, "a joined table is not an inner join by one key that the rows of the heap hold, with ON and WHERE on its own columns");
 		lf = &c->lay->leaf[cb->leaf[0]];
-		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID) || (j->kind == SJ_INNER && !topn_unique_key(c, jc)))
-			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
+		text_key = lf->vtype == SCV_CODE && !lf->lossy && (lf->typid == TEXTOID || lf->typid == VARCHAROID) && (j->keytype[0] == TEXTOID || j->keytype[0] == VARCHAROID) && j->kind != SJ_ANTI;
+		if (lf->kind != SCL_SCALAR || lf->parent >= 0 || (lf->vtype != SCV_I32 && lf->typid != INT8OID && !text_key) || (j->kind == SJ_INNER && !topn_unique_key(c, jc)))
+			return agg_refuse_f(TOPN_SHAPE, "the join key of %s is not an integer or text column of the scanned table, or the joined table has no unique index on its column", get_rel_name(jc->j.relid));
 		/* the keys of an anti join are the conjunct `key NOT IN (keys)`: a row with no key is kept by the join, and dropped by the conjunct */
 		if (j->kind == SJ_ANTI)
 		{

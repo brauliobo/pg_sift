@@ -81,8 +81,9 @@ ident_go_wide(AggExec *ex, KeyState *k)
 	k->wcap = 1024;
 	while (k->wcap < 4 * Max(n, spill_keep(ex)))
 		k->wcap *= 2;
-	/* the only key has the groups the planner expects (a key with one group a row grows the table to them one doubling at a time otherwise): room for them, at most WIDE_PRESIZE_MAX slots */
-	while (ex->spec->nkeys == 1 && k->wcap < Min(2 * ex->spec->est_groups, WIDE_PRESIZE_MAX))
+	/* the only key has the groups the planner expects (a key with one group a row grows the table to them one doubling at a time otherwise): room for them, at most WIDE_PRESIZE_MAX slots and a quarter of hash memory */
+	while (ex->spec->nkeys == 1 && k->wcap < Min(2 * ex->spec->est_groups, WIDE_PRESIZE_MAX) &&
+		   (Size) k->wcap * (sizeof(int64) + sizeof(uint32)) * 4 < get_hash_memory_limit())
 		k->wcap *= 2;
 	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));

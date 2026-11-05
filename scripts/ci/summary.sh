@@ -27,8 +27,11 @@ for s in "${ORDER[@]}" leakcheck; do
 	# the log of a split suite: the logs of its jobs, in order
 	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
-	# a batch of regression tests and a TAP test name what failed (a runner that keeps no files, macOS, has this log only)
-	for id in ${bad:-}; do [[ $id != installcheck-batch* && $id != tap-* ]] || grep -h '^not ok' "$LOG/$id.log" | head -20 | cut -c1-400 | sed "s/^/$red    /; s/\$/$off/"; done
+	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
+	for id in ${bad:-}; do
+		pat='^not ok'; [[ $id != installcheck-* ]] || pat='^(not ok|@@|[-+][^-+])'
+		[[ $id != installcheck-* && $id != tap-* ]] || grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400 | sed "s/^/$red    /; s/\$/$off/"
+	done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
 # a server that crashed: the log of its job says only that psql lost the connection; the signal and the statement the backend ran are in the server log

@@ -11,6 +11,7 @@ ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of key_cut_rows (the
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
 PROBE_MAX_ENTRIES	size of the table of one planner probe: an internal bound with no visible effect
+RANK_MAX_ROWS	most rows the SiftSort node ranks in memory: more go to the tuplesort, as a Sort sorts them (the rows are the same, the packed rank keys of 40 million rows are 320 MB)
 SIFT_AGG_MAX_PARAMS	derived array size of the executor parameters
 SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid input
 SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
@@ -30,6 +31,7 @@ SIFT_MAX_W	words of a page bitmap: the layout of the postings
 SIFT_MERGE_MAX_FANIN	merge policy: segments one merge reads at a time
 SIFT_MERGE_MAX_SEGMENTS	merge policy: more directory entries than this start a merge
 SIFT_NUM_MAX_DIGITS	the same limit as wide_digits, counted by the planner
+SIFT_RADIX_MAX_DIGIT	bits of the widest digit of the radix sort of core/cmp.h: the counters of a digit (4 KB) and the cache lines its pass writes to; the order of the result does not depend on it
 SIFT_SRC_MAX_DIMS	planner-side array size of the dimensions of a source, above cube_dims
 SIFT_SRC_MAX_MEAS	planner-side array size that mirrors cube_measures
 SIFT_SRC_MAX_RDIMS	planner-side array size that mirrors rollup_dims
@@ -53,3 +55,6 @@ WARM_MAX_RELS	the relations a correlated child tracks for its read-ahead (the in
 WARM_MAX_BLOCKS	the largest relation (8 GB) a correlated child asks the OS to read ahead; a larger one is left alone, no result changes
 LOAD_MAX_GROUPS	groups a bulk load writes at once: the backend and three workers, bounded by max_parallel_maintenance_workers and maintenance_work_mem
 LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_GROUPS
+DP_MAX_LEVELS	size of the array of the pages of one descent: a btree is never as deep, the probe falls back to the index scan when it is
+DP_MAX_PEND	keys of a chunk the direct probe holds before it flushes them: a memory bound of the batch with no visible effect
+JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the table's rows, is left to the join: a speed threshold, the rows are the same either way

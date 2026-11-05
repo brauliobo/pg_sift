@@ -75,6 +75,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "agg/init_int.h"
 #include "col/hll.h"
 
 static Datum
@@ -109,8 +110,13 @@ gen_sort_begin(GenSt *st)
 	bool		nf[SIFT_AGG_MAX_GARGS + 1] = {false};
 	TupleDesc	desc;
 
+	/* fixed-length columns first: the offset of a column after a varlena one is walked to at every comparison and read (nocachegetattr) */
 	for (int k = 0; k < g->nargs; k++)
-		st->vcol[k] = g->arg[k].nleaves > 0 || g->arg[k].mapped ? nv++ : -1;
+		st->vcol[k] = -1;
+	for (int pass = 0; pass < 2; pass++)
+		for (int k = 0; k < g->nargs; k++)
+			if ((g->arg[k].nleaves > 0 || g->arg[k].mapped) && (get_typlen(g->arg[k].typid) > 0) == (pass == 0))
+				st->vcol[k] = nv++;
 	desc = CreateTemplateTupleDesc(1 + nv);
 	TupleDescInitEntry(desc, 1, "gid", INT4OID, -1, 0);
 	for (int k = 0; k < g->nargs; k++)
@@ -292,7 +298,7 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 	ReleaseSysCache(tup);
 	foreach_ptr(Node, d, ref->aggdirectargs)
 	{
-		st->dir[k] = gen_eval_once(ex, ExecInitExpr((Expr *) d, EXPR_PARENT(ex)), exprType(d), &st->dirnull[k]);
+		st->dir[k] = gen_eval_once(ex, ExecInitExpr((Expr *) init_param_mutator(d, ex), EXPR_PARENT(ex)), exprType(d), &st->dirnull[k]);
 		k++;
 	}
 	for (k = 0; k < g->nargs; k++)
@@ -300,9 +306,9 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		const SiftAggGenArg *ar2 = &g->arg[k];
 
 		if (ar2->nleaves == 0 && !ar2->mapped)
-			st->argk[k] = gen_eval_once(ex, ExecInitExpr((Expr *) ar2->expr, EXPR_PARENT(ex)), ar2->typid, &st->argknull[k]);
+			st->argk[k] = gen_eval_once(ex, ExecInitExpr((Expr *) init_param_mutator(ar2->expr, ex), EXPR_PARENT(ex)), ar2->typid, &st->argknull[k]);
 		else if (ar2->expr)
-			st->argx[k] = ExecInitExpr((Expr *) ar2->expr, EXPR_PARENT(ex));
+			st->argx[k] = ExecInitExpr((Expr *) init_param_mutator(ar2->expr, ex), EXPR_PARENT(ex));
 	}
 	st->cx = CreateStandaloneExprContext();
 	st->pertrans.aggref = ref;

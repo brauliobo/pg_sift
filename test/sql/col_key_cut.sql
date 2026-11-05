@@ -89,8 +89,10 @@ SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable'
 -- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan
 DROP INDEX kc_idx;
 SET sift.test_col_segment_kb = 64;
+SET sift.col_build_key_ranges = off;
 CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (point_tid_columns = 'off', dead_rewrite_pct = 10, key_cut = 'cust, d');
 RESET sift.test_col_segment_kb;
+RESET sift.col_build_key_ranges;
 SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT * FROM kchk('runs');
 SET maintenance_work_mem = '1MB';
@@ -119,11 +121,13 @@ DROP TABLE kl;
 -- (a row is written once for each level it reaches), so the memory it was given is enough for a table of any size: the runs that the memory makes are 8
 -- segments, and with room for 6 the build leaves fewer, holding the same rows
 SET sift.test_col_segment_kb = 16;
+SET sift.col_build_key_ranges = off;
 CREATE INDEX kc_runs ON kc USING sift_col (id, cust, d, amount) WITH (point_tid_columns = 'off', key_cut = 'cust, d');
 SET sift.test_col_max_segments = 6;
 CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (point_tid_columns = 'off', key_cut = 'cust, d');
 RESET sift.test_col_max_segments;
 RESET sift.test_col_segment_kb;
+RESET sift.col_build_key_ranges;
 SELECT count(*) AS runs, sum(rows) AS rows FROM sift.col_segments('kc_runs') WHERE kind = 'immutable';
 SELECT count(*) < 6 AS merged, bool_and(format = 17) AS key_cut_format, sum(rows) AS rows FROM sift.col_segments('kc_big') WHERE kind = 'immutable';
 SELECT sift.col_verify('kc_big', true);

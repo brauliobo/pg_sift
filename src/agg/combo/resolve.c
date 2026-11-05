@@ -8,7 +8,7 @@
 #include "agg/combo/int.h"
 
 /* the id (1..) of the value of a 64-bit leaf at index i of the vector, 0 for NULL; a NaN of a numeric leaf is a value */
-static uint64
+uint64
 wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 i)
 {
 	int64		bits;
@@ -126,6 +126,14 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_I32);
 		return;
 	}
+	if (cs->fstep && !combo_null_input(ex))
+	{
+		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[0]];
+		const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
+
+		if (combo_fstep_resolve(ex, ci, n, idx, eid, alive, lf, get_vec(ex, cb->leaf[0])))
+			return;
+	}
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		uint64	   *vid = ex->cvid[p];
@@ -202,8 +210,8 @@ combo_row_parent(AggExec *ex, int ci)
 	return par;
 }
 
-void
-combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
+static void
+combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
 {
 	ComboSt    *cs = &ex->cs[ci];
 	const uint32 *row;
@@ -247,6 +255,23 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		}
 		cs->byrow[row[i]] = eid[i] + 1;
 	}
+}
+
+/* a combo whose join runs a correlated child makes the entries a chunk adds together, so that their children are probed as one batch (combo/probe.c) */
+void
+combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
+{
+	ComboSt    *cs = &ex->cs[ci];
+
+	if (!combo_probe_on(ex, ci))
+	{
+		combo_resolve_in(ex, ci, qlevel, n, tidx, ridx, eid, alive, tuples);
+		return;
+	}
+	cs->dbatch = true;
+	combo_resolve_in(ex, ci, qlevel, n, tidx, ridx, eid, alive, tuples);
+	cs->dbatch = false;
+	combo_probe_flush(ex, ci);
 }
 
 /* the output rows of the combo for the current tuples that are alive in `alive` (bit j of tuple j; NULL: all), COMBO_NONE for the others; into o */

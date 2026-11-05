@@ -108,7 +108,10 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	combo_grow_ent(cs);
 	memcpy(&cs->vid[(size_t) cs->nent * cs->ninputs], v, cs->ninputs * sizeof(uint64));
 	cs->null_input[cs->nent] = combo_null_input(ex);
-	combo_make(ex, ci, v, &cs->ent[cs->nent]);
+	if (cs->dbatch)
+		combo_probe_defer(ex, ci, cs->nent);
+	else
+		combo_make(ex, ci, v, &cs->ent[cs->nent]);
 	cs->ht[h] = ++cs->nent;
 	if (direct)
 		combo_dir_set(cs, v[0], cs->nent);
@@ -181,6 +184,9 @@ combo_reset(AggExec *ex, int ci)
 	cs->dircap = 0;
 	cs->byrow = NULL;
 	cs->nbyrow = 0;
+	cs->qtab = NULL;
+	cs->qcap = 0;
+	cs->fq = NULL;
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)

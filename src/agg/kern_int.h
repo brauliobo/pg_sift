@@ -19,7 +19,7 @@ extern const SiftAggKernels sift_aggkern_neon;
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
 	X(cmp_f64) X(cmp2_i32) X(cmp2_i64) X(cmp2_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
-	X(sum_i32) X(sum_i64) X(absmax_f64) X(absmax_i64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
+	X(sum_i32) X(sum_i64) X(absmax_f64) X(absmax_i64) X(minmax_i32) X(minmax_i64) X(minmax_f64) X(fstep) \
 	X(lin_i64) X(mulw_i64) \
 	X(count_gid) X(sum_gid_i32) X(sum_gid_f64) X(sum_gid_i64)
 
@@ -34,7 +34,22 @@ agk_canon_minmax(double x)
 	return x != x ? __builtin_nan("") : x == 0 ? 0.0 : x;
 }
 
-/* One term of lin_i64 (the scalar specification, and the tails of the vector levels) */
+/* The number of one value for fstep, the scalar specification (and the tail of the vector levels): the functions are PostgreSQL's own */
+static inline int32
+agk_fstep_one(double x, int op, int form, double c)
+{
+	double		t = form == SIFT_FSTEP_DIV ? x / c : form == SIFT_FSTEP_MUL ? x * c : x,
+				s;
+
+	if (!(t > -2147483647.0 && t < 2147483647.0) || (form != SIFT_FSTEP_PLAIN && t == 0.0 && x != 0.0))
+		return SIFT_FSTEP_NONE;
+	s = op == SIFT_FSTEP_FLOOR ? floor(t) : op == SIFT_FSTEP_CEIL ? ceil(t) : op == SIFT_FSTEP_TRUNC ? trunc(t) : rint(t);
+	if (op != SIFT_FSTEP_TOINT && s == 0.0 && signbit(t))
+		return SIFT_FSTEP_NONE;
+	return (int32) s;
+}
+
+/* One term of lin_i64(the scalar specification, and the tails of the vector levels) */
 static inline int64
 agk_lin_term(int64 x, int32 k)
 {

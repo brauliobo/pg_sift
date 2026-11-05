@@ -25,11 +25,40 @@ hash_cols(const uint32 *kid, int nk, int nsel, uint32 *hv)
 	}
 }
 
+/*
+ * The group of each tuple of the chunk in hash mode, where nk is a constant for the key counts that are common (the probe unrolls). A table of slots that outgrows the
+ * cache has the slot of a tuple prefetched GROUP_AHEAD tuples early, from the hashes of the chunk made key by key; a smaller one is probed with the hash made in line.
+ */
+static pg_attribute_always_inline void
+probe_chunk(AggExec *ex, const int nk, const bool ahead, const uint32 *kid, uint32 *hv, int nsel)
+{
+	if (ahead)
+	{
+		hash_cols(kid, nk, nsel, hv);
+		for (int i = 0; i < Min(GROUP_AHEAD, nsel); i++)
+			__builtin_prefetch(&ex->hslot[hv[i] & (ex->nhslot - 1)]);
+	}
+	for (int i = 0; i < nsel; i++)
+	{
+		uint32		ids[SIFT_AGG_MAX_KEYS];
+
+		for (int j = 0; j < nk; j++)
+			ids[j] = kid[(Size) j * (VEC + PADW) + i];
+		if (ahead && i + GROUP_AHEAD < nsel)
+			__builtin_prefetch(&ex->hslot[hv[i + GROUP_AHEAD] & (ex->nhslot - 1)]);
+		ex->gid[i] = hash_probe(ex, ids, nk, ahead ? hv[i] : ids_hash32(ids, nk));
+	}
+}
+
+/* a table of more slots than this (4 bytes each) is not in the cache of a core */
+#define PROBE_AHEAD_SLOTS	(1U << 17)
+
 void
 compute_gids(AggExec *ex, int nsel)
 {
 	int			nk = ex->spec->nkeys;
 	uint32		hv[VEC + PADW];
+	bool		ahead;
 
 	if (nk == 0)
 	{
@@ -80,19 +109,23 @@ compute_gids(AggExec *ex, int nsel)
 		/* the table just replaced the arrays: recompute below, in hash mode */
 	}
 	compute_kids(ex, nsel, ex->tmpu32);
-	/* the slot of a tuple is prefetched GROUP_AHEAD tuples early */
-	hash_cols(ex->tmpu32, nk, nsel, hv);
-	for (int i = 0; i < Min(GROUP_AHEAD, nsel); i++)
-		__builtin_prefetch(&ex->hslot[hv[i] & (ex->nhslot - 1)]);
-	for (int i = 0; i < nsel; i++)
+	ahead = ex->nhslot > PROBE_AHEAD_SLOTS;
+	switch (nk)
 	{
-		uint32		ids[SIFT_AGG_MAX_KEYS];
-
-		if (i + GROUP_AHEAD < nsel)
-			__builtin_prefetch(&ex->hslot[hv[i + GROUP_AHEAD] & (ex->nhslot - 1)]);
-		for (int j = 0; j < nk; j++)
-			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
-		ex->gid[i] = ex->hashgh(ex, ids, hv[i]);
+		case 1:
+			ahead ? probe_chunk(ex, 1, true, ex->tmpu32, hv, nsel) : probe_chunk(ex, 1, false, ex->tmpu32, hv, nsel);
+			break;
+		case 2:
+			ahead ? probe_chunk(ex, 2, true, ex->tmpu32, hv, nsel) : probe_chunk(ex, 2, false, ex->tmpu32, hv, nsel);
+			break;
+		case 3:
+			ahead ? probe_chunk(ex, 3, true, ex->tmpu32, hv, nsel) : probe_chunk(ex, 3, false, ex->tmpu32, hv, nsel);
+			break;
+		case 4:
+			ahead ? probe_chunk(ex, 4, true, ex->tmpu32, hv, nsel) : probe_chunk(ex, 4, false, ex->tmpu32, hv, nsel);
+			break;
+		default:
+			probe_chunk(ex, nk, true, ex->tmpu32, hv, nsel);
 	}
 	if (ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);

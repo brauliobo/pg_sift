@@ -29,6 +29,7 @@
 #define SIFT_CPOINT_MAX_RANGE	64			/* so is a range of more keys: the zones cut a range of values by their order */
 #define SIFT_CPOINT_DENSE_ROWS	4096		/* a list that expects more rows than this and a 64th of the segment's rows reads them for nothing: the units hold them as well; so a value of a list in more is not listed (SIFT_CPOINT_DENSE) */
 #define SIFT_CPOINT_DENSE_SHARE	64
+#define SIFT_CPOINT_UNIT_KEYS	16		/* a probe is a block or more of the directory for each key and a unit it cuts spares about as many blocks as the unit has columns: a list of more keys than this many for each unit still kept (in a segment) costs more than reading them all */
 #define SIFT_CPOINT_CHUNK_MIN	65			/* a lookup of this many keys or more is read a chunk of keys at a time by a stream (sift_cseg_point_stream_open): a LIMIT looks up the first chunk only */
 #define SIFT_CPOINT_CHUNK_FIRST	32			/* keys of the first chunk; each chunk has four times as many as the one before */
 #define SIFT_CPOINT_CHUNK_LAST	4096

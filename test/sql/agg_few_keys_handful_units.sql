@@ -7,6 +7,8 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+-- the lookup table is read whole or by probes of its keys (agg_probe_rewrite): the charge of the key's excess is checked on the plans without the probes
+SET sift.agg_probe_rewrite = off;
 -- every row is analyzed, and the lookup table has 20,000 rows: the scan of the small entity costs 941 against 473 of the normal plan (a gap of half, 491 against 473 with 4,740 rows was a tie that
 -- the sample of the statistics could turn), the scan of the large entity 1,200 against 473,000
 SET default_statistics_target = 10000;

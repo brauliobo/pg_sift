@@ -16,6 +16,7 @@ sift_agg_init(void)
 	sift_aggkern_init();
 	sift_aggcol_register();
 	sift_aggcte_init();
+	sift_agg_probe_init();
 	sift_search_init();
 	sift_agg_rows_init();
 	sift_agg_refuse_init();
@@ -79,6 +80,10 @@ sift_agg_init(void)
 							 "Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading.",
 							 NULL, &sift_agg_lookup_pushdown, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_probe_rewrite",
+							 "Plans a join to a large table, or an EXISTS, NOT EXISTS or IN over one, with a btree on its key also as a lateral probe of the btree for each key the scan meets, and keeps that plan where it runs in the scan and costs less.",
+							 NULL, &sift_agg_probe_rewrite, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_lookup_columns",
 							 "Loads the rows of a lookup table from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap.",
 							 NULL, &sift_agg_lookup_columns, true,
@@ -139,6 +144,10 @@ sift_agg_init(void)
 							 "Testing: a top-N scan answers a unit of which every row passes from the head of the sorted run of its first sort column (column format minor 18) instead of reading it.",
 							 NULL, &sift_topn_heads, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.test_probe_hook",
+							   "Testing: STAGE:N:COMMAND, a command run at a stage of the direct probe of a correlated child (agg/combo/probe_test.c).",
+							   NULL, &sift_test_probe_hook, "",
+							   PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, sift_test_probe_hook_assign, NULL);
 	DefineCustomBoolVariable("sift.test_child_warm",
 							 "Testing: a correlated child asks the OS for the relations it reads after a few runs, whatever they read and however long they took.",
 							 NULL, &sift_child_warm_test, false,
@@ -170,7 +179,7 @@ sift_agg_init(void)
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_max_rows",
 							"The older form of sift.agg_lookup_max_kb: rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, whatever their width (-1: the memory limit decides).",
-							NULL, &sift_agg_lookup_max_rows, -1, -1, INT_MAX,
+							NULL, &sift_agg_lookup_max_rows, -1, -3, INT_MAX,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.test_verdict_shm_fail",
@@ -199,6 +208,14 @@ sift_agg_init(void)
 							 NULL, &sift_test_agg_wait, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	sift_aggbe_init();
+	DefineCustomBoolVariable("sift.agg_probe_direct",
+							 "Probe the btree of a correlated lookup child directly, a batch of keys at a time, instead of running the child for each key.",
+							 NULL, &sift_agg_probe_direct, true,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_float_step",
+							 "Evaluate a key or an aggregate argument of a float column that reads it through floor, ceil, trunc, round or an integer cast once for each bucket of the values, not for each distinct value.",
+							 NULL, &sift_agg_float_step, true,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_combo_cache",
 							"Distinct value combinations of an expression PostgreSQL evaluates for the aggregate scan kept before the cache starts again.",
 							NULL, &sift_agg_combo_cache, 1 << 20, 16, 1 << 24,

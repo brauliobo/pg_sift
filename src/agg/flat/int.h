@@ -30,6 +30,7 @@ typedef struct Decor
 	Bitmapset  *outer;			/* the range table entries of the outer query it reads */
 	List	   *groups;			/* the expressions it groups by (a LATERAL one, which gives a row for each group, not one row) */
 	bool		exists;			/* EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..): whether a row is there, whatever it holds */
+	bool		lookup;			/* (SELECT expr FROM d WHERE d.k = x.k): no aggregate, and the equalities hold a whole unique key of d, so a row of x has one row of d at most */
 } Decor;
 
 /* a lateral sub-select to replace (the replacement waits for the joins of the level to be spliced, as for a pull-up) */
@@ -45,6 +46,9 @@ extern bool true_or_missing(Node *quals);
 extern Node * read_columns(Node *n, Pulled *p);
 extern void group_by(Query *q, TargetEntry *te);
 extern bool group_aggregate_lateral(Query *q, bool apply);
+extern void flat_inner_items(Node *n, List **rtis, List **quals);
+extern void flat_ungroup(Query *q);
+extern bool flat_picks_rows(Node *c);
 
 extern bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
 extern void decor_apply(Query *q, DecorJoin *r);
@@ -52,5 +56,8 @@ extern bool decorrelate_sublinks(Query *q, bool apply);
 extern bool decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor);
 extern bool one_row_query(Query *sq);
 extern bool fence_sublinks(Query *q, bool apply);
+extern bool probe_sublinks(Query *q, bool apply);
+extern void flat_add_subquery(Query *q, Query *sub, const char *alias, bool lateral);
+extern JoinExpr *flat_join_item(Query *q, Node *left, Index rti, JoinType type, Node *quals);
 
 #endif							/* SIFT_AGG_FLAT_DIR_INT_H */

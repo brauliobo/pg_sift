@@ -271,6 +271,9 @@ reads_column_index(Query *q)
  * 1.4 to 2 us on it: 6,263 groups of the top 3 rows cost 12.3 ms above the scan, priced 4.5. Measured per group on the unnest of two arrays.
  */
 #define FLAT_RESCAN_OPS	360.0
+#define FLAT_KEYS_MARGIN	2.0
+/* the probes of a join or sub-select made a lateral child (agg/flat/probe.c) win by this much: the plan that reads the table whole or by its keys is as good within it (the instructions of 17 shapes are the same at 1.0 to 1.5 but one, which 1.5 loses 17% of) */
+#define FLAT_PROBE_MARGIN	1.1
 
 /* the groups that a nested loop unnests: the rescans of a function scan below this node */
 static double
@@ -328,6 +331,19 @@ pushed_scan_arms(PlannedStmt *stmt, Bitmapset **scans)
 }
 
 /*
+ * Keeps the choice of the form for the next statement of the shape, except for a statement whose flat form groups the arms of a union (sift_agg_push_arms): the arms that
+ * the scan did not take are planned again as they were, a step of the full plan that a hit would skip, so its plan would differ from the one made in full. The statements
+ * with a shared CTE keep it, as they did before the choice was kept for the others.
+ */
+static void
+remember_form(CteVerdict *fv, bool shared_cte, bool won, PlannedStmt *stmt)
+{
+	if (sift_agg_push_arms > 0 && !shared_cte)
+		return;
+	verdict_remember(fv, won, 0, 0, cte_size(stmt), cte_size(stmt));
+}
+
+/*
  * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat/): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
  */
@@ -345,41 +361,42 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			   *plain_again = NULL;
 	bool		flat_inlined = false,
 				by_cost = false,
-				quiet = false;
+				quiet = false,
+				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && query_nests(parse) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
-		/* the two forms are both planned where the flat plan is no better in every scan, and the inline plan of a shared CTE costs most of it: their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
-		if (has_shared_cte(parse))
+		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
+		shared_cte = has_shared_cte(parse);
+		verdict_lookup(parse, VERDICT_FLAT, &fv);
+		if (fv.known)
 		{
-			verdict_lookup(parse, VERDICT_FLAT, &fv);
-			if (fv.known)
+			/* a verdict holds for the size of the request it was made for: the plan of the form that won is checked against it, else the statement is planned in full */
+			Query	   *retry = fv.won ? parse : copyObject(parse);
+			MemoryContext cx;
+			PlannedStmt *stmt;
+
+			if (fv.won)
 			{
-				/* a verdict holds for the size of the request it was made for: the plan of the form that won is checked against it, else the statement is planned in full */
-				Query	   *retry = fv.won ? parse : copyObject(parse);
-				MemoryContext cx;
-				PlannedStmt *stmt;
-
-				if (fv.won)
-				{
-					flat = copyObject(parse);
-					by_cost = sift_agg_flatten_laterals(flat);
-				}
-				stmt = plan_cte(SIFT_PLANNER_ARGS(fv.won ? flat : parse), &cx);
-
-				/* verdict_accept reads the verdict of the band of this size into fv, which may be the other form's */
-				if (verdict_accept(&fv, cte_size(stmt)) == VERDICT_TAKE)
-					return stmt;
-				discard_plan(cx);
-				parse = retry;
 				flat = copyObject(parse);
+				sift_agg_push_arms = 0;
 				by_cost = sift_agg_flatten_laterals(flat);
 			}
+			stmt = plan_cte(SIFT_PLANNER_ARGS(fv.won ? flat : parse), &cx);
+
+			/* verdict_accept reads the verdict of the band of this size into fv, which may be the other form's */
+			if (verdict_accept(&fv, cte_size(stmt)) == VERDICT_TAKE)
+				return stmt;
+			discard_plan(cx);
+			parse = retry;
+			flat = copyObject(parse);
+			by_cost = sift_agg_flatten_laterals(flat);
 		}
 		if (flat == NULL)
 		{
 			flat = copyObject(parse);
+			sift_agg_push_arms = 0;
 			sift_agg_push_arms = 0;
 			by_cost = sift_agg_flatten_laterals(flat);
 			/*
@@ -420,7 +437,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 */
 		if (flatplan != NULL && !by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan, PLAIN_READER_SHARE))
 		{
-			verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
+			remember_form(&fv, shared_cte, true, flatplan);
 			return flatplan;
 		}
 		planning_second = true;
@@ -430,13 +447,22 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		plain_again = copyObject(parse);
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
+	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
+	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * FLAT_KEYS_MARGIN < plain->planTree->total_cost)
+	{
+		discard_plan(plain_cx);
+		if (quiet)
+			flatplan = plan_again(SIFT_PLANNER_ARGS(again), flat_cx, &flat_cx);
+		verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
+		return flatplan;
+	}
 	/* the flat plan runs more of the statement in the scan only where an ordinary plan still reads a table that has a column index */
-	if (flatplan == NULL || !plain_reader_stmt(plain, 0))
+	if (flatplan == NULL || (!plain_reader_stmt(plain, 0) && !sift_agg_probe_applied))
 	{
 		if (flatplan != NULL)
 		{
 			discard_plan(flat_cx);
-			verdict_remember(&fv, false, 0, 0, cte_size(plain), cte_size(plain));
+			remember_form(&fv, shared_cte, false, plain);
 		}
 		if (quiet)
 			plain = plan_again(SIFT_PLANNER_ARGS(plain_again), plain_cx, &plain_cx);
@@ -448,16 +474,16 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
 		((flat_inlined && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
-		 flatplan->planTree->total_cost + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
+		 flatplan->planTree->total_cost * (sift_agg_probe_applied && !sift_agg_probe_mixed ? FLAT_PROBE_MARGIN : 1.0) + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
 			flatplan = plan_again(SIFT_PLANNER_ARGS(again), flat_cx, &flat_cx);
-		verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
+		remember_form(&fv, shared_cte, true, flatplan);
 		return flatplan;
 	}
 	discard_plan(flat_cx);
-	verdict_remember(&fv, false, 0, 0, cte_size(plain), cte_size(plain));
+	remember_form(&fv, shared_cte, false, plain);
 	if (quiet)
 		plain = plan_again(SIFT_PLANNER_ARGS(plain_again), plain_cx, &plain_cx);
 	return plain;
@@ -488,7 +514,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
-	nests = reads && query_nests(parse);
+	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
 	swap = reads && sift_json_build_object_calls(parse);
 	if (nests || swap || split_exists || (sift_enable_agg && has_shared_cte(parse)))
 		parse = copyObject(parse);
@@ -520,6 +546,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	{
 		stmt->jitFlags = PGJIT_NONE;
 		sift_agg_drop_sorts(stmt);
+		sift_agg_rank_sorts(stmt);
 	}
 	return stmt;
 }
@@ -571,6 +598,7 @@ replan(QueryDesc *qd)
 	List	   *trees,
 			   *plans;
 	PlannedStmt *fresh;
+	int			loc = ps->stmt_location;
 
 	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL ||
 		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
@@ -585,8 +613,12 @@ replan(QueryDesc *qd)
 			if (!OidIsValid(ptypes[i] = params->params[i].ptype))
 				return NULL;
 	}
+	/* the plan inside an EXPLAIN has no location of its own (0): the statement of the string is the one the portal runs */
+	if (ActivePortal != NULL && qd->sourceText == ActivePortal->sourceText && list_length(ActivePortal->stmts) == 1 &&
+		IsA(linitial(ActivePortal->stmts), PlannedStmt))
+		loc = linitial_node(PlannedStmt, ActivePortal->stmts)->stmt_location;
 	foreach_node(RawStmt, r, pg_parse_query(qd->sourceText))
-		if (r->stmt_location == ps->stmt_location)
+		if (r->stmt_location == loc)
 			raw = r;
 	if (raw != NULL)
 	{

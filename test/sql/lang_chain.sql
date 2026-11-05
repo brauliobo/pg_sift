@@ -84,5 +84,6 @@ SELECT sift.verify('hdamaged_idx', true);
 
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

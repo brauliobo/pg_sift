@@ -8,6 +8,7 @@
 #include "utils/datum.h"
 
 #include "agg/blob/int.h"
+#include "agg/group/int.h"
 
 /* a sum or average of numerics added as 38-digit integers until one does not fit (numeric_sum_add) */
 bool
@@ -269,29 +270,31 @@ blob_mset(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 	pfree(old);
 }
 
-/* The hash of the key values of group g, the same in every table that holds the group (the ids are not): the partition of a spilled group */
-uint32
-blob_group_hash(AggExec *ex, uint32 g)
+/* The hash of the key values of each group gl[0..ng), the same in every table that holds the group (the ids are not): the partition of a spilled group. One key at a time over the groups. */
+void
+blob_group_hashes(AggExec *ex, const uint32 *gl, uint32 ng, uint32 *h)
 {
-	uint64		h = 0;
-
+	memset(h, 0, (Size) ng * sizeof(uint32));
 	for (int j = 0; j < ex->spec->nkeys; j++)
 	{
 		KeyState   *k = &ex->ks[j];
-		uint32		id = group_key_id(ex, j, g),
-					kh = 0;
 
-		if (id == 0)
-			kh = 0;
-		else if (k->numk)
-			kh = DatumGetUInt32(hash_any((const unsigned char *) &k->im.val[id - 1], sizeof(sift_i128)));
-		else if (k->ident)
-			kh = DatumGetUInt32(hash_any((const unsigned char *) &k->idval[id - 1], sizeof(int64)));
-		else
-			kh = k->ot.hv[id - 1];
-		h = h * 0x9E3779B97F4A7C15ULL + kh + 1;
+		for (uint32 r = 0; r < ng; r++)
+		{
+			uint32		id = group_key_id(ex, j, gl[r]),
+						kh = 0;
+
+			if (id == 0)
+				kh = 0;
+			else if (k->numk)
+				kh = DatumGetUInt32(hash_any((const unsigned char *) &k->im.val[id - 1], sizeof(sift_i128)));
+			else if (k->ident)
+				kh = wide_hash(k->idval[id - 1], PG_UINT32_MAX / 2 + 1);
+			else
+				kh = k->ot.hv[id - 1];
+			h[r] = h[r] * 0x9E3779B1u + kh + 1;
+		}
 	}
-	return (uint32) (h >> 32) ^ (uint32) h;
 }
 
 void

@@ -8,6 +8,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/leaf/int.h"
+#include "agg/spec/expr.h"
 
 SiftSrcLeaf *
 leaf_of(AggCtx *c, int id)
@@ -104,7 +105,7 @@ null_guarded_arm(Node *n)
 /*
  * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter (but those level_param marked). A non-NULL context (the query's
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
- * compile_exists and array_initplan_ok proved the ones it kept.
+ * compile_exists and initplan_ok proved the ones it kept.
  */
 bool
 has_exec_param_walker(Node *node, void *context)
@@ -116,7 +117,7 @@ has_exec_param_walker(Node *node, void *context)
 	if (level_param(node))
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
-		return !context || !array_initplan_ok(context, (Param *) node);
+		return ((Param *) node)->paramid < SIFT_AGG_INIT_PARAM && (!context || !initplan_ok(context, (Param *) node));
 	if (IsA(node, SubPlan) || IsA(node, SubLink) || IsA(node, Aggref) || IsA(node, WindowFunc))
 		return true;
 	return expression_tree_walker(node, has_exec_param_walker, context);

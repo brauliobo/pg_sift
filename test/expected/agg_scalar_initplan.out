@@ -1,0 +1,116 @@
+-- An uncorrelated scalar sub-select that gives one row whatever the data (aggregates with no GROUP BY, or a table read by equalities to constants that hold a whole unique key) is a
+-- constant of the statement, as a parameter ($1) is: the scan asks it when it starts, in a condition and in an aggregate's argument. One that may give a second row (it raises) keeps the normal plan,
+-- which asks it only when a row reaches it. The rows (or the error) must be those of the normal plan, with no worker and with three.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, name text NOT NULL, grp int NOT NULL);
+INSERT INTO kinds SELECT g, 'kind_' || g, g % 4 FROM generate_series(1, 40) g;
+CREATE UNIQUE INDEX kinds_name ON kinds (name);
+CREATE TABLE nothing (x int, d date);
+CREATE TABLE events (id int PRIMARY KEY, kind_id int, label text NOT NULL, amount numeric(10,2), at date NOT NULL, score int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE 1 + (g * 7919) % 45 END, 'kind_' || (1 + (g * 31) % 50), CASE WHEN g % 11 = 0 THEN NULL ELSE (g % 500) / 5.0 END,
+       date '2024-01-01' + (g % 700), CASE WHEN g % 17 = 0 THEN NULL ELSE g % 90 END FROM generate_series(1, 30000) g;
+CREATE INDEX events_col ON events USING sift_col (id, kind_id, label, amount, at, score);
+VACUUM (FREEZE, ANALYZE) events, kinds, nothing;
+CREATE TABLE init_q (n int, label text, q text);
+INSERT INTO init_q VALUES
+	(1, 'above the average',               'SELECT kind_id, count(*) AS n FROM events WHERE amount > (SELECT avg(amount) FROM events) GROUP BY 1 ORDER BY 1'),
+	(2, 'a key by the unique name',         'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE name = ''kind_7'') GROUP BY 1 ORDER BY 1'),
+	(3, 'a name that is not there',         'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE name = ''kind_99'') GROUP BY 1 ORDER BY 1'),
+	(4, 'a date bound',                     'SELECT kind_id, count(*) AS n FROM events WHERE at > (SELECT max(at) - 30 FROM events) GROUP BY 1 ORDER BY 1'),
+	(5, 'a text column',                    'SELECT kind_id, count(*) AS n FROM events WHERE label = (SELECT name FROM kinds WHERE id = 12) GROUP BY 1 ORDER BY 1'),
+	(6, 'between two sub-selects',          'SELECT label, count(*) AS n FROM events WHERE score BETWEEN (SELECT min(grp) + 10 FROM kinds) AND (SELECT max(grp) + 40 FROM kinds) GROUP BY 1 ORDER BY 1'),
+	(7, 'an aggregate argument',            'SELECT kind_id, sum(amount * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1 ORDER BY 1'),
+	(8, 'a sub-select of no rows is NULL',  'SELECT label, count(*) AS n FROM events WHERE score > (SELECT max(x) FROM nothing) GROUP BY 1 ORDER BY 1'),
+	(9, 'an OR with another condition',     'SELECT kind_id, count(*) AS n FROM events WHERE score > (SELECT max(grp) + 85 FROM kinds) OR kind_id = 3 GROUP BY 1 ORDER BY 1'),
+	(10, 'a column of unique rows is one row', 'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE id = 5) GROUP BY 1 ORDER BY 1'),
+	(11, 'a sub-select that may give two rows', 'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE grp = 1) GROUP BY 1 ORDER BY 1'),
+	(12, 'two rows only when a row asks',     'SELECT label, count(*) AS n FROM events WHERE id < 0 AND kind_id = (SELECT id FROM kinds WHERE grp = 1) GROUP BY 1 ORDER BY 1'),
+	(13, 'the same sub-select twice',        'SELECT kind_id, count(*) AS n FROM events WHERE amount > (SELECT avg(amount) FROM events) AND amount < (SELECT avg(amount) * 1.5 FROM events) GROUP BY 1 ORDER BY 1'),
+	(14, 'an expression of the argument',    'SELECT kind_id, sum(score + (SELECT max(grp) FROM kinds)) AS s FROM events GROUP BY 1 ORDER BY 1'),
+	(15, 'a sub-select and a literal bound', 'SELECT label, count(*) AS n FROM events WHERE score > (SELECT min(grp) + 10 FROM kinds) AND at > date ''2024-06-01'' GROUP BY 1 ORDER BY 1');
+CREATE FUNCTION init_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scans int := 0; inits int := 0;
+BEGIN
+	BEGIN
+		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+			scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+			inits := inits + (l LIKE '%InitPlan%')::int;
+		END LOOP;
+	EXCEPTION WHEN OTHERS THEN RETURN 'error';
+	END;
+	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans ELSE 'normal' END;
+END $$;
+-- the rows, or the error the statement raises
+CREATE FUNCTION init_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	BEGIN
+		EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
+	EXCEPTION WHEN OTHERS THEN r := 'ERROR: ' || SQLERRM;
+	END;
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.agg_par_min_rows', '80000', true);
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+-- the workers the scan launched for the statement (a scan alone: 0)
+CREATE FUNCTION init_launched(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', '3', true);
+	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	BEGIN
+		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+			r := greatest(r, coalesce(substring(l from 'Workers Launched: (\d+)')::int, 0));
+		END LOOP;
+	EXCEPTION WHEN OTHERS THEN r := 0;
+	END;
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.agg_par_min_rows', '80000', true);
+	PERFORM set_config('parallel_setup_cost', '1000', true);
+	PERFORM set_config('parallel_tuple_cost', '0.1', true);
+	PERFORM set_config('min_parallel_table_scan_size', '8MB', true);
+	PERFORM set_config('min_parallel_index_scan_size', '512kB', true);
+	RETURN r;
+END $$;
+SELECT n, label, init_plan(q) AS plan, init_rows(q, false, 0) <> '' AS has_rows, init_rows(q, true, 0) = init_rows(q, false, 0) AS same, init_rows(q, true, 3) = init_rows(q, false, 0) AS same_workers, init_launched(q) > 0 AS in_workers FROM init_q ORDER BY n;
+ n  |                label                |  plan   | has_rows | same | same_workers | in_workers 
+----+-------------------------------------+---------+----------+------+--------------+------------
+  1 | above the average                   | scan x2 | t        | t    | t            | t
+  2 | a key by the unique name            | scan x1 | t        | t    | t            | t
+  3 | a name that is not there            | scan x1 | f        | t    | t            | t
+  4 | a date bound                        | scan x2 | t        | t    | t            | t
+  5 | a text column                       | scan x1 | t        | t    | t            | t
+  6 | between two sub-selects             | scan x1 | t        | t    | t            | t
+  7 | an aggregate argument               | scan x1 | t        | t    | t            | t
+  8 | a sub-select of no rows is NULL     | scan x1 | f        | t    | t            | t
+  9 | an OR with another condition        | scan x1 | t        | t    | t            | t
+ 10 | a column of unique rows is one row  | scan x1 | t        | t    | t            | t
+ 11 | a sub-select that may give two rows | normal  | t        | t    | t            | f
+ 12 | two rows only when a row asks       | normal  | f        | t    | t            | f
+ 13 | the same sub-select twice           | scan x3 | t        | t    | t            | t
+ 14 | an expression of the argument       | scan x1 | t        | t    | t            | t
+ 15 | a sub-select and a literal bound    | scan x1 | t        | t    | t            | t
+(15 rows)
+
+SELECT n, left(init_rows(q, true, 0), 40) AS result FROM init_q WHERE n IN (11, 12) ORDER BY n;
+ n  |                  result                  
+----+------------------------------------------
+ 11 | ERROR: more than one row returned by a s
+ 12 | 
+(2 rows)
+
+DROP FUNCTION init_plan(text);
+DROP FUNCTION init_rows(text, bool, int);
+DROP FUNCTION init_launched(text);
+DROP TABLE init_q, events, nothing, kinds;
+DROP EXTENSION pg_sift;

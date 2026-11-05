@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "access/relation.h"
+#include "access/stratnum.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_statistic.h"
 #include "nodes/nodeFuncs.h"
@@ -316,15 +317,44 @@ joins_counted(AggCtx *c)
 	return counted;
 }
 
-/*
- * A lookup table that a dependent lookup keys is read by a btree probe for each of its `keys`: a descent each and a heap page for each of the `rows` they find (at most
- * the table's pages), all random pages. It pays while that costs less than the pages of the table at the page cost of PostgreSQL's own scan of them (as join_load_rows
- * prices a table read whole).
- */
-bool
-sift_agg_probe_pays(double keys, double rows, double pages)
+/* the operators a row of a keyed load costs, the page visits apart; `entries_only`: the share of them taken from the entries of the btree */
+double
+sift_agg_entry_ops(double entries_only)
 {
-	return (keys + Min(rows, pages)) * random_page_cost < pages * Min(seq_page_cost, random_page_cost);
+	return AGG_PROBE_ROW - entries_only * AGG_PROBE_IOS;
+}
+
+/*
+ * The price, in operators, of reading a lookup table by a btree probe of `keys` values: a descent each, a row for each of the `entries` they find and the heap pages visited
+ * (the table's `pages` less those the rows leave out), at what a visit to a page costs where the table's pages are (heap_visit_ops). `entries_only` is the share of the pages
+ * whose rows come from the entries of a btree that holds the columns (all-visible pages of a covering index): no heap fetch, no page visit.
+ */
+double
+sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only)
+{
+	double		visited = pages * (1.0 - exp(-entries / Max(pages, 1.0)));
+
+	return keys * AGG_PROBE_KEY + entries * sift_agg_entry_ops(entries_only) + visited * (1.0 - entries_only) * heap_visit_ops(pages);
+}
+
+/*
+ * The price, in operators, of a table read whole. From the leaves of a column index that holds its columns (`cols`, with `nnum` numeric ones): the bytes are in the price of the row.
+ * From the heap: the load of each row (of its keys alone for `keys_only`) and the pages at the page cost of PostgreSQL's own sequential scan of them (a 1.5-million-row table: 11,000
+ * of 15,000 more), at most a random fetch each.
+ */
+double
+sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_only)
+{
+	if (cols)
+		return tuples * (AGG_LOAD_ROW_COLS * pow(Max(tuples / AGG_LOAD_BIG, 1.0), 0.4) + nnum * AGG_LOAD_NUMERIC);
+	return tuples * (keys_only ? AGG_LOAD_KEY : AGG_LOAD_ROW) + pages * Min(seq_page_cost, random_page_cost) / cpu_operator_cost;
+}
+
+/* a keyed load pays while it costs less than the table read whole (`whole`, from sift_agg_whole_ops) */
+bool
+sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole)
+{
+	return sift_agg_keyed_ops(keys, entries, pages, entries_only) < whole;
 }
 
 /* the rows a value of column att has: the rows of the table over the distinct values its statistics say; 0 when they say nothing */
@@ -344,74 +374,208 @@ sift_agg_rows_per_key(unsigned int relid, int att, double tuples)
 }
 
 /*
- * The keys of a dependent lookup that the loader probes in a btree of the table (map_keyed_dependent and map_probe in agg/lookup/): an inner or semi join keyed by a
- * column of the table alone, or a child plan inner or semi joined on the same leaf of the scan, when a btree starts with the column and the probes cost less than its pages
- * (sift_agg_probe_pays). 0: the table is read whole. The keys are the rows PostgreSQL expects of the dependent lookup, taken as the geometric mean with the table's rows
- * when it has no statistics for them (join_key_zone).
+ * The `column = value` condition of the join (j->idx*) that a btree column of the given operator family and collation takes as a scan key after the key's column, or -1:
+ * the rows of the index that can match are the only ones fetched.
+ */
+int
+sift_agg_trail_cond(const SiftAggJoin *j, int att, Oid opfamily, Oid collation)
+{
+	for (int k = 0; k < j->nidx; k++)
+		if (!j->idxany[k] && j->idxatt[k] == att && j->idxcoll[k] == collation && op_in_opfamily(j->idxop[k], opfamily) &&
+			get_op_opfamily_strategy(j->idxop[k], opfamily) == BTEqualStrategyNumber)
+			return k;
+	return -1;
+}
+
+/*
+ * The rows a probe of one value of column att fetches: the rows of the table over the distinct values of the column, narrowed by the `column = value` conditions on the `ntrail`
+ * columns that follow it in the btree (a share of 1 over the distinct values of each). 0: unknown, unless the key is unique.
+ */
+double
+sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, double tuples, bool unique)
+{
+	double		rpk = sift_agg_rows_per_key(relid, att, tuples);
+
+	if (rpk <= 0)
+		return unique ? 1.0 : 0;
+	for (int i = 0; i < ntrail; i++)
+	{
+		double		share = sift_agg_rows_per_key(relid, tatt[i], tuples);
+
+		if (share > 0)
+			rpk *= share / tuples;
+	}
+	return Max(rpk, 1.0);
+}
+
+/* the price, in operators, of the table of a join read whole */
+static double
+join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
+{
+	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	Relation	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	int			nnum = 0;
+	bool		cols = map_load_cols_possible(rel, &jc->j, &nnum);
+
+	relation_close(rel, NoLock);
+	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc));
+}
+
+/* does the btree hold, and return, every column a load of the join reads (map_index_covers) */
+static bool
+index_covers(const IndexOptInfo *ii, const SiftAggJoin *j)
+{
+	for (int n = 0; n < j->nkey + j->ncol; n++)
+	{
+		int			att = n < j->nkey ? j->keyatt[n] : j->colatt[n - j->nkey],
+					i;
+
+		if (n < j->nkey && j->tkey[n])
+			return false;
+		for (i = 0; i < ii->ncolumns; i++)
+			if (ii->indexkeys[i] == att && ii->canreturn[i])
+				break;
+		if (i == ii->ncolumns)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Does a keyed load of `keys` values of column att pay for the table of jc (sift_agg_probe_pays against the table read whole)? The btree starts with att and, with the
+ * join's own `column = value` conditions, may go on with columns they name: the rows fetched are those of the entries that match them. *rows: the rows fetched.
+ */
+static bool
+join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, double *rows, double *entries_only)
+{
+	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	const SiftAggJoin *j = &jc->j;
+	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
+	double		tuples = Max(jrel->tuples, 1.0),
+				rpk = 0,
+				best = HUGE_VAL;
+
+	/* the index whose entries cost least for a key: the rows it finds (the join's conditions on its next columns narrow them), a row cheaper where it holds the columns (as map_probe) */
+	foreach_node(IndexOptInfo, ii, jrel->indexlist)
+	{
+		int			ta[SIFT_AGG_MAX_JIDX],
+					n = 0;
+		bool		cov;
+		double		r,
+					price;
+
+		if (!(ii->relam == BTREE_AM_OID && ii->indpred == NIL && !ii->hypothetical && ii->indexkeys[0] == att))
+			continue;
+		for (int col = 1; col < ii->nkeycolumns && n < SIFT_AGG_MAX_JIDX && sift_agg_trail_cond(j, ii->indexkeys[col], ii->opfamily[col], ii->indexcollations[col]) >= 0; col++)
+			ta[n++] = ii->indexkeys[col];
+		cov = index_covers(ii, j);
+		r = sift_agg_key_rows(relid, att, ta, n, tuples, ii->unique && ii->nkeycolumns == 1);
+		price = r * sift_agg_entry_ops(cov ? jrel->allvisfrac : 0);
+		if (r > 0 && price < best)
+		{
+			best = price;
+			rpk = r;
+			*entries_only = cov ? jrel->allvisfrac : 0;
+		}
+	}
+	if (rpk <= 0)
+		return false;
+	keys = Min(keys, tuples);
+	if (!sift_agg_probe_pays(keys, keys * rpk, jrel->pages, *entries_only, join_whole_ops(c, s, jc)))
+		return false;
+	*rows = keys * rpk;
+	return true;
+}
+
+/*
+ * The keys of the IN list of the scan that names the key of the join: its elements, when the join is an inner or semi one keyed by a column of the table alone. 0: none.
  */
 static double
-join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
+join_in_keys(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
+{
+	const SiftAggCombo *cb = &s->combo[jc->combo];
+	const SiftAggJoin *j = &jc->j;
+
+	if (j->nkey != 1 || j->keynull[0] || j->tkey[0] != NULL || j->keypos[0] < 0 || cb->leaf[j->keypos[0]] < 0 || (j->keytype[0] != INT4OID && j->keytype[0] != INT8OID))
+		return 0;
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+
+		if (p->kind == SAP_IN && p->op == 0 && p->level == 0 && !p->late && p->expr != NULL && p->leaf == cb->leaf[j->keypos[0]] && p->argtype == j->keytype[0])
+			return in_list_keys(c, p);
+	}
+	return 0;
+}
+
+/*
+ * The keys of a lookup that the loader probes in a btree of the table (map_keyed_dependent, map_in_keys and map_probe in agg/lookup/): an inner or semi join keyed by a column
+ * of the table alone, from a dependent lookup (a child plan inner or semi joined on the same leaf of the scan, or a lookup keyed by it) or from the scan's IN list of the
+ * key, when a btree starts with the column and the probes cost less than the table read whole (sift_agg_probe_pays). 0: the table is read whole. The keys of a dependent lookup are
+ * the rows PostgreSQL expects of it, taken as the geometric mean with the table's rows when it has no statistics for them (join_key_zone).
+ */
+static double
+join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *entries_only)
 {
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
 	const SiftAggCombo *cb = &s->combo[jc->combo];
 	const SiftAggJoin *j = &jc->j;
+	const SiftAggJoin *sj = &s->join[cb->join];
 	double		tuples = Max(jrel->tuples, 1.0),
-				best = 0;
+				best = 0,
+				keys,
+				found,
+				only;
 
-	*rows = 0;
-	if (!sift_agg_lookup_pushdown || (j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nidx > 0 || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
+	*rows = *entries_only = 0;
+	if (!sift_agg_lookup_pushdown || sift_aggjoin_preserves(j->kind) || j->params != NIL || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
 		return 0;
-	foreach_ptr(JoinCtx, dj, c->joins)
+	/* the keys of a dependent lookup are those of the rows an inner or semi join keeps */
+	if (j->nidx == 0 && (j->kind == SJ_INNER || j->kind == SJ_SEMI))
+		foreach_ptr(JoinCtx, dj, c->joins)
+		{
+			const SiftAggCombo *cc = &s->combo[dj->combo];
+			const SiftAggJoin *d = &dj->j;
+			int			att = 0,
+						dkey;
+			Oid			typ = InvalidOid;
+
+			if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
+				continue;
+			if (dependent_join(c, s, jc, &dkey) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
+			{
+				int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
+
+				if (col >= 0 && col < j->ncol)
+				{
+					att = j->colatt[col];
+					typ = j->coltype[col];
+				}
+			}
+			else if (dj->cpath != NULL && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && d->keypos[0] >= 0 &&
+					 cc->leaf[d->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
+			{
+				att = j->keyatt[0];
+				typ = j->keytype[0];
+			}
+			if (att <= 0 || (typ != INT4OID && typ != INT8OID))
+				continue;
+			keys = lookup_rows(c, dj);
+			keys = Min(!lookup_counted(c, dj) ? sqrt(keys * tuples) : keys, tuples);
+			if ((best == 0 || keys < best) && join_keys_pay(c, s, jc, att, keys, &found, &only))
+			{
+				best = keys;
+				*rows = found;
+				*entries_only = only;
+			}
+		}
+	/* the conditions of the join's own are tested by the filter of the table on each row fetched (map_probe) */
+	if ((j->nidx == 0 || (sj->fslot >= 0 && !slot_reads_leaf(cb, sj->fslot))) && (keys = join_in_keys(c, s, jc)) > 0 && (best == 0 || keys < best) &&
+		join_keys_pay(c, s, jc, j->keyatt[0], keys, &found, &only))
 	{
-		const SiftAggCombo *cc = &s->combo[dj->combo];
-		const SiftAggJoin *d = &dj->j;
-		int			att = 0,
-					dkey;
-		Oid			typ = InvalidOid;
-		double		keys,
-					rpk;
-		bool		usable = false,
-					unique = false;
-
-		if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
-			continue;
-		if (dependent_join(c, s, jc, &dkey) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
-		{
-			int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
-
-			if (col >= 0 && col < j->ncol)
-			{
-				att = j->colatt[col];
-				typ = j->coltype[col];
-			}
-		}
-		else if (dj->cpath != NULL && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && d->keypos[0] >= 0 &&
-				 cc->leaf[d->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
-		{
-			att = j->keyatt[0];
-			typ = j->keytype[0];
-		}
-		if (att <= 0 || (typ != INT4OID && typ != INT8OID))
-			continue;
-		foreach_node(IndexOptInfo, ii, jrel->indexlist)
-			if (ii->relam == BTREE_AM_OID && ii->indpred == NIL && !ii->hypothetical && ii->indexkeys[0] == att)
-			{
-				usable = true;
-				unique |= ii->unique && ii->nkeycolumns == 1;
-			}
-		if (!usable)
-			continue;
-		rpk = sift_agg_rows_per_key(planner_rt_fetch(jc->rti, c->root)->relid, att, tuples);
-		if (rpk <= 0 && !unique)
-			continue;
-		rpk = Max(rpk, 1.0);
-		keys = lookup_rows(c, dj);
-		keys = Min(!lookup_counted(c, dj) ? sqrt(keys * tuples) : keys, tuples);
-		if (sift_agg_probe_pays(keys, keys * rpk, jrel->pages) && (best == 0 || keys < best))
-		{
-			best = keys;
-			*rows = keys * rpk;
-		}
+		best = keys;
+		*rows = found;
+		*entries_only = only;
 	}
 	return best;
 }
@@ -479,7 +643,8 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	RelOptInfo *jrel = root->simple_rel_array[jc->rti];
 	double		tuples = Max(jrel->tuples, 1.0),
 				probes,
-				prows;
+				prows,
+				only;
 
 	if (jc->cpath != NULL)
 	{
@@ -496,22 +661,12 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 		*row_cost = AGG_IDX_ROW + idx_read_cost(c, jrel, &jc->j) / prows;
 		return prows;
 	}
-	if ((probes = join_probe_keys(c, s, jc, &prows)) > 0)
+	if ((probes = join_probe_keys(c, s, jc, &prows, &only)) > 0)
 	{
-		/* the descents and the pages of the rows found, as sift_agg_probe_pays counts them: the price meets that of the whole table where the rule turns */
-		*row_cost = AGG_IDX_ROW + (probes + Min(prows, jrel->pages)) * random_page_cost / (Max(prows, 1.0) * cpu_operator_cost);
+		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only) / Max(prows, 1.0);
 		return Max(prows, 1.0);
 	}
-	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
-	{
-		Relation	rel = relation_open(root->simple_rte_array[jc->rti]->relid, NoLock);
-		int			nnum = 0;
-		bool		cols = map_load_cols_possible(rel, &jc->j, &nnum);
-
-		relation_close(rel, NoLock);
-		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
-		*row_cost = cols ? AGG_LOAD_ROW_COLS * pow(Max(tuples / AGG_LOAD_BIG, 1.0), 0.4) + nnum * AGG_LOAD_NUMERIC : (join_keys_only(c, s, jc) ? AGG_LOAD_KEY : AGG_LOAD_ROW) + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
-	}
+	*row_cost = join_whole_ops(c, s, jc) / tuples;
 	return tuples;
 }
 
@@ -532,6 +687,78 @@ agg_share_rows(AggCtx *c, SiftAggSpec *s)
 }
 
 /* The lookup joins: the children's plans and the lookup tables' reads */
+/*
+ * The price, in operators, of a run of a correlated child that the scan probes in its btree directly (agg/combo/probe.c): LIMIT 1 over a forward index scan, or an index scan alone. PostgreSQL's cost
+ * takes the first match to come after 1 / selectivity entries of the key, as if the rows that pass were spread evenly among them, and prices an entry at a fraction of what it
+ * takes; a condition the index does not take (a column that is only INCLUDEd, a filter) makes the probe examine the entries of the key until one passes, as many as the key
+ * has where the matches lie behind the others (a status that follows the label), so those are counted. A child that gives every row of the key (OFFSET 0) examines the entries
+ * that the conditions of the index let through. 0: not a child of those shapes.
+ */
+static double
+child_probe_ops(const JoinCtx *jc)
+{
+	Path	   *p = jc->cpath;
+	IndexPath  *ip;
+	RelOptInfo *rel;
+	bool		first = false;
+	double		entries = 1.0,
+				rpk;
+
+	for (;;)
+	{
+		if (IsA(p, SubqueryScanPath))
+			p = ((SubqueryScanPath *) p)->subpath;
+		else if (IsA(p, ProjectionPath))
+			p = ((ProjectionPath *) p)->subpath;
+		else
+			break;
+	}
+	if (IsA(p, LimitPath))
+	{
+		LimitPath  *lp = (LimitPath *) p;
+
+		if (lp->limitOffset != NULL || lp->limitCount == NULL || !IsA(lp->limitCount, Const) || DatumGetInt64(((Const *) lp->limitCount)->constvalue) != 1)
+			return 0;
+		first = true;
+		for (p = lp->subpath; IsA(p, ProjectionPath);)
+			p = ((ProjectionPath *) p)->subpath;
+	}
+	if (!IsA(p, IndexPath))
+		return 0;
+	ip = (IndexPath *) p;
+	rel = ip->path.parent;
+	if (ip->indexinfo->relam != BTREE_AM_OID || ip->indexorderbys != NIL || ip->indexscandir != ForwardScanDirection || jc->subroot == NULL)
+		return 0;
+	rpk = sift_agg_rows_per_key(planner_rt_fetch(rel->relid, jc->subroot)->relid, ip->indexinfo->indexkeys[0], rel->tuples);
+	if (first)
+	{
+		/* the first match: as many entries as the key has where a condition the index does not take decides it */
+		if (list_length(rel->baserestrictinfo) + (ip->path.param_info ? list_length(ip->path.param_info->ppi_clauses) : 0) > list_length(ip->indexclauses))
+			entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0);
+	}
+	else
+	{
+		/* every entry of the key that the conditions on the index's other columns let through */
+		List	   *own = NIL;
+
+		foreach_node(IndexClause, ic, ip->indexclauses)
+			if (ic->indexcol > 0)
+				own = lappend(own, ic->rinfo);
+		entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0) * clauselist_selectivity(jc->subroot, own, 0, JOIN_INNER, NULL);
+		entries = Max(entries, 1.0);
+	}
+	return AGG_PROBE_RUN + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
+}
+
+/* is the child a lateral probe that the planner hook made of a sublink (agg/flat/probe.c)? */
+static bool
+probe_made(AggCtx *c, const JoinCtx *jc)
+{
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+
+	return rte->rtekind == RTE_SUBQUERY && rte->eref != NULL && strcmp(rte->eref->aliasname, SIFT_PROBE_ALIAS) == 0;
+}
+
 void
 cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
@@ -545,7 +772,8 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		run = AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		probe = child_probe_ops(jc),
+						run = probe > 0 ? probe * cpu_operator_cost : AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
 			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
 
 			/*
@@ -553,7 +781,8 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			 * inputs are counted by what the index holds of the elements and of the tuples the scan reads, as the rows PostgreSQL expects of the join
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
-			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
+			/* a lateral probe the planner made (agg/flat/probe.c) is priced by what a probe takes: the rows of its table are not loaded for it */
+			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;

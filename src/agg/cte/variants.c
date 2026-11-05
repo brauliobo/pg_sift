@@ -21,6 +21,10 @@
  */
 static List *discarded;
 
+#ifdef SIFT_TESTING
+int64		sift_agg_plan_passes;	/* the runs of PostgreSQL's planner that the hook made */
+#endif
+
 /*
  * A plan keeps every path and relation the planner built for it, several times the size of the plan itself, and a statement is planned up to
  * four times (shared or inline CTEs, as it is or flattened) of which one is kept. Each plan is made in a context of its own, a child of the
@@ -32,6 +36,9 @@ plan_in_own_context(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	MemoryContext old;
 	PlannedStmt *stmt;
 
+#ifdef SIFT_TESTING
+	sift_agg_plan_passes++;
+#endif
 	*cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan variant", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(*cx);
 	stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));

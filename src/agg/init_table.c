@@ -3,7 +3,12 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_collation_d.h"
+#include "catalog/pg_operator_d.h"
 #include "executor/nodeAgg.h"
+#include "nodes/makefuncs.h"
+#include "utils/array.h"
+#include "utils/fmgroids.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
@@ -31,6 +36,120 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 		return false;
 	lf = &ex->lay->leaf[*leaf];
 	return lf->kind == SCL_SCALAR && lf->parent < 0 && (lf->vtype == SCV_I32 || lf->typid == INT8OID);
+}
+
+/*
+ * The source looks every key up in every unit it tests (about 125 instructions for each pair, measured on a dictionary and on inline text), so a list of
+ * N keys costs a row of the scan N / 2,600 of them, where the join it saves costs 450 to 2,000 for a row whose key is in no list: the list is tried when it
+ * has at most a sixteenth of the table's rows (and 65,536; 256 where the rows are not known), and a test that keeps more than half the rows of its
+ * first JSTR_TRIAL units is dropped (unit_conjuncts)
+ */
+#define JSTR_MAX_KEYS	65536
+
+/*
+ * The same for a text leaf: a tuple of an inner or semi join needs a row of the table with its key, so a unit that holds the key of none is not read and the
+ * rows of one that holds some are narrowed to those with a key of the table, on the encoded form (the inline strings of the others are never interned or
+ * hashed). More keys than the join needs are safe: the join still drops the tuples without a match. Joins by bytes only: the planner takes text keys under a
+ * deterministic collation. A leaf of the elements of an array (level 1) keeps the rows with an element that holds a key.
+ */
+static bool
+join_filter_text(AggExec *ex, int ci, int k, int *leaf)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const SiftSrcLeaf *lf;
+
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level > 1)
+		return false;
+	*leaf = cb->leaf[j->keypos[k]];
+	if (*leaf < 0 || *leaf >= ex->nbase)
+		return false;
+	lf = &ex->lay->leaf[*leaf];
+	return lf->kind == SCL_SCALAR && (cb->level == 0 ? lf->parent < 0 : lf->parent >= 0) && lf->vtype == SCV_CODE && !lf->lossy &&
+		(lf->typid == TEXTOID || lf->typid == VARCHAROID);
+}
+
+static void
+join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
+{
+	MapTab	   *m;
+	SiftSrcStrTest *t;
+
+	if (ex->cs[ci].map == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(caller);
+
+		ex->cs[ci].map = map_load(ex, ci);
+		MemoryContextSwitchTo(old);
+	}
+	m = ex->cs[ci].map;
+	if (!m->ktext[k] || m->lazy || m->kd[k].n == 0 || m->kd[k].n > Min(JSTR_MAX_KEYS, Max(256, ex->heap->rd_rel->reltuples / 16)))
+		return;
+	ex->jstr = ex->jstr ? repalloc(ex->jstr, (ex->njstr + 1) * sizeof(SiftSrcStrTest)) : palloc(sizeof(SiftSrcStrTest));
+	ex->jtrial = ex->jtrial ? repalloc(ex->jtrial, (ex->njstr + 1) * sizeof(JstrTrial)) : palloc(sizeof(JstrTrial));
+	ex->jtrial[ex->njstr] = (JstrTrial) {0};
+	t = &ex->jstr[ex->njstr++];
+	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SSTR_EQ : SSTR_IN,.nvals = (int) m->kd[k].n,.vals = m->kd[k].ptr,.lens = m->kd[k].len};
+}
+
+/*
+ * A top-N has no join to test its rows again, so the keys of a text join are the exact conjunct `leaf = ANY(keys)`, a LUT of the leaf as a constant list is
+ * (a row with no key matches nothing, a duplicate key is one key: the planner takes an inner join only by a unique key). live: the rows kept so far, NULL all.
+ */
+static SiftAggPred *
+join_filter_lut(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
+{
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+	const MapTab *m = ex->cs[ci].map;
+	const KeyDict *kd = &m->kd[k];
+	bool	   *used = palloc0(Max(kd->n, 1));
+	Datum	   *keys = palloc(Max(kd->n, 1) * sizeof(Datum));
+	int			n = 0;
+	ScalarArrayOpExpr *sa = makeNode(ScalarArrayOpExpr);
+	Param	   *in = makeNode(Param);
+	SiftAggPred *p = palloc0(sizeof(SiftAggPred));
+
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		uint32		kid = m->kid[(size_t) r * m->nkey + k];
+
+		if (kid > 0 && (live == NULL || live[r]))
+			used[kid - 1] = true;
+	}
+	for (uint32 i = 0; i < kd->n; i++)
+	{
+		text	   *t;
+
+		if (!used[i])
+			continue;
+		t = palloc(VARHDRSZ + kd->len[i]);
+		SET_VARSIZE(t, VARHDRSZ + kd->len[i]);
+		memcpy(VARDATA(t), kd->ptr[i], kd->len[i]);
+		keys[n++] = PointerGetDatum(t);
+	}
+	sa->opno = TextEqualOperator;
+	sa->opfuncid = F_TEXTEQ;
+	sa->hashfuncid = n >= 9 ? F_HASHTEXT : InvalidOid;	/* the executor hashes a list of 9 or more */
+	sa->negfuncid = InvalidOid;
+	sa->useOr = true;
+	sa->inputcollid = C_COLLATION_OID;	/* the join compares bytes: the planner takes text keys under a deterministic collation */
+	sa->location = -1;
+	in->paramkind = PARAM_EXEC;
+	in->paramtype = TEXTOID;
+	in->paramtypmod = -1;
+	in->paramcollid = C_COLLATION_OID;
+	in->location = -1;
+	sa->args = list_make2(in, makeConst(TEXTARRAYOID, -1, InvalidOid, -1, PointerGetDatum(construct_array(keys, n, TEXTOID, -1, false, TYPALIGN_INT)), false, false));
+	p->kind = SAP_LUT;
+	p->id = id;
+	p->leaf = leaf;
+	p->leaf2 = -1;
+	p->expr = (Node *) sa;
+	p->argtype = ex->lay->leaf[leaf].typid;
+	p->desc = psprintf("%s IN (keys of %s)", ex->lay->leaf[leaf].name, j->desc);
+	pfree(used);
+	pfree(keys);
+	return p;
 }
 
 /*
@@ -290,6 +409,31 @@ join_filters(AggExec *ex, MemoryContext caller)
 			SiftAggPred *p;
 			bool	   *live;
 
+			if (join_filter_text(ex, ci, k, &leaf))
+			{
+				if (!s->topn)
+					join_filter_str(ex, ci, k, leaf, caller);
+				else
+				{
+					if (ex->cs[ci].map == NULL)
+					{
+						MemoryContextSwitchTo(caller);
+						ex->cs[ci].map = map_load(ex, ci);
+						MemoryContextSwitchTo(ex->cxt);
+					}
+					ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
+					memset(&ex->ps[total], 0, sizeof(PredState));
+					live = join_own_rows(ex, ci, join_live_rows(ex, ci, caller));
+					p = join_filter_lut(ex, ci, k, leaf, total, live);
+					register_pred(ex, p);
+					add = lappend(add, p);
+					total++;
+					ex->cs[ci].kfilt = j->nkey == 1 && (ex->cs[ci].map->filtered || j->fslot < 0);
+					if (live)
+						pfree(live);
+				}
+				continue;
+			}
 			if (!join_filter_leaf(ex, ci, k, &leaf))
 				continue;
 			if (ex->cs[ci].map == NULL)

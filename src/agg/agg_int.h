@@ -55,6 +55,13 @@ typedef struct Touch
 } Touch;
 
 extern PGDLLIMPORT bool sift_child_warm_test;
+extern PGDLLIMPORT bool sift_agg_probe_direct;
+extern PGDLLIMPORT bool sift_agg_float_step;
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT char *sift_test_probe_hook;
+extern void sift_test_probe_hook_assign(const char *newval, void *extra);
+extern uint64 sift_test_warm_calls;
+#endif
 
 /* the state of an operand expression of a condition (operand_state) */
 typedef struct OperandState
@@ -62,6 +69,17 @@ typedef struct OperandState
 	Node	   *expr;
 	ExprState  *state;
 } OperandState;
+
+/* the rows a join key test of a text leaf saw and kept in its first units: a test that keeps most of them costs more than it saves */
+typedef struct JstrTrial
+{
+	uint64		seen;
+	uint64		kept;
+	uint32		units;
+	bool		off;
+} JstrTrial;
+
+#define JSTR_TRIAL		4
 
 typedef struct AggExec
 {
@@ -124,6 +142,7 @@ typedef struct AggExec
 	DictSlot	dslot[NDICT_SLOTS];
 	uint64		dtick;
 	List	   *operands;		/* operand_state: the states made for the scan */
+	List	   *initvals;		/* a worker: the values of the InitPlan outputs the leader ran (a list of the id of the Param and a Const for each), the worker has no executor state that holds them */
 	bool		started;
 	bool		open_deferred;	/* a top-N whose walk of the global order never reads the combos, the zone tests, the vectors or the group table: engine_open_rest makes them when the walk gives the scan to the units */
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
@@ -182,12 +201,17 @@ typedef struct AggExec
 	uint32		gp_n;			/* a scan whose participants split the groups by a key (SiftAggSpec.gpart): the shares, one for each participant; 0: they split the rows */
 	uint32		gp_mine;		/* ... the shares this process aggregates, bit i = share i: its own, and those of the workers that did not start */
 	int			gp_leaf;		/* ... the leaf of the key */
-	bool		gp_one;			/* ... a single share: the hashes of its keys are [gp_lo, gp_lo + gp_w) */
+	bool		gp_one;			/* ... shares side by side (a pass, a worker): the hashes of their keys are [gp_lo, gp_lo + gp_w); gp_w 0: all of them */
 	uint32		gp_lo;
 	uint32		gp_w;
 	uint32		pass_w;			/* a serial scan that reads the table in passes, each for this many of the 32 shares of the keys of one leaf (agg/spill/pass.c); 0: one pass */
 	bool		pass_stop;		/* ... the scan is being stopped to start again in passes */
 	bool		pass_all;		/* ... one share did not fit: the shares left are read together and spill as a scan does */
+	bool		pass_lazy;		/* ... the groups come pass by pass, as they are asked for (pass_more) */
+	bool		pass_got;		/* ... the first pass is over: pass_rows and pass_units are its */
+	uint32		pass_a;			/* ... the first share of the next pass */
+	int64		pass_rows;
+	int64		pass_units;
 	bool		pass_fixed;		/* ... a pass overflowed: the number of shares of a pass no longer grows */
 	int			pass_key;		/* ... the key it splits by */
 	const void *gp_dict;		/* a text key: the dictionary gp_code was made for */
@@ -229,6 +253,9 @@ typedef struct AggExec
 	SiftVis    *tid_vis;		/* a heap: the visible versions of its edge blocks' rows (a HOT chain's member, not the root the index keeps) */
 	TupleTableSlot *tid_slot;
 	int			njfilter;		/* the join key conjuncts join_filters added to the spec */
+	SiftSrcStrTest *jstr;		/* the keys of the inner and semi joins by a text leaf, as tests the source runs on the encoded form (join_filters) */
+	JstrTrial  *jtrial;			/* what each of them kept of the rows it saw, until it is dropped (unit_conjuncts) */
+	int			njstr;
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
@@ -243,8 +270,10 @@ typedef struct AggExec
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
 	uint64		lookup_loaded;
 	int			lookup_index;
+	uint64		lookup_heap;	/* the entries of an index-only load whose page is not all-visible: their rows were fetched from the heap */
 	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
 	uint64		lookup_us;
+	uint64		probe_direct;	/* the keys of correlated children probed in the index directly (combo/probe.c) */
 	uint64		child_warmed;	/* blocks of the relations of correlated children that were asked of the OS ahead of their probes (combo/child.c child_warm) */
 	int64		dict_shared0[2];	/* sift.stats dict_shared_hits and misses when the run began: EXPLAIN (VERBOSE) shows the difference */
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
@@ -577,5 +606,24 @@ key_lf(AggExec *ex, int j)
 
 	return k->kind == SAK_COMBO || k->kind == SAK_SET || k->kind == SAK_NUM || k->kind == SAK_SPINE ? NULL : &ex->lay->leaf[k->leaf];
 }
+
+/* the distinct values of a key sorted and ranked, the groups or rows by their ranks (agg/gorder.c) */
+typedef struct IdVal
+{
+	uint32		id;
+	Datum		val;
+} IdVal;
+
+extern void sift_idval_sort(IdVal *vals, uint32 nd, SortSupport ssup);
+
+/* the ranks of a group packed into one integer, the first key in the high bits; groups of equal keys keep their order (the group number never goes down along the array) */
+typedef struct PackedGroup
+{
+	uint64		key;
+	uint32		group;
+} PackedGroup;
+
+extern void sift_packed_sort(PackedGroup *pk, uint32 n);
+extern uint32 *sift_rank_perm(const uint32 *tup, uint32 n, uint32 nord);
 
 #endif							/* SIFT_AGG_AGG_INT_H */

@@ -100,6 +100,9 @@ extern sift_i128 sift_pow10(int e);
 extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
 extern const char *sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg);
 
+/* the distinct values of an ordered key sort by the value with no call for a compare (agg/gorder.c) */
+extern bool sift_gorder_call_free(const SiftAggOrd *o);
+
 /* the specs whose group table can also go to partitions on disk past hash memory (agg/spill.c): count, sum, avg, min and max over one pass */
 extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);

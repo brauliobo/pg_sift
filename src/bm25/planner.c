@@ -38,6 +38,7 @@
 #include "agg/agg.h"
 #include "agg/plan_int.h"
 #include "core/compat.h"
+#include "core/visibility.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
@@ -622,6 +623,7 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 				cte->ctematerialized = CTEMaterializeAlways;
 	}
 	sift_agg_walks_forget();
+	sift_vis_scope(true);
 	PG_TRY();
 	{
 		stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
@@ -629,6 +631,7 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 	PG_FINALLY();
 	{
 		sift_agg_walks_forget();
+		sift_vis_scope(false);
 	}
 	PG_END_TRY();
 	if (sift_enable_scan)

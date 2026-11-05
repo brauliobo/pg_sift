@@ -1,0 +1,51 @@
+-- The groups of 1 to 5 integer keys in hash mode (the probe is inlined for 1 to 4 keys, and a table of more than 131,072 slots prefetches the slot of a tuple): the rows are
+-- those of the normal plan, with NULL keys, a few groups (the table is forced to the hash by a limit on the direct arrays) and about 200,000.
+CREATE EXTENSION pg_sift;
+
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '256MB';
+
+CREATE TABLE h (id int, k1 int, k2 int, k3 int, k4 int, k5 int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO h SELECT i, i % 1000, i % 997, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 991 END, i % 983, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 977 END, (i * 7) % 1000
+FROM generate_series(1, 200000) i;
+CREATE INDEX h_col ON h USING sift_col (id, k1, k2, k3, k4, k5, v);
+VACUUM ANALYZE h;
+
+CREATE FUNCTION h_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'' ORDER BY q::text)) || '' '' || count(*) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION h_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE TABLE h_q (n int, q text);
+INSERT INTO h_q VALUES
+	(1, 'SELECT k1, count(*) AS n, sum(v) AS s FROM h GROUP BY k1'),
+	(2, 'SELECT k1, k2, count(*) AS n, sum(v) AS s FROM h GROUP BY k1, k2'),
+	(3, 'SELECT k1, k3, count(*) AS n, sum(v) AS s FROM h GROUP BY k1, k3'),
+	(4, 'SELECT k1, k2, k3, count(*) AS n, min(v) AS lo FROM h GROUP BY k1, k2, k3'),
+	(5, 'SELECT k2, k3, k4, k5, count(*) AS n, max(v) AS hi FROM h GROUP BY k2, k3, k4, k5'),
+	(6, 'SELECT k1, k2, k3, k4, k5, count(*) AS n FROM h GROUP BY k1, k2, k3, k4, k5'),
+	(7, 'SELECT k3, k5, count(*) AS n, sum(v) AS s FROM h WHERE id <= 5000 GROUP BY k3, k5');
+
+-- the plan is the scan, and the rows are the normal plan's: the direct arrays when they fit, then the hash table forced for every size
+SELECT n, h_scan(q) AS scan, h_rows(q, true) = h_rows(q, false) AS direct_or_default FROM h_q ORDER BY n;
+SET sift.test_direct_max = 64;
+SELECT n, h_rows(q, true) = h_rows(q, false) AS hash FROM h_q ORDER BY n;
+RESET sift.test_direct_max;
+
+DROP TABLE h_q;
+DROP FUNCTION h_rows(text, bool), h_scan(text);
+DROP TABLE h;
+DROP EXTENSION pg_sift;

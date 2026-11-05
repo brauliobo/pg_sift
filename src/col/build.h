@@ -29,6 +29,8 @@
 
 typedef struct ColBuild ColBuild;
 
+extern PGDLLIMPORT bool sift_col_build_key_ranges;
+
 extern Size sift_colb_budget(int nslots);
 extern void sift_colb_init_meta(Relation index);
 
@@ -81,6 +83,7 @@ extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of
 extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with key_cut is made whatever its merge (on: the tests of the participants run on small tables; off: build_pays decides) */
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
+extern PGDLLIMPORT int sift_test_col_temp_free_kb;	/* the disk space the temporary files of a build by key ranges may use, in kB (-1 = what the disks of the temporary tablespaces have free) */
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif
 

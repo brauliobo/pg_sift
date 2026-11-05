@@ -1,0 +1,267 @@
+-- A Sort of many rows over the groups of a scan is done by a SiftSort node: the distinct values of each sort key are sorted once with the comparator of the key
+-- (its sort operator, collation and nulls order), and the rows by the ranks. The rows come out in the order of the Sort they replace, for text, numeric, float, date
+-- and expression keys, DESC, NULLS FIRST and LAST, ties, a scroll cursor read backwards, a merge join, a rescan, with workers, and the Sort under a Limit stays.
+CREATE EXTENSION pg_sift;
+SET sift.agg_preagg = off;
+SET extra_float_digits = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET enable_sort = on;
+CREATE TABLE r (id int, a int, b text, c numeric(8,2), d date, f float8, t text) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO r
+SELECT i, i % 97, CASE WHEN i % 31 = 0 THEN NULL ELSE 'k' || (i * 7 % 83) END, (i % 40) / 4.0, DATE '2024-01-01' + (i % 25),
+       CASE i % 9 WHEN 0 THEN 0.0 WHEN 1 THEN -0.0 WHEN 2 THEN 'NaN' WHEN 3 THEN NULL WHEN 4 THEN 'Infinity' WHEN 5 THEN '-Infinity' ELSE i % 5 - 2.5 END,
+       (ARRAY['a', 'A', 'b', 'B', 'é', 'e', '', 'z', 'Z', '10', '9', '_', 'ab', 'aB', 'Ab'])[1 + i % 15] || (i % 7)
+FROM generate_series(1, 40000) i;
+CREATE INDEX r_col ON r USING sift_col (id, a, b, c, d, f, t);
+NOTICE:  sift_col index "r_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = c, d
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_col');
+VACUUM ANALYZE r;
+-- the rows of the statement as a checksum, in the order it gives them, with the pushdown and the workers as given
+CREATE FUNCTION r_sum(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'')) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+-- whether the plan of the statement has a SiftSort node, and a Sort
+CREATE FUNCTION r_plan(q text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftSort\)' THEN r := r || 'SiftSort'::text; ELSIF l ~ '^\s*(-> +)?Sort$' THEN r := r || 'Sort'::text; END IF;
+	END LOOP;
+	RETURN CASE WHEN cardinality(r) = 0 THEN 'none' ELSE array_to_string(r, ' ') END;
+END $$;
+CREATE TABLE r_q (n int, q text);
+INSERT INTO r_q VALUES
+	(1, 'SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) DESC, b, a'),
+	(2, 'SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY b DESC NULLS LAST, a'),
+	(3, 'SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY b NULLS FIRST, a DESC'),
+	(4, 'SELECT a, c, d, sum(id) s FROM r GROUP BY a, c, d ORDER BY c DESC, d, a DESC'),
+	(5, 'SELECT a, f, d, count(*) n FROM r GROUP BY a, f, d ORDER BY f NULLS FIRST, a, d'),
+	(6, 'SELECT a, f, d, count(*) n FROM r GROUP BY a, f, d ORDER BY f DESC NULLS LAST, a DESC, d'),
+	(7, 'SELECT t, a, count(*) n FROM r GROUP BY t, a ORDER BY t, a'),
+	(8, 'SELECT t, a, count(*) n FROM r GROUP BY t, a ORDER BY t COLLATE "C" DESC, a'),
+	(9, 'SELECT t, a, count(*) n FROM r GROUP BY t, a ORDER BY lower(t), a DESC, t'),
+	(10, 'SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY COALESCE(b, ''none'') DESC, a'),
+	(11, 'SELECT a, b, t, count(*) n FROM r GROUP BY a, b, t ORDER BY a % 5, b, t DESC, a'),
+	(12, 'SELECT a, d, sum(c) s FROM r GROUP BY a, d ORDER BY sum(c) DESC NULLS LAST, d, a'),
+	(13, 'SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY n, a, b'),
+	(14, 'SELECT COALESCE(x.a, y.a) a, COALESCE(x.c, y.c) c, x.n, y.s FROM (SELECT a, c, count(*) n FROM r GROUP BY a, c) x FULL JOIN (SELECT a, c, sum(id) s FROM r GROUP BY a, c) y ON x.a = y.a AND x.c = y.c ORDER BY COALESCE(x.c, y.c) DESC, COALESCE(x.a, y.a)'),
+	(15, 'SELECT a, c, n, s FROM (SELECT a, c, count(*) n, sum(id) s FROM r GROUP BY a, c) x FULL JOIN (SELECT a % 13 a, c, 1 m FROM r GROUP BY 1, 2) y USING (a, c) ORDER BY c DESC NULLS LAST, a, n');
+-- the group keys alone are ordered by the scan itself: the same shapes behind a measure, so that the Sort stays
+INSERT INTO r_q SELECT n + 100, replace(q, 'ORDER BY ', 'ORDER BY count(*) % 3, ') FROM r_q WHERE n BETWEEN 2 AND 8;
+-- every shape: a SiftSort in the plan (a Sort when the node is not offered), and the rows equal to the normal plan's, without and with workers
+SELECT n, r_plan(q, 0) plan_serial, r_sum(q, true, 0) = r_sum(q, false, 0) same_serial, r_sum(q, true, 3) = r_sum(q, false, 0) same_workers FROM r_q ORDER BY n;
+  n  | plan_serial | same_serial | same_workers 
+-----+-------------+-------------+--------------
+   1 | SiftSort    | t           | t
+   2 | none        | t           | t
+   3 | none        | t           | t
+   4 | none        | t           | t
+   5 | SiftSort    | t           | t
+   6 | SiftSort    | t           | t
+   7 | none        | t           | t
+   8 | none        | t           | t
+   9 | SiftSort    | t           | t
+  10 | SiftSort    | t           | t
+  11 | SiftSort    | t           | t
+  12 | SiftSort    | t           | t
+  13 | SiftSort    | t           | t
+  14 | SiftSort    | t           | t
+  15 | SiftSort    | t           | t
+ 102 | SiftSort    | t           | t
+ 103 | SiftSort    | t           | t
+ 104 | SiftSort    | t           | t
+ 105 | SiftSort    | t           | t
+ 106 | SiftSort    | t           | t
+ 107 | SiftSort    | t           | t
+ 108 | SiftSort    | t           | t
+(22 rows)
+
+SELECT n, r_plan(q, 3) plan_workers FROM r_q ORDER BY n;
+  n  | plan_workers 
+-----+--------------
+   1 | SiftSort
+   2 | none
+   3 | none
+   4 | none
+   5 | SiftSort
+   6 | SiftSort
+   7 | none
+   8 | none
+   9 | SiftSort
+  10 | SiftSort
+  11 | SiftSort
+  12 | SiftSort
+  13 | SiftSort
+  14 | SiftSort
+  15 | SiftSort
+ 102 | SiftSort
+ 103 | SiftSort
+ 104 | SiftSort
+ 105 | SiftSort
+ 106 | SiftSort
+ 107 | SiftSort
+ 108 | SiftSort
+(22 rows)
+
+-- a key with a nondeterministic collation: the groups that are equal for the collation are one group, shown as either of the values, so the rows are compared lowered
+CREATE COLLATION r_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE TABLE rc (id int, a int, t text COLLATE r_ci) WITH (autovacuum_enabled = false);
+INSERT INTO rc SELECT i, i % 101, (ARRAY['a', 'A', 'b', 'B', 'é', 'e', 'E', 'z'])[1 + i % 8] || (i % 11) FROM generate_series(1, 40000) i;
+CREATE INDEX rc_col ON rc USING sift_col (id, a, t);
+NOTICE:  sift_col index "rc_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rc_col');
+VACUUM ANALYZE rc;
+SELECT r_plan(q, 0) plan, r_sum(q, true, 0) = r_sum(q, false, 0) same
+FROM (VALUES ('SELECT lower(t), a, n FROM (SELECT t, a, count(*) n FROM rc GROUP BY t, a ORDER BY count(*) % 3, t, a DESC) q')) v(q);
+   plan   | same 
+----------+------
+ SiftSort | t
+(1 row)
+
+SELECT r_plan(q, 0) plan FROM (VALUES ('SELECT t, a, count(*) n FROM rc GROUP BY t, a ORDER BY count(*) % 3, t, a DESC')) v(q);
+   plan   
+----------
+ SiftSort
+(1 row)
+
+-- a single key of an integer type is sorted by the Sort itself
+SELECT r_plan('SELECT a, count(*) n FROM r GROUP BY a ORDER BY a DESC', 0) int_key,
+       r_plan('SELECT id, count(*) n FROM r GROUP BY id ORDER BY count(*) DESC', 0) int_measure;
+ int_key | int_measure 
+---------+-------------
+ none    | Sort
+(1 row)
+
+-- a small input keeps the Sort; a tight work_mem keeps the node, which sorts by the rows as the Sort does when the ranks do not fit
+SELECT r_plan('SELECT a, b, count(*) n FROM r WHERE id < 100 GROUP BY a, b ORDER BY count(*) % 3, b, a', 0) small_input;
+ small_input 
+-------------
+ Sort
+(1 row)
+
+SET work_mem = '64kB';
+SELECT r_plan(q, 0) FROM r_q WHERE n = 1;
+  r_plan  
+----------
+ SiftSort
+(1 row)
+
+SELECT r_sum(q, true, 0) = r_sum(q, false, 0) FROM r_q WHERE n = 1;
+ ?column? 
+----------
+ t
+(1 row)
+
+RESET work_mem;
+SELECT r_plan('SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a LIMIT 10', 0) with_limit;
+ with_limit 
+------------
+ Sort
+(1 row)
+
+SELECT r_plan('SELECT * FROM (SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) s LIMIT 10', 0) limit_over;
+ limit_over 
+------------
+ Sort
+(1 row)
+
+-- a scroll cursor reads the node forwards and backwards, past its end and back to its start
+CREATE FUNCTION r_scroll(push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	c SCROLL CURSOR FOR SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b DESC NULLS LAST, a;
+	r record; out text[] := '{}';
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	OPEN c;
+	FETCH FIRST FROM c INTO r; out := out || r::text;
+	FOR i IN 1..2500 LOOP FETCH c INTO r; EXIT WHEN NOT FOUND; out := out || r::text; END LOOP;
+	FETCH c INTO r; out := out || COALESCE(r::text, 'end');
+	FOR i IN 1..3000 LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; out := out || r::text; END LOOP;
+	FETCH LAST FROM c INTO r; out := out || r::text;
+	FETCH ABSOLUTE 7 FROM c INTO r; out := out || r::text;
+	FETCH RELATIVE -3 FROM c INTO r; out := out || r::text;
+	CLOSE c;
+	RETURN md5(array_to_string(out, E'\n')) || ' ' || cardinality(out);
+END $$;
+SELECT r_scroll(true) = r_scroll(false) scroll_same, r_scroll(true) ~ ' 5[0-9]{3}$' scroll_rows;
+ scroll_same | scroll_rows 
+-------------+-------------
+ t           | t
+(1 row)
+
+-- a merge join marks and restores the node
+CREATE FUNCTION r_join(push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('enable_hashjoin', 'off', true);
+	PERFORM set_config('enable_nestloop', 'off', true);
+	SELECT md5(string_agg(q::text, E'\n')) INTO r FROM (
+		SELECT x.a, x.b, x.n, y.n m
+		FROM (SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) x
+		JOIN (SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) y ON x.b = y.b AND x.a = y.a % 50) q;
+	RETURN r;
+END $$;
+SELECT r_join(true) = r_join(false) merge_join;
+ merge_join 
+------------
+ t
+(1 row)
+
+-- a node that is read again (the inner side of a nested loop with no Materialize) starts from its first row each time
+CREATE TABLE r_q2 (q text);
+INSERT INTO r_q2 VALUES ('SELECT g, md5(string_agg(s.a || s.b, '','')) FROM generate_series(1, 3) g, (SELECT a, b FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) s GROUP BY g');
+SET enable_material = off;
+SET enable_memoize = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SELECT r_plan(q, 0) rescan_plan, r_sum(q, true, 0) = r_sum(q, false, 0) rescan_same FROM r_q2;
+ rescan_plan | rescan_same 
+-------------+-------------
+ SiftSort    | t
+(1 row)
+
+RESET enable_material;
+RESET enable_memoize;
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SELECT r_plan('SELECT x.a, x.b, x.n, y.n m FROM (SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) x JOIN (SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b, a) y ON x.b = y.b AND x.a = y.a % 50', 0) merge_join_plan;
+           merge_join_plan           
+-------------------------------------
+ SiftSort SiftSort SiftSort SiftSort
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_nestloop;
+SELECT r_plan('SELECT a, b, count(*) n FROM r GROUP BY a, b ORDER BY count(*) % 3, b DESC NULLS LAST, a', 0) cursor_plan;
+ cursor_plan 
+-------------
+ SiftSort
+(1 row)
+
+DROP TABLE r_q;
+DROP FUNCTION r_sum(text, bool, int);
+DROP FUNCTION r_plan(text, int);
+DROP FUNCTION r_scroll(bool);
+DROP FUNCTION r_join(bool);
+DROP TABLE r_q2;
+DROP TABLE rc;
+DROP COLLATION r_ci;
+DROP TABLE r;
+DROP EXTENSION pg_sift;

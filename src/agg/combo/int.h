@@ -47,6 +47,22 @@ combo_null_input(const AggExec *ex)
 }
 
 extern int combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows);
+extern void child_warm_runs(AggExec *ex, ComboSt *cs, PlanState *child, int nruns, instr_time t0);
+
+/* test builds run a SQL command at a stage of a probe (sift.test_probe_hook), between two page reads, when no page is locked */
+#ifdef SIFT_TESTING
+extern void combo_probe_hook(int stage);
+#else
+#define combo_probe_hook(stage) ((void) 0)
+#endif
+
+extern bool combo_probe_on(AggExec *ex, int ci);
+extern void combo_probe_defer(AggExec *ex, int ci, uint32 e);
+extern void combo_probe_flush(AggExec *ex, int ci);
+extern bool combo_probe_take(AggExec *ex, int ci, uint32 *start, int *n);
+
+extern uint64 wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 i);
+extern bool combo_fstep_resolve(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const uint64 *alive, const SiftSrcLeaf *lf, const SiftSrcVec *v);
 
 extern int combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows);
 extern int combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm);

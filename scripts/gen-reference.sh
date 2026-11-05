@@ -246,7 +246,8 @@ def scripts(v):
 
 if latest not in versions and not any(to == vkey(latest) for to, _, _ in updates):
     sys.exit('reference: neither sql/pg_sift--%s.sql nor an update script into it (default_version) exists' % latest)
-chain = versions + [latest] * (latest not in versions)
+# a version that has update scripts into it but no install script of its own (a patch release such as 4.0.3) is a release of the chain too: its objects are `Since` it
+chain = sorted(set(versions) | {'.'.join(map(str, to)) for to, _, _ in updates} | {latest}, key=vkey)
 
 since = {}
 for v in chain:
