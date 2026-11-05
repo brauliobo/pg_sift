@@ -163,6 +163,21 @@ jobs:
 
       - uses: ./.github/actions/apt-limits
 
+      # one cache for each major and flavour of the entry, renewed every week (a package that left the mirror is no longer asked for); the first job of the entry to finish saves it
+      # the packages apt downloads (scripts/apt-install.sh) are kept there: a mirror that stalls holds an install for minutes, and the server with its development files is 90 MB of it
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg${{ matrix.pg }}${{ matrix.git && '-git' || '' }}${{ matrix.cassert && '-assert' || '' }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg${{ matrix.pg }}${{ matrix.git && '-git' || '' }}${{ matrix.cassert && '-assert' || '' }}-${{ runner.os }}-${{ runner.arch }}-
+
       # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
       - name: PGDG repository
         timeout-minutes: 5
@@ -171,7 +186,7 @@ jobs:
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git && !matrix.cassert }}
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"

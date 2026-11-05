@@ -9,7 +9,10 @@ set -euo pipefail
 # sudo drops the environment, so the settings that keep a maintainer script from waiting on stdin travel through `env`
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 APT_UNIT=${APT_UNIT:-60} # seconds; every bound below is a multiple of it
-APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# a connection that sends nothing for 20 s is cut and tried again (twice) inside the attempt, before the attempt itself is cut: the mirror that served a package at 55 kB/s, or none, held a call for its whole bound
+APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+# APT_ARCHIVES: where the downloaded packages are kept, a directory the workflow caches between runs (the install of PostgreSQL and its development files is 90 MB from one mirror)
+[[ -z ${APT_ARCHIVES:-} ]] || APT_OPTS+=(-o "Dir::Cache::archives=$APT_ARCHIVES")
 
 # no lsof, lslocks or fuser on a runner: /proc/locks names the holder of a lock file by its inode
 apt_diag() {
@@ -56,10 +59,22 @@ apt_get() {
 	return 1
 }
 
+# the packages a cache saves are readable by the user that saves it, and the lock file of apt is not one of them
+apt_archives_ready() {
+	[[ -z ${APT_ARCHIVES:-} ]] || sudo install -d -m 755 "$APT_ARCHIVES" "$APT_ARCHIVES/partial"
+}
+apt_archives_done() {
+	[[ -z ${APT_ARCHIVES:-} ]] || { sudo rm -f "$APT_ARCHIVES/lock"; sudo chmod -R a+rX "$APT_ARCHIVES"; }
+}
+
 # the download that did not finish is not fatal: the install resumes it
 apt_install() {
+	local rc=0
+	apt_archives_ready
 	apt_get 3 $((APT_UNIT * 2)) install -y --download-only "$@" || true
-	apt_get 3 $((APT_UNIT * 2)) install -y "$@"
+	apt_get 3 $((APT_UNIT * 2)) install -y "$@" || rc=$?
+	apt_archives_done
+	return "$rc"
 }
 
 apt_selftest() {
@@ -89,8 +104,12 @@ FAKE
 	: >"$d/log"
 	out=$(env FAIL=1 PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" bash "$self" pkg 2>&1) && { echo "FAIL: apt-install exits 0 when the install fails: $(tail -n 5 <<<"$out")"; bad=1; }
 	[[ $(grep -c ' install -y --no-install-recommends pkg$' "$d/log") == 3 ]] || { echo "FAIL: apt-install does not try the install three times: $(cat "$d/log")"; bad=1; }
+	# the directory of the cache is the archive directory of every call
+	: >"$d/log"
+	env APT_ARCHIVES="$d/debs" PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" FAIL= bash "$self" pkg >/dev/null 2>&1 || { echo "FAIL: apt-install with APT_ARCHIVES fails"; bad=1; }
+	[[ $(grep -c "Dir::Cache::archives=$d/debs" "$d/log") == 2 && -d $d/debs/partial ]] || { echo "FAIL: apt-install does not keep its packages in APT_ARCHIVES: $(cat "$d/log")"; bad=1; }
 	rm -rf "$d"
-	(( bad )) || echo "apt-install selftest: a hung call is cut, diagnosed and retried; a failing install is tried three times"
+	(( bad )) || echo "apt-install selftest: a hung call is cut, diagnosed and retried; a failing install is tried three times; the packages go to APT_ARCHIVES"
 	return "$bad"
 }
 
