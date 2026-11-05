@@ -15,7 +15,9 @@
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "utils/acl.h"
+#include "common/shortest_dec.h"
 #include "utils/builtins.h"
+#include "utils/float.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/json.h"
@@ -33,6 +35,9 @@ typedef struct JbSlot
 	JsonTypeCategory cat;
 	Oid			outf;
 	bool		raw;			/* an unknown literal, read as the C string it is: the text it would be converted to writes the same bytes */
+	bool		stable;			/* a key that is a constant or a parameter of the query: the same for every call of the site */
+	char	   *pre;			/* what a call writes for the key, with the separator before and the colon after it (a stable key, from the first call) */
+	int			prelen;
 	FmgrInfo	out;
 } JbSlot;
 
@@ -43,6 +48,8 @@ typedef struct JbCache
 	bool		direct;			/* the arguments are the call's own: no VARIADIC array, no unknown literal turned into text */
 	Oid		   *types;
 	JbSlot	   *slot;
+	StringInfoData buf;			/* the text of a call is built here, in the memory of the call site, and copied out once */
+	bool		busy;			/* the buffer is in use: a call that comes back to the site (a cast that calls it) builds in its own */
 } JbCache;
 
 /* a change of a type, its output function or a cast to json: every call site looks its arguments up again */
@@ -60,6 +67,9 @@ jb_fill(JbCache *c, MemoryContext cx, int n, const Oid *types)
 {
 	if (c->types)
 	{
+		for (int i = 0; i < c->n; i++)
+			if (c->slot[i].pre)
+				pfree(c->slot[i].pre);
 		pfree(c->types);
 		pfree(c->slot);
 	}
@@ -79,6 +89,37 @@ jb_fill(JbCache *c, MemoryContext cx, int n, const Oid *types)
 	}
 	c->n = n;
 	c->gen = jb_gen;
+}
+
+/* an integer or a float8 the way the core writes it, without the output function's string and the text datum_to_json makes of it */
+static bool
+jb_number(StringInfo out, const JbSlot *s, Datum v)
+{
+	char		buf[32];
+	int			len;
+
+	switch (s->outf)
+	{
+		case F_INT2OUT:
+			len = pg_ltoa((int32) DatumGetInt16(v), buf);
+			break;
+		case F_INT4OUT:
+			len = pg_ltoa(DatumGetInt32(v), buf);
+			break;
+		case F_INT8OUT:
+			len = pg_lltoa(DatumGetInt64(v), buf);
+			break;
+		case F_FLOAT8OUT:
+			/* the shortest form is what float8out writes with extra_float_digits above 0; NaN and the infinities are strings in json */
+			if (extra_float_digits <= 0 || isnan(DatumGetFloat8(v)) || isinf(DatumGetFloat8(v)))
+				return false;
+			len = double_to_shortest_decimal_buf(DatumGetFloat8(v), buf);
+			break;
+		default:
+			return false;
+	}
+	appendBinaryStringInfo(out, buf, len);
+	return true;
 }
 
 static void
@@ -109,6 +150,14 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 		case JSONTYPE_JSON:
 			if (!key)
 			{
+				if (s->outf == F_JSON_OUT)
+				{
+					/* json_out is textout: the bytes of the value */
+					text	   *t = DatumGetTextPP(v);
+
+					appendBinaryStringInfo(out, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+					return;
+				}
 				appendStringInfoString(out, OutputFunctionCall(&s->out, v));
 				return;
 			}
@@ -121,6 +170,8 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 				appendStringInfoChar(out, '"');
 				return;
 			}
+			if (jb_number(out, s, v))
+				return;
 			break;
 		default:
 			break;
@@ -144,8 +195,9 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 	Oid		   *types;
 	int			nargs = PG_NARGS();
 	JbCache    *c = fcinfo->flinfo->fn_extra;
-	StringInfoData out;
-	const char *sep = "";
+	StringInfoData own_out;
+	StringInfo	out;
+	text	   *result;
 
 	if (!jb_registered)
 	{
@@ -171,7 +223,10 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 		if (c->gen != jb_gen || c->n != nargs || (nargs > 0 && memcmp(c->types, types, nargs * sizeof(Oid)) != 0))
 			jb_fill(c, fcinfo->flinfo->fn_mcxt, nargs, types);
 		for (int i = 0; i < nargs; i++)
+		{
 			c->slot[i].raw = direct && get_fn_expr_argtype(fcinfo->flinfo, i) == UNKNOWNOID;
+			c->slot[i].stable = direct && i % 2 == 0 && get_fn_expr_arg_stable(fcinfo->flinfo, i);
+		}
 		c->direct = direct;
 	}
 	/* a call site types its arguments once, the plan fixes them: the arrays extract_variadic_args builds for every call are the call's own */
@@ -185,20 +240,60 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 		args = own;
 		nulls = own_null;
 	}
-	initStringInfo(&out);
-	appendStringInfoChar(&out, '{');
+	if (c->direct && !c->busy)
+	{
+		if (c->buf.data == NULL)
+		{
+			MemoryContext old = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
+
+			initStringInfo(&c->buf);
+			MemoryContextSwitchTo(old);
+		}
+		resetStringInfo(&c->buf);
+		out = &c->buf;
+		c->busy = true;
+	}
+	else
+	{
+		initStringInfo(&own_out);
+		out = &own_out;
+	}
+	appendStringInfoChar(out, '{');
 	for (int i = 0; i < nargs; i += 2)
 	{
-		appendStringInfoString(&out, sep);
-		sep = ", ";
-		if (nulls[i])
-			ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("null value not allowed for object key")));
-		jb_value(&out, &c->slot[i], args[i], false, true);
-		appendStringInfoString(&out, " : ");
-		jb_value(&out, &c->slot[i + 1], args[i + 1], nulls[i + 1], false);
+		JbSlot	   *k = &c->slot[i];
+
+		if (k->pre)
+		{
+			appendBinaryStringInfo(out, k->pre, k->prelen);
+		}
+		else
+		{
+			int			start = i > 0 ? out->len : out->len - 1;
+
+			if (i > 0)
+				appendStringInfoString(out, ", ");
+			if (nulls[i])
+				ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("null value not allowed for object key")));
+			jb_value(out, k, args[i], false, true);
+			appendStringInfoString(out, " : ");
+			if (k->stable)
+			{
+				/* the first pair also holds the brace that opens the object, which every call writes before it */
+				k->prelen = out->len - start;
+				k->pre = MemoryContextAlloc(fcinfo->flinfo->fn_mcxt, k->prelen);
+				memcpy(k->pre, out->data + start, k->prelen);
+				if (i == 0)
+					memmove(k->pre, k->pre + 1, --k->prelen);
+			}
+		}
+		jb_value(out, &c->slot[i + 1], args[i + 1], nulls[i + 1], false);
 	}
-	appendStringInfoChar(&out, '}');
-	PG_RETURN_TEXT_P(cstring_to_text_with_len(out.data, out.len));
+	appendStringInfoChar(out, '}');
+	result = cstring_to_text_with_len(out->data, out->len);
+	if (out == &c->buf)
+		c->busy = false;
+	PG_RETURN_TEXT_P(result);
 }
 
 static Node *
