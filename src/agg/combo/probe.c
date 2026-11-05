@@ -273,7 +273,12 @@ combo_probe_on(AggExec *ex, int ci)
 			map_note_table(ex, dp->hrel);
 			dp->bcxt = AllocSetContextCreate(ex->cxt, "sift direct probe", ALLOCSET_DEFAULT_SIZES);
 			if (dp->ioss)
+			{
+				/* ExecutorEnd resets the executor state's slot table after this node's context is deleted */
+				MemoryContextSwitchTo(dp->estate->es_query_cxt);
 				dp->tslot = ExecAllocTableSlot(&dp->estate->es_tupleTable, RelationGetDescr(dp->hrel), table_slot_callbacks(dp->hrel) PG19_SLOT_FLAGS);
+				MemoryContextSwitchTo(ex->cxt);
+			}
 			dp->ignore_dead = !TransactionStartedDuringRecovery();
 			dp->reads0 = dp_reads(dp->hrel);
 			for (int i = 0; i < DP_MAX_LEVELS; i++)
