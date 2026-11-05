@@ -551,6 +551,17 @@ class CaseFlush(unittest.TestCase):
                 self.assertEqual(len(schema.read(path)), len(recs.ROWS), n)
                 self.assertEqual(os.listdir(d), ['r.tsv'])   # no half-written file is left beside it
 
+    def test_the_native_lane_of_a_case_is_the_arm_native_with_the_statement_of_its_own_or_the_sift_one(self):
+        from types import SimpleNamespace
+        from cases import recs
+        case = lambda baselines, **kw: SimpleNamespace(baselines=baselines, opt=kw.get('opt', {}), statement=lambda lane: {'native': kw.get('pg', 'SELECT 1'), 'sift': 'SELECT 1'}[lane], sec={}, id='c')   # noqa: E731
+        with patch.object(recs, 'expand', lambda text, c: text):
+            self.assertIsNone(recs.native_arm(case(['pg_duckdb']), 'SELECT 1'))
+            arm = recs.native_arm(case(['native']), 'SELECT 1')
+            self.assertEqual((arm.arm, arm.option, arm.sql, arm.settings), (collect.NATIVE, 'default', None, ['SET sift.enable_agg = off']))
+            own = recs.native_arm(case(['native'], pg='SELECT 2', opt={'set': 'sift.enable_col_scan = off'}), 'SELECT 1')
+            self.assertEqual((own.sql, own.settings), ('SELECT 2', ['SET sift.enable_agg = off', 'SET sift.enable_col_scan = off']))
+
 
 class SiftIndexFacts(unittest.TestCase):
     """the segments of a sift index and the leader of a build, from stand-ins for the extension on a plain cluster: access methods that are the hash index under the names sift and sift_col (the b-tree handler refuses a build under another access method on PostgreSQL 16 and 17), and the two

@@ -57,6 +57,9 @@ class Subject:
         self.table, self.key, self.keys, self.protocol, self.structures, self.kind = table, key, keys, protocol, structures, kind
 
 
+NATIVE = schema.NATIVE   # the arm of the lane that runs the normal plan (sift.enable_agg = off): its settings are the harness's, not a structure to force
+
+
 class Arm:
     """a structure forced on the data: arm (heap, btree, gin, sift), option (default, key_order=ts, ...), the settings that force it (FORCING[arm]), an optional SQL of its own, an optional prepare of its own, the structures its table holds when they differ from the subject's (a load of a heap with a b-tree beside one of a sift_table)"""
 
@@ -584,7 +587,7 @@ def measure_statement(s, statement, sql, subject, arms, env, prepare=None, monit
     out, default = [], None
     for mode, arm in ([('default', Arm('sift', settings=[]))] if read else []) + [('forced', a) for a in arms]:
         text = arm.sql or sql
-        if read and mode == 'forced':
+        if read and mode == 'forced' and arm.arm != NATIVE:
             forced, named = forceable(s, arm, text, catalog, restore)
             if forced is None:
                 got = named[2].split(', ')
@@ -635,7 +638,7 @@ def match_default(rows):
         return
     ran = defaultdict(set)
     for r in rows:
-        if r['mode'] == 'forced' and r.get('plan_hash'):
+        if r['mode'] == 'forced' and r.get('plan_hash') and r['arm'] != NATIVE:
             ran[(r['arm'], r['arm_option'])].add(r['plan_hash'])
     matched = {k for k, h in ran.items() if h == hashes}
     for r in rows:
@@ -687,7 +690,7 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
         if err:
             raise failed('EXPLAIN', err)
         _, _, cost, structure, requested, _ = plan_facts(json.loads('\n'.join(rows))[0], *catalog)
-        if mode == 'forced' and structure != arm.arm:
+        if mode == 'forced' and structure != arm.arm and arm.arm != NATIVE:
             raise NotForced(structure)   # the plan without ANALYZE named the arm, the executed one does not: a node that falls back to the heap when it runs
     out = []
     began = time.monotonic()
@@ -739,10 +742,11 @@ def arm_rows(s, sql, subject, env, base, mode, arm, pid, post, catalog, prepare,
                 plan_ms, exec_ms, cost2, structure, requested, launched = plan_facts(doc, *catalog)
                 cost = cost2 if cost2 is not None else cost
                 shape = plan_shape(doc['Plan'])
-                if mode == 'forced' and structure != arm.arm:
+                if mode == 'forced' and structure != arm.arm and arm.arm != NATIVE:
                     raise NotForced(structure)
-            table_bytes, index_bytes = structure_bytes(s, subject.table, structure if mode == 'default' else arm.arm)
-            facts = index_facts(s, subject.table) if index_bytes is not None and (structure if mode == 'default' else arm.arm) == 'sift' else {}
+            shown = structure if mode == 'default' or arm.arm == NATIVE else arm.arm   # the structure the plan used
+            table_bytes, index_bytes = structure_bytes(s, subject.table, shown)
+            facts = index_facts(s, subject.table) if index_bytes is not None and shown == 'sift' else {}
             instr = cycles = leader = workers_m = None
             if temp == 'warm':
                 if prepare and not read:
