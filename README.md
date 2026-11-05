@@ -1,13 +1,13 @@
 # pg_sift
 
-[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#postgresql-versions) [![release](https://img.shields.io/badge/release-4.0.3-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
+[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#postgresql-versions) [![release](https://img.shields.io/badge/release-4.1.0-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
 pg_sift makes analytics on PostgreSQL fast: you keep your queries and add an index. A `sift_col` index, or a `sift_table`, answers counts, sums, distinct counts, group-bys and top-N from compressed columns; the planner picks it, and a query it cannot prove equal keeps PostgreSQL's own plan. It also adds ranked BM25 full-text search (boolean, phrase, prefix, regex, fuzzy, facets) with a `sift` index, which has its own query syntax. One `CREATE EXTENSION pg_sift`: no separate analytics database, no search server, no `shared_preload_libraries`.
 It is for applications that keep their data in PostgreSQL and serve dashboards, reports and search from the same rows. It supports PostgreSQL 17, 18 and 19[^pg19]; the search engine also runs as a SQLite extension and a MariaDB library.
 
 [^pg19]: PostgreSQL 19 is tested on its release candidate (a server built from `REL_19_STABLE`, the same jobs as for 17 and 18); see [docs/SUPPORT.md](docs/SUPPORT.md#postgresql-versions).
 
-[In five minutes](#in-five-minutes) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · [Compared with](#compared-with) · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
+[In five minutes](#in-five-minutes) · [What 4.1 adds](#what-41-adds) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · [Compared with](#compared-with) · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
 
 
 ## In five minutes
@@ -48,6 +48,29 @@ Medians of six runs, warm, PostgreSQL 18.6 on a shared x86-64 host (2026-10-24),
 The last column is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen and still wins, but 4 to 19 times less than with the precision ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
 
 **Use it** when the data stays in PostgreSQL and you want fast dashboards and reports from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table (your queries stay as they are; you add an index), and ranked search as a second kind of index. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
+
+## What 4.1 adds
+
+For the reports a typical application runs, 4.1 widens what the scan answers by itself, with the defaults and the queries you have: no setting to turn on, no query to rewrite. After `ALTER EXTENSION pg_sift UPDATE` (see [docs/UPGRADING.md](docs/UPGRADING.md)) the indexes you have keep working and are used by the new plans; none needs a `REINDEX`.
+
+- **Joins to a lookup table, `EXISTS`, `NOT EXISTS`, `IN`, `NOT IN`:** a report over a range of an events table joined to a large table by a key (with filters on the large table) takes the keys the scan meets and probes the b-tree of the large table for each, where PostgreSQL joined every row of the range. A 60-key range of 300,000 events against a table of 1,000,000 rows: 344.5 M instructions become 14.9 M for the inner join, 549.8 M become 57.0 M for `NOT IN`, 701 M become 48 M for `EXISTS` ([`sift.agg_probe_rewrite`](docs/OPTIONS.md), [`sift.agg_probe_direct`](docs/OPTIONS.md)).
+- **Scalar sub-selects and eager sums:** `WHERE amount > (SELECT avg(amount) FROM t)` or `sum(amount + (SELECT max(w) FROM kinds))` is asked once when the scan starts, also in the workers, where such a query kept the normal plan; a sum times a value of a table joined by its unique key adds up the amounts of each key first.
+- **Text keys:** `ORDER BY .. LIMIT n` over a table joined by a text key is answered by the top-N scan, as the joins by an integer or a date are (600,000 rows, 200 keys: 6,461 M instructions and 3.6 s become 118 M and 0.14 s); the elements of an array of text are joined and filtered by their text.
+- **Big group-bys that outgrow memory:** the scan chooses the number of passes from the planner's estimate and reads the table once for each, instead of reading it to find out, throwing that away and starting again; an ungrouped sum of a float column keeps its running sum in a register.
+- **Builds of a `key_cut` index by key ranges** ([`sift.col_build_key_ranges`](docs/OPTIONS.md), on by default): the segments of a large build do not each hold every key, so a lookup of a few keys reads one unit, at a build about a quarter longer; the rewrite of an index built before 4.1 is paced by [`sift.col_auto_merge_pass_mb`](docs/OPTIONS.md) (1,024 MB a pass) so the first maintenance after the upgrade does not write an index at once.
+
+The cases of these changes, measured with `bench/bench cases --rows 300000` on tip a8be5fa5b (run a8be5fa5be36-20261105T122909Z-aec6): PostgreSQL 18.6, one x86-64 host, the data in memory, one backend, warm medians of 5 runs. Each cell is the time of the statement, the millions of instructions of the backend and the buffers it touched; the other plan is PostgreSQL's with the index left out (a sequential scan, plus the b-tree it has). The ratio is its time divided by pg_sift's. Reproduce one with `bench/bench cases --cases ID --rows 300000`.
+
+| case | pg_sift: ms · M instr · blocks | the other: ms · M instr · blocks | other ÷ pg_sift |
+|---|---|---|---:|
+| `lookup_probe_join`: a join to a large b-tree table on a range of the scan's keys (60 parents of 3,000), probed for each key | 2.42 ms · 26.4 M · 232 | 129 ms · 1,466 M · 11,998 | 53x |
+| `float_sum_ungrouped`: `SELECT sum(value_a)` of a float8 column | 0.546 ms · 5.21 M · 149 | 23.2 ms · 140 M · 1,911 | 43x |
+| `group_passes_upfront`: `GROUP BY` one integer column whose groups are several times hash memory (1 MB) | 14.3 ms · 107 M · 1,194 | 94.5 ms · 849 M · 4,105 | 6.6x |
+| `group_direct_arrays_passes`: `GROUP BY` two integer columns whose direct arrays are more than hash memory (2 MB) | 40.1 ms · 392 M · 5,065 | 162 ms · 1,643 M · 4,105 | 4.0x |
+| `group_spill_two_keys`: `GROUP BY` two columns whose groups outgrow hash memory (64 kB) and spill from the start | 106 ms · 831 M · 303 | 180 ms · 1,970 M · 4,105 | 1.7x |
+| `group_join_dim_filter_keys`: the keys of a filtered table joined to a grouped sub-select, looked up before the groups are made (one name, groups of 10 rows) | 0.34 ms · 1.27 M · 32 | 9.2 ms · 112.8 M · 182 | 27x |
+
+The row of `group_join_dim_filter_keys` was measured on tip e8cd177d0 (run e8cd177d0886-20261105T194357Z-7e16), the same way, with the whole statement timed from the client (planning included: 0.24 ms of the 0.34 ms) and the other plan being PostgreSQL's own with `sift.enable_agg = off` on the same table and indexes (the b-tree of the key, an index-only scan of the vacuumed table). `group_direct_arrays_passes` touches more buffers than the sequential scan (5,065 against 4,105): its gain is the time and the instructions, not the IO. The gain of the spill is the smallest of the table because the groups go to partitions and are merged back, which a larger `work_mem` avoids. What the 4.1 changes do not do is in the [release notes](docs/releases/v4.1.0.md#known-issues).
 
 ## At a glance
 
