@@ -193,6 +193,19 @@ if [[ $MODE == --selftest ]]; then
 		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
 	done
+	# the quick tier (PostgreSQL 18, no job after the pool) is cut by weight as well: every job once, and the shards within 15% of each other
+	for ns in 2 3; do
+		plan_of quick 18 '' ; all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
+		got= lo='' hi=0
+		for (( k = 1; k <= ns; k++ )); do
+			plan_of quick 18 '' $k/$ns; got+=$PLAN_OUT$'\n'; l=0
+			while read -r j _; do MODE=quick weight_of "$j" '' 18; l=$(( l + WEIGHT )); done <<<"$PLAN_OUT"
+			(( l > hi )) && hi=$l
+			[[ -z $lo ]] || (( l < lo )) && lo=$l
+		done
+		[[ $all == "$(awk 'NF {print $1}' <<<"$got" | sort)" ]] || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are not the plan, each job once"; bad=1; }
+		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
+	done
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
 	for k in 3 9; do
 		plan_of full 18 1 $k/9
