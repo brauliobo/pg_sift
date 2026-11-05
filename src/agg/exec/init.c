@@ -149,7 +149,7 @@ sift_agg_init(void)
 							   NULL, &sift_test_probe_hook, "",
 							   PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, sift_test_probe_hook_assign, NULL);
 	DefineCustomBoolVariable("sift.test_child_warm",
-							 "Testing: a correlated child asks the OS for the relations it reads after a few runs, whatever they read and however long they took.",
+							 "Testing: the direct probe of a correlated child asks for the heap blocks of the entries it found from the first, whatever the statement has read from the OS.",
 							 NULL, &sift_child_warm_test, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_topn_gorder",

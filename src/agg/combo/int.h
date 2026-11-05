@@ -47,7 +47,6 @@ combo_null_input(const AggExec *ex)
 }
 
 extern int combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows);
-extern void child_warm_runs(AggExec *ex, ComboSt *cs, PlanState *child, int nruns, instr_time t0);
 
 /* test builds run a SQL command at a stage of a probe (sift.test_probe_hook), between two page reads, when no page is locked */
 #ifdef SIFT_TESTING

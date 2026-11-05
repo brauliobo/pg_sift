@@ -274,7 +274,7 @@ typedef struct AggExec
 	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
 	uint64		lookup_us;
 	uint64		probe_direct;	/* the keys of correlated children probed in the index directly (combo/probe.c) */
-	uint64		child_warmed;	/* blocks of the relations of correlated children that were asked of the OS ahead of their probes (combo/child.c child_warm) */
+	uint64		child_warmed;	/* heap blocks of the entries a correlated child probe found, asked of the pool and the OS ahead of their fetch (combo/probe_bt.c dp_prefetch) */
 	int64		dict_shared0[2];	/* sift.stats dict_shared_hits and misses when the run began: EXPLAIN (VERBOSE) shows the difference */
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
 	const char **pmaps;			/* in a worker: per combo, the table of its join in the shared memory, NULL when it has none (map_load) */

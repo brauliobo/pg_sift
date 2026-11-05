@@ -94,7 +94,6 @@ typedef struct ComboSt
 	uint32	   *fruns;			/* the child runs for the keys while the table is not read, over the arms that read it */
 	uint32		fthresh;		/* ... after which it is */
 	ExprState  *fpq;			/* ... and the child's condition on its parameters, over the combo's leaves */
-	struct ChildWarm *warm;		/* the relations the correlated child reads and what its runs read of them (combo/child.c child_warm) */
 	struct DProbe *dp;			/* the direct probe of the correlated child (combo/probe.c), NULL until the combo's first chunk */
 	struct DKey *dkey;			/* the key of the entry being made, when the batch probed it */
 	bool		dbatch;			/* the entries made now wait for the probe of their keys together (combo_probe_defer) */

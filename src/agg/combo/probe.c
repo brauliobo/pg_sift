@@ -262,6 +262,7 @@ combo_probe_on(AggExec *ex, int ci)
 			if (dp->ioss)
 				dp->tslot = ExecAllocTableSlot(&dp->estate->es_tupleTable, RelationGetDescr(dp->hrel), table_slot_callbacks(dp->hrel) PG19_SLOT_FLAGS);
 			dp->ignore_dead = !TransactionStartedDuringRecovery();
+			dp->reads0 = dp_reads(dp->hrel);
 			for (int i = 0; i < DP_MAX_LEVELS; i++)
 				dp->lv[i].hik = palloc(BLCKSZ / 2);
 		}
@@ -479,7 +480,8 @@ combo_probe_flush(AggExec *ex, int ci)
 		table_index_fetch_end(dp->fetch);
 		dp->fetch = NULL;
 	}
-	child_warm_runs(ex, cs, dp->child, n, t0);
+	ex->child_warmed += dp->asked;
+	dp->asked = 0;
 	map_loaded(ex, 0, t0);
 	for (int p = 0; p < n; p++)
 	{

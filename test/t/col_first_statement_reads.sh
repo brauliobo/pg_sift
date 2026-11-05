@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The first statement after the index's pages left shared buffers (a native scan of a table larger than the pool evicted them) reads its blocks in as few requests as it can: the
 # segment reader reads the rest of a run of pages in one request (sr_read_range), a unit that waited for the device has the chunks every unit before it read, and the head of the next
-# unit, read as one plan (sift_cseg_unit_plan), and a child's warm-up advises the OS in ranges of 1 MB, not 8 kB at a time. Counts only, never time: blocks read (pg_stat_io), read
+# unit, read as one plan (sift_cseg_unit_plan), and the probes of a correlated child ask for the heap blocks of the entries they found, not for the lookup table. Counts only, never time: blocks read (pg_stat_io), read
 # requests (pg_stat_io reads), the share of the segment's blocks that a get waited for against those the plan or the read-ahead brought in first (sift._test_segment_reads), the blocks
-# of the same statement run again, and the advice calls of the warm-up. A scratch cluster on tmpfs has no device latency.
+# of the same statement run again, and the blocks the probes asked for. A scratch cluster on tmpfs has no device latency.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 # pg_stat_io counts bytes from PostgreSQL 18 (read_bytes); before it, reads of op_bytes (8 kB)
@@ -77,7 +77,7 @@ for n in 25 200; do
 	check "$n keys: the same statement run again reads nothing" test "$(steady "$r")" == 0
 done
 
-# the warm-up of a correlated child advises the OS in ranges: the same blocks in 128 times fewer calls
+# the probes of a correlated child ask for the heap blocks of the entries they found: at most one for each probe (agg_child_warm holds that a few keys do not ask for the table)
 sql fs "CREATE TABLE dim_b (id int PRIMARY KEY, kind text)" "INSERT INTO dim_b SELECT i, CASE WHEN i % 7 = 0 THEN 'b' ELSE 'a' END FROM generate_series(1, 60) i" \
 	"CREATE TABLE tag_map (scope int[], kind text, tag text, sub text, to_tag text, to_sub text)" \
 	"INSERT INTO tag_map SELECT NULL, k, 'tag' || t, 'sub' || s, CASE WHEN (t + s) % 9 = 0 THEN NULL ELSE 'to' || (t % 5) END, 'tosub' || (s % 3)
@@ -97,14 +97,14 @@ LQ="SELECT CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.tag ELSE m.to_tag EN
                     AND NOT jsonb_exists(e.doc, 'resolved') LIMIT 1) m ON true
  WHERE e.day >= '2025-03-01' AND e.day < '2025-11-01' AND e.dim_b_id <= 50
  GROUP BY 1, 2 ORDER BY 1, 2"
-w=$({ echo "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on;"; echo "SELECT sift._test_segment_reads(true) \\g /dev/null"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"
-	echo "SELECT advice_calls FROM sift._test_segment_reads();"; } | sql fs)
+w=$({ echo "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
 woff=$({ echo "SET sift.enable_agg = off;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
-calls=$(stats "$w")
-blocks=$(sql fs "SELECT (pg_relation_size('tag_map') + pg_relation_size('tag_map_unique')) / 8192")
-diag "warm-up: $calls advice calls for $blocks blocks of the lookup table and its index"
-check "the warm-up advises the OS" test "$calls" -ge 1
-check "in at most one call for each 128 blocks and one for each of its relations" test "$calls" -le $((blocks / 128 + 4))
+look=$(sql fs "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0;" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $LQ" | grep 'Lookup:')
+asked=$(sed -n 's/.* \([0-9]*\) child blocks prefetched.*/\1/p' <<<"$look")
+probes=$(sed -n 's/.* \([0-9]*\) child direct probes.*/\1/p' <<<"$look")
+diag "probes: $asked blocks asked for $probes probes of the lookup table"
+check "the probes ask for blocks" test "${asked:-0}" -ge 1
+check "no more than one for each probe" test "${asked:-0}" -le "${probes:-0}"
 check "the rows are those of the normal plan" test "$(rowsum "$w")" == "$(rowsum "$woff")"
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir fs)/postgres.log")" == 0
 

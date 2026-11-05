@@ -425,6 +425,44 @@ dp_load(DProbe *dp, IndexTuple itup)
 	ExecStoreVirtualTuple(slot);
 }
 
+/* the blocks of the relation this backend has read from the OS so far (-1: the statistics are off) */
+int64
+dp_reads(Relation rel)
+{
+	if (rel->pgstat_info == NULL)
+		return -1;
+	return rel->pgstat_info->counts.blocks_fetched - rel->pgstat_info->counts.blocks_hit;
+}
+
+/*
+ * The entries of a key are on a page of the index, the heap tuples they point to at random places of the table. When the probes of the statement read their
+ * heap pages from the OS (a handful did), the pages of the entries just found are asked for together, so that the device works on them while the first is
+ * read: the blocks asked are those the fetches below read, at most the entries of the keys probed. A table that is in memory is never asked.
+ */
+#define DP_PREFETCH_READS	8
+
+static void
+dp_prefetch(DProbe *dp, int nt)
+{
+	BlockNumber last = InvalidBlockNumber;
+
+	if (effective_io_concurrency == 0 || (!sift_child_warm_test && dp_reads(dp->hrel) - dp->reads0 < DP_PREFETCH_READS))
+		return;
+	for (int t = 0; t < nt; t++)
+	{
+		BlockNumber blk = ItemPointerGetBlockNumber(&dp->tids[t]);
+
+		if (blk == last || (dp->ioss && VM_ALL_VISIBLE(dp->hrel, blk, &dp->vmbuf)))
+			continue;
+		last = blk;
+		(void) PrefetchBuffer(dp->hrel, MAIN_FORKNUM, blk);
+		dp->asked++;
+#ifdef SIFT_TESTING
+		sift_test_warm_calls++;
+#endif
+	}
+}
+
 static void
 dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 {
@@ -503,6 +541,7 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 			UnlockReleaseBuffer(buf);
 		buf = InvalidBuffer;
 		combo_probe_hook(1);
+		dp_prefetch(dp, nt);
 		for (int t = 0; t < nt; t++)
 		{
 			ItemPointerData tid = dp->tids[t];

@@ -134,6 +134,8 @@ typedef struct DProbe
 	BlockNumber root;
 	bool		path_ok;
 	uint32		skipped;
+	int64		reads0;			/* the heap blocks the backend had read from the OS when the probe began (dp_reads) */
+	uint64		asked;			/* heap blocks of the entries found that were asked of the pool and the OS ahead of their fetch (combo_probe_flush adds them to the statement's) */
 } DProbe;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
@@ -141,6 +143,7 @@ typedef struct DProbe
 
 extern void dp_abbrev(DProbe *dp, DKey *k);
 extern int	dp_batch(DProbe *dp, DKey **ord, int n, DSink *sink);
+extern int64 dp_reads(Relation rel);
 
 #pragma GCC visibility pop
 
