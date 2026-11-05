@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.1.0 - 2026-11-05
+
 - Fixed: pg_sift: the direct probe of a correlated child (`LEFT JOIN LATERAL (.. LIMIT 1)`, the plans of `sift.agg_probe_rewrite`) kept its heap fetch open after each batch of keys, and PostgreSQL 19 keeps the pin of the last heap page (and of its visibility map page) in the fetch until it ends: a build with assertions printed `WARNING: resource was not closed` at the end of every statement that ran the probe. The fetch is begun for each batch and ended with it (test `agg_child_warm` on PostgreSQL 19).
 - Improved: pg_sift: the sum of a float column that is not grouped (`SELECT sum(value_a) FROM t`, `avg`, a filtered sum) keeps the running sum in a register while a chunk is added up, where it updated the one group's slot in memory and each row waited for the store of the one before it: the sum takes the rows in the same order, so the result has the same bits, and a grouped sum is unchanged
 - Improved: pg_sift: an `ORDER BY .. LIMIT n` over a table joined by a text key (`JOIN keys ON keys.k = t.title`, `IN (SELECT ..)`, `EXISTS`; an inner join needs a unique index on the key) is answered by the Top-N scan, as the joins by an integer or date key are: the keys of the joined table are the exact condition `title = ANY(keys)` of the scan, so no join is left for the rows of the heap. 600,000 rows and 200 keys, `ORDER BY dim_a_id DESC, id LIMIT 10`: 6,461 M instructions, 1.8 M buffer accesses and 3.6 s become 118 M, 188 and 0.14 s (30,000 rows and 20 keys: 23.6 M instructions become 2.0 M); the rows are those of the plan without the extension. Held by `agg_topn_join_text`. No REINDEX.
