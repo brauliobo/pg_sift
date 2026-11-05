@@ -1,6 +1,7 @@
 -- A table that was loaded and never vacuumed or analyzed has reltuples = -1 and nothing visible in its visibility map. The probe rewrite of an EXISTS, NOT EXISTS, NOT IN or
 -- join to a large btree table was refused for it (it asked pg_class for the rows), so the scan read the whole table or PostgreSQL kept its own plan: the planner's own estimate
--- of the rows (from the pages and the row width) decides, as it does for the plans around it.
+-- of the rows (from the pages and the row width) decides, as it does for the plans around it. A correlated LIMIT 1 child that the scan probes in its btree (probe_direct) is priced
+-- by what the probe takes, not by the normal plan's idea of the rows: it is the scan's plan in the three states.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -19,7 +20,7 @@ CREATE FUNCTION probes(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF line LIKE '%Lookup Joins:%sift_probe%' THEN RETURN true; END IF;
+		IF line LIKE '%Lookup Joins:%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
@@ -29,6 +30,7 @@ INSERT INTO shapes VALUES
  ('not_in', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND ev.fk NOT IN (SELECT lk.parent FROM lk WHERE lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
  ('anti', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND NOT EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
  ('semi', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
+ ('lateral', $q$SELECT ev.v, count(*) FROM ev JOIN LATERAL (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 0 LIMIT 1) x ON true WHERE ev.v < 5 GROUP BY 1 ORDER BY 1$q$),
  ('join', $q$SELECT lk.label, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN 100 AND 159 GROUP BY 1 ORDER BY 1$q$);
 
 -- never analyzed, never vacuumed
