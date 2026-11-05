@@ -22,8 +22,13 @@ if [[ $MODE == full ]]; then
 	# The deep tier cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		once_on_18 && {
-			job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
-			job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+			# the mutants and the queries are cut in slices (3 and 2) so that no job is longer than 12 minutes: the whole run was 30 minutes of one lane
+			for k in 1 2 3; do
+				job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/3 --docs 4000 --queries 40 --rounds 1 --minimize 1
+			done
+			for k in 1 2; do
+				job difftest-$k difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --query-slice $k/2 --docs 4000 --queries 100 --rounds 3
+			done
 			job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
 		}
 	elif (( PG_MAJOR >= 18 )); then
