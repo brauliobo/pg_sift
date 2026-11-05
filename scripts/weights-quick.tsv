@@ -1,5 +1,6 @@
 # job	PostgreSQL 17 lane seconds	PostgreSQL 18 lane seconds: the newest passing job of runs 42064806680 42084189989 (scripts/ci-times.py --weights); the shards are cut by these, the other jobs weigh 10
-release-library-regress	184	406
+release-library-regress-1	100	210
+release-library-regress-2	100	210
 hardened	105	216
 tap-shell-compat_matrix	1	198
 tap-shell-sb_mask_small	0	197

@@ -120,7 +120,11 @@ else
 			echo "$t"
 		done
 	}
-	flavor_job release-library-regress release-library-regress "$S/release-library-check.sh" $(release_library_tests)
+	# two jobs of every other test: each builds the library (3 s with the compiler cache warm, 60 cold) and the longer one was 283 to 406 s of a lane
+	rl=($(release_library_tests))
+	for k in 1 2; do
+		flavor_job release-library-regress-$k release-library-regress "$S/release-library-check.sh" $(for (( i = k - 1; i < ${#rl[@]}; i += 2 )); do echo "${rl[i]}"; done)
+	done
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter

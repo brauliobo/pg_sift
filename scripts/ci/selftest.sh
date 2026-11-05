@@ -158,12 +158,12 @@ if [[ $MODE == --selftest ]]; then
 	done
 	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 	plan_of quick 18
-	prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
-	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	prod=$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")
+	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
 	# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
 	# without names), except the slow ones, which are jobs of their own
 	plan_of quick 18 1
-	got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; exit } }' <<<"$(grep '^release-library-regress ' <<<"$PLAN_OUT")" | sort)
+	got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
 	# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
 	pgc=${PG_CONFIG:-pg_config}
 	if "$pgc" --version 2>/dev/null | grep -qE '^PostgreSQL (1[7-9]|[2-9][0-9])' && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
@@ -207,7 +207,7 @@ if [[ $MODE == --selftest ]]; then
 		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
 	# the budget of a job: the slowest job of a hosted run is the floor of its shard, so a job over the ceiling is sliced or shrunk (CI_JOB_TIMEOUT kills it at 3 times the ceiling of its tier)
-	for tier in quick:420 full:2100; do
+	for tier in quick:300 full:1300; do
 		over=$(awk -F'\t' -v max="${tier#*:}" '!/^#/ && ($2 > max || $3 > max) {print $1 " " $2 "/" $3}' "$REPO/scripts/weights-${tier%:*}.tsv")
 		[[ -z $over ]] || { echo "FAIL: scripts/weights-${tier%:*}.tsv: a job takes more than ${tier#*:} lane seconds (PostgreSQL 17/18): $over"; bad=1; }
 	done
