@@ -166,6 +166,37 @@ SELECT relallvisible FROM pg_class WHERE relname = 'vr_optout';
              0
 (1 row)
 
-DROP TABLE vr_built, vr_loaded, vr_small, vr_off, vr_optout;
+-- a build that rolls back asks for nothing, and the request of the next one that commits is not lost
+SET sift.col_auto_merge = on;
+CREATE TABLE vr_rolled AS SELECT g AS id, 'st' || g % 7 AS s, (g % 1000)::numeric AS amt FROM generate_series(1, 30000) g;
+BEGIN;
+CREATE INDEX vr_rolled_col ON vr_rolled USING sift_col (s, amt);
+NOTICE:  sift_col index "vr_rolled_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vr_rolled_col');
+ROLLBACK;
+SELECT pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT relallvisible FROM pg_class WHERE relname = 'vr_rolled';
+ relallvisible 
+---------------
+             0
+(1 row)
+
+CREATE INDEX vr_rolled_col ON vr_rolled USING sift_col (s, amt);
+NOTICE:  sift_col index "vr_rolled_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vr_rolled_col');
+SELECT vr_vacuumed('vr_rolled') AS rolled_then_built_vacuumed;
+ rolled_then_built_vacuumed 
+----------------------------
+ t
+(1 row)
+
+DROP TABLE vr_built, vr_loaded, vr_small, vr_off, vr_optout, vr_rolled;
 DROP FUNCTION vr_vacuumed, vr_idle, vr_vacuumed_over, vr_same;
 DROP EXTENSION pg_sift;

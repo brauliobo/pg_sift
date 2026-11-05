@@ -89,6 +89,17 @@ CREATE INDEX vr_optout_col ON vr_optout USING sift_col (s, amt);
 SELECT pg_sleep(1);
 SELECT relallvisible FROM pg_class WHERE relname = 'vr_optout';
 
-DROP TABLE vr_built, vr_loaded, vr_small, vr_off, vr_optout;
+-- a build that rolls back asks for nothing, and the request of the next one that commits is not lost
+SET sift.col_auto_merge = on;
+CREATE TABLE vr_rolled AS SELECT g AS id, 'st' || g % 7 AS s, (g % 1000)::numeric AS amt FROM generate_series(1, 30000) g;
+BEGIN;
+CREATE INDEX vr_rolled_col ON vr_rolled USING sift_col (s, amt);
+ROLLBACK;
+SELECT pg_sleep(1);
+SELECT relallvisible FROM pg_class WHERE relname = 'vr_rolled';
+CREATE INDEX vr_rolled_col ON vr_rolled USING sift_col (s, amt);
+SELECT vr_vacuumed('vr_rolled') AS rolled_then_built_vacuumed;
+
+DROP TABLE vr_built, vr_loaded, vr_small, vr_off, vr_optout, vr_rolled;
 DROP FUNCTION vr_vacuumed, vr_idle, vr_vacuumed_over, vr_same;
 DROP EXTENSION pg_sift;

@@ -30,6 +30,7 @@
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/bufmgr.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
@@ -55,6 +56,8 @@
 #define MIN_VETTED		1000
 /* Rows changed under which a table is clean whatever its size (autovacuum_vacuum_threshold) */
 #define MIN_CHANGED		50
+/* Pages the map does not hold from which a build asks, and the worker takes a table for unclean: a table of a few pages is read in the heap in less than the worker takes to start */
+#define MIN_UNCLEAN		16
 /* The least time between two VACUUMs of a table on this account, in naptimes, and in times the average one where it is known */
 #define NAPTIMES		5
 #define DURATIONS		10
@@ -89,8 +92,28 @@ churn_of(const PgStat_StatTabEntry *tab, int64 *changed, int64 *threshold)
  * What the statistics say of the table; they lag the changes by a second or so, and have no entry for a table nothing has touched. A scan that
  * checked many rows in the heap (asked) is the better witness: the table is due unless it was vacuumed lately.
  */
+/*
+ * Does the map lack more than a hundredth of the pages of the table (MIN_UNCLEAN at least): what the worker takes for a table that is not clean when the statistics say it is. A VACUUM
+ * resets the counts of dead and new rows to what it saw, so one that began before a transaction committed (the worker of another request, a scan's) wipes that transaction's rows
+ * from them, and the table would be left with the pages that transaction wrote out of the map until the next change.
+ */
+static bool
+heap_unclean(Oid heapoid)
+{
+	Relation	heap = try_table_open(heapoid, AccessShareLock);
+	BlockNumber nblocks,
+				allvisible;
+
+	if (heap == NULL)
+		return false;
+	nblocks = RelationGetNumberOfBlocks(heap);
+	visibilitymap_count(heap, &allvisible, NULL);
+	table_close(heap, AccessShareLock);
+	return nblocks - Min(allvisible, nblocks) >= Max(MIN_UNCLEAN, nblocks / 100);
+}
+
 static TableState
-table_state(Oid heapoid, bool asked)
+table_state(Oid heapoid, bool asked, bool worker)
 {
 	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(heapoid);
 	TimestampTz last;
@@ -99,9 +122,9 @@ table_state(Oid heapoid, bool asked)
 				threshold;
 
 	if (tab == NULL)
-		return asked ? TABLE_DUE : TABLE_CLEAN;
+		return asked || (worker && heap_unclean(heapoid)) ? TABLE_DUE : TABLE_CLEAN;
 	churn_of(tab, &changed, &threshold);
-	if (!asked && changed < threshold)
+	if (!asked && changed < threshold && !(worker && heap_unclean(heapoid)))
 		return TABLE_CLEAN;
 #if PG_VERSION_NUM >= 180000
 	if (tab->vacuum_count + tab->autovacuum_count > 0)
@@ -234,11 +257,11 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 
 			if (!unclean)
 				owed_vacuum = 0;
-			else if (owed_vacuum >= MAINT_HALF * cost && table_state(heapoid, true) == TABLE_DUE)
+			else if (owed_vacuum >= MAINT_HALF * cost && table_state(heapoid, true, false) == TABLE_DUE)
 				worker = "sift_col_vacuum_once_worker_main";
 		}
 	}
-	else if (table_state(heapoid, vetted > 0) == TABLE_DUE)
+	else if (table_state(heapoid, vetted > 0, false) == TABLE_DUE)
 		worker = vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main";
 	if (worker != NULL && !worker_at(heapoid))
 	{
@@ -267,8 +290,6 @@ sift_col_autovacuum_enabled(Relation heap)
  * The first rows of a table, and the pages that no VACUUM has marked, are what the reads of a table that was just loaded pay for.
  */
 #define ASKS			4
-/* Pages the map does not hold from which a build asks: a table of a few pages is read in the heap in less than the worker takes to start */
-#define MIN_UNCLEAN		16
 
 typedef struct VacAsk
 {
@@ -403,6 +424,17 @@ vacuum_heap_of(Oid indexoid)
  * indexes when few pages hold a dead row. vacuum() ends the transaction it is called in and starts the next, as the VACUUM command does for the one of
  * its backend, so what it is given lives in a context of its own, as autovacuum's does.
  */
+/* The context of the VACUUM at work: a worker that is ended in the middle of it (the server stops) leaves it for the exit to free */
+static MemoryContext vacuum_cx;
+
+static void
+vacuum_cx_free(int code, Datum arg)
+{
+	if (vacuum_cx != NULL)
+		MemoryContextDelete(vacuum_cx);
+	vacuum_cx = NULL;
+}
+
 static void
 vacuum_heap(Oid heapoid)
 {
@@ -427,8 +459,10 @@ vacuum_heap(Oid heapoid)
 	 * until the next VACUUM (a fifth of the pages after 3% of the rows changed). The flush costs the WAL writer's next one.
 	 */
 	sift_wal_flush_inserted();
+	vacuum_cx = cx;
 	vacuum(rels, &params, strategy, cx, true);
 	FreeAccessStrategy(strategy);
+	vacuum_cx = NULL;
 	MemoryContextDelete(cx);
 }
 
@@ -448,6 +482,7 @@ vacuum_worker(Datum main_arg, bool asked, bool once)
 	table_lock_tag(&tag, heapoid);
 	if (!OidIsValid(heapoid) || LockAcquire(&tag, ExclusiveLock, true, true) == LOCKACQUIRE_NOT_AVAIL)
 		return;
+	before_shmem_exit(vacuum_cx_free, (Datum) 0);
 	SetConfigOption("vacuum_cost_delay", psprintf("%d", Max(sift_maintenance_cost_delay, 2)), PGC_SUSET, PGC_S_OVERRIDE);
 	for (int looks = 0; looks < MAX_LOOKS && clean < CLEAN_LOOKS; looks++)
 	{
@@ -455,7 +490,7 @@ vacuum_worker(Datum main_arg, bool asked, bool once)
 
 		/* vacuum() ends the transaction it is called in and starts the next */
 		StartTransactionCommand();
-		state = RecoveryInProgress() ? TABLE_CLEAN : table_state(heapoid, asked && looks == 0);
+		state = RecoveryInProgress() ? TABLE_CLEAN : table_state(heapoid, asked && looks == 0, true);
 		clean = state == TABLE_CLEAN ? clean + 1 : 0;
 		if (state == TABLE_DUE)
 		{
