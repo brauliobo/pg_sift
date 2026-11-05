@@ -16,6 +16,7 @@
 #include "port/pg_bswap.h"
 #include "storage/bufmgr.h"
 #include "utils/rel.h"
+#include "utils/uuid.h"
 
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
@@ -56,6 +57,11 @@ dp_abbrev(DProbe *dp, DKey *k)
 
 			for (int b = c->len - 1; b >= 0 && at < DP_ABBREV; b--)
 				buf[at++] = (unsigned char) (c->desc ? ~(v >> (8 * b)) : (v >> (8 * b)));
+		}
+		else if (c->kind == DC_UUID)
+		{
+			for (int b = 0; b < UUID_LEN && at < DP_ABBREV; b++)
+				buf[at++] = c->desc ? ~((const unsigned char *) a->p)[b] : ((const unsigned char *) a->p)[b];
 		}
 		else if (c->kind == DC_TEXT || c->kind == DC_TEXTC)
 		{
@@ -138,6 +144,9 @@ dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
 				r = r != 0 ? dp_sign(r) : (a->n > n) - (a->n < n);
 				break;
 			}
+		case DC_UUID:
+			r = dp_sign(memcmp(a->p, p, UUID_LEN));
+			break;
 		case DC_TEXTC:
 		case DC_ARRAY:
 			{

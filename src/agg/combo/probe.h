@@ -44,7 +44,8 @@ extern DStats sift_probe_stats;
 typedef enum DKind
 {
 	DC_GENERIC,						/* the opclass's order function, as the index AM calls it */
-	DC_INT,							/* int2, int4, int8 */
+	DC_INT,							/* int2, int4, int8, date, timestamp, timestamptz: the integers themselves */
+	DC_UUID,						/* the 16 bytes */
 	DC_TEXT,						/* memcmp order: text under the C collation, text_pattern_ops */
 	DC_TEXTC,						/* text under another collation: equal bytes are equal, else the order function; the bytes sort the batch */
 	DC_ARRAY						/* equal bytes are equal, else the order function */

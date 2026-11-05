@@ -29,6 +29,7 @@
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/uuid.h"
 
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
@@ -219,6 +220,16 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 			case F_BTINT8CMP:
 				c->kind = c->len == 8 && c->byval ? DC_INT : DC_GENERIC;
 				break;
+			case F_DATE_CMP:
+				c->kind = c->len == 4 && c->byval ? DC_INT : DC_GENERIC;
+				break;
+			case F_TIMESTAMP_CMP:
+			case F_TIMESTAMPTZ_CMP:
+				c->kind = c->len == 8 && c->byval ? DC_INT : DC_GENERIC;
+				break;
+			case F_UUID_CMP:
+				c->kind = c->len == UUID_LEN && !c->byval ? DC_UUID : DC_GENERIC;
+				break;
 			case F_BTTEXTCMP:
 				c->kind = c->len != -1 ? DC_GENERIC : OidIsValid(c->coll) && sift_collate_is_c(c->coll) ? DC_TEXT : DC_TEXTC;
 				break;
@@ -365,7 +376,14 @@ dp_key(AggExec *ex, int ci, DProbe *dp, DKey *k, uint32 e)
 		{
 			a->d = datumCopy(sk->sk_argument, c->byval, c->len);
 			if (c->kind == DC_INT)
-				a->i = sk->sk_subtype == INT2OID ? DatumGetInt16(a->d) : sk->sk_subtype == INT4OID ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
+			{
+				/* a key of another integer type is read at its own width (the column's is the width of date, timestamp and the integer types alike) */
+				int			w = sk->sk_subtype == INT2OID ? 2 : sk->sk_subtype == INT4OID ? 4 : sk->sk_subtype == INT8OID ? 8 : c->len;
+
+				a->i = w == 2 ? DatumGetInt16(a->d) : w == 4 ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
+			}
+			else if (c->kind == DC_UUID)
+				a->p = DatumGetPointer(a->d);
 		}
 		MemoryContextSwitchTo(old);
 		if (c->kind == DC_INT && c->len < 8 && (a->i < -(INT64CONST(1) << (c->len * 8 - 1)) || a->i >= (INT64CONST(1) << (c->len * 8 - 1))))
