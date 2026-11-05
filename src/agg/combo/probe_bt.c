@@ -20,17 +20,23 @@
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
 
-static int
-dp_sort_cmp(const void *a, const void *b)
+static inline int
+dp_sort_cmp(DKey *x, DKey *y)
 {
-	const DKey *x = *(DKey *const *) a;
-	const DKey *y = *(DKey *const *) b;
-
 	for (int i = 0; i < DP_ABBREV / 8; i++)
 		if (x->ab[i] != y->ab[i])
 			return x->ab[i] < y->ab[i] ? -1 : 1;
 	return 0;
 }
+
+typedef DKey *DKeyP;
+
+#define ST_SORT dp_sort_keys
+#define ST_ELEMENT_TYPE DKeyP
+#define ST_COMPARE(a, b) dp_sort_cmp(*(a), *(b))
+#define ST_SCOPE static
+#define ST_DEFINE
+#include "lib/sort_template.h"
 
 /* the prefix of the key that sorts like the index does, for the columns whose order is the bytes (the others add nothing: the order only decides how many pages the descents share) */
 void
@@ -51,10 +57,12 @@ dp_abbrev(DProbe *dp, DKey *k)
 			for (int b = c->len - 1; b >= 0 && at < DP_ABBREV; b--)
 				buf[at++] = (unsigned char) (c->desc ? ~(v >> (8 * b)) : (v >> (8 * b)));
 		}
-		else if (c->kind == DC_TEXT)
+		else if (c->kind == DC_TEXT || c->kind == DC_TEXTC)
 		{
-			for (Size b = 0; b < a->n && at < DP_ABBREV; b++)
-				buf[at++] = (unsigned char) a->p[b];
+			Size		m = Min(a->n, (Size) (DP_ABBREV - at));
+
+			memcpy(buf + at, a->p, m);
+			at += m;
 			if (at < DP_ABBREV)
 				buf[at++] = 0;
 		}
@@ -75,7 +83,7 @@ dp_sign(int64 v)
 }
 
 /* the bytes of a varlena of an index tuple (a compressed one is expanded in the batch context) */
-static inline const char *
+static pg_attribute_always_inline const char *
 dp_bytes(DProbe *dp, const char *p, Size *n)
 {
 	if (unlikely(VARATT_IS_COMPRESSED(p) || VARATT_IS_EXTERNAL(p)))
@@ -92,7 +100,7 @@ dp_bytes(DProbe *dp, const char *p, Size *n)
 }
 
 /* the sign of key - value of an index column: what _bt_compare reports for one attribute (the sign flipped back for a DESC column) */
-static inline int
+static pg_attribute_always_inline int
 dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
 {
 	int			r;
@@ -115,12 +123,22 @@ dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
 		case DC_TEXT:
 			{
 				Size		n;
-				const char *b = dp_bytes(dp, p, &n);
+				const char *b;
 
+				if (unlikely(VARATT_IS_COMPRESSED(p) || VARATT_IS_EXTERNAL(p)))
+				{
+					b = dp_bytes(dp, p, &n);
+					r = memcmp(a->p, b, Min(a->n, n));
+					r = r != 0 ? dp_sign(r) : (a->n > n) - (a->n < n);
+					break;
+				}
+				b = VARDATA_ANY(p);
+				n = VARSIZE_ANY_EXHDR(p);
 				r = memcmp(a->p, b, Min(a->n, n));
 				r = r != 0 ? dp_sign(r) : (a->n > n) - (a->n < n);
 				break;
 			}
+		case DC_TEXTC:
 		case DC_ARRAY:
 			{
 				Size		n;
@@ -137,6 +155,7 @@ dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
 			{
 				Datum		item = c->byval ? fetch_att(p, true, c->len) : PointerGetDatum(p);
 
+				DP_COUNT(generic_cmps, 1);
 				r = DatumGetInt32(FunctionCall2Coll(c->cmp, c->coll, item, a->d));
 				return c->desc ? dp_sign(r) : -dp_sign(r);
 			}
@@ -150,9 +169,12 @@ dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
  * descent makes a descent that ends one page too far left harmless, never one that ends too far right.
  */
 static inline int
-dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts)
+dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts, int *eq)
 {
 	int			ncmp = Min(ntupatts, dp->nk);
+	int			from = Min(*eq, ncmp);
+
+	DP_COUNT(tuple_cmps, 1);
 
 	if (!IndexTupleHasNulls(itup))
 	{
@@ -163,27 +185,40 @@ dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts)
 		{
 			const DCol *c = &dp->col[i];
 			const char *p;
-			int			r;
 
-			off = att_align_pointer(off, c->align, c->len, data + off);
+			/* a fixed width or a varlena column (the short header of a varlena has no padding in front of it) */
+			if (c->len > 0 || (c->len == -1 && data[off] == 0))
+				off = TYPEALIGN(c->alignb, off);
+			else if (unlikely(c->len < -1))
+				off = att_align_pointer(off, c->align, c->len, data + off);
 			p = data + off;
-			r = dp_col_cmp(dp, c, &k->a[i], p);
-			if (r != 0)
-				return r;
-			off = att_addlength_pointer(off, c->len, p);
+			if (i >= from)
+			{
+				int			r = dp_col_cmp(dp, c, &k->a[i], p);
+
+				DP_COUNT(col_cmps, 1);
+
+				if (r != 0)
+				{
+					*eq = i;
+					return r;
+				}
+			}
+			off += c->len > 0 ? c->len : c->len == -1 ? VARSIZE_ANY(p) : strlen(p) + 1;
 		}
 	}
 	else
 	{
 		TupleDesc	td = RelationGetDescr(dp->irel);
 
-		for (int i = 0; i < ncmp; i++)
+		for (int i = from; i < ncmp; i++)
 		{
 			const DCol *c = &dp->col[i];
 			bool		isnull;
 			Datum		item = index_getattr(itup, i + 1, td, &isnull);
 			int			r;
 
+			DP_COUNT(col_cmps, 1);
 			if (isnull)
 				r = c->nullsfirst ? 1 : -1;		/* the key is not NULL */
 			else if (c->byval || c->len != -1)
@@ -197,9 +232,13 @@ dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts)
 				r = dp_col_cmp(dp, c, &k->a[i], DatumGetPointer(item));
 			}
 			if (r != 0)
+			{
+				*eq = i;
 				return r;
+			}
 		}
 	}
+	*eq = ncmp;
 	if (dp->nk > ntupatts)
 		return 1;
 	/*
@@ -213,14 +252,23 @@ dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts)
 }
 
 static inline int
-dp_cmp_item(DProbe *dp, const DKey *k, Page page, BTPageOpaque op, OffsetNumber off)
+dp_cmp_item(DProbe *dp, const DKey *k, Page page, BTPageOpaque op, OffsetNumber off, int *eq)
 {
 	IndexTuple	itup;
 
 	if (!P_ISLEAF(op) && off == P_FIRSTDATAKEY(op))
 		return 1;				/* minus infinity */
 	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
-	return dp_cmp_tuple(dp, k, itup, BTreeTupleGetNAtts(itup, dp->irel));
+	return dp_cmp_tuple(dp, k, itup, BTreeTupleGetNAtts(itup, dp->irel), eq);
+}
+
+/* the sign of key - high key of a page, and the columns they agree on (`eq` in: the columns the key's range is known to agree on) */
+static inline int
+dp_cmp_hikey(DProbe *dp, const DKey *k, Page page, int *eq)
+{
+	IndexTuple	hk = (IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY));
+
+	return dp_cmp_tuple(dp, k, hk, BTreeTupleGetNAtts(hk, dp->irel), eq);
 }
 
 static bool
@@ -279,6 +327,53 @@ dp_note_page(DProbe *dp, int lv, Buffer buf, Page page, BTPageOpaque op)
 }
 
 /*
+ * The pages above the leaves are pinned for the batch: the descents of sorted keys read the same few of them again and again, and a pin of an internal page blocks
+ * no VACUUM (it asks a cleanup lock of leaves only). dp_read gives the page of level lv share-locked, the pin of the level kept in dp->pin; dp_unlock
+ * ends the lock and the pin of a leaf, and the lock only of a kept one; dp_unpin ends the pins of the batch.
+ */
+static Buffer
+dp_read(DProbe *dp, int lv, BlockNumber blk)
+{
+	Buffer		buf;
+
+	if (lv > 0 && BufferIsValid(dp->pin[lv]) && BufferGetBlockNumber(dp->pin[lv]) == blk)
+		buf = dp->pin[lv];
+	else
+	{
+		DP_COUNT(page_reads, 1);
+		buf = ReadBuffer(dp->irel, blk);
+		if (lv > 0)
+		{
+			if (BufferIsValid(dp->pin[lv]))
+				ReleaseBuffer(dp->pin[lv]);
+			dp->pin[lv] = buf;
+		}
+	}
+	LockBuffer(buf, BT_READ);
+	return buf;
+}
+
+static void
+dp_unlock(DProbe *dp, int lv, Buffer buf)
+{
+	if (lv > 0 && buf == dp->pin[lv])
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	else
+		UnlockReleaseBuffer(buf);
+}
+
+static void
+dp_unpin(DProbe *dp)
+{
+	for (int lv = 1; lv < DP_MAX_LEVELS; lv++)
+		if (BufferIsValid(dp->pin[lv]))
+		{
+			ReleaseBuffer(dp->pin[lv]);
+			dp->pin[lv] = InvalidBuffer;
+		}
+}
+
+/*
  * The leaf that holds the first entry that is not less than the key, share-locked, and the offset of that entry; InvalidBuffer when the pages are not
  * what a descent expects (the key is left to the child). A descent that starts from the pages of the key before ("reuse") is checked at the leaf: it
  * must hold an entry less than the key, or be the leftmost page, so that no page to its left can hold an entry of the key; else the caller descends again from the root.
@@ -289,8 +384,13 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 	int			lv = 0;
 	BlockNumber blk;
 	Buffer		buf;
+	int			eqc = 0;		/* the columns on which the key agrees with both bounds of the page's range: every item of the page agrees with it on them */
+	int			hik_c = 0,		/* the compare of the key with the high key the first page was left with, when that is the one the page still has */
+				hik_eq = 0;
+	bool		hik_known = false;
 
 	*retry = false;
+	dp->first_c = DP_NOCMP;
 	if (reuse)
 	{
 		for (lv = 0; lv < dp->nlv - 1; lv++)
@@ -301,8 +401,13 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 				continue;
 			if (!l->has_hik)
 				break;
-			if (dp_cmp_tuple(dp, k, (IndexTuple) l->hik, BTreeTupleGetNAtts((IndexTuple) l->hik, dp->irel)) <= 0)
+			hik_eq = 0;
+			hik_c = dp_cmp_tuple(dp, k, (IndexTuple) l->hik, BTreeTupleGetNAtts((IndexTuple) l->hik, dp->irel), &hik_eq);
+			if (hik_c <= 0)
+			{
+				hik_known = true;
 				break;
+			}
 		}
 		blk = lv == dp->nlv - 1 ? dp->root : dp->lv[lv].blk;
 		/*
@@ -324,42 +429,77 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 		BTPageOpaque op;
 		OffsetNumber low,
 					high;
+		int			lo_eq,
+					hi_eq,
+					hi_c = DP_NOCMP;
 
-		buf = ReadBuffer(dp->irel, blk);
-		LockBuffer(buf, BT_READ);
+		buf = dp_read(dp, lv, blk);
 		page = BufferGetPage(buf);
 		if (!dp_page_ok(page))
 			goto bad;
 		op = BTPageGetOpaque(page);
-		while (P_IGNORE(op) || (!P_RIGHTMOST(op) &&
-								dp_cmp_tuple(dp, k, (IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY)),
-											 BTreeTupleGetNAtts((IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY)), dp->irel)) > 0))
+		hi_eq = eqc;
+		for (;;)
 		{
 			BlockNumber next = op->btpo_next;
 
+			if (!P_IGNORE(op) && P_RIGHTMOST(op))
+				break;
+			if (!P_IGNORE(op))
+			{
+				int			c;
+
+				if (hik_known && blk == dp->lv[lv].blk &&
+					IndexTupleSize((IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY))) == IndexTupleSize((IndexTuple) dp->lv[lv].hik) &&
+					memcmp(PageGetItem(page, PageGetItemId(page, P_HIKEY)), dp->lv[lv].hik, IndexTupleSize((IndexTuple) dp->lv[lv].hik)) == 0)
+				{
+					c = hik_c;
+					hi_eq = hik_eq;
+				}
+				else
+				{
+					hi_eq = eqc;
+					c = dp_cmp_hikey(dp, k, page, &hi_eq);
+				}
+				if (c <= 0)
+					break;
+			}
+			hik_known = false;
 			if (P_RIGHTMOST(op) || next == P_NONE)
 				goto bad;
-			UnlockReleaseBuffer(buf);
-			buf = ReadBuffer(dp->irel, next);
-			LockBuffer(buf, BT_READ);
+			dp_unlock(dp, lv, buf);
+			buf = dp_read(dp, lv, next);
 			page = BufferGetPage(buf);
 			if (!dp_page_ok(page))
 				goto bad;
 			op = BTPageGetOpaque(page);
+			eqc = 0;			/* beyond the range the parent gave */
+			hi_eq = 0;
 		}
+		hik_known = false;
 		if ((int) op->btpo_level != lv || P_ISLEAF(op) != (lv == 0))
 			goto bad;
 		dp_note_page(dp, lv, buf, page, op);
 		low = P_FIRSTDATAKEY(op);
 		high = PageGetMaxOffsetNumber(page) + 1;
+		lo_eq = eqc;
 		while (low < high)
 		{
 			OffsetNumber mid = low + ((high - low) >> 1);
+			int			e = Min(lo_eq, hi_eq);
+			int			c = dp_cmp_item(dp, k, page, op, mid, &e);
 
-			if (dp_cmp_item(dp, k, page, op, mid) > 0)
+			if (c > 0)
+			{
 				low = mid + 1;
+				lo_eq = e;
+			}
 			else
+			{
 				high = mid;
+				hi_eq = e;
+				hi_c = c;
+			}
 		}
 		if (lv == 0)
 		{
@@ -369,6 +509,7 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 				goto bad;
 			}
 			*offp = low;
+			dp->first_c = hi_c;
 			return buf;
 		}
 		if (low <= P_FIRSTDATAKEY(op) || low > PageGetMaxOffsetNumber(page) + 1)
@@ -378,7 +519,8 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 
 			blk = BTreeTupleGetDownLink(it);
 		}
-		UnlockReleaseBuffer(buf);
+		eqc = Min(lo_eq, hi_eq);
+		dp_unlock(dp, lv, buf);
 		combo_probe_hook(0);
 		lv--;
 		if (blk == P_NONE || blk == BTREE_METAPAGE)
@@ -388,7 +530,7 @@ dp_descend(DProbe *dp, const DKey *k, bool reuse, OffsetNumber *offp, bool *retr
 		}
 	}
 bad:
-	UnlockReleaseBuffer(buf);
+	dp_unlock(dp, lv, buf);
 bad_nobuf:
 	return InvalidBuffer;
 }
@@ -467,6 +609,8 @@ static void
 dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 {
 	bool		end = false;
+	OffsetNumber first_off = off;
+	int			first_c = dp->first_c;	/* the descent's compare of the entry it ended at */
 
 	k->state = DKS_ROWS;
 	sink->begin(sink, k);
@@ -492,7 +636,17 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 			if (dp->ignore_dead && ItemIdIsDead(iid))
 				continue;
 			itup = (IndexTuple) PageGetItem(page, iid);
-			c = dp_cmp_tuple(dp, k, itup, BTreeTupleGetNAtts(itup, dp->irel));
+			if (off == first_off && first_c != DP_NOCMP)
+			{
+				c = first_c;
+				first_c = DP_NOCMP;
+			}
+			else
+			{
+				int			eq = 0;
+
+				c = dp_cmp_tuple(dp, k, itup, BTreeTupleGetNAtts(itup, dp->irel), &eq);
+			}
 			if (c < 0)
 			{
 				end = true;
@@ -525,9 +679,13 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 				dp->tids[nt++] = itup->t_tid;
 		}
 		/* the entries to the right are not less than the high key: a key below it has no entry there, and that page is not read (as the index AM's scan does) */
-		if (!end && !rightmost && dp_cmp_tuple(dp, k, (IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY)),
-											   BTreeTupleGetNAtts((IndexTuple) PageGetItem(page, PageGetItemId(page, P_HIKEY)), dp->irel)) < 0)
-			end = true;
+		if (!end && !rightmost)
+		{
+			int			eq = 0;
+
+			if (dp_cmp_hikey(dp, k, page, &eq) < 0)
+				end = true;
+		}
 		/*
 		 * An index-only scan keeps the pin of the leaf until the visibility map has been asked for its entries: a VACUUM that removed the entry of a dead tuple and marked
 		 * the page all-visible between the read and the check would otherwise let the dead tuple through (it needs a cleanup lock of the leaf).
@@ -587,6 +745,7 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 		combo_probe_hook(2);
 		for (;;)
 		{
+			DP_COUNT(page_reads, 1);
 			buf = ReadBuffer(dp->irel, next);
 			LockBuffer(buf, BT_READ);
 			page = BufferGetPage(buf);
@@ -610,6 +769,7 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 		if (!P_ISLEAF(op))
 			ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\" has a non-leaf page to the right of a leaf page", RelationGetRelationName(dp->irel))));
 		off = P_FIRSTDATAKEY(op);
+		first_c = DP_NOCMP;
 	}
 }
 
@@ -647,7 +807,7 @@ dp_batch(DProbe *dp, DKey **ord, int n, DSink *sink)
 	int			level;
 
 	if (n > 1)
-		qsort(ord, n, sizeof(DKey *), dp_sort_cmp);
+		dp_sort_keys(ord, n);
 	if (!dp_root(dp, &level))
 	{
 		for (int p = 0; p < n; p++)
@@ -667,6 +827,8 @@ dp_batch(DProbe *dp, DKey **ord, int n, DSink *sink)
 		dp_probe(dp, ord[p], sink);
 		CHECK_FOR_INTERRUPTS();
 	}
+	DP_COUNT(probes, n);
+	dp_unpin(dp);
 	if (BufferIsValid(dp->vmbuf))
 	{
 		ReleaseBuffer(dp->vmbuf);

@@ -202,6 +202,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 		c->len = att->attlen;
 		c->byval = att->attbyval;
 		c->align = att->attalign;
+		c->alignb = att->attalign == TYPALIGN_CHAR ? 1 : att->attalign == TYPALIGN_SHORT ? 2 : att->attalign == TYPALIGN_INT ? 4 : 8;
 		c->desc = (opt & INDOPTION_DESC) != 0;
 		c->nullsfirst = (opt & INDOPTION_NULLS_FIRST) != 0;
 		c->coll = irel->rd_indcollation[i];
@@ -219,7 +220,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 				c->kind = c->len == 8 && c->byval ? DC_INT : DC_GENERIC;
 				break;
 			case F_BTTEXTCMP:
-				c->kind = c->len == -1 && OidIsValid(c->coll) && sift_collate_is_c(c->coll) ? DC_TEXT : DC_GENERIC;
+				c->kind = c->len != -1 ? DC_GENERIC : OidIsValid(c->coll) && sift_collate_is_c(c->coll) ? DC_TEXT : DC_TEXTC;
 				break;
 			case F_BTTEXT_PATTERN_CMP:
 				c->kind = c->len == -1 ? DC_TEXT : DC_GENERIC;

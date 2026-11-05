@@ -12,11 +12,14 @@
 #ifdef SIFT_TESTING
 
 #include "executor/spi.h"
+#include "funcapi.h"
 #include "utils/guc.h"
 
 #include "agg/combo/int.h"
+#include "agg/combo/probe.h"
 
 char	   *sift_test_probe_hook = NULL;
+DStats		sift_probe_stats;
 static int	hook_hits[3];
 static bool	hook_busy;
 
@@ -49,6 +52,28 @@ combo_probe_hook(int stage)
 		hook_busy = false;
 	}
 	PG_END_TRY();
+}
+
+PG_FUNCTION_INFO_V1(sift_test_probe_stats);
+
+/* sift._test_probe_stats(reset): what the direct probes of this backend did since the last reset (counters in probe.h) */
+Datum
+sift_test_probe_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	td;
+	Datum		v[5];
+	bool		n[5] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	v[0] = Int64GetDatum(sift_probe_stats.probes);
+	v[1] = Int64GetDatum(sift_probe_stats.tuple_cmps);
+	v[2] = Int64GetDatum(sift_probe_stats.col_cmps);
+	v[3] = Int64GetDatum(sift_probe_stats.generic_cmps);
+	v[4] = Int64GetDatum(sift_probe_stats.page_reads);
+	if (PG_GETARG_BOOL(0))
+		memset(&sift_probe_stats, 0, sizeof(sift_probe_stats));
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(td, v, n)));
 }
 
 #endif							/* SIFT_TESTING */
