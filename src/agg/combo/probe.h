@@ -68,10 +68,15 @@ typedef struct DKey
 	int			n;
 } DKey;
 
-/* what a probe does with the entries of a key: begin before the first, row for each visible heap tuple (in dp->scan), true when it counts as a match of the key */
+/*
+ * what a probe does with the entries of a key: begin before the first, row for each visible heap tuple (in dp->scan), true when it counts as a match of the key;
+ * keep (index-only probes, may be NULL) for each entry before the visibility map or the heap is asked about it, with the entry's columns in dp->scan: false when the
+ * child's filter rejects it, whatever the heap says (an entry's columns are those of its tuple version: a rejected one is no match visible or not)
+ */
 typedef struct DSink
 {
 	void		(*begin) (struct DSink *s, DKey *k);
+	bool		(*keep) (struct DSink *s);
 	bool		(*row) (struct DSink *s);
 } DSink;
 
