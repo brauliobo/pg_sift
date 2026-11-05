@@ -178,6 +178,7 @@ extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool autom
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);
+extern bool sift_maint_register_worker_oid(Oid indexoid, const char *function);
 
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);

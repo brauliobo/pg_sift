@@ -46,7 +46,6 @@ SELECT idx_digest('br_par') = :'serial_digest' AS same_bytes_default;
 SELECT sift.verify('br_par', true);
 
 -- REINDEX goes through the same build
-SET sift.test_run_docs = 3000;
 SET sift.test_range_bytes = 20000;
 SET sift.test_range_pieces = 0;
 REINDEX INDEX br_par;
@@ -55,7 +54,6 @@ SELECT idx_digest('br_par') = :'serial_digest' AS reindex_same_bytes;
 SELECT count(*) FROM br WHERE body @@> 'rare17';
 
 -- a segment without positions
-SET sift.test_run_docs = 3000;
 SET sift.test_range_bytes = 20000;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX br_np ON br USING sift (body) WITH (positions = off);

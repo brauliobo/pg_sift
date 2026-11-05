@@ -662,8 +662,9 @@ stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->maint_requested_at = *(TimestampTz *) arg;
 }
 
+/* By oid: what a commit callback has, where no relation can be opened */
 bool
-sift_maint_register_worker(Relation index, const char *function)
+sift_maint_register_worker_oid(Oid indexoid, const char *function)
 {
 	BackgroundWorker bw = {0};
 	BackgroundWorkerHandle *handle;
@@ -673,11 +674,17 @@ sift_maint_register_worker(Relation index, const char *function)
 	bw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
 	snprintf(bw.bgw_function_name, BGW_MAXLEN, "%s", function);
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", RelationGetRelid(index));
+	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", indexoid);
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
-	bw.bgw_main_arg = ObjectIdGetDatum(RelationGetRelid(index));
+	bw.bgw_main_arg = ObjectIdGetDatum(indexoid);
 	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	if (RegisterDynamicBackgroundWorker(&bw, &handle))
+	return RegisterDynamicBackgroundWorker(&bw, &handle);
+}
+
+bool
+sift_maint_register_worker(Relation index, const char *function)
+{
+	if (sift_maint_register_worker_oid(RelationGetRelid(index), function))
 		return true;
 	sift_log_refused(index);
 	return false;
