@@ -157,31 +157,70 @@ key_list_walker(Node *node, KeyList *kl)
  * keys are joined to: its selectivity from the statistics of that column (the share of the table the listed keys own, a key of the
  * most common values with its own frequency), over the share of one key. A list of keys with few rows stays at the rows PostgreSQL expects.
  */
+/* the lists priced in this planning, for every variant of the statement (each plans a copy of the same lists): the table and column, the list, the rows */
+typedef struct PricedList
+{
+	Oid			relid;
+	AttrNumber	attno;
+	Node	   *list;
+	double		rows;
+} PricedList;
+
+static PricedList *priced;
+static int	priced_n;
+static uint64 priced_seq;
+#define PRICED_MAX	16
+
 static double
 list_keys_worth_once(PlannerInfo *root, PlannerInfo *body, Var *key)
 {
 	KeyList		kl = {body->parse->targetList, NULL};
-	Node	   *list;
+	Node	   *list,
+			   *kept = NULL;
+	Oid			relid = planner_rt_fetch(key->varno, root)->relid;
 	VariableStatData vardata;
 	bool		isdefault;
-	double		nd;
+	double		nd,
+				rows;
 
 	if (body->parse->jointree == NULL)
 		return 0;
 	key_list_walker((Node *) body->parse->jointree, &kl);
 	if ((list = kl.clause) == NULL || key->vartype != exprType(linitial(*key_clause_args(list))) || key->varcollid != exprCollation(linitial(*key_clause_args(list))))
 		return 0;
+	if (sift_agg_memo_cx() == NULL || priced_seq != sift_agg_memo_seq())
+	{
+		priced_seq = sift_agg_memo_seq();
+		priced_n = 0;
+	}
+	for (int i = 0; i < priced_n; i++)
+		if (priced[i].relid == relid && priced[i].attno == key->varattno && equal(priced[i].list, list))
+			return priced[i].rows;
 	examine_variable(root, (Node *) key, 0, &vardata);
 	nd = get_variable_numdistinct(&vardata, &isdefault);
 	ReleaseVariableStats(vardata);
 	if (isdefault)
 		return 0;
+	if (sift_agg_memo_cx() != NULL && priced_n < PRICED_MAX)
+	{
+		MemoryContext old = MemoryContextSwitchTo(sift_agg_memo_cx());
+
+		kept = copyObject(list);
+		MemoryContextSwitchTo(old);
+	}
 	list = copyObject(list);
 	linitial(*key_clause_args(list)) = key;
 #ifdef SIFT_TESTING
 	sift_agg_key_lists++;
 #endif
-	return clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+	rows = clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+	if (kept != NULL)
+	{
+		if (priced == NULL)
+			priced = MemoryContextAlloc(TopMemoryContext, PRICED_MAX * sizeof(PricedList));
+		priced[priced_n++] = (PricedList) {relid, key->varattno, kept, rows};
+	}
+	return rows;
 }
 
 /* the selectivity of a list of a few hundred keys costs a million instructions, and every join of every arm of the plan asks for it again */

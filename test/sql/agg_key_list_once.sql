@@ -38,6 +38,9 @@ END $f$;
 SELECT runs_in_scan(kl_stmt(3)) AS scanned;
 SELECT n, kl_lists(kl_stmt(n)) <= n AS one_list_per_arm FROM unnest(ARRAY[1, 3, 6]) n;
 
+-- the variants of one statement (the CTE shared, and inlined at each reference) plan copies of the same list: it is priced once for the planning of the statement
+SELECT n, kl_lists(kl_stmt(n)) AS lists_per_statement FROM unnest(ARRAY[1, 3, 6]) n;
+
 -- the plan is the same with the statement planned again: nothing of the memo is kept between planner runs
 SELECT kl_lists(kl_stmt(3)) = kl_lists(kl_stmt(3)) AS same_count_again;
 

@@ -121,6 +121,18 @@ sift_agg_memo_begin(void)
 	return part_memo_cx;
 }
 
+MemoryContext
+sift_agg_memo_cx(void)
+{
+	return part_memo_cx;
+}
+
+uint64
+sift_agg_memo_seq(void)
+{
+	return memo_seq;
+}
+
 void
 sift_agg_memo_end(MemoryContext cx)
 {

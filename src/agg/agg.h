@@ -82,6 +82,8 @@ extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, 
 extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);
 extern MemoryContext sift_agg_memo_begin(void);
+extern MemoryContext sift_agg_memo_cx(void);
+extern uint64 sift_agg_memo_seq(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
 extern void sift_agg_drop_unused_laterals(Query *q);
