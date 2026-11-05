@@ -11,9 +11,10 @@ CREATE TABLE ev (id int, fk int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + i % 3000, i % 7 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, fk, v);
 CREATE TABLE lk (id int NOT NULL, parent int NOT NULL, status int, label text, weight int) WITH (autovacuum_enabled = false);
--- the index exists before the rows: the reltuples a btree build leaves in the table differs between PostgreSQL 17 (the rows) and 18 (-1), the state of the test is -1
-CREATE INDEX lk_cover ON lk (parent, status) INCLUDE (label, weight);
 INSERT INTO lk SELECT i, 1 + i % 3000, (i / 3000) % 5, 'l' || (i % 3000 % 3), i % 4 FROM generate_series(0, 149999) i;
+CREATE INDEX lk_cover ON lk (parent, status) INCLUDE (label, weight);
+-- PostgreSQL 17 sets reltuples of the heap when an index is built on it, 18 leaves -1: the state of the test is the same on both
+UPDATE pg_class SET reltuples = -1 WHERE relname = 'lk';
 
 SELECT c.relname, c.reltuples, c.relallvisible FROM pg_class c WHERE c.relname IN ('ev', 'lk') ORDER BY 1;
 
