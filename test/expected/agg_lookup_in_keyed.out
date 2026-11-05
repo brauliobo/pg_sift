@@ -78,7 +78,7 @@ SELECT loaded(join_q(:'some', 'inner'));
  155 rows read; 1 index scans; 
 (1 row)
 
--- every key: the five thousand entries of the status by the index; with the twenty-five thousand rows of the table all wanted, the table is read whole
+-- every key: the five thousand entries of the status by the index; with the twenty-five thousand rows of the table all wanted the covering btree still gives them from its entries (all-visible pages: 2.5 ms to load against 7.4 for the table read whole, 25,000 rows of 1,087 pages)
 SELECT loaded(join_q(:'many', 'inner'));
              loaded              
 ---------------------------------
@@ -86,9 +86,9 @@ SELECT loaded(join_q(:'many', 'inner'));
 (1 row)
 
 SELECT loaded(join_q(:'many', 'inner_all'));
-      loaded       
--------------------
- 25000 rows read; 
+              loaded              
+----------------------------------
+ 25000 rows read; 1 index scans; 
 (1 row)
 
 -- rows changed since the last VACUUM: their pages are not all-visible, those entries are fetched from the heap (and a deleted row, an updated label, are not those of the entries)
