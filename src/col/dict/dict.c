@@ -30,6 +30,38 @@ cdict_reset(SiftCDict *d)
 		memset(d->slots, 0, d->nslots * sizeof(uint64));
 }
 
+/*
+ * The hash of the strings of a dictionary table, in memory only (never stored): PostgreSQL's hash_bytes for a short string, four lanes of eight bytes for a long one, which
+ * costs a fifth of the instructions a byte (a unit of inline text of 385-byte strings interns every row: 2,280 instructions a row, 65% of them in hash_bytes)
+ */
+static inline uint32
+cdict_hash(const char *s, uint32 len)
+{
+	const unsigned char *p = (const unsigned char *) s,
+			   *end = p + len;
+	uint64		h[4] = {len * UINT64CONST(0x9E3779B97F4A7C15), UINT64CONST(0xC2B2AE3D27D4EB4F), UINT64CONST(0x165667B19E3779F9), UINT64CONST(0x27D4EB2F165667C5)};
+	uint64		x;
+
+	if (len < 64)
+		return hash_bytes(p, (int) len);
+	for (; end - p > 32; p += 32)
+		for (int k = 0; k < 4; k++)
+		{
+			memcpy(&x, p + 8 * k, sizeof(x));
+			h[k] = (h[k] ^ x) * UINT64CONST(0xFF51AFD7ED558CCD);
+			h[k] ^= h[k] >> 32;
+		}
+	for (int k = 0; k < 4; k++)
+	{
+		memcpy(&x, end - 32 + 8 * k, sizeof(x));
+		h[k] = (h[k] ^ x) * UINT64CONST(0xFF51AFD7ED558CCD);
+		h[k] ^= h[k] >> 32;
+	}
+	x = h[0] ^ (h[1] << 17 | h[1] >> 47) ^ (h[2] << 31 | h[2] >> 33) ^ (h[3] << 47 | h[3] >> 17);
+	x *= UINT64CONST(0xC4CEB9FE1A85EC53);
+	return (uint32) (x ^ x >> 32);
+}
+
 /* a slot holds the hash of the string above its code + 1 (0: free): a probe reads the strings only of the slots with its hash, and a growth reinserts without hashing */
 static uint64 *
 cdict_probe(const SiftCDict *d, const char *s, uint32 len, uint32 hash)
@@ -77,7 +109,7 @@ cdict_ready(SiftCDict *d)
 	}
 	else
 		for (uint32 c = 0; c < d->n; c++)
-			cdict_put(d, (uint64) hash_bytes((const unsigned char *) d->bytes + d->off[c], (int) cdict_len(d, c)) << 32 | (c + 1));
+			cdict_put(d, (uint64) cdict_hash(d->bytes + d->off[c], cdict_len(d, c)) << 32 | (c + 1));
 	if (d->built)
 		d->built(d, d->built_arg);
 }
@@ -100,7 +132,7 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 				 errmsg("the strings of one unit of a sift_col column exceed %lld bytes", (long long) max_value),
 				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	cdict_ready(d);
-	hash = hash_bytes((const unsigned char *) s, (int) len);
+	hash = cdict_hash(s, len);
 	slot = cdict_probe(d, s, len, hash);
 	if ((uint32) *slot)
 		return (uint32) *slot - 1;
@@ -151,5 +183,5 @@ sift_cdict_find(SiftCDict *d, const char *s, uint32 len)
 		return -1;
 	}
 	cdict_ready(d);
-	return (int64) (uint32) *cdict_probe(d, s, len, hash_bytes((const unsigned char *) s, (int) len)) - 1;
+	return (int64) (uint32) *cdict_probe(d, s, len, cdict_hash(s, len)) - 1;
 }

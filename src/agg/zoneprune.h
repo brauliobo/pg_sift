@@ -21,6 +21,7 @@ typedef struct SiftAggZones
 	int			nzone;
 	SiftColPred *zpred;			/* the zone tests of the other entries, kept while the entries are the same */
 	int			nzpred;
+	const int64 *zvals[SIFT_AGGZONE_MAX];	/* the set of values zpred[i] was made from: the same array is the same values (the entries are made once), so a begin does not compare them */
 } SiftAggZones;
 
 /*

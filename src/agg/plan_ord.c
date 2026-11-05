@@ -93,7 +93,8 @@ order_cost(AggCtx *c, const SiftAggSpec *s, double groups)
 		/* no statistics of the key: the distinct values grow slower than the groups */
 		double		d = k->kind == SAK_LEAF && c->stats.ndistinct[k->leaf] > 0 ? Min(c->stats.ndistinct[k->leaf], n) : pow(n, 0.6);
 
-		cost += Max(d, 2.0) * log2(Max(d, 2.0)) * 2.0 * cpu_operator_cost;
+		/* the values of an integer, date or timestamp key are sorted by the value, with no call for a compare (agg/gorder.c) */
+		cost += Max(d, 2.0) * log2(Max(d, 2.0)) * (sift_gorder_call_free(&s->ord[o]) ? ORD_RANK_CMP : 2.0) * cpu_operator_cost;
 	}
 	return cost;
 }
@@ -173,6 +174,17 @@ parent_entry(PlannerInfo *root)
 	return 0;
 }
 
+/* an aggregate with an ORDER BY or DISTINCT of its own */
+static bool
+has_sorted_agg(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Aggref) && (((Aggref *) node)->aggorder != NIL || ((Aggref *) node)->aggdistinct != NIL))
+		return true;
+	return expression_tree_walker(node, has_sorted_agg, context);
+}
+
 /*
  * The order the parent query asks for, when this level is a sub-select or an inlined CTE that it reads: its pathkeys name the columns of the sub-select as Vars of the
  * entry, which are target entries of this query and so group keys. The pathkeys the node promises are made from the group clause of this level.
@@ -192,9 +204,13 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 
 	if (root->parent_root == NULL || root->parent_root->query_pathkeys == NIL)
 		return;
-	/* a window or an ORDER BY of the parent: not its grouping or DISTINCT, whose plan the order would only turn from a hash to a sort */
+	/*
+	 * a window or an ORDER BY of the parent; its grouping only when an aggregate of it has an ORDER BY or DISTINCT (PostgreSQL sorts for it and can not hash then),
+	 * else the order would only turn a hash aggregate into a sorted one
+	 */
 	parent = root->parent_root->parse;
-	if (parent->groupClause != NIL || parent->hasAggs || parent->groupingSets != NIL || parent->distinctClause != NIL || (rti = parent_entry(root)) == 0)
+	if (parent->groupingSets != NIL || parent->distinctClause != NIL || ((parent->groupClause != NIL || parent->hasAggs) && !has_sorted_agg((Node *) parent->targetList, NULL)) ||
+		(rti = parent_entry(root)) == 0)
 		return;
 	foreach_node(PathKey, pk, root->parent_root->query_pathkeys)
 	{
@@ -234,22 +250,19 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		}
 		if (tle->resjunk)
 			break;
-		/* COALESCE(key, constant): the NULL group sorts as the constant */
+		/* a group key (even one that is a COALESCE), else COALESCE(key, constant): the NULL group sorts as the constant */
 		subst = NULL;
-		if (IsA(key_relabel((Node *) tle->expr), CoalesceExpr))
+		if (tle->ressortgroupref != 0 && (sgc = get_sortgroupref_clause_noerr(tle->ressortgroupref, parse->groupClause)) != NULL)
+			e = key_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
+		else if (IsA(key_relabel((Node *) tle->expr), CoalesceExpr))
 		{
 			CoalesceExpr *ce = (CoalesceExpr *) key_relabel((Node *) tle->expr);
 
-			if (list_length(ce->args) == 2 && IsA(lsecond(ce->args), Const) && !((Const *) lsecond(ce->args))->constisnull)
-			{
-				subst = (Const *) lsecond(ce->args);
-				e = key_relabel((Node *) linitial(ce->args));
-			}
-			else
+			if (list_length(ce->args) != 2 || !IsA(lsecond(ce->args), Const) || ((Const *) lsecond(ce->args))->constisnull)
 				break;
+			subst = (Const *) lsecond(ce->args);
+			e = key_relabel((Node *) linitial(ce->args));
 		}
-		else if (tle->ressortgroupref != 0 && (sgc = get_sortgroupref_clause_noerr(tle->ressortgroupref, parse->groupClause)) != NULL)
-			e = key_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
 		else
 			break;
 		foreach_ptr(Node, k, keys)

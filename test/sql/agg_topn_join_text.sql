@@ -1,0 +1,99 @@
+-- ORDER BY .. LIMIT over a scan joined to a table by a text key is served by Custom Scan (SiftAgg) Top-N: the keys of the loaded table are the exact condition
+-- `key = ANY(keys)` of the scan, so no join is left to run for the rows of the heap. An inner join needs a unique index on the key (a duplicate key would repeat
+-- the row), a semi join (IN, EXISTS) does not; an anti join, a joined column in the select list and a nondeterministic collation keep the normal plan.
+-- Every statement is run with the extension and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- title and v are in the dictionary, body is stored inline (over 255 bytes); NULLs, the empty string and repeated values; grp repeats, so the order has ties
+CREATE TABLE ev (id int PRIMARY KEY, grp int, title text, v varchar(20), body text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, i % 97,
+       CASE WHEN i % 41 = 0 THEN NULL ELSE 'tag' || (i % 400) END,
+       CASE WHEN i % 43 = 0 THEN NULL ELSE 'v' || (i % 150) END,
+       CASE WHEN i % 50 = 0 THEN NULL WHEN i % 61 = 0 THEN '' ELSE 'line-' || (i % 300) || repeat('y', 280) END,
+       i % 1000
+FROM generate_series(1, 40000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, title, v, body, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+SELECT path, inline_chunks > 0 AS inline FROM sift.col_leaves('ev_col') WHERE path IN ('title', 'v', 'body') ORDER BY path;
+
+-- keys: present, absent, the empty string, a case variant, a NULL, a duplicate
+CREATE TABLE ku (k text PRIMARY KEY, w int);
+INSERT INTO ku VALUES ('tag7', 1), ('tag42', 2), ('tag399', 3), ('tag500', 4), ('', 5), ('TAG7', 6), ('tag250', 7);
+CREATE TABLE kd (k text, w int);
+INSERT INTO kd VALUES ('tag7', 1), ('tag7', 2), ('tag42', 3), (NULL, 4), ('', 5), ('tag113', 6);
+CREATE TABLE kb (k text PRIMARY KEY, w int);
+INSERT INTO kb VALUES ('line-7' || repeat('y', 280), 1), ('line-299' || repeat('y', 280), 2), ('line-300' || repeat('y', 280), 3), ('', 4), ('line-7' || repeat('y', 279), 5);
+CREATE TABLE kv (k varchar(20) PRIMARY KEY, w int);
+INSERT INTO kv VALUES ('v3', 1), ('v77', 2), ('v900', 3), ('V3', 4), ('v7', 5), ('v42', 6);
+CREATE TABLE kmany (k text PRIMARY KEY);
+INSERT INTO kmany SELECT 'tag' || i FROM generate_series(0, 2999) i;
+CREATE TABLE kempty (k text PRIMARY KEY);
+ANALYZE ku; ANALYZE kd; ANALYZE kb; ANALYZE kv; ANALYZE kmany; ANALYZE kempty;
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l ~ 'Top-N:' THEN r := r || ' Top-N'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
+-- an inner join by a unique key (the dictionary, a varchar, an inline text), a semi join by a table that holds duplicates and NULL, EXISTS
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN ku k ON k.k = ev.title ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN kv k ON k.k = ev.v ORDER BY ev.grp, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN kb k ON k.k = ev.body ORDER BY ev.id DESC LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev WHERE ev.title IN (SELECT k FROM kd) ORDER BY ev.id DESC LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev WHERE EXISTS (SELECT 1 FROM kd k WHERE k.k = ev.title) ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id FROM ev WHERE ev.body IN (SELECT k FROM kd UNION ALL SELECT k FROM kb) ORDER BY ev.id LIMIT 10 OFFSET 20$$);
+-- the conditions of the joined table, a condition of the scan, a page of the order with ties
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN ku k ON k.k = ev.title AND k.w > 2 ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN ku k ON k.k = ev.title WHERE k.w < 3 AND ev.amount > 500 ORDER BY ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.grp FROM ev WHERE ev.title IN (SELECT k FROM ku) ORDER BY ev.grp LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.grp FROM ev WHERE ev.title IN (SELECT k FROM ku) ORDER BY ev.grp DESC LIMIT 7 OFFSET 3$$);
+-- two joins, each by a text key
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k = ev.title JOIN kv x ON x.k = ev.v ORDER BY ev.id LIMIT 10$$);
+-- thousands of keys, a table with no row, keys that match nothing
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN kmany k ON k.k = ev.title ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN kempty k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k = ev.title WHERE k.w = 4 ORDER BY ev.id LIMIT 10$$);
+-- not taken: an inner join by a key with duplicates (each match is a row), a column of the joined table in the select list, an anti join, a nondeterministic collation
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN kd k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, k.w FROM ev JOIN ku k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id FROM ev WHERE NOT EXISTS (SELECT 1 FROM ku k WHERE k.k = ev.title) ORDER BY ev.id LIMIT 10$$);
+CREATE COLLATION ci_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k COLLATE ci_nd = ev.title COLLATE ci_nd ORDER BY ev.id LIMIT 10$$);
+
+-- rows written after the index was built (the write buffer), rows changed or deleted since, and the keys of the table changed
+INSERT INTO ev SELECT 100000 + i, i % 97, 'tag7', 'v3', 'line-7' || repeat('y', 280), i FROM generate_series(1, 200) i;
+UPDATE ev SET title = 'tag42' WHERE id % 1500 = 0;
+DELETE FROM ev WHERE id % 1000 = 7 AND title IS NOT NULL;
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN ku k ON k.k = ev.title ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id FROM ev JOIN kb k ON k.k = ev.body ORDER BY ev.id DESC LIMIT 10$$);
+INSERT INTO ku VALUES ('tag100', 8);
+SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN ku k ON k.k = ev.title ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
+VACUUM ev;
+SELECT * FROM same($$SELECT ev.id FROM ev WHERE ev.title IN (SELECT k FROM ku) ORDER BY ev.id DESC LIMIT 10$$);
+
+DROP FUNCTION same(text), plan_of(text);
+DROP TABLE ev, ku, kd, kb, kv, kmany, kempty;
+DROP COLLATION ci_nd;
+DROP EXTENSION pg_sift;

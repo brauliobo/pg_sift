@@ -264,4 +264,7 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 }
 
 bool		sift_child_warm_test = false;	/* sift.test_child_warm */
+#ifdef SIFT_TESTING
+uint64		sift_test_warm_calls = 0;		/* the advice calls child_warm made (sift._test_segment_reads) */
+#endif
 

@@ -233,7 +233,10 @@ dense_update(AggExec *ex, int ai, int start, int n, const uint64 *mask)
 		case SAA_AVG_F64:
 			x = chunk_vals(ex, a->leaf, start, n, true, ex->c64);
 			float_guard(ex, ai, x, ok, n, gid);
-			sift_aggk->sum_gid_f64(acc->d, gid, x, ok, n);
+			if (ungrouped)
+				acc->d[0] = sift_aggk_sum_f64(acc->d[0], x, ok, n);
+			else
+				sift_aggk->sum_gid_f64(acc->d, gid, x, ok, n);
 			break;
 		default:
 			break;

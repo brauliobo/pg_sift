@@ -1,0 +1,86 @@
+-- A table joined by a column that the scan's IN list names is read by one btree scan with the list as its keys (and the join's `column = value` conditions on the index's next
+-- columns) while that costs less than the table read whole: the rows read are those of the keys, the answers the same as with the table read whole, in a serial and a parallel scan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+-- the statements check the keyed load (the plans with probes have their own test, agg_probe_rewrite)
+SET sift.agg_probe_rewrite = off;
+
+CREATE TABLE ev (id int, fk int, v int, d date) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 1000, i % 7, date '2026-01-01' + i % 300 FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, fk, v, d);
+-- twenty-five rows to a key, five to each status: a thousand pages in all
+CREATE TABLE lk (id int, parent int, status int, label text, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO lk SELECT i, i % 1000, (i / 1000) % 5, 'l' || (i % 1000 % 3), repeat('x', 300) FROM generate_series(0, 24999) i;
+CREATE INDEX lk_parent_status ON lk (parent, status);
+CREATE INDEX lk_parent ON lk (parent);
+-- the columns of the join in the entries: no heap fetch on an all-visible page
+CREATE INDEX lk_cover ON lk (parent, status) INCLUDE (label);
+VACUUM (FREEZE, ANALYZE) ev, lk;
+
+-- the rows read, the index scans and the heap fetches of the scan, from its EXPLAIN
+CREATE FUNCTION loaded(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := ''; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ '^ *Lookup: ' THEN r := r || concat_ws('; ', substring(l from '\d+ rows read'), substring(l from '\d+ index scans'), substring(l from '\d+ heap fetches')) || '; '; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION join_q(keys text, kind text) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE kind
+		WHEN 'inner' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk IN (%s) GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'inner_all' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk WHERE ev.fk IN (%s) GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'semi' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk IN (%s) AND EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'anti' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk IN (%s) AND NOT EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'left' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk IN (%s) GROUP BY 1 ORDER BY 1', keys)
+	END
+$$;
+
+SELECT string_agg(i::text, ',') AS few FROM generate_series(10, 14) i \gset
+SELECT string_agg(i::text, ',') AS many FROM generate_series(0, 999) i \gset
+SELECT string_agg(i::text, ',') AS some FROM generate_series(100, 130) i \gset
+
+-- five keys: their twenty-five entries (the index names the status, five rows of the twenty-five), one index scan
+SELECT loaded(join_q(:'few', 'inner'));
+-- without a condition of the join's own: the twenty-five rows of each key
+SELECT loaded(join_q(:'few', 'inner_all'));
+SELECT loaded(join_q(:'few', 'semi'));
+SELECT loaded(join_q(:'few', 'anti'));
+SELECT loaded(join_q(:'few', 'left'));
+-- thirty-one keys: still by the index
+SELECT loaded(join_q(:'some', 'inner'));
+-- every key: the five thousand entries of the status by the index; with the twenty-five thousand rows of the table all wanted, the table is read whole
+SELECT loaded(join_q(:'many', 'inner'));
+SELECT loaded(join_q(:'many', 'inner_all'));
+
+-- rows changed since the last VACUUM: their pages are not all-visible, those entries are fetched from the heap (and a deleted row, an updated label, are not those of the entries)
+UPDATE lk SET label = 'l1' WHERE parent BETWEEN 10 AND 12 AND status = 2 AND id % 2 = 0;
+DELETE FROM lk WHERE parent = 13 AND status = 2;
+SELECT loaded(join_q(:'few', 'inner'));
+SELECT loaded(join_q(:'few', 'semi'));
+
+-- the answers: the same with the table read whole (the setting off) and from the normal plan, serial and parallel; keys listed twice, a key the table has no row for and a NULL in the list
+CREATE FUNCTION answers(keys text, kind text, mode text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_lookup_pushdown', (mode = 'keyed')::text, true);
+	PERFORM set_config('sift.enable_agg', (mode <> 'normal')::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || join_q(keys, kind) || ') t' INTO r;
+	RETURN coalesce(r, '');
+END $$;
+SELECT k.name, kind, w.workers, answers(k.keys, kind, 'keyed', w.workers) = answers(k.keys, kind, 'whole', w.workers) AND answers(k.keys, kind, 'keyed', w.workers) = answers(k.keys, kind, 'normal', w.workers) AS same_answers,
+	   answers(k.keys, kind, 'keyed', w.workers) <> '' AS not_empty
+FROM (VALUES ('few', :'few'), ('some', :'some'), ('twice', '10,10,11,11,12'), ('absent', '10,5000,11'), ('null', '10,NULL,11'), ('one', '7'), ('many', :'many')) k(name, keys),
+	 (VALUES ('inner'), ('inner_all'), ('semi'), ('anti'), ('left')) q(kind), (VALUES (0), (3)) w(workers)
+ORDER BY 1, 2, 3;
+
+DROP FUNCTION answers(text, text, text, int), loaded(text), join_q(text, text);
+DROP TABLE ev, lk;
+DROP EXTENSION pg_sift;

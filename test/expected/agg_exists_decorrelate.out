@@ -175,7 +175,7 @@ SELECT * FROM check_query('the outer query groups', $q$
  SELECT o.grp, count(*) AS n, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM items i WHERE i.set_id = o.k AND i.amt > 80)) AS big FROM key_sets o GROUP BY o.grp $q$);
          label          | in_scan | same | rows 
 ------------------------+---------+------+------
- the outer query groups | f       | t    |    7
+ the outer query groups | t       | t    |    7
 (1 row)
 
 SELECT * FROM check_query('an inequality', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.set_id < o.k AND i.set_id > o.k - 3) AS has FROM key_sets o WHERE o.id < 500 $q$);

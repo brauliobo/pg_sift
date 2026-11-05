@@ -4,9 +4,12 @@
  * and map_load.
  */
 #include "postgres.h"
+#include <math.h>
 
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/visibilitymap.h"
+#include "access/amapi.h"
 #include "access/skey.h"
 #include "access/stratnum.h"
 #include "access/table.h"
@@ -15,6 +18,7 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "portability/instr_time.h"
+#include "storage/predicate.h"
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -23,6 +27,7 @@
 #include "agg/agg.h"
 #include "agg/wide.h"
 #include "agg/lookup/int.h"
+#include "agg/init_int.h"
 
 #define LOOKUP_RESERVE_MAX	(1 << 22)	/* rows a map is sized for before the load: a table the statistics put above is grown as it is read */
 
@@ -42,64 +47,248 @@ typedef struct SharedMap
 static List *shared_maps = NIL;
 
 /*
- * The rows of a table that its dependent lookup keys, read through a btree on the column: one probe a key, where the table is read page by page. It pays while the keys
- * are few against the pages (sift_agg_probe_pays). Returns the index opened, with the scan key of the array of keys; NULL: read the table whole.
+ * The keys the scan itself restricts the join's key leaf to: a top-level `leaf IN (constants)` of the row, which every tuple that reaches the join satisfies, so a
+ * table read for these keys alone gives each tuple the rows it would find in the whole table (a NULL element matches nothing). n keys of the integer type *typ in *vals,
+ * -1: no such list, or its type is not the table key's (an int4 key against an int8 list is read whole).
  */
-static Relation
-map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key)
+static int
+map_in_keys(AggExec *ex, int ci, int *att, Oid *typ, Datum **vals)
 {
-	const MapTab *dm;
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
+
+	if (j->kind == SJ_RIGHT || j->kind == SJ_FULL || j->params != NIL || j->nkey != 1 || j->keynull[0] || j->tkey[0] != NULL || j->keypos[0] < 0 || cb->level != 0 ||
+		j->first.qual != NIL || j->first.nord > 0 || (j->keytype[0] != INT4OID && j->keytype[0] != INT8OID))
+		return -1;
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+		MemoryContext old;
+		ExprState  *e;
+		Datum		d;
+		bool		isnull;
+		ArrayType  *arr;
+		int16		elen;
+		bool		ebyval;
+		char		ealign;
+		Datum	   *elems;
+		bool	   *nulls;
+		int			ne,
+					n = 0;
+
+		if (p->kind != SAP_IN || p->op != 0 || p->level != 0 || p->late || p->expr == NULL || p->leaf != cb->leaf[j->keypos[0]] || p->argtype != j->keytype[0])
+			continue;
+		old = MemoryContextSwitchTo(ex->cxt);
+		e = operand_state(ex, p->expr);
+		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+		MemoryContextSwitchTo(old);
+		if (isnull)
+			return -1;
+		arr = DatumGetArrayTypeP(d);
+		get_typlenbyvalalign(p->argtype, &elen, &ebyval, &ealign);
+		deconstruct_array(arr, p->argtype, elen, ebyval, ealign, &elems, &nulls, &ne);
+		*vals = palloc((ne + 1) * sizeof(Datum));
+		for (int k = 0; k < ne; k++)
+			if (!nulls[k])
+				(*vals)[n++] = elems[k];
+		*att = j->keyatt[0];
+		*typ = j->keytype[0];
+		return n;
+	}
+	return -1;
+}
+
+/*
+ * The rows of a table that its keys are few, read through a btree on the column: one probe a key, where the table is read page by page. The keys are those of a dependent
+ * lookup (the ids of a request joined to the table of their rows) or the scan's own IN list of the join's key. It pays while the keys are few against the pages
+ * (sift_agg_probe_pays). Returns the index opened, with the scan key of the array of keys; NULL: read the table whole.
+ */
+static bool map_index_covers(Relation idx, const SiftAggJoin *j);
+
+static Relation
+map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const Datum *val, bool own)
+{
+	const MapTab *dm = NULL;
+	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 	Relation	best = NULL;
+	int			nbest = 1;
 	Oid			typ = InvalidOid;
-	double		rpk;
-	bool		unique = false;
+	double		nkey,
+				rpk,
+				tuples = Max(rel->rd_rel->reltuples, 1.0),
+				pages = RelationGetNumberOfBlocks(rel),
+				bprice = HUGE_VAL,
+				allvis = rel->rd_rel->relallvisible / Max(pages, 1.0);
+	bool		bcov = false;
 	int			att = 0,
-				cd = map_keyed_dependent(ex, ci, &att, &typ);
-	Datum	   *vals;
-	int			n = 0;
+				cd = map_keyed_dependent(ex, ci, &att, &typ),
+				nv = 0;
+	Datum	   *vals = NULL;
 	int16		typlen;
 	bool		typbyval;
 	char		typalign;
+	int			nnum = 0;
+	bool		cols;
 
-	if (cd < 0)
+	if (cd >= 0)
+		dm = ex->cs[cd].map;
+	/* the equalities of the rest of the ON clause are tested by the table's own filter on each row read */
+	else if ((j->nidx > 0 && !own) || (nv = map_in_keys(ex, ci, &att, &typ, &vals)) < 0)
 		return NULL;
-	dm = ex->cs[cd].map;
+	/* the index whose entries cost least for a key (join_keys_pay) */
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
+		ScanKeyData ik[SIFT_AGG_MAX_JIDX];
+		int			ta[SIFT_AGG_MAX_JIDX],
+					n = 1;
+		bool		cov;
+		double		r,
+					price;
 
-		if (best == NULL && idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			idx->rd_index->indkey.values[0] == att && idx->rd_opcintype[0] == typ)
+		if (!(idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+			  idx->rd_index->indkey.values[0] == att && idx->rd_opcintype[0] == typ))
 		{
+			index_close(idx, AccessShareLock);
+			continue;
+		}
+		/* the table's `column = value` conditions on the columns that follow the key in the index are keys of the scan too: its entries are those that can match, no heap row is read for the others */
+		for (; dm == NULL && n < idx->rd_index->indnkeyatts && n < SIFT_AGG_MAX_JIDX; n++)
+		{
+			int			k = sift_agg_trail_cond(j, idx->rd_index->indkey.values[n], idx->rd_opfamily[n], idx->rd_indcollation[n]);
+			int			strategy;
+			Oid			lt,
+						rt;
+
+			if (k < 0)
+				break;
+			get_op_opfamily_properties(j->idxop[k], idx->rd_opfamily[n], false, &strategy, &lt, &rt);
+			ScanKeyEntryInitialize(&ik[n], 0, n + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+			ta[n - 1] = idx->rd_index->indkey.values[n];
+		}
+		cov = map_index_covers(idx, j);
+		r = sift_agg_key_rows(RelationGetRelid(rel), att, ta, n - 1, tuples, idx->rd_index->indisunique && idx->rd_index->indnkeyatts == 1);
+		price = r * sift_agg_entry_ops(cov ? allvis : 0);
+		if (r > 0 && price < bprice)
+		{
+			if (best)
+				index_close(best, AccessShareLock);
 			best = idx;
-			unique = idx->rd_index->indisunique && idx->rd_index->indnkeyatts == 1;
+			nbest = n;
+			bprice = price;
+			rpk = r;
+			bcov = cov;
+			memcpy(&key[1], &ik[1], (n - 1) * sizeof(ScanKeyData));
 		}
 		else
 			index_close(idx, AccessShareLock);
 	}
 	if (best == NULL)
 		return NULL;
-	rpk = sift_agg_rows_per_key(RelationGetRelid(rel), att, rel->rd_rel->reltuples);
-	if ((rpk <= 0 && !unique) || !sift_agg_probe_pays(dm->kd[0].n, dm->kd[0].n * Max(rpk, 1.0), RelationGetNumberOfBlocks(rel)))
+	nkey = Min(dm ? dm->kd[0].n : nv, tuples);
+	cols = map_load_cols_possible(rel, j, &nnum);
+	if (!sift_agg_probe_pays(nkey, nkey * rpk, pages, bcov ? allvis : 0, sift_agg_whole_ops(tuples, pages, cols, nnum, !cols && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))))
 	{
 		index_close(best, AccessShareLock);
 		return NULL;
 	}
-	vals = palloc((dm->kd[0].n + 1) * sizeof(Datum));
-	for (uint32 i = 0; i < dm->kd[0].n; i++)
+	if (dm)
 	{
-		int64		v = dm->kd[0].ival[i];
+		vals = palloc((dm->kd[0].n + 1) * sizeof(Datum));
+		for (uint32 i = 0; i < dm->kd[0].n; i++)
+		{
+			int64		v = dm->kd[0].ival[i];
 
-		if (typ == INT4OID && (v < PG_INT32_MIN || v > PG_INT32_MAX))
-			continue;			/* no int4 value equals it */
-		vals[n++] = typ == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
+			if (typ == INT4OID && (v < PG_INT32_MIN || v > PG_INT32_MAX))
+				continue;		/* no int4 value equals it */
+			vals[nv++] = typ == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
+		}
 	}
 	get_typlenbyvalalign(typ, &typlen, &typbyval, &typalign);
 	ScanKeyEntryInitialize(key, SK_SEARCHARRAY, 1, BTEqualStrategyNumber, typ, InvalidOid,
 						   get_opcode(get_opfamily_member(best->rd_opfamily[0], typ, typ, BTEqualStrategyNumber)),
-						   PointerGetDatum(construct_array(vals, n, typ, typlen, typbyval, typalign)));
+						   PointerGetDatum(construct_array(vals, nv, typ, typlen, typbyval, typalign)));
 	pfree(vals);
+	*nkeys = nbest;
 	return best;
+}
+
+/*
+ * Does the btree hold, and return, every column the load reads (the key and the columns of the join, an INCLUDE column too)? Then the rows on the pages the visibility map
+ * calls all-visible come from the entries, with no heap fetch.
+ */
+static bool
+map_index_covers(Relation idx, const SiftAggJoin *j)
+{
+	int			natts = idx->rd_index->indnatts;
+	int			need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS],
+				nneed = 0;
+
+	if (idx->rd_indam->amcanreturn == NULL)
+		return false;
+	for (int k = 0; k < j->nkey; k++)
+	{
+		if (j->tkey[k])
+			return false;
+		need[nneed++] = j->keyatt[k];
+	}
+	for (int c = 0; c < j->ncol; c++)
+		need[nneed++] = j->colatt[c];
+	for (int n = 0; n < nneed; n++)
+	{
+		int			i;
+
+		for (i = 0; i < natts; i++)
+			if (idx->rd_index->indkey.values[i] == need[n] && idx->rd_indam->amcanreturn(idx, i + 1))
+				break;
+		if (i == natts)
+			return false;
+	}
+	return true;
+}
+
+/* the entries of the scan into the table, a row fetched from the heap only where its page is not all-visible (what an Index Only Scan does) */
+static void
+map_scan_entries(AggExec *ex, MapTab *m, Relation rel, Relation idx, IndexScanDesc iscan, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own)
+{
+	TupleTableSlot *vs = MakeSingleTupleTableSlot(RelationGetDescr(rel), &TTSOpsVirtual);
+	Buffer		vmbuf = InvalidBuffer;
+	int			natts = RelationGetDescr(rel)->natts;
+	Datum		ivals[INDEX_MAX_KEYS];
+	bool		inulls[INDEX_MAX_KEYS];
+
+	for (ItemPointer tid; (tid = index_getnext_tid(iscan, ForwardScanDirection)) != NULL;)
+	{
+		BlockNumber blk = ItemPointerGetBlockNumber(tid);
+
+		if (!VM_ALL_VISIBLE(rel, blk, &vmbuf))
+		{
+			ex->lookup_heap++;
+			if (index_fetch_heap(iscan, slot))
+				map_row(ex, m, slot, j, cb, own);
+			continue;
+		}
+		PredicateLockPage(rel, blk, ex->snap);
+		index_deform_tuple(iscan->xs_itup, iscan->xs_itupdesc, ivals, inulls);
+		ExecClearTuple(vs);
+		memset(vs->tts_isnull, true, natts * sizeof(bool));
+		for (int i = 0; i < idx->rd_index->indnatts; i++)
+		{
+			int			a = idx->rd_index->indkey.values[i];
+
+			if (a > 0)
+			{
+				vs->tts_values[a - 1] = ivals[i];
+				vs->tts_isnull[a - 1] = inulls[i];
+			}
+		}
+		ExecStoreVirtualTuple(vs);
+		map_row(ex, m, vs, j, cb, own);
+	}
+	if (vmbuf != InvalidBuffer)
+		ReleaseBuffer(vmbuf);
+	ExecDropSingleTupleTableSlot(vs);
 }
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
@@ -138,8 +327,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
-	if (idx == NULL && !none && sift_agg_lookup_pushdown && j->nidx == 0 && (idx = map_probe(ex, ci, rel, keys)) != NULL)
-		nkeys = 1;
+	if (idx == NULL && !none && sift_agg_lookup_pushdown)
+		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL);
 	if (idx == NULL && !none && (m = map_kept_find(ex, ci, rel, cxt, own != NULL, &kept)) != NULL)
 	{
 		MemoryContextSwitchTo(old);
@@ -192,9 +381,16 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
 
+		/* the entries are enough where the index holds the columns; the key array makes no difference to the entries returned */
+		bool		entries = sift_agg_lookup_pushdown && map_index_covers(idx, &lj);
+
+		iscan->xs_want_itup = entries;
 		index_rescan(iscan, keys, nkeys, NULL, 0);
-		while (index_getnext_slot(iscan, ForwardScanDirection, slot))
-			map_row(ex, m, slot, &lj, cb, own);
+		if (entries)
+			map_scan_entries(ex, m, rel, idx, iscan, slot, &lj, cb, own);
+		else
+			while (index_getnext_slot(iscan, ForwardScanDirection, slot))
+				map_row(ex, m, slot, &lj, cb, own);
 		index_endscan(iscan);
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
@@ -389,6 +585,7 @@ map_load(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 	int			att;
 	Oid			typ;
+	Datum	   *keys;
 
 	if (ex->pmaps && ex->pmaps[ci])
 		return map_share_attach(ex->pmaps[ci], j, ex->cxt);
@@ -396,7 +593,9 @@ map_load(AggExec *ex, int ci)
 		return map_new(j, false, ex->cxt);
 	if (j->child >= 0)
 		return map_load_child(ex, ci);
-	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) && !(sift_agg_lookup_pushdown && map_keyed_dependent(ex, ci, &att, &typ) >= 0) ? map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
+	/* a table read for the keys of this scan alone is no other arm's table: it is not shared */
+	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) && !(sift_agg_lookup_pushdown && (map_keyed_dependent(ex, ci, &att, &typ) >= 0 || map_in_keys(ex, ci, &att, &typ, &keys) >= 0)) ?
+		map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
 }
 
 /* does an expression read one of the first n parameters (the leaves of a combo)? */

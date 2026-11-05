@@ -528,6 +528,15 @@ extern const void *sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, voi
 /* Reads [off, off + len) ahead through a ReadStream for the following gets */
 extern void sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len);
 
+/* A byte range of the segment's stream */
+typedef struct SiftSrRange
+{
+	uint64		off;
+	uint64		len;
+} SiftSrRange;
+
+extern uint64 sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n);
+
 /*
  * Reads ahead the ranges next yields, through a ReadStream, once two gets have waited for the device for their pages (every range of the
  * following sift_sr_ahead calls then): a scan whose pages are cached, or that the kernel reads ahead in time, never starts the stream and pays
@@ -540,6 +549,8 @@ extern void sift_sr_ahead(SiftStreamReader *sr, SiftSrAheadFn next, void *arg, u
 #ifdef SIFT_TESTING
 /* sift.test_ahead_cold: every reader reads ahead from its first get, as one whose pages are not in shared buffers does */
 extern PGDLLIMPORT bool sift_test_ahead_cold;
+extern uint64 sift_test_sr_demand;
+extern uint64 sift_test_sr_ahead;
 #endif
 extern void sift_sr_release(SiftStreamReader *sr);
 

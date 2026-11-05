@@ -45,8 +45,16 @@ extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_pre
  */
 extern void sift_agg_walks_forget(void);
 extern int64 sift_agg_outer_asks;
+extern int64 sift_agg_plan_passes;	/* SIFT_TESTING: the runs of the planner that the hook made for the statements planned */
+extern int64 sift_agg_key_lists;	/* SIFT_TESTING: the selectivities of a key list the plan computed */
 extern int64 sift_agg_outer_walks;	/* SIFT_TESTING: the walks for references to a query above that the plan made */
-extern bool sift_agg_probe_pays(double keys, double rows, double pages);
+struct SiftAggJoin;
+extern double sift_agg_entry_ops(double entries_only);
+extern double sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only);
+extern double sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_only);
+extern bool sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole);
+extern int sift_agg_trail_cond(const struct SiftAggJoin *j, int att, Oid opfamily, Oid collation);
+extern double sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, double tuples, bool unique);
 extern double sift_agg_rows_per_key(unsigned int relid, int att, double tuples);
 extern PGDLLIMPORT double sift_plan_scale;
 extern PGDLLIMPORT double sift_agg_scale_horizon;
@@ -80,12 +88,25 @@ extern void sift_agg_defer_lookups(Query *q);
 extern bool sift_agg_exists_or_candidate(Query *q);
 extern void sift_agg_split_exists_or(Query *q);
 extern void sift_agg_drop_sorts(PlannedStmt *stmt);
+extern void sift_agg_rank_sorts(PlannedStmt *stmt);
+extern PGDLLIMPORT const CustomScanMethods sift_agg_rank_plan_methods;
 #ifdef SIFT_TESTING
 extern int64 sift_source_lookups;	/* the asks of has_column_source that went to the catalog */
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_probe_joins(Query *q, bool apply);
+extern void sift_agg_probe_init(void);
+extern bool sift_agg_push_dim_keys(Query *q, bool apply);
+extern bool sift_agg_factor_constants(Query *q, bool apply);
+extern bool sift_agg_eager_candidate(Query *q);
+extern bool sift_agg_eager_lookup(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
+extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */
+#define SIFT_PROBE_ALIAS "sift_probe"	/* the alias of the lateral probe agg/flat/probe.c makes of a sublink or a join */
+extern PGDLLIMPORT bool sift_agg_probe_rewrite;
+extern bool sift_agg_probe_mixed;		/* ... and another rewrite was made as well */
+extern bool sift_agg_probe_applied;		/* the flattening made a lateral probe of a sublink or a join (agg/flat/probe.c): the plan is set against the one as written whatever that reads */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
 extern bool sift_agg_partition_arms(Query *q, bool apply);

@@ -474,6 +474,7 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 	int			nrw = (nrow + 63) / 64;
 
 	uint64		strdone = 0;
+	bool		jdone = false;			/* a join key test of a text leaf narrowed the rows */
 
 	/* the text tests the source runs on the encoded form come first: they decode no leaf, and leave the others and the aggregates few rows to read */
 	for (int i = 0; i < Min(s->npred, 64); i++)
@@ -488,13 +489,27 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 			strdone |= UINT64CONST(1) << i;
 		}
 	}
-	if (!cand && strdone != 0 && !sift_colk->bits_count(rmask, nrw))
+	for (int i = 0; i < ex->njstr; i++)
+	{
+		JstrTrial  *jt = &ex->jtrial[i];
+		uint64		before = jt->off ? 0 : sift_colk->bits_count(rmask, nrw);
+
+		if (jt->off || before == 0 || !sift_colsrc_filter_str(ex->src, u, &ex->jstr[i], rmask))
+			continue;
+		if (cand)
+			sift_colsrc_filter_str(ex->src, u, &ex->jstr[i], cand);
+		jdone = true;
+		jt->seen += before;
+		jt->kept += sift_colk->bits_count(rmask, nrw);
+		jt->off = ++jt->units >= JSTR_TRIAL && jt->kept * 2 > jt->seen;
+	}
+	if (!cand && (strdone != 0 || jdone) && !sift_colk->bits_count(rmask, nrw))
 	{
 		ex->qlevel = s->group >= 0;
 		return;
 	}
 	/* a few rows left: the leaves are decoded for them only (not with rows to read again: they are tested on whole leaves, and a selected read of an overflowed slot is an error) */
-	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0 || strdone != 0) && sift_colsrc_can_read_sel(ex->src) &&
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0 || strdone != 0 || jdone) && sift_colsrc_can_read_sel(ex->src) &&
 		sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
 		ex->rsel = rmask;
 	/* row level conjuncts */

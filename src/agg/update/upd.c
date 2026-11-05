@@ -73,7 +73,10 @@ upd_sum_f64(const AggUpd *u)
 		x = (const double *) ex->c64;
 	}
 	float_guard(ex, u->ai, x, u->ok, nsel, ex->gid);
-	sift_aggk->sum_gid_f64(u->acc->d, ex->gid, x, u->ok, nsel);
+	if (ex->spec->nkeys == 0)
+		u->acc->d[0] = sift_aggk_sum_f64(u->acc->d[0], x, u->ok, nsel);
+	else
+		sift_aggk->sum_gid_f64(u->acc->d, ex->gid, x, u->ok, nsel);
 	upd_count(u);
 }
 

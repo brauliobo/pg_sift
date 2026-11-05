@@ -5,12 +5,16 @@
  */
 #include "postgres.h"
 #ifdef SIFT_TESTING
+#include "access/relation.h"
+#include "access/visibilitymap.h"
 #include "funcapi.h"
+#include "storage/bufmgr.h"
 #include "agg/agg.h"
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/pagg.h"
 #include "core/sql.h"
+#include "core/visibility.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
 
@@ -35,6 +39,9 @@ PG_FUNCTION_INFO_V1(sift_test_source_lookups);
 PG_FUNCTION_INFO_V1(sift_test_prepass_nodes);
 
 PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
+PG_FUNCTION_INFO_V1(sift_test_agg_key_lists);
+PG_FUNCTION_INFO_V1(sift_test_vis_counts);
+PG_FUNCTION_INFO_V1(sift_test_agg_plan_passes);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
@@ -311,6 +318,71 @@ sift_test_agg_outer_walks(PG_FUNCTION_ARGS)
 	if (PG_GETARG_BOOL(0))
 		sift_agg_outer_asks = sift_agg_outer_walks = 0;
 	PG_RETURN_ARRAYTYPE_P(a);
+}
+
+/*
+ * {the all-visible pages, the clean superblocks} of the first nblocks pages of a table (the table's own size when nblocks is negative), by sift_vis_count and, as an oracle, page by page by
+ * visibilitymap_get_status (a superblock is clean when every page it has is all-visible)
+ */
+Datum
+sift_test_vis_counts(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	int64		arg = PG_GETARG_INT64(1);
+	BlockNumber nblocks = arg < 0 ? RelationGetNumberOfBlocks(rel) : (BlockNumber) arg,
+				visible,
+				clean;
+	Buffer		vmbuf = InvalidBuffer;
+	int64		ov = 0,
+				oc = 0;
+	bool		all = true;
+	Datum		d[4];
+	ArrayType  *a;
+
+	sift_vis_count(rel, nblocks, &visible, &clean);
+	for (BlockNumber b = 0; b < nblocks; b++)
+	{
+		bool		v = (visibilitymap_get_status(rel, b, &vmbuf) & VISIBILITYMAP_ALL_VISIBLE) != 0;
+
+		ov += v;
+		all &= v;
+		if ((b + 1) % SIFT_SB_PAGES == 0 || b + 1 == nblocks)
+		{
+			oc += all;
+			all = true;
+		}
+	}
+	if (BufferIsValid(vmbuf))
+		ReleaseBuffer(vmbuf);
+	relation_close(rel, AccessShareLock);
+	d[0] = Int64GetDatum(visible);
+	d[1] = Int64GetDatum(clean);
+	d[2] = Int64GetDatum(ov);
+	d[3] = Int64GetDatum(oc);
+	a = construct_array_builtin(d, 4, INT8OID);
+	PG_RETURN_ARRAYTYPE_P(a);
+}
+
+/* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
+Datum
+sift_test_agg_plan_passes(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_agg_plan_passes;
+
+	if (PG_GETARG_BOOL(0))
+		sift_agg_plan_passes = 0;
+	PG_RETURN_INT64(n);
+}
+
+/* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
+Datum
+sift_test_agg_key_lists(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_agg_key_lists;
+
+	if (PG_GETARG_BOOL(0))
+		sift_agg_key_lists = 0;
+	PG_RETURN_INT64(n);
 }
 
 /* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */

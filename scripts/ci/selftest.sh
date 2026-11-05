@@ -94,7 +94,7 @@ if [[ $MODE == --selftest ]]; then
 	read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")
 	mv_fn=$(grep -o "$mv_old:[A-Za-z_0-9]*" "$REPO/scripts/focus.tsv" | head -1 | cut -d: -f2)
 	[[ -z $mv_fn || ( $(focus_regex "${mv_new}x.c:${mv_pre}${mv_fn}") == "$(focus_regex "$mv_old:$mv_fn")" && $(focus_regex "$mv_old:$mv_fn") != '^(coverage|isolation-emulated)$' ) ]] || { echo "FAIL: focus: a function of a file split into a folder does not select the tests of the row of the old file ($mv_old:$mv_fn)"; bad=1; }
-	[[ $(focus_regex src/agg/cte/hook.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
+	[[ $(focus_regex src/agg/accum.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
 	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
@@ -160,6 +160,16 @@ if [[ $MODE == --selftest ]]; then
 	plan_of quick 18
 	prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
+	# without names), except the slow ones, which are jobs of their own
+	plan_of quick 18 1
+	got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; exit } }' <<<"$(grep '^release-library-regress ' <<<"$PLAN_OUT")" | sort)
+	# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
+	pgc=${PG_CONFIG:-pg_config}
+	if "$pgc" --version 2>/dev/null | grep -qE '^PostgreSQL (1[7-9]|[2-9][0-9])' && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
+		want=$(printf 'include Makefile\nrelease-regress: ; @echo $(REGRESS)\n' | make -s -C "$REPO" USE_PGXS=1 SIFT_TESTING= -f - release-regress | tr ' ' '\n' | grep -vxF -f <(xargs -n1 <<<"$SLOW_REGRESS") | sort)
+		[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
+	else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
 	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
 	(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard

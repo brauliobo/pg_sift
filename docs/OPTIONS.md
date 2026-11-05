@@ -34,10 +34,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 117 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 121 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 14 | to measure, compare or explain a plan; not for a deployed configuration |
-| [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
+| [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
 
 ### default
@@ -713,6 +713,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 1.0: the write buffer holding more than this percent of the rows is promoted (alone, without a whole-index rewrite when it is the only reason). Lower it to keep the buffer smaller.
 - **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
+#### sift.col_build_key_ranges
+
+`sift_col` · default · since 4.1 · default on
+
+- **What it does:** a serial CREATE INDEX or REINDEX of a key_cut index on a table that does not fit one run writes runs that do not overlap in the key, so a lookup of a key set reads one unit for a key and nothing is rewritten after the build
+- **Gain:** 2,650,000 rows, 4 columns, key_cut on an integer of 28,000 values, runs of 5 MB: a key in 1.00 units where the runs of the table hold it in 7.95; 25 keys 12.9 to 4.9 million instructions and 990 to 243 blocks, 200 keys 49.5 to 18.5 million, 2,000 keys 84.9 to 93.9 million but 4,715 to 3,985 blocks (the layout the rewrite makes)
+- **Gain and cost:** 2.70x fewer instructions (8070k saved a query), index +0.4%, build +25.0%, automatic
+- **Impact:** index size: the index is the size of the runs (170.3 against 169.6 MB) where the rewrite that cuts the runs leaves 342 MB until the freed blocks are reused; build, merge and writes: CREATE INDEX 4.8 to 6.0 s (+25%) and 170 MB of WAL, where the runs and their rewrite take 11 s and 340 MB of WAL (460 MB paced); 187 MB of temporary files; other: the rows go to temporary files while the table is scanned (about the size of the index, no WAL), and a sample of the table is read before the scan: the build takes about a quarter longer than runs in the order of the table, and half the time and half the WAL of those runs and the rewrite that cuts them
+- **When:** A serial build of a key_cut index whose first leaf is an integer, date, timestamp, numeric or float (the columns key_cut takes), on a table of more than three runs; not a parallel build (a key_cut index is built by one process) or a table that fits two runs.
+- **Default:** on — on: the runs of the ranges are what the rewrite after a build makes, for the cost of a sample of the table and temporary files that the build writes and reads once.
+- **Turn off:** SET sift.col_build_key_ranges = off (ALTER SYSTEM or ALTER DATABASE) writes the runs in the order of the table.
+- **Upgrade from 3.7:** After ALTER EXTENSION UPDATE an existing index keeps its runs and its rewrite (see sift.col_auto_merge_pass_mb); a REINDEX writes the runs by ranges. No format change.
+- **Advice:** Leave on. Off writes the runs in the order of the table, each holding every key, which the maintenance worker cuts by key afterwards. A temp_file_limit smaller than the rows, or a disk of the temporary tablespaces with less than twice the room they need, leaves it off for that build.
+- **Sources:** benchmark `test:col_key_cut_ranges`; [USAGE](USAGE.md#maintenance-and-operations)
+
 #### sift.col_unit_floor
 
 `sift_col` · default · since 3.4 · default 2048
@@ -754,6 +769,34 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Off keeps the normal plan for a LEFT JOIN LATERAL over a row's list (to compare, or to isolate a wrong result). A WHERE that sees the NULL element tuple keeps the normal plan anyway.
 - **Sources:** benchmark `test:agg_left_lateral`; [AGG](AGG.md)
+
+#### sift.agg_probe_direct
+
+`sift_col`, `sift_table` · default · since 4.1 · default on
+
+- **What it does:** the keys of a correlated LIMIT 1 child (LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree, an Index Scan or an Index Only Scan) are probed in the child's btree by the aggregate scan, a sorted batch of keys at a time, instead of running the child's plan once for each key
+- **Gain:** lateral_probe_direct (120,000 events, 1,000 entities): 1,657 M to 606 M instructions, btree buffer hits 177,454 to 66,897; cold reads 7,429 to 7,430 btree blocks
+- **Impact:** index size: -; build, merge and writes: -; other: none; a child the probe does not take (a parameter in its filter, a sub-plan, a non-btree index, an inequality key, a serializable transaction) keeps its plan for every key
+- **When:** a correlated LIMIT 1 child whose key is an equality of the index column's own type on a btree; the rows are those of the child's index scan
+- **Default:** on — On: 1,657 M to 606 M instructions on the bench case; see the CHANGELOG.
+- **Turn off:** SET sift.agg_probe_direct = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the child then runs for every key. No REINDEX.
+- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
+- **Advice:** Leave on. Off runs the child's plan for every key (to compare, or to isolate a wrong result).
+- **Sources:** benchmark `lateral_probe_direct`; [AGG](AGG.md)
+
+#### sift.agg_float_step
+
+`sift_col`, `sift_table` · default · since 4.1 · default on
+
+- **What it does:** a key, an aggregate argument or a filter of a float column that reads it only through floor, ceil, trunc, round or an integer cast of the column, of the column divided by a constant or of the column times a constant is evaluated by PostgreSQL once for each bucket of the values, not for each distinct value; the bucket numbers of a chunk come from the vector kernels of the scan (AVX2, AVX-512, NEON)
+- **Gain:** float_step_buckets (1,000,000 rows, a distinct value in almost every row, 200 buckets): 624 M to 107.5 M instructions; the same blocks
+- **Impact:** index size: -; build, merge and writes: -; other: none; a value with no bucket number (NULL, NaN, an infinity, a quotient or product that overflows or underflows, a result outside int32, a negative zero) keeps the id of its value, and a statement that reads the column another way as well keeps the ids of its values
+- **When:** a float8 (or float4) column whose every read in the key, the aggregates and the filters of the combo is the one step floor, ceil, trunc, round or an integer cast of x, x / c or x * c with c a constant other than 0; the rows are PostgreSQL's
+- **Default:** on — On: 624 M to 107.5 M instructions on the bench case; see the CHANGELOG.
+- **Turn off:** SET sift.agg_float_step = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the expression then runs for every distinct value. No REINDEX.
+- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
+- **Advice:** Leave on. Off evaluates the expression for every distinct value (to compare, or to isolate a wrong result).
+- **Sources:** benchmark `float_step_buckets`; [AGG](AGG.md)
 
 #### sift.agg_preagg
 
@@ -871,7 +914,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · default · since 3.2 · default on
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** semi join of a group of 1,000 keys, 3,000,000 rows: generic lookup join 70.8 to 22.9 ms, byte table 24.8 to 5.5 ms; keyed by a dependent lookup (a CTE of ids joined to the table of their rows, 90,000 rows, 1,500,000 events): 1 key 83.6 to 1.1 ms, 1,000 keys 101.8 to 30.5 ms, 12,000 keys unchanged
 - **Impact:** index size: -; build, merge and writes: -; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
 - **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
@@ -895,6 +938,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Turn it off to load every lookup table from the heap.
 - **Sources:** benchmark `lookup_columns`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
 
+#### sift.agg_probe_rewrite
+
+`sift_col`, `sift_table` · default · since 4.1 · default on
+
+- **What it does:** a join to a large btree table (JOIN, comma join), EXISTS, NOT EXISTS, IN and NOT IN over one is also planned as a probe of the table's btree for each key the scan meets, and kept where that costs less
+- **Gain:** on a key range of 60 keys of 300,000 events joined to a 1,000,000-row table: inner join 344.5 M instructions, comma join 344.7 M, left join 171.9 M, with the probes 14.9 M, 15.0 M and 15.5 M; a NOT IN 549.8 M, with the probes 57.0 M; an EXISTS over the columns of an index on every key 701 M, with the probes 48 M
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: planning only: one more plan made for a statement that joins a large table by a btree column
+- **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
+- **Default:** on — the plan with the probes is priced by what a probe takes (the entries it examines in the btree), against the table read whole and the ordinary plan, so the rewrite does not lose where the probes are many and wide
+- **Turn off:** SET sift.agg_probe_rewrite = off (session, role, database or postgresql.conf): a join or sub-select is planned as written. Planning only, no REINDEX.
+- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement
+- **Advice:** Leave on. It costs one more plan for the statements it applies to and is kept only where the plan with the probes is priced lower than the others.
+- **Sources:** benchmark `test:agg_probe_rewrite`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
 #### sift.verdict_cache_kb
 
 `sift_col`, `sift_table` · default · since 3.4 · default 256 kB
@@ -913,7 +970,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · default · since 3.2 · default on
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** as `sift.agg_lookup_pushdown`
 - **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
 - **When:** UNION ALL arms of one statement that join the same table with the same columns and conditions; arms with other tables or conditions load their own, and nothing is kept between statements (that is agg_lookup_cache_kb).
@@ -1056,7 +1113,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
 - **Gain:** as `sift.agg_dense`
 - **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** Inner and semi lookup joins on an integer or date key leaf; other key types are not tested against the loaded keys before tuples are made.
+- **When:** Inner and semi lookup joins on an integer or date key leaf, or on a scalar text leaf or a text field of array elements, with keys up to a sixteenth of the table's rows (a source test on the encoded form: units without a key are not read, inline strings of other rows are not hashed); other key types are not tested against the loaded keys before tuples are made.
 - **Default:** on — On: units outside the keys' range are not read and the other rows are tested as a set, not through the combo cache (case keys_join_500k); no figure recorded for the switch.
 - **Turn off:** SET sift.agg_join_filter = off (session, role, database or postgresql.conf): the join resolves through the combo cache (no Join Key Filters in EXPLAIN ANALYZE). No REINDEX.
 - **Upgrade from 3.7:** unchanged
@@ -2267,6 +2324,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 5: the whole-index rewrite waits until the server wrote 100 / 5 times the bytes of the index since it was last written. Raise it for sooner rewrites; 0 does not wait. col_maintain ignores it.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
+#### sift.col_auto_merge_pass_mb
+
+`sift_col` · safety · since 4.1 · default 1024 MB
+
+- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a scraper mix), 100% right after a rewrite
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: the rewrite of runs that overlap in the key is spread over passes: 33 runs of 5 MB (169 MB), 170 MB of WAL in one pass against passes of at most 45 MB (8 runs) in 7 passes, 293 MB in all (1.7x); rows equal to the heap after every pass; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
+- **When:** Overlapping runs of a build that are as large as partitions are cut by key range a window at a time; a pass stops once it has rewritten this many MB (the window in hand finishes), and the next VACUUM, worker pass or sift.col_maintain(index) goes on from the directory it left. Each pass leaves the index valid; no pass holds more than the rewrite of one partition-sized step in memory. 0: one pass does all.
+- **Default:** 1024 MB — WAL of the whole rewrite by runs a pass takes (33 runs, 169 MB, 170 MB in one pass): 2 runs 627 MB in 53 passes (3.7x), 4 runs 399 MB in 18 (2.3x), 8 runs 293 MB in 7 (1.7x), 16 runs 216 MB in 3 (1.27x); the largest pass 15 / 25 / 45 / 84 MB
+- **Turn off:** SET sift.col_auto_merge_pass_mb = 0 (ALTER SYSTEM or ALTER DATABASE) rewrites all the overlapping runs in one pass: the least total WAL (170 MB here) in one burst.
+- **Upgrade from 3.7:** After ALTER EXTENSION UPDATE the first maintenance of a key_cut index whose partition-sized runs overlap in the key rewrites them a pass of about 1024 MB at a time (the pass is requested again by the next VACUUM, read tick or sift.col_maintain) instead of waiting for churn; no REINDEX. A server that sets it to 0 rewrites all in one pass.
+- **Advice:** Leave at 1024 (about 8 runs of 120 MB a pass): a pass rewrites whole runs, never fewer than two. Lower it to cap the burst of one pass, at the price of more total WAL; raise it to finish in fewer passes.
+- **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
+
 #### sift.col_auto_merge_max_active
 
 `sift_col` · safety · since 3.3 · default 0
@@ -2299,7 +2370,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · safety · since 3.2 · default 262144 kB
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** an unchanged 200,000-row joined table: 27 ms to load, 0.47 ms to check; 25,000 rows 3.3 ms and 0.09 ms
 - **Impact:** index size: 12 MB per kept table of 500,000 rows with three text keys (76 MB before); at most 256 MB a backend; build, merge and writes: as `sift.agg_lookup_pushdown`; other: up to 256 MB a backend while the table is unchanged and fully vacuumed; a table that needs over half of it is loaded per query
 - **When:** Lookup tables a SiftAgg scan loaded, while the table is unchanged and fully vacuumed (all pages visible, same LSNs); a written, rolled back or unvacuumed table is loaded again, as is one needing over half the limit.
@@ -2313,7 +2384,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · safety · since 3.3 · default -1
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** first query of a fresh backend, 200,000 mapping rows, one integer key: 35.6 ms to load, 17.0 ms to read shared; 8 fresh connections at once 59.5 to 13.5 ms
 - **Impact:** index size: 32 sessions joining a 200,000-row table: 254 MB private, 88 MB shared in all; build, merge and writes: the backend that writes the entry pays +16 ms once (200,000 rows); other: dynamic shared memory taken as entries are kept (by default the smaller of the per-backend cache and 5% of shared_buffers); with posix shared memory keep it below what /dev/shm holds
 - **When:** Several backends joining the same unchanged table (pools of short connections, concurrent sessions); same-query backends wait up to 30 s for the loader; with no room in shared memory a backend loads its own table.
@@ -2327,7 +2398,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · safety · since 3.3 · default 262144 kB
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** spine of 1,000 / 10,000 / 100,000 rows over 20,000 facts: 60 / 425 / 693 ms (100,000 refused) to 10.6 / 17 / 130 ms (spine matched by a hash)
 - **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: a larger sub-select, VALUES list or function keeps the normal join
 - **When:** Rows of a sub-select, VALUES list, function or spine joined to the scan, and the keys of a semi or anti join, sized as rows times (width + 64 bytes) by the planner's estimate; a larger one keeps the normal join.
@@ -2455,7 +2526,7 @@ all · deprecated · since 1.0 · default 4096
 
 `sift_col`, `sift_table` · deprecated · since 3.2 · default -1
 
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
 - **Gain:** -
 - **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: the older form of agg_lookup_max_kb; -1 lets the memory decide
 - **When:** The same joins as sift.agg_lookup_max_kb, limited by the estimated rows whatever their width; used only when set to 0 or more, and then it replaces the memory limit.
@@ -2485,14 +2556,19 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
 
-| Option | 3.7 | 4.0 | Column format | What a 3.7 user gets after the update |
+| Option | 3.7 | 4.1 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
 | `sift(merge_fanin)` | 8 | 4 |  | After ALTER EXTENSION UPDATE an index that did not set merge_fanin merges at 4 segments of a size tier from its next merge (8 in 3.7), so it keeps fewer segments and writes more while it ingests; no REINDEX. An index that set the option keeps its value; ALTER INDEX .. SET (merge_fanin = 8) keeps the old policy. |
 | `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |
 | `sift_col(order_layout)` | new | '' | minor 41, unreadable by 3.7 | unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
 | `sift_col(track_changes)` | new | 'auto' | minor 43, unreadable by 3.7 | an index of 3.7 or earlier is not changed by ALTER EXTENSION UPDATE: it keeps its options, has no triggers and stays without a key until REINDEX INDEX i (the empty option is auto, which the build resolves; ALTER INDEX i SET (track_changes = '<key column>') installs the triggers and the baseline at once, and the reads check the heap for the rows written before it until the REINDEX); a new or reindexed index with a primary key writes column format minor 43, which only 4.0 and later read (sift.col_format_minor below 15 leaves it off with the NOTICE); the triggers are internal, so pg_dump does not write them and a restore creates them with the index; a pg_dump of such an index has WITH (track_changes=id, point_tid_columns=id), which a library before 4.0 refuses to restore |
+| `sift.col_auto_merge_pass_mb` | new | 1024 MB |  | After ALTER EXTENSION UPDATE the first maintenance of a key_cut index whose partition-sized runs overlap in the key rewrites them a pass of about 1024 MB at a time (the pass is requested again by the next VACUUM, read tick or sift.col_maintain) instead of waiting for churn; no REINDEX. A server that sets it to 0 rewrites all in one pass. |
+| `sift.col_build_key_ranges` | new | on |  | After ALTER EXTENSION UPDATE an existing index keeps its runs and its rewrite (see sift.col_auto_merge_pass_mb); a REINDEX writes the runs by ranges. No format change. |
+| `sift.agg_probe_direct` | new | on |  | On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX. |
+| `sift.agg_float_step` | new | on |  | On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX. |
+| `sift.agg_probe_rewrite` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
 | `sift.eval_methods` | new | '' |  | Available after the extension library is loaded; unit_rewrite needs CREATE INDEX or REINDEX to establish its complete layout. RESET does not change existing allocation boundaries; REINDEX with it off does. Use the selection in the VACUUM session as well. Forced or space-pressure merges may restore ordinary multi-unit segments. |

@@ -9,6 +9,8 @@
 #endif
 #include "col/build.h"
 
+typedef struct ColSpill ColSpill;
+
 struct ColBuild
 {
 	Relation	index;
@@ -34,6 +36,14 @@ struct ColBuild
 	SiftSegEntry *segs;
 	uint8	   *lvl;			/* key_cut: how many times the rows of segs[i] were merged (a run is level 0) */
 	uint32		aim;			/* key_cut: the aim of the units of the runs, which the merges of them keep */
+	ColSpill   *spill;			/* key_cut: the rows go to a file for each range of the key (col/build/spill.c) */
+	uint64		spill_run_rows;	/* the rows the first run held: the rows of the runs of the ranges */
+	uint32		spill_aim;		/* the aim of the units of the runs of the ranges: the first run's, whose batches held a superblock's rows */
+	int64	   *ksample;		/* key_cut: the sorted keys of the rows of superblocks spread over the table, taken before the scan (col/build/spill.c) */
+	uint32		nksample;
+	uint32		unit_base;		/* the unit the next run of the ranges starts at */
+	bool		spill_final;	/* the ranges are being read back */
+	bool		spill_tried;	/* the first full run decided whether the build goes by ranges */
 	int			nsegs;
 	int			maxsegs;
 	bool		shared;			/* a participant of a parallel build */
@@ -43,5 +53,13 @@ struct ColBuild
 };
 
 extern uint64	colb_next_gen(ColBuild *b);
+extern Size colb_run_budget(ColBuild *b, Size held);
+extern void colb_flush_batch(ColBuild *b);
+extern void colb_add_row(ColBuild *b, const SiftColRow *row);
+extern void colb_write_run(ColBuild *b, bool last);
+extern void colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info);
+extern bool colb_spill_start(ColBuild *b);
+extern void colb_spill_batch(ColBuild *b, const SiftColBatch *batch);
+extern void colb_spill_finish(ColBuild *b);
 
 #endif

@@ -112,7 +112,7 @@ spill_keep(const AggExec *ex)
 bool
 spill_started(const AggExec *ex)
 {
-	return ex->spill != NULL && (ex->spill->spilled || ex->gs != NULL);
+	return ex->spill != NULL && (ex->spill->spilled || ex->gs != NULL || ex->pass_lazy);
 }
 
 bool
@@ -349,17 +349,20 @@ table_write(AggExec *ex, SpillSet *set)
 					part[ng] = set->bound ? range_part(set, v) : 0;
 				}
 				sp->nstream += set->depth == 0;
+				start[part[ng] + 1]++;
 			}
-			else
-			{
-				/* another hash of the same values at each level, so that a partition splits */
-				uint32		h = hash_bytes_uint32(blob_group_hash(ex, g) ^ ((uint32) set->depth * 0x9E3779B9u));
-
-				part[ng] = h & (set->n - 1);
-			}
-			start[part[ng] + 1]++;
 			ng++;
 		}
+	if (!sp->ranged)
+	{
+		/* another hash of the same values at each level, so that a partition splits */
+		blob_group_hashes(ex, gl, ng, part);
+		for (uint32 r = 0; r < ng; r++)
+		{
+			part[r] = (((part[r] ^ ((uint32) set->depth * 0x9E3779B9u)) * 0x9E3779B1u) >> 16) & (set->n - 1);
+			start[part[r] + 1]++;
+		}
+	}
 	for (int p = 0; p < set->n; p++)
 		start[p + 1] += start[p];
 	order = palloc(Max(ng, 1) * sizeof(uint32));
@@ -631,37 +634,6 @@ spill_next(AggExec *ex)
 	return false;
 }
 
-/*
- * The end of a pass of a scan read in passes (agg/spill/pass.c): the groups of its share are final, their partial states are not needed, only the tuples of
- * the result. A table that spilled in the pass has its partitions merged here, one at a time, and the next pass starts with the spill as new.
- */
-void
-spill_pass_end(AggExec *ex)
-{
-	AggSpill   *sp = ex->spill;
-
-	if (!sp->spilled)
-	{
-		dist_finish_all(ex);
-		mapped_finish(ex);
-		list_groups(ex);
-		if (ex->spec->gtopn_k > 0)
-			groups_topn(ex);
-		done_put(ex);
-		table_reset(ex);
-		return;
-	}
-	spill_finish(ex);
-	while (spill_more(ex))
-	{
-		done_put(ex);
-	}
-	table_reset(ex);
-	sp->spilled = false;
-	sp->groups = 0;
-	sp->keep = 0;
-}
-
 /* the groups of the next partition, or the next batch of the sweep, are the ones to return */
 bool
 spill_more(AggExec *ex)
@@ -672,6 +644,8 @@ spill_more(AggExec *ex)
 		return false;
 	if (ex->gs)
 		got = gstream_next(ex);
+	if (!got && pass_pending(ex))
+		got = pass_more(ex);
 	if (!got)
 	{
 		if (!ex->spill->spilled || !spill_next(ex))

@@ -3,6 +3,8 @@
 -- that stays when the scans of a shared CTE lose has PostgreSQL's rows of the CTE too (agg_cte_stock_rows); the sub-select is lifted in the plan it has.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- the rows are those of the scan's choice between the plans without the probe rewrite (agg_probe_rewrite prices the plans with probes)
+SET sift.agg_probe_rewrite = off;
 \set rows 20000
 \ir test/agg_cte_inline_fixture.sql
 -- the rows the plan expects of the scan of a CTE that two sub-selects read, and of a sub-select whose filters have no statistics

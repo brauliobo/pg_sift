@@ -1,6 +1,6 @@
 -- The condition of a global-order walk is tested on the heap row of each entry (col_topn_gorder_filter). What that test relies on, case by case, against a copy of the table
--- without an index (the oracle): conditions that are not immutable comparisons are not tested there (a volatile function refuses the scan, a subplan or an expression of a text column leaves the
--- units; a string against a constant is tested, col_topn_gorder_filter_text); NULL semantics of IS NULL, = NULL, a boolean that is NULL; the row tested is the version the scan's snapshot sees (own writes, a cursor opened before an update, a
+-- without an index (the oracle): conditions that are not immutable comparisons are not tested there (a volatile function refuses the scan, an expression of a text column leaves the
+-- units; a scalar sub-select that gives one row is a constant of the scan, tested like a number; a string against a constant is tested, col_topn_gorder_filter_text); NULL semantics of IS NULL, = NULL, a boolean that is NULL; the row tested is the version the scan's snapshot sees (own writes, a cursor opened before an update, a
 -- rolled-back subtransaction, HOT chains); a scan that is rewound or restarted with another parameter (the budget starts again); parallel plans keep the units.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -37,7 +37,7 @@ INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
  'SELECT id FROM @ WHERE nb ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE NOT nb ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb IS NOT TRUE ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE nb IS NULL ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb IS FALSE ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb = true ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE COALESCE(nb, true) ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE u <> 5 AND gone IS NULL ORDER BY k, id LIMIT 20',
- -- not immutable comparisons of integers: volatile (the scan is refused), a subplan, a text column (a string against a constant is tested on the heap row when the walk is cheaper than the units)
+ -- not immutable comparisons of integers: volatile (the scan is refused), a scalar sub-select (a constant of the scan when the walk is cheaper than the units; the price of (SELECT 9000) keeps the sequential scan), a text column (a string against a constant is tested on the heap row when the walk is cheaper than the units)
  'SELECT id FROM @ WHERE gone IS NULL AND random() < 2 ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE u < (SELECT 9000) ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE u < (SELECT max(u) FROM tp) - 100 ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE tx = ''v3'' ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE tx < ''v5'' COLLATE "C" ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE tx LIKE ''v1%'' ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE lower(tx) = ''v2'' ORDER BY k, id LIMIT 20',
@@ -61,7 +61,7 @@ SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answer
  13 | t            | t
  14 | f            | t
  15 | f            | t
- 16 | f            | t
+ 16 | t            | t
  17 | f            | t
  18 | t            | t
  19 | f            | t

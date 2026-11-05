@@ -1,11 +1,12 @@
 -- The choice between a shared CTE and its inline plan (cte.c, verdict.c) is kept under the statement without its constants, and the constants of a
 -- statement change the size of its request: the verdict holds only within a band of the rows its largest scan of an indexed table is expected to
--- read. The sizes of one statement, met in any order, are planned as each is planned in full: owners <= 1 keeps the shared CTE, more take the scans.
+-- read. The sizes of one statement, met in any order, are planned as each is planned in full: owners <= 1 keeps the shared CTE, more take the scans
+-- (kinds carries a note column: the price of loading a table fell with the instructions counted for it, and a table of bare keys would take the scans at one owner too).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
-CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
-INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 8000) g;
+CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL, note text);
+INSERT INTO kinds SELECT g, g <= 20, repeat('x', 300) FROM generate_series(1, 8000) g;
 CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL, doc jsonb);
 INSERT INTO events
 SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360),

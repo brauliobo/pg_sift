@@ -262,6 +262,16 @@ sift_col_init(void)
 							 "The segments of a build that overlap each other (a parallel build leaves one set per worker) are not churn: their rewrite does not wait. "
 							 "0 does not wait. sift.col_maintain(index) ignores it.",
 							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_build_key_ranges",
+							 "A serial sift_col build with key_cut of a large table writes runs that do not overlap in the key.",
+							 "The rows go to a temporary file for each stretch of the key (cut at quantiles of a sample of the table) while the table is scanned, and the stretches are written as runs in the order of the key, where the runs of the rows in table order each hold every key and wait for a rewrite. temp_file_limit and the free room of the temporary tablespaces bound it (a build that does not fit them writes the runs in table order). off: runs in table order.",
+							 &sift_col_build_key_ranges, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_pass_mb",
+							"Megabytes of overlapping runs one pass of the automatic rewrite of a sift_col index rewrites.",
+							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
+							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next VACUUM, worker pass or sift.col_maintain(index) goes on, "
+							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). 0: one pass does all of it.",
+							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_active",
 							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
@@ -381,6 +391,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_merge_slices",
 							"Testing: slices the participants of the last parallel sift_col build merged in (0 = one process merged).",
 							NULL, &sift_test_col_merge_slices, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_temp_free_kb",
+							"Testing: kB of disk the temporary files of a sift_col build by key ranges may use, instead of what the temporary tablespaces have free (-1 = the disk).",
+							NULL, &sift_test_col_temp_free_kb, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_gap_blocks",
 							"Testing: blocks a parallel sift_col build reserves in front of its segments for the merge (-1 = by the statistics, 0 = none).",
 							NULL, &sift_test_col_gap_blocks, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

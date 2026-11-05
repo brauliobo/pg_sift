@@ -12,8 +12,11 @@
 /* init.c */
 void extend_layout(AggExec *ex);
 ExprState *operand_state(AggExec *ex, Node *expr);
+Node *init_param_mutator(Node *n, AggExec *ex);
+List *init_values(AggExec *ex);
 extern bool level_param(Node *n);
 void init_states(AggExec *ex);
+void register_pred(AggExec *ex, SiftAggPred *p);
 void register_preds(AggExec *ex);
 void prune_init(AggExec *ex);
 int sift_agg_cmp_only_leaf(AggExec *ex);

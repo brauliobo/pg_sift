@@ -78,6 +78,7 @@ AggAcc *acc_alloc(AggExec *ex, uint32 cap);
 void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void direct_layout(AggExec *ex);
 void hash_init(AggExec *ex, uint32 groups);
+uint32 hash_add(AggExec *ex, const uint32 *ids, uint32 pos);	/* a new group of an id tuple in hash mode, in slot `pos` of its probe */
 void direct_grow(AggExec *ex);
 bool direct_oversized(AggExec *ex, uint64 total);
 uint32 ident_add(AggExec *ex, KeyState *k, int64 v);

@@ -227,7 +227,10 @@ flatten_sublinks(Node *n, SublinkFlat *c)
 static bool
 flatten_query(Query *q, bool apply)
 {
-	bool		changed = false;
+	bool		changed = false,
+				probed,
+				after,
+				probe_mixed;
 	List	   *pulled = NIL,
 			   *decor = NIL;
 	SublinkFlat sublinks = {apply, false};
@@ -255,10 +258,23 @@ flatten_query(Query *q, bool apply)
 		decor_apply(q, r);
 	changed |= decorrelate_sublinks(q, apply);
 	flat_fenced |= fence_sublinks(q, apply);
-	changed |= group_aggregate_lateral(q, apply);
-	changed |= sift_agg_latest_per_group(q, apply);
-	changed |= sift_agg_partition_arms(q, apply);
-	changed |= sift_agg_push_partial_aggs(q, apply);
+	/* before the joins are read as probes: the queries they move have their tables joined as written (a table read as a probe is a sub-select the keys are not looked up in) */
+	changed |= sift_agg_eager_lookup(q, apply);
+	changed |= sift_agg_push_dim_keys(q, apply);
+	probe_mixed = changed;
+	probed = probe_sublinks(q, apply);
+	probed |= sift_agg_probe_joins(q, apply);
+	changed |= probed;
+	after = group_aggregate_lateral(q, apply);
+	after |= sift_agg_latest_per_group(q, apply);
+	after |= sift_agg_partition_arms(q, apply);
+	after |= sift_agg_push_partial_aggs(q, apply);
+	after |= sift_agg_push_dim_keys(q, apply);
+	after |= sift_agg_factor_constants(q, apply);
+	changed |= after;
+	/* the probes are not the only rewrite of the statement: the margin that they win by (cte/hook.c) is not asked of the others */
+	if (probed && (probe_mixed || after))
+		sift_agg_probe_mixed = true;
 	flat_levels = list_delete_first(flat_levels);
 	return changed;
 }
@@ -276,6 +292,8 @@ sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
+	sift_agg_flat_any = false;
+	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
 	sift_agg_fence_alone = false;
 	if (!flatten_query(q, true) && flat_fenced)

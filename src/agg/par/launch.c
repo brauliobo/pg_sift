@@ -10,6 +10,7 @@
 #include "agg/agg.h"
 #include "col/dictshm.h"
 #include "agg/memo.h"
+#include "agg/init_int.h"
 #include "agg/par/int.h"
 
 /* does the packed spec (its expressions are Nodes among Integers and Strings) start a sub-plan? */
@@ -84,7 +85,9 @@ par_launch(AggExec *ex)
 	int			nmaps = 0,
 				ncorr = 0;
 	char	  **child_txt;
-	char	   *sub_txt = NULL;
+	char	   *sub_txt = NULL,
+			   *init_txt = NULL;
+	List	   *initvals;
 
 	/* a scan run again starts from none */
 	ex->gp_n = ex->gp_mine = 0;
@@ -111,6 +114,9 @@ par_launch(AggExec *ex)
 	/* the sub-plans of the expressions start in each worker (they hash a small table once): a statement of the query's sub-plans with no node of its own */
 	if (pack_has_subplan((Node *) ex->pack, NULL))
 		sub_txt = nodeToString(select_stmt(ex, (Plan *) makeNode(Result)));
+	/* the InitPlans the scan reads as constants ran in the leader's executor state, which the workers do not have: they get the values */
+	if ((initvals = init_values(ex)) != NIL)
+		init_txt = nodeToString(initvals);
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	mlf = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
@@ -161,9 +167,11 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, ((const SpineHdr *) ex->spine_buf)->len);
 	if (sub_txt)
 		shm_toc_estimate_chunk(&pcxt->estimator, strlen(sub_txt) + 1);
+	if (init_txt)
+		shm_toc_estimate_chunk(&pcxt->estimator, strlen(init_txt) + 1);
 	if (dictshm)
 		shm_toc_estimate_chunk(&pcxt->estimator, 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + dictshm);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm);
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -228,6 +236,13 @@ par_launch(AggExec *ex)
 
 		strcpy(sm, sub_txt);
 		shm_toc_insert(pcxt->toc, KEY_SUB, sm);
+	}
+	if (init_txt)
+	{
+		char	   *im = shm_toc_allocate(pcxt->toc, strlen(init_txt) + 1);
+
+		strcpy(im, init_txt);
+		shm_toc_insert(pcxt->toc, KEY_INITVALS, im);
 	}
 	if (ex->spec->spine)
 	{

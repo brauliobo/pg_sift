@@ -344,3 +344,66 @@ hash_agg_extra(const AggPath *a)
 	misses = (AGG_HASH_MISS + (byval ? 0 : AGG_HASH_MISS_KEY + 0.02 * width)) * bytes / (bytes + AGG_HASH_CACHE);
 	return a->subpath->rows * (misses * AGG_HASH_MISS_NS + AGG_HASH_GROW_NS * log2(groups)) * 1e-6 * AGG_NORMAL_MS;
 }
+
+static bool
+table_input(const Path *p)
+{
+	return p->parent->reloptkind != RELOPT_BASEREL || p->parent->rtekind == RTE_RELATION;
+}
+
+/*
+ * the rows the joins of tables below a path of the normal plan add to those of their larger input (a key that repeats in the table joined), whatever sorts, hashes and
+ * appends them: the scan prices that fan for a table it looks up, and no other input (the rows of a function, a sub-select or a CTE are an estimate of PostgreSQL's,
+ * 100 for each call of jsonb_each_text where its three keys make three)
+ */
+static double
+joined_rows(const Path *p)
+{
+	double		rows = 0;
+
+	if (p == NULL)
+		return 0;
+	switch (nodeTag(p))
+	{
+		case T_NestPath:
+		case T_MergePath:
+		case T_HashPath:
+		{
+			const JoinPath *j = (const JoinPath *) p;
+
+			if (!table_input(j->outerjoinpath) || !table_input(j->innerjoinpath))
+				return joined_rows(j->outerjoinpath) + joined_rows(j->innerjoinpath);
+			return Max(p->rows - Max(j->outerjoinpath->rows, j->innerjoinpath->rows), 0.0) + joined_rows(j->outerjoinpath) + joined_rows(j->innerjoinpath);
+		}
+		case T_SortPath:
+			return joined_rows(((const SortPath *) p)->subpath);
+		case T_IncrementalSortPath:
+			return joined_rows(((const IncrementalSortPath *) p)->spath.subpath);
+		case T_MemoizePath:
+			return joined_rows(((const MemoizePath *) p)->subpath);
+		case T_MaterialPath:
+			return joined_rows(((const MaterialPath *) p)->subpath);
+		case T_GatherPath:
+			return joined_rows(((const GatherPath *) p)->subpath);
+		case T_GatherMergePath:
+			return joined_rows(((const GatherMergePath *) p)->subpath);
+		case T_AppendPath:
+			foreach_ptr(Path, q, ((const AppendPath *) p)->subpaths)
+				rows += joined_rows(q);
+			return rows;
+		default:
+			return 0;
+	}
+}
+
+/*
+ * The time PostgreSQL leaves out of the joins of a normal plan that multiply the rows: it prices a joined tuple at a few operators, and the executor
+ * spends 1,700 to 2,200 instructions on each in the join and the grouping above it (a hash probe and the tuple built, or a nested loop's rescan, then the
+ * hash of the group and the transition). In its units, for the tuples the joins add to the rows of the larger input (those the scan counts as the fan of
+ * the lookup, cost_work), which the scan prices for itself.
+ */
+double
+join_agg_extra(const AggPath *a)
+{
+	return joined_rows(a->subpath) * AGG_JOIN_NS * 1e-6 * AGG_NORMAL_MS;
+}

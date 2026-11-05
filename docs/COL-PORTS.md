@@ -16,7 +16,7 @@ Verified by building them (`make -C sqlite col-smoke`, tests/col_smoke.c):
 | column kernels (filters, zone tests, unpack) | `col/kern*.c` | 1.7k | builds |
 | shredder core (JSON paths into leaves, no JSON parser) | `col/shred*.c` | 1.6k | builds |
 | aggregation kernels (sum/min/max/count, group-by) | `agg/kern*.c` | 1.2k | builds |
-| runtime SIMD (AVX2/AVX-512 tables, `core/cpu.c`) | `*_avx2.c`, `*_avx512.c` |  | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
+| runtime SIMD (AVX2/AVX-512 tables, `core/cpu.c`) | `*_avx2.c`, `*_avx512.c`, `*_popcnt.c` |  | baseline objects have no POPCNT/vector instruction (same rule as `make isa-check`); `SIMD=none` builds and passes |
 
 The MariaDB host (same C-library shim) syntax-checks all of them with its flags. aarch64: `clang --target=aarch64` accepts them with no vector files
 (the dispatchers are `__x86_64__`-guarded); nothing was linked or run there.

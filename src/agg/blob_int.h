@@ -30,7 +30,7 @@ void blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringIn
 bool blob_splittable(const AggExec *ex);
 void blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 *start, const uint32 *fill, MemoryContext tmp,
 					 void (*put) (void *arg, int p, StringInfo b), void *arg);
-uint32 blob_group_hash(AggExec *ex, uint32 g);
+void blob_group_hashes(AggExec *ex, const uint32 *gl, uint32 ng, uint32 *h);
 void blob_merge(AggExec *g, const char *p);
 void blob_fold(AggExec *g, const uint32 *from, const uint32 *to, uint32 n);
 

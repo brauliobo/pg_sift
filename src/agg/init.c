@@ -66,7 +66,7 @@ hashed_array_const(ScalarArrayOpExpr *sa, AggExec *ex)
  * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's. A
  * parameter an enclosing query level sets (level_param) is the constant it has now.
  */
-static Node *
+Node *
 init_param_mutator(Node *n, AggExec *ex)
 {
 	Param	   *p = (Param *) n;
@@ -81,11 +81,42 @@ init_param_mutator(Node *n, AggExec *ex)
 		return hashed_array_const((ScalarArrayOpExpr *) expression_tree_mutator(n, init_param_mutator, ex), ex);
 	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || (p->paramid < SIFT_AGG_INIT_PARAM && !level_param(n)))
 		return expression_tree_mutator(n, init_param_mutator, ex);
+	foreach_ptr(List, v, ex->initvals)
+		if (intVal(linitial(v)) == p->paramid - SIFT_AGG_INIT_PARAM)
+			return (Node *) copyObject(lsecond(v));
 	prm = &estate->es_param_exec_vals[p->paramid - (level_param(n) ? 0 : SIFT_AGG_INIT_PARAM)];
 	if (prm->execPlan != NULL)
 		ExecSetParamPlan(prm->execPlan, GetPerTupleExprContext(estate));
 	get_typlenbyval(p->paramtype, &len, &byval);
 	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, len, prm->value, prm->isnull, byval);
+}
+
+static bool
+init_param_walker(Node *n, List **found)
+{
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList))
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= SIFT_AGG_INIT_PARAM)
+	{
+		foreach_ptr(Param, f, *found)
+			if (f->paramid == ((Param *) n)->paramid)
+				return false;
+		*found = lappend(*found, n);
+	}
+	return expression_tree_walker(n, init_param_walker, found);
+}
+
+/* the outputs of the InitPlans the packed spec reads, run now, for the workers: for each the id of its Param and its value as a Const (the workers have no executor state that holds them) */
+List *
+init_values(AggExec *ex)
+{
+	List	   *params = NIL,
+			   *vals = NIL;
+
+	init_param_walker((Node *) ex->pack, &params);
+	foreach_ptr(Param, p, params)
+		vals = lappend(vals, list_make2(makeInteger(p->paramid - SIFT_AGG_INIT_PARAM), init_param_mutator((Node *) p, ex)));
+	return vals;
 }
 
 /* the operand of a condition, evaluated when the scan starts: the state of an expression is made once for the scan (its parameters stand as constants for the scan, and a top-N asks for each operand three times) */
@@ -318,7 +349,7 @@ text_eq_literal(Node *e, const char **s, int *len)
 	return true;
 }
 
-static void
+void
 register_pred(AggExec *ex, SiftAggPred *p)
 {
 	PredState  *st;
@@ -461,6 +492,7 @@ register_combos(AggExec *ex)
 		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
 		cs->resettable = cb->join < 0;
 		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && cb->leaf[0] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
+		cs->fstep = sift_agg_float_step && cs->by_id && ex->lay->leaf[cb->leaf[0]].vtype == SCV_F64 && combo_fstep(cb, &cs->fs);
 		cs->slot = palloc(Max(cb->nslots, 1) * sizeof(ExprState *));
 		cs->tlen = palloc0(Max(cb->nslots, 1) * sizeof(int16));
 		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));

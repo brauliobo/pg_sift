@@ -66,6 +66,14 @@ typedef struct PriorVal
 	uint32		nrep;
 } PriorVal;
 
+/* the step of a float column that the expressions of a combo read it through (combo/fstep.c): op of x, x / c or x * c */
+typedef struct FStep
+{
+	int			op;				/* SIFT_FSTEP_FLOOR .. SIFT_FSTEP_TOINT (agg/kern.h) */
+	int			form;			/* SIFT_FSTEP_PLAIN, _DIV, _MUL */
+	double		c;
+} FStep;
+
 typedef struct ComboSt
 {
 	Intern		in[SIFT_AGG_MAX_CLEAVES];
@@ -75,12 +83,21 @@ typedef struct ComboSt
 	MemoryContext cxt;			/* the cache: entries, outputs, values and ids of the leaves; reset when it passes sift.agg_combo_cache */
 	bool		resettable;		/* no join, no dictionary leaf: nothing outside the cache holds its ids */
 	bool		by_id;			/* one 64-bit leaf, no join: the entry of a tuple is the id of its value, there is no table of entries */
+	bool		fstep;			/* ... and every expression reads it through the one step fs: the entry of a bucket is the one of its first value */
+	FStep		fs;
+	int32	   *fq;				/* fstep: the bucket numbers of a chunk */
+	uint32	   *qtab;			/* fstep: the id of the first value of the bucket number qlo + i (0 none yet) */
+	int32		qlo;
+	uint32		qcap;
 	MapTab	   *map;
-	MapTab	   *fmap;			/* a hybrid first-row lookup: the table by the child's key (agg/first.c), asked before the child runs */
+	MapTab	   *fmap;		/* a hybrid first-row lookup: the table by the child's key (agg/first.c), asked before the child runs */
 	uint32	   *fruns;			/* the child runs for the keys while the table is not read, over the arms that read it */
 	uint32		fthresh;		/* ... after which it is */
 	ExprState  *fpq;			/* ... and the child's condition on its parameters, over the combo's leaves */
 	struct ChildWarm *warm;		/* the relations the correlated child reads and what its runs read of them (combo/child.c child_warm) */
+	struct DProbe *dp;			/* the direct probe of the correlated child (combo/probe.c), NULL until the combo's first chunk */
+	struct DKey *dkey;			/* the key of the entry being made, when the batch probed it */
+	bool		dbatch;			/* the entries made now wait for the probe of their keys together (combo_probe_defer) */
 	uint32	   *kmemo[SIFT_AGG_MAX_JKEYS];	/* per text key of the join: the id of the table's value of each interned value of the leaf (COMBO_UNEVAL: not looked up yet, 0: no row has it) */
 	uint32		nmemo[SIFT_AGG_MAX_JKEYS];
 	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */
@@ -138,6 +155,7 @@ void combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, 
 ComboEnt combo_unmatched(AggExec *ex, int ci, const uint32 *prior);
 bool combo_prior_keyed(AggExec *ex, int ci, int prior);
 bool combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row);
+bool combo_fstep(const SiftAggCombo *cb, FStep *fs);
 void combo_reset(AggExec *ex, int ci);
 void combo_forget_priors(AggExec *ex, int ci);
 void combo_trim(AggExec *ex);

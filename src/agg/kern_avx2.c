@@ -329,7 +329,7 @@ SIFT_VEC_POP
 
 const SiftAggKernels sift_aggkern_avx2 = {
 	AGK_INIT2(cmp_f64) AGK_INIT2(cmp2_i32) AGK_INIT2(cmp2_i64) AGK_INIT2(cmp2_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
-	AGK_INIT2(sum_i32) AGK_INIT2(sum_i64) AGK_INIT2(absmax_f64) AGK_INIT2(absmax_i64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
+	AGK_INIT2(sum_i32) AGK_INIT2(sum_i64) AGK_INIT2(absmax_f64) AGK_INIT2(absmax_i64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64) AGK_INIT2(fstep)
 	AGK_INIT2(lin_i64) AGK_INIT2(mulw_i64) AGK_INIT2(gid_i32) AGK_INIT2(gid_code)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,

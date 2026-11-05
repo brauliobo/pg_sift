@@ -466,3 +466,120 @@ AKV_RFN(minmax_f64)(double *mn, double *mx, const double *v, const uint64 *mask,
 #endif
 
 #endif							/* AKV_OWN_REDUCE */
+
+#ifndef AKV_NO_FSTEP
+/*
+ * fstep (agg/kern.h): the formulas of agk_fstep_one on lanes. t is rounded to nearest even by adding 1.5 * 2^52 and taking it off (exact below 2^51, and the lanes that
+ * pass the range test are below 2^31), and moved to the floor, ceiling or truncation by a compare; the lanes that have no number are masked out of the range and made
+ * SIFT_FSTEP_NONE. A whole vector at a time, the rows left are agk_fstep_one's. The ranges are those of the doubles, converted at the end.
+ */
+typedef int32 akv_q __attribute__((vector_size(AKV_L * 4), aligned(4), may_alias));
+
+#define AKV_FS_SEL(m, a, b) ((akv_f64) (((akv_s) (m) & (akv_s) (a)) | (~(akv_s) (m) & (akv_s) (b))))
+
+static pg_attribute_always_inline bool
+AKV_FN(fstep_t)(int32 *q, int32 *mn, int32 *mx, const double *x, int n, double c, const int op, const int form)
+{
+	const akv_f64 vc = (akv_f64) {} + c,
+				magic = (akv_f64) {} + 6755399441055744.0,
+				lim = (akv_f64) {} + 2147483647.0,
+				nlim = (akv_f64) {} - 2147483647.0,
+				zero = {},
+				pinf = (akv_f64) {} + INFINITY,
+				ninf = (akv_f64) {} - INFINITY;
+	const akv_s one = (akv_s) ((akv_f64) {} + 1.0);
+	const akv_q none = (akv_q) {} + SIFT_FSTEP_NONE;
+	akv_f64		lo = pinf,
+				hi = ninf;
+	double		l,
+				h;
+	int			i = 0;
+
+	for (; i + AKV_L <= n; i += AKV_L)
+	{
+		const akv_f64 xv = *(const akv_f64 *) (x + i);
+		akv_f64		t = xv,
+					r,
+					s;
+		akv_s		neg,
+					ok;
+		akv_q		okq;
+
+		if (form == SIFT_FSTEP_DIV)
+			t = xv / vc;
+		else if (form == SIFT_FSTEP_MUL)
+			t = xv * vc;
+		r = (t + magic) - magic;
+		neg = (akv_s) t < 0;
+		ok = (akv_s) (t > nlim) & (akv_s) (t < lim);
+		if (op == SIFT_FSTEP_FLOOR)
+			s = r - (akv_f64) ((akv_s) (r > t) & one);
+		else if (op == SIFT_FSTEP_CEIL)
+			s = r + (akv_f64) ((akv_s) (r < t) & one);
+		else if (op == SIFT_FSTEP_TRUNC)
+			s = r + (akv_f64) ((akv_s) (r < t) & neg & one) - (akv_f64) ((akv_s) (r > t) & ~neg & one);
+		else
+			s = r;
+		if (form != SIFT_FSTEP_PLAIN)
+			ok &= ~((akv_s) (t == zero) & (akv_s) (xv != zero));
+		if (op != SIFT_FSTEP_TOINT)
+			ok &= ~((akv_s) (s == zero) & neg);
+		okq = __builtin_convertvector(ok, akv_q);
+		*(akv_q *) (q + i) = (__builtin_convertvector(AKV_FS_SEL(ok, s, zero), akv_q) & okq) | (none & ~okq);
+		{
+			const akv_f64 cl = AKV_FS_SEL(ok, s, pinf),
+						ch = AKV_FS_SEL(ok, s, ninf);
+
+			lo = AKV_FS_SEL(cl < lo, cl, lo);
+			hi = AKV_FS_SEL(ch > hi, ch, hi);
+		}
+	}
+	l = lo[0];
+	h = hi[0];
+	for (int k = 1; k < AKV_L; k++)
+	{
+		l = Min(l, lo[k]);
+		h = Max(h, hi[k]);
+	}
+	for (; i < n; i++)
+	{
+		q[i] = agk_fstep_one(x[i], op, form, c);
+		if (q[i] != SIFT_FSTEP_NONE)
+		{
+			l = Min(l, (double) q[i]);
+			h = Max(h, (double) q[i]);
+		}
+	}
+	if (l > h)
+		return false;
+	*mn = (int32) l;
+	*mx = (int32) h;
+	return true;
+}
+
+#define AKV_FS_FORMS(OP) \
+	switch (form) \
+	{ \
+		case SIFT_FSTEP_DIV: return AKV_FN(fstep_t)(q, mn, mx, x, n, c, OP, SIFT_FSTEP_DIV); \
+		case SIFT_FSTEP_MUL: return AKV_FN(fstep_t)(q, mn, mx, x, n, c, OP, SIFT_FSTEP_MUL); \
+		default: return AKV_FN(fstep_t)(q, mn, mx, x, n, c, OP, SIFT_FSTEP_PLAIN); \
+	}
+
+static bool
+AKV_FN(fstep)(int32 *q, int32 *mn, int32 *mx, const double *x, int n, int op, int form, double c)
+{
+	switch (op)
+	{
+		case SIFT_FSTEP_FLOOR:
+			AKV_FS_FORMS(SIFT_FSTEP_FLOOR)
+		case SIFT_FSTEP_CEIL:
+			AKV_FS_FORMS(SIFT_FSTEP_CEIL)
+		case SIFT_FSTEP_TRUNC:
+			AKV_FS_FORMS(SIFT_FSTEP_TRUNC)
+		case SIFT_FSTEP_ROUND:
+			AKV_FS_FORMS(SIFT_FSTEP_ROUND)
+		default:
+			AKV_FS_FORMS(SIFT_FSTEP_TOINT)
+	}
+}
+#endif

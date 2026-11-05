@@ -415,12 +415,12 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 }
 
 /*
- * Sorts the rows of the batches by the leaves of the order key and adds them to w as units (cut_rows). Returns the number of units. Memory: one
+ * Sorts the rows of the batches by the leaves of the order key and adds them to w as units (cut_rows). Returns the number of units; the first is numbered unit_base. Memory: one
  * reference per row, and the batches themselves; sift_colk_merge is the form that holds a unit of each input.
  */
 int
 sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows,
-				MemoryContext cx)
+				MemoryContext cx, uint32 unit_base)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	uint64		total = 0,
@@ -437,7 +437,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};
 	sort_refs(refs, total, &ctx);
-	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx, NULL, NULL, 0);
+	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx, NULL, NULL, unit_base);
 	pfree(refs);
 	return units;
 }

@@ -77,6 +77,46 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 }
 
 /*
+ * The ids of the integer values vals[0..nsel) of an ident key in its open addressing table (ident_wide_id), 0 for the NULLs. The probe is here for a hit, the
+ * one place that adds a value (and may grow the table) is ident_wide_id; the rows of one value that follow each other (the elements of one row's array, the
+ * rows of one parent) take the id of the row before.
+ */
+static void
+wide_ids(AggExec *ex, KeyState *k, const uint8 *isnull, const uint32 *idx, int nsel, uint32 *vals)
+{
+	int32		last = 0;
+	uint32		lastid = 0;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int32		x = (int32) vals[i];
+
+		if (isnull && isnull[idx[i]])
+		{
+			vals[i] = 0;
+			continue;
+		}
+		if (lastid != 0 && x == last)
+		{
+			vals[i] = lastid;
+			continue;
+		}
+		if (i + GROUP_AHEAD < nsel)
+		{
+			uint32		ha = wide_hash((int32) vals[i + GROUP_AHEAD], k->wcap);
+
+			__builtin_prefetch(&k->wid[ha]);
+			__builtin_prefetch(&k->wval[ha]);
+		}
+		lastid = wide_find(k, x);
+		if (lastid == 0)
+			lastid = ident_wide_id(ex, k, x);
+		last = x;
+		vals[i] = lastid;
+	}
+}
+
+/*
  * The ids of the integer values in [mn, mx] of key ki, of nsel rows, are made; false: the key keeps its ids in a hash table instead of the
  * range table (ident_wide_id), which is too wide (a lookup key's too: a date column holding both infinities spans 2^32 values) or would be filled
  * with many more values than the rows have (the ids of a column clustered by another, whose units hold few values far apart).
@@ -206,33 +246,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 
 		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
-			int32		last = 0;
-			uint32		lastid = 0;
-
-			/* the rows of one value follow each other (the elements of one row's array, the rows of one parent): the id of the row before is theirs */
-			for (int i = 0; i < nsel; i++)
-			{
-				int32		x = (int32) vals_out[i];
-
-				if (v->isnull && v->isnull[idx[i]])
-				{
-					vals_out[i] = 0;
-					continue;
-				}
-				if (lastid == 0 || x != last)
-				{
-					if (i + GROUP_AHEAD < nsel)
-					{
-						uint32		h = wide_hash((int32) vals_out[i + GROUP_AHEAD], k->wcap);
-
-						__builtin_prefetch(&k->wid[h]);
-						__builtin_prefetch(&k->wval[h]);
-					}
-					lastid = ident_wide_id(ex, k, x);
-					last = x;
-				}
-				vals_out[i] = lastid;
-			}
+			wide_ids(ex, k, v->isnull, idx, nsel, vals_out);
 			*map_out = NULL;		/* the values are the ids */
 			*base_out = 0;
 			return;

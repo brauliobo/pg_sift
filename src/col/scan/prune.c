@@ -6,6 +6,8 @@
 #include "postgres.h"
 #include "col/scan_int.h"
 
+#define SIG_TEST_NVALS	64			/* a list of this many values is tested once for the statement, and the same array is the same values (the predicates are made once) */
+
 /*
  * The rows of the segment that own the one value the only test names, from the list of the point directory of its element leaf: false when the test is not
  * the lone equality of a list leaf with a directory, the value has no list (too common to be listed, or no row owns it: the units are pruned instead), or a
@@ -121,8 +123,32 @@ prune_groups(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const SiftCo
 	}
 }
 
+/*
+ * A list of numbers is one test for every segment and every begin that shares the predicates (the dictionary of a text is a segment's, a number's key is not): made once
+ * for the statement, where each of the segments of a rewritten index would make it, sort and chain it again (0.4 M instructions at 2,000 keys and 55 segments).
+ * Only for the predicates of the last begin (sig), which src->sig copies.
+ */
 static void
-prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr)
+num_test(SiftColSource *src, const SiftColDef *def, const SiftColPred *preds, int i, bool sig, SiftCTest *t)
+{
+	if (!sig || preds[i].nvals < SIG_TEST_NVALS || i >= src->nsig)
+	{
+		make_test(src, def, NULL, &preds[i], t);
+		return;
+	}
+	if (src->sigtest[i] == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(src->sigcx);
+
+		src->sigtest[i] = palloc(sizeof(SiftCTest));
+		make_test(src, def, NULL, &preds[i], src->sigtest[i]);
+		MemoryContextSwitchTo(old);
+	}
+	*t = *src->sigtest[i];
+}
+
+static void
+prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr, bool sig)
 {
 	int64	   *lo = palloc(Max(npreds, 1) * 2 * sizeof(int64)),
 			   *hi = lo + Max(npreds, 1);
@@ -162,7 +188,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 				keys |= preds[i].col != first;
 				if (def->store == SIFT_COLS_STR)
 					continue;
-				make_test(src, def, NULL, &preds[i], &t);
+				num_test(src, def, preds, i, sig, &t);
 				range[i] = t.kind == SIFT_CT_RANGE;
 				lo[i] = t.lo;
 				hi[i] = t.hi;
@@ -189,7 +215,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			if (def->store == SIFT_COLS_STR)
 				seg_test(src, seg, def, &preds[i], &t);
 			else
-				make_test(src, def, NULL, &preds[i], &t);
+				num_test(src, def, preds, i, sig, &t);
 			/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
 			if (pass == 0 || !scan_prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
 			{
@@ -219,7 +245,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		if (def->store == SIFT_COLS_STR)
 			seg_test(src, seg, def, &preds[i], &t);
 		else
-			make_test(src, def, NULL, &preds[i], &t);
+			num_test(src, def, preds, i, sig, &t);
 		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut, true);
 	}
 	if (pr->top != NULL)
@@ -271,7 +297,7 @@ prune_zone(SiftColSource *src, SiftColSegment *seg, const SiftColPrune *z, uint6
 	uint64	   *any = z->any ? palloc0(nw * sizeof(uint64)) : NULL;
 	uint64	   *kid = z->any ? palloc(nw * sizeof(uint64)) : keep;
 
-	prune_preds(src, seg, z->preds, z->npreds, keep, pr);
+	prune_preds(src, seg, z->preds, z->npreds, keep, pr, false);
 	for (int i = 0; i < z->nkids; i++)
 	{
 		if (z->any)
@@ -307,7 +333,9 @@ sig_same(const SiftColSource *src, const SiftColPred *p, int n)
 
 		if (a->col != b->col || a->op != b->op || a->nvals != b->nvals)
 			return false;
-		/* a list of thousands of numbers is the same at every begin: one comparison of the bytes, not of each field of each value */
+		/* the same array of a long list is the list of the last begin; else a list of thousands of numbers is the same at every begin: one comparison of the bytes, not of each field of each value */
+		if (b->nvals >= SIG_TEST_NVALS && b->vals == src->sigsrc[i])
+			continue;
 		if (!str && b->nvals > 0 && memcmp(a->vals, b->vals, b->nvals * sizeof(SiftColValue)) == 0)
 			continue;
 		for (int j = 0; j < b->nvals; j++)
@@ -348,6 +376,7 @@ scan_keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const
 	else
 		MemoryContextReset(src->sigcx);
 	src->sig = MemoryContextAlloc(src->sigcx, Max(npreds, 1) * sizeof(SiftColPred));
+	src->sigsrc = MemoryContextAlloc(src->sigcx, Max(npreds, 1) * sizeof(const SiftColValue *));
 	for (int i = 0; i < npreds; i++)
 	{
 		SiftColValue *v = MemoryContextAlloc(src->sigcx, Max(preds[i].nvals, 1) * sizeof(SiftColValue));
@@ -364,8 +393,10 @@ scan_keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const
 				v[j].v.s = s;
 			}
 		src->sig[i] = (SiftColPred) {preds[i].col, preds[i].op, preds[i].nvals, v};
+		src->sigsrc[i] = preds[i].vals;
 	}
 	src->nsig = npreds;
+	src->sigtest = MemoryContextAllocZero(src->sigcx, Max(npreds, 1) * sizeof(SiftCTest *));
 	src->sigzone = zones;
 	src->sig_gen++;
 	return true;
@@ -390,7 +421,7 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 		if (def->store == SIFT_COLS_STR)
 			seg_test(src, seg, def, &preds[i], &t);
 		else
-			make_test(src, def, NULL, &preds[i], &t);
+			num_test(src, def, preds, i, true, &t);
 		if (scan_prune_point(src, seg, c, i, preds[i].col, &t, c->ckeep) && def->parent < 0)
 			break;
 	}
@@ -406,7 +437,7 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 
 			if (def->store == SIFT_COLS_STR || sift_colw_is_wide_pred(def, &preds[i]))
 				continue;
-			make_test(src, def, NULL, &preds[i], &t);
+			num_test(src, def, preds, i, true, &t);
 			range[i] = t.kind == SIFT_CT_RANGE;
 			lo[i] = t.lo;
 			lo[npreds + i] = t.hi;
@@ -436,7 +467,7 @@ prune_new_words(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int 
 		for (e = w; e < w1 && !sift_col_bit_test(c->cdone, e); e++)
 			sift_col_bit_set(c->cdone, e);
 		br = (PruneRange) {w * 64, Min(e * 64, seg->nsb), c->csetcut, NULL};
-		prune_preds(src, seg, preds, npreds, c->ckeep, &br);
+		prune_preds(src, seg, preds, npreds, c->ckeep, &br, true);
 		for (int i = 0; i < nzones; i++)
 			prune_zone(src, seg, &zones[i], c->ckeep, &br);
 	}
@@ -538,7 +569,7 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	memset(c->keep, 0xFF, nw * sizeof(uint64));
 	if (seg->nsb % 64)
 		c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
-	prune_preds(src, seg, preds, npreds, c->keep, &pr);
+	prune_preds(src, seg, preds, npreds, c->keep, &pr, false);
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
 	c->setcut = pr.setcut;

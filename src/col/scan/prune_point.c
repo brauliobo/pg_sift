@@ -462,6 +462,17 @@ scan_prune_places(SiftColSource *src, ColCursor *c, int i, int col, const SiftCo
 	return ok;
 }
 
+/* The units of the segment that are still kept (the words of a keep map are padded past the last unit) */
+static uint32
+kept_units(const SiftColSegment *seg, const uint64 *keep)
+{
+	uint32		n = 0;
+
+	for (uint32 w = 0; (uint64) w * 64 < seg->nsb; w++)
+		n += pg_popcount64((w + 1) * 64 > seg->nsb ? keep[w] & ((UINT64CONST(1) << (seg->nsb % 64)) - 1) : keep[w]);
+	return n;
+}
+
 bool
 scan_prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
 {
@@ -475,13 +486,16 @@ scan_prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, i
 	/*
 	 * A list that names a good share of the rows is no lookup: the zones and the units answer it as well. So does one whose keys have many rows
 	 * on average: reading them costs about what scanning the units that hold them does (a row of a list is read at some ten times a row of a unit).
-	 * A scan that hands the addresses to the heap has no units to scan, and the directory is its answer.
+	 * A scan that hands the addresses to the heap has no units to scan, and the directory is its answer. Nor is a list of more keys than SIFT_CPOINT_UNIT_KEYS for each
+	 * unit the segment has left (a scope list of thousands of keys next to a search that matches ten rows): its probes touch more blocks than reading all of them.
 	 */
 	if (nkeys > SIFT_CPOINT_MIN_KEYS && (uint64) nkeys > ((uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / 16)
 		ok = false;
 	else if ((src->flags & SIFT_COLO_POINT_TIDS) == 0 && sift_cseg_point_nkeys(seg, col) > 0 &&
 			 (double) nkeys * sift_cseg_point_count(seg, col) / sift_cseg_point_nkeys(seg, col) >
 			 Max((double) SIFT_CPOINT_DENSE_ROWS, ((double) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / SIFT_CPOINT_DENSE_SHARE))
+		ok = false;
+	else if ((src->flags & SIFT_COLO_POINT_TIDS) == 0 && nkeys > SIFT_CPOINT_MIN_KEYS && (uint64) nkeys > (uint64) kept_units(seg, keep) * SIFT_CPOINT_UNIT_KEYS)
 		ok = false;
 	else
 		ok = prune_keys(src, seg, c, i, col, keys, nkeys, keep);

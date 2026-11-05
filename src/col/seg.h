@@ -149,6 +149,7 @@ extern bool sift_cseg_unit_view(SiftColSegment *seg, uint32 u, SiftCUnitView *v)
 /* The bytes of the unit records at the start of the segment stream, and the range of it sift_cseg_unit_head reads of unit u, for sift_sr_ahead */
 extern uint64 sift_cseg_units_len(const SiftColSegment *seg);
 extern void sift_cseg_unit_head_span(const SiftColSegment *seg, uint32 u, uint64 *off, uint64 *len);
+extern uint64 sift_cseg_unit_plan(SiftColSegment *seg, uint32 u, const SiftCUnitView *v, const uint8 *want, uint32 next);
 
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);

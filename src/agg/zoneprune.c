@@ -39,7 +39,7 @@ zone_preds(MemoryContext cxt, const SiftSrcPrune *z, int leaf, SiftColValue *val
 
 /* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
 static bool
-zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z, int leaf)
+zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z, int leaf, const int64 *known)
 {
 	if (z->nulltest)
 		return p[0].col == leaf && p[0].op == (z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL);
@@ -49,6 +49,8 @@ zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z, int leaf)
 		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
 	if (p[1].op != SIFT_COLOP_IN || p[1].nvals != z->nvals)
 		return false;
+	if (known == z->vals)
+		return true;
 	for (int i = 0; i < z->nvals; i++)
 		if (p[1].vals[i].v.i != z->vals[i])
 			return false;
@@ -74,8 +76,11 @@ zone_tests(SiftAggZones *z, MemoryContext cxt, const int *col, const SiftSrcPrun
 
 			if (leaf < 0)
 				continue;
-			if (n + len > z->nzpred || !zone_preds_same(&z->zpred[n], &prune[k], leaf))
+			if (n + len > z->nzpred || !zone_preds_same(&z->zpred[n], &prune[k], leaf, z->zvals[n]))
+			{
 				zone_preds(cxt, &prune[k], leaf, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), &z->zpred[n]);
+				z->zvals[n] = prune[k].nvals > 0 ? prune[k].vals : NULL;
+			}
 			n += len;
 		}
 	z->nzpred = n;

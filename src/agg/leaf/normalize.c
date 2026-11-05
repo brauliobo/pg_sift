@@ -257,11 +257,11 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 Node *
 normalize_expr(AggCtx *c, Node *n)
 {
-	if (c->nulling)
-	{
+	/* a group expression that came from a pulled-up sub-select is a placeholder the grouping step nulls: with no join to null it, it is its expression */
+	if (c->nulling || group_wraps(c))
 		n = nullable_expr_mutator(n, c);
+	if (c->nulling)
 		n = remove_nulling_relids(n, c->nulling, NULL);
-	}
 	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
 	if (group_rti(c) > 0)
 		n = remove_nulling_relids(n, bms_make_singleton(group_rti(c)), NULL);

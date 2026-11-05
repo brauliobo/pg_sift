@@ -19,6 +19,9 @@
 
 static PlannerInfo *cte_inner_body(PlannerInfo *body, int *resno);
 static double list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key);
+#ifdef SIFT_TESTING
+int64		sift_agg_key_lists;	/* the selectivities of a key list computed (not found in the memo) */
+#endif
 
 typedef struct KeyList
 {
@@ -155,7 +158,7 @@ key_list_walker(Node *node, KeyList *kl)
  * most common values with its own frequency), over the share of one key. A list of keys with few rows stays at the rows PostgreSQL expects.
  */
 static double
-list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key)
+list_keys_worth_once(PlannerInfo *root, PlannerInfo *body, Var *key)
 {
 	KeyList		kl = {body->parse->targetList, NULL};
 	Node	   *list;
@@ -175,7 +178,28 @@ list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key)
 		return 0;
 	list = copyObject(list);
 	linitial(*key_clause_args(list)) = key;
+#ifdef SIFT_TESTING
+	sift_agg_key_lists++;
+#endif
 	return clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+}
+
+/* the selectivity of a list of a few hundred keys costs a million instructions, and every join of every arm of the plan asks for it again */
+#define KEY_LIST_MEMO	(1 << 30)
+
+static double
+list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key)
+{
+	int			at = KEY_LIST_MEMO | key->varno << 15 | (key->varattno & 0x7fff);
+	double		rows;
+
+	if (key->varlevelsup != 0 || key->varno >= 1 << 14 || key->varattno <= 0)
+		return list_keys_worth_once(root, body, key);
+	if (walk_memo_get(body, root, at, &rows))
+		return rows;
+	rows = list_keys_worth_once(root, body, key);
+	walk_memo_put(body, root, at, rows);
+	return rows;
 }
 
 static void

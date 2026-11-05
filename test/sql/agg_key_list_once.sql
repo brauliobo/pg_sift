@@ -1,0 +1,47 @@
+-- The plan prices a CTE of the keys a request names by the share of the table the listed keys own (the selectivity of the whole list: a million instructions for
+-- a few hundred keys), and every join and every cost of an arm that reads the CTE asks for it again. One planner run computes it once for each body of the CTE and key
+-- column. The function sift._test_agg_key_lists counts the selectivities computed since the last read.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_verdict_cache = off;
+CREATE TABLE kl_site (id int PRIMARY KEY);
+INSERT INTO kl_site SELECT g FROM generate_series(1, 2000) g;
+CREATE TABLE kl_event (id int PRIMARY KEY, site_id int NOT NULL REFERENCES kl_site, ts date NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO kl_event SELECT g, CASE WHEN g % 100 < 30 THEN 1 WHEN g % 1000 = 999 THEN 2 ELSE 3 + g % 1997 END, date '2025-01-01' + g % 360, g % 7 FROM generate_series(1, 30000) g;
+CREATE INDEX kl_event_col ON kl_event USING sift_col (id, site_id, ts, kind);
+VACUUM (FREEZE, ANALYZE) kl_event;
+ANALYZE kl_site;
+RESET client_min_messages;
+\ir test/agg_helpers.sql
+
+-- n aggregates read one CTE of a list of 50 keys, joined one to the next
+CREATE FUNCTION kl_stmt(n int) RETURNS text LANGUAGE sql AS $f$ SELECT format($q$
+ WITH keys AS MATERIALIZED (SELECT DISTINCT id FROM kl_site WHERE id IN (%s)),
+  %s
+ SELECT a1.kind, %s FROM a1 %s $q$,
+  (SELECT string_agg(g::text, ',') FROM generate_series(1, 50) g),
+  (SELECT string_agg(format('a%s AS (SELECT e.kind, count(*) AS c FROM kl_event e JOIN keys k ON k.id = e.site_id WHERE e.ts >= date ''2025-%s-01'' GROUP BY e.kind)', i, lpad((1 + i % 9)::text, 2, '0')), ', ') FROM generate_series(1, n) i),
+  (SELECT string_agg(format('a%s.c', i), ' + ') FROM generate_series(1, n) i),
+  (SELECT coalesce(string_agg(format('JOIN a%s USING (kind)', i), ' '), '') FROM generate_series(2, n) i)) $f$;
+
+CREATE FUNCTION kl_lists(q text) RETURNS bigint LANGUAGE plpgsql AS $f$
+DECLARE l text;
+BEGIN
+	PERFORM sift._test_agg_key_lists(true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP NULL; END LOOP;
+	RETURN sift._test_agg_key_lists(true);
+END $f$;
+
+-- the arms run in the scan, and one selectivity is computed for each of them, however many joins and costs ask for it
+SELECT runs_in_scan(kl_stmt(3)) AS scanned;
+SELECT n, kl_lists(kl_stmt(n)) <= n AS one_list_per_arm FROM unnest(ARRAY[1, 3, 6]) n;
+
+-- the plan is the same with the statement planned again: nothing of the memo is kept between planner runs
+SELECT kl_lists(kl_stmt(3)) = kl_lists(kl_stmt(3)) AS same_count_again;
+
+DROP FUNCTION kl_stmt, kl_lists, outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP TABLE kl_event, kl_site;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

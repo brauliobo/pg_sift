@@ -40,6 +40,8 @@ bool		sift_enable_topn = true;
 bool		sift_topn_walk = true;
 bool		sift_test_agg_wait = false;
 int		sift_agg_combo_cache = 1 << 20;
+bool		sift_agg_probe_direct = true;
+bool		sift_agg_float_step = true;
 
 static const char null_dict_id = 0;
 static const uint32 null_dict_off[1] = {0};
@@ -146,7 +148,7 @@ run_scan(AggExec *ex)
 	ex->ndsorder = 0;
 	ex->dsabort = false;
 	ex->pass_w = 0;
-	ex->pass_all = ex->pass_fixed = false;
+	ex->pass_all = ex->pass_fixed = ex->pass_lazy = false;
 	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
 	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
 		par_launch(ex);
@@ -171,13 +173,13 @@ run_scan(AggExec *ex)
 		return;					/* the superblocks are read as the groups are asked for (spill_more), the last of them ends the scan */
 	else if (ex->par == NULL || parallel_leader_participation)
 	{
-		if (pass_forced(ex))
-			pass_scan(ex);
+		if (pass_forced(ex) || pass_upfront(ex))
+			pass_begin(ex);
 		else
 		{
 			scan_items(ex);
 			if (ex->pass_stop)
-				pass_scan(ex);
+				pass_begin(ex);
 		}
 	}
 	scan_tail(ex);
@@ -521,7 +523,7 @@ agg_next(ScanState *node)
 	if (!ex->started && !fuse_start(ex))
 	{
 		run_scan(ex);
-		if (ex->gs == NULL)
+		if (ex->gs == NULL && !ex->pass_lazy)
 			finish_groups(ex);
 		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
 		if (ex->spec->gtopn_k > 0 && !ex->done && !spill_started(ex))

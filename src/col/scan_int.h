@@ -245,6 +245,10 @@ struct SiftColSource
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
 	int			wmeas[SIFT_PAGG_MAX_MEAS];
+	uint32	   *chunk_units;	/* [ncols] in how many stored units of this source the leaf's chunk was read (unit_chunk_raw); NULL: none yet */
+	uint32		units_loaded;	/* the stored units this source loaded (load_stored) */
+	uint8	   *plan_want;		/* [ncols] scratch of load_stored: the leaves every earlier unit read */
+	bool		plan_cold;		/* the last head or plan read blocks: the scan is on blocks that are not cached */
 	uint64	   *ahead_kept;		/* the superblocks of the units the whole scan reads (sift_col_kept_map), for the read-ahead of its cursors; NULL: none */
 	int			nseg;
 	ColCursor  *seg;
@@ -265,6 +269,8 @@ struct SiftColSource
 	MemoryContext sigcx;		/* the predicates of the last begin and the bitmaps the cursors made under them */
 	SiftColPred *sig;
 	int			nsig;
+	const SiftColValue **sigsrc;	/* the array of values each predicate of sig was copied from */
+	SiftCTest **sigtest;		/* the test of each predicate of sig that is a long list, made when first asked for (num_test), in sigcx */
 	const SiftColPrune *sigzone;	/* the zone trees of the last begin: made once for the entries of a scan, so a pointer tells them */
 	uint32		sig_gen;
 	uint32		counted;		/* the sig_gen whose pruned units sift_col_kept_map counted for the whole scan: a cursor counts none of them (0: none) */

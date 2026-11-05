@@ -42,6 +42,17 @@
 #define SIFT_AGG_PAD		64
 #define SIFT_AGG_PADW		8		/* words of slack after a vector's bitmap: SIFT_COL_SELWORDS */
 
+/* the op and the form of the step kernel (fstep) */
+#define SIFT_FSTEP_FLOOR	0
+#define SIFT_FSTEP_CEIL		1
+#define SIFT_FSTEP_TRUNC	2
+#define SIFT_FSTEP_ROUND	3
+#define SIFT_FSTEP_TOINT	4
+#define SIFT_FSTEP_PLAIN	0
+#define SIFT_FSTEP_DIV		1
+#define SIFT_FSTEP_MUL		2
+#define SIFT_FSTEP_NONE		INT32_MIN
+
 typedef enum SiftCmpOp
 {
 	SCMP_EQ,
@@ -99,6 +110,13 @@ typedef struct SiftAggKernels
 	bool		(*minmax_i32) (int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n);
 	bool		(*minmax_i64) (int64 *mn, int64 *mx, const int64 *v, const uint64 *mask, int n);
 	bool		(*minmax_f64) (double *mn, double *mx, const double *v, const uint64 *mask, int n);
+	/*
+	 * The steps of a float column (agg/combo/fstep.c): q[i] = op(t) as an int32 with t = x[i] / c (form SIFT_FSTEP_DIV), x[i] * c (SIFT_FSTEP_MUL) or x[i], op the floor, ceiling,
+	 * truncation or rint (to nearest even) PostgreSQL's functions of that name give: SIFT_FSTEP_NONE (INT32_MIN) where the value has no number, that is where t is not within
+	 * (-2^31 + 1, 2^31 - 1) (NaN and the infinities too), t underflowed to 0 from a value other than 0 (PostgreSQL raises), or the result is -0 (a value of its own, but for
+	 * SIFT_FSTEP_TOINT, an integer cast). False when no value has a number, else *mn and *mx are the least and the greatest.
+	 */
+	bool		(*fstep) (int32 *q, int32 *mn, int32 *mx, const double *x, int n, int op, int form, double c);
 
 	/*
 	 * ---- integer arithmetic of the numeric programs (agg/vnum.c), wrapping modulo 2^64; dst may be a or b ----
@@ -136,6 +154,13 @@ extern const SiftAggKernels sift_aggkern_scalar;
 
 /* cnt[c][gid[i]] += 1 for each of the nc >= 1 counters over the rows of mask (NULL: all n): count_gid for several counters in one walk of the rows (scalar at every level, like count_gid) */
 extern void sift_aggk_count_gid_n(int64 *const *cnt, int nc, const uint32 *gid, const uint64 *mask, int n);
+
+/*
+ * s + the selected values in row order (the ungrouped float sum, scalar at every level like sum_gid_f64: the order is what is
+ * promised). The running sum stays in a register: sum_gid_f64 on one group updates acc[0] in memory, and each row waits for the
+ * store of the one before it (about 11 cycles a row against 4 for the add).
+ */
+extern double sift_aggk_sum_f64(double s, const double *v, const uint64 *mask, int n);
 
 /* Registers the dispatch rebind (sift_cpu_register); called from _PG_init */
 extern void sift_aggkern_init(void);

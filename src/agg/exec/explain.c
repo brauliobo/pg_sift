@@ -188,6 +188,7 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		sift_explain_int(&ln, "Lookup Rows Loaded", NULL, "rows loaded", c->lookup_loaded, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Lookup Rows Shared", NULL, "rows shared", c->lookup_shared, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", c->lookup_index, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Heap Fetches", NULL, "heap fetches", c->lookup_heap, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Column Loads", NULL, "column loads", c->lookup_cols, SIFT_XI_OPT);
 		if (es->timing)
 			sift_explain_ms(&ln, "Lookup Load Time", "to load", c->lookup_us / 1000.0, SIFT_XI_KEEP);
@@ -200,8 +201,10 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		if (hits + misses > 0)
 			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
+	sift_explain_int(&ln, "Child Direct Probes", NULL, "child direct probes", c->probe_direct, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Child Blocks Prefetched", NULL, "child blocks prefetched", c->child_warmed, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Join Text Filters", NULL, "text key filters", c->njstr, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Cached Lookup Tables", NULL, "cached tables", c->ncached, SIFT_XI_OPT);

@@ -71,8 +71,8 @@ run_cap(int nslots)
  * directory is merged with others while the table is scanned, and a row is written once more for each level of the merges: 6 million of 10 million rows at
  * 64 MB), up to run_cap.
  */
-static Size
-run_budget(ColBuild *b, Size held)
+Size
+colb_run_budget(ColBuild *b, Size held)
 {
 	double		need = (double) held / b->held_rows * b->share / Max(b->maxsegs - 3, 1);
 
@@ -180,8 +180,8 @@ compact(ColBuild *b)
  * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/order.c), so the build holds
  * about its budget however large the table is. The segments of the runs overlap in the key; compact streams them into larger ones when the directory is full.
  */
-static void
-write_run(ColBuild *b, bool last)
+void
+colb_write_run(ColBuild *b, bool last)
 {
 	int			n = list_length(b->held);
 	SiftColBatch **in = palloc_array(SiftColBatch *, n);
@@ -194,9 +194,10 @@ write_run(ColBuild *b, bool last)
 	b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
 	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
-	b->aim = sift_colk_run_rows(b->index, in, n);
+	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
 	sift_colw_set_keyed(b->w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
-	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt);
+	/* the runs of a build by ranges follow each other in the key as the partitions of a rewrite do: their units are numbered on from the last run's */
+	b->unit_base += sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt, b->spill_final ? b->unit_base : 0) * (b->spill_final ? 1 : 0);
 	end_segment(b);
 	b->lvl[b->nsegs - 1] = 0;
 	pfree(in);
@@ -210,11 +211,17 @@ write_run(ColBuild *b, bool last)
 		compact(b);
 }
 
-static void
-flush_batch(ColBuild *b)
+void
+colb_flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	if (b->spill != NULL)
+	{
+		colb_spill_batch(b, b->batch);
+		sift_cbatch_reset(b->batch, 0);
+		return;
+	}
 	if (sift_col_key_cut(b->r))
 	{
 		Size		before = MemoryContextMemAllocated(b->heldcxt, true),
@@ -225,8 +232,12 @@ flush_batch(ColBuild *b)
 		b->trimmed += before - held;
 		b->held = lappend(b->held, b->batch);
 		b->held_rows += b->batch->nrows;
-		if (held > run_budget(b, held))
-			write_run(b, false);
+		if (held > colb_run_budget(b, held))
+		{
+			/* the first full run: a table of many runs goes by ranges of the key, the rows of the run are the sample that cuts them */
+			if (b->spill_tried || (b->spill_tried = true, !colb_spill_start(b)))
+				colb_write_run(b, false);
+		}
 		b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);
 		return;
 	}
@@ -294,6 +305,19 @@ row_cmp(const void *a, const void *b)
 	return ItemPointerCompare((ItemPointer) &((const SiftColRow *) a)->tid, (ItemPointer) &((const SiftColRow *) b)->tid);
 }
 
+/* A row of the table's order into the batch of its superblock, the batch flushed at the next one */
+void
+colb_add_row(ColBuild *b, const SiftColRow *row)
+{
+	uint32		sb = sift_block_sb(ItemPointerGetBlockNumberNoCheck(&row->tid));
+
+	if (b->batch->nrows > 0 && b->batch->sb != sb)
+		colb_flush_batch(b);
+	if (b->batch->nrows == 0 && b->batch->sb != sb)
+		sift_cbatch_reset(b->batch, sb);
+	sift_cbatch_add(b->batch, row);
+}
+
 /* The page's rows in offset order (a HOT chain reports the TID of its root, so they do not arrive in order) into the batch */
 static void
 flush_page(ColBuild *b)
@@ -302,15 +326,7 @@ flush_page(ColBuild *b)
 		return;
 	qsort(b->rows, b->nrows, sizeof(SiftColRow), row_cmp);
 	for (int i = 0; i < b->nrows; i++)
-	{
-		uint32		sb = sift_block_sb(ItemPointerGetBlockNumberNoCheck(&b->rows[i].tid));
-
-		if (b->batch->nrows > 0 && b->batch->sb != sb)
-			flush_batch(b);
-		if (b->batch->nrows == 0 && b->batch->sb != sb)
-			sift_cbatch_reset(b->batch, sb);
-		sift_cbatch_add(b->batch, &b->rows[i]);
-	}
+		colb_add_row(b, &b->rows[i]);
 	b->nrows = 0;
 	MemoryContextReset(b->pagecxt);
 	CHECK_FOR_INTERRUPTS();
@@ -403,7 +419,11 @@ double
 sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 {
 	MemoryContext old = MemoryContextSwitchTo(b->cxt);
-	double		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	double		tuples;
+
+	if (sift_col_key_cut(b->r))
+		colb_spill_sample(b, heap, info);
+	tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
 
 	MemoryContextSwitchTo(old);
 	report_rows(b);
@@ -435,9 +455,11 @@ int
 sift_colb_end(ColBuild *b)
 {
 	flush_page(b);
-	flush_batch(b);
-	if (b->held != NIL)
-		write_run(b, true);
+	colb_flush_batch(b);
+	if (b->spill != NULL)
+		colb_spill_finish(b);
+	else if (b->held != NIL)
+		colb_write_run(b, true);
 	end_segment(b);
 	report_rows(b);
 	return b->nsegs;

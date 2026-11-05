@@ -2,9 +2,7 @@
 # Edit here to add a job; --plan prints it and the selftest checks it. Sourced by scripts/ci.sh; not a script of its own.
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
-# by measured time, the long jobs of each kind first
-SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
-	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"
+# by measured time, the long jobs of each kind first (SLOW_REGRESS: scripts/ci/weights.sh)
 SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
 # shellcheck disable=SC2046,SC2086  # the names are words
@@ -96,15 +94,17 @@ else
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
 	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
-	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard: those
-	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
+	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard, or forces a
+	# parallel build (max_parallel_maintenance_workers above 0): the release library builds some indexes in one process where the test library keeps the participants
+	# (build_pays in src/col/build_par.c), so a test that counts the segments of that build says so only on the release library. Those run, with a smoke of STOCK_SMOKE, one test
+	# or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
 		local t p f pats globs=()
-		local -A guarded=() named=()   # guarded: the tests that name a test-only object, found in one grep; named: the names of the Makefile that are no pattern
+		local -A guarded=() named=()   # guarded: the tests that name a test-only object or force a parallel build, found in one grep; named: the names of the Makefile that are no pattern
 		read -ra pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
 		for p in "${pats[@]}"; do if [[ $p == *%* ]]; then globs+=("${p//%/*}"); else named[$p]=1; fi; done   # one regular expression for all of them is slower to match (4 s of CPU for the plan instead of 0.7)
-		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO"/test/sql/*.sql)
+		while IFS= read -r f; do f=${f##*/}; guarded[${f%.sql}]=1; done < <(grep -lE 'sift\.test_|sift\._test_|pg_sift_test|max_parallel_maintenance_workers (=|TO) [1-9]' "$REPO"/test/sql/*.sql)
 		for t in $(rest sql .sql $SLOW_REGRESS); do
 			[[ ! -v named[$t] ]] || continue
 			for p in "${globs[@]}"; do [[ $t == $p ]] && continue 2; done

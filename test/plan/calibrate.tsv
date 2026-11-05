@@ -104,3 +104,26 @@ text_not_equal	other
 top_rows_per_kind_unindexed_column	known	1.28
 skew_join_rows_read	join
 dirty_pages_set	group
+# dimexpr_dim_c (tuned lane, 250,000 rows): PostgreSQL's own choice, not the scan's: seq_page_cost 100 makes it drop the sequential plan that takes 822 M instructions for the plan it runs at 1,111 M; the scan (1,173 M) is not chosen and is not the best.
+dimexpr_dim_c	known	1.35
+dimexpr_two	join
+dimsum_two	join
+# dimexpr_few_sets (stock lane, 30,000 rows): PostgreSQL's own choice: it prices its hash join at 188 against 274 for the index plan that takes 0.44 M instructions instead of 2.34 M; the scan takes 0.66 M. A loss of 1.9 M instructions, under half a millisecond.
+dimexpr_few_sets	known	5.32
+dimrate_one	join
+dimrate_two	join
+dimright_dim_c	join
+dimfull_dim_b	join
+dimright_filtered	join
+linkjoin_200_parents	join
+linksemi_200_parents	join
+linkanti_200_parents	join
+linkleft_200_parents	join
+linkjoin_2000_parents	join
+linksemi_2000_parents	join
+linkanti_2000_parents	join
+linkleft_2000_parents	join
+linkjoin_all_parents	join
+linksemi_all_parents	join
+linkanti_all_parents	join
+linkleft_all_parents	join

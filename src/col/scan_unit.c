@@ -38,6 +38,9 @@ unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c)
 	{
 		sift_cseg_unit_fill(cu->seg, cu->u, cu->v.chunk_off[col], cu->v.chunk_len[col]);
 		cu->loaded[col] = 1;
+		if (cu->src->chunk_units == NULL)
+			cu->src->chunk_units = MemoryContextAllocZero(cu->src->mcxt, cu->seg->schema->ncols * sizeof(uint32));
+		cu->src->chunk_units[col]++;
 	}
 	return sift_cunit_chunk(&cu->v, col, c);
 }

@@ -1,0 +1,128 @@
+-- The direct probe of a correlated lookup child (combo/probe.c) reads the btree one page at a time, with no page locked between two reads. A session that changes the index
+-- in those moments (a page that splits after its downlink was read, entries added after the leaf was read) must not change what the probe finds: the rows are those the
+-- statement's snapshot sees. sift.test_probe_hook runs a command in the probing backend at a stage of the probe: 0 after a parent page was released and before the child it
+-- pointed to is read, 1 after a leaf was released and before its heap tuples are fetched, 2 before the page to the right of a leaf is read. The command's writes are not
+-- visible to the statement (a later command of the transaction), as those of a session that began after it. Each case runs the query without the hook, then with it, and
+-- prints how many rows differ and how often the hook ran.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100; SET random_page_cost = 4;
+SET enable_bitmapscan = off;
+\ir test/agg_probe_helpers.sql
+\set ECHO none
+\set ECHO none
+CREATE TABLE hook_log (stage int);
+-- the wide keys of a table of about 9 leaf pages under one root; a key sorts before the keys that extend it (the rows the hook adds)
+CREATE TABLE lk_race (k text, v text);
+INSERT INTO lk_race SELECT 't' || g || repeat('x', 200), 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE UNIQUE INDEX lk_race_k ON lk_race (k);
+-- the entries of one key over several pages: the live row is the last, behind the dead versions of earlier updates
+CREATE TABLE lk_dead (k text, w int, v text);
+INSERT INTO lk_dead SELECT 't' || g || repeat('x', 200), 0, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_dead_k ON lk_dead (k) WITH (deduplicate_items = off);
+CREATE INDEX lk_dead_w ON lk_dead (w);
+DO $$ BEGIN FOR i IN 1..60 LOOP UPDATE lk_dead SET w = i WHERE k LIKE 't1%' OR k LIKE 't2%'; END LOOP; END $$;
+-- the same keys under an Index Only Scan child: the leaf is released before the visibility map is asked for its entries (the changes of the hook clear the bits of the pages they touch)
+CREATE TABLE lk_race_io (k text, v text);
+INSERT INTO lk_race_io SELECT 't' || g || repeat('x', 200), 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_race_io_kv ON lk_race_io (k, v);
+VACUUM (FREEZE, ANALYZE) lk_race_io;
+VACUUM (FREEZE, ANALYZE) entries;
+ANALYZE lk_race, lk_dead;
+SELECT pg_relation_size('lk_race_k') / current_setting('block_size')::int AS race_pages, pg_relation_size('lk_dead_k') / current_setting('block_size')::int > 40 AS dead_pages;
+ race_pages | dead_pages 
+------------+------------
+         10 | t
+(1 row)
+
+CREATE FUNCTION race(label text, tab text, hook text) RETURNS TABLE (step text, direct bool, differences bigint, hook_runs bigint) LANGUAGE plpgsql AS $$
+DECLARE q text := case_query(tab, $c$k = 't' || o.n::int || repeat('x', 200)$c$);
+        l text;
+BEGIN
+  SET LOCAL sift.enable_agg = on;
+  SET LOCAL sift.agg_probe_direct = off;
+  EXECUTE 'CREATE TEMP TABLE r_before ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.agg_probe_direct = on;
+  TRUNCATE hook_log;
+  PERFORM set_config('sift.test_probe_hook', hook, true);
+  EXECUTE 'CREATE TEMP TABLE r_after ON COMMIT DROP AS ' || q;
+  PERFORM set_config('sift.test_probe_hook', '', true);
+  step := label;
+  SELECT count(*) INTO differences FROM ((TABLE r_before EXCEPT ALL TABLE r_after) UNION ALL (TABLE r_after EXCEPT ALL TABLE r_before)) d;
+  SELECT count(*) INTO hook_runs FROM hook_log;
+  direct := false;
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP direct := direct OR l ~ '[1-9][0-9]* child direct probes'; END LOOP;
+  DROP TABLE r_before, r_after;
+  RETURN NEXT;
+END $$;
+-- the hook, once, when the Nth parent page of the statement was released: rows between the keys of the table split the leaves (and the root) that the probes are about to read
+SELECT * FROM race('no hook', 'lk_race', '');
+  step   | direct | differences | hook_runs 
+---------+--------+-------------+-----------
+ no hook | t      |           0 |         0
+(1 row)
+
+SELECT * FROM race('split after a downlink', 'lk_race', '0:3:INSERT INTO lk_race SELECT k || ''y'' || i, ''new'' FROM lk_race, generate_series(1, 3) i; INSERT INTO hook_log VALUES (0)');
+          step          | direct | differences | hook_runs 
+------------------------+--------+-------------+-----------
+ split after a downlink | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('split after a later downlink', 'lk_race', '0:60:INSERT INTO lk_race SELECT k || ''z'' || i, ''new'' FROM lk_race, generate_series(1, 3) i; INSERT INTO hook_log VALUES (0)');
+             step             | direct | differences | hook_runs 
+------------------------------+--------+-------------+-----------
+ split after a later downlink | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('rows changed before the heap', 'lk_race', '1:5:UPDATE lk_race SET v = v || ''!''; DELETE FROM lk_race WHERE k LIKE ''t1%''; INSERT INTO hook_log VALUES (1)');
+             step             | direct | differences | hook_runs 
+------------------------------+--------+-------------+-----------
+ rows changed before the heap | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('index only, no hook', 'lk_race_io', '');
+        step         | direct | differences | hook_runs 
+---------------------+--------+-------------+-----------
+ index only, no hook | t      |           0 |         0
+(1 row)
+
+SELECT * FROM race('index only, split after a downlink', 'lk_race_io', '0:3:INSERT INTO lk_race_io SELECT k || ''y'' || i, ''new'' FROM lk_race_io, generate_series(1, 3) i; INSERT INTO hook_log VALUES (0)');
+                step                | direct | differences | hook_runs 
+------------------------------------+--------+-------------+-----------
+ index only, split after a downlink | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('index only, rows changed before the visibility check', 'lk_race_io', '1:5:UPDATE lk_race_io SET v = v || ''!''; DELETE FROM lk_race_io WHERE k LIKE ''t1%''; INSERT INTO hook_log VALUES (1)');
+                         step                         | direct | differences | hook_runs 
+------------------------------------------------------+--------+-------------+-----------
+ index only, rows changed before the visibility check | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('no hook, dead entries', 'lk_dead', '');
+         step          | direct | differences | hook_runs 
+-----------------------+--------+-------------+-----------
+ no hook, dead entries | t      |           0 |         0
+(1 row)
+
+SELECT * FROM race('split before the next page', 'lk_dead', '2:5:INSERT INTO lk_dead SELECT k, -1, ''dead'' FROM lk_dead, generate_series(1, 20) WHERE k LIKE ''t1%'' AND w = 60; INSERT INTO hook_log VALUES (2)');
+            step            | direct | differences | hook_runs 
+----------------------------+--------+-------------+-----------
+ split before the next page | t      |           0 |         1
+(1 row)
+
+SELECT * FROM race('split before a later next page', 'lk_dead', '2:40:INSERT INTO lk_dead SELECT k, -2, ''dead'' FROM lk_dead, generate_series(1, 20) WHERE k LIKE ''t2%'' AND w = 60; INSERT INTO hook_log VALUES (2)');
+              step              | direct | differences | hook_runs 
+--------------------------------+--------+-------------+-----------
+ split before a later next page | t      |           0 |         1
+(1 row)
+
+SELECT count(*) AS rows_added FROM lk_race WHERE v = 'new';
+ rows_added 
+------------
+          0
+(1 row)
+
+DROP FUNCTION race(text, text, text), step_io(text, text, text, text, text), case_query_col(text, text, text, text), step(text, text, text, text), case_query(text, text, text), probe_check(text), check_query(text);
+DROP TABLE hook_log, lk_race, lk_race_io, lk_dead, entries;
+DROP EXTENSION pg_sift;

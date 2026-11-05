@@ -17,6 +17,7 @@
 
 #include "agg/wide.h"
 #include "agg/memo.h"
+#include "storage/smgr.h"
 #include "agg/combo/int.h"
 
 /*
@@ -31,6 +32,7 @@
 #define WARM_MIN_US		25			/* an average run shorter than this finds its pages in memory */
 #define WARM_SHARE		16
 #define WARM_MAX_BLOCKS	(1 << 20)
+#define WARM_CHUNK		128			/* blocks of one advice to the OS (1 MB): the kernel reads a range in one go, where a call for each block asks it 8 kB at a time */
 
 typedef struct ChildWarm
 {
@@ -124,9 +126,9 @@ warm_walk(PlanState *ps, void *context)
 	return planstate_tree_walker(ps, warm_walk, context);
 }
 
-/* the child ran since t0: when its runs are slow and have read a sixteenth of a relation, ask the OS for the rest of it (the blocks counted in ex->child_warmed) */
-static void
-child_warm(AggExec *ex, ComboSt *cs, PlanState *child, instr_time t0)
+/* nruns runs of the child took the time since t0: when its runs are slow and have read a sixteenth of a relation, ask the OS for the rest of it (the blocks counted in ex->child_warmed) */
+void
+child_warm_runs(AggExec *ex, ComboSt *cs, PlanState *child, int nruns, instr_time t0)
 {
 	ChildWarm  *w = cs->warm;
 	instr_time	t1;
@@ -143,7 +145,8 @@ child_warm(AggExec *ex, ComboSt *cs, PlanState *child, instr_time t0)
 	INSTR_TIME_SET_CURRENT(t1);
 	INSTR_TIME_SUBTRACT(t1, t0);
 	w->us += INSTR_TIME_GET_MICROSEC(t1);
-	if (++w->runs % (test ? 4 : WARM_MIN_RUNS) != 0 || (!test && w->us < w->runs * WARM_MIN_US))
+	w->runs += nruns;
+	if (w->runs / (test ? 4 : WARM_MIN_RUNS) == (w->runs - nruns) / (test ? 4 : WARM_MIN_RUNS) || (!test && w->us < w->runs * WARM_MIN_US))
 		return;
 	for (int i = 0; i < w->nrel; i++)
 		reads += Max(warm_reads(w->rel[i]) - w->base[i], 0);
@@ -156,11 +159,13 @@ child_warm(AggExec *ex, ComboSt *cs, PlanState *child, instr_time t0)
 		if (w->asked[i] || (nb = RelationGetNumberOfBlocks(w->rel[i])) > WARM_MAX_BLOCKS || (!test && (warm_reads(w->rel[i]) - w->base[i]) * WARM_SHARE < nb))
 			continue;
 		w->asked[i] = true;
-		for (BlockNumber b = 0; b < nb; b++)
+		for (BlockNumber b = 0; b < nb; b += WARM_CHUNK)
 		{
-			PrefetchBuffer(w->rel[i], MAIN_FORKNUM, b);
-			if ((b & 1023) == 0)
-				CHECK_FOR_INTERRUPTS();
+			smgrprefetch(RelationGetSmgr(w->rel[i]), MAIN_FORKNUM, b, Min(WARM_CHUNK, nb - b));
+#ifdef SIFT_TESTING
+			sift_test_warm_calls++;
+#endif
+			CHECK_FOR_INTERRUPTS();
 		}
 		ex->child_warmed += nb;
 	}
@@ -187,6 +192,8 @@ combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	MinimalTuple *mts = NULL;
 
 	INSTR_TIME_SET_CURRENT(t0);
+	if (combo_probe_take(ex, ci, (uint32 *) &start, &n))
+		goto probed;
 	forboth(lp, j->params, la, cs->args)
 	{
 		int         id = lfirst_int(lp);
@@ -253,7 +260,7 @@ combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 		MemoryContextSwitchTo(estate->es_query_cxt);
 	}
 	MemoryContextSwitchTo(caller);
-	child_warm(ex, cs, child, t0);
+	child_warm_runs(ex, cs, child, 1, t0);
 	if (memo)
 	{
 		memo_put(memo, key, klen, nmt, mts);
@@ -264,6 +271,7 @@ combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	}
 done:
 	n = cs->map->nrow - start;
+probed:
 	map_loaded(ex, n, t0);
 	*rows = palloc(Max(n, 1) * sizeof(uint32));
 	for (int i = 0; i < n; i++)

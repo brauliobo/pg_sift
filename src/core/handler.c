@@ -262,6 +262,7 @@ _PG_init(void)
 	sift_cpu_init();
 	sift_init();
 	sift_cpu_register(codec_rebind);
+	sift_vis_init();
 	sift_kernels_init();
 	sift_col_kernels_init();
 	sift_col_init();

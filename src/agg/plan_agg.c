@@ -668,6 +668,9 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (list_length(a->args) != 1)
 		return false;
 	arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
+	/* a column of a table that a join preserves rows for is NULL for those rows (the unit they join to has only NULL leaves): the kernels of the column count and add what they find */
+	if (c->nulling && IsA(strip_relabel(arg), Var))
+		arg = normalize_expr(c, arg);
 	/* count(x->>'k') counts the values of the typed leaf of the member: both are NULL for a missing key and a JSON null */
 	if (fid == F_COUNT_ANY && a->aggdistinct == NIL)
 	{
@@ -712,7 +715,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
-	a = (Aggref *) strict_placeholders(c, (Node *) a);
+	a = (Aggref *) scalar_initplans(c, strict_placeholders(c, (Node *) a));
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;

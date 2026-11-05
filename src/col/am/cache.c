@@ -233,7 +233,9 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	Relation	heap;
-	BlockNumber relpages;
+	BlockNumber relpages,
+				visible,
+				clean;
 
 	*m = *d;
 	sift_dir_read(index, snap);
@@ -260,8 +262,9 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	heap = table_open(d->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	m->stats.heap_pages = relpages;
-	m->stats.allvisible_frac = relpages > 0 ? (double) sift_vis_count_allvisible(heap, relpages) / relpages : 0;
-	m->stats.clean_frac = relpages > 0 ? (double) sift_vis_count_clean_sbs(heap, relpages) / ((relpages + SIFT_SB_PAGES - 1) / SIFT_SB_PAGES) : 0;
+	sift_vis_count(heap, relpages, &visible, &clean);
+	m->stats.allvisible_frac = relpages > 0 ? (double) visible / relpages : 0;
+	m->stats.clean_frac = relpages > 0 ? (double) clean / ((relpages + SIFT_SB_PAGES - 1) / SIFT_SB_PAGES) : 0;
 	table_close(heap, AccessShareLock);
 	if (memo != NULL)
 	{

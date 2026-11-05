@@ -1,0 +1,116 @@
+-- An inner or semi lookup join on a text leaf of Custom Scan (SiftAgg) tests the leaf against the keys of the loaded table on the encoded form (sift.agg_join_filter;
+-- "Join Text Filters" of EXPLAIN ANALYZE): a unit that holds none of the keys is not read, and an inline text unit never interns or hashes the strings of the other rows.
+-- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- long strings are stored inline (over 255 bytes): NULLs, the empty string, repeated strings, strings that share their first eight bytes (and 300 bytes of the rest),
+-- multibyte text cut at the eighth byte, and a short column that stays in the dictionary
+CREATE TABLE ev (id int PRIMARY KEY, grp int, body text, mb text, tag text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, i % 7,
+       CASE WHEN i % 50 = 0 THEN NULL
+            WHEN i % 61 = 0 THEN ''
+            WHEN i % 5 = 0 THEN 'same-prefix-' || repeat('x', 300) || (i % 40)
+            ELSE 'line-' || (i % 300) || repeat('y', 280) END,
+       CASE WHEN i % 37 = 0 THEN NULL ELSE 'é' || 'ü' || 'ß' || '日本語' || repeat('ä', 150) || (i % 25) END,
+       CASE WHEN i % 41 = 0 THEN NULL ELSE 'tag' || (i % 100) END,
+       i % 1000
+FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (grp, body, mb, tag, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- keys: present, absent, duplicated, NULL, empty, sharing the eight-byte prefix of present strings, one cut short, and a case variant
+CREATE TABLE ks (k text, w int);
+INSERT INTO ks VALUES ('line-7' || repeat('y', 280), 1), ('line-7' || repeat('y', 280), 2), ('line-299' || repeat('y', 280), 3), ('line-300' || repeat('y', 280), 4),
+       (NULL, 5), ('', 6), ('same-prefix-' || repeat('x', 300) || '3', 7), ('same-prefix-' || repeat('x', 300) || '99', 8), ('same-prefix-', 9),
+       ('line-7' || repeat('y', 279), 10), ('LINE-7' || repeat('y', 280), 11), ('line-12' || repeat('y', 280), 12), ('line-', 13);
+CREATE TABLE kmb (k text);
+INSERT INTO kmb VALUES ('éüß日本語' || repeat('ä', 150) || '3'), ('éüß日本語' || repeat('ä', 150) || '24'), ('éüß日本語' || repeat('ä', 149)), ('éüß日本'), (NULL), ('');
+CREATE TABLE ktag (k text);
+INSERT INTO ktag VALUES ('tag7'), ('tag42'), ('tag42'), ('tag100'), (NULL), (''), ('TAG7');
+CREATE TABLE kmany (k text);
+INSERT INTO kmany SELECT 'line-' || i || repeat('y', 280) FROM generate_series(0, 5999) i;
+CREATE TABLE knone (k text);
+-- body and mb are stored inline, tag in the dictionary
+SELECT path, inline_chunks > 0 AS inline FROM sift.col_leaves('ev_col') WHERE path IN ('body', 'mb', 'tag') ORDER BY path;
+ANALYZE ks; ANALYZE kmb; ANALYZE ktag; ANALYZE kmany; ANALYZE knone;
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l ~ '(\d+) text key filters' THEN r := r || ' text key filters ' || substring(l from '(\d+) text key filters'); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_filter bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_join_filter = off;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_join_filter;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_no_filter := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- inline strings: a semi join, an inner join that returns a column (the duplicated key repeats its rows), EXISTS, a join by two columns
+SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM ev WHERE body IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(*) AS n, sum(amount) AS s FROM ev JOIN ks k ON k.k = ev.body GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM ks k WHERE k.k = ev.body AND k.w > 6)$$);
+SELECT * FROM same($$SELECT grp, count(*) AS n FROM ev JOIN ks k ON k.k = ev.body WHERE ev.amount < 500 GROUP BY 1$$);
+-- the key that is one string, the strings that share the prefix, the empty string and the NULL key
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks WHERE w = 3)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks WHERE w IN (7, 8, 9))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks WHERE w IN (5, 6))$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks WHERE w IN (10, 11, 13))$$);
+-- multibyte strings and a short string of the dictionary
+SELECT * FROM same($$SELECT grp, count(*) AS n FROM ev WHERE mb IN (SELECT k FROM kmb) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.k, count(*) AS n FROM ev JOIN ktag k ON k.k = ev.tag GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE tag IN (SELECT k FROM ktag)$$);
+-- two joins, on two leaves; a join and the leaf's own condition
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks) AND tag IN (SELECT k FROM ktag)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks) AND body LIKE 'line-%' AND amount > 100$$);
+-- more keys than the filter takes (a sixteenth of the rows of the table), a table with no row, a table of keys that match nothing
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM kmany)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM knone)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks WHERE w = 11)$$);
+-- a LEFT join and an anti join keep the tuples without a match: no filter
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM ev LEFT JOIN ks k ON k.k = ev.body GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM ks k WHERE k.k = ev.body)$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE body NOT IN (SELECT k FROM ks WHERE k IS NOT NULL)$$);
+
+-- a nondeterministic collation compares by more than bytes: the keys are not a filter
+CREATE COLLATION ci_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN ks k ON k.k COLLATE ci_nd = ev.body COLLATE ci_nd$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN ktag k ON k.k COLLATE ci_nd = ev.tag COLLATE ci_nd$$);
+
+-- parallel workers narrow their own units
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SELECT * FROM same($$SELECT grp, count(*) AS n FROM ev WHERE body IN (SELECT k FROM ks) GROUP BY 1$$);
+RESET max_parallel_workers_per_gather;
+
+-- rows written after the index was built (the write buffer) and rows changed or deleted since
+INSERT INTO ev SELECT 100000 + i, i % 7, 'line-7' || repeat('y', 280), 'é', 'tag7', i FROM generate_series(1, 300) i;
+UPDATE ev SET body = 'line-299' || repeat('y', 280) WHERE id % 1500 = 0;
+DELETE FROM ev WHERE id % 1000 = 1 AND body IS NOT NULL;
+SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM ev WHERE body IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM ev JOIN ks k ON k.k = ev.body GROUP BY 1$$);
+VACUUM ev;
+SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM ev WHERE body IN (SELECT k FROM ks) GROUP BY 1$$);
+
+DROP FUNCTION same(text), plan_of(text);
+DROP TABLE ev, ks, kmb, ktag, kmany, knone;
+DROP COLLATION ci_nd;
+DROP EXTENSION pg_sift;

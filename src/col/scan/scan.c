@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "utils/rls.h"
+#include "executor/instrument.h"
 #include "storage/predicate.h"
 #include "utils/acl.h"
 #include "core/cmp.h"
@@ -591,16 +592,51 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 	return true;
 }
 
-static void
-load_stored(ColUnit *cu, SiftColSegment *seg, uint32 u)
+/* The cursor's kept unit after unit u, in its morsel or, past it, in the kept map of the whole scan; PG_UINT32_MAX: none known */
+static uint32
+cursor_next_kept(const ColCursor *c, uint32 u)
 {
+	for (u++; u < c->end; u++)
+		if (c->keep[u / 64] >> (u % 64) & 1)
+			return u;
+	if (c->src->ahead_kept != NULL && (u = next_ahead_unit(c, u)) < c->seg->nsb)
+		return u;
+	return PG_UINT32_MAX;
+}
+
+/*
+ * The head of a unit that waited for the device says the scan is on blocks that are not cached: the leaves that every unit before it read, and the head of the cursor's next
+ * unit, come in as one plan (sorted, the blocks that follow each other in one read) where the ask of each would be a read of its own. A leaf that only some units read (the
+ * columns of the rows a filter kept) is not in it: a plan reads what the unit is known to ask for. A scan on cached blocks reads nothing here.
+ */
+static void
+load_stored(ColUnit *cu, ColCursor *c, uint32 u)
+{
+	SiftColSource *src = cu->src;
+	SiftColSegment *seg = c->seg;
+	uint64		reads = pgBufferUsage.shared_blks_read;
+
 	cu->seg = seg;
 	cu->u = u;
 	cu->sb = seg->sbdir[u].id;
 	if (!sift_cseg_unit_view(seg, u, &cu->v))
 		corrupt("Unit %u of segment %llu does not parse.", u, (unsigned long long) seg->entry.gen);
-	cu->loaded = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols);
-	cu->istr = MemoryContextAllocZero(cu->src->arena, seg->schema->ncols * sizeof(ColInline));
+	if (reads != pgBufferUsage.shared_blks_read)
+		src->plan_cold = true;
+#ifdef SIFT_TESTING
+	src->plan_cold |= sift_test_ahead_cold;
+#endif
+	if (src->plan_cold && src->chunk_units != NULL && src->units_loaded > 0)
+	{
+		if (src->plan_want == NULL)
+			src->plan_want = MemoryContextAlloc(src->mcxt, seg->schema->ncols);
+		for (int col = 0; col < seg->schema->ncols; col++)
+			src->plan_want[col] = src->chunk_units[col] == src->units_loaded;
+		src->plan_cold = sift_cseg_unit_plan(seg, u, &cu->v, src->plan_want, cursor_next_kept(c, u)) > 0;
+	}
+	src->units_loaded++;
+	cu->loaded = MemoryContextAllocZero(src->arena, seg->schema->ncols);
+	cu->istr = MemoryContextAllocZero(src->arena, seg->schema->ncols * sizeof(ColInline));
 }
 
 static void
@@ -673,7 +709,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	}
 	else if (!((src->super || src->whole || src->pcnt) && col_super_take(src, best, cu)))
 	{
-		load_stored(cu, best->seg, best->cur);
+		load_stored(cu, best, best->cur);
 		if (sift_cseg_dirty(best->seg, best->cur))
 			src->cnt.dirty_rows += best->seg->sbdir[best->cur].nrows;
 		if (best->prow != NULL)

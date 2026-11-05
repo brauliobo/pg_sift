@@ -20,6 +20,7 @@
  * in store_ops_test.c.
  */
 #include "store_test_int.h"
+#include "agg/agg_int.h"
 
 #ifdef SIFT_TESTING
 
@@ -27,6 +28,7 @@ PG_FUNCTION_INFO_V1(sift_test_seg_write);
 PG_FUNCTION_INFO_V1(sift_test_seg_read);
 PG_FUNCTION_INFO_V1(sift_test_seg_drop);
 PG_FUNCTION_INFO_V1(sift_test_segments);
+PG_FUNCTION_INFO_V1(sift_test_segment_reads);
 /* a new setting starts the count of the directory updates it applies to */
 static void
 crash_dir_assign(int newval, void *extra)
@@ -576,5 +578,19 @@ sift_test_segments(PG_FUNCTION_ARGS)
 }
 
 
-#endif							/* SIFT_TESTING */
+/* sift._test_read_stats(reset): the blocks this backend's segment readers waited for, and those read-ahead brought in first */
+Datum
+sift_test_segment_reads(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[3] = {Int64GetDatum(sift_test_sr_demand), Int64GetDatum(sift_test_sr_ahead), Int64GetDatum(sift_test_warm_calls)};
+	bool		nulls[3] = {0};
 
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	if (PG_GETARG_BOOL(0))
+		sift_test_sr_demand = sift_test_sr_ahead = sift_test_warm_calls = 0;
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+#endif							/* SIFT_TESTING */

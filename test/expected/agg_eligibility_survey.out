@@ -1,0 +1,510 @@
+-- Which ordinary analytics shapes the aggregate scan answers (sift.agg_force on: the shape decides, not the cost), and why it does not for the rest. Each row is one
+-- statement: pushed says the plan has a SiftAgg or Top-N node, differences counts the rows that differ from the normal plan (sift.enable_agg off), order_differs says
+-- whether a statement with an ORDER BY of its own returns its rows in another order, and why is the refusal slug (sift.explain_why) of one that keeps the normal plan.
+-- A row that is not pushed is a gap or a limit by design (docs/LIMITS.md); when a shape starts to be answered its row changes here.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE tenants (id int PRIMARY KEY, type text NOT NULL, region text);
+CREATE TABLE dim_a (id int PRIMARY KEY, name text NOT NULL, set_id int NOT NULL);
+CREATE TABLE events (id bigint PRIMARY KEY, tenant_id int NOT NULL, category_id int NOT NULL, event_date date NOT NULL, created_at timestamptz NOT NULL, status text,
+	value_num numeric(12,2), counter_a int, value_f float8, flag_a bool, label text, metrics jsonb NOT NULL);
+INSERT INTO tenants SELECT g, (ARRAY['type_a', 'type_a', 'type_a', 'type_b', 'type_c', 'type_d'])[1 + g % 6], 'region' || (g % 5) FROM generate_series(1, 40) g;
+INSERT INTO dim_a SELECT g, 'kind' || g, 1 + g % 4 FROM generate_series(1, 30) g;
+INSERT INTO events
+SELECT g, 1 + (g * 7) % 40, 1 + (g * 5) % 19, date '2024-01-01' + (g * 13) % 700, timestamptz '2024-01-01' + ((g * 7919) % 700) * interval '1 day' + (g % 86400) * interval '1 second',
+       CASE WHEN g % 31 = 0 THEN NULL ELSE (ARRAY['open', 'paid', 'void', 'late'])[1 + g % 4] END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE ((g * 37) % 100000)::numeric / 100 END,
+       CASE WHEN g % 17 = 0 THEN NULL ELSE (g * 11) % 51 END,
+       CASE WHEN g % 23 = 0 THEN NULL ELSE ((g * 17) % 1000)::float8 / 100 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE g % 3 = 0 END,
+       CASE WHEN g % 2 = 0 THEN 'note_' || (g % 21) ELSE NULL END,
+       jsonb_strip_nulls(jsonb_build_object('m1', CASE WHEN g % 5 <> 0 THEN round(3 + (g % 70) / 10.0, 1) END, 'm2', CASE WHEN g % 5 = 0 THEN round(3 + (g % 50) / 10.0, 1) END, 'm5', CASE WHEN g % 16 = 0 THEN 5.0 END))
+FROM generate_series(1, 3000) g;
+CREATE INDEX events_col ON events USING sift_col (id, tenant_id, category_id, event_date, created_at, status, value_num, counter_a, value_f, flag_a, label, metrics) WITH (paths = 'metrics.* float8');
+CREATE VIEW v_keys AS SELECT t.type AS m, upper(e.status) AS k, e.value_num FROM events e JOIN tenants t ON t.id = e.tenant_id;
+CREATE VIEW v_counts AS SELECT status, count(*) AS n FROM events GROUP BY 1;
+VACUUM (FREEZE, ANALYZE) events, tenants, dim_a;
+CREATE FUNCTION survey(q text) RETURNS TABLE (pushed bool, differences bigint, order_differs bool, why text) LANGUAGE plpgsql AS $$
+DECLARE l text; off text[]; on_ text[];
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+	order_differs := false;
+	IF q ~ 'ORDER BY [^()]*$' THEN
+		SET LOCAL sift.enable_agg = off;
+		EXECUTE 'SELECT array_agg(t::text) FROM (' || q || ') t' INTO off;
+		SET LOCAL sift.enable_agg = on;
+		EXECUTE 'SELECT array_agg(t::text) FROM (' || q || ') t' INTO on_;
+		order_differs := off IS DISTINCT FROM on_;
+	END IF;
+	pushed := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%' OR l LIKE '%Top-N:%'; END LOOP;
+	IF NOT pushed THEN
+		SELECT string_agg(DISTINCT w.slug, ',' ORDER BY w.slug) INTO why FROM sift.explain_why(q) w WHERE NOT w.used AND w.slug IS NOT NULL AND w.arm NOT LIKE 'L2:%';
+	END IF;
+	DROP TABLE r_off, r_on;
+	RETURN NEXT;
+END $$;
+CREATE TABLE survey_q (n serial, slug text, family text, q text);
+INSERT INTO survey_q (slug, family, q) VALUES
+	('key_ordinal', 'group-key', $q$SELECT status, count(*) FROM events GROUP BY 1$q$),
+	('key_alias', 'group-key', $q$SELECT status AS s, count(*) AS n FROM events GROUP BY s$q$),
+	('key_alias_expr', 'group-key', $q$SELECT category_id % 5 AS b, count(*) FROM events GROUP BY b$q$),
+	('key_two_ordinals', 'group-key', $q$SELECT status, category_id, count(*) FROM events GROUP BY 1, 2$q$),
+	('key_date_trunc_ts', 'group-key', $q$SELECT date_trunc('month', created_at) AS m, count(*) FROM events GROUP BY 1$q$),
+	('key_date_trunc_date', 'group-key', $q$SELECT date_trunc('week', event_date)::date AS w, count(*) FROM events GROUP BY 1$q$),
+	('key_extract_year', 'group-key', $q$SELECT extract(year FROM event_date)::int AS y, count(*) FROM events GROUP BY 1$q$),
+	('key_extract_dow_ts', 'group-key', $q$SELECT extract(dow FROM created_at)::int AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_to_char', 'group-key', $q$SELECT to_char(event_date, 'YYYY-MM') AS ym, count(*) FROM events GROUP BY 1$q$),
+	('key_case', 'group-key', $q$SELECT CASE WHEN value_num < 100 THEN 'lo' WHEN value_num < 500 THEN 'mid' ELSE 'hi' END AS band, count(*) FROM events GROUP BY 1$q$),
+	('key_case_two_cols', 'group-key', $q$SELECT CASE WHEN counter_a > 25 THEN status ELSE label END AS k, count(*) FROM events GROUP BY 1$q$),
+	('key_coalesce', 'group-key', $q$SELECT coalesce(status, 'none') AS s, count(*) FROM events GROUP BY 1$q$),
+	('key_arith', 'group-key', $q$SELECT counter_a / 10 AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_arith_two_cols', 'group-key', $q$SELECT (counter_a + category_id) % 7 AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_cast', 'group-key', $q$SELECT value_num::int AS a, count(*) FROM events GROUP BY 1$q$),
+	('key_text_fn', 'group-key', $q$SELECT upper(left(label, 6)) AS n, count(*) FROM events GROUP BY 1$q$),
+	('key_bool', 'group-key', $q$SELECT flag_a, count(*) FROM events GROUP BY 1$q$),
+	('key_float', 'group-key', $q$SELECT round(value_f::numeric, 0) AS s, count(*) FROM events GROUP BY 1$q$),
+	('key_jsonb_member', 'group-key', $q$SELECT (metrics ->> 'm1') IS NULL AS no_m1, count(*) FROM events GROUP BY 1$q$),
+	('key_const_plus_col', 'group-key', $q$SELECT 'x'::text AS c, status, count(*) FROM events GROUP BY 1, 2$q$),
+	('key_func_of_join_col', 'group-key', $q$SELECT upper(k.name) AS n, count(*) FROM events e JOIN dim_a k ON k.id = e.category_id GROUP BY 1$q$),
+	('sets_grouping_sets_cols', 'sets', $q$SELECT status, category_id % 3 AS k, count(*) AS n FROM events GROUP BY GROUPING SETS ((status), (status, category_id % 3), ()) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_rollup_cols', 'sets', $q$SELECT status, flag_a, count(*) AS n, sum(counter_a) AS q FROM events GROUP BY ROLLUP (status, flag_a) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_cube_cols', 'sets', $q$SELECT status, flag_a, count(*) AS n FROM events GROUP BY CUBE (status, flag_a) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_grouping_fn', 'sets', $q$SELECT status, flag_a, GROUPING(status, flag_a) AS g, count(*) AS n FROM events GROUP BY CUBE (status, flag_a) ORDER BY 3, 1 NULLS FIRST, 2 NULLS FIRST$q$),
+	('sets_rollup_expr_direct', 'sets', $q$SELECT date_trunc('month', created_at) AS m, status, count(*) AS n FROM events GROUP BY ROLLUP (1, 2) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_rollup_expr_subselect', 'sets', $q$SELECT m, count(*) AS n FROM (SELECT upper(status) AS m FROM events) p GROUP BY ROLLUP (m) ORDER BY 1 NULLS FIRST, 2$q$),
+	('sets_having', 'sets', $q$SELECT status, count(*) AS n FROM events GROUP BY ROLLUP (status) HAVING count(*) > 100 ORDER BY 1 NULLS FIRST, 2$q$),
+	('sets_cte', 'sets', $q$WITH p AS (SELECT upper(status) AS m, category_id % 4 AS k, value_num FROM events) SELECT m, k, count(*) AS n, sum(value_num) AS a FROM p GROUP BY GROUPING SETS ((m), (m, k)) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_cte_materialized', 'sets', $q$WITH p AS MATERIALIZED (SELECT upper(status) AS m, category_id % 4 AS k, value_num FROM events) SELECT m, k, count(*) AS n FROM p GROUP BY ROLLUP (m, k) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_join_dim_key', 'sets', $q$SELECT k.set_id, e.status, count(*) AS n FROM events e JOIN dim_a k ON k.id = e.category_id GROUP BY ROLLUP (k.set_id, e.status) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_lateral_each_key', 'sets', $q$SELECT m, count(*) AS n FROM events ev INNER JOIN LATERAL (SELECT split_part(r.key, '_', 1) AS m FROM jsonb_each(ev.metrics) r) c ON true GROUP BY GROUPING SETS ((m), ()) ORDER BY 1 NULLS FIRST, 2$q$),
+	('agg_count_star', 'aggregate', $q$SELECT status, count(*) AS n FROM events GROUP BY 1$q$),
+	('agg_count_col', 'aggregate', $q$SELECT status, count(value_num) AS n FROM events GROUP BY 1$q$),
+	('agg_sum_avg_numeric', 'aggregate', $q$SELECT status, sum(value_num) AS s, avg(value_num) AS a FROM events GROUP BY 1$q$),
+	('agg_sum_avg_int', 'aggregate', $q$SELECT status, sum(counter_a) AS s, avg(counter_a)::numeric(10,3) AS a FROM events GROUP BY 1$q$),
+	('agg_sum_avg_float', 'aggregate', $q$SELECT status, round(sum(value_f)::numeric, 3) AS s, round(avg(value_f)::numeric, 3) AS a FROM events GROUP BY 1$q$),
+	('agg_min_max', 'aggregate', $q$SELECT status, min(value_num) AS lo, max(value_num) AS hi, min(event_date) AS d0, max(created_at) AS t1, min(label) AS n0 FROM events GROUP BY 1$q$),
+	('agg_bool_and_or', 'aggregate', $q$SELECT status, bool_and(flag_a) AS a, bool_or(flag_a) AS o FROM events GROUP BY 1$q$),
+	('agg_every', 'aggregate', $q$SELECT status, every(counter_a > 0) AS e FROM events GROUP BY 1$q$),
+	('agg_array_agg_ordered', 'aggregate', $q$SELECT status, array_agg(id ORDER BY id) FILTER (WHERE id < 30) AS ids FROM events GROUP BY 1$q$),
+	('agg_string_agg', 'aggregate', $q$SELECT status, string_agg(DISTINCT label, ',' ORDER BY label) AS ns FROM events GROUP BY 1$q$),
+	('agg_percentile_cont', 'aggregate', $q$SELECT status, percentile_cont(0.5) WITHIN GROUP (ORDER BY value_f) AS med FROM events GROUP BY 1$q$),
+	('agg_percentile_disc', 'aggregate', $q$SELECT status, percentile_disc(0.9) WITHIN GROUP (ORDER BY counter_a) AS p90 FROM events GROUP BY 1$q$),
+	('agg_mode', 'aggregate', $q$SELECT status, mode() WITHIN GROUP (ORDER BY category_id) AS m FROM events GROUP BY 1$q$),
+	('agg_stddev', 'aggregate', $q$SELECT status, round(stddev_samp(value_f)::numeric, 6) AS sd, round(var_pop(counter_a)::numeric, 6) AS v FROM events GROUP BY 1$q$),
+	('agg_corr', 'aggregate', $q$SELECT status, round(corr(value_f, value_num)::numeric, 6) AS c FROM events GROUP BY 1$q$),
+	('agg_regr', 'aggregate', $q$SELECT status, round(regr_slope(value_num::float8, value_f)::numeric, 6) AS c FROM events GROUP BY 1$q$),
+	('agg_jsonb_agg', 'aggregate', $q$SELECT status, jsonb_agg(id ORDER BY id) FILTER (WHERE id < 20) AS ids FROM events GROUP BY 1$q$),
+	('agg_json_object_agg', 'aggregate', $q$SELECT status, count(*) FILTER (WHERE jsonb_typeof(metrics -> 'm1') = 'number') AS n FROM events GROUP BY 1$q$),
+	('agg_sum_expr', 'aggregate', $q$SELECT status, sum(value_num * counter_a) AS s FROM events GROUP BY 1$q$),
+	('agg_sum_expr_case', 'aggregate', $q$SELECT status, sum(CASE WHEN flag_a THEN value_num ELSE 0 END) AS s FROM events GROUP BY 1$q$),
+	('agg_avg_expr_cast', 'aggregate', $q$SELECT status, avg(counter_a::numeric / 2) AS a FROM events GROUP BY 1$q$),
+	('agg_count_distinct', 'aggregate', $q$SELECT status, count(DISTINCT tenant_id) AS n FROM events GROUP BY 1$q$),
+	('agg_count_distinct_expr', 'aggregate', $q$SELECT status, count(DISTINCT category_id % 5) AS n FROM events GROUP BY 1$q$),
+	('agg_count_distinct_two', 'aggregate', $q$SELECT status, count(DISTINCT (tenant_id, category_id)) AS n FROM events GROUP BY 1$q$),
+	('agg_sum_distinct', 'aggregate', $q$SELECT status, sum(DISTINCT counter_a) AS s FROM events GROUP BY 1$q$),
+	('agg_filter_count', 'aggregate', $q$SELECT status, count(*) FILTER (WHERE flag_a) AS n, count(*) FILTER (WHERE value_num > 500) AS big FROM events GROUP BY 1$q$),
+	('agg_filter_sum', 'aggregate', $q$SELECT status, sum(value_num) FILTER (WHERE counter_a > 10) AS s FROM events GROUP BY 1$q$),
+	('agg_filter_count_distinct', 'aggregate', $q$SELECT status, count(DISTINCT tenant_id) FILTER (WHERE flag_a) AS n FROM events GROUP BY 1$q$),
+	('agg_no_group', 'aggregate', $q$SELECT count(*), sum(value_num), min(event_date), max(created_at) FROM events$q$),
+	('agg_no_group_filter', 'aggregate', $q$SELECT count(*) FILTER (WHERE status = 'paid'), avg(counter_a) FILTER (WHERE flag_a) FROM events$q$),
+	('agg_two_aggs_same_arg', 'aggregate', $q$SELECT status, min(counter_a) AS a, max(counter_a) AS b, sum(counter_a) AS c, count(counter_a) AS d FROM events GROUP BY 1$q$),
+	('select_distinct', 'distinct', $q$SELECT DISTINCT status FROM events$q$),
+	('select_distinct_two', 'distinct', $q$SELECT DISTINCT status, category_id FROM events$q$),
+	('select_distinct_expr', 'distinct', $q$SELECT DISTINCT date_trunc('month', event_date) FROM events$q$),
+	('distinct_on', 'distinct', $q$SELECT DISTINCT ON (tenant_id) tenant_id, id, created_at FROM events ORDER BY tenant_id, created_at DESC, id$q$),
+	('distinct_on_where', 'distinct', $q$SELECT DISTINCT ON (tenant_id, category_id) tenant_id, category_id, id FROM events WHERE status = 'paid' ORDER BY tenant_id, category_id, id DESC$q$),
+	('having_count', 'having', $q$SELECT status, count(*) AS n FROM events GROUP BY 1 HAVING count(*) > 40000$q$),
+	('having_sum', 'having', $q$SELECT category_id, sum(value_num) AS s FROM events GROUP BY 1 HAVING sum(value_num) > 5000000$q$),
+	('having_expr', 'having', $q$SELECT category_id, sum(value_num) AS s FROM events GROUP BY 1 HAVING sum(value_num) / count(*) > 400$q$),
+	('having_filter_agg', 'having', $q$SELECT category_id, count(*) AS n FROM events GROUP BY 1 HAVING count(*) FILTER (WHERE flag_a) > 10$q$),
+	('order_agg_limit', 'order-limit', $q$SELECT tenant_id, count(*) AS n FROM events GROUP BY 1 ORDER BY n DESC, tenant_id LIMIT 10$q$),
+	('order_sum_limit', 'order-limit', $q$SELECT tenant_id, sum(value_num) AS s FROM events GROUP BY 1 ORDER BY s DESC NULLS LAST, tenant_id LIMIT 5$q$),
+	('order_key_limit', 'order-limit', $q$SELECT category_id, count(*) AS n FROM events GROUP BY 1 ORDER BY category_id DESC LIMIT 5$q$),
+	('order_expr_limit', 'order-limit', $q$SELECT date_trunc('month', event_date)::date AS m, count(*) AS n FROM events GROUP BY 1 ORDER BY 1 DESC LIMIT 6$q$),
+	('order_agg_offset', 'order-limit', $q$SELECT tenant_id, count(*) AS n FROM events GROUP BY 1 ORDER BY n DESC, tenant_id LIMIT 5 OFFSET 5$q$),
+	('order_agg_expr_limit', 'order-limit', $q$SELECT tenant_id, sum(value_num) / count(*) AS a FROM events GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1 LIMIT 5$q$),
+	('rows_order_limit', 'order-limit', $q$SELECT id, created_at, value_num FROM events WHERE status = 'paid' ORDER BY created_at DESC, id LIMIT 20$q$),
+	('rows_order_expr_limit', 'order-limit', $q$SELECT id, value_num FROM events ORDER BY value_num * counter_a DESC NULLS LAST, id LIMIT 20$q$),
+	('window_over_agg', 'window', $q$SELECT status, count(*) AS n, sum(count(*)) OVER () AS total FROM events GROUP BY 1$q$),
+	('window_rank_over_agg', 'window', $q$SELECT tenant_id, count(*) AS n, rank() OVER (ORDER BY count(*) DESC) AS r FROM events GROUP BY 1$q$),
+	('window_row_number_first', 'window', $q$SELECT * FROM (SELECT id, tenant_id, created_at, row_number() OVER (PARTITION BY tenant_id ORDER BY created_at DESC, id) AS rn FROM events) t WHERE rn = 1$q$),
+	('window_running_sum_agg', 'window', $q$SELECT m, n, sum(n) OVER (ORDER BY m) AS running FROM (SELECT date_trunc('month', event_date) AS m, count(*) AS n FROM events GROUP BY 1) t$q$),
+	('window_lag_agg', 'window', $q$SELECT m, n, lag(n) OVER (ORDER BY m) AS prev FROM (SELECT date_trunc('month', event_date) AS m, count(*) AS n FROM events GROUP BY 1) t$q$),
+	('subselect_scalar_select', 'subquery', $q$SELECT status, count(*) AS n, (SELECT count(*) FROM dim_a) AS k FROM events GROUP BY 1$q$),
+	('subselect_scalar_where', 'subquery', $q$SELECT status, count(*) AS n FROM events WHERE value_num > (SELECT avg(value_num) FROM events) GROUP BY 1$q$),
+	('subselect_in_where', 'subquery', $q$SELECT status, count(*) AS n FROM events WHERE category_id IN (SELECT id FROM dim_a WHERE set_id = 2) GROUP BY 1$q$),
+	('subselect_exists_where', 'subquery', $q$SELECT status, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM tenants t WHERE t.id = e.tenant_id AND t.type = 'type_a') GROUP BY 1$q$),
+	('subselect_not_exists', 'subquery', $q$SELECT status, count(*) AS n FROM events e WHERE NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = e.tenant_id AND t.type = 'type_a') GROUP BY 1$q$),
+	('subselect_not_in', 'subquery', $q$SELECT status, count(*) AS n FROM events e WHERE category_id NOT IN (SELECT id FROM dim_a WHERE set_id = 2) GROUP BY 1$q$),
+	('subselect_from_agg_over_agg', 'subquery', $q$SELECT status, avg(n) AS a FROM (SELECT status, tenant_id, count(*) AS n FROM events GROUP BY 1, 2) t GROUP BY 1$q$),
+	('where_eq', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE category_id = 5 GROUP BY 1$q$),
+	('where_in_list', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE tenant_id IN (1, 5, 9, 33) GROUP BY 1$q$),
+	('where_any_array', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE tenant_id = ANY (ARRAY[1, 5, 9, 33]) GROUP BY 1$q$),
+	('where_between', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE event_date BETWEEN '2024-03-01' AND '2024-06-30' GROUP BY 1$q$),
+	('where_ts_range', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE created_at >= '2024-03-01' AND created_at < '2024-04-01' GROUP BY 1$q$),
+	('where_or_eq', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE category_id = 3 OR category_id = 7 OR tenant_id = 11 GROUP BY 1$q$),
+	('where_or_mixed', 'filter', $q$SELECT status, count(*) AS n FROM events WHERE category_id = 3 OR value_num > 900 GROUP BY 1$q$),
+	('where_is_null', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE status IS NULL GROUP BY 1$q$),
+	('where_is_not_null', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE label IS NOT NULL GROUP BY 1$q$),
+	('where_is_distinct_from', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE status IS DISTINCT FROM 'paid' GROUP BY 1$q$),
+	('where_is_not_distinct_from', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE status IS NOT DISTINCT FROM 'paid' GROUP BY 1$q$),
+	('where_like_prefix', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE label LIKE 'note_1%' GROUP BY 1$q$),
+	('where_like_infix', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE label LIKE '%_1%' GROUP BY 1$q$),
+	('where_ilike', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE label ILIKE 'NOTE_1%' GROUP BY 1$q$),
+	('where_regex', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE label ~ '^note_1[0-9]$' GROUP BY 1$q$),
+	('where_not_eq', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE status <> 'void' GROUP BY 1$q$),
+	('where_not_in', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE status NOT IN ('void', 'late') GROUP BY 1$q$),
+	('where_expr_col', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE value_num * counter_a > 5000 GROUP BY 1$q$),
+	('where_two_cols_cmp', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE counter_a > category_id GROUP BY 1$q$),
+	('where_func_col', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE lower(status) = 'paid' GROUP BY 1$q$),
+	('where_extract', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE extract(year FROM event_date) = 2024 GROUP BY 1$q$),
+	('where_date_trunc_eq', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE date_trunc('month', created_at) = '2024-05-01' GROUP BY 1$q$),
+	('where_jsonb_exists', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE metrics ? 'm2' GROUP BY 1$q$),
+	('where_jsonb_member_cmp', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE (metrics ->> 'm1')::float8 > 6 GROUP BY 1$q$),
+	('where_jsonb_contains', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE metrics @> '{"m5": 5.0}' GROUP BY 1$q$),
+	('where_bool_col', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE flag_a GROUP BY 1$q$),
+	('where_not_bool_col', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE NOT flag_a GROUP BY 1$q$),
+	('where_coalesce', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE coalesce(status, 'none') = 'none' GROUP BY 1$q$),
+	('where_case', 'filter', $q$SELECT category_id, count(*) AS n FROM events WHERE CASE WHEN flag_a THEN counter_a > 10 ELSE counter_a < 5 END GROUP BY 1$q$),
+	('join_inner_dim_group_dim', 'join', $q$SELECT k.name, count(*) AS n FROM events e JOIN dim_a k ON k.id = e.category_id GROUP BY 1$q$),
+	('join_inner_dim_group_fact', 'join', $q$SELECT e.status, count(*) AS n FROM events e JOIN dim_a k ON k.id = e.category_id WHERE k.set_id = 2 GROUP BY 1$q$),
+	('join_inner_dim_two', 'join', $q$SELECT k.set_id, t.type, count(*) AS n FROM events e JOIN dim_a k ON k.id = e.category_id JOIN tenants t ON t.id = e.tenant_id GROUP BY 1, 2$q$),
+	('join_left_dim', 'join', $q$SELECT k.name, count(*) AS n FROM events e LEFT JOIN dim_a k ON k.id = e.category_id AND k.set_id = 1 GROUP BY 1$q$),
+	('join_right_dim', 'join', $q$SELECT k.name, count(e.id) AS n FROM events e RIGHT JOIN dim_a k ON k.id = e.category_id GROUP BY 1$q$),
+	('join_full_dim', 'join', $q$SELECT k.name, count(e.id) AS n FROM events e FULL JOIN dim_a k ON k.id = e.category_id GROUP BY 1$q$),
+	('join_dim_agg_expr', 'join', $q$SELECT t.type, sum(e.value_num * k.set_id) AS s FROM events e JOIN dim_a k ON k.id = e.category_id JOIN tenants t ON t.id = e.tenant_id GROUP BY 1$q$),
+	('join_dim_filter_in', 'join', $q$SELECT e.status, count(*) AS n FROM events e JOIN tenants t ON t.id = e.tenant_id WHERE t.region IN ('region1', 'region2') GROUP BY 1$q$),
+	('join_using', 'join', $q$SELECT t.type, count(*) AS n FROM events e JOIN tenants t ON t.id = e.tenant_id GROUP BY 1$q$),
+	('join_nonequi', 'join', $q$SELECT k.name, count(*) AS n FROM events e JOIN dim_a k ON k.id <= e.category_id AND k.set_id = 1 GROUP BY 1$q$),
+	('join_self', 'join', $q$SELECT a.status, count(*) AS n FROM events a JOIN events b ON b.id = a.id + 1 GROUP BY 1$q$),
+	('join_cross_small', 'join', $q$SELECT k.set_id, count(*) AS n FROM events e CROSS JOIN dim_a k WHERE k.id = e.category_id GROUP BY 1$q$),
+	('join_semi_in', 'join', $q$SELECT status, count(*) AS n FROM events WHERE tenant_id IN (SELECT id FROM tenants WHERE type = 'type_b') GROUP BY 1$q$),
+	('lateral_jsonb_each', 'lateral', $q$SELECT r.key, count(*) AS n FROM events ev, jsonb_each(ev.metrics) r GROUP BY 1$q$),
+	('lateral_jsonb_each_value', 'lateral', $q$SELECT r.key, round(sum((r.value #>> '{}')::numeric), 3) AS s FROM events ev, jsonb_each(ev.metrics) r GROUP BY 1$q$),
+	('lateral_subselect_limit1', 'lateral', $q$SELECT k.set_id, count(*) AS n FROM events e CROSS JOIN LATERAL (SELECT set_id FROM dim_a k WHERE k.id = e.category_id LIMIT 1) k GROUP BY 1$q$),
+	('lateral_generate_series', 'lateral', $q$SELECT g, count(*) AS n FROM events e CROSS JOIN LATERAL generate_series(1, e.counter_a % 3) g GROUP BY 1$q$),
+	('cte_plain', 'cte', $q$WITH p AS (SELECT status, value_num FROM events WHERE flag_a) SELECT status, sum(value_num) AS s FROM p GROUP BY 1$q$),
+	('cte_materialized', 'cte', $q$WITH p AS MATERIALIZED (SELECT status, value_num FROM events WHERE flag_a) SELECT status, sum(value_num) AS s FROM p GROUP BY 1$q$),
+	('cte_two_refs', 'cte', $q$WITH p AS (SELECT status, count(*) AS n FROM events GROUP BY 1) SELECT a.status, a.n, b.n AS n2 FROM p a JOIN p b ON a.status = b.status$q$),
+	('cte_agg_then_agg', 'cte', $q$WITH p AS (SELECT tenant_id, sum(value_num) AS s FROM events GROUP BY 1) SELECT count(*), sum(s), max(s) FROM p$q$),
+	('union_all_aggs', 'union', $q$SELECT 'a'::text AS src, status, count(*) AS n FROM events GROUP BY 2 UNION ALL SELECT 'b', status, sum(counter_a) FROM events WHERE flag_a GROUP BY 2$q$),
+	('union_all_then_agg', 'union', $q$SELECT status, sum(n) AS n FROM (SELECT status, count(*) AS n FROM events GROUP BY 1 UNION ALL SELECT status, count(*) FROM events WHERE flag_a GROUP BY 1) u GROUP BY 1$q$),
+	('union_all_rows_agg', 'union', $q$SELECT status, count(*) AS n FROM (SELECT status FROM events WHERE counter_a < 10 UNION ALL SELECT status FROM events WHERE counter_a > 40) u GROUP BY 1$q$),
+	('rows_select_where_limit', 'rows', $q$SELECT id, status, value_num FROM events WHERE tenant_id = 7 ORDER BY id LIMIT 50$q$),
+	('rows_point_lookup', 'rows', $q$SELECT id, status FROM events WHERE id = 12345$q$),
+	('rows_count_where', 'rows', $q$SELECT count(*) FROM events WHERE status = 'paid' AND flag_a$q$),
+	('rows_exists_scalar', 'rows', $q$SELECT EXISTS (SELECT 1 FROM events WHERE status = 'void' AND value_num > 999)$q$),
+	('two_level_per_entity', 'two-level', $q$SELECT status, avg(n) AS a FROM (SELECT tenant_id, status, count(*) AS n FROM events GROUP BY 1, 2) t GROUP BY 1$q$),
+	('key_at_time_zone', 'group-key', $q$SELECT (created_at AT TIME ZONE 'UTC')::date AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_ts_cast_date', 'group-key', $q$SELECT created_at::date AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_date_plus_int', 'group-key', $q$SELECT event_date + 7 AS d, count(*) FROM events GROUP BY 1$q$),
+	('key_extract_epoch_div', 'group-key', $q$SELECT (extract(epoch FROM created_at) / 86400)::int / 30 AS b, count(*) FROM events GROUP BY 1$q$),
+	('key_ntile_bucket', 'group-key', $q$SELECT width_bucket(value_num, 0, 1000, 10) AS b, count(*) FROM events GROUP BY 1$q$),
+	('key_concat', 'group-key', $q$SELECT status || '/' || category_id AS k, count(*) FROM events GROUP BY 1$q$),
+	('key_row_comparison', 'group-key', $q$SELECT (value_num > 500 AND counter_a > 25) AS big, count(*) FROM events GROUP BY 1$q$),
+	('key_nullif', 'group-key', $q$SELECT nullif(status, 'void') AS s, count(*) FROM events GROUP BY 1$q$),
+	('key_greatest', 'group-key', $q$SELECT greatest(counter_a, category_id) AS g, count(*) FROM events GROUP BY 1$q$),
+	('key_subquery_scalar', 'group-key', $q$SELECT (SELECT t.type FROM tenants t WHERE t.id = e.tenant_id) AS ty, count(*) FROM events e GROUP BY 1$q$),
+	('key_jsonb_member_text', 'group-key', $q$SELECT metrics ->> 'm1' AS m1, count(*) FROM events GROUP BY 1$q$),
+	('key_jsonb_member_float', 'group-key', $q$SELECT (metrics ->> 'm1')::float8 AS m1, count(*) FROM events GROUP BY 1$q$),
+	('key_jsonb_has_key', 'group-key', $q$SELECT metrics ? 'm2' AS has_m2, count(*) FROM events GROUP BY 1$q$),
+	('key_jsonb_typeof', 'group-key', $q$SELECT jsonb_typeof(metrics -> 'm1') AS ty, count(*) FROM events GROUP BY 1$q$),
+	('sets_grouping_sets_empty_only', 'sets', $q$SELECT count(*) AS n, sum(value_num) AS s FROM events GROUP BY GROUPING SETS (())$q$),
+	('sets_rollup_date_parts', 'sets', $q$SELECT extract(year FROM event_date)::int AS y, extract(month FROM event_date)::int AS m, count(*) AS n FROM events GROUP BY ROLLUP (1, 2) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_cube_expr_filter', 'sets', $q$SELECT upper(status) AS s, category_id % 2 AS k, count(*) FILTER (WHERE flag_a) AS n, sum(value_num) AS a FROM events GROUP BY CUBE (1, 2) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3, 4$q$),
+	('sets_rollup_count_distinct', 'sets', $q$SELECT status, count(DISTINCT tenant_id) AS n FROM events GROUP BY ROLLUP (status) ORDER BY 1 NULLS FIRST, 2$q$),
+	('sets_rollup_subselect_join', 'sets', $q$SELECT p.region, p.k, count(*) AS n FROM (SELECT t.region, upper(e.status) AS k FROM events e JOIN tenants t ON t.id = e.tenant_id) p GROUP BY ROLLUP (p.region, p.k) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_rollup_view', 'sets', $q$SELECT m, k, count(*) AS n FROM v_keys GROUP BY ROLLUP (m, k) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3$q$),
+	('sets_rollup_order_limit', 'sets', $q$SELECT status, category_id % 3 AS k, count(*) AS n FROM events GROUP BY ROLLUP (1, 2) ORDER BY 3 DESC, 1 NULLS FIRST, 2 NULLS FIRST LIMIT 5$q$),
+	('sets_union_all_rollup_arms', 'sets', $q$SELECT status, NULL::int AS k, count(*) AS n FROM events GROUP BY 1 UNION ALL SELECT status, category_id, count(*) FROM events GROUP BY 1, 2 UNION ALL SELECT NULL, NULL, count(*) FROM events$q$),
+	('view_group', 'view', $q$SELECT m, count(*) AS n FROM v_keys GROUP BY 1$q$),
+	('view_group_where', 'view', $q$SELECT k, count(*) AS n FROM v_keys WHERE m = 'type_a' GROUP BY 1$q$),
+	('view_with_group_inside', 'view', $q$SELECT status, n FROM v_counts WHERE n > 100$q$),
+	('agg_array_agg_distinct', 'aggregate', $q$SELECT status, array_agg(DISTINCT category_id) AS ks FROM events GROUP BY 1$q$),
+	('agg_bit_and', 'aggregate', $q$SELECT status, bit_and(counter_a) AS b FROM events GROUP BY 1$q$),
+	('agg_min_max_text', 'aggregate', $q$SELECT category_id, min(status) AS a, max(label) AS b FROM events GROUP BY 1$q$),
+	('agg_sum_int8_cast', 'aggregate', $q$SELECT status, sum(counter_a::bigint * 1000000) AS s FROM events GROUP BY 1$q$),
+	('agg_coalesce_sum', 'aggregate', $q$SELECT status, coalesce(sum(value_num), 0) AS s FROM events GROUP BY 1$q$),
+	('agg_ratio_output', 'aggregate', $q$SELECT status, round(100.0 * count(*) / sum(count(*)) OVER (), 2) AS pct FROM events GROUP BY 1$q$),
+	('agg_output_arith', 'aggregate', $q$SELECT status, sum(value_num) / NULLIF(count(*), 0) AS a, round(avg(counter_a), 2) AS q FROM events GROUP BY 1$q$),
+	('agg_filter_in_rollup_all', 'aggregate', $q$SELECT category_id, count(*) FILTER (WHERE status = 'paid') AS paid, count(*) FILTER (WHERE status = 'void') AS v FROM events GROUP BY 1$q$),
+	('agg_count_distinct_filter_key', 'aggregate', $q$SELECT category_id, count(DISTINCT tenant_id) AS n FROM events WHERE status = 'paid' GROUP BY 1$q$),
+	('agg_count_distinct_text', 'aggregate', $q$SELECT category_id, count(DISTINCT label) AS n FROM events GROUP BY 1$q$),
+	('agg_count_distinct_no_group', 'aggregate', $q$SELECT count(DISTINCT tenant_id) AS n FROM events$q$),
+	('agg_count_distinct_id_notnull', 'aggregate', $q$SELECT status, count(DISTINCT id) AS n FROM events GROUP BY 1$q$),
+	('agg_ordered_agg_in_call', 'aggregate', $q$SELECT tenant_id, (array_agg(status ORDER BY created_at DESC, id))[1] AS last_status FROM events GROUP BY 1$q$),
+	('agg_first_by_min_ts', 'aggregate', $q$SELECT tenant_id, min(created_at) AS first_ts, max(created_at) AS last_ts FROM events GROUP BY 1$q$),
+	('fetch_first', 'order-limit', $q$SELECT tenant_id, count(*) AS n FROM events GROUP BY 1 ORDER BY n DESC, tenant_id FETCH FIRST 5 ROWS ONLY$q$),
+	('order_key_nulls_last_limit', 'order-limit', $q$SELECT label, count(*) AS n FROM events GROUP BY 1 ORDER BY label NULLS LAST LIMIT 7$q$),
+	('order_by_agg_and_key_with_ties', 'order-limit', $q$SELECT category_id, status, count(*) AS n FROM events GROUP BY 1, 2 ORDER BY n DESC, category_id, status LIMIT 7$q$),
+	('order_distinct_limit', 'order-limit', $q$SELECT DISTINCT category_id FROM events ORDER BY category_id DESC LIMIT 5$q$),
+	('rows_order_limit_offset', 'order-limit', $q$SELECT id, created_at FROM events WHERE category_id = 3 ORDER BY created_at DESC, id LIMIT 10 OFFSET 40$q$),
+	('rows_order_limit_join', 'order-limit', $q$SELECT e.id, t.type FROM events e JOIN tenants t ON t.id = e.tenant_id WHERE e.status = 'paid' ORDER BY e.created_at DESC, e.id LIMIT 10$q$),
+	('rows_in_list_order_limit', 'order-limit', $q$SELECT id, created_at FROM events WHERE tenant_id IN (4, 8, 15) ORDER BY created_at DESC, id LIMIT 10$q$),
+	('window_count_over_partition', 'window', $q$SELECT * FROM (SELECT id, tenant_id, count(*) OVER (PARTITION BY tenant_id) AS n FROM events WHERE category_id = 3) t WHERE n > 200 ORDER BY id LIMIT 10$q$),
+	('window_rank_in_group', 'window', $q$SELECT * FROM (SELECT tenant_id, category_id, count(*) AS n, rank() OVER (PARTITION BY tenant_id ORDER BY count(*) DESC, category_id) AS r FROM events GROUP BY 1, 2) t WHERE r <= 2 ORDER BY 1, 2$q$),
+	('window_pct_of_total', 'window', $q$SELECT category_id, count(*) AS n, count(*) * 1.0 / sum(count(*)) OVER () AS share FROM events GROUP BY 1$q$),
+	('subselect_correlated_select_list', 'subquery', $q$SELECT t.id, (SELECT count(*) FROM events e WHERE e.tenant_id = t.id) AS n FROM tenants t WHERE t.id <= 20 ORDER BY 1$q$),
+	('subselect_correlated_sum_select_list', 'subquery', $q$SELECT t.id, (SELECT sum(value_num) FROM events e WHERE e.tenant_id = t.id AND e.status = 'paid') AS s FROM tenants t WHERE t.id <= 20 ORDER BY 1$q$),
+	('subselect_exists_select_list', 'subquery', $q$SELECT t.id, EXISTS (SELECT 1 FROM events e WHERE e.tenant_id = t.id AND e.status = 'void') AS has_void FROM tenants t WHERE t.id <= 20 ORDER BY 1$q$),
+	('subselect_lateral_agg', 'subquery', $q$SELECT t.id, s.n, s.a FROM tenants t CROSS JOIN LATERAL (SELECT count(*) AS n, sum(value_num) AS a FROM events e WHERE e.tenant_id = t.id) s WHERE t.id <= 20 ORDER BY 1$q$),
+	('subselect_lateral_agg_left', 'subquery', $q$SELECT t.id, s.n FROM tenants t LEFT JOIN LATERAL (SELECT count(*) AS n FROM events e WHERE e.tenant_id = t.id AND e.flag_a) s ON true WHERE t.id <= 20 ORDER BY 1$q$),
+	('subselect_in_values', 'subquery', $q$SELECT status, count(*) AS n FROM events WHERE tenant_id IN (SELECT v FROM (VALUES (1), (5), (9)) q(v)) GROUP BY 1$q$),
+	('subselect_any_subselect_array', 'subquery', $q$SELECT status, count(*) AS n FROM events WHERE tenant_id = ANY (SELECT id FROM tenants WHERE region = 'region2') GROUP BY 1$q$),
+	('subselect_row_in', 'subquery', $q$SELECT status, count(*) AS n FROM events WHERE (tenant_id, category_id) IN ((1, 2), (3, 4), (5, 6)) GROUP BY 1$q$),
+	('subselect_scalar_in_having', 'subquery', $q$SELECT category_id, count(*) AS n FROM events GROUP BY 1 HAVING count(*) > (SELECT count(*) / 40 FROM events)$q$),
+	('subselect_join_agg_dim', 'subquery', $q$SELECT t.type, s.n FROM tenants t JOIN (SELECT tenant_id, count(*) AS n FROM events GROUP BY 1) s ON s.tenant_id = t.id ORDER BY 1, 2 LIMIT 10$q$),
+	('join_spine_left', 'join', $q$SELECT d::date AS day, count(e.id) AS n FROM generate_series(date '2024-01-01', date '2024-01-31', interval '1 day') d LEFT JOIN events e ON e.event_date = d::date GROUP BY 1$q$),
+	('join_values_list', 'join', $q$SELECT v.label, count(*) AS n FROM events e JOIN (VALUES (1, 'a'), (2, 'b'), (3, 'a')) v(id, label) ON v.id = e.category_id GROUP BY 1$q$),
+	('join_agg_of_join_key_in_list', 'join', $q$SELECT t.region, count(*) AS n FROM events e JOIN tenants t ON t.id = e.tenant_id WHERE e.tenant_id IN (1, 2, 3, 4, 5, 6) GROUP BY 1$q$),
+	('join_three_dims_chain', 'join', $q$SELECT t.region, k.set_id, e.status, count(*) AS n, sum(e.value_num) AS a FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN dim_a k ON k.id = e.category_id GROUP BY 1, 2, 3$q$),
+	('join_group_by_dim_pk_only', 'join', $q$SELECT t.id, count(*) AS n FROM events e JOIN tenants t ON t.id = e.tenant_id GROUP BY t.id$q$),
+	('lateral_unnest_array_col', 'lateral', $q$SELECT x, count(*) AS n FROM events e CROSS JOIN LATERAL unnest(ARRAY[e.category_id, e.category_id + 1]) x GROUP BY 1$q$),
+	('cte_two_aggs_joined', 'cte', $q$WITH a AS (SELECT tenant_id, count(*) AS n FROM events GROUP BY 1), b AS (SELECT tenant_id, sum(value_num) AS s FROM events GROUP BY 1) SELECT a.tenant_id, a.n, b.s FROM a JOIN b USING (tenant_id) ORDER BY 1 LIMIT 10$q$),
+	('cte_filter_then_group', 'cte', $q$WITH recent AS (SELECT * FROM events WHERE event_date >= '2025-01-01') SELECT status, count(*) AS n FROM recent GROUP BY 1$q$),
+	('cte_chain', 'cte', $q$WITH a AS (SELECT status, category_id, value_num FROM events WHERE flag_a), b AS (SELECT status, sum(value_num) AS s FROM a GROUP BY 1, category_id) SELECT status, max(s) FROM b GROUP BY 1$q$),
+	('union_all_agg_arms_same_key', 'union', $q$SELECT 'all'::text AS bucket, count(*) AS n FROM events UNION ALL SELECT 'paid', count(*) FROM events WHERE status = 'paid' UNION ALL SELECT 'void', count(*) FROM events WHERE status = 'void'$q$),
+	('union_distinct_arms', 'union', $q$SELECT status FROM events WHERE category_id = 1 UNION SELECT status FROM events WHERE category_id = 2$q$),
+	('intersect_arms', 'union', $q$SELECT tenant_id FROM events WHERE category_id = 1 INTERSECT SELECT tenant_id FROM events WHERE category_id = 2$q$),
+	('rows_only_columns', 'rows', $q$SELECT status, category_id FROM events WHERE tenant_id = 3 LIMIT 5$q$),
+	('rows_only_keyword', 'rows', $q$SELECT status, count(*) FROM ONLY events GROUP BY 1$q$);
+SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
+                 slug                 |   family    | pushed | differences | order_differs |    why     
+--------------------------------------+-------------+--------+-------------+---------------+------------
+ key_ordinal                          | group-key   | t      |           0 | f             | 
+ key_alias                            | group-key   | t      |           0 | f             | 
+ key_alias_expr                       | group-key   | t      |           0 | f             | 
+ key_two_ordinals                     | group-key   | t      |           0 | f             | 
+ key_date_trunc_ts                    | group-key   | t      |           0 | f             | 
+ key_date_trunc_date                  | group-key   | t      |           0 | f             | 
+ key_extract_year                     | group-key   | t      |           0 | f             | 
+ key_extract_dow_ts                   | group-key   | t      |           0 | f             | 
+ key_to_char                          | group-key   | t      |           0 | f             | 
+ key_case                             | group-key   | t      |           0 | f             | 
+ key_case_two_cols                    | group-key   | t      |           0 | f             | 
+ key_coalesce                         | group-key   | t      |           0 | f             | 
+ key_arith                            | group-key   | t      |           0 | f             | 
+ key_arith_two_cols                   | group-key   | t      |           0 | f             | 
+ key_cast                             | group-key   | t      |           0 | f             | 
+ key_text_fn                          | group-key   | t      |           0 | f             | 
+ key_bool                             | group-key   | t      |           0 | f             | 
+ key_float                            | group-key   | t      |           0 | f             | 
+ key_jsonb_member                     | group-key   | f      |           0 | f             | group_key
+ key_const_plus_col                   | group-key   | t      |           0 | f             | 
+ key_func_of_join_col                 | group-key   | t      |           0 | f             | 
+ sets_grouping_sets_cols              | sets        | t      |           0 | f             | 
+ sets_rollup_cols                     | sets        | t      |           0 | f             | 
+ sets_cube_cols                       | sets        | t      |           0 | f             | 
+ sets_grouping_fn                     | sets        | t      |           0 | f             | 
+ sets_rollup_expr_direct              | sets        | t      |           0 | f             | 
+ sets_rollup_expr_subselect           | sets        | t      |           0 | f             | 
+ sets_having                          | sets        | t      |           0 | f             | 
+ sets_cte                             | sets        | t      |           0 | f             | 
+ sets_cte_materialized                | sets        | f      |           0 | f             | from_shape
+ sets_join_dim_key                    | sets        | t      |           0 | f             | 
+ sets_lateral_each_key                | sets        | t      |           0 | f             | 
+ agg_count_star                       | aggregate   | t      |           0 | f             | 
+ agg_count_col                        | aggregate   | t      |           0 | f             | 
+ agg_sum_avg_numeric                  | aggregate   | t      |           0 | f             | 
+ agg_sum_avg_int                      | aggregate   | t      |           0 | f             | 
+ agg_sum_avg_float                    | aggregate   | t      |           0 | f             | 
+ agg_min_max                          | aggregate   | t      |           0 | f             | 
+ agg_bool_and_or                      | aggregate   | t      |           0 | f             | 
+ agg_every                            | aggregate   | t      |           0 | f             | 
+ agg_array_agg_ordered                | aggregate   | t      |           0 | f             | 
+ agg_string_agg                       | aggregate   | t      |           0 | f             | 
+ agg_percentile_cont                  | aggregate   | t      |           0 | f             | 
+ agg_percentile_disc                  | aggregate   | t      |           0 | f             | 
+ agg_mode                             | aggregate   | t      |           0 | f             | 
+ agg_stddev                           | aggregate   | t      |           0 | f             | 
+ agg_corr                             | aggregate   | t      |           0 | f             | 
+ agg_regr                             | aggregate   | t      |           0 | f             | 
+ agg_jsonb_agg                        | aggregate   | t      |           0 | f             | 
+ agg_json_object_agg                  | aggregate   | f      |           0 | f             | aggregate
+ agg_sum_expr                         | aggregate   | t      |           0 | f             | 
+ agg_sum_expr_case                    | aggregate   | t      |           0 | f             | 
+ agg_avg_expr_cast                    | aggregate   | t      |           0 | f             | 
+ agg_count_distinct                   | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_expr              | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_two               | aggregate   | t      |           0 | f             | 
+ agg_sum_distinct                     | aggregate   | t      |           0 | f             | 
+ agg_filter_count                     | aggregate   | t      |           0 | f             | 
+ agg_filter_sum                       | aggregate   | t      |           0 | f             | 
+ agg_filter_count_distinct            | aggregate   | t      |           0 | f             | 
+ agg_no_group                         | aggregate   | t      |           0 | f             | 
+ agg_no_group_filter                  | aggregate   | t      |           0 | f             | 
+ agg_two_aggs_same_arg                | aggregate   | t      |           0 | f             | 
+ select_distinct                      | distinct    | t      |           0 | f             | 
+ select_distinct_two                  | distinct    | t      |           0 | f             | 
+ select_distinct_expr                 | distinct    | t      |           0 | f             | 
+ distinct_on                          | distinct    | t      |           0 | f             | 
+ distinct_on_where                    | distinct    | t      |           0 | f             | 
+ having_count                         | having      | t      |           0 | f             | 
+ having_sum                           | having      | t      |           0 | f             | 
+ having_expr                          | having      | t      |           0 | f             | 
+ having_filter_agg                    | having      | t      |           0 | f             | 
+ order_agg_limit                      | order-limit | t      |           0 | f             | 
+ order_sum_limit                      | order-limit | t      |           0 | f             | 
+ order_key_limit                      | order-limit | t      |           0 | f             | 
+ order_expr_limit                     | order-limit | t      |           0 | f             | 
+ order_agg_offset                     | order-limit | t      |           0 | f             | 
+ order_agg_expr_limit                 | order-limit | t      |           0 | f             | 
+ rows_order_limit                     | order-limit | t      |           0 | f             | 
+ rows_order_expr_limit                | order-limit | t      |           0 | f             | 
+ window_over_agg                      | window      | t      |           0 | f             | 
+ window_rank_over_agg                 | window      | t      |           0 | f             | 
+ window_row_number_first              | window      | t      |           0 | f             | 
+ window_running_sum_agg               | window      | t      |           0 | f             | 
+ window_lag_agg                       | window      | t      |           0 | f             | 
+ subselect_scalar_select              | subquery    | t      |           0 | f             | 
+ subselect_scalar_where               | subquery    | t      |           0 | f             | 
+ subselect_in_where                   | subquery    | t      |           0 | f             | 
+ subselect_exists_where               | subquery    | t      |           0 | f             | 
+ subselect_not_exists                 | subquery    | t      |           0 | f             | 
+ subselect_not_in                     | subquery    | t      |           0 | f             | 
+ subselect_from_agg_over_agg          | subquery    | t      |           0 | f             | 
+ where_eq                             | filter      | t      |           0 | f             | 
+ where_in_list                        | filter      | t      |           0 | f             | 
+ where_any_array                      | filter      | t      |           0 | f             | 
+ where_between                        | filter      | t      |           0 | f             | 
+ where_ts_range                       | filter      | t      |           0 | f             | 
+ where_or_eq                          | filter      | t      |           0 | f             | 
+ where_or_mixed                       | filter      | t      |           0 | f             | 
+ where_is_null                        | filter      | t      |           0 | f             | 
+ where_is_not_null                    | filter      | t      |           0 | f             | 
+ where_is_distinct_from               | filter      | t      |           0 | f             | 
+ where_is_not_distinct_from           | filter      | t      |           0 | f             | 
+ where_like_prefix                    | filter      | t      |           0 | f             | 
+ where_like_infix                     | filter      | t      |           0 | f             | 
+ where_ilike                          | filter      | t      |           0 | f             | 
+ where_regex                          | filter      | t      |           0 | f             | 
+ where_not_eq                         | filter      | t      |           0 | f             | 
+ where_not_in                         | filter      | t      |           0 | f             | 
+ where_expr_col                       | filter      | t      |           0 | f             | 
+ where_two_cols_cmp                   | filter      | t      |           0 | f             | 
+ where_func_col                       | filter      | t      |           0 | f             | 
+ where_extract                        | filter      | t      |           0 | f             | 
+ where_date_trunc_eq                  | filter      | t      |           0 | f             | 
+ where_jsonb_exists                   | filter      | f      |           0 | f             | where
+ where_jsonb_member_cmp               | filter      | t      |           0 | f             | 
+ where_jsonb_contains                 | filter      | f      |           0 | f             | where
+ where_bool_col                       | filter      | t      |           0 | f             | 
+ where_not_bool_col                   | filter      | t      |           0 | f             | 
+ where_coalesce                       | filter      | t      |           0 | f             | 
+ where_case                           | filter      | t      |           0 | f             | 
+ join_inner_dim_group_dim             | join        | t      |           0 | f             | 
+ join_inner_dim_group_fact            | join        | t      |           0 | f             | 
+ join_inner_dim_two                   | join        | t      |           0 | f             | 
+ join_left_dim                        | join        | t      |           0 | f             | 
+ join_right_dim                       | join        | t      |           0 | f             | 
+ join_full_dim                        | join        | t      |           0 | f             | 
+ join_dim_agg_expr                    | join        | t      |           0 | f             | 
+ join_dim_filter_in                   | join        | t      |           0 | f             | 
+ join_using                           | join        | t      |           0 | f             | 
+ join_nonequi                         | join        | t      |           0 | f             | 
+ join_self                            | join        | t      |           0 | f             | 
+ join_cross_small                     | join        | t      |           0 | f             | 
+ join_semi_in                         | join        | t      |           0 | f             | 
+ lateral_jsonb_each                   | lateral     | t      |           0 | f             | 
+ lateral_jsonb_each_value             | lateral     | f      |           0 | f             | aggregate
+ lateral_subselect_limit1             | lateral     | t      |           0 | f             | 
+ lateral_generate_series              | lateral     | t      |           0 | f             | 
+ cte_plain                            | cte         | t      |           0 | f             | 
+ cte_materialized                     | cte         | f      |           0 | f             | from_shape
+ cte_two_refs                         | cte         | t      |           0 | f             | 
+ cte_agg_then_agg                     | cte         | t      |           0 | f             | 
+ union_all_aggs                       | union       | t      |           0 | f             | 
+ union_all_then_agg                   | union       | t      |           0 | f             | 
+ union_all_rows_agg                   | union       | t      |           0 | f             | 
+ rows_select_where_limit              | rows        | t      |           0 | f             | 
+ rows_point_lookup                    | rows        | f      |           0 | f             | where
+ rows_count_where                     | rows        | t      |           0 | f             | 
+ rows_exists_scalar                   | rows        | f      |           0 | f             | 
+ two_level_per_entity                 | two-level   | t      |           0 | f             | 
+ key_at_time_zone                     | group-key   | t      |           0 | f             | 
+ key_ts_cast_date                     | group-key   | t      |           0 | f             | 
+ key_date_plus_int                    | group-key   | t      |           0 | f             | 
+ key_extract_epoch_div                | group-key   | t      |           0 | f             | 
+ key_ntile_bucket                     | group-key   | t      |           0 | f             | 
+ key_concat                           | group-key   | t      |           0 | f             | 
+ key_row_comparison                   | group-key   | t      |           0 | f             | 
+ key_nullif                           | group-key   | t      |           0 | f             | 
+ key_greatest                         | group-key   | t      |           0 | f             | 
+ key_subquery_scalar                  | group-key   | t      |           0 | f             | 
+ key_jsonb_member_text                | group-key   | f      |           0 | f             | group_key
+ key_jsonb_member_float               | group-key   | t      |           0 | f             | 
+ key_jsonb_has_key                    | group-key   | f      |           0 | f             | group_key
+ key_jsonb_typeof                     | group-key   | f      |           0 | f             | group_key
+ sets_grouping_sets_empty_only        | sets        | t      |           0 | f             | 
+ sets_rollup_date_parts               | sets        | t      |           0 | f             | 
+ sets_cube_expr_filter                | sets        | t      |           0 | f             | 
+ sets_rollup_count_distinct           | sets        | t      |           0 | f             | 
+ sets_rollup_subselect_join           | sets        | t      |           0 | f             | 
+ sets_rollup_view                     | sets        | t      |           0 | f             | 
+ sets_rollup_order_limit              | sets        | t      |           0 | f             | 
+ sets_union_all_rollup_arms           | sets        | t      |           0 | f             | 
+ view_group                           | view        | t      |           0 | f             | 
+ view_group_where                     | view        | t      |           0 | f             | 
+ view_with_group_inside               | view        | t      |           0 | f             | 
+ agg_array_agg_distinct               | aggregate   | t      |           0 | f             | 
+ agg_bit_and                          | aggregate   | t      |           0 | f             | 
+ agg_min_max_text                     | aggregate   | t      |           0 | f             | 
+ agg_sum_int8_cast                    | aggregate   | t      |           0 | f             | 
+ agg_coalesce_sum                     | aggregate   | t      |           0 | f             | 
+ agg_ratio_output                     | aggregate   | t      |           0 | f             | 
+ agg_output_arith                     | aggregate   | t      |           0 | f             | 
+ agg_filter_in_rollup_all             | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_filter_key        | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_text              | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_no_group          | aggregate   | t      |           0 | f             | 
+ agg_count_distinct_id_notnull        | aggregate   | t      |           0 | f             | 
+ agg_ordered_agg_in_call              | aggregate   | t      |           0 | f             | 
+ agg_first_by_min_ts                  | aggregate   | t      |           0 | f             | 
+ fetch_first                          | order-limit | t      |           0 | f             | 
+ order_key_nulls_last_limit           | order-limit | t      |           0 | f             | 
+ order_by_agg_and_key_with_ties       | order-limit | t      |           0 | f             | 
+ order_distinct_limit                 | order-limit | t      |           0 | f             | 
+ rows_order_limit_offset              | order-limit | t      |           0 | f             | 
+ rows_order_limit_join                | order-limit | t      |           0 | f             | 
+ rows_in_list_order_limit             | order-limit | t      |           0 | f             | 
+ window_count_over_partition          | window      | f      |           0 | f             | from_shape
+ window_rank_in_group                 | window      | t      |           0 | f             | 
+ window_pct_of_total                  | window      | t      |           0 | f             | 
+ subselect_correlated_select_list     | subquery    | t      |           0 | f             | 
+ subselect_correlated_sum_select_list | subquery    | t      |           0 | f             | 
+ subselect_exists_select_list         | subquery    | t      |           0 | f             | 
+ subselect_lateral_agg                | subquery    | t      |           0 | f             | 
+ subselect_lateral_agg_left           | subquery    | t      |           0 | f             | 
+ subselect_in_values                  | subquery    | t      |           0 | f             | 
+ subselect_any_subselect_array        | subquery    | t      |           0 | f             | 
+ subselect_row_in                     | subquery    | t      |           0 | f             | 
+ subselect_scalar_in_having           | subquery    | t      |           0 | f             | 
+ subselect_join_agg_dim               | subquery    | t      |           0 | f             | 
+ join_spine_left                      | join        | t      |           0 | f             | 
+ join_values_list                     | join        | t      |           0 | f             | 
+ join_agg_of_join_key_in_list         | join        | t      |           0 | f             | 
+ join_three_dims_chain                | join        | t      |           0 | f             | 
+ join_group_by_dim_pk_only            | join        | t      |           0 | f             | 
+ lateral_unnest_array_col             | lateral     | t      |           0 | f             | 
+ cte_two_aggs_joined                  | cte         | t      |           0 | f             | 
+ cte_filter_then_group                | cte         | t      |           0 | f             | 
+ cte_chain                            | cte         | t      |           0 | f             | 
+ union_all_agg_arms_same_key          | union       | t      |           0 | f             | 
+ union_distinct_arms                  | union       | f      |           0 | f             | cost
+ intersect_arms                       | union       | f      |           0 | f             | 
+ rows_only_columns                    | rows        | f      |           0 | f             | cost
+ rows_only_keyword                    | rows        | t      |           0 | f             | 
+(223 rows)
+
+DROP FUNCTION survey(text);
+DROP TABLE survey_q;
+DROP VIEW v_keys, v_counts;
+DROP TABLE events, tenants, dim_a;
+DROP EXTENSION pg_sift;

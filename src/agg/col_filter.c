@@ -57,7 +57,16 @@ filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
 	sift_col_filter(cu, pred, 1, sel);
 }
 
-/* the rows whose value passes, on the encoded form of the unit: the strings are not decoded unless the prefixes cannot decide */
+static void
+filter_elem_op(const SiftColUnit *cu, SiftColSel *sel, void *gp)
+{
+	sift_col_filter_group(cu, gp, sel);
+}
+
+/*
+ * the rows whose value passes, on the encoded form of the unit: the strings are not decoded unless the prefixes cannot decide. A test of an element leaf
+ * keeps the rows with an element that passes (a row the encoded form cannot decide stays).
+ */
 bool
 col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
@@ -72,7 +81,14 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
 	}
 	pred = sift_aggfilt_str_pred(t, src->fvals, t->leaf);
-	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
+	if (src->lay->leaf[t->leaf].parent >= 0)
+	{
+		SiftColGroupPred gp = {.group = src->lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
+
+		sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_elem_op, &gp);
+	}
+	else
+		sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
 	return true;
 }
 

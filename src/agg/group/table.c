@@ -172,7 +172,7 @@ direct_layout(AggExec *ex)
 }
 
 /* a new group of an id tuple in hash mode, in slot `pos` of its probe */
-static pg_noinline uint32
+pg_noinline uint32
 hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 {
 	int			nk = ex->spec->nkeys;
@@ -204,18 +204,6 @@ hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 		ex->nhslot = nn;
 	}
 	return g;
-}
-
-/* the probe for `nk` ids, a constant where it is inlined: the hash and the comparison unroll */
-static pg_attribute_always_inline uint32
-hash_probe(AggExec *ex, const uint32 *ids, const int nk, uint32 h)
-{
-	uint32		pos = h & (ex->nhslot - 1);
-
-	for (; ex->hslot[pos]; pos = (pos + 1) & (ex->nhslot - 1))
-		if (memcmp(&ex->hkey[(Size) (ex->hslot[pos] - 1) * nk], ids, nk * sizeof(uint32)) == 0)
-			return ex->hslot[pos] - 1;
-	return hash_add(ex, ids, pos);
 }
 
 /* one probe function per number of keys (`ex->hashg`): the hash and the comparison of the ids are unrolled, as the hot loop wants */
@@ -284,6 +272,33 @@ direct_oversized(AggExec *ex, uint64 total)
 	return total > PRESIZE_MIN && total > ex->spec->est_groups * 4;
 }
 
+/* the bytes a slot of the direct arrays takes: the arrays acc_alloc makes for a group, and the count of its rows */
+static Size
+direct_slot_bytes(const AggExec *ex)
+{
+	Size		bytes = sizeof(int64);
+
+	for (int i = 0; i < ex->spec->naggs; i++)
+	{
+		unsigned	l = sift_agg_acc_layout(&ex->spec->agg[i], ex->lane_serial);
+
+		bytes += sizeof(int64) + ((l & ACCL_I) ? sizeof(int64) : 0) + ((l & ACCL_W) ? sizeof(sift_i128) : 0) + ((l & ACCL_D) ? sizeof(double) : 0) +
+			((l & ACCL_DT) ? sizeof(double) : 0) + ((l & ACCL_NF) ? 1 : 0) + ((l & ACCL_V) ? sizeof(Datum) : 0) + ((l & ACCL_R) ? sizeof(Datum) : 0) +
+			((l & ACCL_LAST) ? sizeof(uint64) : 0);
+	}
+	return bytes;
+}
+
+/*
+ * The arrays of `total` slots hold more than three quarters of hash memory (the keys and the sets of the groups take the rest) of a scan that spills: they would be over the memory before a row is read, and so would a pass of the
+ * scan for a share of the groups. The groups go to the hash table, which holds what they use.
+ */
+static bool
+direct_past_memory(const AggExec *ex, uint64 total)
+{
+	return ex->spill != NULL && total * direct_slot_bytes(ex) > get_hash_memory_limit() / 4 * 3;
+}
+
 /* a key outgrew its capacity: more room per key, or the hash table when the arrays would be too big */
 void
 direct_grow(AggExec *ex)
@@ -315,7 +330,7 @@ direct_grow(AggExec *ex)
 		if ((uint64) used * DIRECT_SPARSE < total)
 			total = (uint64) ex->direct_max + 1;
 	}
-	if (total > ex->direct_max)
+	if (total > ex->direct_max || direct_past_memory(ex, total))
 	{
 		/* the existing groups keep their ids in the hash table */
 		hash_init(ex, 1024);

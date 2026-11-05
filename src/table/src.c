@@ -397,6 +397,13 @@ filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
 	sift_col_filter(cu, pred, 1, sel);
 }
 
+static void
+filter_elem_op(const SiftColUnit *cu, SiftColSel *sel, void *gp)
+{
+	sift_col_filter_group(cu, gp, sel);
+}
+
+/* a test of an element leaf keeps the rows with an element that passes (col_filter_str) */
 static bool
 tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
 {
@@ -404,12 +411,20 @@ tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	TblPart    *p = unit->priv;
 	SiftColValue *vals;
 	SiftColPred pred;
+	int			parent = tb->lay->leaf[t->leaf].parent;
 
-	if (p->col[t->leaf] < 0 || tb->lay->leaf[t->leaf].lossy)
+	if (p->col[t->leaf] < 0 || tb->lay->leaf[t->leaf].lossy || (parent >= 0 && p->col[parent] < 0))
 		return false;
 	vals = palloc(Max(t->nvals, 1) * sizeof(SiftColValue));
 	pred = sift_aggfilt_str_pred(t, vals, p->col[t->leaf]);
-	sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
+	if (parent >= 0)
+	{
+		SiftColGroupPred gp = {.group = p->col[parent],.npreds = 1,.preds = &pred};
+
+		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_elem_op, &gp);
+	}
+	else
+		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
 	pfree(vals);
 	return true;
 }

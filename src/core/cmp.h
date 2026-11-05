@@ -168,27 +168,30 @@ NAME(T *a, size_t n) \
 /*
  * defines the static function NAME(T *a, size_t n) that orders an array by the signed 64-bit KEY(x), then KEY2(x) (x: a pointer; 0 when there is one key) and, among
  * equal keys, by TIE(x) (an unsigned integer): the order SIFT_DEFINE_SORT gives with the same fields, for an array whose TIE never goes down along it (entries added
- * in the order of their rows). A least significant digit radix sort, stable, of the bytes each key differs in from its smallest value (a column of a few thousand
- * values takes two passes of one load and one store an entry, where the comparison sort takes 20 steps of two fields). The other arrays, those under 512 entries
- * and those that ALLOC (the bytes of a copy; NULL: none) does not give go to FALLBACK(a, n). Same result as the comparison sort whatever the path: two entries equal
- * in all three fields are alike.
+ * in the order of their rows). A least significant digit radix sort, stable, of the bits each key spans above its smallest value, in as few digits of equal width as
+ * the width allows (8 bits under 4,096 entries, 10 under 32,768, 12 above: a column of a few thousand values takes one or two passes of one load and one store an
+ * entry, where the comparison sort takes 20 steps of two fields). A digit all entries share is not moved. The other arrays, those under 512 entries and those that
+ * ALLOC (the bytes of a copy and of the counters of a digit; NULL: none) does not give go to FALLBACK(a, n). Same result as the comparison sort whatever the path:
+ * two entries equal in all three fields are alike.
  */
+#define SIFT_RADIX_MAX_DIGIT 12
+
 #define SIFT_DEFINE_RADIX_SORT(NAME, T, KEY, KEY2, TIE, ALLOC, FREE, FALLBACK) \
 static void \
 NAME(T *a, size_t n) \
 { \
-	size_t		cnt[16][256]; \
 	int64_t		mn[2], \
 				mx[2]; \
-	uint64_t	range[2]; \
-	int			pk[16], \
-				pd[16], \
-				npass = 0; \
+	int			bits[2], \
+				dw[2], \
+				npass[2], \
+				maxd; \
 	T		   *tmp, \
 			   *src = a, \
 			   *dst; \
+	uint32_t   *cnt; \
 \
-	if (n < 512) \
+	if (n < 512 || n > UINT32_MAX) \
 	{ \
 		FALLBACK(a, n); \
 		return; \
@@ -197,71 +200,75 @@ NAME(T *a, size_t n) \
 	mn[1] = mx[1] = KEY2(&a[0]); \
 	for (size_t i = 1; i < n; i++) \
 	{ \
+		int64_t		k0 = KEY(&a[i]), \
+					k1 = KEY2(&a[i]); \
+\
 		if (TIE(&a[i]) < TIE(&a[i - 1])) \
 		{ \
 			FALLBACK(a, n); \
 			return; \
 		} \
-		if (KEY(&a[i]) < mn[0]) \
-			mn[0] = KEY(&a[i]); \
-		if (KEY(&a[i]) > mx[0]) \
-			mx[0] = KEY(&a[i]); \
-		if (KEY2(&a[i]) < mn[1]) \
-			mn[1] = KEY2(&a[i]); \
-		if (KEY2(&a[i]) > mx[1]) \
-			mx[1] = KEY2(&a[i]); \
+		mn[0] = k0 < mn[0] ? k0 : mn[0]; \
+		mx[0] = k0 > mx[0] ? k0 : mx[0]; \
+		mn[1] = k1 < mn[1] ? k1 : mn[1]; \
+		mx[1] = k1 > mx[1] ? k1 : mx[1]; \
 	} \
-	range[0] = (uint64_t) mx[0] - (uint64_t) mn[0]; \
-	range[1] = (uint64_t) mx[1] - (uint64_t) mn[1]; \
-	if (range[0] == 0 && range[1] == 0) \
+	if (mn[0] == mx[0] && mn[1] == mx[1]) \
 		return; \
-	if ((tmp = (T *) ALLOC(n * sizeof(T))) == NULL) \
+	maxd = n >= 32768 ? SIFT_RADIX_MAX_DIGIT : n >= 4096 ? 10 : 8; \
+	for (int c = 0; c < 2; c++) \
+	{ \
+		uint64_t	range = (uint64_t) mx[c] - (uint64_t) mn[c]; \
+\
+		for (bits[c] = 0; bits[c] < 64 && (range >> bits[c]) != 0; bits[c]++) \
+			; \
+		npass[c] = (bits[c] + maxd - 1) / maxd; \
+		dw[c] = npass[c] == 0 ? 0 : (bits[c] + npass[c] - 1) / npass[c]; \
+	} \
+	if ((tmp = (T *) ALLOC(n * sizeof(T) + ((size_t) 1 << maxd) * sizeof(uint32_t))) == NULL) \
 	{ \
 		FALLBACK(a, n); \
 		return; \
 	} \
-	memset(cnt, 0, sizeof(cnt)); \
-	for (size_t i = 0; i < n; i++) \
-	{ \
-		uint64_t	u0 = (uint64_t) KEY(&a[i]) - (uint64_t) mn[0], \
-					u1 = (uint64_t) KEY2(&a[i]) - (uint64_t) mn[1]; \
-\
-		for (int d = 0; d < 8 && (range[1] >> (8 * d)) != 0; d++) \
-			cnt[d][(u1 >> (8 * d)) & 255]++; \
-		for (int d = 0; d < 8 && (range[0] >> (8 * d)) != 0; d++) \
-			cnt[8 + d][(u0 >> (8 * d)) & 255]++; \
-	} \
-	for (int c = 0; c < 16; c++) \
-	{ \
-		size_t		sum = 0; \
-\
-		if ((range[1 - c / 8] >> (8 * (c % 8))) == 0) \
-			continue; \
-		for (int b = 0; b < 256; b++) \
-		{ \
-			size_t		x = cnt[c][b]; \
-\
-			cnt[c][b] = sum; \
-			sum += x; \
-		} \
-		pk[npass] = c / 8; \
-		pd[npass++] = c % 8; \
-	} \
+	cnt = (uint32_t *) (tmp + n); \
 	dst = tmp; \
-	for (int k = 0; k < npass; k++) \
+	for (int c = 1; c >= 0; c--) \
 	{ \
-		size_t	   *pos = cnt[pk[k] * 8 + pd[k]]; \
-		T		   *t; \
+		for (int k = 0, shift = 0; k < npass[c]; k++, shift += dw[c]) \
+		{ \
+			uint64_t	mask = ((uint64_t) 1 << dw[c]) - 1, \
+						base = (uint64_t) mn[c]; \
+			size_t		sum = 0; \
+			bool		shared = false; \
+			T		   *t; \
 \
-		if (pk[k] == 0) \
-			for (size_t i = 0; i < n; i++) \
-				dst[pos[(((uint64_t) KEY2(&src[i]) - (uint64_t) mn[1]) >> (8 * pd[k])) & 255]++] = src[i]; \
-		else \
-			for (size_t i = 0; i < n; i++) \
-				dst[pos[(((uint64_t) KEY(&src[i]) - (uint64_t) mn[0]) >> (8 * pd[k])) & 255]++] = src[i]; \
-		t = src; \
-		src = dst; \
-		dst = t; \
+			memset(cnt, 0, ((size_t) 1 << dw[c]) * sizeof(uint32_t)); \
+			if (c == 0) \
+				for (size_t i = 0; i < n; i++) \
+					cnt[(((uint64_t) KEY(&src[i]) - base) >> shift) & mask]++; \
+			else \
+				for (size_t i = 0; i < n; i++) \
+					cnt[(((uint64_t) KEY2(&src[i]) - base) >> shift) & mask]++; \
+			for (size_t b = 0; b <= mask; b++) \
+			{ \
+				size_t		x = cnt[b]; \
+\
+				shared |= x == n; \
+				cnt[b] = sum; \
+				sum += x; \
+			} \
+			if (shared) \
+				continue; \
+			if (c == 0) \
+				for (size_t i = 0; i < n; i++) \
+					dst[cnt[(((uint64_t) KEY(&src[i]) - base) >> shift) & mask]++] = src[i]; \
+			else \
+				for (size_t i = 0; i < n; i++) \
+					dst[cnt[(((uint64_t) KEY2(&src[i]) - base) >> shift) & mask]++] = src[i]; \
+			t = src; \
+			src = dst; \
+			dst = t; \
+		} \
 	} \
 	if (src != a) \
 		memcpy(a, src, n * sizeof(T)); \

@@ -48,6 +48,7 @@ DECLARE
 	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; tags text[] := string_to_array(coalesce(h ->> 'expect', 'untagged -'), ' '); plan text := tags[1]; band text[] := tags[2:3];
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
 	lane_band plangate.bands; anyband boolean := false; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
+	nruns int := CASE WHEN runs > 0 THEN greatest(runs, coalesce((h ->> 'runs')::int, 0)) ELSE 0 END;
 BEGIN
 	SELECT * INTO lane_band FROM plangate.bands WHERE lane = current_setting('plangate.lane', true) AND name = nm;
 	IF FOUND THEN
@@ -60,7 +61,7 @@ BEGIN
 	native := plangate.cost(q);
 	err := coldiff.materialize(q, 'pg_native');
 	IF err IS NOT NULL THEN problems := problems || ('native: ' || err); END IF;
-	IF runs > 0 AND err IS NULL THEN native_ms := plangate.ms(q, runs); END IF;
+	IF nruns > 0 AND err IS NULL THEN native_ms := plangate.ms(q, nruns); END IF;
 
 	PERFORM plangate.path('chosen');
 	ch := plangate.cost(q);
@@ -78,7 +79,7 @@ BEGIN
 		err := coldiff.materialize(q, 'pg_scan');
 		diff := CASE WHEN err IS NULL THEN coldiff.compare('pg_native', 'pg_scan', keycols, 1e-9, 1e-12) ELSE err END;
 		IF diff IS NOT NULL THEN problems := problems || ('result scan: ' || diff); END IF;
-		IF runs > 0 AND err IS NULL THEN scan_ms := plangate.ms(q, runs); END IF;
+		IF nruns > 0 AND err IS NULL THEN scan_ms := plangate.ms(q, nruns); END IF;
 	END IF;
 	PERFORM plangate.path('chosen');
 

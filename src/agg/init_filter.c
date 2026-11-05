@@ -429,7 +429,7 @@ str_init(AggExec *ex)
 
 	for (int i = 0; i < ex->spec->npred; i++)
 		cap += pred_nodes(ex->spec->pred[i]);
-	all = palloc0(Max(cap, 1) * sizeof(SiftSrcStrTest));
+	all = palloc0(Max(cap + ex->njstr, 1) * sizeof(SiftSrcStrTest));
 	for (int i = 0; i < ex->spec->npred; i++)
 	{
 		if (sift_aggspec_str_test(ex->spec->pred[i], ex->lay, ex->nbase, &all[n]))
@@ -437,6 +437,8 @@ str_init(AggExec *ex)
 		else
 			n = elem_tests(ex, ex->spec->pred[i], all, n);
 	}
+	for (int i = 0; i < ex->njstr; i++)
+		all[n++] = ex->jstr[i];
 	if (n > 0)
 		sift_colsrc_prune_str(ex->src, all, n);
 }
@@ -675,7 +677,7 @@ periodic_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		sift_colsrc_zone_range(ex->src, 0, sift_colsrc_nsb(ex->src), leaf, &z) <= 0 || z.nnull >= z.nvals ||
 		z.min < MIN_TIMESTAMP + 400 * USECS_PER_DAY || z.max > END_TIMESTAMP - 400 * USECS_PER_DAY || ((p->calmode & SCW_YEAR4) && !years_in_order(z.min, z.max)))
 		return false;
-	e = ExecInitExpr((Expr *) lsecond(cal), EXPR_PARENT(ex));
+	e = ExecInitExpr((Expr *) init_param_mutator(lsecond(cal), ex), EXPR_PARENT(ex));
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	if (isnull)
 		return false;

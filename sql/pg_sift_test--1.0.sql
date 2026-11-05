@@ -144,6 +144,10 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 								  OUT has bool[], OUT block_mismatches int8)
 	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;
 
+-- The radix sort of core/cmp.h (src/core/cmp_test.c): n entries of random keys of bits1 and bits2 bits (bits2 < 0: one key) moved by offsets, sorted by it and by the comparison sort: do the arrays agree?
+CREATE FUNCTION sift._test_radix_sort(n int4, bits1 int4, bits2 int4, offset1 int8, offset2 int8, seed int8) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_radix_sort' LANGUAGE C STRICT;
+
 -- Leak detection (src/core/leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
 -- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
@@ -444,6 +448,12 @@ CREATE FUNCTION sift._test_prepass_nodes(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_prepass_nodes' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_agg_outer_walks(reset bool) RETURNS int8[]
 	AS 'MODULE_PATHNAME', 'sift_test_agg_outer_walks' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_vis_counts(rel regclass, nblocks int8 DEFAULT -1) RETURNS int8[]
+	AS 'MODULE_PATHNAME', 'sift_test_vis_counts' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_agg_plan_passes(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_agg_plan_passes' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_agg_key_lists(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_agg_key_lists' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
 -- sift_col exists from pg_sift 3.0 on; extension_lifecycle creates this extension on 1.0
 DO $$ BEGIN
@@ -493,3 +503,6 @@ CREATE FUNCTION sift._test_tomb_header(rel regclass, legacy bool DEFAULT false, 
 -- The participants the weighted choice gives a parallel CREATE INDEX of a sift_col index (src/col/build_par.c): rows, columns, whether the index has a point directory, the most the server allows.
 CREATE FUNCTION sift._test_par_participants(rows int8, cols int, point_dir bool, maxp int) RETURNS int
 	AS 'MODULE_PATHNAME', 'sift_test_par_participants' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_blocks int8, OUT ahead_blocks int8, OUT advice_calls int8)
+	AS 'MODULE_PATHNAME', 'sift_test_segment_reads' LANGUAGE C STRICT;

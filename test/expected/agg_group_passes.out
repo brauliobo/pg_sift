@@ -158,6 +158,7 @@ SELECT name, passes(q) AS passes FROM qs WHERE name IN ('int key', 'top-n') ORDE
 
 SET sift.test_agg_pass_w = 0;
 -- one share does not fit: the shares left are read together and spill, not a pass for each of the 32
+SET work_mem = '64kB';
 SELECT name, passes(q) < 32 AS not_a_pass_a_share FROM qs WHERE name IN ('int key', 'two keys', 'text key') ORDER BY 1;
    name   | not_a_pass_a_share 
 ----------+--------------------
@@ -220,6 +221,35 @@ FROM generate_series(1, 3) g, (SELECT kt, count(DISTINCT u) c FROM ev GROUP BY k
 
 RESET sift.enable_agg;
 RESET sift.test_agg_pass_w;
-DROP TABLE ev, qs, want;
+-- two keys whose direct arrays (the capacities of the keys multiply) are more than hash memory: the groups are in the hash table at once, and the scan is read in a few
+-- passes of the shares the memory holds, not one for each share after it started again on a table that was over the memory before a row
+CREATE TABLE dk AS SELECT i AS id, i % 250 AS a, (i / 250) % 250 AS b, i % 7 AS c FROM generate_series(1, 120000) i;
+CREATE INDEX dk_col ON dk USING sift_col (id, a, b, c);
+VACUUM (FREEZE, ANALYZE) dk;
+INSERT INTO qs VALUES ('direct arrays', 'SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b');
+SET sift.enable_agg = off;
+INSERT INTO want SELECT name, digest(q) FROM qs WHERE name = 'direct arrays';
+RESET sift.enable_agg;
+SET work_mem = '2MB';
+SET hash_mem_multiplier = 1;
+SELECT digest(q) = d AS same, passes(q) BETWEEN 2 AND 8 AS a_few_passes
+FROM qs JOIN want USING (name) WHERE name = 'direct arrays';
+ same | a_few_passes 
+------+--------------
+ t    | t
+(1 row)
+
+-- the passes are read as the groups are asked for: a LIMIT stops before the last one, and the rows are groups of the table
+SELECT passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b LIMIT 5') < passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b') AS stops_early,
+       (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l) AS rows_limited,
+       (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l JOIN (SELECT a, b, count(*) n FROM dk GROUP BY a, b) g USING (a, b, n)) AS rows_in_the_table;
+ stops_early | rows_limited | rows_in_the_table 
+-------------+--------------+-------------------
+ t           |            5 |                 5
+(1 row)
+
+RESET work_mem;
+RESET hash_mem_multiplier;
+DROP TABLE ev, qs, want, dk;
 DROP FUNCTION digest(text), passes(text), temp_written(text);
 DROP EXTENSION pg_sift;

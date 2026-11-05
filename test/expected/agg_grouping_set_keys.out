@@ -73,6 +73,40 @@ $q$);
  t      |           0
 (1 row)
 
+-- Keys that are expressions of a sub-select: PostgreSQL pulls the sub-select up and hands each key to the grouping step as a placeholder that the step nulls.
+-- Each shape is pushed and gives the rows of the normal plan, GROUPING() and the NULL rows of the sets included (kind and dim_a_id hold NULLs of their own).
+CREATE FUNCTION same_order(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE off text[]; on_ text[];
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT array_agg(t::text) FROM (' || q || ') t' INTO off;
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'SELECT array_agg(t::text) FROM (' || q || ') t' INTO on_;
+	RETURN off = on_;
+END $$;
+CREATE TABLE gs_sub (n int, q text);
+INSERT INTO gs_sub VALUES
+	(1, 'SELECT k, count(*) AS n FROM (SELECT upper(kind) AS k FROM gs_facts) p GROUP BY GROUPING SETS ((k), ()) ORDER BY 1 NULLS FIRST, 2'),
+	(2, 'SELECT k, g, GROUPING(k, g) AS gr, count(*) AS n FROM (SELECT coalesce(kind, ''none'') AS k, dim_a_id % 3 AS g FROM gs_facts) p GROUP BY ROLLUP (k, g) ORDER BY 3, 1 NULLS FIRST, 2 NULLS FIRST'),
+	(3, 'SELECT k, g, GROUPING(k) AS gk, GROUPING(g) AS gg, sum(v) FROM (SELECT upper(kind) AS k, dim_a_id % 3 AS g, id AS v FROM gs_facts) p GROUP BY CUBE (k, g) ORDER BY 3, 4, 1 NULLS FIRST, 2 NULLS FIRST'),
+	(4, 'SELECT k, d, count(*) AS n FROM (SELECT left(kind, 1) AS k, day + 1 AS d FROM gs_facts) p GROUP BY GROUPING SETS ((k, d), (d), (k)) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3'),
+	(5, 'SELECT k, count(*) AS n, count(DISTINCT id) FILTER (WHERE id % 2 = 0) AS n_even FROM (SELECT id, kind || ''_'' || dim_a_id AS k FROM gs_facts) p GROUP BY ROLLUP (k) ORDER BY 1 NULLS FIRST'),
+	(6, 'SELECT k, count(*) AS n FROM (SELECT split_part(e.key, ''_'', 1) AS k FROM gs_facts f CROSS JOIN LATERAL jsonb_each(f.metrics_a) e) p GROUP BY GROUPING SETS ((k), ()) ORDER BY 1 NULLS FIRST, 2'),
+	(7, 'SELECT k, count(*) AS n, sum(c) AS total FROM (SELECT lower(kind) AS k, id % 10 AS c FROM gs_facts) p GROUP BY GROUPING SETS ((k), ()) HAVING GROUPING(k) = 1 OR count(*) > 100 ORDER BY 1 NULLS FIRST, 2');
+SELECT n, (check_query(q)).*, same_order(q) AS same_order FROM gs_sub ORDER BY n;
+ n | pushed | differences | same_order 
+---+--------+-------------+------------
+ 1 | t      |           0 | t
+ 2 | t      |           0 | t
+ 3 | t      |           0 | t
+ 4 | t      |           0 | t
+ 5 | t      |           0 | t
+ 6 | t      |           0 | t
+ 7 | t      |           0 | t
+(7 rows)
+
+DROP TABLE gs_sub;
+DROP FUNCTION same_order(text);
 DROP FUNCTION check_query(text);
 DROP TABLE gs_facts;
 DROP EXTENSION pg_sift;

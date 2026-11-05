@@ -121,27 +121,61 @@ decor_equality(Node *c, Decor *d)
 	return true;
 }
 
-/* the sub-select as PostgreSQL 17 parses it: no range table entry for its grouping (PostgreSQL 18 adds one for any GROUP BY) */
-static Query *
-ungrouped(Query *sub)
+/* the query as PostgreSQL 17 parses it, in place: no range table entry for its grouping (PostgreSQL 18 adds one for any GROUP BY), its columns the expressions they stand for */
+void
+flat_ungroup(Query *q)
 {
 #if PG_VERSION_NUM >= 180000
-	Query	   *q;
 	Ungroup		u;
 
-	if (!sub->hasGroupRTE)
-		return sub;
-	q = copyObject(sub);
+	if (!q->hasGroupRTE)
+		return;
 	u.rti = list_length(q->rtable);
 	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
 	q->targetList = (List *) ungroup_column((Node *) q->targetList, &u);
 	q->havingQual = ungroup_column(q->havingQual, &u);
 	q->rtable = list_delete_last(q->rtable);
 	q->hasGroupRTE = false;
+#endif
+}
+
+/* the sub-select as PostgreSQL 17 parses it */
+static Query *
+ungrouped(Query *sub)
+{
+#if PG_VERSION_NUM >= 180000
+	Query	   *q;
+
+	if (!sub->hasGroupRTE)
+		return sub;
+	q = copyObject(sub);
+	flat_ungroup(q);
 	return q;
 #else
 	return sub;
 #endif
+}
+
+/* do the equalities hold every column of a unique key of the table? */
+static bool
+decor_unique(Oid relid, List *conds)
+{
+	int		   *atts = palloc(list_length(conds) * sizeof(int));
+	int			n = 0;
+
+	foreach_ptr(OpExpr, c, conds)
+	{
+		Var		   *in = castNode(Var, linitial(c->args));
+		bool		seen = false;
+
+		if (in->varlevelsup != 0)
+			in = castNode(Var, lsecond(c->args));
+		for (int i = 0; i < n; i++)
+			seen |= atts[i] == in->varattno;
+		if (!seen)
+			atts[n++] = in->varattno;
+	}
+	return sift_agg_unique_key(relid, n, 0, atts, NULL);
 }
 
 static bool
@@ -150,14 +184,15 @@ decor_analyze(Query *sub, Decor *d)
 	RangeTblEntry *t;
 
 	sub = ungrouped(sub);
-	if (sub->commandType != CMD_SELECT || (sub->hasAggs || sub->groupClause != NIL) != !d->exists || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
+	d->lookup = !d->exists && !sub->hasAggs && sub->groupClause == NIL;
+	if (sub->commandType != CMD_SELECT || (d->exists && (sub->hasAggs || sub->groupClause != NIL)) || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
 		sub->setOperations != NULL || sub->groupingSets != NIL || sub->groupDistinct || (sub->groupClause == NIL && sub->havingQual != NULL) || sub->sortClause != NIL ||
 		sub->distinctClause != NIL || sub->limitOffset != NULL || sub->limitCount != NULL || sub->cteList != NIL || sub->rowMarks != NIL ||
 		sub->jointree == NULL || list_length(sub->jointree->fromlist) != 1 || !IsA(linitial(sub->jointree->fromlist), RangeTblRef) ||
 		list_length(sub->rtable) != 1 || contain_volatile_functions((Node *) sub) || contain_vars_of_level((Node *) sub, 2))
 		return false;
 	t = linitial_node(RangeTblEntry, sub->rtable);
-	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || !has_column_source(t->relid))
+	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || (!d->lookup && !d->exists && !has_column_source(t->relid)))
 		return false;
 	d->sub = sub;
 	if (contain_vars_of_level(sub->havingQual, 1))
@@ -179,11 +214,15 @@ decor_analyze(Query *sub, Decor *d)
 		else
 			return false;
 	}
-	if (!d->exists)
+	if (d->lookup)
+		foreach_node(TargetEntry, te, sub->targetList)
+			if (te->resjunk || contain_vars_of_level((Node *) te->expr, 1))
+				return false;
+	if (!d->exists && !d->lookup)
 		foreach_node(TargetEntry, te, sub->targetList)
 			if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
 				return false;
-	return d->conds != NIL;
+	return d->conds != NIL && (!d->lookup || decor_unique(t->relid, d->conds));
 }
 
 /* an aggregate becomes a column of the grouped query (a count of no rows is 0, not NULL) */
@@ -211,6 +250,73 @@ decor_column(Node *n, DecorOut *o)
 		return (Node *) c;
 	}
 	return (Node *) v;
+}
+
+typedef struct LookupOut
+{
+	Query	   *g;				/* the query being built */
+	Index		grti;
+	Bitmapset  *nulled;
+	List	   *atts;			/* the columns of the table it already gives for this expression, and where (pos) */
+	List	   *pos;
+} LookupOut;
+
+/* a column of the table is the column of the same name the lookup gives, NULL for a row it found nothing for */
+static Node *
+lookup_column(Node *n, LookupOut *o)
+{
+	Var		   *v;
+	int			at = 0;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, Var) || ((Var *) n)->varlevelsup != 0)
+		return expression_tree_mutator(n, lookup_column, o);
+	v = (Var *) n;
+	foreach_int(att, o->atts)
+		if (att == v->varattno)
+			at = list_nth_int(o->pos, foreach_current_index(att));
+	if (at == 0)
+	{
+		o->g->targetList = lappend(o->g->targetList, makeTargetEntry((Expr *) copyObject(v), list_length(o->g->targetList) + 1, psprintf("c%d", list_length(o->g->targetList) + 1), false));
+		at = list_length(o->g->targetList);
+		o->atts = lappend_int(o->atts, v->varattno);
+		o->pos = lappend_int(o->pos, at);
+	}
+	v = makeVar(o->grti, at, v->vartype, v->vartypmod, v->varcollid, 0);
+	v->varnullingrels = o->nulled;
+	return (Node *) v;
+}
+
+/*
+ * An expression of the looked up table's columns, evaluated over the join: a function that does not return NULL for NULL inputs (coalesce) would give a value for a row the
+ * lookup found nothing for, where the sub-select gives NULL, so it is asked only where the first key of the lookup is there.
+ */
+static Node *
+lookup_expression(Query *g, Index grti, Bitmapset *nulled, Expr *e)
+{
+	LookupOut	o = {g, grti, nulled, NIL, NIL};
+	Var		   *marker;
+	CaseExpr   *c = makeNode(CaseExpr);
+	CaseWhen   *w = makeNode(CaseWhen);
+	NullTest   *t = makeNode(NullTest);
+	TargetEntry *key = linitial_node(TargetEntry, g->targetList);
+	Node	   *body = lookup_column((Node *) e, &o);
+
+	marker = makeVar(grti, 1, exprType((Node *) key->expr), exprTypmod((Node *) key->expr), exprCollation((Node *) key->expr), 0);
+	marker->varnullingrels = nulled;
+	t->arg = (Expr *) marker;
+	t->nulltesttype = IS_NOT_NULL;
+	t->location = -1;
+	w->expr = (Expr *) t;
+	w->result = (Expr *) body;
+	w->location = -1;
+	c->casetype = exprType(body);
+	c->casecollid = exprCollation(body);
+	c->args = list_make1(w);
+	c->defresult = (Expr *) makeNullConst(c->casetype, exprTypmod(body), c->casecollid);
+	c->location = -1;
+	return (Node *) c;
 }
 
 /*
@@ -242,7 +348,8 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 			TargetEntry *te = makeTargetEntry((Expr *) copyObject(in), list_length(g->targetList) + 1, psprintf("k%d", list_length(g->targetList) + 1), false);
 
 			g->targetList = lappend(g->targetList, te);
-			group_by(g, te);
+			if (!d->lookup)
+				group_by(g, te);
 			keys = lappend_int(keys, in->varattno);
 			at = list_length(keys);
 		}
@@ -281,14 +388,19 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 	{
 		if (te->resjunk)
 			continue;
-		if (d->groups == NIL)
+		if (d->groups == NIL && !d->lookup)
 			*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
+		else if (d->lookup && !IsA(te->expr, Var))
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) lookup_expression(g, grti, nulled, te->expr), te->resno, te->resname, false));
 		else
 		{
-			/* a missing group is a row of NULLs: its columns are the sub-select's own, not expressions of the aggregates evaluated above the join */
+			Var		   *v;
+
+			/* a missing group (a missing row of a lookup) is a row of NULLs: its columns are the sub-select's own, not expressions of the aggregates evaluated above the join */
 			g->targetList = lappend(g->targetList, makeTargetEntry((Expr *) copyObject(te->expr), list_length(g->targetList) + 1, psprintf("o%d", te->resno), false));
-			*exprs = lappend(*exprs, makeTargetEntry((Expr *) makeVar(grti, list_length(g->targetList), exprType((Node *) te->expr), exprTypmod((Node *) te->expr),
-																	   exprCollation((Node *) te->expr), 0), te->resno, te->resname, false));
+			v = makeVar(grti, list_length(g->targetList), exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr), 0);
+			v->varnullingrels = nulled;
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) v, te->resno, te->resname, false));
 		}
 	}
 	return g;
@@ -409,10 +521,10 @@ decor_apply(Query *q, DecorJoin *r)
 	RangeTblEntry *rte;
 	JoinExpr   *j;
 	DecorRead	read;
-	bool		grouped = r->d.groups != NIL;
+	bool		grouped = r->d.groups != NIL || r->d.lookup;
 
 	j = join_of((Node *) q->jointree, r->lrti);
-	/* one row for every outer row, so a join that did not null the columns now does; the groups of the sub-select keep an inner join an inner join */
+	/* one row for every outer row, so a join that did not null the columns now does; the groups of the sub-select (the row of a lookup) keep an inner join an inner join */
 	read.exprs = exprs;
 	read.nulled = grouped && j->jointype == JOIN_INNER ? NULL : bms_make_singleton(j->rtindex);
 	*q = *(Query *) replace_rte_variables((Node *) q, r->lrti, 0, decor_read, &read, NULL);
@@ -446,8 +558,8 @@ join_columns(Query *q, Node *n, List **names, List **vars)
 }
 
 /* the sub-select as a range table entry of the query (its columns named as its select list does) */
-static void
-add_subquery(Query *q, Query *sub)
+void
+flat_add_subquery(Query *q, Query *sub, const char *alias, bool lateral)
 {
 	RangeTblEntry *rte = makeNode(RangeTblEntry);
 	List	   *names = NIL;
@@ -457,13 +569,14 @@ add_subquery(Query *q, Query *sub)
 	rte->inFromCl = true;
 	foreach_node(TargetEntry, te, sub->targetList)
 		names = lappend(names, makeString(te->resname));
-	rte->eref = makeAlias("decor", names);
+	rte->eref = makeAlias(alias, names);
+	rte->lateral = lateral;
 	q->rtable = lappend(q->rtable, rte);
 }
 
 /* `left JOIN rti ON quals` with the range table entry of the join that the planner expects */
-static JoinExpr *
-join_item(Query *q, Node *left, Index rti, JoinType type, Node *quals)
+JoinExpr *
+flat_join_item(Query *q, Node *left, Index rti, JoinType type, Node *quals)
 {
 	List	   *names = NIL,
 			   *vars = NIL;
@@ -527,9 +640,9 @@ decor_sublink(Node *n, SublinkDecor *c)
 	c->changed = true;
 	if (!c->apply)
 		return n;
-	add_subquery(q, decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join));
+	flat_add_subquery(q, decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join), "decor", false);
 	sift_agg_by_cost = true;
-	lfirst(item) = join_item(q, lfirst(item), grti, JOIN_LEFT, (Node *) make_ands_explicit(join));
+	lfirst(item) = flat_join_item(q, lfirst(item), grti, JOIN_LEFT, (Node *) make_ands_explicit(join));
 	e = (Node *) linitial_node(TargetEntry, exprs)->expr;
 	if (d.exists)
 	{
@@ -564,13 +677,19 @@ decorrelate_sublinks(Query *q, bool apply)
 {
 	SublinkDecor c = {q, apply, false, NIL};
 
-	if (!q->hasSubLinks || q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->groupClause != NIL || q->groupingSets != NIL ||
-		q->havingQual != NULL || q->jointree == NULL || q->setOperations != NULL)
+	if (!q->hasSubLinks || q->commandType != CMD_SELECT || q->hasWindowFuncs || q->groupingSets != NIL || q->jointree == NULL || q->setOperations != NULL)
 		return false;
 	semi_sublinks(q->jointree->quals, &c.semi);
 	foreach_node(TargetEntry, te, q->targetList)
 		te->expr = (Expr *) decor_sublink((Node *) te->expr, &c);
 	q->jointree->quals = decor_sublink(q->jointree->quals, &c);
+#if PG_VERSION_NUM >= 180000
+	/* the expressions a query groups by are held by the entry of its grouping step, not by its select list */
+	if (q->hasGroupRTE)
+		foreach_node(RangeTblEntry, rte, q->rtable)
+			if (rte->rtekind == RTE_GROUP)
+				rte->groupexprs = (List *) decor_sublink((Node *) rte->groupexprs, &c);
+#endif
 	return c.changed;
 }
 
@@ -598,7 +717,7 @@ decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor)
 				changed = true;
 				if (apply)
 				{
-					JoinExpr   *j = join_item(q, list_nth(f->fromlist, k), ((RangeTblRef *) n)->rtindex, JOIN_INNER, NULL);
+					JoinExpr   *j = flat_join_item(q, list_nth(f->fromlist, k), ((RangeTblRef *) n)->rtindex, JOIN_INNER, NULL);
 
 					lfirst(list_nth_cell(f->fromlist, k)) = j;
 					f->fromlist = list_delete_nth_cell(f->fromlist, i);
