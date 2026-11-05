@@ -88,6 +88,7 @@ extern bool sift_maint_wait_quiet(int max_active);
 
 /* The common start of a worker: context of its errors, signals, connection to the database of the request; returns the index OID */
 extern Oid	sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx);
+extern void sift_lock_table_of_index(Oid indexoid, LOCKMODE lock);
 
 /* The outcome of one maintenance step */
 typedef enum SiftStepResult

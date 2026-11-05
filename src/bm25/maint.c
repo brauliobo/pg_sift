@@ -459,10 +459,26 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	return stats;
 }
 
+/*
+ * Locks the table of an index before the index, in the order of a statement: DROP TABLE and the commands like it lock the table and then its indexes, so a backend that holds an
+ * index and then asks for the table waits for a command that waits for the index. The lock is held to the end of the transaction; nothing is locked when the index is gone.
+ */
+void
+sift_lock_table_of_index(Oid indexoid, LOCKMODE lock)
+{
+	Oid			heapoid = IndexGetRelation(indexoid, true);
+
+	if (OidIsValid(heapoid))
+		LockRelationOid(heapoid, lock);
+}
+
 Relation
 sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 {
-	Relation	index = index_open(indexoid, lock);
+	Relation	index;
+
+	sift_lock_table_of_index(indexoid, lock);
+	index = index_open(indexoid, lock);
 
 	if (!ops->is_index(index))
 		ereport(ERROR,
@@ -761,6 +777,7 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 	SiftStepResult	r = SIFT_STEP_IDLE;
 
 	StartTransactionCommand();
+	sift_lock_table_of_index(indexoid, RowExclusiveLock);
 	index = try_index_open(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{

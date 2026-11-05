@@ -122,6 +122,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_merge_gate",
 							 "Testing: a merge of the maintenance worker waits for advisory lock (0x51F7, 4) once its segments are claimed.",
 							 NULL, &sift_test_merge_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_worker_gate",
+							 "Testing: a merge of the maintenance worker waits for advisory lock (0x51F7, 7) before it opens the table for the text of the documents.",
+							 NULL, &sift_test_worker_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_release_gate",
 							 "Testing: a directory change that releases extents waits for advisory lock (0x51F7, 6) once its xid is taken, before it locks the directory.",
 							 NULL, &sift_test_release_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
