@@ -30,7 +30,8 @@ for s in "${ORDER[@]}" leakcheck; do
 	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
 	for id in ${bad:-}; do
 		pat='^not ok'; [[ $id != installcheck-* ]] || pat='^(not ok|@@|[-+][^-+])'
-		[[ $id != installcheck-* && $id != tap-* ]] || grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400 | sed "s/^/$red    /; s/\$/$off/"
+		if [[ $id == installcheck-* || $id == tap-* ]]; then grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400
+		else tail -n 15 "$LOG/$id.log" 2>/dev/null | cut -c1-400; fi | sed "s/^/$red    /; s/\$/$off/"   # any other job (isolation, a differential test): the end of its log, the hosted log is all there is of it
 	done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
