@@ -353,6 +353,7 @@ dp_read(DProbe *dp, int lv, BlockNumber blk)
 		buf = ReadBuffer(dp->irel, blk);
 		if (lv > 0)
 		{
+			dp->pins++;
 			if (BufferIsValid(dp->pin[lv]))
 				ReleaseBuffer(dp->pin[lv]);
 			dp->pin[lv] = buf;
@@ -720,8 +721,11 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 				dp_load(dp, dp->tup[t]);
 				if (sink->keep && !sink->keep(sink))
 					continue;
-				if (!VM_ALL_VISIBLE(dp->hrel, ItemPointerGetBlockNumber(&tid), &dp->vmbuf))
+				if (VM_ALL_VISIBLE(dp->hrel, ItemPointerGetBlockNumber(&tid), &dp->vmbuf))
+					dp->vm++;
+				else
 				{
+					dp->heap++;
 					if (!table_index_fetch_tuple(dp->fetch, &tid, dp->snap, dp->tslot, &call_again, &all_dead))
 						continue;
 					SIFT_INVARIANT(!call_again, "an index-only probe found a heap fetch that needs another call");
@@ -739,6 +743,7 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 			}
 			do
 			{
+				dp->heap++;
 				if (table_index_fetch_tuple(dp->fetch, &tid, dp->snap, dp->scan, &call_again, &all_dead) && sink->row(sink))
 				{
 					k->n++;
@@ -755,6 +760,7 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 		for (;;)
 		{
 			DP_COUNT(page_reads, 1);
+			dp->leaves++;
 			buf = ReadBuffer(dp->irel, next);
 			LockBuffer(buf, BT_READ);
 			page = BufferGetPage(buf);
@@ -803,6 +809,9 @@ dp_probe(DProbe *dp, DKey *k, DSink *sink)
 		k->state = DKS_FALLBACK;
 		return;
 	}
+	if (BufferGetBlockNumber(buf) != dp->lastleaf)
+		dp->leaves++;
+	dp->lastleaf = BufferGetBlockNumber(buf);
 	dp_walk(dp, k, buf, off, sink);
 }
 
@@ -831,6 +840,7 @@ dp_batch(DProbe *dp, DKey **ord, int n, DSink *sink)
 	}
 	dp->nlv = level + 1;
 	dp->path_ok = false;
+	dp->lastleaf = InvalidBlockNumber;
 	for (int p = 0; p < n; p++)
 	{
 		dp_probe(dp, ord[p], sink);

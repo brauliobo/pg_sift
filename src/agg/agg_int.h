@@ -274,6 +274,12 @@ typedef struct AggExec
 	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
 	uint64		lookup_us;
 	uint64		probe_direct;	/* the keys of correlated children probed in the index directly (combo/probe.c) */
+	uint64		probe_leaves;	/* ... the leaf pages those probes moved to (a probe on the leaf of the one before does not count), the pages above the leaves they pinned, */
+	uint64		probe_pins;
+	uint64		probe_heap;		/* ... the heap fetches they made, and the index-only entries answered by the visibility map without one */
+	uint64		probe_vm;
+	uint64		lookup_pages;	/* the heap pages of the lookup tables a run loaded or probed, and how many of them the visibility map holds all-visible (map_note_table) */
+	uint64		lookup_allvis;
 	uint64		child_warmed;	/* heap blocks of the entries a correlated child probe found, asked of the pool and the OS ahead of their fetch (combo/probe_bt.c dp_prefetch) */
 	int64		dict_shared0[2];	/* sift.stats dict_shared_hits and misses when the run began: EXPLAIN (VERBOSE) shows the difference */
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */

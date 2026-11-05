@@ -325,6 +325,18 @@ map_scan_entries(AggExec *ex, MapTab *m, Relation rel, Relation idx, IndexScanDe
 	ExecDropSingleTupleTableSlot(vs);
 }
 
+/* a table the run reads: its pages and the share the visibility map holds all-visible, for the Lookup line of EXPLAIN */
+void
+map_note_table(AggExec *ex, Relation rel)
+{
+	BlockNumber pages = RelationGetNumberOfBlocks(rel);
+
+	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+		return;
+	ex->lookup_pages += pages;
+	ex->lookup_allvis += Min((BlockNumber) rel->rd_rel->relallvisible, pages);
+}
+
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 MapTab *
 map_load_table(AggExec *ex, int ci, MemoryContext cxt)
@@ -350,6 +362,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
+	map_note_table(ex, rel);
 	for (int k = 0; sift_agg_lookup_pushdown && k < j->nidx && !none; k++)
 	{
 		bool		isnull;

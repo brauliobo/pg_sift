@@ -270,6 +270,7 @@ combo_probe_on(AggExec *ex, int ci)
 		dp->state = sift_agg_probe_direct && dp_shape(ex, ci, dp) ? 1 : -1;
 		if (dp->state > 0)
 		{
+			map_note_table(ex, dp->hrel);
 			dp->bcxt = AllocSetContextCreate(ex->cxt, "sift direct probe", ALLOCSET_DEFAULT_SIZES);
 			if (dp->ioss)
 				dp->tslot = ExecAllocTableSlot(&dp->estate->es_tupleTable, RelationGetDescr(dp->hrel), table_slot_callbacks(dp->hrel) PG19_SLOT_FLAGS);
@@ -501,6 +502,11 @@ combo_probe_flush(AggExec *ex, int ci)
 	}
 	ex->child_warmed += dp->asked;
 	dp->asked = 0;
+	ex->probe_leaves += dp->leaves;
+	ex->probe_pins += dp->pins;
+	ex->probe_heap += dp->heap;
+	ex->probe_vm += dp->vm;
+	dp->leaves = dp->pins = dp->heap = dp->vm = 0;
 	map_loaded(ex, 0, t0);
 	for (int p = 0; p < n; p++)
 	{

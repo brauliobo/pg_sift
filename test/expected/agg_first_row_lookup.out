@@ -522,11 +522,11 @@ SELECT * FROM explain_first($q$
  SELECT d.score % 10 AS g, count(*) AS n
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1
 $q$);
-                             shown                              
-----------------------------------------------------------------
+                                                    shown                                                    
+-------------------------------------------------------------------------------------------------------------
  ->  Limit (never executed)
  ->  Index Scan using dims_key on dims (never executed)
- Lookup: 20200 rows read, 20200 rows loaded, 1 first row tables
+ Lookup: 20200 rows read, 20200 rows loaded, 1 first row tables, 0 % of the lookup tables' pages all-visible
 (3 rows)
 
 DROP FUNCTION explain_first(text);

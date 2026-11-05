@@ -199,6 +199,7 @@ extern void first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o,
 extern void map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o);
 extern void map_keep_agreeing(MapTab *m);
 extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt);
+extern void map_note_table(AggExec *ex, Relation rel);
 extern char * shared_map_key(AggExec *ex, int ci, bool cols);
 
 extern void map_index_rows(MapTab *m);

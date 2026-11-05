@@ -175,6 +175,9 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	ExplainCloseGroup(group, label, true, es);
 }
 
+/* a handful of pages is never all-visible before its first VACUUM and costs nothing to read: the hint is for tables that matter */
+#define LOOKUP_HINT_PAGES 64
+
 /* The lookup tables a run loaded and the key filters and semi tables it built from them */
 static void
 explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
@@ -202,6 +205,13 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
 	sift_explain_int(&ln, "Child Direct Probes", NULL, "child direct probes", c->probe_direct, SIFT_XI_OPT);
+	if (c->probe_direct > 0)
+	{
+		sift_explain_int(&ln, "Child Probe Leaves", NULL, "leaves", c->probe_leaves, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Upper Pages Pinned", NULL, "upper pages pinned", c->probe_pins, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Heap Fetches", NULL, "heap fetches", c->probe_heap, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Index Only Entries", NULL, "from the visibility map", c->probe_vm, SIFT_XI_SUB | SIFT_XI_OPT);
+	}
 	sift_explain_int(&ln, "Child Blocks Prefetched", NULL, "child blocks prefetched", c->child_warmed, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Text Filters", NULL, "text key filters", c->njstr, SIFT_XI_OPT);
@@ -219,7 +229,11 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		sift_explain_int(&ln, "Semi Lookup Tables", NULL, "semi tables", c->nsemi, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Semi Lookup Table Size", "kB", NULL, (c->semi_bytes + 1023) / 1024, SIFT_XI_SUB | SIFT_XI_KEEP);
 	}
+	if (c->lookup_pages > 0)
+		sift_explain_int(&ln, "Lookup Pages All Visible", "%", "of the lookup tables' pages all-visible", c->lookup_allvis * 100 / c->lookup_pages, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
+	if (c->lookup_pages >= LOOKUP_HINT_PAGES && c->lookup_allvis * 2 < c->lookup_pages)
+		ExplainPropertyText("Lookup Hint", "VACUUM the lookup tables: under half of their pages are all-visible, so the lookups fetch heap pages", es);
 }
 
 /* The units a run read, pruned, and answered from the pre-aggregates */

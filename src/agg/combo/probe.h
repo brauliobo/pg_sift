@@ -158,6 +158,11 @@ typedef struct DProbe
 	bool		path_ok;
 	uint32		skipped;
 	int64		reads0;			/* the heap blocks the backend had read from the OS when the probe began (dp_reads) */
+	uint64		leaves;			/* what the batches did, for the Lookup line of EXPLAIN (combo_probe_flush adds them to the statement's): leaf pages moved to, pages above the leaves pinned, */
+	uint64		pins;
+	uint64		heap;			/* heap fetches, index-only entries the visibility map answered */
+	uint64		vm;
+	BlockNumber lastleaf;
 	uint64		asked;			/* heap blocks of the entries found that were asked of the pool and the OS ahead of their fetch (combo_probe_flush adds them to the statement's) */
 } DProbe;
 
