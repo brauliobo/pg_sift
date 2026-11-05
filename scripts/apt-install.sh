@@ -59,7 +59,7 @@ apt_get() {
 # the download that did not finish is not fatal: the install resumes it
 apt_install() {
 	apt_get 3 $((APT_UNIT * 2)) install -y --download-only "$@" || true
-	apt_get 3 $((APT_UNIT * 3)) install -y "$@"
+	apt_get 3 $((APT_UNIT * 2)) install -y "$@"
 }
 
 apt_selftest() {

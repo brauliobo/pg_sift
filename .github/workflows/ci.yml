@@ -8,7 +8,7 @@ name: ci
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
-# The full tier is four shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
+# The full tier is five shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
 # A deep run does not repeat the x86 quick shards on 17 and 18: its full tier has the same jobs at full scale; the quick shards of AArch64 and 19 stay, with the release-library list on 18.
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a `ci-full` pull request, the quick tier
 # of a push, the nightly run and a dispatch.
@@ -150,7 +150,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || 90 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || matrix.tier == 'full' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -165,13 +165,13 @@ jobs:
 
       # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
       - name: PGDG repository
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           scripts/pgdg-repo.sh
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git && !matrix.cassert }}
-        timeout-minutes: 10
+        timeout-minutes: 8
         run: |
           scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
@@ -293,8 +293,8 @@ jobs:
           SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
-          # a job that hangs is stopped with the end of its log after 45 minutes: the limit of the workflow (90) ends the whole shard, and its logs are lost
-          CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '2700' || '' }}
+          # a job that hangs is stopped with the end of its log after 30 minutes (15 in the quick tier, scripts/ci/config.sh): the limit of the workflow ends the whole shard, and its logs are lost
+          CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '1800' || '' }}
 
       # the first hosted run says whether the compiler wrappers took: a cache of 0 hits on a warm key means the build did not go through them
       - name: Compiler cache statistics
