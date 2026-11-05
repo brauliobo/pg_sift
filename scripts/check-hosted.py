@@ -72,6 +72,7 @@ keep = step('postgresql', 'name', 'Keep the compiler cache')
 need(' ccache ' in inst['run'], 'the compiler cache is not installed with PostgreSQL')
 need('/usr/lib/ccache >> "$GITHUB_PATH"' in inst['run'], 'the ccache wrappers are not put on PATH')
 need(keyer and all(part in keyer['run'] for part in ('matrix.pg', 'RUNNER_OS', 'RUNNER_ARCH', 'gcc', "hashFiles('src/**'")), 'the key of the compiler cache is not made of the PostgreSQL major, the OS, the architecture, the compiler and the sources')
+need(keyer and '"key=${prefix}' in keyer['run'], 'the key of the compiler cache does not name the prefix as ${prefix} (a hash after $prefix is read as part of the variable name)')
 need(cache and cache['with']['path'].endswith('/ccache'), 'the compiler cache does not keep the directory of ccache')
 if cache:
     need(cache['uses'].startswith('actions/cache/restore@'), 'the compiler cache is not restored by actions/cache/restore (the save is a step of its own)')

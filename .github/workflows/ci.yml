@@ -201,7 +201,7 @@ jobs:
         run: |
           prefix="ccache-pg${{ matrix.pg }}-$RUNNER_OS-$RUNNER_ARCH-gcc$(gcc -dumpfullversion)-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "key=$prefix${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
+          echo "key=${prefix}${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the compiler
         id: ccache-cache
