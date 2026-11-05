@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 \ir test/sift_plan.sql
 \set ECHO none
+-- no worker merges the promoted segments before the count of them below (a slow runner let it)
+SET sift.async_maintenance = off;
 SELECT sift.version() IS NOT NULL AS library_loaded;
  library_loaded 
 ----------------
