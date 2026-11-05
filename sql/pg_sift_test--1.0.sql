@@ -251,6 +251,8 @@ CREATE FUNCTION sift._test_col_damage(index regclass, section text, units int4, 
 CREATE FUNCTION sift._test_col_pre_stats(index regclass, OUT leaf int4, OUT units float8, OUT dim_units float8, OUT mm_units float8, OUT roll_units float8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_pre_stats' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_leaf_fold(index regclass, OUT folded_shared int4, OUT folded_full int4, OUT same bool) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_leaf_fold' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_col_set_damage(index regclass, units int4, OUT blobs int8, OUT exact int8, OUT bloom int8, OUT intact int8, OUT matching int8, OUT cut int8,
 										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record

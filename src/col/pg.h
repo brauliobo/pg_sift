@@ -44,6 +44,10 @@ typedef struct SiftColPreStats
 	double		rows;			/* the rollup of the rows */
 } SiftColPreStats;
 extern const SiftColPreStats *sift_col_pre_stats(Relation index);
+#ifdef SIFT_TESTING
+/* folds the statistics with the shared ring (*incremental: the segments opened) and without it (*full), and tells whether they are the same bytes */
+extern bool sift_col_leaf_fold_check(Relation index, int *incremental, int *full);
+#endif
 /* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the three functions above for the directory it read */
 typedef struct SiftColLeafMemo
 {

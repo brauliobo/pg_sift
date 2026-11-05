@@ -56,7 +56,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  part_key_tests       | KEYS_MAX_TESTS                  |      20000 | t         | t
  partitions           | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
  phrase_terms         | SIFT_MAX_PHRASE                 |        128 | t         | t
- pre_census_units     | -                               |        256 | t         | t
+ pre_census_units     | -                               |         16 | t         | t
  prefix_index         | SIFT_MAX_PREFIX_INDEX           |         15 | t         | f
  presence_pct         | SIFT_CSET_PRES_PCT              |          3 | t         | f
  query_bytes          | SIFT_QUERY_MAX_BYTES            |     262144 | t         | t

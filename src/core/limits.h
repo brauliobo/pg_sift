@@ -119,9 +119,9 @@
 	X(par_build_rows, "PAR_BUILD_ROWS", "col/build_par.c", 150000, "rows", \
 	  "rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table)", \
 	  "fewer workers are launched, down to the build of the leader alone: one segment", "max_parallel_maintenance_workers, the parallel_workers option of the table", 1) \
-	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
-	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
-	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \
+	X(pre_census_units, "-", "col/am/cache.c", 16, "units", \
+	  "units of each segment of an index the planner counts the pre-aggregate sections of (spread over the segment)", \
+	  "the share of the units that hold a section is that of the units counted; a segment of fewer units is counted whole", "-", 1) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
 	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too", "-", 1) \

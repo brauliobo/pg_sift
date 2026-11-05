@@ -113,6 +113,26 @@ record_crc(const char *rec, Size len)
 }
 
 bool
+sift_col_leafshm_peek(RelFileNumber rel, uint64 *stamp)
+{
+	Lshm	   *s = lshm_get();
+	bool		found = false;
+
+	if (s == NULL)
+		return false;
+	SpinLockAcquire(&s->mutex);
+	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId)
+		{
+			*stamp = s->dir[i].stamp;
+			found = true;
+			break;
+		}
+	SpinLockRelease(&s->mutex);
+	return found;
+}
+
+bool
 sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafStats *st, SiftColPreStats *pre, SiftColZones *zs)
 {
 	Lshm	   *s = lshm_get();

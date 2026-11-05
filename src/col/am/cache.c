@@ -21,13 +21,12 @@
 
 /*
  * The planner needs the share of the units that hold each pre-aggregate section, not the count: reading the sections of every unit costs
- * a few buffers each (2.5 for an index of seven leaves and a cube), on the first plan of every backend. The units of an index are counted
- * up to PRE_CENSUS_UNITS together, shared out over its segments in proportion to their units and at least PRE_CENSUS_MIN of each, spread
- * evenly; an index of fewer units is counted whole.
+ * a few buffers each (2.5 for an index of seven leaves and a cube), on the first plan of every backend. Up to PRE_CENSUS_UNITS units of
+ * each segment are counted, spread evenly; a segment of fewer units is counted whole. The count of a segment is a function of the segment
+ * alone, so that the statistics of an index are the same whether a backend folded all its segments or only those a record of the shared
+ * ring (col/leafshm.c) did not cover.
  */
-#define PRE_CENSUS_UNITS	256
-
-#define PRE_CENSUS_MIN		2
+#define PRE_CENSUS_UNITS	16
 
 typedef struct LeafEntry
 {
@@ -81,6 +80,115 @@ zones_shrink(SiftColZones *zs)
 			zs->lo[c] = repalloc(zs->lo[c], Max(zs->n, 1) * sizeof(int64));
 			zs->hi[c] = repalloc(zs->hi[c], Max(zs->n, 1) * sizeof(int64));
 		}
+}
+
+/* the state a fold starts from */
+static void
+fold_reset(int ncols, SiftColLeafStats *st, SiftColPreStats *pre, SiftColZones *zs)
+{
+	for (int c = 0; c < ncols; c++)
+		sift_col_leaf_stats_init(&st[c]);
+	memset(pre, 0, sizeof(*pre));
+	zs->n = 0;
+	zs->units = 0;
+	zs->stride = 1;
+}
+
+/*
+ * The statistics of the immutable segments of the directory, folded into st, pre and zs (reset here): the sections of each segment, in the order of the directory. The fold
+ * is the same whichever segments a record of the shared ring covers: it stands for the first k, and only the others are opened. fs[j] is the stamp of the first j
+ * immutable segments (the index, its options and what each segment's generation and format are); the record is under the stamp of all of them, and the one of the index, under
+ * any older stamp, is taken as the first k segments when that stamp is that of a prefix of the directory: a promotion adds a segment and the next backend that plans reads
+ * its sections, not those of the segments it has seen. shared false folds them all and neither reads nor writes the ring. *folded: the segments opened.
+ */
+static void
+leaf_fold(Relation index, const SiftDirSnapshot *dir, SiftColLeafStats *st, SiftColPreStats *pre, SiftColZones *zs, bool shared, int *folded)
+{
+	const int	ncols = sift_col_index_defs(index)->ncols;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
+	const SiftColRel *rel = sift_col_rel_private(index, cx);	/* the loops open segments, which read catalogs and reload the cached state */
+	const SiftColIndexMeta *d = &rel->meta;
+	const SiftCPaggSpec *spec = &rel->pagg;
+	uint64	   *fs = palloc((dir->nsegs + 1) * sizeof(uint64));
+	int			nimm = 0,
+				k0 = 0,
+				nfold = 0;
+	uint64		prefix;
+	bool		whole;
+
+	fs[0] = (uint64) index->rd_locator.relNumber * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
+	fs[0] = fs[0] * 31 + sift_limit(pre_census_units, PRE_CENSUS_UNITS);
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			fs[nimm + 1] = fs[nimm] * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
+			nimm++;
+		}
+	fold_reset(ncols, st, pre, zs);
+	/* the statistics of the segments are folded once for the server: the first backend that plans keeps them for the others (col/leafshm.c) */
+	whole = shared && sift_col_leafshm_read(index->rd_locator.relNumber, fs[nimm], ncols, st, pre, zs);
+	if (whole)
+	{
+		sift_stat_add(SIFT_STAT_LEAF_SHARED, 1);
+		k0 = nimm;
+	}
+	else if (shared && sift_col_leafshm_peek(index->rd_locator.relNumber, &prefix))
+	{
+		int			k = nimm - 1;
+
+		while (k > 0 && fs[k] != prefix)
+			k--;
+		if (k > 0 && sift_col_leafshm_read(index->rd_locator.relNumber, prefix, ncols, st, pre, zs))
+			k0 = k;
+		else
+			fold_reset(ncols, st, pre, zs);
+	}
+	if (!whole)
+	{
+		int			j = 0;
+
+		for (int i = 0; i < dir->nsegs; i++)
+		{
+			SiftColSegment *seg;
+			SiftCPaggCensus census;
+			double		w;
+
+			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || j++ < k0)
+				continue;
+			seg = sift_cseg_open(index, &dir->segs[i], cx);
+			for (int c = 0; c < ncols; c++)
+				sift_cseg_leaf_stats(seg, c, &st[c]);
+			sift_cseg_zone_sample(seg, zs);
+			sift_cseg_pre_census(seg, spec, sift_col_format_minor, sift_limit(pre_census_units, PRE_CENSUS_UNITS), &census);
+			/* the units counted stand for the units of the segment */
+			w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
+			pre->units += census.units * w;
+			for (int k = 0; k < spec->ndims; k++)
+			{
+				pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
+				pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
+			}
+			for (int k = 0; k < spec->nrollups; k++)
+				if (spec->rollup[k].list >= 0)
+					pre->roll[spec->rollup[k].list] += census.roll[k] * w;
+				else
+					pre->rows += census.roll[k] * w;
+			sift_cseg_close(seg);
+			nfold++;
+		}
+		sift_stat_add(SIFT_STAT_LEAF_BUILT, 1);
+		if (shared)
+			sift_col_leafshm_write(index->rd_locator.relNumber, fs[nimm], ncols, st, pre, zs);
+	}
+	/* what the segments that are not immutable (a write buffer, a segment of an older format) say is not in the record: it is of the directory in hand */
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].kind != SIFT_SEG_TOMB && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
+			for (int c = 0; c < ncols; c++)
+				st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
+	MemoryContextDelete(cx);
+	zones_shrink(zs);
+	if (folded != NULL)
+		*folded = nfold;
 }
 
 static LeafEntry *
@@ -141,62 +249,11 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		}
 	}
 	{
-		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
-		const SiftColRel *rel = sift_col_rel_private(index, cx);	/* the loops open segments, which read catalogs and reload the cached state */
-		const SiftColIndexMeta *d = &rel->meta;
-		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
+		SiftColLeafStats *st = MemoryContextAllocZero(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
 		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
-		const SiftCPaggSpec *spec = &rel->pagg;
-		SiftColZones *zs = zones_new(d);
-		uint64		nunits = sift_cseg_dir_units(dir),
-					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS),
-					shared_stamp;
+		SiftColZones *zs = zones_new(sift_col_index_defs(index));
 
-		for (int c = 0; c < ncols; c++)
-			sift_col_leaf_stats_init(&st[c]);
-		/* the statistics of the segments are folded once for the server: the first backend that plans keeps them for the others (col/leafshm.c) */
-		shared_stamp = stamp * 31 + census_units;
-		if (sift_col_leafshm_read(index->rd_locator.relNumber, shared_stamp, ncols, st, pre, zs))
-			sift_stat_add(SIFT_STAT_LEAF_SHARED, 1);
-		else
-		{
-			for (int i = 0; i < dir->nsegs; i++)
-			{
-				SiftColSegment *seg;
-				SiftCPaggCensus census;
-				double		w;
-
-				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
-					continue;
-				seg = sift_cseg_open(index, &dir->segs[i], cx);
-				for (int c = 0; c < ncols; c++)
-					sift_cseg_leaf_stats(seg, c, &st[c]);
-				sift_cseg_zone_sample(seg, zs);
-				sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
-				/* the units counted stand for the units of the segment */
-				w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
-				pre->units += census.units * w;
-				for (int k = 0; k < spec->ndims; k++)
-				{
-					pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
-					pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
-				}
-				for (int k = 0; k < spec->nrollups; k++)
-					if (spec->rollup[k].list >= 0)
-						pre->roll[spec->rollup[k].list] += census.roll[k] * w;
-					else
-						pre->rows += census.roll[k] * w;
-				sift_cseg_close(seg);
-			}
-			for (int i = 0; i < dir->nsegs; i++)
-				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].kind != SIFT_SEG_TOMB && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
-					for (int c = 0; c < ncols; c++)
-						st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
-			sift_stat_add(SIFT_STAT_LEAF_BUILT, 1);
-			sift_col_leafshm_write(index->rd_locator.relNumber, shared_stamp, ncols, st, pre, zs);
-		}
-		MemoryContextDelete(cx);
-		zones_shrink(zs);
+		leaf_fold(index, dir, st, pre, zs, true, NULL);
 		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 		e->stamp = stamp;
 		e->checked = am_leaf_plan;
@@ -293,3 +350,47 @@ sift_col_am_oid(void)
 		am = get_index_am_oid("sift_col", true);
 	return am;
 }
+
+#ifdef SIFT_TESTING
+static bool
+zones_equal(const SiftColZones *a, const SiftColZones *b)
+{
+	if (a->ncols != b->ncols || a->n != b->n || a->units != b->units || a->stride != b->stride)
+		return false;
+	for (int c = 0; c < a->ncols; c++)
+		if ((a->lo[c] == NULL) != (b->lo[c] == NULL) ||
+			(a->lo[c] != NULL && (memcmp(a->lo[c], b->lo[c], a->n * sizeof(int64)) != 0 || memcmp(a->hi[c], b->hi[c], a->n * sizeof(int64)) != 0)))
+			return false;
+	return true;
+}
+
+bool
+sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftColLeafStats *st[2];
+	SiftColPreStats *pre[2];
+	SiftColZones *zs[2];
+	bool		same;
+
+	sift_dir_read(index, dir);
+	for (int k = 0; k < 2; k++)
+	{
+		st[k] = MemoryContextAllocZero(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+		pre[k] = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
+		zs[k] = zones_new(d);
+	}
+	leaf_fold(index, dir, st[0], pre[0], zs[0], true, incremental);
+	leaf_fold(index, dir, st[1], pre[1], zs[1], false, full);
+	same = memcmp(st[0], st[1], d->ncols * sizeof(SiftColLeafStats)) == 0 && memcmp(pre[0], pre[1], sizeof(SiftColPreStats)) == 0 && zones_equal(zs[0], zs[1]);
+	for (int k = 0; k < 2; k++)
+	{
+		pfree(st[k]);
+		pfree(pre[k]);
+		zones_free(zs[k]);
+	}
+	pfree(dir);
+	return same;
+}
+#endif							/* SIFT_TESTING */

@@ -11,6 +11,8 @@ extern int	sift_col_leaf_cache_kb;
 
 /* st[ncols], *pre and the arrays of *zs (as many as the leaves with a sample) are filled from what another backend kept for the index under the stamp; false: none, or none that is whole */
 extern bool sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafStats *st, SiftColPreStats *pre, SiftColZones *zs);
+/* the stamp of the record the ring holds for the index (the newest: a write drops the older), false: none */
+extern bool sift_col_leafshm_peek(RelFileNumber rel, uint64 *stamp);
 extern void sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftColLeafStats *st, const SiftColPreStats *pre, const SiftColZones *zs);
 
 #endif

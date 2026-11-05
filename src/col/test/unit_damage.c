@@ -17,6 +17,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_damage);
 
 PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
 
+PG_FUNCTION_INFO_V1(sift_test_leaf_fold);
+
 typedef enum DamageSection
 {
 	DMG_UNIT,
@@ -307,5 +309,20 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* sift._test_leaf_fold(index): the leaf statistics folded with the shared ring and without it: the segments the first opened, those the second did, and whether the statistics are the same bytes */
+Datum
+sift_test_leaf_fold(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	int			inc,
+				full;
+	bool		same = sift_col_leaf_fold_check(index, &inc, &full);
+	Datum		v[3] = {Int32GetDatum(inc), Int32GetDatum(full), BoolGetDatum(same)};
+	bool		nulls[3] = {false};
+
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 #endif							/* SIFT_TESTING */
