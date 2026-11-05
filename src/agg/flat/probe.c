@@ -526,6 +526,21 @@ refs(Node *n, Index rti)
 	return r;
 }
 
+/* the items other than RTI that the expression reads (Vars of this query level) */
+static bool
+partners_walker(Node *n, Bitmapset **partners)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+	{
+		if (((Var *) n)->varlevelsup == 0)
+			*partners = bms_add_member(*partners, ((Var *) n)->varno);
+		return false;
+	}
+	return expression_tree_walker(n, partners_walker, partners);
+}
+
 /* the conjunct of the ON as the sub-select reads it: the Vars of the table are its own, those of the others the query around it's */
 static Node *
 child_vars(Node *n, Index *rti)
@@ -618,6 +633,38 @@ scan_table(Oid relid)
 	return found;
 }
 
+/* does the query read a table that has a column index (a scan)? */
+static bool
+reads_scan_table(Query *q)
+{
+	foreach_node(RangeTblEntry, r, q->rtable)
+	{
+		if (r->rtekind == RTE_RELATION && scan_table(r->relid))
+			return true;
+		if (r->rtekind == RTE_SUBQUERY && reads_scan_table(r->subquery))
+			return true;
+	}
+	foreach_node(CommonTableExpr, cte, q->cteList)
+		if (reads_scan_table(castNode(Query, cte->ctequery)))
+			return true;
+	return false;
+}
+
+/* a CTE, a sub-select or a VALUES list that reads no table with a column index: the keys a statement names, which no scan reads */
+static bool
+keys_item(RangeTblEntry *rte)
+{
+	if (rte->rtekind == RTE_VALUES)
+		return true;
+	if (rte->rtekind == RTE_SUBQUERY)
+		return !reads_scan_table(rte->subquery);
+	if (rte->rtekind == RTE_CTE && rte->ctelevelsup < list_length(flat_levels))
+		foreach_node(CommonTableExpr, cte, ((Query *) list_nth(flat_levels, rte->ctelevelsup))->cteList)
+			if (strcmp(cte->ctename, rte->ctename) == 0)
+				return !reads_scan_table(castNode(Query, cte->ctequery));
+	return false;
+}
+
 /* a plain table with many rows that no row-level policy restricts */
 static bool
 join_table(Query *q, Node *n)
@@ -659,6 +706,7 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 	Node	  **slot = join_slot(c);
 	Node	   *on = *slot;
 	bool		tie = false;
+	Bitmapset  *partners = NULL;
 
 	c->child = c->rest = NIL;
 	c->used = NULL;
@@ -671,7 +719,12 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 
 		if (r.outer || checkExprHasSubLink(a) || contain_volatile_functions(a) || contain_agg_clause(a))
 			return false;
-		tie |= r.table && join_tie(rte, c->rti, a);
+		if (r.table && join_tie(rte, c->rti, a))
+		{
+			tie = true;
+			partners_walker(a, &partners);
+			partners = bms_del_member(partners, c->rti);
+		}
 		if (r.table || type == JOIN_LEFT)
 			c->child = lappend(c->child, a);
 		else
@@ -679,6 +732,20 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 	}
 	if (!tie)
 		return false;
+	/*
+	 * A table that an inner join ties only to a CTE (the keys a statement names) is probed by those keys by the planner's own nested loop, and
+	 * as a lateral child of the CTE it leaves the CTE with no join condition of its own once the statement is flattened into the query that
+	 * reads the table's columns (the scan finds no lookup to key it by): the keys' CTE is the driver, the table the one joined by them.
+	 */
+	if (type == JOIN_INNER && !bms_is_empty(partners))
+	{
+		bool		driven = true;
+
+		for (int m = -1; (m = bms_next_member(partners, m)) >= 0;)
+			driven &= keys_item(rt_fetch(m, q->rtable));
+		if (driven)
+			return false;
+	}
 	foreach_node(RangeTblEntry, r, q->rtable)
 	{
 		/* the items of a FROM list are in an order that a lateral reference to the table needs: the table goes last */
