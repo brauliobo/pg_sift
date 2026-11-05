@@ -63,17 +63,21 @@ for name, job in doc['jobs'].items():
 need(doc['jobs']['macos']['runs-on'] == 'macos-15', 'the macOS job is not on macos-15 (arm64)')
 need('postgresql@17 postgresql@18' in step('macos', 'name', 'Install bash 5 and PostgreSQL 17 and 18')['run'], 'the macOS job does not install PostgreSQL 17 and 18')
 
-# the compiler cache: installed, on PATH, kept by pg, OS and architecture, saved under the commit
+# the compiler cache: installed, on PATH, kept by pg, OS, architecture, compiler and sources (the key is made by a step), restored from the newest cache of the branch or of main, and saved by the first job to finish
 pg = doc['jobs']['postgresql']['steps']
 inst = next(s for s in pg if str(s.get('name', '')).startswith('Install PostgreSQL'))
+keyer = step('postgresql', 'name', 'Key of the compiler cache')
 cache = step('postgresql', 'name', 'Cache the compiler')
+keep = step('postgresql', 'name', 'Keep the compiler cache')
 need(' ccache ' in inst['run'], 'the compiler cache is not installed with PostgreSQL')
 need('/usr/lib/ccache >> "$GITHUB_PATH"' in inst['run'], 'the ccache wrappers are not put on PATH')
+need(keyer and all(part in keyer['run'] for part in ('matrix.pg', 'RUNNER_OS', 'RUNNER_ARCH', 'gcc', "hashFiles('src/**'")), 'the key of the compiler cache is not made of the PostgreSQL major, the OS, the architecture, the compiler and the sources')
 need(cache and cache['with']['path'].endswith('/ccache'), 'the compiler cache does not keep the directory of ccache')
 if cache:
-    for part in ('matrix.pg', 'runner.os', 'runner.arch', 'github.sha'):
-        need(part in cache['with']['key'], 'the key of the compiler cache lacks %s' % part)
-    need(cache['with']['key'].startswith(cache['with']['restore-keys'].strip()), 'restore-keys is not a prefix of the key')
+    need(cache['uses'].startswith('actions/cache/restore@'), 'the compiler cache is not restored by actions/cache/restore (the save is a step of its own)')
+    need('steps.ccache.outputs.key' in cache['with']['key'], 'the compiler cache is not restored by the key of its step')
+    need('steps.ccache.outputs.prefix' in cache['with']['restore-keys'] and 'matrix.pg' in cache['with']['restore-keys'], 'restore-keys lacks the prefix of the compiler and the major')
+need(keep and keep['uses'].startswith('actions/cache/save@') and keep['with']['key'] == cache['with']['key'] and '!cancelled()' in keep['if'], 'the compiler cache is not saved, under the key it was looked up by, when the run is not cancelled')
 need(pg.index(cache) > pg.index(inst), 'the compiler cache is restored before the compiler wrappers are installed')
 
 al = os.environ.get('ACTIONLINT') or shutil.which('actionlint')
