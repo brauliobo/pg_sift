@@ -60,7 +60,7 @@ PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 unset PGDATABASE PGSERVICE PGSERVICEFILE
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
-FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan}"
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan} pg$PG_MAJOR"
 
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
 
