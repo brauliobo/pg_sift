@@ -177,14 +177,27 @@ jobs:
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
 
-      # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm): the newest cache of the branch, saved under this commit
-      - name: Cache the compiler
+      # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm). The key is the compiler and the sources the objects come from, so a commit that
+      # changes none of them (tests, docs, workflows) finds its cache and saves nothing new, and any other restores the newest cache of the branch or of main (caches of the default branch
+      # are read by every branch) and saves its own. The first job of the entry to finish saves it, a failed run included: the objects are the cost, not the tests
+      - name: Key of the compiler cache
+        id: ccache
         if: ${{ !matrix.git && !matrix.cassert }}
-        uses: actions/cache@v5
+        run: |
+          prefix="ccache-pg${{ matrix.pg }}-$RUNNER_OS-$RUNNER_ARCH-gcc$(gcc -dumpfullversion)-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the compiler
+        id: ccache-cache
+        if: ${{ !matrix.git && !matrix.cassert }}
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          restore-keys: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          key: ${{ steps.ccache.outputs.key }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.prefix }}
+            ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
       - name: Get PostgreSQL 19
@@ -287,6 +300,13 @@ jobs:
       - name: Compiler cache statistics
         if: ${{ !cancelled() && !matrix.git && !matrix.cassert }}
         run: ccache -s
+
+      - name: Keep the compiler cache
+        if: ${{ !cancelled() && steps.ccache-cache.outcome == 'success' && steps.ccache-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.key }}
 
       - name: Keep the older releases
         if: ${{ !cancelled() && steps.oldlib-cache.outcome == 'success' && steps.oldlib-cache.outputs.cache-hit != 'true' }}
