@@ -12,6 +12,10 @@ CREATE FUNCTION ov_rows(n int, keys int) RETURNS void LANGUAGE sql AS $$
   INSERT INTO ov (dim_a_id, kind_id, amount) SELECT 1 + (random() * (keys - 1))::int, 1 + (random() * 6)::int, round((random() * 100)::numeric, 2) FROM generate_series(1, n) $$;
 SELECT ov_rows(60000, 3000);
 CREATE INDEX ov_idx ON ov USING sift_col (id, dim_a_id, kind_id, amount) WITH (key_cut = dim_a_id, key_cut_rows = 25);
+-- the partition holds dead rows (it is dirty): the merge of the overlays leaves it as it is, whatever the rewrite of a dirty segment would do
+DELETE FROM ov WHERE id % 97 = 0;
+UPDATE ov SET amount = amount + 1 WHERE id % 89 = 0;
+VACUUM (FREEZE, ANALYZE) ov;
 SET sift.col_auto_merge = off;
 DO $$ BEGIN FOR i IN 1..12 LOOP PERFORM ov_rows(150, 12); PERFORM sift.col_promote('ov_idx'); COMMIT; END LOOP; END $$;
 VACUUM (FREEZE, ANALYZE, INDEX_CLEANUP off) ov;
@@ -28,6 +32,8 @@ END $$;
 CREATE FUNCTION ov_requests(n int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN FOR i IN 1..n LOOP PERFORM kind_id, count(*), sum(amount) FROM ov WHERE dim_a_id = 1 + i % 12 GROUP BY kind_id; END LOOP; END $$;
 SELECT ov_segments() AS segments;
+SELECT dirty AS partition_dirty, gen AS part_gen FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND rows > 50000 \gset
+SELECT :'partition_dirty' AS partition_dirty;
 -- no one has read the index: the merge is not worth its rows
 SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_cold;
 SELECT sift.col_maintain('ov_idx') AS maintained_cold;
@@ -40,10 +46,14 @@ SELECT ov_requests(200);
 SELECT pg_stat_force_next_flush();
 CHECKPOINT;
 SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_read;
+SELECT pg_current_wal_lsn() AS wal0, (SELECT sum(bytes) FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND rows < 50000) AS overlay_bytes \gset
 SELECT sift.col_maintain('ov_idx') AS maintained;
+-- the pass writes about the bytes of the overlays, not those of the partition (a rewrite of the dirty partition was ten times that)
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), :'wal0') < 3 * :overlay_bytes AS wal_within_overlays;
 -- the overlays are one, the partition is the one it was
 SELECT ov_segments() AS segments;
 SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_merged;
+SELECT count(*) = 1 AS partition_kept FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND gen = :part_gen;
 SELECT ov_units(5) < :units_before AS fewer_units;
 SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) = :'native' AS same_rows FROM (SELECT dim_a_id, kind_id, count(*), round(sum(amount)::numeric, 2) FROM ov WHERE dim_a_id <= 40 GROUP BY 1, 2) x;
 DROP FUNCTION ov_rows(int, int), ov_segments(), ov_units(int), ov_requests(int);

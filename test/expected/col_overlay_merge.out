@@ -17,6 +17,10 @@ SELECT ov_rows(60000, 3000);
 (1 row)
 
 CREATE INDEX ov_idx ON ov USING sift_col (id, dim_a_id, kind_id, amount) WITH (key_cut = dim_a_id, key_cut_rows = 25);
+-- the partition holds dead rows (it is dirty): the merge of the overlays leaves it as it is, whatever the rewrite of a dirty segment would do
+DELETE FROM ov WHERE id % 97 = 0;
+UPDATE ov SET amount = amount + 1 WHERE id % 89 = 0;
+VACUUM (FREEZE, ANALYZE) ov;
 SET sift.col_auto_merge = off;
 DO $$ BEGIN FOR i IN 1..12 LOOP PERFORM ov_rows(150, 12); PERFORM sift.col_promote('ov_idx'); COMMIT; END LOOP; END $$;
 VACUUM (FREEZE, ANALYZE, INDEX_CLEANUP off) ov;
@@ -36,6 +40,13 @@ SELECT ov_segments() AS segments;
  segments 
 ----------
        13
+(1 row)
+
+SELECT dirty AS partition_dirty, gen AS part_gen FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND rows > 50000 \gset
+SELECT :'partition_dirty' AS partition_dirty;
+ partition_dirty 
+-----------------
+ t
 (1 row)
 
 -- no one has read the index: the merge is not worth its rows
@@ -80,9 +91,17 @@ SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_read
  overlay units
 (1 row)
 
+SELECT pg_current_wal_lsn() AS wal0, (SELECT sum(bytes) FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND rows < 50000) AS overlay_bytes \gset
 SELECT sift.col_maintain('ov_idx') AS maintained;
  maintained 
 ------------
+ t
+(1 row)
+
+-- the pass writes about the bytes of the overlays, not those of the partition (a rewrite of the dirty partition was ten times that)
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), :'wal0') < 3 * :overlay_bytes AS wal_within_overlays;
+ wal_within_overlays 
+---------------------
  t
 (1 row)
 
@@ -90,13 +109,19 @@ SELECT sift.col_maintain('ov_idx') AS maintained;
 SELECT ov_segments() AS segments;
  segments 
 ----------
-        2
+        3
 (1 row)
 
 SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_merged;
  due_merged 
 ------------
  not due
+(1 row)
+
+SELECT count(*) = 1 AS partition_kept FROM sift.col_segments('ov_idx') WHERE kind = 'immutable' AND gen = :part_gen;
+ partition_kept 
+----------------
+ t
 (1 row)
 
 SELECT ov_units(5) < :units_before AS fewer_units;

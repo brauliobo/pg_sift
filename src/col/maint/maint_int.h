@@ -78,6 +78,7 @@ typedef struct OverlayEv
 extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
 /* set by a rule that found the overlays due: the rewrite then takes them alone */
 extern bool	maint_overlay_asked;
+extern int	maint_overlay_steps;
 
 extern void	maint_throttle(SiftWriteTarget *wt);
 

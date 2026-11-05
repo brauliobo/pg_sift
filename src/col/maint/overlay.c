@@ -19,6 +19,7 @@ span_cmp(const void *a, const void *b)
 }
 
 bool		maint_overlay_asked = false;
+int			maint_overlay_steps = 0;	/* the steps of the rewrite in hand left for the overlays: the automatic one takes a pass and the rule asks again for the next, an explicit col_maintain goes on until they are one */
 
 /*
  * The overlays of a key-cut index in partitions: the segments under half a partition, that promotions leave over the keys of the partitions (a partition holds a key in one
