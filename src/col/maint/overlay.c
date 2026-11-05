@@ -39,8 +39,10 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 				total_units = 0;
 	KeySpan    *sp;
 
-	/* a merge writes about the bytes of its segments: an eighth of max_wal_size at most, so that it does not force a checkpoint of its own; the next pass takes the rest */
+	/* a merge writes about the bytes of its segments: a pass takes an eighth of max_wal_size at most, and sift.col_auto_merge_wal_pct percent of it, so that it forces no checkpoint of its own; the next pass takes the rest */
 	limit = Min(limit, ((uint64) max_wal_size_mb << 20) / 8);
+	if (sift_col_auto_merge_wal_pct > 0)
+		limit = Min(limit, (uint64) ((double) ((uint64) max_wal_size_mb << 20) * sift_col_auto_merge_wal_pct / 100.0));
 	memset(ev, 0, sizeof(*ev));
 	if (maint_part_kb == 0 || v->nkover > 0 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;

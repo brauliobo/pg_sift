@@ -126,7 +126,6 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				dirty = 0,
 				rows = 0,
 				bytes = 0,
-				gate_bytes,
 				buffered = 0,
 				over_listed = 0,
 				over_dirty = 0,
@@ -208,26 +207,15 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	}
 	else if (maint_read_asked && dirty > 0)
 		why = "dirty units";
-	gate_bytes = bytes;
 	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
 	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
 	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
 	if (why != NULL && automatic && build_peers && gates != NULL && maint_rewrite_all(why))
 		*gates |= SIFT_COL_PEERS;
-	/* the merge of the overlays writes their bytes, not the index's: the budget is of the WAL written since the oldest of them */
-	if (maint_overlay_asked)
+	/* the merge of the overlays is paced by the bytes of a pass (maint_overlay_set), not by the WAL others write: a quiet server is when it costs least */
+	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && !maint_read_asked && !maint_overlay_asked && maint_wal_budget_spent(lsn, sbytes, nseg, bytes))
 	{
-		gate_bytes = 0;
-		for (int i = 0; i < nseg; i++)
-		{
-			sbytes[i] = take[i] ? sbytes[i] : 0;
-			gate_bytes += sbytes[i];
-		}
-	}
-	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && !maint_read_asked && maint_wal_budget_spent(lsn, sbytes, nseg, gate_bytes))
-	{
-		maint_overlay_asked = false;
 		if (gates != NULL)
 			*gates |= SIFT_COL_GATE_WAL;
 		/* the budget defers the rewrite of the segments, not the promotion of the write buffer, which costs its rows: reads would walk them until the budget is back */
