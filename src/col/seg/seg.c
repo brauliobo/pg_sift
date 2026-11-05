@@ -466,7 +466,8 @@ seg_points_read(SiftColSegment *seg)
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
 	rat = rooted ? hat - (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN : hat + sizeof(hdr);
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
-	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+	/* the global order blocks are the records past the leaves' (version ORD): without them no table of 2 * ncols blocks of 200 bytes is made for every segment of every statement */
+	pv->go = hdr[3] > 0 ? MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf)) : NULL;
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
 	seg_read(seg, s->off + rat, (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	/* the parameters of the packed tables are next to the records, one for each, in the order of the leaves */
