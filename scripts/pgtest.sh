@@ -122,6 +122,15 @@ new_data() {
 # max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
 # 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
 # The WAL a lane keeps is at most this, 1 MB segments, no recycling.
+# reset_auto_conf DIR: the settings an ALTER SYSTEM of an earlier session left (max_parallel_workers_per_gather = 0, a small shared_buffers, work_mem) change the plans of
+# the tests: 18 of them failed on a clean tree for it. The cluster starts from the conf above alone.
+reset_auto_conf() {
+	if grep -qv '^#' "$1/postgresql.auto.conf" 2>/dev/null; then
+		echo "pgtest: $1/postgresql.auto.conf held settings from ALTER SYSTEM; emptied" >&2
+		: >"$1/postgresql.auto.conf"
+	fi
+}
+
 start() {
 	mkdir -p "$SOCK"
 	if [[ ! -f $DATA/PG_VERSION ]]; then
@@ -141,6 +150,7 @@ start() {
 			autovacuum = off
 		EOF
 	fi
+	reset_auto_conf "$DATA"
 	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
 	leak_baseline "$DATA"
@@ -255,6 +265,7 @@ case ${1:-} in
 		;;
 	regress) shift; regress "$@" ;;
 	leftovers) shift; leftovers "$@" ;;
+	reset-auto-conf) reset_auto_conf "$2" ;;
 	initdb-template) initdb_template "$2" ;;
 	new-data) new_data "$2" "${3:-}" ;;
 	tap) tap "${2:-}" ;;
