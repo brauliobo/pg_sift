@@ -9,8 +9,8 @@ set -euo pipefail
 # sudo drops the environment, so the settings that keep a maintainer script from waiting on stdin travel through `env`
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 APT_UNIT=${APT_UNIT:-60} # seconds; every bound below is a multiple of it
-# a connection that sends nothing for 20 s is cut and tried again (twice) inside the attempt, before the attempt itself is cut: the mirror that served a package at 55 kB/s, or none, held a call for its whole bound
-APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+# a connection that sends nothing for 20 s is cut and tried again (five times, on the next mirror of the list when there is one) inside the attempt, before the attempt itself is cut: the mirror that served a package at 55 kB/s, or none, held a call for its whole bound
+APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
 # APT_ARCHIVES: where the downloaded packages are kept, a directory the workflow caches between runs (the install of PostgreSQL and its development files is 90 MB from one mirror)
 [[ -z ${APT_ARCHIVES:-} ]] || APT_OPTS+=(-o "Dir::Cache::archives=$APT_ARCHIVES")
 
