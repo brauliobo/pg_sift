@@ -93,24 +93,6 @@ bool		sift_agg_probe_mixed;
 /* the tables smaller than this are read whole at the load of the scan: a probe for each key does not beat that */
 #define PROBE_MIN_ROWS	10000.0
 
-/*
- * The rows the planner expects of a table: pg_class.reltuples is -1 until a VACUUM or an ANALYZE has run (a table just loaded, with autovacuum not reached), and the
- * rewrite below was refused for it (a NOT IN over a 1,000,000-row table, probed by key: 40 ms against 0.9 ms). The planner's own estimate takes the density of
- * the pages from the row width then.
- */
-static double
-table_rows(Oid relid)
-{
-	Relation	rel = relation_open(relid, NoLock);
-	BlockNumber pages;
-	double		tuples,
-				allvis;
-
-	estimate_rel_size(rel, NULL, &pages, &tuples, &allvis);
-	relation_close(rel, NoLock);
-	return tuples;
-}
-
 typedef struct Probe
 {
 	Node	   *conj;			/* the conjunct of the WHERE */
@@ -185,7 +167,7 @@ probe_sub(Query *sub)
 	if (contain_volatile_functions((Node *) sub->jointree) || contain_volatile_functions((Node *) sub->targetList) ||
 		contain_vars_of_level((Node *) sub->jointree, 2) || contain_vars_of_level((Node *) sub->targetList, 2))
 		return false;
-	return table_rows(rte->relid) >= PROBE_MIN_ROWS;
+	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS;
 }
 
 /* the parameter of the sub-select's column in an IN's test expression, replaced by the column */
@@ -676,7 +658,7 @@ join_table(Query *q, Node *n)
 	rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable);
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL)
 		return false;
-	return table_rows(rte->relid) >= PROBE_MIN_ROWS && !scan_table(rte->relid);
+	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS && !scan_table(rte->relid);
 }
 
 /* what is left of the ON, or of the WHERE of a FROM list, after the sub-select took its conjuncts */
