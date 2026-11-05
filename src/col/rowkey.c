@@ -31,7 +31,20 @@ sift_col_row_key_on(Relation index)
 {
 	const char *rk = sift_col_options_row_key(index);
 
-	return rk[0] != '\0' && strcmp(rk, "off") != 0 && strcmp(rk, "auto") != 0;
+	return rk[0] != '\0' && strcmp(rk, "off") != 0 && strcmp(rk, "auto") != 0 && strcmp(rk, "ctid") != 0;
+}
+
+/* track_changes = ctid: no key column; the triggers of each row give the address of the version it ends (a column cannot be called ctid) */
+bool
+sift_col_track_ctid(Relation index)
+{
+	return strcmp(sift_col_options_row_key(index), "ctid") == 0;
+}
+
+bool
+sift_col_track_on(Relation index)
+{
+	return sift_col_row_key_on(index) || sift_col_track_ctid(index);
 }
 
 /* A valid, immediate unique index of the table on exactly this column, not partial, not on an expression: its oid, InvalidOid when none */
@@ -225,6 +238,8 @@ sift_col_row_key_prepare(Relation heap, Relation index)
 		sift_col_set_option(index, "track_changes", "off");
 		return;
 	}
+	if (strcmp(rk, "ctid") == 0)
+		return;
 	check_column(heap, index, rk, true);
 	tid = sift_col_options_point_tid_columns(index);
 	if (sift_col_list_has(tid, rk))

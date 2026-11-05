@@ -174,7 +174,7 @@ col_hf_open(SiftColSource *src)
 		return;
 #endif
 	if ((src->flags & COLO_TABLE) || IsolationIsSerializable() || src->snap->snapshot_type != SNAPSHOT_MVCC || !TransactionIdIsNormal(src->snap->xmin) ||
-		!sift_col_row_key_on(src->index))
+		!sift_col_track_on(src->index))
 		return;
 	src->hflog = sift_col_log(src->index);
 	if (src->hflog != NULL)

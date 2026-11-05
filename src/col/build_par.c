@@ -378,7 +378,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	gapn = sh->gapn;
 	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;
 	sift_par_end(ldr);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_col_build_merge(index, gap, gapn, nmerge);
 	return res;
 }

@@ -104,6 +104,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_track",
 							 "Testing: the statement triggers of track_changes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_no_chain_root",
+							 "Testing: the row triggers of track_changes = ctid write the address of the version a HOT update chain ends in, not the one of its root (a mutant of the tracking).",
+							 NULL, &sift_test_no_chain_root, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

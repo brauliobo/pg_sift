@@ -78,6 +78,21 @@ static int	batch_stmts;
 
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
 
+static void batch_xact(XactEvent event, void *arg);
+static void batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg);
+
+/* The callbacks that write the held rows and tombstones at the commit: made by the first row of the backend, or by the first tombstone a row trigger holds */
+void
+sift_col_batch_hook(void)
+{
+	if (!batch_hooked)
+	{
+		RegisterXactCallback(batch_xact, NULL);
+		RegisterSubXactCallback(batch_subxact, NULL);
+		batch_hooked = true;
+	}
+}
+
 static void
 batch_flush_all(void)
 {
@@ -189,15 +204,10 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
-	TransactionId xmin = r->rowkey && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
+	TransactionId xmin = r->track && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
 
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
-	if (!batch_hooked)
-	{
-		RegisterXactCallback(batch_xact, NULL);
-		RegisterSubXactCallback(batch_subxact, NULL);
-		batch_hooked = true;
-	}
+	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
 	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
 		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin);

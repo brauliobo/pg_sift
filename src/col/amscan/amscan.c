@@ -359,7 +359,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	so->first = palloc((r->natts + 1) * sizeof(int));
 	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
 	so->natts = r->natts;
-	rowkey = r->rowkey;	/* r is the cache's: opening the heap below reloads the entry */
+	rowkey = r->track;	/* r is the cache's: opening the heap below reloads the entry */
 	so->defs = palloc(r->meta.ncols * sizeof(SiftColDef));
 	memcpy(so->defs, r->meta.cols, r->meta.ncols * sizeof(SiftColDef));
 	so->preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
