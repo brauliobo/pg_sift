@@ -338,6 +338,10 @@ fold_from(Query *q)
 	return true;
 }
 
+static bool keys_level(Query *q);
+static bool reads_scan_table(Query *q);
+static bool item_reads_scan(RangeTblEntry *rte);
+
 bool
 probe_sublinks(Query *q, bool apply)
 {
@@ -346,7 +350,7 @@ probe_sublinks(Query *q, bool apply)
 	bool		changed = false;
 
 	if (!sift_agg_probe_rewrite || !q->hasSubLinks || q->commandType != CMD_SELECT || q->jointree == NULL || q->jointree->fromlist == NIL || q->setOperations != NULL ||
-		q->rowMarks != NIL)
+		q->rowMarks != NIL || keys_level(q))
 		return false;
 	found = probe_found(q);
 	if (found == NIL || !apply)
@@ -615,36 +619,66 @@ scan_table(Oid relid)
 	return found;
 }
 
-/* does the query read a table that has a column index (a scan)? */
+/* does the query read a table that has a column index (a scan), in its own tables, its sub-selects and the CTEs it names or reads? The query is the first of flat_levels (as at the call
+ * from flatten_query), and the levels follow a sub-select or a CTE body into it */
 static bool
 reads_scan_table(Query *q)
 {
 	foreach_node(RangeTblEntry, r, q->rtable)
-	{
-		if (r->rtekind == RTE_RELATION && scan_table(r->relid))
+		if ((r->rtekind == RTE_RELATION && scan_table(r->relid)) || ((r->rtekind == RTE_SUBQUERY || r->rtekind == RTE_CTE) && item_reads_scan(r)))
 			return true;
-		if (r->rtekind == RTE_SUBQUERY && reads_scan_table(r->subquery))
+	foreach_node(CommonTableExpr, cte, q->cteList)
+	{
+		bool		found;
+
+		flat_levels = lcons(cte->ctequery, flat_levels);
+		found = reads_scan_table(castNode(Query, cte->ctequery));
+		flat_levels = list_delete_first(flat_levels);
+		if (found)
 			return true;
 	}
-	foreach_node(CommonTableExpr, cte, q->cteList)
-		if (reads_scan_table(castNode(Query, cte->ctequery)))
-			return true;
 	return false;
+}
+
+/* does a sub-select or a CTE reference of the first level of flat_levels read a table with a column index? A CTE that cannot be found is taken as one that does */
+static bool
+item_reads_scan(RangeTblEntry *rte)
+{
+	List	   *saved = flat_levels;
+	bool		found;
+
+	if (rte->rtekind == RTE_SUBQUERY)
+	{
+		flat_levels = lcons(rte->subquery, flat_levels);
+		found = reads_scan_table(rte->subquery);
+		flat_levels = list_delete_first(flat_levels);
+		return found;
+	}
+	if (!rte->self_reference && rte->ctelevelsup < list_length(saved))
+		foreach_node(CommonTableExpr, cte, ((Query *) list_nth(saved, rte->ctelevelsup))->cteList)
+			if (strcmp(cte->ctename, rte->ctename) == 0 && !cte->cterecursive)
+			{
+				flat_levels = lcons(cte->ctequery, list_copy_tail(saved, rte->ctelevelsup));
+				found = reads_scan_table(castNode(Query, cte->ctequery));
+				flat_levels = saved;
+				return found;
+			}
+	return true;
+}
+
+/* a query level that reads no table with a column index and no column of the query around it: it names keys, no scan reads it, and PostgreSQL plans its joins and sub-selects as written
+ * (a probe made there leaves a table with no join condition of its own once the level is flattened into the statement that reads it) */
+static bool
+keys_level(Query *q)
+{
+	return !reads_scan_table(q) && !contain_vars_of_level((Node *) q, 1);
 }
 
 /* a CTE, a sub-select or a VALUES list that reads no table with a column index: the keys a statement names, which no scan reads */
 static bool
 keys_item(RangeTblEntry *rte)
 {
-	if (rte->rtekind == RTE_VALUES)
-		return true;
-	if (rte->rtekind == RTE_SUBQUERY)
-		return !reads_scan_table(rte->subquery);
-	if (rte->rtekind == RTE_CTE && rte->ctelevelsup < list_length(flat_levels))
-		foreach_node(CommonTableExpr, cte, ((Query *) list_nth(flat_levels, rte->ctelevelsup))->cteList)
-			if (strcmp(cte->ctename, rte->ctename) == 0)
-				return !reads_scan_table(castNode(Query, cte->ctequery));
-	return false;
+	return rte->rtekind == RTE_VALUES || ((rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE) && !item_reads_scan(rte));
 }
 
 /* a plain table with many rows that no row-level policy restricts */
@@ -916,7 +950,7 @@ sift_agg_probe_joins(Query *q, bool apply)
 	bool		changed = false;
 	ProbeJoin	c = {0};
 
-	if (!sift_agg_probe_rewrite || q->commandType != CMD_SELECT || q->jointree == NULL || q->setOperations != NULL || q->rowMarks != NIL)
+	if (!sift_agg_probe_rewrite || q->commandType != CMD_SELECT || q->jointree == NULL || q->setOperations != NULL || q->rowMarks != NIL || keys_level(q))
 		return false;
 	while (join_find(q, (Node *) q->jointree, &c))
 	{
