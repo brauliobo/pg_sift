@@ -211,6 +211,19 @@ if [[ $MODE == --selftest ]]; then
 		over=$(awk -F'\t' -v max="${tier#*:}" '!/^#/ && ($2 > max || $3 > max) {print $1 " " $2 "/" $3}' "$REPO/scripts/weights-${tier%:*}.tsv")
 		[[ -z $over ]] || { echo "FAIL: scripts/weights-${tier%:*}.tsv: a job takes more than ${tier#*:} lane seconds (PostgreSQL 17/18): $over"; bad=1; }
 	done
+	# the footprint sampler ends on the stop file and on TERM, prints its report and nothing on stderr (a hosted run printed "trap: line 2: unexpected EOF" and the sampler outlived the run)
+	mkdir -p "$ST/stats/logs"
+	for how in file term; do
+		bash "$REPO/scripts/ci_stats.sh" "$ST/stats" >"$ST/stats/out" 2>"$ST/stats/err" &
+		p=$!
+		sleep 1.5
+		if [[ $how == file ]]; then touch "$ST/stats/logs/stats.stop"; else kill "$p"; fi
+		for _ in {1..10}; do kill -0 "$p" 2>/dev/null || break; sleep 0.5; done
+		! kill -0 "$p" 2>/dev/null || { kill -9 "$p"; echo "FAIL: the footprint sampler does not end within 5 s of its $how"; bad=1; }
+		wait "$p" 2>/dev/null
+		{ grep -q 'peak total' "$ST/stats/out" && [[ ! -s $ST/stats/err ]]; } || { echo "FAIL: the footprint sampler ended by its $how without its report or with output on stderr: $(head -c 200 "$ST/stats/err")"; bad=1; }
+		rm -f "$ST/stats/logs/stats.stop"
+	done
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
 	for k in 3 9; do
 		plan_of full 18 1 $k/9

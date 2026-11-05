@@ -50,9 +50,9 @@ if (( failed )); then
 fi
 # the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
 if [[ -n ${STATS:-} ]]; then
-	kill "$STATS" 2>/dev/null
+	touch "$LOG/stats.stop"
 	for _ in {1..20}; do kill -0 "$STATS" 2>/dev/null || break; sleep 1; done
-	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler ignored TERM for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
+	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler did not end for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
 	wait "$STATS" 2>/dev/null
 	cat "$LOG/stats.txt"
 fi

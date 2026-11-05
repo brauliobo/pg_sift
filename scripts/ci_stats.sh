@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Footprint sampler of scripts/ci.sh (SIFT_CI_STATS=1): every second, the disk blocks of the scratch directory by component and
 # by lane, and the memory (PSS) of the postgres processes that run in it. Prints the peak of each, and the sample of the peak
-# total, when it gets TERM.
+# total, when logs/stats.stop exists or it gets TERM.
 #
 #   scripts/ci_stats.sh SCRATCH_DIR
 #
@@ -66,10 +66,12 @@ report() {
 	for k in "${!job_peak[@]}"; do printf '  %-40s %6d\n' "$k" $(( ${job_peak[$k]} / 1048576 )); done | sort -k2 -n -r | head -"${JOBS_SHOWN:-12}"
 	echo "postgres processes, peak PSS: $rss_peak MB"
 }
-nap=
-trap 'kill "$nap" 2>/dev/null; report; exit 0' TERM INT
+# The run ends the sampler with the file logs/stats.stop, which the loop reads every second; TERM and INT do the same. A signal handler given as a string failed to
+# parse once on a hosted runner ("trap: line 2: unexpected EOF", the sampler then outlived the run by 20 s): a function has nothing to parse.
+finish() { report; exit 0; }
+trap finish TERM INT
 
-while :; do
+while [[ ! -e $BASE/logs/stats.stop ]]; do
 	sample=$(find "$BASE" -type f -printf '%b %P\n' 2>/dev/null | awk "$classify")
 	line='' total=0
 	while read -r kind name bytes; do
@@ -83,7 +85,6 @@ while :; do
 	running_jobs
 	rss=$(pss_mb)
 	(( rss > rss_peak )) && rss_peak=$rss
-	sleep 1 &
-	nap=$!
-	wait "$nap"
+	sleep 1
 done
+finish
