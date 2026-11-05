@@ -447,6 +447,24 @@ The keys of a list are in order: the descent from the root is shared by the keys
 
 The two reads take the same instructions at 50% of the rows, so the planner takes the btree up to about half the table (the model's own crossover is 55 to 65% with the pages of the heap added to the whole read); the choices wrong by the time or by more than 5% of the instructions were 21 and 16 of 48 before and are 8 and 0 after, all at half the rows, where the two take the same within 30 ms (total loss against the best read 2,702 M instructions and 357 ms before, 117 M and 118 ms after). A table never analyzed has no statistics for the rows a key has and its unique key is known: for a key that is not unique the entries of up to four keys of the list are counted in the btree (256 at most for each, the entries only, no heap row), where the keyed read was refused (the table was read whole then: 20 rows a key, 150,000 rows, 750 keys, 309 M instructions against 181 M by the btree). Test `agg_lookup_keyed_crossover` pins both sides of the crossover for a unique key and for 20 rows a key in the three states.
 
+The price of a correlated `LIMIT 1` child that the scan probes in its btree (`AGG_PROBE_RUN`, `AGG_PROBE_COLL`, `AGG_PROBE_SCAN`, `AGG_PROBE_FETCH`; `child_probe_ops`) was 800 operators for a run and 42 and 110 for an entry, in operators of 15 instructions, while the table it competes with is read whole at `AGG_LOAD_ROW` (9 operators of 111 instructions) a row. The load of the first-row table was priced by `AGG_FIRST_ROW` (0.1), in cost units for the choice and added to a cost counted in operators; it is `AGG_LOAD_ROW` now, in both. The probes lost the choice to the table read whole from about a twentieth of its rows as keys, where the two take the same instructions at a fifth. Measured on tables of 100,000 rows (30,000 and 300,000 give the same figures within 3%), the lookup cache off, user instructions and cycles of one backend by `perf stat` (median of three warm runs), as the slope over 1,250 to 20,000 keys of the statement with the child less the statement without it:
+
+| key | probe: instructions | probe: cycles | table read whole, a row: instructions / cycles | probes win up to (instructions) |
+|---|---|---|---|---|
+| integer, date | 5,700 | 2,600 | 820 / 460 | a 5.5th of the rows |
+| text, C collation | 6,900 | 4,400 | 980 / 520 | a 5.5th |
+| uuid | 7,700 | 6,100 | no table read whole | |
+| text, ICU collation | 12,000 | 4,800 | 980 / 525 | a 12th |
+
+The entries a probe examines apart from the first (10 entries a key against 1, 5,000 keys): 317 instructions and 130 cycles in an Index Only Scan on an all-visible page, 732 and 325 with the heap fetch of each. An operator being 111 instructions: `AGG_PROBE_RUN` 55 (the integer and the C text at 51 and 62, the uuid 69), `AGG_PROBE_COLL` 1.9 (a column of another collation than C, the one factor), `AGG_PROBE_SCAN` 3 (2.9) and `AGG_PROBE_FETCH` 7 (6.6). The page search compares an integer, a date, a timestamp, a uuid and a text under the C collation inline, so no table of types follows; a uuid or a text takes more cycles than its instructions say (the keys of a list are not near each other in the btree), which the one price does not carry. The choice at 60 points (integer, date, text under C and under ICU; 30,000, 100,000 and 300,000 rows; a eightieth to a fifth of the rows as keys; the uuid has no table read whole to choose against):
+
+| | wrong by instructions | wrong by time | instructions lost | time lost |
+|---|---|---|---|---|
+| 800 / 42 / 110 operators, `AGG_FIRST_ROW` 0.1 | 21 of 60 | 23 | 1,470 M | 240 ms |
+| 55 / 42 x 1.9 / 3 / 7, `AGG_LOAD_ROW` | 0 | 3 | 0 | 24 ms |
+
+The three left wrong by time are a fifth of a 300,000-row table (integer, date, text C): the table read whole takes 5 to 6% fewer instructions and 15 to 18% more time there (the load walks the heap in order, the probes keep their pages in the cache), a gap under the 25% of a tie. The pair of statements that pin both sides, and the number of keys between the integer's crossover and the ICU text's where they choose differently, are `agg_probe_run_crossover`.
+
 What stays wrong or unmodelled:
 
 - The cache misses of the lookup into the entries (three for each fact row at 1,000,000 rows, 96 instructions for each joined row) are not in the price; the difference to the measured scan is under the margin of the choices above.

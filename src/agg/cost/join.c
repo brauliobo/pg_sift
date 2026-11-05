@@ -722,6 +722,7 @@ child_probe_ops(const JoinCtx *jc)
 	RelOptInfo *rel;
 	bool		first = false;
 	double		entries = 1.0,
+				run = AGG_PROBE_RUN,
 				rpk;
 
 	for (;;)
@@ -767,7 +768,18 @@ child_probe_ops(const JoinCtx *jc)
 		entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0) * clauselist_selectivity(jc->subroot, own, 0, JOIN_INNER, NULL);
 		entries = Max(entries, 1.0);
 	}
-	return AGG_PROBE_RUN + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
+	/* the page search of a probe compares a key column that is not text under the C collation inline; any other collation is a call of its compare */
+	foreach_node(IndexClause, ic, ip->indexclauses)
+	{
+		Oid			coll = ip->indexinfo->indexcollations[ic->indexcol];
+
+		if (OidIsValid(coll) && !sift_collate_is_c(coll))
+		{
+			run = AGG_PROBE_RUN * AGG_PROBE_COLL;
+			break;
+		}
+	}
+	return run + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
 }
 
 /* is the child a lateral probe that the planner hook made of a sublink (agg/flat/probe.c)? */
@@ -802,11 +814,11 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
 			/* a lateral probe the planner made (agg/flat/probe.c) is priced by what a probe takes: the rows of its table are not loaded for it */
-			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
+			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_LOAD_ROW * cpu_operator_cost < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
-				k->load_cost += jc->frows * AGG_FIRST_ROW;
+				k->load_cost += jc->frows * AGG_LOAD_ROW;
 			}
 			else
 				k->child_cost += native;
