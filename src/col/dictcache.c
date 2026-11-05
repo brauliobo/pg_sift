@@ -47,7 +47,7 @@ typedef struct DictEnt
 typedef struct Unpin
 {
 	MemoryContextCallback cb;
-	DictKey		key;
+	DictEnt    *ent;			/* stays where it is while it is pinned: only an entry nobody pins is dropped */
 } Unpin;
 
 static HTAB *cache;
@@ -75,11 +75,7 @@ dict_drop(DictEnt *e)
 static void
 dict_unpin(void *arg)
 {
-	Unpin	   *u = arg;
-	DictEnt    *e = hash_search(cache, &u->key, HASH_FIND, NULL);
-
-	if (e)
-		e->pins--;
+	((Unpin *) arg)->ent->pins--;
 }
 
 /* Drops the least recently used entries nobody pins until need more bytes fit; false when they do not */
@@ -117,7 +113,7 @@ dict_pin(DictEnt *e, MemoryContext mcxt)
 	e->pins++;
 	dlist_move_tail(&lru, &e->node);
 	u->cb = (MemoryContextCallback) {dict_unpin, u, NULL};
-	u->key = e->key;
+	u->ent = e;
 	MemoryContextRegisterResetCallback(mcxt, &u->cb);
 }
 
