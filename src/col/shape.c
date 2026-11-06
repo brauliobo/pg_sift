@@ -50,7 +50,7 @@ typedef struct SiftColShape
 	bool		decided;		/* fn is set */
 	bool		unary;			/* fn is a function of the image alone (isempty, lower_inf ..) */
 	bool		negate;			/* the test is NOT fn(image) */
-	int			nexact;			/* with decide_rows, the first alternatives are exact: only the others are decided by fn */
+	int			parity;			/* a range test of the inclusive bounds: the lane (1 + first, 2 + last position) whose parity the rows that pass the lanes are kept by, 0 none */
 } SiftColShape;
 
 /* ---- the lanes of a value ---- */
@@ -372,7 +372,8 @@ static const Oid shape_fn[] = {
  * The tests of a range with no operand, on the first and last positions. A row whose lanes are an overflow is decided by PostgreSQL's function, as for the operators. The ranges of
  * the discrete subtypes are canonical, [a, b), whenever the bound is a value: lower_inc is true of every finite lower bound and upper_inc of no finite upper one. A date that is
  * infinity stays as written (daterange('-infinity', 'infinity', '[]')): its one position, 2 * INT32_MAX for an inclusive upper bound and the exclusive -infinity just after 2 * INT32_MIN
- * for a lower one, is a test of its own. The continuous subtypes hold either, which the lanes only select candidates for.
+ * for a lower one, is a test of its own. The continuous subtypes hold either, and the position tells which: an inclusive lower bound is the even position 2v, an exclusive one 2v + 1,
+ * and the last position is 2v for an inclusive upper bound and 2v - 1 for an exclusive one, so the lane of the bound (a finite one, a non-empty range) kept by its parity is exact.
  */
 static void
 range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
@@ -412,20 +413,18 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
 			if (sub == DATEOID)
 				add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN + 1);
-			sh->decide_rows = continuous;
+			sh->parity = continuous ? s : 0;
 			break;
 		case SIFT_COLW_R_LOWER_EXC:
 			/* the rows the test above leaves: an empty range, an infinite bound (a date also the exclusive -infinity) */
-			sh->nalt = 2;
 			if (continuous)
 			{
-				add(sh, 0, s, SIFT_COLOP_EQ, SPAN_NONE);
-				add(sh, 1, s, SIFT_COLOP_LT, SPAN_NONE);
-				sh->decide_rows = true;
-				sh->nexact = 1;
+				sh->pred[0][sh->npred[0]++] = (SiftColPred) {s, SIFT_COLOP_NOTNULL, 0, NULL};
+				sh->parity = s;
 			}
 			else
 			{
+				sh->nalt = 2;
 				if (sub == DATEOID)
 				{
 					add(sh, 0, s, SIFT_COLOP_LE, 2 * (int64) DATEVAL_NOBEGIN + 1);
@@ -443,9 +442,8 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 				add(sh, 0, e, SIFT_COLOP_EQ, 2 * (int64) DATEVAL_NOEND);
 			else
 			{
-				add(sh, 0, e, SIFT_COLOP_LT, PG_INT64_MAX);
 				add(sh, 0, e, SIFT_COLOP_GT, SPAN_NEVER);
-				sh->decide_rows = true;
+				sh->parity = e;
 			}
 			break;
 		case SIFT_COLW_R_UPPER_EXC:
@@ -455,11 +453,8 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 				add(sh, 0, e, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOEND);
 			else
 			{
-				sh->nalt = 2;
-				add(sh, 0, e, SIFT_COLOP_LE, SPAN_NEVER);
-				add(sh, 1, e, SIFT_COLOP_GT, SPAN_NEVER);
-				sh->decide_rows = true;
-				sh->nexact = 1;
+				sh->pred[0][sh->npred[0]++] = (SiftColPred) {e, SIFT_COLOP_NOTNULL, 0, NULL};
+				sh->parity = e;
 			}
 			break;
 	}
@@ -575,14 +570,35 @@ andnot_into(SiftColSel *dst, const SiftColSel *src)
 	sift_col_sel_count(dst);
 }
 
+/*
+ * Keeps the rows of `rows` whose bound is inclusive (the test) or exclusive (its NOT) by the parity of the position of the bound: even for an inclusive one, odd for an exclusive one,
+ * and INT64_MIN, the position of an infinite lower bound (and of the last of an empty range), is no inclusive bound
+ */
+static void
+parity_rows(const SiftColUnit *unit, const SiftColShape *sh, SiftColSel *rows)
+{
+	SiftColVec	v;
+	uint32	   *idx;
+
+	if (rows->count == 0)
+		return;
+	idx = palloc((rows->count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_read(unit, sh->parity, rows, &v);
+	sift_col_sel_idx(rows, idx);
+	for (uint32 k = 0; k < rows->count; k++)
+		if (((v.i[k] & 1) == 0 && v.i[k] != PG_INT64_MIN) == sh->negate)
+			sift_col_bit_clear(rows->bits, idx[k]);
+	pfree(idx);
+	sift_col_sel_count(rows);
+}
+
 bool
 sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel)
 {
 	const SiftColShape *sh = t->shape;
 	int			col = t->pred.col;
 	SiftColSel *res,
-			   *hard,
-			   *exact = NULL;
+			   *hard;
 
 	/* the lanes alone decide a network test with one alternative (the node, then the offset on the rows it kept): the predicates narrow sel in place */
 	if (sh->nalt == 1 && !sh->decide_all && !sh->decide_rows && sift_col_def_shape(sift_col_def(unit->src, col)) == SIFT_COL_SHAPE_INET)
@@ -616,15 +632,12 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 			sift_colw_ovf_rows(unit, col + 1, sel, hard->bits);	/* stored as overflows: every test keeps them */
 			andnot_into(res, hard);
 		}
+		if (sh->parity)
+			parity_rows(unit, sh, res);
 		if (sh->decide_rows)
 		{
 			or_into(hard, res);
 			memset(res->bits, 0, res->nwords * sizeof(uint64));
-			if (exact)
-			{
-				andnot_into(hard, exact);
-				or_into(res, exact);
-			}
 		}
 	}
 	sift_col_sel_count(hard);

@@ -122,7 +122,7 @@ of the rows (`id`, `r`, `ip`, `u` uuid, a 128-character note); the plain index i
 ## Tests of the lanes with no operand
 
 `isempty(r)`, `lower_inf(r)`, `upper_inf(r)`, `lower_inc(r)` and `upper_inc(r)` (and their `NOT`, `IS TRUE` and `IS FALSE`) in a `WHERE` conjunct are tests of the first or last position: an empty range is the position `INT64_MAX`, an infinite bound `INT64_MIN` or `INT64_MAX`.
-`lower_inc(r)` and `upper_inc(r)` (and their `NOT`) read the parity of the position in the continuous ranges (`tsrange`, `tstzrange`): the lanes select the finite ranges that are not empty and PostgreSQL's function decides them (an empty range, true of the `NOT`, needs no decision). The discrete ranges
+`lower_inc(r)` and `upper_inc(r)` (and their `NOT`) read the parity of the position in the continuous ranges (`tsrange`, `tstzrange`): an inclusive lower bound is the even position `2v`, an exclusive one `2v + 1`, the last position is `2v` for an inclusive upper bound and `2v - 1` for an exclusive one, so the lane of the bound is read for the rows that pass and kept by its parity (no format change, PostgreSQL's function decides none of them). The discrete ranges
 are canonical (`[a, b)`), so `lower_inc` is true of every finite lower bound and `upper_inc` of no finite upper one; a `daterange` keeps an infinite bound as written, which is the one position the test names. A row whose bound
 does not fit a lane is decided by PostgreSQL's function, as for the operators (test `agg_range_unary`).
 

@@ -554,7 +554,7 @@ select tenant_id, count(*), sum(qty) from spans where not isempty(during) group 
 select count(*), sum(amount) from spans where upper_inf(during) is false and lower_inf(during) is false;
 -- @case c3_range_lower_inc | range | spans that include their first day
 select tenant_id, count(*) from spans where lower_inc(during) group by 1;
--- @case c3_range_seen_upper_inc | range | timestamp ranges that include their last instant (PostgreSQL decides the candidates)
+-- @case c3_range_seen_upper_inc | range | timestamp ranges that include their last instant (the parity of the last position)
 select count(*) from spans where upper_inc(seen);
 -- @case c3_range_bounds_minmax | range | the first start and the last end of the spans
 select count(*), min(lower(during)), max(upper(during)) from spans;
