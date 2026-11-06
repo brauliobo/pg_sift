@@ -82,6 +82,12 @@ if [[ $MODE == full ]]; then
 	elif (( PG_MAJOR >= 18 )); then
 		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
 	fi
+	# BM25 queries (phrase, plain, boolean) in subplans, LATERAL joins and cursors, each plan in a new backend, the heap plan against the index and the parallel plan (test/fuzz/bm25_fuzz.py)
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
+		job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
+	elif (( PG_MAJOR >= 18 )); then
+		job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-300 --queries 40 --stop-after 3
+	fi
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		seeds=1-3; (( PG_MAJOR < 18 )) || seeds=4-6
 		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
@@ -159,6 +165,7 @@ else
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
+	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown

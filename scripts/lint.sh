@@ -62,6 +62,7 @@ CHECKS=(
 	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
 	'txn-fuzz	test/fuzz/txn_fuzz.py --selftest'
+	'bm25-fuzz	test/fuzz/bm25_fuzz.py --selftest'
 )
 
 want=" $* "
