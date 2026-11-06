@@ -287,11 +287,6 @@ jobs:
           key: ${{ steps.oldlib.outputs.key }}
           restore-keys: ${{ steps.oldlib.outputs.prefix }}
 
-      - name: Build
-        run: |
-          pg_config --version
-          make -j4
-
       # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
       # includes the regression tests against the release library (SIFT_TESTING off, stage release-library-regress), with its own leak gate
