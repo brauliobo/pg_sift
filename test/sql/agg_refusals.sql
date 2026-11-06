@@ -183,9 +183,9 @@ DROP TABLE minmax_leftover;
 -- the EXECUTE of a prepared SELECT is planned for its values and answers as the statement does
 SELECT slug, reason ~ 'volatile function' AS reason_kept
 FROM sift.explain_why($q$SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1$q$);
--- the notice of a refusal says what to do about it
+-- the notice of a refusal says what to do about it (the plan under it is not the test's: 17 and 18 print it differently)
 SET sift.explain_refusals = on;
-EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1;
+SELECT plan_of('SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1', true) <> '' AS planned;
 RESET sift.explain_refusals;
 PREPARE ex_volatile(float8) AS SELECT kind, count(*) FROM events WHERE random() < $1 GROUP BY 1;
 SELECT slug, reason ~ 'volatile function' AS reason_kept FROM sift.explain_why('EXECUTE ex_volatile(0.5)');

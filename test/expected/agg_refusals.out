@@ -342,20 +342,16 @@ FROM sift.explain_why($q$SELECT kind, count(*) FROM events WHERE random() < 0.5 
  volatile | t
 (1 row)
 
--- the notice of a refusal says what to do about it
+-- the notice of a refusal says what to do about it (the plan under it is not the test's: 17 and 18 print it differently)
 SET sift.explain_refusals = on;
-EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1;
+SELECT plan_of('SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1', true) <> '' AS planned;
 NOTICE:  SiftAgg not used: volatile: the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce
 DETAIL:  arm: single
 HINT:  None needed, the normal plan is the answer; compute the volatile function outside the statement or in an outer query to get the scan.
-                      QUERY PLAN                      
-------------------------------------------------------
- HashAggregate
-   Group Key: kind
-   ->  Seq Scan on events
-         Disabled: true
-         Filter: (random() < '0.5'::double precision)
-(5 rows)
+ planned 
+---------
+ t
+(1 row)
 
 RESET sift.explain_refusals;
 PREPARE ex_volatile(float8) AS SELECT kind, count(*) FROM events WHERE random() < $1 GROUP BY 1;
