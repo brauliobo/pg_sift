@@ -291,6 +291,7 @@ SELECT sift_count('news', 'power AND plant');
 - **One library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
 - **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested; arm64 tested with 18); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
 - **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
+- **Which options to touch (about ten of 150):** [docs/TUNING.md](docs/TUNING.md).
 - **Column engine types, options and limits:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
 
 [^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).

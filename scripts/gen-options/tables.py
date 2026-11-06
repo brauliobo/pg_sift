@@ -182,6 +182,12 @@ def generate(opts, notes, released, version, old_version):
             upgrade.append('| ' + ' | '.join(esc(c) for c in ('`%s`' % k, 'automatic' if o['kind'] == 'auto' else released[k] if k in released else 'new', default(o, False), fmt_, r['upgrade'])) + ' |')
     upgrade.append('<!-- sift-upgrade:end -->')
 
+    diag = ['<!-- sift-diagnostics:start -->', '| Option | Applies to | What it does |', '|---|---|---|']
+    for os_, r in ents:
+        if meta(r, 'class') == 'diagnostic':
+            diag.append('| %s | %s | %s |' % (names(os_), r['applies'].replace(', ', ', ') if r['applies'] != '-' else 'all', esc(meta(r, 'buys'))))
+    diag.append('<!-- sift-diagnostics:end -->')
+
     gs = ['| Setting | Applies to | Default | Class | Values | Context | Description | Cost |', '|---|---|---|---|---|---|---|---|']
     rs = ['| Index option | Index | Default | Class | Values | Description | Cost |', '|---|---|---|---|---|---|---|']
     for o, r in listed:
@@ -192,4 +198,4 @@ def generate(opts, notes, released, version, old_version):
         else:
             rs.append('| `%s` | `%s` | %s | %s | %s | %s | %s |' % (o['name'], o['am'], default(o), meta(r, 'class'), values(o, r), esc(d), esc(c)))
     return ('\n'.join(readme), '\n'.join(['<!-- sift-settings:start -->'] + gs + ['<!-- sift-settings:end -->']), '\n'.join(['<!-- sift-reloptions:start -->'] + rs + ['<!-- sift-reloptions:end -->']),
-            '\n'.join(sections), '\n'.join(upgrade))
+            '\n'.join(sections), '\n'.join(upgrade), '\n'.join(diag))

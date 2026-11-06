@@ -97,6 +97,8 @@ The quickstart used only defaults. These settings change behaviour or disk forma
 
 `ALTER SYSTEM` or `ALTER DATABASE ... SET` make a setting stick; `sift.enable_agg = off` is the way back to plain PostgreSQL at any time.
 
+Which options are worth knowing, in one page: [TUNING.md](TUNING.md).
+
 ## Check the numbers on your machine
 
 ```sh

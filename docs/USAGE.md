@@ -1,6 +1,6 @@
 # pg_sift usage
 
-Reference for everything beyond the [README](../README.md) quick start. The examples use the `docs` table created there.
+Reference for everything beyond the [README](../README.md) quick start. The examples use the `docs` table created there. Which of the options to touch, and which to leave alone: [TUNING.md](TUNING.md).
 
 ## Install
 
