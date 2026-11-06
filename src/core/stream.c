@@ -14,6 +14,21 @@ sift_page_init(Page page, SiftPageType type, uint64 gen)
 	SiftPageGetOpaque(page)->gen = gen;
 }
 
+/* The header page of a segment: the fixed part of h and its n extents; the block it went to */
+BlockNumber
+sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n)
+{
+	PGIOAlignedBlock page;
+	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
+
+	sift_page_init(page.data, SIFT_PT_SEGHEADER, h->gen);
+	memcpy(hdr, h, offsetof(SiftSegHeaderData, extents));
+	hdr->nextents = n;
+	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
+	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
+	return sift_wt_write_page(wt, page.data);
+}
+
 /*
  * The state of the page is a function of the stream position alone: a page holds SIFT_PAGE_PAYLOAD bytes from
  * SIFT_PAGE_DATA_OFFSET, and a full page (or none yet) is the same as an empty one for the next byte. When the padding would

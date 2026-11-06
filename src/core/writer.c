@@ -380,21 +380,6 @@ sift_wt_write_page(SiftWriteTarget *wt, Page page)
 	return blkno;
 }
 
-/* The header page of a segment: the fixed part of h and its n extents; the block it went to */
-BlockNumber
-sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n)
-{
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
-
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, h->gen);
-	memcpy(hdr, h, offsetof(SiftSegHeaderData, extents));
-	hdr->nextents = n;
-	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
-	return sift_wt_write_page(wt, page.data);
-}
-
 static void
 bulk_put_meta(SiftWriteTarget *wt)
 {
