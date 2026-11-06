@@ -238,7 +238,7 @@ sift_colsrc_whole(SiftSrcSource *src, int leaf, const int *meas, int nmeas)
 }
 
 static inline void
-sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftSrcStrOp op, const char *s, uint32 len)
+sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	if (src->prov->count_range != NULL)
 		src->prov->count_range(src->impl, leaf, op, s, len);

@@ -198,30 +198,30 @@ str_const(Node *n, const char **s, uint32 *len)
 	return true;
 }
 
-static SiftSrcStrOp
-str_commute(SiftSrcStrOp op)
+static SiftColOp
+str_commute(SiftColOp op)
 {
-	return op == SSTR_LT ? SSTR_GT : op == SSTR_LE ? SSTR_GE : op == SSTR_GT ? SSTR_LT : op == SSTR_GE ? SSTR_LE : op;
+	return op == SIFT_COLOP_LT ? SIFT_COLOP_GT : op == SIFT_COLOP_LE ? SIFT_COLOP_GE : op == SIFT_COLOP_GT ? SIFT_COLOP_LT : op == SIFT_COLOP_GE ? SIFT_COLOP_LE : op;
 }
 
 /* the comparison a text function is, or 0; the range operators only compare bytes in the C collation */
-static SiftSrcStrOp
+static SiftColOp
 str_func_op(Oid funcid)
 {
 	switch (funcid)
 	{
 		case F_TEXTEQ:
-			return SSTR_EQ;
+			return SIFT_COLOP_EQ;
 		case F_TEXTNE:
-			return SSTR_NE;
+			return SIFT_COLOP_NE;
 		case F_TEXT_LT:
-			return SSTR_LT;
+			return SIFT_COLOP_LT;
 		case F_TEXT_LE:
-			return SSTR_LE;
+			return SIFT_COLOP_LE;
 		case F_TEXT_GT:
-			return SSTR_GT;
+			return SIFT_COLOP_GT;
 		case F_TEXT_GE:
-			return SSTR_GE;
+			return SIFT_COLOP_GE;
 	}
 	return 0;
 }
@@ -238,7 +238,7 @@ str_pattern_func(Oid funcid)
  * characters in UTF-8 and the single byte encodings only (a trail byte of SJIS or GBK is also an ASCII one). On true the literal is in *s, *len.
  */
 static bool
-like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
+like_test(const char **s, uint32 *len, SiftColOp *op)
 {
 	bool		head = *len > 0 && **s == '%',
 				tail = *len > 1 && (*s)[*len - 1] == '%';
@@ -250,7 +250,7 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
 		return false;
 	*s = lit;
 	*len = n;
-	*op = head ? (tail ? SSTR_CONTAINS : SSTR_SUFFIX) : SSTR_PREFIX;
+	*op = head ? (tail ? SIFT_COLOP_CONTAINS : SIFT_COLOP_SUFFIX) : SIFT_COLOP_PREFIX;
 	return true;
 }
 
@@ -260,7 +260,7 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
  * only, in a collation that lowers A-Z to a-z).
  */
 static bool
-regex_literal(const char **s, uint32 *len, bool icase, SiftSrcStrOp *op)
+regex_literal(const char **s, uint32 *len, bool icase, SiftColOp *op)
 {
 	const char *re = *s;
 	uint32		n = *len,
@@ -298,7 +298,7 @@ regex_literal(const char **s, uint32 *len, bool icase, SiftSrcStrOp *op)
 		return false;
 	*s = lit;
 	*len = k;
-	*op = head ? (tail ? SSTR_EQ : SSTR_PREFIX) : tail ? SSTR_SUFFIX : SSTR_CONTAINS;
+	*op = head ? (tail ? SIFT_COLOP_EQ : SIFT_COLOP_PREFIX) : tail ? SIFT_COLOP_SUFFIX : SIFT_COLOP_CONTAINS;
 	return true;
 }
 
@@ -376,9 +376,9 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
  * is a literal. On true *op, and *s, *len the literal (ICONTAINS: spelled by ilike_test, where *subst says whether U+0130 and U+212A count).
  */
 static bool
-pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *subst)
+pattern_test(Oid funcid, const char **s, uint32 *len, SiftColOp *op, bool *subst)
 {
-	SiftSrcStrOp lop;
+	SiftColOp lop;
 
 	*subst = true;
 	switch (funcid)
@@ -390,24 +390,24 @@ pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *su
 			return true;
 		case F_TEXTNLIKE:
 		case F_TEXTICLIKE:
-			if (!like_test(s, len, &lop) || lop != SSTR_CONTAINS)
+			if (!like_test(s, len, &lop) || lop != SIFT_COLOP_CONTAINS)
 				return false;
-			*op = funcid == F_TEXTNLIKE ? SSTR_NOTCONTAINS : SSTR_ICONTAINS;
+			*op = funcid == F_TEXTNLIKE ? SIFT_COLOP_NOTCONTAINS : SIFT_COLOP_ICONTAINS;
 			return true;
 		case F_STARTS_WITH:
-			*op = SSTR_PREFIX;
+			*op = SIFT_COLOP_PREFIX;
 			return *len > 0;
 		case F_TEXTREGEXEQ:
 			return regex_literal(s, len, false, op);
 		case F_TEXTREGEXNE:
-			if (!regex_literal(s, len, false, op) || *op != SSTR_CONTAINS)
+			if (!regex_literal(s, len, false, op) || *op != SIFT_COLOP_CONTAINS)
 				return false;
-			*op = SSTR_NOTCONTAINS;
+			*op = SIFT_COLOP_NOTCONTAINS;
 			return true;
 		case F_TEXTICREGEXEQ:
 			if (!regex_literal(s, len, true, op))
 				return false;
-			*op = SSTR_ICONTAINS;
+			*op = SIFT_COLOP_ICONTAINS;
 			*subst = false;
 			return true;
 	}
@@ -420,7 +420,7 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 {
 	Node	   *a,
 			   *b;
-	SiftSrcStrOp sop = 0;
+	SiftColOp sop = 0;
 	const char *s;
 	uint32		len;
 	bool		pattern = str_pattern_func(funcid),
@@ -442,11 +442,11 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 		return false;
 	if (pattern && !pattern_test(funcid, &s, &len, &sop, &subst))
 		return false;
-	if (sop >= SSTR_LT && sop <= SSTR_GE && !ranges ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
+	if (sop >= SIFT_COLOP_LT && sop <= SIFT_COLOP_GE && !ranges ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
 		return false;
 	out->op = sop;
 	out->collid = collid;
-	if (sop == SSTR_ICONTAINS)
+	if (sop == SIFT_COLOP_ICONTAINS)
 	{
 		const char **vals;
 		uint32	   *lens;
@@ -525,7 +525,7 @@ strpos_test(OpExpr *op, SiftSrcStrTest *out)
 	if (absent == found || list_length(f->args) != 2 || !IsA(strip_relabel(linitial(f->args)), Param) || !str_const(strip_relabel(lsecond(f->args)), &s, &len) ||
 		len == 0 || !get_collation_isdeterministic(f->inputcollid) || (GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1))
 		return false;
-	out->op = found ? SSTR_CONTAINS : SSTR_NOTCONTAINS;
+	out->op = found ? SIFT_COLOP_CONTAINS : SIFT_COLOP_NOTCONTAINS;
 	out->nvals = 1;
 	out->vals = palloc(sizeof(char *));
 	out->lens = palloc(sizeof(uint32));
@@ -570,7 +570,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 	}
 	if (n == 0)
 		return false;
-	out->op = sa->useOr ? SSTR_IN : SSTR_NOTIN;
+	out->op = sa->useOr ? SIFT_COLOP_IN : SIFT_COLOP_NOTIN;
 	out->nvals = n;
 	out->vals = vals;
 	out->lens = lens;
@@ -619,7 +619,7 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 bool
 sift_aggspec_text_bound(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
 {
-	return str_leaf_test(p, lay, nbase, out, true) && (out->op == SSTR_PREFIX ? sift_collate_is_c(out->collid) : (out->op == SSTR_EQ || (out->op >= SSTR_LT && out->op <= SSTR_GE)));
+	return str_leaf_test(p, lay, nbase, out, true) && (out->op == SIFT_COLOP_PREFIX ? sift_collate_is_c(out->collid) : (out->op == SIFT_COLOP_EQ || (out->op >= SIFT_COLOP_LT && out->op <= SIFT_COLOP_GE)));
 }
 
 /* EXISTS element = a string, or in a set, of a list of text: the element leaf's test, for the units and rows that own such an element (a source prunes by it; the executor tests the elements) */
@@ -645,12 +645,12 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 		int64	   *v = palloc(sizeof(int64));
 
 		*v = DatumGetInt64(((Const *) t->expr)->constvalue);
-		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SSTR_EQ,.nvals = 1,.ints = v};
+		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SIFT_COLOP_EQ,.nvals = 1,.ints = v};
 		return true;
 	}
 	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !sift_str_type(lf->typid))
 		return false;
-	return str_expr_test(t, out, false) && (out->op == SSTR_EQ || out->op == SSTR_IN);
+	return str_expr_test(t, out, false) && (out->op == SIFT_COLOP_EQ || out->op == SIFT_COLOP_IN);
 }
 
 static bool

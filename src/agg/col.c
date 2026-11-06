@@ -515,15 +515,13 @@ col_whole(void *impl, int leaf, const int *meas, int nmeas)
 }
 
 static void
-col_count_range(void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len)
+col_count_range(void *impl, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	ColSource  *src = impl;
-	static const SiftColOp ops[] = {[SSTR_EQ] = SIFT_COLOP_EQ, [SSTR_LT] = SIFT_COLOP_LT, [SSTR_LE] = SIFT_COLOP_LE, [SSTR_GT] = SIFT_COLOP_GT,
-	[SSTR_GE] = SIFT_COLOP_GE, [SSTR_PREFIX] = SIFT_COLOP_PREFIX};
 
 	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
-	if (src->sel.keep == NULL && ops[op] != 0)
-		sift_col_count_range(src->cs, leaf, ops[op], s, len);
+	if (src->sel.keep == NULL && (op == SIFT_COLOP_EQ || (op >= SIFT_COLOP_LT && op <= SIFT_COLOP_GE) || op == SIFT_COLOP_PREFIX))
+		sift_col_count_range(src->cs, leaf, op, s, len);
 }
 
 static void

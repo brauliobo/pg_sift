@@ -119,26 +119,26 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 			return r;
 		switch (p->sop)
 		{
-			case SSTR_EQ:
+			case SIFT_COLOP_EQ:
 				r.has_lo = r.has_hi = true;
 				r.lo = r.hi = p->str;
 				r.lolen = r.hilen = p->slen;
 				break;
-			case SSTR_LT:
-			case SSTR_LE:
+			case SIFT_COLOP_LT:
+			case SIFT_COLOP_LE:
 				r.has_hi = true;
 				r.hi = p->str;
 				r.hilen = p->slen;
-				r.hi_excl = p->sop == SSTR_LT;
+				r.hi_excl = p->sop == SIFT_COLOP_LT;
 				break;
-			case SSTR_GT:
-			case SSTR_GE:
+			case SIFT_COLOP_GT:
+			case SIFT_COLOP_GE:
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
-				r.lo_excl = p->sop == SSTR_GT;
+				r.lo_excl = p->sop == SIFT_COLOP_GT;
 				break;
-			case SSTR_PREFIX:
+			case SIFT_COLOP_PREFIX:
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
@@ -216,18 +216,18 @@ gcond_str_test(const SiftTopGPred *p, Datum d)
 	uint32		len = VARSIZE_ANY_EXHDR(v);
 	int			c;
 
-	if (p->sop == SSTR_PREFIX)
+	if (p->sop == SIFT_COLOP_PREFIX)
 		return len >= p->slen && memcmp(s, p->str, p->slen) == 0;
 	c = sift_cgord_str_order(s, len, p->str, p->slen, p->collid);
 	switch (p->sop)
 	{
-		case SSTR_EQ:
+		case SIFT_COLOP_EQ:
 			return c == 0;
-		case SSTR_LT:
+		case SIFT_COLOP_LT:
 			return c < 0;
-		case SSTR_LE:
+		case SIFT_COLOP_LE:
 			return c <= 0;
-		case SSTR_GT:
+		case SIFT_COLOP_GT:
 			return c > 0;
 		default:
 			return c >= 0;

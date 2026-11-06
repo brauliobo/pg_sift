@@ -97,8 +97,8 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
 	void		(*super) (void *impl, bool on);
 	bool		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only); true: an item of the scan has to span a segment for that, which a source with no superunits does not do alone */
-	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftSrcStrOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
-	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
+	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftColOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
+	void		(*count_range) (void *impl, int leaf, SiftColOp op, const char *s, uint32 len);
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
 	/* Optional: the same for the comparisons of a text leaf that lie between two bounds (a NULL one: none) under the collation collid, all the conditions of the scan: a segment whose global order of the leaf holds the ranks of its strings counts them */

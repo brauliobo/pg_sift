@@ -344,16 +344,16 @@ text_range(AggExec *ex, SiftAggPred *p, int *leaf, const SiftSrcStrTest **lo, co
 		return true;
 	}
 	t = palloc0(sizeof(SiftSrcStrTest));
-	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SSTR_PREFIX)
+	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SIFT_COLOP_PREFIX)
 		return false;
 	if ((*leaf >= 0 && *leaf != p->leaf) || ((*lo != NULL || *hi != NULL) && (*lo ? (*lo)->collid : (*hi)->collid) != t->collid))
 		return false;
 	*leaf = p->leaf;
-	if (t->op == SSTR_EQ && *lo == NULL && *hi == NULL)
+	if (t->op == SIFT_COLOP_EQ && *lo == NULL && *hi == NULL)
 		*lo = *hi = t;
-	else if ((t->op == SSTR_GT || t->op == SSTR_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SSTR_EQ))
+	else if ((t->op == SIFT_COLOP_GT || t->op == SIFT_COLOP_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SIFT_COLOP_EQ))
 		*lo = t;
-	else if ((t->op == SSTR_LT || t->op == SSTR_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SSTR_EQ))
+	else if ((t->op == SIFT_COLOP_LT || t->op == SIFT_COLOP_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SIFT_COLOP_EQ))
 		*hi = t;
 	else
 		return false;

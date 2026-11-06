@@ -7,6 +7,7 @@
 #define SIFT_AGG_COLSRC_EXEC_H
 
 #include "agg/colsrc/meta.h"
+#include "col/col.h"
 
 /* ---- executor side ---- */
 
@@ -119,27 +120,10 @@ typedef struct SiftSrcPrune
  * pushes EQ, NE, IN, NOT IN, PREFIX and CONTAINS for any deterministic collation (CONTAINS only where a byte match is a character match) and the range operators only for the C collation. vals are
  * not copied: they outlive the call (prune_str: the scan).
  */
-typedef enum SiftSrcStrOp
-{
-	SSTR_EQ = 1,
-	SSTR_NE,					/* non-NULL values different from vals[0] */
-	SSTR_LT,
-	SSTR_LE,
-	SSTR_GT,
-	SSTR_GE,
-	SSTR_IN,
-	SSTR_NOTIN,					/* non-NULL values none of vals */
-	SSTR_PREFIX,				/* values that start with vals[0] */
-	SSTR_CONTAINS,				/* values that hold vals[0] (not empty), bytewise */
-	SSTR_NOTCONTAINS,			/* non-NULL values that do not hold vals[0] */
-	SSTR_SUFFIX,				/* values that end with vals[0] */
-	SSTR_ICONTAINS				/* values whose lower() holds vals[0] (ASCII, lower case; nvals 3: and vals[1], vals[2] are lower() of U+0130 and U+212A) */
-} SiftSrcStrOp;
-
 typedef struct SiftSrcStrTest
 {
 	int			leaf;
-	SiftSrcStrOp op;
+	SiftColOp op;
 	Oid			collid;			/* the collation the test compares under (set by the planner's recognizer; the source ignores it) */
 	int			nvals;
 	const char *const *vals;

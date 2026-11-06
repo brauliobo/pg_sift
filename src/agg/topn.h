@@ -131,7 +131,7 @@ typedef struct SiftTopGPred
 	int			attno;			/* STG_CMP: the heap column and its type */
 	Oid			typid;
 	int64		val;
-	int			sop;			/* STG_STR: SiftSrcStrOp (EQ, LT, LE, GT, GE or PREFIX) */
+	int			sop;			/* STG_STR: SiftColOp (EQ, LT, LE, GT, GE or PREFIX) */
 	const char *str;
 	uint32		slen;
 	Oid			collid;			/* ... and the collation it compares under */

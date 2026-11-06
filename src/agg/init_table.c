@@ -89,7 +89,7 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 	ex->jtrial = ex->jtrial ? repalloc(ex->jtrial, (ex->njstr + 1) * sizeof(JstrTrial)) : palloc(sizeof(JstrTrial));
 	ex->jtrial[ex->njstr] = (JstrTrial) {0};
 	t = &ex->jstr[ex->njstr++];
-	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SSTR_EQ : SSTR_IN,.nvals = (int) m->kd[k].n,.vals = m->kd[k].ptr,.lens = m->kd[k].len};
+	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SIFT_COLOP_EQ : SIFT_COLOP_IN,.nvals = (int) m->kd[k].n,.vals = m->kd[k].ptr,.lens = m->kd[k].len};
 }
 
 /*

@@ -419,7 +419,7 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 		SiftSrcStrTest st;
 		double		share;
 
-		if (p->kind == SAP_LUT && sift_aggspec_str_test(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && (st.op == SSTR_EQ || st.op == SSTR_IN) &&
+		if (p->kind == SAP_LUT && sift_aggspec_str_test(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && (st.op == SIFT_COLOP_EQ || st.op == SIFT_COLOP_IN) &&
 			c->stats.ndistinct[p->leaf] > 0)
 			share = st.nvals / c->stats.ndistinct[p->leaf];
 		else if ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0))
