@@ -156,8 +156,8 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 			for (int i = 0; i < n; i++)
 			{
 				/* the table of a column with many values does not fit the cache: ask for the line a few values ahead */
-				if (i + WIDE_AHEAD < n && leaf_wide(lf) && cs->id64[p].nslot > 4096)
-					__builtin_prefetch(&cs->id64[p].tab[id64_hash(((const int64 *) v->data)[idx[i + WIDE_AHEAD]]) & (cs->id64[p].nslot - 1)]);
+				if (i + WIDE_AHEAD < n && leaf_wide(lf))
+					intids_prefetch(&cs->id64[p].ix, ((const int64 *) v->data)[idx[i + WIDE_AHEAD]]);
 				if (alive && !sift_colsrc_bit(alive, i))
 					vid[i] = 0;
 				else if (leaf_wide(lf))

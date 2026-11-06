@@ -81,12 +81,10 @@ dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
 void
 id64_init(Id64 *m)
 {
-	m->cxt = CurrentMemoryContext;
-	m->nslot = 4096;
+	intids_init(&m->ix);
 	m->n = 0;
 	m->cap = 2048;
 	m->nan_id = 0;
-	m->tab = palloc0(m->nslot * sizeof(Id64Ent));
 	m->val = palloc(m->cap * sizeof(int64));
 }
 
@@ -105,32 +103,11 @@ id64_new(Id64 *m, int64 k)
 uint32
 id64_id(Id64 *m, int64 k)
 {
-	uint32		mask = m->nslot - 1,
-				h = id64_hash(k) & mask;
+	uint32		id = intids_id(&m->ix, k, m->n + 1);
 
-	for (; m->tab[h].id; h = (h + 1) & mask)
-		if (m->tab[h].key == k)
-			return m->tab[h].id;
-	m->tab[h] = (Id64Ent) {k, id64_new(m, k)};
-	if (m->n * 2 > m->nslot)
-	{
-		Id64Ent    *old = m->tab;
-
-		m->nslot *= 4;
-		m->tab = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(Id64Ent));
-		mask = m->nslot - 1;
-		for (uint32 id = 1; id <= m->n; id++)
-		{
-			if (id == m->nan_id)
-				continue;
-			for (h = id64_hash(m->val[id - 1]) & mask; m->tab[h].id; h = (h + 1) & mask)
-				;
-			m->tab[h] = (Id64Ent) {m->val[id - 1], id};
-		}
-		pfree(old);
-		return m->n;
-	}
-	return m->tab[h].id;
+	if (id > m->n)
+		id64_new(m, k);
+	return id;
 }
 
 uint32
@@ -192,7 +169,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 			{
 				MemoryContext old = MemoryContextSwitchTo(cs->cxt);
 
-				if (cs->id64[p].tab == NULL)
+				if (cs->id64[p].val == NULL)
 					id64_init(&cs->id64[p]);
 				MemoryContextSwitchTo(old);
 				id = id64_id(&cs->id64[p], (int64) d);

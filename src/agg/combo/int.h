@@ -31,14 +31,6 @@ cmap_id(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ci, int p, uint32 c)
 	return map[c];
 }
 
-static inline uint32
-id64_hash(int64 k)
-{
-	uint64		x = (uint64) k * UINT64CONST(0x9E3779B97F4A7C15);
-
-	return (uint32) ((x ^ (x >> 29)) * UINT64CONST(0xD6E8FEB86659FD93) >> 32);
-}
-
 /* a placeholder of the nullable side reads NULL for a row nothing matched: the missing rows of a join, and the tuples of a LEFT lateral's rows with no element */
 static inline bool
 combo_null_input(const AggExec *ex)

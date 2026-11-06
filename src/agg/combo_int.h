@@ -5,6 +5,7 @@
 #define SIFT_AGG_COMBO_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "agg/intids.h"
 #include "agg/lookup_int.h"
 #include "agg/tup_int.h"
 
@@ -26,22 +27,14 @@ typedef struct ComboEnt
 	uint32		base;			/* first output row */
 } ComboEnt;
 
-/* the ids (1..) of the distinct values of a 64-bit leaf of a combo: one table of (value, id), so a probe is one cache line */
-typedef struct Id64Ent
-{
-	int64		key;
-	uint32		id;				/* 0: free */
-} Id64Ent;
-
+/* the ids (1..) of the distinct values of a 64-bit leaf of a combo */
 typedef struct Id64
 {
-	MemoryContext cxt;
-	Id64Ent    *tab;
-	uint32		nslot;
+	IntIds		ix;
 	uint32		n;
 	uint32		cap;
 	int64	   *val;			/* the value of an id */
-	uint32		nan_id;			/* the id of the NaN of a numeric leaf (not in tab), 0 until one is seen */
+	uint32		nan_id;			/* the id of the NaN of a numeric leaf (not in ix), 0 until one is seen */
 } Id64;
 
 /* a numeric value as an integer times 10^-scale (ok: it is a finite number of at most 38 digits) */

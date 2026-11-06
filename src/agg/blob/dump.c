@@ -291,7 +291,7 @@ blob_group_hashes(AggExec *ex, const uint32 *gl, uint32 ng, uint32 *h)
 			else if (k->ident)
 				kh = wide_hash(k->idval[id - 1], PG_UINT32_MAX / 2 + 1);
 			else
-				kh = k->ot.hv[id - 1];
+				kh = ot_hash(&k->ot, id);
 			h[r] = h[r] * 0x9E3779B1u + kh + 1;
 		}
 	}

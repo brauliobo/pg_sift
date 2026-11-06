@@ -146,9 +146,9 @@ combo_forget_priors(AggExec *ex, int ci)
 			pfree(cs->pv[p].memo);
 		if (cs->pv[p].rep)
 			pfree(cs->pv[p].rep);
-		if (cs->id64[p].tab)
+		if (cs->id64[p].val)
 		{
-			pfree(cs->id64[p].tab);
+			intids_free(&cs->id64[p].ix);
 			pfree(cs->id64[p].val);
 		}
 		memset(&cs->pv[p], 0, sizeof(cs->pv[p]));

@@ -5,6 +5,7 @@
 #define SIFT_AGG_LEAF_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "agg/intids.h"
 
 typedef struct OutTable
 {
@@ -12,7 +13,9 @@ typedef struct OutTable
 	bool		text;			/* text of a deterministic collation: equal when the bytes are, hashed as hashtext does */
 	bool		image;			/* values are the same when their bytes are (generic DISTINCT), not when the type's equality says so */
 	bool		byval;
+	bool		ints;			/* a key of an integer type: its ids come from ix by the value (ot_init_key), not from slot and hv */
 	int16		len;
+	IntIds		ix;
 	FmgrInfo	hashfn;
 	FmgrInfo	eqfn;
 	uint32		n;				/* ids 1..n */
@@ -47,13 +50,15 @@ typedef struct DictSlot
 	struct DNum *num;			/* wide numeric dictionaries: the integer and scale of each entry, decoded when a row first adds it (scale WNUM_UNSET before) */
 } DictSlot;
 
-/* distinct numbers to ids 1.. in order of appearance (open addressing) */
+/* distinct numbers to ids 1.. in order of appearance: those of an int64 in ix, the others (open addressing) in slot */
 typedef struct IdMap
 {
 	MemoryContext cxt;
 	uint32		n;
 	uint32		cap;
 	sift_i128  *val;
+	IntIds		ix;
+	uint32		nbig;			/* the numbers in slot */
 	uint32		nslot;
 	uint32	   *slot;			/* id or 0 */
 } IdMap;
@@ -73,7 +78,22 @@ rt_span(const RangeTab *r, int32 lo, int32 hi)
 /* leaf.c */
 void ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid);
 void ot_init_image(OutTable *t, Oid typid);
+void ot_init_key(OutTable *t, Oid eqop, Oid typid, Oid collid);
 uint32 ot_id(OutTable *t, Datum d);
+
+/* the value of an integer key (ints) as the key of its IntIds table */
+static inline int64
+ot_int_key(const OutTable *t, Datum d)
+{
+	return t->len == 4 ? DatumGetInt32(d) : t->len == 2 ? DatumGetInt16(d) : DatumGetInt64(d);
+}
+
+/* the hash of the value of id, the same in every table that holds it */
+static inline uint32
+ot_hash(const OutTable *t, uint32 id)
+{
+	return t->ints ? intids_hash(ot_int_key(t, t->val[id - 1])) : t->hv[id - 1];
+}
 void rt_init(RangeTab *r, int esize);
 void rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg);
 Datum leaf_datum(Oid typid, int64 iv);

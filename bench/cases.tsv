@@ -425,3 +425,5 @@ agg_pred_normalize	a condition that wraps a column in `coalesce(col, c)`	events	
 col_overlay_wide_units	the merge of the small overlay segments counts the rows of the units a request scans	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_overlay_wide_units__layered	ms,minstr	faster33	no	-
 agg_jsonb_contain_object	a containment `doc @> '{...}'` with a boolean or JSON null member on an object document	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 set_key_skew_dimension	multiplied by the skew of the column	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+group_int_expr_halves	`GROUP BY id / 2`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+group_bigint_key_dense	an `int`, `bigint`, `date`, `timestamp` or `timestamptz` column	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

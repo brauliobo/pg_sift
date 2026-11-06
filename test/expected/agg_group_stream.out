@@ -125,7 +125,7 @@ SELECT * FROM stream_cases('gs');
  h, k                      | 4GB     | f      | f        | f       | t
  h DESC NULLS LAST, k DESC | 64kB    | f      | f        | t       | t
  h DESC NULLS LAST, k      | 64kB    | f      | f        | t       | t
- h, k                      | 64kB    | f      | f        | f       | t
+ h, k                      | 64kB    | f      | f        | t       | t
  h                         | 64kB    | f      | f        | t       | t
  h, k                      | 64kB    | t      | f        | f       | t
  h DESC, k                 | 1MB     | f      | f        | t       | t
@@ -146,7 +146,7 @@ SELECT * FROM stream_cases('gs');
  h, k                      | 4GB     | f      | f        | f       | t
  h DESC NULLS LAST, k DESC | 64kB    | f      | f        | t       | t
  h DESC NULLS LAST, k      | 64kB    | f      | f        | t       | t
- h, k                      | 64kB    | f      | f        | f       | t
+ h, k                      | 64kB    | f      | f        | t       | t
  h                         | 64kB    | f      | f        | t       | t
  h, k                      | 64kB    | t      | f        | f       | t
  h DESC, k                 | 1MB     | f      | f        | t       | t

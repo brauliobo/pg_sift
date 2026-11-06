@@ -106,6 +106,9 @@ CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_aggkern_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern_level' LANGUAGE C STRICT;
+-- Integer key ids (src/agg/intids_test.c): the table against a plain hash, over many shapes of keys.
+CREATE FUNCTION sift._test_intids(seed int8, cases int4, OUT bad int8, OUT paged int8, OUT hashed int8, OUT up int8, OUT down int8)
+	AS 'MODULE_PATHNAME', 'sift_test_intids' LANGUAGE C STRICT;
 
 -- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,

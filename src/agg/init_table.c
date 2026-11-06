@@ -552,7 +552,7 @@ table_init(AggExec *ex)
 		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .zone = k->zone, .zcut = k->zcut, .cal = k->cal};
 
 		*k = keep;
-		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
+		ot_init_key(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
 		rt_init(&k->rt, sizeof(uint32));
 		k->cap = 4;
 		k->nullid = UINT32_MAX;

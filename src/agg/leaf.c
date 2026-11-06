@@ -115,6 +115,30 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 	t->hv = palloc(t->cap * sizeof(uint32));
 }
 
+/* an output table of a key: one of an integer type looks its values up in an IntIds table, which is an array while they are dense */
+void
+ot_init_key(OutTable *t, Oid eqop, Oid typid, Oid collid)
+{
+	switch (get_opcode(eqop))
+	{
+		case F_INT2EQ:
+		case F_INT4EQ:
+		case F_INT8EQ:
+		case F_OIDEQ:
+		case F_DATE_EQ:
+		case F_TIMESTAMP_EQ:
+		case F_TIMESTAMPTZ_EQ:
+			get_typlenbyval(typid, &t->len, &t->byval);
+			t->ints = true;
+			intids_init(&t->ix);
+			t->cap = 16;
+			t->val = palloc(t->cap * sizeof(Datum));
+			break;
+		default:
+			ot_init(t, eqop, typid, collid);
+	}
+}
+
 /* a table of the distinct byte images of values of any type: the equal values of the type that differ (1.0 and 1.00) keep their ids */
 void
 ot_init_image(OutTable *t, Oid typid)
@@ -179,6 +203,21 @@ ot_id(OutTable *t, Datum d)
 	const unsigned char *b = NULL;
 	Size		len = 0;
 
+	if (t->ints)
+	{
+		uint32		id = intids_id(&t->ix, ot_int_key(t, d), t->n + 1);
+
+		if (id > t->n)
+		{
+			if (t->n == t->cap)
+			{
+				t->cap *= 2;
+				t->val = repalloc(t->val, t->cap * sizeof(Datum));
+			}
+			t->val[t->n++] = d;
+		}
+		return id;
+	}
 	if (t->text)
 	{
 		b = text_bytes(d, &len);
@@ -677,9 +716,11 @@ idmap_init(IdMap *m)
 	m->cxt = CurrentMemoryContext;
 	m->n = 0;
 	m->cap = 64;
+	m->nbig = 0;
 	m->nslot = 128;
 	m->val = palloc(m->cap * sizeof(sift_i128));
 	m->slot = palloc0(m->nslot * sizeof(uint32));
+	intids_init(&m->ix);
 }
 
 static inline uint32
@@ -691,29 +732,51 @@ idmap_hash(sift_i128 v)
 	return (uint32) ((x * UINT64CONST(0xD6E8FEB86659FD93)) >> 32);
 }
 
-uint32
-idmap_id(IdMap *m, sift_i128 v)
+static inline bool
+idmap_small(sift_i128 v)
 {
-	uint32		mask = m->nslot - 1,
-				h = idmap_hash(v) & mask;
+	return v == (sift_i128) (int64) v;
+}
 
-	for (; m->slot[h]; h = (h + 1) & mask)
-		if (m->val[m->slot[h] - 1] == v)
-			return m->slot[h];
+static uint32
+idmap_add(IdMap *m, sift_i128 v)
+{
 	if (m->n == m->cap)
 	{
 		m->cap *= 2;
 		m->val = repalloc(m->val, m->cap * sizeof(sift_i128));
 	}
 	m->val[m->n] = v;
-	m->slot[h] = ++m->n;
-	if (m->n * 2 > m->nslot)
+	return ++m->n;
+}
+
+uint32
+idmap_id(IdMap *m, sift_i128 v)
+{
+	uint32		mask = m->nslot - 1,
+				h;
+
+	if (idmap_small(v))
+	{
+		uint32		id = intids_id(&m->ix, (int64) v, m->n + 1);
+
+		if (id > m->n)
+			idmap_add(m, v);
+		return id;
+	}
+	for (h = idmap_hash(v) & mask; m->slot[h]; h = (h + 1) & mask)
+		if (m->val[m->slot[h] - 1] == v)
+			return m->slot[h];
+	m->slot[h] = idmap_add(m, v);
+	if (++m->nbig * 2 > m->nslot)
 	{
 		pfree(m->slot);
 		m->nslot *= 2;
 		m->slot = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(uint32));
 		for (uint32 id = 1; id <= m->n; id++)
 		{
+			if (idmap_small(m->val[id - 1]))
+				continue;
 			for (h = idmap_hash(m->val[id - 1]) & (m->nslot - 1); m->slot[h]; h = (h + 1) & (m->nslot - 1))
 				;
 			m->slot[h] = id;
