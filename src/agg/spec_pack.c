@@ -1,5 +1,8 @@
 /*
- * agg/spec_pack.c - pack and unpack of the spec as a flat List with per-node writers and readers
+ * agg/spec_pack.c - pack and unpack of the spec as a flat List
+ *
+ * One function per struct does both: the Codec either appends the fields it walks to the list (pack) or sets them from it (unpack), so a field that is added
+ * here is written and read in the same place and in the same order. The packed list is only read by the same build (the workers' copy of the plan).
  */
 #include "postgres.h"
 
@@ -17,925 +20,598 @@
 
 #include "agg/spec.h"
 
-typedef struct Pack
+typedef struct Codec
 {
-	List	   *items;
-} Pack;
+	List	   *items;			/* written (pack) or read (unpack) */
+	int			pos;
+	bool		rd;
+} Codec;
 
-static void
-put_int(Pack *p, int v)
+static Node *
+pk_item(Codec *c)
 {
-	p->items = lappend(p->items, makeInteger(v));
+	SIFT_INVARIANT(c->pos < list_length(c->items), "sift: truncated aggregate plan");
+	return list_nth(c->items, c->pos++);
 }
 
 static void
-put_str(Pack *p, const char *s)
+pk_int(Codec *c, int *v)
 {
-	p->items = lappend(p->items, makeString(pstrdup(s ? s : "")));
+	if (c->rd)
+		*v = intVal(pk_item(c));
+	else
+		c->items = lappend(c->items, makeInteger(*v));
 }
+
+/* the field f of any integer, enum or Oid type, as an int */
+#define PK(c, f) \
+	do { int v_ = (int) (f); pk_int(c, &v_); if ((c)->rd) (f) = (__typeof__(f)) v_; } while (0)
+
+/* the count of an array, and the array itself on the way in */
+#define PK_COUNT(c, cnt, arr) \
+	do { PK(c, cnt); if ((c)->rd) (arr) = palloc0(Max(cnt, 1) * sizeof(*(arr))); } while (0)
+
+/* a string, "" for NULL */
+static void
+pk_str(Codec *c, const char **s)
+{
+	if (c->rd)
+		*s = pstrdup(strVal(pk_item(c)));
+	else
+		c->items = lappend(c->items, makeString(pstrdup(*s ? *s : "")));
+}
+
+#define PKS(c, f) pk_str(c, (const char **) &(f))
+
+/* a string where the empty one is NULL */
+#define PKS_OPT(c, f) \
+	do { PKS(c, f); if ((c)->rd && !*(f)) (f) = NULL; } while (0)
 
 /* Node or NULL */
 static void
-put_node(Pack *p, Node *n)
+pk_node(Codec *c, Node **n)
 {
-	put_int(p, n != NULL);
-	if (n)
-		p->items = lappend(p->items, n);
+	int			has = !c->rd && *n != NULL;
+
+	pk_int(c, &has);
+	if (c->rd)
+		*n = has ? pk_item(c) : NULL;
+	else if (has)
+		c->items = lappend(c->items, *n);
 }
 
+#define PKN(c, f) pk_node(c, (Node **) &(f))
+
 static void
-put_dbl(Pack *p, double d)
+pk_dbl(Codec *c, double *d)
 {
+	const char *s;
 	char		buf[64];
 
-	snprintf(buf, sizeof(buf), "%.17g", d);
-	put_str(p, buf);
+	if (c->rd)
+	{
+		s = strVal(pk_item(c));
+		*d = strtod(s, NULL);
+		return;
+	}
+	snprintf(buf, sizeof(buf), "%.17g", *d);
+	s = buf;
+	pk_str(c, &s);
 }
 
 static void
-put_num(Pack *p, const SiftAggNum *n)
+pk_i64(Codec *c, int64 *v)
 {
-	put_int(p, n->n);
-	put_int(p, n->scale);
-	put_int(p, n->dig);
+	const char *s;
+
+	if (c->rd)
+	{
+		*v = strtoll(strVal(pk_item(c)), NULL, 10);
+		return;
+	}
+	s = psprintf(INT64_FORMAT, *v);
+	pk_str(c, &s);
+}
+
+static void
+codec_num(Codec *c, SiftAggNum *n)
+{
+	PK(c, n->n);
+	PK(c, n->scale);
+	PK(c, n->dig);
+	if (c->rd)
+		n->step = palloc(Max(n->n, 1) * sizeof(SiftAggNx));
 	for (int i = 0; i < n->n; i++)
 	{
-		const SiftAggNx *x = &n->step[i];
-		sift_i128	m = x->c;
-		char		buf[48],
-				   *o = buf + sizeof(buf) - 1;
+		SiftAggNx  *x = &n->step[i];
 
-		*o = '\0';
-		do
-			*--o = '0' + (int) (m < 0 ? -(m % 10) : m % 10);
-		while ((m /= 10) != 0);
-		if (x->c < 0)
-			*--o = '-';
-		put_int(p, x->op);
-		put_int(p, x->leaf);
-		put_int(p, x->a);
-		put_int(p, x->b);
-		put_str(p, o);
+		PK(c, x->op);
+		PK(c, x->leaf);
+		PK(c, x->a);
+		PK(c, x->b);
+		if (c->rd)
+		{
+			int			scale;
+
+			SIFT_INVARIANT(sift_parse_decimal(strVal(pk_item(c)), &x->c, &scale), "sift: bad number in the aggregate plan");
+		}
+		else
+		{
+			sift_i128	m = x->c;
+			char		buf[48],
+					   *o = buf + sizeof(buf) - 1;
+			const char *s;
+
+			*o = '\0';
+			do
+				*--o = '0' + (int) (m < 0 ? -(m % 10) : m % 10);
+			while ((m /= 10) != 0);
+			if (x->c < 0)
+				*--o = '-';
+			s = o;
+			pk_str(c, &s);
+		}
 	}
 }
 
+/* the predicate tree: -1 for NULL */
 static void
-put_pred(Pack *p, const SiftAggPred *pr)
+codec_pred(Codec *c, SiftAggPred **pp)
 {
-	if (pr == NULL)
+	SiftAggPred *pr;
+	int			kind = !c->rd && *pp ? (int) (*pp)->kind : -1;
+
+	pk_int(c, &kind);
+	if (kind < 0)
 	{
-		put_int(p, -1);
+		*pp = NULL;
 		return;
 	}
-	put_int(p, pr->kind);
-	put_int(p, pr->id);
-	put_int(p, pr->leaf);
-	put_int(p, pr->leaf2);
-	put_int(p, pr->wslot);
-	put_int(p, pr->op);
-	put_int(p, (int) pr->argtype);
-	put_int(p, pr->level);
-	put_int(p, pr->late);
-	put_int(p, pr->negated);
-	put_int(p, pr->pass_poison);
-	put_node(p, pr->expr);
-	put_node(p, pr->cal);
-	put_int(p, pr->calmode);
-	put_int(p, pr->step);
-	put_int(p, pr->zoned);
-	put_num(p, &pr->num);
-	put_str(p, pr->desc);
-	put_int(p, pr->nchild);
+	if (c->rd)
+	{
+		*pp = palloc0(sizeof(SiftAggPred));
+		(*pp)->kind = kind;
+	}
+	pr = *pp;
+	PK(c, pr->id);
+	PK(c, pr->leaf);
+	PK(c, pr->leaf2);
+	PK(c, pr->wslot);
+	PK(c, pr->op);
+	PK(c, pr->argtype);
+	PK(c, pr->level);
+	PK(c, pr->late);
+	PK(c, pr->negated);
+	PK(c, pr->pass_poison);
+	PKN(c, pr->expr);
+	PKN(c, pr->cal);
+	PK(c, pr->calmode);
+	PK(c, pr->step);
+	PK(c, pr->zoned);
+	codec_num(c, &pr->num);
+	PKS(c, pr->desc);
+	PK(c, pr->nchild);
+	if (c->rd)
+		pr->child = pr->nchild ? palloc0(pr->nchild * sizeof(SiftAggPred *)) : NULL;
 	for (int i = 0; i < pr->nchild; i++)
-		put_pred(p, pr->child[i]);
+		codec_pred(c, &pr->child[i]);
 }
 
 static void
-put_cond(Pack *p, const SiftAggCond *c)
+codec_cond(Codec *c, SiftAggCond *d)
 {
-	put_int(p, c->col);
-	put_int(p, c->op);
-	put_int(p, c->isint);
-	put_str(p, psprintf(INT64_FORMAT, c->ci));
-	put_dbl(p, c->cd);
+	PK(c, d->col);
+	PK(c, d->op);
+	PK(c, d->isint);
+	pk_i64(c, &d->ci);
+	pk_dbl(c, &d->cd);
 }
 
 static void
-put_gen(Pack *p, const SiftAggGen *g)
+codec_gen(Codec *c, SiftAggGen **gp)
 {
-	put_int(p, g != NULL);
-	if (g == NULL)
+	SiftAggGen *g = c->rd ? NULL : *gp;
+	int			has = g != NULL;
+
+	pk_int(c, &has);
+	if (!has)
+	{
+		*gp = NULL;
 		return;
-	put_node(p, g->aggref);
-	put_int(p, g->nargs);
-	put_int(p, g->ntrans);
+	}
+	if (c->rd)
+		g = *gp = palloc0(sizeof(SiftAggGen));
+	PKN(c, g->aggref);
+	PK(c, g->nargs);
+	PK(c, g->ntrans);
 	for (int k = 0; k < g->nargs; k++)
 	{
-		put_int(p, (int) g->arg[k].typid);
-		put_int(p, g->arg[k].nleaves);
+		PK(c, g->arg[k].typid);
+		PK(c, g->arg[k].nleaves);
 		for (int l = 0; l < g->arg[k].nleaves; l++)
-			put_int(p, g->arg[k].leaf[l]);
-		put_node(p, g->arg[k].expr);
-		put_int(p, g->arg[k].mapped);
-		put_int(p, g->arg[k].combo);
-		put_int(p, g->arg[k].slot);
+			PK(c, g->arg[k].leaf[l]);
+		PKN(c, g->arg[k].expr);
+		PK(c, g->arg[k].mapped);
+		PK(c, g->arg[k].combo);
+		PK(c, g->arg[k].slot);
 	}
-	put_node(p, g->direct);
-	put_int(p, g->distinct);
-	put_int(p, g->darg);
-	put_int(p, g->ordered);
-	put_int(p, g->sorted);
-	put_int(p, g->first);
-	put_int(p, g->topn);
-	put_int(p, g->ties);
-	put_int(p, g->hyp);
-	put_str(p, g->serial);
-	put_int(p, g->hll);
+	PKN(c, g->direct);
+	PK(c, g->distinct);
+	PK(c, g->darg);
+	PK(c, g->ordered);
+	PK(c, g->sorted);
+	PK(c, g->first);
+	PK(c, g->topn);
+	PK(c, g->ties);
+	PK(c, g->hyp);
+	PKS_OPT(c, g->serial);
+	PK(c, g->hll);
 }
 
 static void
-put_agg(Pack *p, const SiftAggAgg *a)
+codec_agg(Codec *c, SiftAggAgg *a)
 {
-	put_int(p, a->kind);
-	put_int(p, a->leaf);
-	put_int(p, a->wsum);
-	put_int(p, a->nvx);
+	PK(c, a->kind);
+	PK(c, a->leaf);
+	PK(c, a->wsum);
+	PK_COUNT(c, a->nvx, a->vx);
 	for (int j = 0; j < a->nvx; j++)
 	{
-		put_int(p, a->vx[j].op);
-		put_int(p, a->vx[j].leaf);
-		put_dbl(p, a->vx[j].c);
+		PK(c, a->vx[j].op);
+		PK(c, a->vx[j].leaf);
+		pk_dbl(c, &a->vx[j].c);
 	}
-	put_num(p, &a->num);
-	put_int(p, a->distinct);
-	put_pred(p, a->filter);
-	put_int(p, (int) a->restype);
-	put_int(p, (int) a->argtype);
-	put_int(p, (int) a->collid);
-	put_int(p, a->col);
-	put_int(p, a->ncond);
+	codec_num(c, &a->num);
+	PK(c, a->distinct);
+	codec_pred(c, &a->filter);
+	PK(c, a->restype);
+	PK(c, a->argtype);
+	PK(c, a->collid);
+	PK(c, a->col);
+	PK_COUNT(c, a->ncond, a->cond);
 	for (int j = 0; j < a->ncond; j++)
-		put_cond(p, &a->cond[j]);
-	put_int(p, a->combo);
-	put_int(p, a->slot);
-	put_int(p, a->nref);
+		codec_cond(c, &a->cond[j]);
+	PK(c, a->combo);
+	PK(c, a->slot);
+	PK_COUNT(c, a->nref, a->ref);
 	for (int j = 0; j < a->nref; j++)
-		put_int(p, a->ref[j]);
-	put_str(p, a->desc);
-	put_dbl(p, a->frac);
-	put_int(p, a->desc_order);
-	put_int(p, a->share);
-	put_gen(p, a->gen);
-	put_int(p, (int) a->aggfn);
+		PK(c, a->ref[j]);
+	PKS(c, a->desc);
+	pk_dbl(c, &a->frac);
+	PK(c, a->desc_order);
+	PK(c, a->share);
+	codec_gen(c, &a->gen);
+	PK(c, a->aggfn);
 }
 
 static void
-put_arms(Pack *p, const SiftAggSpec *s)
+codec_spine(Codec *c, SiftAggSpec *s)
 {
-	put_int(p, s->narms);
+	SiftAggSpine *sp;
+	int			has = !c->rd && s->spine != NULL;
+
+	pk_int(c, &has);
+	if (!has)
+		return;
+	if (c->rd)
+		s->spine = palloc0(sizeof(SiftAggSpine));
+	sp = s->spine;
+	PK(c, sp->left);
+	PK(c, sp->child);
+	PK(c, sp->ncol);
+	PK(c, sp->npair);
+	for (int i = 0; i < sp->npair; i++)
+	{
+		struct SiftAggSpinePair *q = &sp->pair[i];
+
+		PK(c, q->col);
+		PKN(c, q->konst);
+		PK(c, q->nullsafe);
+		PK(c, q->typid);
+		PK(c, q->collid);
+		PK(c, q->eqop);
+		for (int k = 0; k < s->narms; k++)
+			PK(c, q->key[k]);
+	}
+	PK(c, sp->nout);
+	for (int i = 0; i < sp->nout; i++)
+	{
+		PK(c, sp->outcol[i]);
+		PK(c, sp->outkey[i]);
+	}
+}
+
+static void
+codec_arms(Codec *c, SiftAggSpec *s)
+{
+	PK_COUNT(c, s->narms, s->arm);
 	for (int i = 0; i < s->narms; i++)
 	{
-		const SiftAggArm *a = &s->arm[i];
+		SiftAggArm *a = &s->arm[i];
 
-		put_int(p, (int) a->keymask);
-		put_int(p, (int) a->hmask);
-		put_int(p, a->nfilter);
+		PK(c, a->keymask);
+		PK(c, a->hmask);
+		PK_COUNT(c, a->nfilter, a->filter);
 		for (int j = 0; j < a->nfilter; j++)
-			put_pred(p, a->filter[j]);
-		put_int(p, a->ninner);
+			codec_pred(c, &a->filter[j]);
+		PK_COUNT(c, a->ninner, a->inner);
 		for (int j = 0; j < a->ninner; j++)
-			put_agg(p, &a->inner[j]);
-		put_int(p, a->nhaving);
+			codec_agg(c, &a->inner[j]);
+		PK_COUNT(c, a->nhaving, a->having);
 		for (int j = 0; j < a->nhaving; j++)
-			put_cond(p, &a->having[j]);
-		put_node(p, a->hexpr);
-		put_int(p, a->nhp);
+			codec_cond(c, &a->having[j]);
+		PKN(c, a->hexpr);
+		PK_COUNT(c, a->nhp, a->hsrc);
 		for (int j = 0; j < a->nhp; j++)
-			put_int(p, a->hsrc[j]);
-		put_int(p, a->ncol);
+			PK(c, a->hsrc[j]);
+		PK_COUNT(c, a->ncol, a->colsrc);
 		for (int j = 0; j < a->ncol; j++)
-			put_int(p, a->colsrc[j]);
+			PK(c, a->colsrc[j]);
 	}
-	put_int(p, s->spine != NULL);
-	if (s->spine == NULL)
-		return;
-	put_int(p, s->spine->left);
-	put_int(p, s->spine->child);
-	put_int(p, s->spine->ncol);
-	put_int(p, s->spine->npair);
-	for (int i = 0; i < s->spine->npair; i++)
-	{
-		const struct SiftAggSpinePair *q = &s->spine->pair[i];
+	codec_spine(c, s);
+}
 
-		put_int(p, q->col);
-		put_node(p, q->konst);
-		put_int(p, q->nullsafe);
-		put_int(p, (int) q->typid);
-		put_int(p, (int) q->collid);
-		put_int(p, (int) q->eqop);
-		for (int k = 0; k < s->narms; k++)
-			put_int(p, q->key[k]);
-	}
-	put_int(p, s->spine->nout);
-	for (int i = 0; i < s->spine->nout; i++)
+static void
+codec_joins(Codec *c, SiftAggSpec *s)
+{
+	PK_COUNT(c, s->njoin, s->join);
+	for (int i = 0; i < s->njoin; i++)
 	{
-		put_int(p, s->spine->outcol[i]);
-		put_int(p, s->spine->outkey[i]);
+		SiftAggJoin *j = &s->join[i];
+
+		PK(c, j->relid);
+		PK(c, j->child);
+		PK(c, j->kind);
+		PK(c, j->subplan);
+		PKN(c, j->params);
+		PKN(c, j->args);
+		PKN(c, j->sig);
+		PK(c, j->scoped);
+		PK(c, j->fslot);
+		PK(c, j->nidx);
+		for (int k = 0; k < j->nidx; k++)
+		{
+			PK(c, j->idxatt[k]);
+			PK(c, j->idxop[k]);
+			PK(c, j->idxcoll[k]);
+			PK(c, j->idxany[k]);
+			PKN(c, j->idxval[k]);
+		}
+		PK(c, j->nkey);
+		for (int k = 0; k < j->nkey; k++)
+		{
+			PK(c, j->keyatt[k]);
+			PK(c, j->keytype[k]);
+			PK(c, j->keypos[k]);
+			PKN(c, j->keyexpr[k]);
+			PKN(c, j->tkey[k]);
+			PK(c, j->keynull[k]);
+		}
+		PK(c, j->ncol);
+		for (int k = 0; k < j->ncol; k++)
+		{
+			PK(c, j->colatt[k]);
+			PK(c, j->coltype[k]);
+			PK(c, j->coltypmod[k]);
+			PK(c, j->colcoll[k]);
+		}
+		PK(c, j->first.ok);
+		if (j->first.ok)
+		{
+			PK(c, j->first.use);
+			PK(c, j->first.hybrid);
+			PKN(c, j->first.pqual);
+			PK(c, j->first.relid);
+			PK(c, j->first.rows);
+			PK(c, j->first.nkey);
+			for (int k = 0; k < j->first.nkey; k++)
+			{
+				PK(c, j->first.keyatt[k]);
+				PK(c, j->first.keytype[k]);
+				PK(c, j->first.keyarg[k]);
+			}
+			PK(c, j->first.ncol);
+			for (int k = 0; k < j->first.ncol; k++)
+				PK(c, j->first.col[k]);
+			PK(c, j->first.nord);
+			for (int k = 0; k < j->first.nord; k++)
+			{
+				PK(c, j->first.ordatt[k]);
+				PK(c, j->first.ordtype[k]);
+				PK(c, j->first.orddesc[k]);
+				PK(c, j->first.ordnullsfirst[k]);
+			}
+			PKN(c, j->first.qual);
+		}
+		PKS(c, j->desc);
+	}
+	PK_COUNT(c, s->ncombo, s->combo);
+	for (int i = 0; i < s->ncombo; i++)
+	{
+		SiftAggCombo *cb = &s->combo[i];
+
+		PK(c, cb->nleaves);
+		for (int k = 0; k < cb->nleaves; k++)
+		{
+			PK(c, cb->leaf[k]);
+			PK(c, cb->refcombo[k]);
+			PK(c, cb->refcol[k]);
+			PK(c, cb->ptype[k]);
+			PK(c, cb->ptypmod[k]);
+			PK(c, cb->pcoll[k]);
+		}
+		PK(c, cb->join);
+		PK(c, cb->level);
+		PK_COUNT(c, cb->nslots, cb->slot);
+		for (int k = 0; k < cb->nslots; k++)
+		{
+			PK(c, cb->slot[k].is_key);
+			PK(c, cb->slot[k].key);
+			PK(c, cb->slot[k].agg);
+			PKN(c, cb->slot[k].expr);
+			PK(c, cb->slot[k].direct);
+		}
 	}
 }
 
 static void
-put_joins(Pack *p, const SiftAggSpec *s)
+codec_spec(Codec *c, SiftAggSpec *s)
 {
-	put_int(p, s->njoin);
-	for (int i = 0; i < s->njoin; i++)
+	PK(c, s->indexoid);
+	PK(c, s->heapoid);
+	PK_COUNT(c, s->nparts, s->partheap);
+	if (c->rd)
+		s->partindex = palloc0(Max(s->nparts, 1) * sizeof(Oid));
+	for (int i = 0; i < s->nparts; i++)
 	{
-		const SiftAggJoin *j = &s->join[i];
-
-		put_int(p, (int) j->relid);
-		put_int(p, j->child);
-		put_int(p, j->kind);
-		put_int(p, j->subplan);
-		put_node(p, (Node *) j->params);
-		put_node(p, (Node *) j->args);
-		put_node(p, j->sig);
-		put_int(p, j->scoped);
-		put_int(p, j->fslot);
-		put_int(p, j->nidx);
-		for (int k = 0; k < j->nidx; k++)
-		{
-			put_int(p, j->idxatt[k]);
-			put_int(p, (int) j->idxop[k]);
-			put_int(p, (int) j->idxcoll[k]);
-			put_int(p, j->idxany[k]);
-			put_node(p, j->idxval[k]);
-		}
-		put_int(p, j->nkey);
-		for (int k = 0; k < j->nkey; k++)
-		{
-			put_int(p, j->keyatt[k]);
-			put_int(p, (int) j->keytype[k]);
-			put_int(p, j->keypos[k]);
-			put_node(p, j->keyexpr[k]);
-			put_node(p, j->tkey[k]);
-			put_int(p, j->keynull[k]);
-		}
-		put_int(p, j->ncol);
-		for (int k = 0; k < j->ncol; k++)
-		{
-			put_int(p, j->colatt[k]);
-			put_int(p, (int) j->coltype[k]);
-			put_int(p, j->coltypmod[k]);
-			put_int(p, (int) j->colcoll[k]);
-		}
-		put_int(p, j->first.ok);
-		if (j->first.ok)
-		{
-			put_int(p, j->first.use);
-			put_int(p, j->first.hybrid);
-			put_node(p, j->first.pqual);
-			put_int(p, (int) j->first.relid);
-			put_int(p, j->first.rows);
-			put_int(p, j->first.nkey);
-			for (int k = 0; k < j->first.nkey; k++)
-			{
-				put_int(p, j->first.keyatt[k]);
-				put_int(p, (int) j->first.keytype[k]);
-				put_int(p, j->first.keyarg[k]);
-			}
-			put_int(p, j->first.ncol);
-			for (int k = 0; k < j->first.ncol; k++)
-				put_int(p, j->first.col[k]);
-			put_int(p, j->first.nord);
-			for (int k = 0; k < j->first.nord; k++)
-			{
-				put_int(p, j->first.ordatt[k]);
-				put_int(p, (int) j->first.ordtype[k]);
-				put_int(p, j->first.orddesc[k]);
-				put_int(p, j->first.ordnullsfirst[k]);
-			}
-			put_node(p, (Node *) j->first.qual);
-		}
-		put_str(p, j->desc);
+		PK(c, s->partheap[i]);
+		PK(c, s->partindex[i]);
 	}
-	put_int(p, s->ncombo);
-	for (int i = 0; i < s->ncombo; i++)
+	PKN(c, s->partprune);
+	PK(c, s->group);
+	PK(c, s->left_lateral);
+	PK(c, s->part_final);
+	PK_COUNT(c, s->nleaves, s->leaves);
+	if (c->rd)
 	{
-		const SiftAggCombo *c = &s->combo[i];
+		s->recheck = palloc0(Max(s->nleaves, 1));
+		s->gate = palloc0(Max(s->nleaves, 1) * sizeof(uint64));
+	}
+	for (int i = 0; i < s->nleaves; i++)
+	{
+		int			lo = c->rd ? 0 : (int) (s->gate[i] & PG_UINT32_MAX),
+					hi = c->rd ? 0 : (int) (s->gate[i] >> 32);
 
-		put_int(p, c->nleaves);
-		for (int k = 0; k < c->nleaves; k++)
-		{
-			put_int(p, c->leaf[k]);
-			put_int(p, c->refcombo[k]);
-			put_int(p, c->refcol[k]);
-			put_int(p, (int) c->ptype[k]);
-			put_int(p, c->ptypmod[k]);
-			put_int(p, (int) c->pcoll[k]);
-		}
-		put_int(p, c->join);
-		put_int(p, c->level);
-		put_int(p, c->nslots);
-		for (int k = 0; k < c->nslots; k++)
-		{
-			put_int(p, c->slot[k].is_key);
-			put_int(p, c->slot[k].key);
-			put_int(p, c->slot[k].agg);
-			put_node(p, c->slot[k].expr);
-			put_int(p, c->slot[k].direct);
-		}
+		PK(c, s->leaves[i]);
+		PK(c, s->recheck[i]);
+		pk_int(c, &lo);
+		pk_int(c, &hi);
+		if (c->rd)
+			s->gate[i] = (uint32) lo | (uint64) (uint32) hi << 32;
+	}
+	PK_COUNT(c, s->npred, s->pred);
+	for (int i = 0; i < s->npred; i++)
+		codec_pred(c, &s->pred[i]);
+	PK_COUNT(c, s->nwide, s->wide);
+	for (int i = 0; i < s->nwide; i++)
+		codec_pred(c, &s->wide[i]);
+	PK_COUNT(c, s->ntype, s->type_leaf);
+	for (int i = 0; i < s->ntype; i++)
+		PK(c, s->type_leaf[i]);
+	PK_COUNT(c, s->nkeys, s->key);
+	for (int i = 0; i < s->nkeys; i++)
+	{
+		SiftAggKey *k = &s->key[i];
+
+		PK(c, k->kind);
+		PK(c, k->leaf);
+		PK(c, k->slot);
+		PKN(c, k->expr);
+		PK(c, k->bucket);
+		PK(c, k->zoned);
+		codec_num(c, &k->num);
+		PK(c, k->typid);
+		PK(c, k->typmod);
+		PK(c, k->collid);
+		PK(c, k->eqop);
+		PKS(c, k->desc);
+	}
+	PK_COUNT(c, s->naggs, s->agg);
+	for (int i = 0; i < s->naggs; i++)
+		codec_agg(c, &s->agg[i]);
+	codec_joins(c, s);
+	PK(c, s->npost);
+	PK(c, s->nprepost);
+	if (c->rd)
+	{
+		s->post = palloc0(Max(s->npost, 1) * sizeof(SiftAggPred *));
+		s->postsets = palloc0(Max(s->npost, 1) * sizeof(uint32));
+	}
+	for (int i = 0; i < s->npost; i++)
+	{
+		int			sets = !c->rd && s->postsets ? (int) s->postsets[i] : 0;
+
+		codec_pred(c, &s->post[i]);
+		pk_int(c, &sets);
+		if (c->rd)
+			s->postsets[i] = (uint32) sets;
+	}
+	PK(c, s->nvleaf);
+	for (int i = 0; i < s->nvleaf; i++)
+	{
+		PK(c, s->vleaf[i].obj);
+		PKS(c, s->vleaf[i].key);
+		PK(c, s->vleaf[i].count);
+		PK(c, s->vleaf[i].types);
+		PK(c, s->vleaf[i].bound);
+		PK(c, s->vleaf[i].recheck);
+		PK(c, s->vleaf[i].cast);
+	}
+	codec_arms(c, s);
+	PK_COUNT(c, s->nsets, s->setmask);
+	for (int i = 0; i < s->nsets; i++)
+		PK(c, s->setmask[i]);
+	{
+		int			has = !c->rd && s->setaggs != NULL;
+
+		pk_int(c, &has);
+		if (has && c->rd)
+			s->setaggs = palloc0(Max(s->naggs, 1) * sizeof(uint32));
+		for (int i = 0; has && i < s->naggs; i++)
+			PK(c, s->setaggs[i]);
+		has = !c->rd && s->setpred != NULL;
+		pk_int(c, &has);
+		if (has && c->rd)
+			s->setpred = palloc0(s->nsets * sizeof(SiftAggPred *));
+		for (int i = 0; has && i < s->nsets; i++)
+			codec_pred(c, &s->setpred[i]);
+	}
+	PK(c, s->nhidden);
+	PK(c, s->npreds_total);
+	pk_dbl(c, &s->est_groups);
+	pk_dbl(c, &s->est_rows);
+	PK(c, s->nworkers);
+	PK(c, s->gpart);
+	pk_dbl(c, &s->wide_unit_rows);
+	PKS_OPT(c, s->serial);
+	PKS(c, s->desc_quals);
+	PKN(c, s->search);
+	PKN(c, s->topn);
+	PKS(c, s->desc_topn);
+	PK(c, s->gtopn_k);
+	PK(c, s->gtopn_agg);
+	PK(c, s->gtopn_desc);
+	PK(c, s->gtopn_nulls_first);
+	PK_COUNT(c, s->nord, s->ord);
+	for (int i = 0; i < s->nord; i++)
+	{
+		PK(c, s->ord[i].key);
+		PK(c, s->ord[i].sortop);
+		PK(c, s->ord[i].collation);
+		PK(c, s->ord[i].nulls_first);
+		PKN(c, s->ord[i].subst);
+		PKN(c, s->ord[i].eq);
+		PK(c, s->ord[i].eqop);
+		PK(c, s->ord[i].eqcoll);
 	}
 }
 
 List *
 sift_aggspec_pack(const SiftAggSpec *s)
 {
-	Pack		pk = {NIL};
-	Pack	   *p = &pk;
+	Codec		c = {NIL, 0, false};
 
-	put_int(p, (int) s->indexoid);
-	put_int(p, (int) s->heapoid);
-	put_int(p, s->nparts);
-	for (int i = 0; i < s->nparts; i++)
-	{
-		put_int(p, (int) s->partheap[i]);
-		put_int(p, (int) s->partindex[i]);
-	}
-	put_node(p, (Node *) s->partprune);
-	put_int(p, s->group);
-	put_int(p, s->left_lateral);
-	put_int(p, s->part_final);
-	put_int(p, s->nleaves);
-	for (int i = 0; i < s->nleaves; i++)
-	{
-		put_int(p, s->leaves[i]);
-		put_int(p, s->recheck[i]);
-		put_int(p, (int) (s->gate[i] & PG_UINT32_MAX));
-		put_int(p, (int) (s->gate[i] >> 32));
-	}
-	put_int(p, s->npred);
-	for (int i = 0; i < s->npred; i++)
-		put_pred(p, s->pred[i]);
-	put_int(p, s->nwide);
-	for (int i = 0; i < s->nwide; i++)
-		put_pred(p, s->wide[i]);
-	put_int(p, s->ntype);
-	for (int i = 0; i < s->ntype; i++)
-		put_int(p, s->type_leaf[i]);
-	put_int(p, s->nkeys);
-	for (int i = 0; i < s->nkeys; i++)
-	{
-		const SiftAggKey *k = &s->key[i];
-
-		put_int(p, k->kind);
-		put_int(p, k->leaf);
-		put_int(p, k->slot);
-		put_node(p, k->expr);
-		put_int(p, k->bucket);
-		put_int(p, k->zoned);
-		put_num(p, &k->num);
-		put_int(p, (int) k->typid);
-		put_int(p, k->typmod);
-		put_int(p, (int) k->collid);
-		put_int(p, (int) k->eqop);
-		put_str(p, k->desc);
-	}
-	put_int(p, s->naggs);
-	for (int i = 0; i < s->naggs; i++)
-		put_agg(p, &s->agg[i]);
-	put_joins(p, s);
-	put_int(p, s->npost);
-	put_int(p, s->nprepost);
-	for (int i = 0; i < s->npost; i++)
-	{
-		put_pred(p, s->post[i]);
-		put_int(p, s->postsets ? (int) s->postsets[i] : 0);
-	}
-	put_int(p, s->nvleaf);
-	for (int i = 0; i < s->nvleaf; i++)
-	{
-		put_int(p, s->vleaf[i].obj);
-		put_str(p, s->vleaf[i].key);
-		put_int(p, s->vleaf[i].count);
-		put_int(p, s->vleaf[i].types);
-		put_int(p, s->vleaf[i].bound);
-		put_int(p, s->vleaf[i].recheck);
-		put_int(p, (int) s->vleaf[i].cast);
-	}
-	put_arms(p, s);
-	put_int(p, s->nsets);
-	for (int i = 0; i < s->nsets; i++)
-		put_int(p, (int) s->setmask[i]);
-	put_int(p, s->setaggs != NULL);
-	for (int i = 0; s->setaggs && i < s->naggs; i++)
-		put_int(p, (int) s->setaggs[i]);
-	put_int(p, s->setpred != NULL);
-	for (int i = 0; s->setpred && i < s->nsets; i++)
-		put_pred(p, s->setpred[i]);
-	put_int(p, s->nhidden);
-	put_int(p, s->npreds_total);
-	put_dbl(p, s->est_groups);
-	put_dbl(p, s->est_rows);
-	put_int(p, s->nworkers);
-	put_int(p, s->gpart);
-	put_dbl(p, s->wide_unit_rows);
-	put_str(p, s->serial);
-	put_str(p, s->desc_quals);
-	put_node(p, s->search);
-	put_node(p, s->topn);
-	put_str(p, s->desc_topn ? s->desc_topn : "");
-	put_int(p, s->gtopn_k);
-	put_int(p, s->gtopn_agg);
-	put_int(p, s->gtopn_desc);
-	put_int(p, s->gtopn_nulls_first);
-	put_int(p, s->nord);
-	for (int i = 0; i < s->nord; i++)
-	{
-		put_int(p, s->ord[i].key);
-		put_int(p, (int) s->ord[i].sortop);
-		put_int(p, (int) s->ord[i].collation);
-		put_int(p, s->ord[i].nulls_first);
-		put_node(p, (Node *) s->ord[i].subst);
-		put_node(p, (Node *) s->ord[i].eq);
-		put_int(p, (int) s->ord[i].eqop);
-		put_int(p, (int) s->ord[i].eqcoll);
-	}
-	return pk.items;
-}
-
-typedef struct Unpack
-{
-	const List *items;
-	int			pos;
-} Unpack;
-
-static Node *
-get_item(Unpack *u)
-{
-	SIFT_INVARIANT(u->pos < list_length(u->items), "sift: truncated aggregate plan");
-	return list_nth(u->items, u->pos++);
-}
-
-static int
-get_int(Unpack *u)
-{
-	return intVal(get_item(u));
-}
-
-static char *
-get_str(Unpack *u)
-{
-	return pstrdup(strVal(get_item(u)));
-}
-
-static Node *
-get_node(Unpack *u)
-{
-	return get_int(u) ? get_item(u) : NULL;
-}
-
-static void
-get_num(Unpack *u, SiftAggNum *n)
-{
-	n->n = get_int(u);
-	n->scale = get_int(u);
-	n->dig = get_int(u);
-	n->step = palloc(Max(n->n, 1) * sizeof(SiftAggNx));
-	for (int i = 0; i < n->n; i++)
-	{
-		SiftAggNx  *x = &n->step[i];
-		int			scale;
-
-		x->op = get_int(u);
-		x->leaf = get_int(u);
-		x->a = get_int(u);
-		x->b = get_int(u);
-		SIFT_INVARIANT(sift_parse_decimal(get_str(u), &x->c, &scale), "sift: bad number in the aggregate plan");
-	}
-}
-
-static SiftAggPred *
-get_pred(Unpack *u)
-{
-	SiftAggPred *pr;
-	int			kind = get_int(u);
-
-	if (kind < 0)
-		return NULL;
-	pr = palloc0(sizeof(SiftAggPred));
-	pr->kind = kind;
-	pr->id = get_int(u);
-	pr->leaf = get_int(u);
-	pr->leaf2 = get_int(u);
-	pr->wslot = get_int(u);
-	pr->op = get_int(u);
-	pr->argtype = (Oid) get_int(u);
-	pr->level = get_int(u);
-	pr->late = get_int(u);
-	pr->negated = get_int(u);
-	pr->pass_poison = get_int(u);
-	pr->expr = get_node(u);
-	pr->cal = get_node(u);
-	pr->calmode = get_int(u);
-	pr->step = get_int(u);
-	pr->zoned = get_int(u);
-	get_num(u, &pr->num);
-	pr->desc = get_str(u);
-	pr->nchild = get_int(u);
-	pr->child = pr->nchild ? palloc(pr->nchild * sizeof(SiftAggPred *)) : NULL;
-	for (int i = 0; i < pr->nchild; i++)
-		pr->child[i] = get_pred(u);
-	return pr;
-}
-
-static void
-get_cond(Unpack *u, SiftAggCond *c)
-{
-	c->col = get_int(u);
-	c->op = get_int(u);
-	c->isint = get_int(u);
-	c->ci = strtoll(get_str(u), NULL, 10);
-	c->cd = strtod(get_str(u), NULL);
-}
-
-static SiftAggGen *
-get_gen(Unpack *u)
-{
-	SiftAggGen *g;
-
-	if (!get_int(u))
-		return NULL;
-	g = palloc0(sizeof(SiftAggGen));
-	g->aggref = get_node(u);
-	g->nargs = get_int(u);
-	g->ntrans = get_int(u);
-	for (int k = 0; k < g->nargs; k++)
-	{
-		g->arg[k].typid = (Oid) get_int(u);
-		g->arg[k].nleaves = get_int(u);
-		for (int l = 0; l < g->arg[k].nleaves; l++)
-			g->arg[k].leaf[l] = get_int(u);
-		g->arg[k].expr = get_node(u);
-		g->arg[k].mapped = get_int(u);
-		g->arg[k].combo = get_int(u);
-		g->arg[k].slot = get_int(u);
-	}
-	g->direct = get_node(u);
-	g->distinct = get_int(u);
-	g->darg = get_int(u);
-	g->ordered = get_int(u);
-	g->sorted = get_int(u);
-	g->first = get_int(u);
-	g->topn = get_int(u);
-	g->ties = get_int(u);
-	g->hyp = get_int(u);
-	g->serial = get_str(u);
-	if (!*g->serial)
-		g->serial = NULL;
-	g->hll = get_int(u);
-	return g;
-}
-
-static void
-get_agg(Unpack *u, SiftAggAgg *a)
-{
-	a->kind = get_int(u);
-	a->leaf = get_int(u);
-	a->wsum = get_int(u);
-	a->nvx = get_int(u);
-	a->vx = palloc(Max(a->nvx, 1) * sizeof(SiftAggVx));
-	for (int j = 0; j < a->nvx; j++)
-	{
-		a->vx[j].op = get_int(u);
-		a->vx[j].leaf = get_int(u);
-		a->vx[j].c = strtod(get_str(u), NULL);
-	}
-	get_num(u, &a->num);
-	a->distinct = get_int(u);
-	a->filter = get_pred(u);
-	a->restype = (Oid) get_int(u);
-	a->argtype = (Oid) get_int(u);
-	a->collid = (Oid) get_int(u);
-	a->col = get_int(u);
-	a->ncond = get_int(u);
-	a->cond = palloc0(Max(a->ncond, 1) * sizeof(SiftAggCond));
-	for (int j = 0; j < a->ncond; j++)
-		get_cond(u, &a->cond[j]);
-	a->combo = get_int(u);
-	a->slot = get_int(u);
-	a->nref = get_int(u);
-	a->ref = palloc(Max(a->nref, 1) * sizeof(int));
-	for (int j = 0; j < a->nref; j++)
-		a->ref[j] = get_int(u);
-	a->desc = get_str(u);
-	a->frac = strtod(get_str(u), NULL);
-	a->desc_order = get_int(u);
-	a->share = get_int(u);
-	a->gen = get_gen(u);
-	a->aggfn = (Oid) get_int(u);
-}
-
-static void
-get_arms(Unpack *u, SiftAggSpec *s)
-{
-	s->narms = get_int(u);
-	s->arm = palloc0(Max(s->narms, 1) * sizeof(SiftAggArm));
-	for (int i = 0; i < s->narms; i++)
-	{
-		SiftAggArm *a = &s->arm[i];
-
-		a->keymask = (uint32) get_int(u);
-		a->hmask = (uint32) get_int(u);
-		a->nfilter = get_int(u);
-		a->filter = palloc(Max(a->nfilter, 1) * sizeof(SiftAggPred *));
-		for (int j = 0; j < a->nfilter; j++)
-			a->filter[j] = get_pred(u);
-		a->ninner = get_int(u);
-		a->inner = palloc0(Max(a->ninner, 1) * sizeof(SiftAggAgg));
-		for (int j = 0; j < a->ninner; j++)
-			get_agg(u, &a->inner[j]);
-		a->nhaving = get_int(u);
-		a->having = palloc0(Max(a->nhaving, 1) * sizeof(SiftAggCond));
-		for (int j = 0; j < a->nhaving; j++)
-			get_cond(u, &a->having[j]);
-		a->hexpr = get_node(u);
-		a->nhp = get_int(u);
-		a->hsrc = palloc(Max(a->nhp, 1) * sizeof(int));
-		for (int j = 0; j < a->nhp; j++)
-			a->hsrc[j] = get_int(u);
-		a->ncol = get_int(u);
-		a->colsrc = palloc(Max(a->ncol, 1) * sizeof(int));
-		for (int j = 0; j < a->ncol; j++)
-			a->colsrc[j] = get_int(u);
-	}
-	if (!get_int(u))
-		return;
-	s->spine = palloc0(sizeof(SiftAggSpine));
-	s->spine->left = get_int(u);
-	s->spine->child = get_int(u);
-	s->spine->ncol = get_int(u);
-	s->spine->npair = get_int(u);
-	for (int i = 0; i < s->spine->npair; i++)
-	{
-		struct SiftAggSpinePair *q = &s->spine->pair[i];
-
-		q->col = get_int(u);
-		q->konst = get_node(u);
-		q->nullsafe = get_int(u);
-		q->typid = (Oid) get_int(u);
-		q->collid = (Oid) get_int(u);
-		q->eqop = (Oid) get_int(u);
-		for (int k = 0; k < s->narms; k++)
-			q->key[k] = get_int(u);
-	}
-	s->spine->nout = get_int(u);
-	for (int i = 0; i < s->spine->nout; i++)
-	{
-		s->spine->outcol[i] = get_int(u);
-		s->spine->outkey[i] = get_int(u);
-	}
-}
-
-static void
-get_joins(Unpack *u, SiftAggSpec *s)
-{
-	s->njoin = get_int(u);
-	s->join = palloc0(Max(s->njoin, 1) * sizeof(SiftAggJoin));
-	for (int i = 0; i < s->njoin; i++)
-	{
-		SiftAggJoin *j = &s->join[i];
-
-		j->relid = (Oid) get_int(u);
-		j->child = get_int(u);
-		j->kind = get_int(u);
-		j->subplan = get_int(u);
-		j->params = (List *) get_node(u);
-		j->args = (List *) get_node(u);
-		j->sig = get_node(u);
-		j->scoped = get_int(u);
-		j->fslot = get_int(u);
-		j->nidx = get_int(u);
-		for (int k = 0; k < j->nidx; k++)
-		{
-			j->idxatt[k] = get_int(u);
-			j->idxop[k] = (Oid) get_int(u);
-			j->idxcoll[k] = (Oid) get_int(u);
-			j->idxany[k] = get_int(u);
-			j->idxval[k] = get_node(u);
-		}
-		j->nkey = get_int(u);
-		for (int k = 0; k < j->nkey; k++)
-		{
-			j->keyatt[k] = get_int(u);
-			j->keytype[k] = (Oid) get_int(u);
-			j->keypos[k] = get_int(u);
-			j->keyexpr[k] = get_node(u);
-			j->tkey[k] = get_node(u);
-			j->keynull[k] = get_int(u);
-		}
-		j->ncol = get_int(u);
-		for (int k = 0; k < j->ncol; k++)
-		{
-			j->colatt[k] = get_int(u);
-			j->coltype[k] = (Oid) get_int(u);
-			j->coltypmod[k] = get_int(u);
-			j->colcoll[k] = (Oid) get_int(u);
-		}
-		if ((j->first.ok = get_int(u)))
-		{
-			j->first.use = get_int(u);
-			j->first.hybrid = get_int(u);
-			j->first.pqual = get_node(u);
-			j->first.relid = (Oid) get_int(u);
-			j->first.rows = get_int(u);
-			j->first.nkey = get_int(u);
-			for (int k = 0; k < j->first.nkey; k++)
-			{
-				j->first.keyatt[k] = get_int(u);
-				j->first.keytype[k] = (Oid) get_int(u);
-				j->first.keyarg[k] = get_int(u);
-			}
-			j->first.ncol = get_int(u);
-			for (int k = 0; k < j->first.ncol; k++)
-				j->first.col[k] = get_int(u);
-			j->first.nord = get_int(u);
-			for (int k = 0; k < j->first.nord; k++)
-			{
-				j->first.ordatt[k] = get_int(u);
-				j->first.ordtype[k] = (Oid) get_int(u);
-				j->first.orddesc[k] = get_int(u);
-				j->first.ordnullsfirst[k] = get_int(u);
-			}
-			j->first.qual = (List *) get_node(u);
-		}
-		j->desc = get_str(u);
-	}
-	s->ncombo = get_int(u);
-	s->combo = palloc0(Max(s->ncombo, 1) * sizeof(SiftAggCombo));
-	for (int i = 0; i < s->ncombo; i++)
-	{
-		SiftAggCombo *c = &s->combo[i];
-
-		c->nleaves = get_int(u);
-		for (int k = 0; k < c->nleaves; k++)
-		{
-			c->leaf[k] = get_int(u);
-			c->refcombo[k] = get_int(u);
-			c->refcol[k] = get_int(u);
-			c->ptype[k] = (Oid) get_int(u);
-			c->ptypmod[k] = get_int(u);
-			c->pcoll[k] = (Oid) get_int(u);
-		}
-		c->join = get_int(u);
-		c->level = get_int(u);
-		c->nslots = get_int(u);
-		c->slot = palloc0(Max(c->nslots, 1) * sizeof(SiftAggSlot));
-		for (int k = 0; k < c->nslots; k++)
-		{
-			c->slot[k].is_key = get_int(u);
-			c->slot[k].key = get_int(u);
-			c->slot[k].agg = get_int(u);
-			c->slot[k].expr = get_node(u);
-			c->slot[k].direct = get_int(u);
-		}
-	}
+	/* a pack only reads the spec */
+	codec_spec(&c, (SiftAggSpec *) s);
+	return c.items;
 }
 
 SiftAggSpec *
 sift_aggspec_unpack(const List *items)
 {
-	Unpack		un = {items, 0};
-	Unpack	   *u = &un;
+	Codec		c = {(List *) items, 0, true};
 	SiftAggSpec *s = palloc0(sizeof(SiftAggSpec));
 
-	s->indexoid = (Oid) get_int(u);
-	s->heapoid = (Oid) get_int(u);
-	s->nparts = get_int(u);
-	s->partheap = palloc(Max(s->nparts, 1) * sizeof(Oid));
-	s->partindex = palloc(Max(s->nparts, 1) * sizeof(Oid));
-	for (int i = 0; i < s->nparts; i++)
-	{
-		s->partheap[i] = (Oid) get_int(u);
-		s->partindex[i] = (Oid) get_int(u);
-	}
-	s->partprune = (List *) get_node(u);
-	s->group = get_int(u);
-	s->left_lateral = get_int(u);
-	s->part_final = get_int(u);
-	s->nleaves = get_int(u);
-	s->leaves = palloc(Max(s->nleaves, 1) * sizeof(int));
-	s->recheck = palloc0(Max(s->nleaves, 1));
-	s->gate = palloc0(Max(s->nleaves, 1) * sizeof(uint64));
-	for (int i = 0; i < s->nleaves; i++)
-	{
-		s->leaves[i] = get_int(u);
-		s->recheck[i] = get_int(u);
-		s->gate[i] = (uint32) get_int(u);
-		s->gate[i] |= (uint64) (uint32) get_int(u) << 32;
-	}
-	s->npred = get_int(u);
-	s->pred = palloc(Max(s->npred, 1) * sizeof(SiftAggPred *));
-	for (int i = 0; i < s->npred; i++)
-		s->pred[i] = get_pred(u);
-	s->nwide = get_int(u);
-	s->wide = palloc(Max(s->nwide, 1) * sizeof(SiftAggPred *));
-	for (int i = 0; i < s->nwide; i++)
-		s->wide[i] = get_pred(u);
-	s->ntype = get_int(u);
-	s->type_leaf = palloc(Max(s->ntype, 1) * sizeof(int));
-	for (int i = 0; i < s->ntype; i++)
-		s->type_leaf[i] = get_int(u);
-	s->nkeys = get_int(u);
-	s->key = palloc0(Max(s->nkeys, 1) * sizeof(SiftAggKey));
-	for (int i = 0; i < s->nkeys; i++)
-	{
-		SiftAggKey *k = &s->key[i];
-
-		k->kind = get_int(u);
-		k->leaf = get_int(u);
-		k->slot = get_int(u);
-		k->expr = get_node(u);
-		k->bucket = get_int(u);
-		k->zoned = get_int(u);
-		get_num(u, &k->num);
-		k->typid = (Oid) get_int(u);
-		k->typmod = get_int(u);
-		k->collid = (Oid) get_int(u);
-		k->eqop = (Oid) get_int(u);
-		k->desc = get_str(u);
-	}
-	s->naggs = get_int(u);
-	s->agg = palloc0(Max(s->naggs, 1) * sizeof(SiftAggAgg));
-	for (int i = 0; i < s->naggs; i++)
-		get_agg(u, &s->agg[i]);
-	get_joins(u, s);
-	s->npost = get_int(u);
-	s->nprepost = get_int(u);
-	s->post = palloc(Max(s->npost, 1) * sizeof(SiftAggPred *));
-	s->postsets = palloc0(Max(s->npost, 1) * sizeof(uint32));
-	for (int i = 0; i < s->npost; i++)
-	{
-		s->post[i] = get_pred(u);
-		s->postsets[i] = (uint32) get_int(u);
-	}
-	s->nvleaf = get_int(u);
-	for (int i = 0; i < s->nvleaf; i++)
-	{
-		s->vleaf[i].obj = get_int(u);
-		s->vleaf[i].key = get_str(u);
-		s->vleaf[i].count = get_int(u);
-		s->vleaf[i].types = get_int(u);
-		s->vleaf[i].bound = get_int(u);
-		s->vleaf[i].recheck = get_int(u);
-		s->vleaf[i].cast = (Oid) get_int(u);
-	}
-	get_arms(u, s);
-	s->nsets = get_int(u);
-	s->setmask = palloc(Max(s->nsets, 1) * sizeof(uint32));
-	for (int i = 0; i < s->nsets; i++)
-		s->setmask[i] = (uint32) get_int(u);
-	if (get_int(u))
-	{
-		s->setaggs = palloc(Max(s->naggs, 1) * sizeof(uint32));
-		for (int i = 0; i < s->naggs; i++)
-			s->setaggs[i] = (uint32) get_int(u);
-	}
-	if (get_int(u))
-	{
-		s->setpred = palloc(s->nsets * sizeof(SiftAggPred *));
-		for (int i = 0; i < s->nsets; i++)
-			s->setpred[i] = get_pred(u);
-	}
-	s->nhidden = get_int(u);
-	s->npreds_total = get_int(u);
-	s->est_groups = strtod(get_str(u), NULL);
-	s->est_rows = strtod(get_str(u), NULL);
-	s->nworkers = get_int(u);
-	s->gpart = get_int(u);
-	s->wide_unit_rows = strtod(get_str(u), NULL);
-	s->serial = get_str(u);
-	if (!*s->serial)
-		s->serial = NULL;
-	s->desc_quals = get_str(u);
-	s->search = get_node(u);
-	s->topn = get_node(u);
-	s->desc_topn = get_str(u);
-	s->gtopn_k = get_int(u);
-	s->gtopn_agg = get_int(u);
-	s->gtopn_desc = get_int(u);
-	s->gtopn_nulls_first = get_int(u);
-	s->nord = get_int(u);
-	s->ord = palloc0(Max(s->nord, 1) * sizeof(SiftAggOrd));
-	for (int i = 0; i < s->nord; i++)
-	{
-		s->ord[i].key = get_int(u);
-		s->ord[i].sortop = (Oid) get_int(u);
-		s->ord[i].collation = (Oid) get_int(u);
-		s->ord[i].nulls_first = get_int(u);
-		s->ord[i].subst = (Const *) get_node(u);
-		s->ord[i].eq = (Const *) get_node(u);
-		s->ord[i].eqop = (Oid) get_int(u);
-		s->ord[i].eqcoll = (Oid) get_int(u);
-	}
+	codec_spec(&c, s);
 	return s;
 }
