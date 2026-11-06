@@ -1,5 +1,5 @@
-# released: 3.7, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
-# column format read: 39, the newest minor that release reads
+# released: 4.1, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
+# column format read: 43, the newest minor that release reads
 sift(accent_folding)	true
 sift(analyzer)	text
 sift(b)	0.75
@@ -8,7 +8,7 @@ sift(case_folding)	true
 sift(dead_rewrite_pct)	50
 sift(fields)	''
 sift(k1)	1.2
-sift(merge_fanin)	8
+sift(merge_fanin)	4
 sift(mutable_limit)	4096
 sift(positions)	true
 sift(prefix_index)	0
@@ -20,6 +20,7 @@ sift.agg_combo_cache	1048576
 sift.agg_dead_delta	15
 sift.agg_dense	on
 sift.agg_dist_stream	on
+sift.agg_float_step	on
 sift.agg_force	off
 sift.agg_fuse	on
 sift.agg_join_filter	on
@@ -35,6 +36,8 @@ sift.agg_par_min_rows	80000
 sift.agg_param_set_size	1000
 sift.agg_preagg	on
 sift.agg_preagg_distinct	on
+sift.agg_probe_direct	on
+sift.agg_probe_rewrite	on
 sift.agg_rollup_cost	1
 sift.agg_rows	on
 sift.agg_scale_horizon	100
@@ -53,10 +56,12 @@ sift.col_auto_merge_fragmentation	2
 sift.col_auto_merge_max_active	0
 sift.col_auto_merge_max_workers	0
 sift.col_auto_merge_partition_kb	0
+sift.col_auto_merge_pass_mb	1024 MB
 sift.col_auto_merge_wal_pct	5
+sift.col_build_key_ranges	on
 sift.col_dict_shared_cache_kb	65536 kB
 sift.col_format_minor	15
-sift.col_leaf_cache_kb	4096 kB
+sift.col_leaf_cache_kb	16384 kB
 sift.col_rollup_on_demand	on
 sift.col_rollup_worker	on
 sift.col_unit_floor	2048
@@ -67,6 +72,7 @@ sift.enable_col_scan	on
 sift.enable_count	on
 sift.enable_scan	on
 sift.enable_topn	on
+sift.eval_methods	''
 sift.explain_refusals	off
 sift.filter_pushdown	on
 sift.gpu	off
@@ -123,10 +129,12 @@ sift_col(hll_columns)	''
 sift_col(key_columns)	''
 sift_col(key_cut)	''
 sift_col(key_cut_rows)	0
+sift_col(key_order)	''
 sift_col(key_table)	true
 sift_col(order_array_columns)	''
 sift_col(order_array_group)	''
 sift_col(order_columns)	''
+sift_col(order_layout)	''
 sift_col(paths)	''
 sift_col(point_columns)	''
 sift_col(point_tid_columns)	''
@@ -136,5 +144,6 @@ sift_col(rollup)	''
 sift_col(rollup_dims)	''
 sift_col(rollup_on_demand)	true
 sift_col(superunit)	16
+sift_col(track_changes)	'auto'
 sift_col(vacuum_truncate)	true
 sift_col(write_buffer_limit)	4096

@@ -28,7 +28,7 @@ def missing(notes):
 
 def col_max_read():
     """-> the newest column format minor this tree reads (SIFT_COL_FORMAT_MAX_READ, through the macros it names)"""
-    h = read('src/col/col.h')
+    h = read('src/col/col.h') + read('src/col/api/format.h')
     v = re.search(r'#define SIFT_COL_FORMAT_MAX_READ\s+(\w+)', h).group(1)
     while not v.isdigit():
         v = re.search(r'#define %s\s+(\w+)' % v, h).group(1)
