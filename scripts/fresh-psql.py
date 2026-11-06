@@ -33,21 +33,21 @@ def setting(t):
 
 
 def remember(state, t):
-    """The statement that sets the session's value of a setting is all a new connection needs: an earlier SET ROLE of a role that is dropped since would fail"""
+    """The SETs of the session since the last RESET of the setting, in order: the last one may be a SET that failed (a role that may not change the setting) and the value is the one before it"""
     k = setting(t)
-    state.pop(k, None)
-    # a SET that failed in the test (out of range, unknown) fails again at every connection: replayed in a block that keeps its error to itself
-    state[k] = "DO $sift_fresh$ BEGIN EXECUTE $sift_stmt$%s$sift_stmt$; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % t
     if k == "session authorization":
-        state.pop("role", None)
+        forget(state, "reset role")
+    # a SET that failed in the test fails again at every connection: replayed in a block that keeps its error to itself (also a SET ROLE of a role dropped since)
+    state.append((k, "DO $sift_fresh$ BEGIN EXECUTE $sift_stmt$%s$sift_stmt$; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % t))
 
 
 def forget(state, t):
-    state.pop(setting(t), None)
+    k = setting(t)
+    state[:] = [e for e in state if e[0] != k]
 
 
 def transform(text, restore=RESTORE, load=""):
-    out, state = [], {}
+    out, state = [], []
     fresh = stmts = 0
     in_txn = bound = copy_data = False
     mode, tag, depth, paren = None, "", 0, 0
@@ -81,7 +81,7 @@ def transform(text, restore=RESTORE, load=""):
             continue
         s = line.lstrip()
         if mode is None and not sig and s and not s.startswith(("--", "/*")) and (not s.startswith("\\") or RUNS_QUERY.match(s)) and not in_txn and not bound:
-            out.append(CTRL + "\n\\connect\n" + load + "".join(state.values()) + restore + "\n")
+            out.append(CTRL + "\n\\connect\n" + load + "".join(e[1] for e in state) + restore + "\n")
             fresh += 1
         out.append(line)
         i, n = 0, len(line)

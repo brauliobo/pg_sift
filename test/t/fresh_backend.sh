@@ -7,7 +7,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SHIM=$REPO/scripts/fresh-psql.py
 
-plan 15
+plan 16
 STUB=$(mktemp) && printf '#!/bin/sh\ncat\n' >"$STUB" && chmod +x "$STUB"
 trap 'rm -f "$STUB"; cleanup' EXIT
 # the script the shim hands to psql, for a script on stdin
@@ -19,7 +19,7 @@ check "the statements of a transaction block share one" test "$(connects $'BEGIN
 check "from the first statement that binds the session (PREPARE) on there is no new connection" test "$(connects $'SELECT 1;\nPREPARE p AS SELECT 1;\nEXECUTE p;\nSELECT 2;')" == 2
 check "the SET of the session is replayed after the connection" test "$(fed $'SET work_mem = 1000;\nSELECT 1;' | grep -c 'SET work_mem = 1000')" == 2
 last_block() { fed "$1" | awk '/^\\connect$/ {buf = ""; next} {buf = buf $0 "\n"} END {printf "%s", buf}'; }
-check "only the last SET of a setting is replayed (a SET ROLE of a role dropped since would fail)" test "$(last_block $'CREATE ROLE r;\nSET ROLE r;\nRESET ROLE;\nSET work_mem = 1000;\nSET work_mem = 2000;\nDROP ROLE r;\nSELECT 1;' | grep -cE 'ROLE|1000')|$(last_block $'SET work_mem = 1000;\nSET work_mem = 2000;\nSELECT 1;' | grep -c 'work_mem = 2000')" == "0|1"
+check "a RESET ends the replay of a setting, the SETs since it are replayed in order" test "$(last_block $'CREATE ROLE r;\nSET ROLE r;\nRESET ROLE;\nSET work_mem = 1000;\nSET work_mem = 2000;\nSELECT 1;' | grep -cE 'ROLE')|$(last_block $'SET work_mem = 1000;\nSET work_mem = 2000;\nSELECT 1;' | grep -c 'work_mem')" == "0|2"
 check "the echo a new connection restores is the one the test set last" test "$(FRESH_PSQL=$STUB "$SHIM" -a <<<$'\\set ECHO none\nSELECT 1;' | grep -c 'ECHO all')" == 0
 check "setseed binds the session: the random numbers after it come from its seed" test "$(connects $'SELECT setseed(0.5);\nSELECT random();\nSELECT random();')" == 1
 check "FRESH_LOAD loads the library first in every new backend" test "$(FRESH_LOAD=pg_sift fed $'SELECT 1;\nSELECT 2;' | grep -c "LOAD ''pg_sift''")" == 2
@@ -47,4 +47,6 @@ cold=$(fresh $'SET sift.enable_agg = on;\nSET sift.agg_force = on;\nSELECT \'x\'
 check "a statement of a new backend sees none of the counters of the one before" test "$warm" != "$cold" -a "$cold" == "scans|0"
 out=$(fresh $'SET work_mem = \'nope\';\nSELECT 1;\nSELECT 2;' 2>&1)
 check "a SET the test saw fail does not fail again at every new connection" test "$(grep -c ERROR <<<"$out")" == 1
+out=$(fresh $'CREATE ROLE sift_fb_r;\nSET log_min_messages = notice;\nSET ROLE sift_fb_r;\nSET log_min_messages = error;\nSELECT current_setting(\'log_min_messages\');\nRESET ROLE;\nDROP ROLE sift_fb_r;\nSELECT 1;' 2>&1)
+check "a SET the role could not make leaves the value before it, and a role dropped since is no error" test "$(grep -c notice <<<"$out")|$(grep -c 'role.*does not exist' <<<"$out")" == "1|0"
 finish
