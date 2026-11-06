@@ -379,9 +379,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	uint64		pos = 0;
 	SiftDfClassStats *cls = &w->st->cls[df_class(Max(info->df, 1))];
 
-	if (w->verify && w->prevlen >= 0 &&
-		(memcmp(w->prev, term, Min(len, w->prevlen)) > 0 ||
-		 (memcmp(w->prev, term, Min(len, w->prevlen)) == 0 && w->prevlen >= len)))
+	if (w->verify && w->prevlen >= 0 && sift_term_cmp(w->prev, w->prevlen, term, len) >= 0)
 		corrupt(seg, "Dictionary term \"%.*s\" follows \"%.*s\".", len, term, w->prevlen, w->prev);
 	/* a block's first term is not front coded */
 	if (w->st->nterms % SIFT_DICT_BLOCK != 0)

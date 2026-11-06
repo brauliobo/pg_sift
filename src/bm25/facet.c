@@ -468,14 +468,11 @@ count_value(Facets *f, const Value *v)
 static int
 res_cmp(const Res *a, const Res *b)
 {
-	int			c;
-
 	if (a->n != b->n)
 		return a->n > b->n ? -1 : 1;
 	if (a->term == NULL || b->term == NULL)
 		return (a->term == NULL) - (b->term == NULL);
-	c = memcmp(a->term, b->term, Min(a->len, b->len));
-	return c ? c : a->len - b->len;
+	return sift_term_cmp(a->term, a->len, b->term, b->len);
 }
 
 static int

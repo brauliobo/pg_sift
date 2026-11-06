@@ -84,9 +84,8 @@ facet_cmp(const void *a, const void *b)
 {
 	const Facet *x = a,
 			   *y = b;
-	int			c = memcmp(x->value, y->value, Min(x->len, y->len));
 
-	return c ? c : x->len - y->len;
+	return sift_term_cmp(x->value, x->len, y->value, y->len);
 }
 
 static int

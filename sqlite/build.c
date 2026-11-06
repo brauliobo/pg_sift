@@ -5,6 +5,7 @@
  * The merge of segments is in merge.c.
  */
 #include "api.h"
+#include "core/cmp.h"
 
 #define BATCH			1024
 
@@ -289,9 +290,8 @@ term_cmp(const void *a, const void *b)
 {
 	const InvTerm *x = *(InvTerm *const *) a,
 			   *y = *(InvTerm *const *) b;
-	int			c = memcmp(x->bytes, y->bytes, Min(x->len, y->len));
 
-	return c ? c : (int) x->len - (int) y->len;
+	return sift_term_cmp(x->bytes, x->len, y->bytes, y->len);
 }
 
 typedef struct RankCtx
