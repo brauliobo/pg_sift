@@ -103,7 +103,7 @@ END $$;
 
 -- every shape of a file whose name matches `pattern`: a shape starts at its `-- name:` line
 CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '') RETURNS void LANGUAGE sql AS $$
-	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s WHERE s ~ ('^-- name: ' || pattern) $$;
+	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s WHERE substring(s FROM '^-- name: (\S+)') ~ pattern $$;
 
 -- the `-- expect:` line each shape would have from this run: its plan (the chosen one where it is new) and a band of a factor of 2 either way, in 2 significant digits
 CREATE VIEW plangate.suggestions AS
