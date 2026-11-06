@@ -445,3 +445,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 -	agg_topn_chunk	300000	picked	default	instr_m	52.2	10	bench case agg_topn_chunk, records in program-scale/realq42b/wp27
 -	agg_topn_chunk	300000	native	default	exec_ms	108	25	bench case agg_topn_chunk, native plan, records in program-scale/realq42b/wp27
 -	agg_topn_chunk	300000	native	default	instr_m	1505	10	bench case agg_topn_chunk, native plan, records in program-scale/realq42b/wp27
+-	agg_distinct_ordered	300000	picked	default	exec_ms	8.24	25	bench case agg_distinct_ordered, 300,000 rows, 12 regions, 20 kinds, records in program-scale/realq42b/wp27
+-	agg_distinct_ordered	300000	picked	default	instr_m	107	10	bench case agg_distinct_ordered, records in program-scale/realq42b/wp27
+-	agg_distinct_ordered	300000	native	default	exec_ms	99.4	25	bench case agg_distinct_ordered, native plan, records in program-scale/realq42b/wp27
+-	agg_distinct_ordered	300000	native	default	instr_m	1441	10	bench case agg_distinct_ordered, native plan, records in program-scale/realq42b/wp27

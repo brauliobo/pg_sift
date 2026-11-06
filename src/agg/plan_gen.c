@@ -418,6 +418,17 @@ agg_first_rows(AggCtx *c, const Aggref *a, int *ties)
 	return (int) w.reads;
 }
 
+/* the ORDER BY of a DISTINCT aggregate is the order its set of distinct values comes out in: ascending by the btree order of the argument that varies, NULLs last (array_agg(DISTINCT x ORDER BY x)) */
+static bool
+distinct_in_set_order(Aggref *a, int darg)
+{
+	SortGroupClause *sgc = list_length(a->aggorder) == 1 ? linitial_node(SortGroupClause, a->aggorder) : NULL;
+	TargetEntry *te = list_nth_node(TargetEntry, a->args, darg);
+
+	return sgc != NULL && te->ressortgroupref == sgc->tleSortGroupRef && !sgc->nulls_first &&
+		sgc->sortop == lookup_type_cache(exprType((Node *) te->expr), TYPECACHE_LT_OPR)->lt_opr;
+}
+
 bool
 compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
@@ -460,7 +471,7 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 				g->darg = k;
 				nvar++;
 			}
-		hash = nvar == 1 && a->aggorder == NIL && !mapped;
+		hash = nvar == 1 && !mapped && (a->aggorder == NIL || distinct_in_set_order(a, g->darg));
 	}
 	if (hash || (ordered && !hyp))
 	{

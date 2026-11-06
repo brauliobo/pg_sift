@@ -9,7 +9,7 @@ agg_distinct_multi	SiftAgg	distinct:f:distinct_set,distinct:f:distinct_set,singl
 agg_percentile	SiftAgg	single:t
 agg_mode	SiftAgg	single:t
 agg_array_agg	SiftAgg	single:t
-agg_string_agg	-	single:f:cost
+agg_string_agg	SiftAgg	single:t
 agg_json_agg	SiftAgg	single:t
 agg_jsonb_object_agg	SiftAgg	-
 agg_rollup	SiftAgg	single:t
