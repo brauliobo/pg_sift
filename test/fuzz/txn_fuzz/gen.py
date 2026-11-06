@@ -234,6 +234,29 @@ class Gen:
             self.out.append({'s': 'B', 't': 'reconnect'})
             self.bintxn = False
 
+    DDL = ['REINDEX INDEX t_c', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')", "ALTER INDEX t_c SET (track_changes = 'k')", "ALTER INDEX t_c SET (track_changes = 'off')",
+           "ALTER INDEX t_c SET (track_changes = 'auto')", "SELECT sift.col_refresh('t_c')", "SELECT sift.col_merge('t_c', true)", "SELECT sift.col_promote('t_c')"]
+
+    def rr_ddl(self):
+        """A transaction takes its snapshot (REPEATABLE READ or SERIALIZABLE), another session commits, and the transaction runs DDL on the index and reads (a wrong answer of 4.0 to 4.2)"""
+        r = self.r
+        if self.bintxn:
+            self.sql('B', 'COMMIT')
+            self.bintxn = False
+        self.sql('A', f"BEGIN ISOLATION LEVEL {r.choice(['REPEATABLE READ', 'SERIALIZABLE'])}; SELECT count(*) FROM t WHERE tenant = {r.randint(0, 9)}")
+        for _ in range(r.randint(1, 3)):
+            self.sql('B', self.b_stmt())
+        if r.random() < 0.3:
+            self.sql('A', self.a_stmt())
+        for _ in range(r.choice([1, 1, 2])):
+            self.sql('A', r.choice(self.DDL))
+            self.check('A')
+            if r.random() < 0.4:
+                self.sql('B', self.b_stmt())
+        self.sql('A', r.choice(['COMMIT', 'ROLLBACK']))
+        self.check('A')
+        self.check('F')
+
     def finish_txn(self):
         r = self.r
         w = r.choice(['commit'] * 6 + ['rollback'] * 2 + (['prepare'] if self.c.prepared else []))
@@ -265,8 +288,10 @@ class Gen:
             elif r.random() < 0.12:
                 self.b_step()
             elif not self.intxn:
-                w = r.choice(['begin'] * 6 + ['auto'] * 3 + ['vacuum', 'promote', 'reconnect', 'maint'])
-                if w == 'begin':
+                w = r.choice(['begin'] * 6 + ['auto'] * 3 + ['vacuum', 'promote', 'reconnect', 'maint'] + ['rrddl'] * 2)
+                if w == 'rrddl':
+                    self.rr_ddl()
+                elif w == 'begin':
                     self.sql('A', 'BEGIN' + r.choice(['', '', ' ISOLATION LEVEL REPEATABLE READ', ' ISOLATION LEVEL READ COMMITTED']))
                     self.intxn = True
                 elif w == 'auto':

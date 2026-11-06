@@ -158,7 +158,7 @@ else
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
-	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,15,192,971 --stop-after 2
+	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
