@@ -121,6 +121,7 @@
 #define AGG_ARR_KNEE		64		/* the bytes of an array from which the unit's dictionary entry for it costs more than the generic wide entry: 1,670 to 2,030 instructions a row for arrays of 44 to 78 bytes, 4,020 for 122 (1,000,000 rows of almost unique arrays, forced SiftAgg; the heap plan takes about 950 whatever the width) */
 #define AGG_ARR_BIG		6.0		/* the operators a byte of an array beyond the knee adds to a new entry: hash, intern and inflate (about 8.6 instructions an operator counted at 3 ns) */
 #define AGG_ARR_WIDTH		32		/* the bytes of an array whose column has no statistics */
+#define AGG_ARR_ROW			22.0	/* a row of a conjunct on the image of an array (&&, @>, <@, = ANY of a column the index holds as whole arrays only): the image is looked up in the batch's table, its entry resolved and the operator called on it, 170 instructions a row measured whatever the arrays and their repeats (300,000 rows, 441 distinct arrays or 144,000: 59.1 M instructions against 8.4 M with the element lists), about 7.7 an operator: the GIN bitmap of the normal plan answers the same in 12 to 20 M cycles */
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */

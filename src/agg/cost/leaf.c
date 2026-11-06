@@ -378,7 +378,7 @@ wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
 }
 
 /* the bytes of an array of the column an image leaf holds, 0 when the leaf is not the image of an array */
-static double
+double
 array_image_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];

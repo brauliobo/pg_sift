@@ -69,6 +69,7 @@ extern double scan_bytes(AggCtx *c, SiftAggSpec *s, double rows);
 extern double recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k);
 extern double key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, double *ops);
 extern void cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k);
+extern double array_image_width(AggCtx *c, int leaf);
 extern double distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k);
 extern double distinct_id_ops(AggCtx *c, const SiftAggSpec *s, const CostAcc *k);
 

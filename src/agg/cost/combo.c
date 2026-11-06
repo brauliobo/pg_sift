@@ -12,6 +12,8 @@
 #include "optimizer/optimizer.h"
 #include "utils/selfuncs.h"
 #include "catalog/pg_type.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 
 #include "agg/cost/int.h"
 
@@ -183,6 +185,33 @@ combo_wsum_only(const SiftAggSpec *s, int ci)
 	return only;
 }
 
+/* does a slot of the combo test the elements of an array: &&, @>, <@ or = ANY? */
+static bool
+elements_walker(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, OpExpr))
+	{
+		Oid			fn = get_opcode(((OpExpr *) n)->opno);
+
+		if (fn == F_ARRAYOVERLAP || fn == F_ARRAYCONTAINS || fn == F_ARRAYCONTAINED)
+			return true;
+	}
+	if (IsA(n, ScalarArrayOpExpr))
+		return true;
+	return expression_tree_walker(n, elements_walker, ctx);
+}
+
+static bool
+combo_tests_elements(const SiftAggCombo *cb)
+{
+	for (int sl = 0; sl < cb->nslots; sl++)
+		if (elements_walker((Node *) cb->slot[sl].expr, NULL))
+			return true;
+	return false;
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
@@ -198,7 +227,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		const SiftAggCombo *cb = &s->combo[ci];
-		int			wide = 0;
+		int			wide = 0,
+					arrays = 0;
 		bool		direct = false,
 					filter = false,
 					lookup_ref = false;
@@ -249,7 +279,10 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		for (int p = 0; p < cb->nleaves; p++)
 		{
 			if (cb->leaf[p] >= 0)
+			{
 				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+				arrays += array_image_width(c, cb->leaf[p]) > 0;
+			}
 			else
 				lookup_ref = true;
 		}
@@ -259,6 +292,9 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			filter |= !cb->slot[sl].is_key && !cb->slot[sl].direct;
 		}
 		tuples = filter ? rows : agg_rows;
+		/* a test of the elements of a leaf that holds whole arrays only: each tuple looks its image up and resolves its entry, whatever the number of distinct arrays (a length or a null test reads lanes) */
+		if (arrays > 0 && combo_tests_elements(cb))
+			cost += tuples * arrays * AGG_ARR_ROW;
 		/*
 		 * A test between leaves (a column compared with a column) is evaluated by PostgreSQL once per distinct combination of the leaves: a few for
 		 * dictionary and small integer leaves, which keep the price they had, one per row for two dates that vary (545 instructions a row measured,
