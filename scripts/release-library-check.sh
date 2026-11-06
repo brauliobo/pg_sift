@@ -5,15 +5,22 @@
 # SIFT_PORT + 8 (scripts/ci.sh gives each job the port block of its lane).
 #
 #   scripts/release-library-check.sh [TEST...]     (without names: every test the release build can run)
+#   scripts/release-library-check.sh --build       only the release build and its install, no cluster and no test: the gate of a change in src/ or the Makefile
+#                                                  (a compile of the flavour the testing shards never build; scripts/land-local.sh runs it)
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+build_only=; [[ ${1:-} != --build ]] || { build_only=1; shift; }
 base=${SIFT_TMP:-/tmp/sift-release-library}
 export SIFT_TMP=$base/run SIFT_ROOT=$base/run/root SIFT_PORT=$(( ${SIFT_PORT:-56100} + 8 )) SIFT_TESTING= SIFT_TEST_HELPERS=1
 src=$base/src
 mkdir -p "$src"
 tar -C "$REPO" --exclude=.git --exclude=bench --exclude=docs --exclude=sqlite --exclude=packaging --exclude='*.o' --exclude='*.d' \
 	--exclude='*.so' --exclude=test/results --exclude=.build-flavor -cf - . | tar -C "$src" -xf -
+if [[ -n $build_only ]]; then
+	"$src/scripts/pgtest.sh" install >"$base/build.log" 2>&1 || { tail -n 20 "$base/build.log"; exit 1; }
+	exit 0
+fi
 rc=0
 "$src/scripts/pgtest.sh" install && "$src/scripts/pgtest.sh" start && "$src/scripts/pgtest.sh" regress "$@" || rc=1
 "$src/scripts/pgtest.sh" stop || rc=1
