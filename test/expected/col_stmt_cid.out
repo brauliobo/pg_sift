@@ -1,0 +1,197 @@
+-- A statement that modifies data runs with one command id (the one its tuples carry), and a function that runs SQL inside it (SPI) advances the current one. The index of a
+-- track_changes key ends the entries of the versions a statement replaces: its tombstones carry the command id of the statement, and the probe that finds the old versions
+-- reads them with a snapshot of the statement's command (sift_col_stmt_cid, col/am/am.c). With the current command id the probe of every row after the function's first call
+-- no longer saw the version the UPDATE ended, kept its entry, and a read counted the row twice. Every case runs the statements in a transaction, and the aggregate through the
+-- index (heap-free and checked) gives the rows of the heap (the oracle) after each statement and after the commit.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE tk (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO tk SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
+CREATE INDEX tk_c ON tk USING sift_col (code, tenant, amount);
+VACUUM (FREEZE, ANALYZE) tk;
+CREATE FUNCTION f_perform() RETURNS int LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; RETURN 0; END $$;
+CREATE FUNCTION f_execute() RETURNS int LANGUAGE plpgsql AS $$ DECLARE r int; BEGIN EXECUTE 'SELECT count(*)::int FROM pg_class' INTO r; RETURN r - r; END $$;
+CREATE FUNCTION f_definer() RETURNS int LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN PERFORM count(*) FROM pg_class; RETURN 0; END $$;
+-- an AFTER trigger of one row that updates another row of the same table: a statement of its own inside the statement
+CREATE FUNCTION bump() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE tk SET amount = amount + 1 WHERE code = 'c71'; RETURN NULL; END $$;
+CREATE TRIGGER tk_bump AFTER UPDATE ON tk FOR EACH ROW WHEN (OLD.code = 'c70') EXECUTE FUNCTION bump();
+-- dynamic SQL: a cached plan would keep the plan of the first call whatever the settings are
+CREATE FUNCTION answer(mode int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; plan text := ''; l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
+	PERFORM set_config('sift.test_no_heapfree', (mode = 1)::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT tenant, count(*), sum(amount) FROM tk GROUP BY tenant' LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF (plan LIKE '%SiftAgg%') <> (mode < 2) THEN
+		RAISE EXCEPTION 'the plan is not the one asked for: %', plan;
+	END IF;
+	SELECT coalesce(string_agg(format('%s:%s:%s', tenant, n, s), ' ' ORDER BY tenant), 'none') INTO r
+	FROM (SELECT tenant, count(*) AS n, sum(amount) AS s FROM tk GROUP BY tenant) q;
+	RETURN r;
+END $$;
+CREATE FUNCTION chk(what text, OUT test text, OUT free_equals_heap bool, OUT checked_equals_heap bool) LANGUAGE plpgsql AS $$
+BEGIN
+	test := what;
+	free_equals_heap := answer(0) = answer(2);
+	checked_equals_heap := answer(1) = answer(2);
+END $$;
+-- a function with PERFORM, one with EXECUTE and a SECURITY DEFINER one, in the target list of three UPDATEs of the same rows
+BEGIN;
+UPDATE tk SET amount = amount + 1 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i);
+SELECT * FROM chk('perform, in the transaction');
+            test             | free_equals_heap | checked_equals_heap 
+-----------------------------+------------------+---------------------
+ perform, in the transaction | t                | t
+(1 row)
+
+UPDATE tk SET amount = amount + 500 + f_execute() WHERE code IN (SELECT 'c' || i FROM generate_series(21, 20000, 21) i);
+SELECT * FROM chk('execute, in the transaction');
+            test             | free_equals_heap | checked_equals_heap 
+-----------------------------+------------------+---------------------
+ execute, in the transaction | t                | t
+(1 row)
+
+UPDATE tk SET amount = amount + 5 + f_definer() WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i);
+SELECT * FROM chk('security definer, in the transaction');
+                 test                 | free_equals_heap | checked_equals_heap 
+--------------------------------------+------------------+---------------------
+ security definer, in the transaction | t                | t
+(1 row)
+
+COMMIT;
+SELECT * FROM chk('functions');
+   test    | free_equals_heap | checked_equals_heap 
+-----------+------------------+---------------------
+ functions | t                | t
+(1 row)
+
+-- the trigger that updates another row of the table
+BEGIN;
+UPDATE tk SET amount = amount + 2 + f_perform() WHERE code IN ('c70', 'c71', 'c72', 'c73');
+SELECT * FROM chk('trigger, in the transaction');
+            test             | free_equals_heap | checked_equals_heap 
+-----------------------------+------------------+---------------------
+ trigger, in the transaction | t                | t
+(1 row)
+
+COMMIT;
+SELECT * FROM chk('trigger');
+  test   | free_equals_heap | checked_equals_heap 
+---------+------------------+---------------------
+ trigger | t                | t
+(1 row)
+
+-- an UPDATE in a CTE
+BEGIN;
+WITH u AS (UPDATE tk SET amount = amount + 3 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(3, 20000, 3) i) RETURNING code)
+UPDATE tk SET amount = amount + 4 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(2, 20000, 2) i) AND code NOT IN (SELECT code FROM u);
+SELECT * FROM chk('cte, in the transaction');
+          test           | free_equals_heap | checked_equals_heap 
+-------------------------+------------------+---------------------
+ cte, in the transaction | t                | t
+(1 row)
+
+COMMIT;
+SELECT * FROM chk('cte');
+ test | free_equals_heap | checked_equals_heap 
+------+------------------+---------------------
+ cte  | t                | t
+(1 row)
+
+-- MERGE
+BEGIN;
+MERGE INTO tk t USING (SELECT 'c' || i AS code FROM generate_series(11, 20000, 11) i) s ON t.code = s.code
+	WHEN MATCHED THEN UPDATE SET amount = t.amount + 6 + f_perform();
+SELECT * FROM chk('merge, in the transaction');
+           test            | free_equals_heap | checked_equals_heap 
+---------------------------+------------------+---------------------
+ merge, in the transaction | t                | t
+(1 row)
+
+UPDATE tk SET amount = amount + 7 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(11, 20000, 22) i);
+SELECT * FROM chk('merge and update, in the transaction');
+                 test                 | free_equals_heap | checked_equals_heap 
+--------------------------------------+------------------+---------------------
+ merge and update, in the transaction | t                | t
+(1 row)
+
+COMMIT;
+SELECT * FROM chk('merge');
+ test  | free_equals_heap | checked_equals_heap 
+-------+------------------+---------------------
+ merge | t                | t
+(1 row)
+
+-- a cursor and UPDATE ... WHERE CURRENT OF
+BEGIN;
+DECLARE cur CURSOR FOR SELECT code FROM tk WHERE code IN (SELECT 'c' || i FROM generate_series(13, 20000, 13) i) FOR UPDATE;
+MOVE FORWARD 39 IN cur;
+FETCH FROM cur;
+  code  
+--------
+ c19890
+(1 row)
+
+UPDATE tk SET amount = amount + 8 + f_perform() WHERE CURRENT OF cur;
+FETCH FROM cur;
+ code  
+-------
+ c4355
+(1 row)
+
+UPDATE tk SET amount = amount + 9 + f_perform() WHERE CURRENT OF cur;
+SELECT * FROM chk('cursor, in the transaction');
+            test            | free_equals_heap | checked_equals_heap 
+----------------------------+------------------+---------------------
+ cursor, in the transaction | t                | t
+(1 row)
+
+CLOSE cur;
+COMMIT;
+SELECT * FROM chk('cursor');
+  test  | free_equals_heap | checked_equals_heap 
+--------+------------------+---------------------
+ cursor | t                | t
+(1 row)
+
+-- a savepoint rolled back in the middle: the statements before and after it, and the ones it undid
+BEGIN;
+UPDATE tk SET amount = amount + 10 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(17, 20000, 17) i);
+SAVEPOINT s;
+UPDATE tk SET amount = amount + 11 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(17, 20000, 34) i);
+SELECT * FROM chk('savepoint, before the rollback');
+              test              | free_equals_heap | checked_equals_heap 
+--------------------------------+------------------+---------------------
+ savepoint, before the rollback | t                | t
+(1 row)
+
+ROLLBACK TO s;
+SELECT * FROM chk('savepoint, after the rollback');
+             test              | free_equals_heap | checked_equals_heap 
+-------------------------------+------------------+---------------------
+ savepoint, after the rollback | t                | t
+(1 row)
+
+UPDATE tk SET amount = amount + 12 + f_perform() WHERE code IN (SELECT 'c' || i FROM generate_series(17, 20000, 51) i);
+SELECT * FROM chk('savepoint, after the next update');
+               test               | free_equals_heap | checked_equals_heap 
+----------------------------------+------------------+---------------------
+ savepoint, after the next update | t                | t
+(1 row)
+
+COMMIT;
+SELECT * FROM chk('savepoint');
+   test    | free_equals_heap | checked_equals_heap 
+-----------+------------------+---------------------
+ savepoint | t                | t
+(1 row)
+
+DROP TRIGGER tk_bump ON tk;
+DROP FUNCTION chk(text), answer(int), bump(), f_perform(), f_execute(), f_definer();
+DROP TABLE tk;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -318,7 +318,7 @@ add_dead(SiftTomb **ents, int *nents, int *cap, const SiftTombLog *log, uint64 k
 		return;
 	if (*nents == *cap)
 		*ents = repalloc(*ents, (*cap *= 2) * sizeof(SiftTomb));
-	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE};
+	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE};
 }
 
 /*
