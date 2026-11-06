@@ -1,8 +1,9 @@
--- A HAVING `column IN (sub-select)` or EXISTS of a sub-select that the planner pulls up as a semi join, reading no aggregate of the query, is a condition of the rows of a plain GROUP BY (PostgreSQL moves
--- the ones without a sub-select to WHERE itself): the rows it drops are not grouped, and the sub-select is a semi join the scan answers, always, without a comparison with the condition on the groups.
+-- A HAVING `column IN (sub-select)` that does not read the query, or EXISTS of a sub-select the planner pulls up as a semi join, reading no aggregate of the query, is a condition of the rows of a plain
+-- GROUP BY (PostgreSQL moves the ones without a sub-select to WHERE itself): the rows it drops are not grouped, and the sub-select is a semi join the scan answers (the planner makes one of every
+-- uncorrelated IN in WHERE, a sub-plan of the groups in HAVING), always, without a comparison with the condition on the groups.
 -- `outcome` says whether the aggregate is in the scan and that the rows are those of sift off (a float sum is rounded: the scan adds in another order), `subplan` that a sub-select is a sub-plan of the
--- plan (tested for each group, or for each row) and not a semi join. What must stay (NOT IN, NOT EXISTS, a cast or an expression of the key, a sub-select with an aggregate or a
--- limit, a correlated IN, an aggregate in the condition, a volatile function, grouping sets, no GROUP BY) keeps its HAVING and gives the same rows; a HAVING of several conditions moves the ones of the rows only.
+-- plan (tested for each group, or for each row) and not a semi join. What must stay (NOT IN, NOT EXISTS, a cast or an expression of the key, an EXISTS with an aggregate or a limit, a correlated IN,
+-- an aggregate in the condition, a volatile function, grouping sets, no GROUP BY) keeps its HAVING and gives the same rows; a HAVING of several conditions moves the ones of the rows only.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -52,6 +53,9 @@ INSERT INTO hv_q (label, q) VALUES
   ('IN, an aggregate in the list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT max(grp) + 5 FROM hv_kinds)$q$),
   ('IN, a limit in the list',  $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds ORDER BY id DESC LIMIT 4)$q$),
   ('IN, an order in the list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled ORDER BY id DESC)$q$),
+  ('IN, a CTE in the list',   $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (WITH c AS (SELECT id FROM hv_kinds WHERE enabled) SELECT id FROM c)$q$),
+  ('IN, a limit and an offset', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds ORDER BY id LIMIT 5 OFFSET 2)$q$),
+  ('IN, a set-returning list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT generate_series(1, 5))$q$),
   ('IN, a grouped list',       $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT grp + 4 FROM hv_kinds GROUP BY grp)$q$),
   ('IN, a correlated list',    $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds k WHERE k.grp = hv_events.kind_id % 4)$q$),
   ('EXISTS, a limit',          $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = hv_events.kind_id LIMIT 1)$q$),

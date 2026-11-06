@@ -21,8 +21,8 @@
 #include "agg/flat/int.h"
 
 /*
- * a sub-select the planner pulls up as a semi join: no aggregate, grouping, window function, set returning function, set operation, CTE or limit (a limit makes it a sub-plan tested
- * for every row, which a HAVING tests for every group)
+ * EXISTS of a sub-select the planner pulls up as a semi join: no aggregate, grouping, window function, set returning function, set operation, CTE or limit (any other is a sub-plan
+ * run for each row of a correlated EXISTS, which a HAVING runs for each group)
  */
 static bool
 semi_subselect(Query *q)
@@ -33,9 +33,11 @@ semi_subselect(Query *q)
 
 /*
  * a condition of the rows of a group that the scan answers as a semi join: `column = ANY (sub-select)` (IN) with the column as it is (or a relabel of it that keeps its collation:
- * any other cast of it is a function of the key that the groups may not agree on, and stays) and a sub-select that does not read the query, or EXISTS of one, reading no aggregate of
- * this query (one in a sub-select of it counts) and nothing volatile. The rows form reads less than the groups form in every cell measured (1.3 to 10 times), so the planner takes it
- * without a comparison; NOT IN, NOT EXISTS and an expression of the key stay on the groups, where the rows form tests every row (20% and 49% slower)
+ * any other cast of it is a function of the key that the groups may not agree on, and stays) and a sub-select that does not read the query (whatever it holds: the planner makes
+ * a semi join of every such sub-select in WHERE, a sub-plan hashed or not in HAVING: 161 s against 28 ms for 20,000 keys of an aggregate at work_mem 64kB), or EXISTS of a simple
+ * one, reading no aggregate of this query (one in a sub-select of it counts) and nothing volatile. The rows form reads less than the groups form in every cell measured
+ * (1.3 to 10 times; 1.1 to 10 times for a limit or an aggregate in the sub-select), so the planner takes it without a comparison; NOT IN, NOT EXISTS and an expression of the key stay
+ * on the groups, where the rows form tests every row (20% and 49% slower in half the cells and 2 to 3 times faster in the others: no rule of the shape tells them apart)
  */
 static bool
 row_condition(Node *c)
@@ -44,10 +46,10 @@ row_condition(Node *c)
 	OpExpr	   *op;
 	Node	   *key;
 
-	if (!IsA(c, SubLink) || !semi_subselect((Query *) sl->subselect) || contain_aggs_of_level(c, 0) || contain_volatile_functions(c))
+	if (!IsA(c, SubLink) || contain_aggs_of_level(c, 0) || contain_volatile_functions(c))
 		return false;
 	if (sl->subLinkType == EXISTS_SUBLINK)
-		return true;
+		return semi_subselect((Query *) sl->subselect);
 	op = (OpExpr *) sl->testexpr;
 	if (sl->subLinkType != ANY_SUBLINK || !IsA(op, OpExpr) || contain_vars_of_level(sl->subselect, 1))
 		return false;
