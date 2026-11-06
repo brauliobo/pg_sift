@@ -556,6 +556,12 @@ select count(*), sum(amount) from spans where upper_inf(during) is false and low
 select tenant_id, count(*) from spans where lower_inc(during) group by 1;
 -- @case c3_range_seen_upper_inc | range | timestamp ranges that include their last instant (PostgreSQL decides the candidates)
 select count(*) from spans where upper_inc(seen);
+-- @case c3_range_bounds_minmax | range | the first start and the last end of the spans
+select count(*), min(lower(during)), max(upper(during)) from spans;
+-- @case c3_range_upper_key | range | the biggest groups of spans by their end
+select upper(during) u, count(*) from spans where dim_a_id <= 50 group by 1 order by 2 desc, 1 limit 5;
+-- @case c3_range_lower_where | range | spans that start in a month
+select tenant_id, count(*) from spans where lower(during) >= date '2025-03-01' and lower(during) < date '2025-04-01' group by 1;
 -- ===================== HAVING with sub-selects
 -- @case c3_having_scalar_avg | having | entities whose total is above ten times the average row
 select dim_a_id, sum(amount) from events group by 1 having sum(amount) > (select avg(amount) * 10 from events);

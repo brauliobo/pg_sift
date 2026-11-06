@@ -33,6 +33,8 @@ vleaf_source(AggCtx *c, int j)
 
 	if (v->count)
 		return v->obj;
+	if (v->bound)
+		return v->obj + v->bound;
 	return sift_aggvleaf_member(v) ? child_leaf(c, v->obj, "value", leaf_of(c, c->lay->nleaves - c->nvleaf + j)->typid) : -1;
 }
 

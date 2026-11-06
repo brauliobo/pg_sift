@@ -290,6 +290,12 @@ overflow_rows(AggExec *ex, bool rechecked, bool lists_only)
 	{
 		if (s->vleaf[j].types)
 			continue;
+		if (s->vleaf[j].bound)
+		{
+			if (!rechecked)
+				leaf_overflow_rows(ex, s->vleaf[j].obj + s->vleaf[j].bound, &rows);
+			continue;
+		}
 		if (s->vleaf[j].count)
 		{
 			if (!rechecked)

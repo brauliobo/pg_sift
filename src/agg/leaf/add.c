@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include "utils/fmgroids.h"
+#include "nodes/nodeFuncs.h"
+#include "utils/lsyscache.h"
 
 #include "agg/leaf/int.h"
 
@@ -119,6 +121,7 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 	c->vleaf[c->nvleaf].obj = obj;
 	c->vleaf[c->nvleaf].count = false;
 	c->vleaf[c->nvleaf].types = false;
+	c->vleaf[c->nvleaf].bound = 0;
 	c->vleaf[c->nvleaf++].key = pstrdup(strVal(llast(path)));
 	return v->id;
 }
@@ -147,6 +150,7 @@ types_leaf(AggCtx *c, Node *call)
 	c->vleaf[c->nvleaf].obj = base;
 	c->vleaf[c->nvleaf].count = false;
 	c->vleaf[c->nvleaf].types = true;
+	c->vleaf[c->nvleaf].bound = 0;
 	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }
@@ -168,6 +172,45 @@ count_leaf(AggCtx *c, int grp)
 	c->vleaf[c->nvleaf].obj = grp;
 	c->vleaf[c->nvleaf].count = true;
 	c->vleaf[c->nvleaf].types = false;
+	c->vleaf[c->nvleaf].bound = 0;
+	c->vleaf[c->nvleaf++].key = pstrdup("");
+	return v->id;
+}
+
+/*
+ * lower(r) or upper(r) of a range column the index keeps lanes for: a scalar leaf after the source's, of the subtype, whose values the executor takes from the lane of that bound
+ * (SiftAggVLeaf.bound; the lanes are the leaves after the head of the range). -1 for another call or column.
+ */
+int
+bound_leaf(AggCtx *c, Node *e, int bound)
+{
+	Node	   *arg = strip_relabel(linitial(func_args(e)));
+	int			att = attr_of_expr(c, arg),
+				nbase = c->lay->nleaves - c->nvleaf,
+				head = -1;
+	Oid			sub;
+	SiftSrcLeaf *v;
+
+	for (int i = 0; att > 0 && i < nbase; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && l->shape == 1 && !l->lossy && l->typid == exprType(arg))
+			head = i;
+	}
+	if (head < 0 || head + 2 >= nbase || !OidIsValid(sub = get_range_subtype(exprType(arg))))
+		return -1;
+	for (int j = 0; j < c->nvleaf; j++)
+		if (c->vleaf[j].bound == bound && c->vleaf[j].obj == head)
+			return nbase + j;
+	if (agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+		return -1;
+	v = vleaf_add(c, att, leaf_of(c, head)->path, sift_aggbound_i32(sub) ? SCV_I32 : SCV_I64, sub);
+	strlcpy(v->name, bound == 1 ? "#lower" : "#upper", NAMEDATALEN);
+	c->vleaf[c->nvleaf].obj = head;
+	c->vleaf[c->nvleaf].count = false;
+	c->vleaf[c->nvleaf].types = false;
+	c->vleaf[c->nvleaf].bound = bound;
 	c->vleaf[c->nvleaf++].key = pstrdup("");
 	return v->id;
 }

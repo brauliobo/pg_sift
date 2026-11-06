@@ -167,7 +167,7 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 	else
 	{
 		l->kind = SCL_SCALAR;
-		l->vtype = def->store == SIFT_COLS_VAR ? SCV_I64 : leaf_vtype(def);
+		l->vtype = def->store == SIFT_COLS_VAR || (def->lane > 0 && i >= def->lane && sift_col_def_shape(&cols[i - def->lane])) ? SCV_I64 : leaf_vtype(def);	/* the lanes of a range or network are 64-bit positions whatever the head's type */
 		l->lossy |= def->store == SIFT_COLS_VAR;
 		if (def->parent < 0)
 			l->path = path_below(def->path, att);

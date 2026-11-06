@@ -1,0 +1,81 @@
+-- lower(r) and upper(r) of a range column, as an aggregate argument, a group key or a condition, are read from the first and last position of the range the index keeps for the
+-- containment operators (col/shape.c) as values of the subtype: NULL for a NULL range, an empty range and an infinite bound, the date infinity as written. A column with a bound
+-- too large for a lane (an int8 near its limits, a timestamp infinity) is read from the image, as before: the scan is refused and the rows are PostgreSQL's. Each statement is run
+-- with the scan on and off; `scan` says the aggregate is in the scan, `same` that the rows are those of sift off.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE rg (id int PRIMARY KEY, i4 int4range, i8 int8range, d daterange, ts tsrange, tz tstzrange) WITH (autovacuum_enabled = false);
+INSERT INTO rg
+SELECT i, r.i4, r.i8, r.d, r.ts, r.tz
+FROM generate_series(1, 4000) i
+CROSS JOIN LATERAL (SELECT i % 20 AS k) m
+CROSS JOIN LATERAL (VALUES
+  (CASE m.k
+     WHEN 0 THEN NULL WHEN 1 THEN 'empty'::int4range WHEN 2 THEN int4range(NULL, NULL) WHEN 3 THEN int4range(5, NULL) WHEN 4 THEN int4range(NULL, 9)
+     WHEN 5 THEN int4range(i, i + 3, '[]') WHEN 6 THEN int4range(i, i + 3, '()') WHEN 7 THEN int4range(i, i, '[]') WHEN 8 THEN int4range(i, i, '[)')
+     ELSE int4range(i % 97, i % 97 + 1 + i % 13) END,
+   CASE m.k
+     WHEN 0 THEN NULL WHEN 1 THEN 'empty'::int8range WHEN 2 THEN int8range(NULL, NULL) WHEN 3 THEN int8range(5, NULL) WHEN 4 THEN int8range(NULL, 9)
+     WHEN 5 THEN int8range(i, i + 3, '(]') WHEN 6 THEN int8range(4611686018427387904, 4611686018427387999) WHEN 7 THEN int8range(-4611686018427388000, 5)
+     WHEN 8 THEN int8range(-9223372036854775807, 9223372036854775806, '[]') ELSE int8range(i, i + 1 + i % 7, '[]') END,
+   CASE m.k
+     WHEN 0 THEN NULL WHEN 1 THEN 'empty'::daterange WHEN 2 THEN daterange(NULL, NULL) WHEN 3 THEN daterange(date '2025-01-01', NULL) WHEN 4 THEN daterange(NULL, date '2025-02-01')
+     WHEN 5 THEN daterange(date '2025-01-01' + i % 50, date '2025-01-01' + i % 50, '[]') WHEN 6 THEN daterange('-infinity', 'infinity', '[]') WHEN 7 THEN daterange('2025-01-01', 'infinity')
+     ELSE daterange(date '2025-01-01' + i % 90, date '2025-01-01' + i % 90 + 1 + i % 20, CASE WHEN i % 3 = 0 THEN '[]' WHEN i % 3 = 1 THEN '()' ELSE '(]' END) END,
+   CASE m.k
+     WHEN 0 THEN NULL WHEN 1 THEN 'empty'::tsrange WHEN 2 THEN tsrange(NULL, NULL) WHEN 3 THEN tsrange(timestamp '2025-01-01', NULL, '(]') WHEN 4 THEN tsrange(NULL, timestamp '2025-02-01', '[]')
+     WHEN 5 THEN tsrange(timestamp '2025-01-01' + i * interval '1 hour', timestamp '2025-01-01' + i * interval '1 hour', '[]') WHEN 6 THEN tsrange('infinity', 'infinity', '[]')
+     WHEN 7 THEN tsrange('-infinity', timestamp '2025-01-01') WHEN 8 THEN tsrange(timestamp '2025-01-01', 'infinity', '()')
+     ELSE tsrange(timestamp '2025-01-01' + i * interval '1 hour', timestamp '2025-01-01' + i * interval '1 hour' + interval '3 hours',
+                  CASE i % 4 WHEN 0 THEN '[]' WHEN 1 THEN '[)' WHEN 2 THEN '()' ELSE '(]' END) END,
+   CASE m.k
+     WHEN 0 THEN NULL WHEN 1 THEN 'empty'::tstzrange WHEN 2 THEN tstzrange(NULL, NULL) WHEN 3 THEN tstzrange(timestamptz '2025-01-01 00:00+00', NULL, '(]')
+     WHEN 4 THEN tstzrange(NULL, timestamptz '2025-02-01 00:00+00', '[]') WHEN 5 THEN tstzrange(timestamptz '2025-01-01 00:00+00' + i * interval '1 hour', timestamptz '2025-01-01 00:00+00' + i * interval '1 hour', '[]')
+     ELSE tstzrange(timestamptz '2025-01-01 00:00+00' + i * interval '1 hour', timestamptz '2025-01-01 00:00+00' + i * interval '1 hour' + interval '3 hours',
+                    CASE i % 4 WHEN 0 THEN '[]' WHEN 1 THEN '[)' WHEN 2 THEN '()' ELSE '(]' END) END)
+) r (i4, i8, d, ts, tz);
+CREATE INDEX rg_col ON rg USING sift_col (id, i4, i8, d, ts, tz);
+VACUUM (FREEZE, ANALYZE) rg;
+
+-- the same rows with the bounds that do not fit a lane made finite (an int8 near its limits, a timestamp infinity)
+CREATE TABLE rgf AS TABLE rg;
+ALTER TABLE rgf ADD PRIMARY KEY (id);
+UPDATE rgf SET i8 = int8range(id, id + 4, '[]') WHERE id % 20 IN (6, 7, 8);
+UPDATE rgf SET ts = tsrange(timestamp '2025-02-01' + id * interval '1 hour', timestamp '2025-02-02' + id * interval '1 hour') WHERE id % 20 IN (6, 7, 8);
+CREATE INDEX rgf_col ON rgf USING sift_col (id, i4, i8, d, ts, tz);
+VACUUM (FREEZE, ANALYZE) rgf;
+
+CREATE TABLE q (ord serial, tbl text, sql text);
+INSERT INTO q (tbl, sql) SELECT t, replace(replace(p, '$', c), '#', t) FROM unnest(ARRAY['rg', 'rgf']) t CROSS JOIN unnest(ARRAY['i4', 'i8', 'd', 'ts', 'tz']) c CROSS JOIN
+  unnest(ARRAY['SELECT count($), count(lower($)), count(upper($)), min(lower($)), max(upper($)) FROM #',
+               'SELECT lower($) AS k, count(*) AS n FROM # GROUP BY 1',
+               'SELECT upper($) AS k, count(*) AS n, min(id) AS first FROM # GROUP BY 1',
+               'SELECT count(*) AS n, sum(id) AS s FROM # WHERE lower($) IS NULL',
+               'SELECT count(*) AS n FROM # WHERE upper($) IS NOT NULL AND NOT isempty($)',
+               'SELECT id % 7 AS g, min(lower($)) AS lo, max(upper($)) AS hi FROM # GROUP BY 1']) p;
+
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE r text;
+BEGIN
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
+  RETURN r;
+EXCEPTION WHEN OTHERS THEN RETURN SQLERRM;
+END $$;
+CREATE FUNCTION value_check(q text) RETURNS TABLE (scan bool, same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; off text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  off := rows_md5(q);
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  same := rows_md5(q) IS NOT DISTINCT FROM off;
+  RETURN NEXT;
+END $$;
+SELECT q.sql AS statement, c.* FROM q, LATERAL value_check(q.sql) c ORDER BY q.ord;
+
+DROP FUNCTION value_check(text), rows_md5(text);
+DROP TABLE q, rg, rgf;
+DROP EXTENSION pg_sift;

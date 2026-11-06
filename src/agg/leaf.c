@@ -621,6 +621,8 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 
 	if (vl->types)
 		read_types_leaf(ex, leaf, out);
+	else if (vl->bound)
+		read_bound_leaf(ex, leaf, out);
 	else if (vl->count)
 		*out = *get_vec(ex, vl->obj);
 	else

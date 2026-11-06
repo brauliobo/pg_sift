@@ -335,13 +335,21 @@ typedef struct SiftAggVLeaf
 	bool		types;			/* the JSON type of the value of the scalar leaf obj (jsonb_typeof), as the name text, NULL where the path has no value; key is unused */
 	uint8		recheck;		/* a member read only through the cast of its jsonb value (SiftSrcRecheck, SRK_NONE: not): a row whose member of this key holds a value the leaf cannot store is read again from the heap, and raises the error of the cast */
 	Oid			cast;			/* ... to this type (float8, int4 or int8): the name of the type is in the message */
+	uint8		bound;			/* the lower (1) or upper (2) bound of the range leaf obj, as the value of the subtype (lower(r), upper(r)): read from its lane leaf obj + bound; key is unused */
 } SiftAggVLeaf;
 
 /* a leaf of a member of an object by key: its element columns are its object's children "key" and "value" */
 static inline bool
 sift_aggvleaf_member(const SiftAggVLeaf *v)
 {
-	return !v->count && !v->types;
+	return !v->count && !v->types && !v->bound;
+}
+
+/* the vector type of the bound of a range of this subtype: the values the lanes hold are those of the subtype's datum (shape.c element_key) */
+static inline bool
+sift_aggbound_i32(Oid subtype)
+{
+	return subtype == INT4OID || subtype == DATEOID;
 }
 
 typedef struct SiftAggArm

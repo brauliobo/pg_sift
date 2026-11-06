@@ -131,6 +131,7 @@ kmap_fill(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ki, const uint32 *
 			map[codes[i]] = kmap_resolve(ex, d, ki, codes[i]);
 }
 const SiftSrcVec *get_vec(AggExec *ex, int leaf);
+extern void read_bound_leaf(AggExec *ex, int leaf, SiftSrcVec *out);
 uint32 *elem_offs(AggExec *ex, int leaf);
 uint64 *member_elems(AggExec *ex, int j, const uint32 **offs);
 void idmap_init(IdMap *m);

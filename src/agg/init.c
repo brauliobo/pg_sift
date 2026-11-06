@@ -176,6 +176,14 @@ extend_layout(AggExec *ex)
 		v->attno = lay->leaf[s->vleaf[j].obj].attno;
 		v->parent = -1;
 		v->kind = SCL_SCALAR;
+		if (s->vleaf[j].bound)
+		{
+			Oid			sub = get_range_subtype(lay->leaf[s->vleaf[j].obj].typid);
+
+			v->vtype = sift_aggbound_i32(sub) ? SCV_I32 : SCV_I64;
+			v->typid = sub;
+			continue;
+		}
 		v->vtype = s->vleaf[j].types ? SCV_CODE : s->vleaf[j].count ? SCV_I32 : lay->leaf[ex->vl[j].val].vtype;
 		v->typid = s->vleaf[j].types ? TEXTOID : s->vleaf[j].count ? INT4OID : lay->leaf[ex->vl[j].val].typid;
 	}
