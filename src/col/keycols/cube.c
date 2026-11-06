@@ -446,7 +446,7 @@ rows_cells(const uint64 *a, const uint64 *b, uint32 rows, uint32 limit, uint64 *
 	memset(tab, 0, ROWS_SLOTS * sizeof(uint64));
 	for (uint32 r = 0; r < rows && cells <= limit; r++)
 	{
-		uint64		h = sift_fib64(a[r] ^ (b[r] * UINT64CONST(0xC2B2AE3D27D4EB4F))) | 1;
+		uint64		h = sift_fib64(a[r] ^ (b[r] * SIFT_XXP64_2)) | 1;
 
 		for (uint32 at = (uint32) (h >> 40) & (ROWS_SLOTS - 1);; at = (at + 1) & (ROWS_SLOTS - 1))
 		{

@@ -95,8 +95,8 @@ struct SiftAnalyzer
 /* Hashing */
 
 #define K1	UINT64CONST(0x9E3779B185EBCA87)
-#define K2	UINT64CONST(0xC2B2AE3D27D4EB4F)
-#define K3	UINT64CONST(0x27D4EB2F165667C5)
+#define K2	SIFT_XXP64_2
+#define K3	SIFT_XXP64_5
 
 static inline uint64
 load_le(const char *p, int n)

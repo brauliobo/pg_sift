@@ -40,7 +40,7 @@ cdict_hash(const char *s, uint32 len)
 {
 	const unsigned char *p = (const unsigned char *) s,
 			   *end = p + len;
-	uint64		h[4] = {len * SIFT_FIB64, UINT64CONST(0xC2B2AE3D27D4EB4F), UINT64CONST(0x165667B19E3779F9), UINT64CONST(0x27D4EB2F165667C5)};
+	uint64		h[4] = {len * SIFT_FIB64, SIFT_XXP64_2, SIFT_XXP64_3, SIFT_XXP64_5};
 	uint64		x;
 
 	if (len < 64)
