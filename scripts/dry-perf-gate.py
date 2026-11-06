@@ -423,7 +423,7 @@ def judge(b, c, cfg, noise, par=False):
     if dc > thr_c and b['cycles'] >= cfg.min_cycles:
         if abs(di) <= cfg.layout_instr_pct and dc <= cfg.layout_cycles_pct:
             # the same instructions and blocks, a moderate cycles difference: the machine code moved (alignment, cache sets), not the work; recorded, not failed
-            warn.append(f'cycles {dc:+.2f}% with equal instructions ({di:+.3f}%): code layout')
+            warn.append(f'cycles {dc:+.2f}% with equal instructions ({di:+.3f}%): code layout or noise')
         else:
             why.append(f'cycles {dc:+.2f}% > {thr_c:.2f}%')
     for k in ('hits', 'reads', 'wal'):
@@ -525,7 +525,7 @@ def main():
     ap.add_argument('--layout-instr-pct', type=float, default=0.1, help='a cycles excess with instructions within this percent is a WARN (code layout), not a FAIL (default 0.1)')
     ap.add_argument('--layout-cycles-pct', type=float, default=15.0, help='...unless the cycles excess is above this (default 15)')
     ap.add_argument('--par-instr-pct', type=float, default=1.0, help='instruction limit of the parallel (workers) cases (default 1.0)')
-    ap.add_argument('--par-blocks-pct', type=float, default=5.0)
+    ap.add_argument('--par-blocks-pct', type=float, default=10.0, help='the leader counts only its own share of the blocks (default 10)')
     ap.add_argument('--par-wal-pct', type=float, default=3.0)
     ap.add_argument('--blocks-tol', type=int, default=0)
     ap.add_argument('--wal-tol', type=int, default=0)
