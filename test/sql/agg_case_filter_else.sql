@@ -1,5 +1,5 @@
 -- agg(CASE WHEN p THEN x ELSE k END) with an ELSE other than NULL is planned as aggregates with a FILTER (agg/expr/casefilter.c), for count with any ELSE that is not NULL, and
--- for min, max (integers) and avg (integers and numerics) with ELSE 0: the zeros are values, so a group where p never holds is 0, not NULL, and the zeros count in an average. Each statement runs
+-- for min and max (integers, float4, float8) with ELSE k, avg (integers and numerics with a whole k, float8 with 0): the ELSE values are values, so a group where p never holds is 0, not NULL, and the zeros count in an average. Each statement runs
 -- with the scan and without it and the rows must be the same text (scale of a numeric and sign of a zero included); `rewritten` says that the scan runs the aggregates with no CASE left in them.
 -- The shapes where the two forms could differ: groups where p never holds, always holds, or holds only for NULL values; NULL conditions; negative values (min and max against the zero); an empty
 -- input; a filter of the aggregate; the types that stay as written (a float, a numeric for min and max, an ELSE that is not a zero of the type), DISTINCT and a value that raises.
@@ -8,18 +8,19 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-CREATE TABLE cfe (id int, k int, p text, x float8, n numeric, i int, b bigint, m numeric(10,3), s smallint, t text);
+CREATE TABLE cfe (id int, k int, p text, x float8, n numeric, i int, b bigint, m numeric(10,3), s smallint, t text, f4 float4);
 -- k 0..39; p is NULL for a quarter of the rows and never is 'a' in the group k = 7 and always is in k = 8; the values have NULLs and negatives; the group k = 9 has NULL values only where p = 'a'
 INSERT INTO cfe SELECT g, g % 40, (array['a', 'b', 'c', NULL])[1 + (g / 40) % 4], CASE WHEN g % 5 = 0 THEN NULL ELSE (g % 17) * 0.25 - 2 END,
        CASE WHEN g % 7 = 0 THEN NULL ELSE ((g % 11) - 3) * 0.5 END, CASE WHEN g % 3 = 0 THEN NULL ELSE g % 9 - 4 END,
        CASE WHEN g % 4 = 0 THEN NULL ELSE (g % 5 - 2) * 3000000000000 + g END, CASE WHEN g % 6 = 0 THEN NULL ELSE (g % 13) * 1.125 - 4 END,
-       CASE WHEN g % 8 = 0 THEN NULL ELSE (g % 7 - 3)::smallint END, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g % 5 END
+       CASE WHEN g % 8 = 0 THEN NULL ELSE (g % 7 - 3)::smallint END, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g % 5 END,
+       CASE WHEN g % 6 = 1 THEN NULL ELSE (g % 11) * 0.5 - 3 END
 FROM generate_series(1, 6000) g;
 UPDATE cfe SET p = 'b' WHERE k = 7 AND p = 'a';
 UPDATE cfe SET p = 'a' WHERE k = 8 AND p IS DISTINCT FROM 'a';
-UPDATE cfe SET x = NULL, n = NULL, i = NULL, b = NULL, m = NULL, s = NULL WHERE k = 9 AND p = 'a';
+UPDATE cfe SET x = NULL, n = NULL, i = NULL, b = NULL, m = NULL, s = NULL, f4 = NULL WHERE k = 9 AND p = 'a';
 UPDATE cfe SET i = abs(i) + 1, b = abs(b) + 1, s = abs(s) + 1 WHERE k = 10;
-CREATE INDEX cfe_col ON cfe USING sift_col (id, k, p, x, n, i, b, m, s, t) WITH (key_cut = k);
+CREATE INDEX cfe_col ON cfe USING sift_col (id, k, p, x, n, i, b, m, s, t, f4) WITH (key_cut = k);
 VACUUM ANALYZE cfe;
 
 CREATE TABLE shapes (n int, label text, q text);
@@ -50,16 +51,33 @@ INSERT INTO shapes VALUES
   (24, 'min max with a filter',     $q$SELECT k, min(CASE WHEN p = 'a' THEN i ELSE 0 END) FILTER (WHERE id % 2 = 0), max(CASE WHEN p = 'a' THEN i ELSE 0 END) FILTER (WHERE id % 2 = 0) FROM cfe GROUP BY k$q$),
   (25, 'min max ungrouped empty',   $q$SELECT min(CASE WHEN p = 'a' THEN i ELSE 0 END) a, max(CASE WHEN p = 'a' THEN i ELSE 0 END) b FROM cfe WHERE k > 100$q$),
   (26, 'pivot of the three',        $q$SELECT k, avg(CASE WHEN p = 'a' THEN i ELSE 0 END), min(CASE WHEN p = 'a' THEN i ELSE 0 END), count(CASE WHEN p = 'a' THEN i ELSE 0 END), sum(CASE WHEN p = 'a' THEN i ELSE 0 END) FROM cfe GROUP BY k$q$),
-  (27, 'avg float stays',           $q$SELECT k, avg(CASE WHEN p = 'a' THEN x ELSE 0 END) FROM cfe GROUP BY k$q$),
-  (28, 'min numeric stays',         $q$SELECT k, min(CASE WHEN p = 'a' THEN n ELSE 0 END) FROM cfe GROUP BY k$q$),
-  (29, 'max float stays',           $q$SELECT k, max(CASE WHEN p = 'a' THEN x ELSE 0 END) FROM cfe GROUP BY k$q$),
-  (30, 'avg else 1 stays',          $q$SELECT k, avg(CASE WHEN p = 'a' THEN i ELSE 1 END) FROM cfe GROUP BY k$q$),
-  (31, 'avg else 0.00 stays',       $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 0.00 END) FROM cfe GROUP BY k$q$),
-  (32, 'min else 1 stays',          $q$SELECT k, min(CASE WHEN p = 'a' THEN i ELSE 1 END) FROM cfe GROUP BY k$q$),
+  (27, 'avg else 0 float8',        $q$SELECT k, avg(CASE WHEN p = 'a' THEN x ELSE 0 END) FROM cfe GROUP BY k$q$),
+  (28, 'min numeric stays',        $q$SELECT k, min(CASE WHEN p = 'a' THEN n ELSE 0 END) FROM cfe GROUP BY k$q$),
+  (29, 'min max else 0 float8',    $q$SELECT k, min(CASE WHEN p = 'a' THEN x ELSE 0 END), max(CASE WHEN p = 'a' THEN x ELSE 0 END) FROM cfe GROUP BY k$q$),
+  (30, 'avg else 1 int4',          $q$SELECT k, avg(CASE WHEN p = 'a' THEN i ELSE 1 END) FROM cfe GROUP BY k$q$),
+  (31, 'avg else 3 numeric',       $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 3 END) FROM cfe GROUP BY k$q$),
+  (32, 'min else 1 int4',          $q$SELECT k, min(CASE WHEN p = 'a' THEN i ELSE 1 END), max(CASE WHEN p = 'a' THEN i ELSE 1 END) FROM cfe GROUP BY k$q$),
   (33, 'avg distinct stays',        $q$SELECT k, avg(DISTINCT CASE WHEN p = 'a' THEN i ELSE 0 END) FROM cfe GROUP BY k$q$),
   (34, 'value guarded by p',        $q$SELECT k, avg(CASE WHEN i <> 0 THEN 100 / i ELSE 0 END), count(CASE WHEN i <> 0 THEN 1 / i ELSE 0 END), max(CASE WHEN i <> 0 THEN 100 / i ELSE 0 END) FROM cfe GROUP BY k$q$),
   (35, 'value that raises',         $q$SELECT k, avg(CASE WHEN p = 'a' THEN 100 / i ELSE 0 END) FROM cfe GROUP BY k$q$),
-  (36, 'value that raises in count', $q$SELECT count(CASE WHEN p = 'a' THEN 1 / i ELSE 0 END) FROM cfe$q$);
+  (36, 'value that raises in count', $q$SELECT count(CASE WHEN p = 'a' THEN 1 / i ELSE 0 END) FROM cfe$q$),
+  (37, 'min max else 0 float4',    $q$SELECT k, min(CASE WHEN p = 'a' THEN f4 ELSE 0 END), max(CASE WHEN p = 'a' THEN f4 ELSE 0 END) FROM cfe GROUP BY k$q$),
+  (38, 'min max else k float8',    $q$SELECT k, min(CASE WHEN p = 'b' THEN x ELSE 1.5 END), max(CASE WHEN p = 'c' THEN x ELSE -1.5 END) FROM cfe GROUP BY k$q$),
+  (39, 'min max else k float4',    $q$SELECT k, min(CASE WHEN p = 'b' THEN f4 ELSE 2.5 END), max(CASE WHEN p = 'c' THEN f4 ELSE -2.5 END) FROM cfe GROUP BY k$q$),
+  (40, 'min max else negative int8', $q$SELECT k, min(CASE WHEN p = 'a' THEN b ELSE -7 END), max(CASE WHEN p = 'a' THEN b ELSE -7 END) FROM cfe GROUP BY k$q$),
+  (41, 'min max else k int2',      $q$SELECT k, min(CASE WHEN p = 'a' THEN s ELSE 2 END), max(CASE WHEN p = 'b' THEN s ELSE -2 END) FROM cfe GROUP BY k$q$),
+  (42, 'avg else k int8',          $q$SELECT k, avg(CASE WHEN p = 'a' THEN b ELSE 5 END) FROM cfe GROUP BY k$q$),
+  (43, 'avg else negative int2',   $q$SELECT k, avg(CASE WHEN p = 'a' THEN s ELSE -4 END) FROM cfe GROUP BY k$q$),
+  (44, 'avg else k numeric typmod', $q$SELECT k, avg(CASE WHEN p = 'b' THEN m ELSE 3 END) FROM cfe GROUP BY k$q$),
+  (45, 'avg else k ungrouped empty', $q$SELECT avg(CASE WHEN p = 'a' THEN i ELSE 2 END) a, avg(CASE WHEN p = 'a' THEN n ELSE 2 END) b, min(CASE WHEN p = 'a' THEN i ELSE 2 END) c FROM cfe WHERE k > 100$q$),
+  (46, 'avg else k with filter and having', $q$SELECT k, avg(CASE WHEN p = 'a' THEN i ELSE 2 END) FILTER (WHERE id % 3 <> 0) a FROM cfe GROUP BY k HAVING avg(CASE WHEN p = 'a' THEN i ELSE 2 END) > 0.1$q$),
+  (47, 'avg else 0 float8 empty and having', $q$SELECT avg(CASE WHEN p = 'a' THEN x ELSE 0 END) a FROM cfe WHERE k > 100 UNION ALL SELECT avg(CASE WHEN p = 'c' THEN x ELSE 0 END) FROM cfe GROUP BY k HAVING avg(CASE WHEN p = 'c' THEN x ELSE 0 END) > 0.1$q$),
+  (48, 'avg float4 stays',         $q$SELECT k, avg(CASE WHEN p = 'a' THEN f4 ELSE 0 END) FROM cfe GROUP BY k$q$),
+  (49, 'avg else k float8 stays',  $q$SELECT k, avg(CASE WHEN p = 'a' THEN x ELSE 1 END) FROM cfe GROUP BY k$q$),
+  (50, 'avg else 0.5 numeric stays', $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 0.5 END) FROM cfe GROUP BY k$q$),
+  (51, 'min else k numeric stays', $q$SELECT k, min(CASE WHEN p = 'a' THEN n ELSE 1 END) FROM cfe GROUP BY k$q$),
+  (52, 'min max NaN else',         $q$SELECT k, min(CASE WHEN p = 'a' THEN x ELSE 'NaN'::float8 END) FROM cfe GROUP BY k$q$),
+  (53, 'sum else 1 stays',         $q$SELECT k, sum(CASE WHEN p = 'a' THEN i ELSE 1 END) FROM cfe GROUP BY k$q$);
 
 -- rows: the text of the rows of the scan equals that of the normal plan (scale and sign of zero included); rewritten: no CASE is left in the aggregates the scan runs
 SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome, sift_helpers.plan_pushed_aggregates_have_no_case(q) AS rewritten FROM shapes ORDER BY n;

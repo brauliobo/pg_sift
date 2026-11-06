@@ -811,3 +811,5 @@ with g as (select region, count(*) c from events group by 1 having count(*) > 16
 select tenant_id, count(case when status = 'paid' then qty else 0 end) a, count(case when status = 'paid' then null else 1 end) b from events group by 1;
 -- @case c3_case_else_avg_min | pred | an average, a minimum and a maximum of a CASE with ELSE 0, by tenant
 select tenant_id, avg(case when status = 'paid' then qty else 0 end) a, min(case when status = 'paid' then qty else 0 end) mn, max(case when status = 'open' then kind_id else 0 end) mx, avg(case when status = 'paid' then amount else 0 end) am from events group by 1;
+-- @case c3_case_else_value | pred | a minimum, a maximum and an average of a CASE whose ELSE is a value, by tenant
+select tenant_id, min(case when status = 'paid' then amount else 500 end) mn, max(case when status = 'paid' then qty else 3 end) mx, avg(case when status = 'paid' then qty else 3 end) av from events group by 1;
