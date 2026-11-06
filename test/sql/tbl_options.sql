@@ -17,8 +17,11 @@ RESET ROLE;
 
 -- nothing is set: every option reads the setting
 SELECT count(*) AS options FROM sift.table_options('ot');
-SELECT name, value, source, "default" FROM sift.table_options('ot') WHERE name IN ('write_buffer_limit', 'compression', 'hot_update') ORDER BY name;
+SELECT name, value, source, default_value FROM sift.table_options('ot') WHERE name IN ('write_buffer_limit', 'compression', 'hot_update') ORDER BY name;
 SELECT sift.table_get_option('ot', 'write_buffer_limit');
+-- every function names its table argument tbl
+SELECT sift.table_get_option(tbl => 'ot', name => 'hot_update');
+SELECT count(*) AS options_named FROM sift.table_options(tbl => 'ot');
 
 -- set, read back in the canonical text of the setting, reset
 SET ROLE opt_owner;
@@ -31,6 +34,8 @@ SELECT name, value, source FROM sift.table_options('ot') WHERE source = 'table' 
 SELECT name, value FROM sift.table_options('ot2') WHERE name = 'write_buffer_limit';
 SELECT sift.table_reset_option('ot', 'compression');
 SELECT sift.table_reset_option('ot', 'compression');
+SELECT sift.table_set_option(tbl => 'ot2', name => 'wide_rows', value => 'off');
+SELECT sift.table_reset_option(tbl => 'ot2', name => 'wide_rows');
 SELECT name, value, source FROM sift.table_options('ot') WHERE source = 'table' ORDER BY name;
 
 -- a value the setting refuses is refused, with the reason of the setting

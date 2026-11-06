@@ -46,26 +46,26 @@ CREATE EVENT TRIGGER sift_table_option_values_drop ON sql_drop EXECUTE FUNCTION 
 CREATE FUNCTION sift._table_option_names() RETURNS text[]
 	AS 'MODULE_PATHNAME', 'sift_table_option_names' LANGUAGE C IMMUTABLE STRICT;
 
--- Sets the option of the sift_table rel; the value is checked as the setting of the same name checks it (type, range, unit). The owner of the table.
-CREATE FUNCTION sift.table_set_option(rel regclass, name text, value text) RETURNS void
+-- Sets the option of the sift_table tbl; the value is checked as the setting of the same name checks it (type, range, unit). The owner of the table.
+CREATE FUNCTION sift.table_set_option(tbl regclass, name text, value text) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_table_set_option' LANGUAGE C VOLATILE;
 
 -- Takes the option off the table (all its options when name is NULL): the setting applies again.
-CREATE FUNCTION sift.table_reset_option(rel regclass, name text DEFAULT NULL) RETURNS void
+CREATE FUNCTION sift.table_reset_option(tbl regclass, name text DEFAULT NULL) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_table_reset_option' LANGUAGE C VOLATILE;
 
 -- The value in force on the table: its own option, else the setting.
-CREATE FUNCTION sift.table_get_option(rel regclass, name text) RETURNS text
+CREATE FUNCTION sift.table_get_option(tbl regclass, name text) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_table_get_option' LANGUAGE C STABLE STRICT;
 
 -- The option as the table stores it; NULL when the table sets none.
-CREATE FUNCTION sift._table_option_stored(rel regclass, name text) RETURNS text
+CREATE FUNCTION sift._table_option_stored(tbl regclass, name text) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_table_option_stored' LANGUAGE C STABLE STRICT;
 
 -- The options of the sift_tables the caller may see (or of tbl): the value in force, where it comes from (table: set on the table; setting: the sift.table_*
 -- setting is not at its built-in default; default) and the built-in default.
 CREATE FUNCTION sift.table_options(tbl regclass DEFAULT NULL)
-	RETURNS TABLE (rel regclass, name text, value text, source text, "default" text)
+	RETURNS TABLE (rel regclass, name text, value text, source text, default_value text)
 	LANGUAGE plpgsql STABLE AS $fn$
 BEGIN
 	PERFORM sift._table_option_names();		-- loads the library, which defines the settings

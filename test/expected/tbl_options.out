@@ -20,9 +20,9 @@ SELECT count(*) AS options FROM sift.table_options('ot');
       16
 (1 row)
 
-SELECT name, value, source, "default" FROM sift.table_options('ot') WHERE name IN ('write_buffer_limit', 'compression', 'hot_update') ORDER BY name;
-        name        | value | source  | default 
---------------------+-------+---------+---------
+SELECT name, value, source, default_value FROM sift.table_options('ot') WHERE name IN ('write_buffer_limit', 'compression', 'hot_update') ORDER BY name;
+        name        | value | source  | default_value 
+--------------------+-------+---------+---------------
  compression        |       | default | 
  hot_update         | on    | default | on
  write_buffer_limit | 4MB   | default | 4096kB
@@ -32,6 +32,19 @@ SELECT sift.table_get_option('ot', 'write_buffer_limit');
  table_get_option 
 ------------------
  4MB
+(1 row)
+
+-- every function names its table argument tbl
+SELECT sift.table_get_option(tbl => 'ot', name => 'hot_update');
+ table_get_option 
+------------------
+ on
+(1 row)
+
+SELECT count(*) AS options_named FROM sift.table_options(tbl => 'ot');
+ options_named 
+---------------
+            16
 (1 row)
 
 -- set, read back in the canonical text of the setting, reset
@@ -87,6 +100,18 @@ SELECT sift.table_reset_option('ot', 'compression');
 (1 row)
 
 SELECT sift.table_reset_option('ot', 'compression');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option(tbl => 'ot2', name => 'wide_rows', value => 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_reset_option(tbl => 'ot2', name => 'wide_rows');
  table_reset_option 
 --------------------
  

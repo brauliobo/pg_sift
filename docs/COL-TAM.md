@@ -348,10 +348,10 @@ A table access method has no reloptions before PostgreSQL 20 (`CREATE TABLE .. U
 
 | function | |
 |---|---|
-| `sift.table_set_option(rel regclass, name text, value text)` | sets the option; the value is checked as `SET` checks the setting of the same name (type, range, unit, the check of `compression` and `backpressure`), and the canonical text is stored |
-| `sift.table_get_option(rel, name)` | the value in force: the table's own, else the setting |
-| `sift.table_reset_option(rel, name DEFAULT NULL)` | takes one option (all when NULL) off the table |
-| `sift.table_options(rel DEFAULT NULL)` | one row for each option of each `sift_table` the caller may see: `name`, `value`, `source` (`table`, `setting` when the `sift.table_*` setting is not at its built-in default, `default`), the built-in `default` |
+| `sift.table_set_option(tbl regclass, name text, value text)` | sets the option; the value is checked as `SET` checks the setting of the same name (type, range, unit, the check of `compression` and `backpressure`), and the canonical text is stored |
+| `sift.table_get_option(tbl, name)` | the value in force: the table's own, else the setting |
+| `sift.table_reset_option(tbl, name DEFAULT NULL)` | takes one option (all when NULL) off the table |
+| `sift.table_options(tbl DEFAULT NULL)` | one row for each option of each `sift_table` the caller may see: `name`, `value`, `source` (`table`, `setting` when the `sift.table_*` setting is not at its built-in default, `default`), the built-in `default_value` |
 
 The name of an option is the name of its setting without `sift.table_`: `write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes`. The policies that bound the I/O and the load of the whole server (`auto_defrag_delay`, `auto_defrag_wal_rate`, `auto_defrag_max_active`) are not options of a table.
 
