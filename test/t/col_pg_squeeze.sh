@@ -51,7 +51,8 @@ reader() {
 	while ((SECONDS < end)); do
 		out=$(psql -X -At -q -h "$D/sock" -p "$(port sq)" -U postgres -d postgres -f "$D/rr.sql" 2>&1 | grep -v '^SET$\|^BEGIN$\|^COMMIT$')
 		n=$((n + 1))
-		[[ -n $out && $(sed -n 1p <<<"$out") == "$(sed -n 2p <<<"$out")" ]] || { bad=$((bad + 1)); echo "$out" >>"$D/reader.bad"; }
+		# no output at all is two empty answers, the index's and the heap's: a snapshot older than the swap of the files sees the new file empty, as it does for the heap (a psql error is a line of output)
+		[[ $(sed -n 1p <<<"$out") == "$(sed -n 2p <<<"$out")" ]] || { bad=$((bad + 1)); echo "$out" >>"$D/reader.bad"; }
 	done
 	echo "$n $bad" >"$D/reader.out"
 }

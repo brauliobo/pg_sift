@@ -6,7 +6,7 @@ name: ci
 # `integration/` branch runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
 # release-library stages and the other jobs; its base is the last green run of that branch, so a red or cancelled push is not forgotten by the next one.
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
-# the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
+# the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere. Every PostgreSQL 18 job installs pg_squeeze (PGDG ships 1.9.4, a few seconds), so test/t/col_pg_squeeze.sh runs in the shard that holds it and skips on 17 and 19.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
 # The full tier is five shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
 # A deep run does not repeat the x86 quick shards on 17 and 18: its full tier has the same jobs at full scale; the quick shards of AArch64 and 19 stay, with the release-library list on 18.
@@ -189,7 +189,7 @@ jobs:
         if: ${{ !matrix.git && !matrix.cassert }}
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
+          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }} ${{ matrix.pg == 18 && 'postgresql-18-squeeze' || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
 
