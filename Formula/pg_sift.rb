@@ -1,8 +1,8 @@
 class PgSift < Formula
   desc "Fast analytics for PostgreSQL: just add an index, plus BM25 full-text search"
   homepage "https://github.com/brauliobo/pg_sift"
-  url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v4.1.2.tar.gz"
-  sha256 "5af8b8b34a41acb087acfa405e072cda229dabc951fdbe832ba65dc9730d437f"
+  url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v4.1.3.tar.gz"
+  sha256 "708a88938246a75f3f8a741fd1551f9edfdf0d9db27a3edf27ffb128812be986"
   license "PostgreSQL"
   head "https://github.com/brauliobo/pg_sift.git", branch: "main"
 
