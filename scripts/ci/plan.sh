@@ -166,6 +166,7 @@ else
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
+	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-3 --queries 40 --rows 3000 --leader-on
 	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
 	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
