@@ -75,7 +75,7 @@ SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev LEFT JOIN dims d ON 
 -- a list that keeps half of the table is read by the heap scan, as a table with no index and NOT IN are
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49) GROUP BY d.country');
 SELECT * FROM same('SELECT b.country, count(*) AS n FROM ev JOIN dims_bare b ON b.id = ev.dim_a_id WHERE b.country IN (3, 17, 41) GROUP BY b.country');
-SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country NOT IN (3, 17, 41) AND d.country < 6 GROUP BY d.country');
+SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country NOT IN (3, 17, 41) AND d.tier <> 4 GROUP BY d.country');
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country IN (3, 17, 41) AND ev.day >= ''2025-01-01'' GROUP BY d.country');
 
 -- a list that is a parameter: the generic plan reads the array when the scan starts

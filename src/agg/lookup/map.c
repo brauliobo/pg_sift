@@ -252,9 +252,23 @@ map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, cons
 	map_add(ex, m, slot, j);
 }
 
+/* does the table's own condition k name the column col of the btree: its strategy and the type of its operand when it does (-1: no) */
+static int
+index_cond(const SiftAggJoin *j, int k, Relation idx, int col, Oid *rt)
+{
+	int			strategy;
+	Oid			lt;
+
+	if (j->idxatt[k] != idx->rd_index->indkey.values[col] || !op_in_opfamily(j->idxop[k], idx->rd_opfamily[col]) || idx->rd_indcollation[col] != j->idxcoll[k])
+		return -1;
+	get_op_opfamily_properties(j->idxop[k], idx->rd_opfamily[col], false, &strategy, &lt, rt);
+	return strategy;
+}
+
 /*
  * The btree of the joined table that starts with columns the table's `column = value` and `column = ANY (array)` conditions give (the planner found them, join_index_quals),
- * opened, with the keys of its scan: the rows that can match are those it returns. NULL when no index fits; *none when a value is NULL (no row).
+ * opened, with the keys of its scan: the rows that can match are those it returns. The column that follows the points may be bounded (`column < value`, `>=`, both bounds
+ * of a range are keys), which ends the keys. NULL when no index fits; *none when a value is NULL (no row).
  */
 Relation
 map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys)
@@ -269,23 +283,28 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 		int			n = 0;
 
 		if (idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL))
-			for (; n < idx->rd_index->indnkeyatts && n < SIFT_AGG_MAX_JIDX; n++)
+			for (int col = 0; col < idx->rd_index->indnkeyatts && n < SIFT_AGG_MAX_JIDX; col++)
 			{
-				int			k;
-				int			strategy;
-				Oid			lt,
-							rt;
+				int			point = -1;
+				Oid			rt;
 
-				for (k = 0; k < j->nidx; k++)
-					if (j->idxatt[k] == idx->rd_index->indkey.values[n] && op_in_opfamily(j->idxop[k], idx->rd_opfamily[n]) &&
-						idx->rd_indcollation[n] == j->idxcoll[k])
-						break;
-				if (k == j->nidx)
-					break;
-				get_op_opfamily_properties(j->idxop[k], idx->rd_opfamily[n], false, &strategy, &lt, &rt);
-				if (strategy != BTEqualStrategyNumber)
-					break;
-				ScanKeyEntryInitialize(&ik[n], j->idxany[k] ? SK_SEARCHARRAY : 0, n + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+				for (int k = 0; k < j->nidx && point < 0; k++)
+					if (index_cond(j, k, idx, col, &rt) == BTEqualStrategyNumber)
+						point = k;
+				if (point >= 0)
+				{
+					index_cond(j, point, idx, col, &rt);
+					ScanKeyEntryInitialize(&ik[n++], j->idxany[point] ? SK_SEARCHARRAY : 0, col + 1, BTEqualStrategyNumber, rt, j->idxcoll[point], get_opcode(j->idxop[point]), val[point]);
+					continue;
+				}
+				for (int k = 0; k < j->nidx && n < SIFT_AGG_MAX_JIDX; k++)
+				{
+					int			strategy = index_cond(j, k, idx, col, &rt);
+
+					if (strategy > 0)
+						ScanKeyEntryInitialize(&ik[n++], 0, col + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+				}
+				break;
 			}
 		if (n > nbest)
 		{

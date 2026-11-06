@@ -135,10 +135,10 @@ SELECT * FROM same('SELECT b.country, count(*) AS n FROM ev JOIN dims_bare b ON 
  SiftAgg,30002 rows read,900 rows loaded |           3 |              0 |              0
 (1 row)
 
-SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country NOT IN (3, 17, 41) AND d.country < 6 GROUP BY d.country');
-                   plan                   | result_rows | vs_no_pushdown | vs_normal_plan 
-------------------------------------------+-------------+----------------+----------------
- SiftAgg,30002 rows read,1501 rows loaded |           5 |              0 |              0
+SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country NOT IN (3, 17, 41) AND d.tier <> 4 GROUP BY d.country');
+                   plan                    | result_rows | vs_no_pushdown | vs_normal_plan 
+-------------------------------------------+-------------+----------------+----------------
+ SiftAgg,30002 rows read,23101 rows loaded |          77 |              0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country IN (3, 17, 41) AND ev.day >= ''2025-01-01'' GROUP BY d.country');

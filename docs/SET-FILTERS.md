@@ -148,6 +148,7 @@ before 3.2 they counted as parallel restricted and planned no workers.
 Before the scan, `SiftAgg` reads the joined table (membership or attribute table) into a lookup table. It used to read every row and filter afterwards; now:
 
 - the planner collects the join's `column = value` conditions (`group_id = 7`, `country_id = 7`, parameters included, and `country_id IN (3, 17, 41)` when statistics expect the list to keep a small share of the table: a larger one is read faster by the heap scan) and the executor evaluates their values once;
+- the same for the bounds `<`, `<=`, `>` and `>=` of a column (both bounds of a range, as the key of the btree column that follows the equal ones), judged together by the rows the statistics expect them to keep; on a lookup table of 200,000 rows, `id <= 2000` loads 2,000 rows in 0.24 ms where the whole table took 10 ms;
 - it reads the longest matching prefix of a btree index of the table (`Lookup Index Scans` in `EXPLAIN ANALYZE`) or, without such an index, passes the equalities to the heap scan as scan keys; the other conditions (`deleted_at IS NULL`, a boolean) apply per row as read, so the table keeps only rows that can match (`Lookup Rows Read`, `Lookup Rows Loaded`, `Lookup Load Time` with `TIMING`). A `NULL` value gives an empty table;
 - the conditions stay in the join filter, so a scan key that a table access method ignores (only heap tables get scan keys) changes the cost, not the rows;
 - the load is priced by the rows the conditions are expected to keep when a btree can give them, instead of every row.
