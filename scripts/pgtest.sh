@@ -15,6 +15,7 @@
 #                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
 #                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) one at a time on a quiet cluster: a session
 #                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
+#   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
@@ -224,7 +225,16 @@ pg_regress() {
 	local out=$1 db=$2
 	shift 2
 	rm -rf "$out" && mkdir -p "$out"
-	PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+	# SIFT_FRESH: a psql that connects anew before every statement outside a transaction (scripts/fresh-psql.py) stands first in PATH, in this subshell only
+	# (FRESH_PSQL is the real psql, found before PATH changes: the shim refuses to run as its own psql or inside itself)
+	(
+		if [[ -n ${SIFT_FRESH:-} ]]; then
+			mkdir -p "$TMP/fresh-bin" && ln -sf "$REPO/scripts/fresh-psql.py" "$TMP/fresh-bin/psql"
+			FRESH_PSQL=$(command -v psql)
+			export FRESH_PSQL FRESH_STATS=$out/fresh-stats PATH=$TMP/fresh-bin:$PATH
+		fi
+		PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+	)
 }
 
 # leftovers [TEST...]: each test alone in a database of its own (all of test/sql without names); prints "TEST: object" for what it left behind
@@ -267,6 +277,13 @@ case ${1:-} in
 		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS LSAN_OPTIONS=$LSAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
 		;;
 	regress) shift; regress "$@" ;;
+	fresh)
+		shift
+		# one fresh run at a time on a host (every statement is a connection), and never inside one (the shim stands first in PATH of the pg_regress subshell only)
+		[[ -z ${FRESH_PSQL:-}${FRESH_ACTIVE:-} ]] || { echo "pgtest: fresh runs do not nest" >&2; exit 1; }
+		exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.lock"
+		flock -n 9 || { echo "pgtest: another fresh run is at work (${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.lock)" >&2; exit 1; }
+		SIFT_FRESH=1 regress "$@" ;;
 	leftovers) shift; leftovers "$@" ;;
 	reset-auto-conf) reset_auto_conf "$2" ;;
 	initdb-template) initdb_template "$2" ;;
@@ -276,5 +293,5 @@ case ${1:-} in
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
-	*) sed -n '2,31p' "$0"; exit 1 ;;
+	*) sed -n "2,32p" "$0"; exit 1 ;;
 esac
