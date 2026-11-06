@@ -4,8 +4,7 @@
 
 typedef enum SiftEvalMethod
 {
-	SIFT_EVAL_PENALTY_MAINTENANCE,
-	SIFT_EVAL_UNIT_REWRITE
+	SIFT_EVAL_PENALTY_MAINTENANCE
 } SiftEvalMethod;
 
 extern void

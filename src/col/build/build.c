@@ -13,7 +13,6 @@
 #endif
 #include "col/build/build_int.h"
 #include "col/maint/maint_int.h"
-#include "core/eval.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_workers = 0;
@@ -146,12 +145,6 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	else
 		sift_col_track_reconcile(index);
-	if (sift_eval_on(SIFT_EVAL_UNIT_REWRITE))
-	{
-		(void) sift_maint_lock(index, true);
-		maint_unit_layout(index, true);
-		sift_maint_unlock(index);
-	}
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

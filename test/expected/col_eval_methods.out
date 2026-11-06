@@ -1,5 +1,6 @@
--- sift.eval_methods names the methods under evaluation that are on: a comma separated list, a name that is none of the two is an
--- error and leaves the setting as it was. skip_trigger_lookup, the method that was on by default, is always on, snapshot_masks, which had no code, and latest_hint, which won nothing, were removed: none of the three is a name.
+-- sift.eval_methods names the methods under evaluation that are on: a comma separated list; penalty_maintenance is the only name. A name that is none of it is an
+-- error and leaves the setting as it was, and so are the names of the four methods removed in 4.2 (skip_trigger_lookup is always on, snapshot_masks had no code, latest_hint
+-- won nothing, the writer of unit_rewrite is gone) and the sign of -name.
 CREATE EXTENSION pg_sift;
 SHOW sift.eval_methods;
  sift.eval_methods 
@@ -7,18 +8,18 @@ SHOW sift.eval_methods;
  
 (1 row)
 
-SET sift.eval_methods = 'penalty_maintenance, unit_rewrite';
+SET sift.eval_methods = 'penalty_maintenance';
 SHOW sift.eval_methods;
-         sift.eval_methods         
------------------------------------
- penalty_maintenance, unit_rewrite
+  sift.eval_methods  
+---------------------
+ penalty_maintenance
 (1 row)
 
-SET sift.eval_methods = 'penalty_maintenance,unit_rewrite';
+SET sift.eval_methods = 'penalty_maintenance, penalty_maintenance';
 SHOW sift.eval_methods;
-        sift.eval_methods         
-----------------------------------
- penalty_maintenance,unit_rewrite
+            sift.eval_methods             
+------------------------------------------
+ penalty_maintenance, penalty_maintenance
 (1 row)
 
 SET sift.eval_methods = 'skip_trigger_lookup';
@@ -27,22 +28,28 @@ DETAIL:  Unknown evaluation method: skip_trigger_lookup
 SET sift.eval_methods = 'snapshot_masks';
 ERROR:  invalid value for parameter "sift.eval_methods": "snapshot_masks"
 DETAIL:  Unknown evaluation method: snapshot_masks
-SET sift.eval_methods = '-unit_rewrite';
-ERROR:  invalid value for parameter "sift.eval_methods": "-unit_rewrite"
-DETAIL:  Unknown evaluation method: -unit_rewrite
+SET sift.eval_methods = 'latest_hint';
+ERROR:  invalid value for parameter "sift.eval_methods": "latest_hint"
+DETAIL:  Unknown evaluation method: latest_hint
+SET sift.eval_methods = 'unit_rewrite';
+ERROR:  invalid value for parameter "sift.eval_methods": "unit_rewrite"
+DETAIL:  Unknown evaluation method: unit_rewrite
+SET sift.eval_methods = '-penalty_maintenance';
+ERROR:  invalid value for parameter "sift.eval_methods": "-penalty_maintenance"
+DETAIL:  Unknown evaluation method: -penalty_maintenance
 SET sift.eval_methods = 'snapshot_mask';
 ERROR:  invalid value for parameter "sift.eval_methods": "snapshot_mask"
 DETAIL:  Unknown evaluation method: snapshot_mask
-SHOW sift.eval_methods;
-        sift.eval_methods         
-----------------------------------
- penalty_maintenance,unit_rewrite
-(1 row)
-
 SET sift.eval_methods = 'penalty_maintenance,,';
 ERROR:  invalid value for parameter "sift.eval_methods": "penalty_maintenance,,"
 SET sift.eval_methods = 'a b';
 ERROR:  invalid value for parameter "sift.eval_methods": "a b"
+SHOW sift.eval_methods;
+            sift.eval_methods             
+------------------------------------------
+ penalty_maintenance, penalty_maintenance
+(1 row)
+
 RESET sift.eval_methods;
 SHOW sift.eval_methods;
  sift.eval_methods 
@@ -56,25 +63,6 @@ SELECT name || '=' || current_setting(name) AS in_the_settings_hash FROM pg_sett
          in_the_settings_hash          
 ---------------------------------------
  sift.eval_methods=penalty_maintenance
-(1 row)
-
-RESET sift.eval_methods;
--- Every method is available explicitly; the name of a removed one is an error.
-SET sift.eval_methods = 'latest_hint';
-ERROR:  invalid value for parameter "sift.eval_methods": "latest_hint"
-DETAIL:  Unknown evaluation method: latest_hint
-SET sift.eval_methods = 'unit_rewrite';
-SHOW sift.eval_methods;
- sift.eval_methods 
--------------------
- unit_rewrite
-(1 row)
-
-SET sift.eval_methods = 'penalty_maintenance,unit_rewrite';
-SHOW sift.eval_methods;
-        sift.eval_methods         
-----------------------------------
- penalty_maintenance,unit_rewrite
 (1 row)
 
 RESET sift.eval_methods;

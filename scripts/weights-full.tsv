@@ -248,7 +248,6 @@ installcheck-col_key_cut_growth	26	18
 tap-shell-col_build_peers	26	23
 tap-shell-col_pg_repack	19	26
 tap-shell-col_pg_squeeze	0	10
-tap-shell-col_unit_generations	26	12
 tap-shell-maint_lock	21	26
 installcheck-agg_exists_decorrelate	25	8
 installcheck-agg_join_filter	25	25
