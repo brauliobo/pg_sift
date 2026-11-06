@@ -75,16 +75,6 @@ BEGIN
 	RETURN d;
 END $$;
 
--- rows_agg_scans: the helper that tests of test/sql defined themselves (au_rows, ca_rows, cp_rows, kf_rows, kr_rows, sp_rows)
-CREATE FUNCTION sift_helpers.rows_agg_scans(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-
 -- plan_has_agg_scan: the helper that tests of test/sql defined themselves (a_pushed, d_pushed, j_pushed, k_pushed, t_pushed)
 CREATE FUNCTION sift_helpers.plan_has_agg_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -165,41 +155,6 @@ BEGIN
 	SELECT count(*) INTO n FROM r_on;
 	DROP TABLE r_on, r_off;
 	RETURN d = 0 AND n > 0;
-END $$;
-
--- agg_mode_workers_all_scans: the helper that 5 tests of test/sql defined themselves (oc_mode, ta_mode, tb_mode, tc_mode)
-CREATE FUNCTION sift_helpers.agg_mode_workers_all_scans(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
-	PERFORM set_config('parallel_setup_cost', '0', true);
-	PERFORM set_config('parallel_tuple_cost', '0', true);
-	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-END $$;
-
--- rows_agg_all_scans: the helper that 6 tests of test/sql defined themselves (au_rows, ca_rows, cp_rows, kf_rows, kr_rows, sp_rows)
-CREATE FUNCTION sift_helpers.rows_agg_all_scans(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-
--- rows_agg_all_scans_errors: the helper that 4 tests of test/sql defined themselves (kp_rows, kt_rows, ss_rows, tk_rows)
-CREATE FUNCTION sift_helpers.rows_agg_all_scans_errors(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
 END $$;
 
 -- differences_agg_temp: the helper that 4 tests of test/sql defined themselves (s_diff)
@@ -373,15 +328,6 @@ BEGIN
 		IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
 	END LOOP;
 	RETURN format('%s SiftAgg nodes, %s cached tables', nodes, kept);
-END $$;
-
--- rows_agg_pushdown_text: the helper that 3 tests of test/sql defined themselves (im_rows, mk_rows, ow_rows)
-CREATE FUNCTION sift_helpers.rows_agg_pushdown_text(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
 END $$;
 
 -- agg_events_parts_arms_query: the helper that 3 tests of test/sql defined themselves (arms)

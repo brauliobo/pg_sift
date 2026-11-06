@@ -28,7 +28,7 @@ CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s
 RESET sift.test_limits;
 VACUUM (ANALYZE) ta;
 
-CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
+CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION ta_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$

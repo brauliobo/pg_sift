@@ -9,7 +9,7 @@ SET sift.col_auto_merge = off;
 SET max_parallel_workers_per_gather = 0;
 CREATE FUNCTION mk_opt(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce(array_to_string(reloptions, ','), '') FROM pg_class WHERE oid = idx $$;
 CREATE FUNCTION mk_held(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT held FROM sift.index_advice(idx) WHERE leaf = 'set_id' $$;
-CREATE FUNCTION mk_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_pushdown_text(q, push) $$;
+CREATE FUNCTION mk_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 -- clustered by set_id: about 6 owners in a unit, which the cube holds
 CREATE TABLE mk (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO mk SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(0, 29999) i;
