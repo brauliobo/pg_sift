@@ -510,6 +510,6 @@ CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_bl
 	AS 'MODULE_PATHNAME', 'sift_test_segment_reads' LANGUAGE C STRICT;
 
 -- What the direct probes of the backend did since the last reset (src/agg/combo/probe.h DStats): keys probed, keys compared with index tuples, the columns of those
--- compares, the compares through the opclass's order function, the pages read from the buffer manager.
-CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8, OUT tuple_compares int8, OUT column_compares int8, OUT generic_compares int8, OUT page_reads int8)
+-- compares, the compares through the opclass's order function, the pages read from the buffer manager, the compares that read the columns one by one (a NULL among the compared columns).
+CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8, OUT tuple_compares int8, OUT column_compares int8, OUT generic_compares int8, OUT page_reads int8, OUT slow_compares int8)
 	RETURNS record AS 'MODULE_PATHNAME', 'sift_test_probe_stats' LANGUAGE C STRICT;

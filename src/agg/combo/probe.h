@@ -32,6 +32,7 @@ typedef struct DStats
 	int64		tuple_cmps;				/* key against an index tuple */
 	int64		col_cmps;				/* of those, the columns compared (the columns known equal are not) */
 	int64		generic_cmps;			/* of those, through the opclass's order function */
+	int64		slow_cmps;				/* of those, through index_getattr: a NULL among the columns compared */
 	int64		page_reads;				/* pages read from the buffer manager (a page kept pinned is not read again) */
 } DStats;
 

@@ -177,6 +177,29 @@ dp_col_cmp(DProbe *dp, const DCol *c, const DArg *a, const char *p)
  * key with more attributes than a truncated pivot is greater. An item equal in every attribute is equal; the walk to the right that follows every
  * descent makes a descent that ends one page too far left harmless, never one that ends too far right.
  */
+/*
+ * A NULL in an attribute after the n compared ones (an INCLUDE column, a later key column) does not move the ones before it: only a NULL among the first n
+ * sends the compare through index_getattr. A covering index whose included column is NULL in most rows (a column of a document that is mostly absent)
+ * would otherwise take that way for every tuple. The bitmap follows the tuple header, a set bit is a value (att_isnull).
+ */
+static inline bool
+dp_nulls_in(IndexTuple itup, int n)
+{
+	const uint8 *bits;
+
+	if (!IndexTupleHasNulls(itup))
+		return false;
+	bits = (const uint8 *) ((const char *) itup + sizeof(IndexTupleData));
+	for (int i = 0; i < n; i += 8)
+	{
+		int			w = Min(8, n - i);
+
+		if ((bits[i / 8] & ((1 << w) - 1)) != (1 << w) - 1)
+			return true;
+	}
+	return false;
+}
+
 static inline int
 dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts, int *eq)
 {
@@ -185,7 +208,7 @@ dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts, int *eq)
 
 	DP_COUNT(tuple_cmps, 1);
 
-	if (!IndexTupleHasNulls(itup))
+	if (!dp_nulls_in(itup, ncmp))
 	{
 		const char *data = (const char *) itup + IndexInfoFindDataOffset(itup->t_info);
 		long		off = 0;
@@ -220,6 +243,7 @@ dp_cmp_tuple(DProbe *dp, const DKey *k, IndexTuple itup, int ntupatts, int *eq)
 	{
 		TupleDesc	td = RelationGetDescr(dp->irel);
 
+		DP_COUNT(slow_cmps, 1);
 		for (int i = from; i < ncmp; i++)
 		{
 			const DCol *c = &dp->col[i];

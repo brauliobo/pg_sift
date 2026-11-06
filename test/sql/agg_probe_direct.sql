@@ -234,6 +234,40 @@ INSERT INTO lk_inc SELECT g, 'v' || g FROM generate_series(0, 299) g WHERE g % 7
 CREATE INDEX lk_inc_k ON lk_inc (k) INCLUDE (v);
 VACUUM (FREEZE, ANALYZE) lk_inc;
 SELECT * FROM step_io('include column', 'lk_inc', 'k = o.n::int');
+-- A NULL in an INCLUDE column (or a later key column) is not among the columns a probe compares: the compare keeps its fast way, and only a NULL in a compared column
+-- reads the columns one by one (sift._test_probe_stats, slow_compares). The covering index is what the planner takes for an Index Only Scan when it holds every column the
+-- child reads, the column inside an indexed expression included: a lookup child that reads (scope, mapped value) through coalesce(scope, '{}') is answered from the
+-- visibility map once the table is vacuumed.
+CREATE TABLE lk_incn (k int, a text, b int, v text);
+INSERT INTO lk_incn SELECT g, CASE WHEN g % 3 = 0 THEN 'a' || g END, CASE WHEN g % 5 = 0 THEN g END, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_incn_k ON lk_incn (k) INCLUDE (a, b, v);
+CREATE TABLE lk_nullk (k int, a text, v text);
+INSERT INTO lk_nullk SELECT CASE WHEN g % 2 = 0 THEN NULL ELSE g END, CASE WHEN g % 3 = 0 THEN 'a' || g END, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_nullk_k ON lk_nullk (k NULLS FIRST) INCLUDE (a, v);
+CREATE TABLE lk_incx (s int[], t text, v text);
+INSERT INTO lk_incx SELECT CASE WHEN g % 40 = 0 THEN ARRAY[g] END, 't' || g, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_incx_k ON lk_incx ((coalesce(s, '{}'::int[])), t) INCLUDE (s, v);
+VACUUM (FREEZE, ANALYZE) lk_incn, lk_nullk, lk_incx;
+SELECT * FROM step_io('include columns with NULLs', 'lk_incn', 'k = o.n::int', 'LIMIT 1', 'a');
+SELECT * FROM step_io('include column read when NULL', 'lk_incn', 'k = o.n::int', 'LIMIT 1', 'b');
+SELECT * FROM step_io('NULL in a key column', 'lk_nullk', 'k = o.n::int', 'LIMIT 1', 'a');
+SELECT * FROM step_io('expression key, its column included', 'lk_incx', 'coalesce(s, ''{}''::int[]) = ''{}'' AND t = ''t'' || o.n::int', 'LIMIT 1', 'v');
+CREATE FUNCTION slow_compares(q text) RETURNS TABLE (compared bool, slow bigint) LANGUAGE plpgsql AS $$
+DECLARE s record;
+BEGIN
+  SET LOCAL sift.enable_agg = on;
+  PERFORM sift._test_probe_stats(true);
+  EXECUTE 'SELECT count(*) FROM (' || q || ') q';
+  SELECT tuple_compares, slow_compares INTO s FROM sift._test_probe_stats(true);
+  compared := s.tuple_compares > 0;
+  slow := s.slow_compares;
+  RETURN NEXT;
+END $$;
+SELECT 'NULL only in INCLUDE columns' AS lookup, * FROM slow_compares(case_query_col('lk_incn', 'k = o.n::int', 'LIMIT 1', 'a'));
+SELECT 'NULL in the compared column' AS lookup, compared, slow > 0 AS slow_path FROM slow_compares(case_query_col('lk_nullk', 'k = o.n::int', 'LIMIT 1', 'a'));
+SELECT 'expression key, NULL in its INCLUDE column' AS lookup, * FROM slow_compares(case_query_col('lk_incx', 'coalesce(s, ''{}''::int[]) = ''{}'' AND t = ''t'' || o.n::int', 'LIMIT 1', 'v'));
+DROP FUNCTION slow_compares(text);
+DROP TABLE lk_incn, lk_nullk, lk_incx;
 
 DO $$ DECLARE t record; BEGIN FOR t IN SELECT ord FROM types LOOP EXECUTE format('DROP TABLE lk_%s', t.ord); END LOOP; END $$;
 DROP FUNCTION order_function_calls(text), types_query(types), case_query_ud(text, text), step_io(text, text, text, text, text), case_query_col(text, text, text, text), step(text, text, text, text), case_query(text, text, text), probe_check(text), check_query(text);

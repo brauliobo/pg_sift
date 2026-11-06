@@ -61,8 +61,8 @@ Datum
 sift_test_probe_stats(PG_FUNCTION_ARGS)
 {
 	TupleDesc	td;
-	Datum		v[5];
-	bool		n[5] = {false};
+	Datum		v[6];
+	bool		n[6] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -71,6 +71,7 @@ sift_test_probe_stats(PG_FUNCTION_ARGS)
 	v[2] = Int64GetDatum(sift_probe_stats.col_cmps);
 	v[3] = Int64GetDatum(sift_probe_stats.generic_cmps);
 	v[4] = Int64GetDatum(sift_probe_stats.page_reads);
+	v[5] = Int64GetDatum(sift_probe_stats.slow_cmps);
 	if (PG_GETARG_BOOL(0))
 		memset(&sift_probe_stats, 0, sizeof(sift_probe_stats));
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(td, v, n)));
