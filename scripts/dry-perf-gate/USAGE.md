@@ -26,7 +26,7 @@
    `perf-gate 295f60d3e879 -> 7c1d... (14 cases, groups agg-read,agg-kernel): instructions:u 1,204.31M -> 1,204.87M (+0.047%, worst agg_mode +0.11%), cycles:u 612.0M -> 611.4M (-0.10%, noise 1.2%), blocks 41,880 -> 41,880, WAL 0 -> 0 B, text -64 B, rows identical: PASS`
    or `perf-gate A -> B: PASS-IDENTICAL (all 533 stripped object files byte-identical, text +0 B)`.
 8. The base is rebuilt/re-measured when it moves (builds, objects and the data template are cached per base sha under GATE_ROOT (default /dev/shm/sift-perf-gate); 4 builds and 3
-   templates are kept). `scripts/dry-perf-gate.sh baseline BASE` (about 12 minutes, full registry, base against base) stores $GATE_STATE/baselines/<sha>.{json,tsv} and noise.json (default $XDG_STATE_HOME/sift-perf-gate, never in git)
+   templates are kept; every start also removes the run directories of dead processes beyond the newest 2, and builds, ports and templates unused for a day, so the tmpfs root stays bounded; a run in flight is never touched). `scripts/dry-perf-gate.sh baseline BASE` (about 12 minutes, full registry, base against base) stores $GATE_STATE/baselines/<sha>.{json,tsv} and noise.json (default $XDG_STATE_HOME/sift-perf-gate, never in git)
    (the per-case cycles noise floor the later runs use); run it once per integration tip, not per commit.
 9. Parallel workers: the default cases run with workers 0 (deterministic). The opt-in group `par` (selected by `src/agg/par*`, `src/core/parbuild.c`, `src/col/build_par.c`, `src/bm25/parallel.c`,
    or `--groups par`) runs `par_agg_*` (workers planned 2, checked in the plan) and `par_*_build` (2 maintenance workers); the counters are those of the leader and its workers together, and

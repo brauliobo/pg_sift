@@ -107,6 +107,61 @@ class Lock:
         fcntl.flock(self.f, fcntl.LOCK_UN)
 
 
+# --- retention -----------------------------------------------------------------------------------------------------------------------------------------------------
+MAX_AGE_S = 24 * 3600
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def prune_scratch(repo=None, keep_runs=2):
+    """Run at every start, so that the gate never fills tmpfs: the run directories of processes that are gone (a killed run, --keep) except the newest `keep_runs` and none older than a day,
+    their clusters stopped by exact data directory first; the pin files of builds that no longer exist; builds, ports and data templates nobody used for a day (a run in flight pins its
+    build with a shared lock and holds the template lock while it copies, and is skipped). The counts of builds, ports and templates are kept by their own eviction."""
+    now = time.time()
+    run = W / 'run'
+    dead = sorted((d for d in run.iterdir() if d.is_dir() and d.name.isdigit() and not pid_alive(int(d.name))), key=lambda d: d.stat().st_mtime, reverse=True) if run.exists() else []
+    for i, d in enumerate(dead):
+        if i < keep_runs and now - d.stat().st_mtime < MAX_AGE_S:
+            continue
+        for data in (d / 'data-base', d / 'data-cand'):
+            if (data / 'postmaster.pid').exists():
+                subprocess.run(['pg_ctl', '-D', str(data), '-m', 'immediate', '-w', 'stop'], capture_output=True)
+        shutil.rmtree(d, ignore_errors=True)
+    builds = W / 'builds'
+    for use in sorted(builds.glob('*.use')) if builds.exists() else []:
+        f = open(use, 'a')
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.close()
+            continue
+        if not (builds / use.stem).exists() and not (W / 'ports' / use.stem).exists():
+            use.unlink(missing_ok=True)
+        elif repo is not None:
+            for root in (builds, W / 'ports'):
+                d = root / use.stem
+                if d.exists() and now - d.stat().st_mtime > MAX_AGE_S:
+                    repo.git('worktree', 'remove', '--force', str(d / 'src'))
+                    shutil.rmtree(d, ignore_errors=True)
+        f.close()
+    with Lock('lock-template'):
+        data = W / 'data'
+        for t in (sorted(p for p in data.iterdir() if p.name.startswith('tpl-') and p.is_dir()) if data.exists() else []):
+            if now - t.stat().st_mtime > MAX_AGE_S:
+                shutil.rmtree(t, ignore_errors=True)
+                Path(str(t) + '.log').unlink(missing_ok=True)
+    if repo is not None:
+        repo.git('worktree', 'prune')
+
+
 # --- repository ---------------------------------------------------------------------------------------------------------------------------------------------
 class Repo:
     """A repository of our own that borrows the objects of the source repo (alternates, read only): nothing is written to the source."""
@@ -243,6 +298,7 @@ class PortableCheck(Build):
             self.pin()
             if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE:
                 self.info = json.loads(marker.read_text())
+                self.touch()
                 return self
             if self.dir.exists():
                 self.repo.git('worktree', 'remove', '--force', str(self.tree))
@@ -265,7 +321,7 @@ class PortableCheck(Build):
                     problems += [f'{name}: {l}' for l in dict.fromkeys(lines)][:12] or [f'{name}: failed ({r.returncode}): ' + (r.stderr.strip().splitlines() or ['?'])[-1][:200]]
             self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE)
             marker.write_text(json.dumps(self.info))
-            for old in sorted((d for d in (W / 'ports').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)[8:]:
+            for old in sorted((d for d in (W / 'ports').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)[4:]:
                 use = open(W / 'builds' / (old.name + '.use'), 'a')
                 try:
                     fcntl.flock(use, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -682,6 +738,10 @@ def main():
         os.environ.pop(k, None)
     os.environ['PGHOST'], os.environ['PGPORT'] = '/nonexistent', '1'   # fails closed: a psql without a cluster of ours never reaches the system server
     repo = Repo(a.src)
+    try:
+        prune_scratch(repo)
+    except (OSError, InfraError) as e:       # tidying is never a reason for a run to fail
+        log('retention skipped:', e)
     if a.cmd == 'list':
         reg = load_registry(repo_tree(repo))
         for c in reg:
