@@ -224,6 +224,8 @@ if [[ $MODE == --selftest ]]; then
 		{ grep -q 'peak total' "$ST/stats/out" && [[ ! -s $ST/stats/err ]]; } || { echo "FAIL: the footprint sampler ended by its $how without its report or with output on stderr: $(head -c 200 "$ST/stats/err")"; bad=1; }
 		rm -f "$ST/stats/logs/stats.stop"
 	done
+	# the weights of scripts/ci-times.py are the median of the runs, not the newest (one hosted run is noisy)
+	out=$(python3 -I "$REPO/scripts/ci-times.py" --selftest 2>&1) || { echo "FAIL: scripts/ci-times.py --selftest: $out"; bad=1; }
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
 	for k in 3 9; do
 		plan_of full 18 1 $k/9

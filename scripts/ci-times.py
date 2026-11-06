@@ -3,8 +3,8 @@
 
   scripts/ci-times.py RUN...              one table per run: every job (queue, run, test step, lanes, lane minutes, the longest
                                           tests) and the slowest tests of the full tier
-  scripts/ci-times.py --weights [--tier quick|full] RUN...    scripts/weights-*.tsv from the passing jobs of the runs (the newest run that passed a job wins:
-                                          name the runs oldest first; a major that passed a job in no run gets the mean of its sibling slices)
+  scripts/ci-times.py --weights [--tier quick|full] RUN...    scripts/weights-*.tsv from the passing jobs of the runs (the median of the runs that passed a job:
+                                          name three or more; a major that passed a job in no run gets the mean of its sibling slices)
 
 The job logs come from `gh api` and are kept in --cache (default $TMPDIR/ci-times) so that a run is fetched once. The test times are the
 `ci: STATUS ID N s (LANE)` lines scripts/ci.sh prints; a failed job is left out of the weights (--fail-fast ends it early).
@@ -95,6 +95,22 @@ def report(run, cache):
         print(f'| {secs} | {test} | {name} |')
 
 
+def med(v):
+    return int(statistics.median(v))
+
+
+def pick(per, test, major):
+    """The weight of a test on a major: the median of its passing times in the runs (one hosted run is noisy: the same test took 179 and 362 s beside different jobs),
+    else the mean of the medians of its sibling slices (difftest-col-8 of difftest-col-N), else the median on the other major, else the default 10."""
+    mine = per[major].get(test)
+    if mine:
+        return med(mine)
+    family = re.sub(r'-\d+$', '', test)
+    sib = [med(v) for t, v in per[major].items() if t != test and re.sub(r'-\d+$', '', t) == family]
+    other = per[35 - major].get(test)
+    return int(statistics.mean(sib)) if sib else med(other) if other else 10
+
+
 def weights(runs, cache, floor, in_tier):
     per = {17: defaultdict(list), 18: defaultdict(list)}
     for run in runs:
@@ -105,30 +121,36 @@ def weights(runs, cache, floor, in_tier):
             for test, status, secs in parse(job_log(run, j['databaseId'], cache))[0]:
                 if status == 'PASS':
                     per[17 if int(m[1]) == 17 else 18][test].append(secs)
-    print('# job\tPostgreSQL 17 lane seconds\tPostgreSQL 18 lane seconds: the newest passing job of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights); the shards are cut by these, the other jobs weigh 10')
-    def seconds(test, major):
-        # the time of the newest run that passed it on this major, else the mean of its sibling slices (difftest-col-8 of difftest-col-N), else the other major's time
-        mine = per[major].get(test)
-        if mine:
-            return mine[-1]
-        family = re.sub(r'-\d+$', '', test)
-        sib = [v[-1] for t, v in per[major].items() if t != test and re.sub(r'-\d+$', '', t) == family]
-        other = per[35 - major].get(test)
-        return int(statistics.mean(sib)) if sib else other[-1] if other else 10
-    rows = [(test, seconds(test, 17), seconds(test, 18)) for test in set(per[17]) | set(per[18])]
+    print('# job\tPostgreSQL 17 lane seconds\tPostgreSQL 18 lane seconds: the median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10')
+    rows = [(test, pick(per, test, 17), pick(per, test, 18)) for test in set(per[17]) | set(per[18])]
     for test, a, b in sorted(rows, key=lambda r: (-max(r[1], r[2]), r[0])):
         if max(a, b) >= floor:
             print(f'{test}\t{a}\t{b}')
 
 
+def selftest():
+    per = {17: defaultdict(list), 18: defaultdict(list)}
+    per[18]['t'] = [100, 110, 400]       # the newest run is the noisy one
+    per[18]['s-1'] = [50, 60, 70]
+    per[18]['s-2'] = [90]
+    per[17]['o'] = [30, 50]
+    ok = (pick(per, 't', 18) == 110 and pick(per, 's-3', 18) == int(statistics.mean([60, 90])) and pick(per, 'o', 18) == 40 and pick(per, 'none', 17) == 10)
+    print('ci-times selftest: ' + ('the weight is the median of the runs, the mean of the sibling slices, the other major, else 10' if ok else 'FAIL: pick() differs'))
+    return 0 if ok else 1
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('runs', nargs='+', type=int)
+    ap.add_argument('runs', nargs='*', type=int)
+    ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--weights', action='store_true')
     ap.add_argument('--tier', choices=('quick', 'full'), default='full', help='the jobs the weights come from (--weights)')
     ap.add_argument('--floor', type=int, default=20, help='seconds under which a job weighs the default (--weights)')
     ap.add_argument('--cache', default=os.path.join(tempfile.gettempdir(), 'ci-times'))
     a = ap.parse_args()
+    if a.selftest:
+        raise SystemExit(selftest())
+    ap.error('name the runs') if not a.runs else None
     os.makedirs(a.cache, exist_ok=True)
     if a.weights:
         weights(a.runs, a.cache, a.floor, quick_tier if a.tier == 'quick' else full_tier)
