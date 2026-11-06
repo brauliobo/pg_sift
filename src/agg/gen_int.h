@@ -92,6 +92,7 @@ typedef struct GenSt
 	bool		inplace;		/* every argument the best row holds is by-value: a better row overwrites it */
 	/* DISTINCT ON by one key of a plain column: the best row of each group within a chunk, found before any value of it is copied (gen_first_chunk) */
 	uint32		ccap;			/* groups the three arrays cover */
+	uint32		cstamp;			/* topn: the chunks read so far; cwin[g] is the stamp of the chunk whose edge ckey[g] holds */
 	uint32	   *cwin;			/* per group: the chunk's best tuple + 1, 0 none */
 	Datum	   *ckey;
 	bool	   *cnull;

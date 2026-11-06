@@ -294,13 +294,44 @@ gen_first_merge(GenSt *st, AggAcc *acc, uint32 g, const char *at)
 		gen_best_set(st, acc, g, args, nulls);
 }
 
-/* is the one sort key of the call a plain column of a by-value type: its value is read from the chunk with no allocation and kept by a group across the tuples of the chunk */
+/* is the first sort key of the call a plain column of a by-value type: its value is read from the chunk with no allocation and kept by a group across the tuples of the chunk */
 static bool
-gen_first_plain(const GenSt *st)
+gen_key_plain(const GenSt *st)
 {
 	const SiftAggGenArg *ar = &st->g->arg[st->fkey[0]];
 
-	return st->nfk == 1 && !ar->mapped && ar->nleaves == 1 && ar->expr == NULL && st->abyval[st->fkey[0]];
+	return !ar->mapped && ar->nleaves == 1 && ar->expr == NULL && st->abyval[st->fkey[0]];
+}
+
+static bool
+gen_first_plain(const GenSt *st)
+{
+	return st->nfk == 1 && gen_key_plain(st);
+}
+
+/* the per-group arrays of a chunk's pass (the best or the last kept tuple of a group) cover the group */
+static void
+gen_chunk_room(AggExec *ex, GenSt *st, uint32 gid)
+{
+	if (gid >= st->ccap)
+	{
+		uint32		cap = Max(gid + 1, st->ccap * 2);
+
+		if (st->ccap == 0)
+		{
+			st->cwin = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
+			st->ckey = MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
+			st->cnull = MemoryContextAlloc(ex->cxt, cap * sizeof(bool));
+		}
+		else
+		{
+			st->cwin = repalloc(st->cwin, cap * sizeof(uint32));
+			memset(st->cwin + st->ccap, 0, (cap - st->ccap) * sizeof(uint32));
+			st->ckey = repalloc(st->ckey, cap * sizeof(Datum));
+			st->cnull = repalloc(st->cnull, cap * sizeof(bool));
+		}
+		st->ccap = cap;
+	}
 }
 
 /*
@@ -327,25 +358,7 @@ gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint
 
 		if (ok && !sift_colsrc_bit(ok, j))
 			continue;
-		if (gid >= st->ccap)
-		{
-			uint32		cap = Max(gid + 1, st->ccap * 2);
-
-			if (st->ccap == 0)
-			{
-				st->cwin = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
-				st->ckey = MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
-				st->cnull = MemoryContextAlloc(ex->cxt, cap * sizeof(bool));
-			}
-			else
-			{
-				st->cwin = repalloc(st->cwin, cap * sizeof(uint32));
-				memset(st->cwin + st->ccap, 0, (cap - st->ccap) * sizeof(uint32));
-				st->ckey = repalloc(st->ckey, cap * sizeof(Datum));
-				st->cnull = repalloc(st->cnull, cap * sizeof(bool));
-			}
-			st->ccap = cap;
-		}
+		gen_chunk_room(ex, st, gid);
 		gen_arg(ex, st, in, j, st->fkey[0], &d, &isnull);
 		if (st->cwin[gid] == 0)
 			st->ctouch[nt++] = gid;
@@ -499,6 +512,50 @@ gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
 	MemoryContextSwitchTo(old);
 }
 
+/*
+ * The tuples of the chunk of a topn whose first sort key is a plain by-value column: a tuple whose first key comes after that of the last kept tuple of its group (the edge
+ * gen_top compares it with) is dropped on that key alone, read from the chunk, with no allocation and no reset of the expression context; one that ties with the edge on it
+ * goes on to the later keys (with no later key a tie is dropped too, for the rows of a topn, as in gen_top). The edge of a group is kept in ckey, as the best tuple of
+ * a chunk is for a first(): the most of the tuples of a group that has its rows are dropped here.
+ */
+static void
+gen_top_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint64 *ok, int nsel)
+{
+	int			k = st->fkey[0],
+				n = st->g->nargs;
+	uint32		stamp = ++st->cstamp;	/* an edge holds for the chunk it was read in: the group ids may be renumbered between chunks */
+
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		gid = ex->gid[j];
+		const GenBest *edge;
+		Datum		d;
+		bool		isnull;
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		gen_chunk_room(ex, st, gid);
+		if (st->cwin[gid] == stamp)
+		{
+			int			c;
+
+			gen_arg(ex, st, in, j, k, &d, &isnull);
+			c = ApplySortComparator(d, isnull, st->ckey[gid], st->cnull[gid], &st->fsup[0]);
+			if (st->g->ties == SIFT_TOPN_ROWS && st->nfk == 1 ? c >= 0 : c > 0)
+				continue;
+		}
+		gen_top(ex, st, acc, in, j, gid);
+		ResetExprContext(ex->lutcx);
+		edge = gen_top_edge(st, (GenTop *) DatumGetPointer(acc->v[gid]));
+		st->cwin[gid] = edge != NULL ? stamp : 0;
+		if (edge != NULL)
+		{
+			st->ckey[gid] = edge[k];
+			st->cnull[gid] = GEN_BEST_NULL(edge, n, k);
+		}
+	}
+}
+
 /* the scan has ended: the rows each group kept go through the transition function in order, then its final function */
 static void
 gen_flush_topn(AggExec *ex, int ai)
@@ -565,6 +622,12 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	if (g->first && !st->follower && gen_first_plain(st))
 	{
 		gen_first_chunk(ex, st, acc, &in, ok, nsel);
+		MemoryContextSwitchTo(old);
+		return;
+	}
+	if (g->topn && gen_key_plain(st))
+	{
+		gen_top_chunk(ex, st, acc, &in, ok, nsel);
 		MemoryContextSwitchTo(old);
 		return;
 	}

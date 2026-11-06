@@ -441,3 +441,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 -	agg_percentile_array	300000	picked	default	instr_m	192	10	bench case agg_percentile_array, records in program-scale/realq42b/wp27
 -	agg_percentile_array	300000	native	default	exec_ms	78.5	25	bench case agg_percentile_array, native plan, records in program-scale/realq42b/wp27
 -	agg_percentile_array	300000	native	default	instr_m	873	10	bench case agg_percentile_array, native plan, records in program-scale/realq42b/wp27
+-	agg_topn_chunk	300000	picked	default	exec_ms	3.74	25	bench case agg_topn_chunk, 300,000 rows, 20 groups, records in program-scale/realq42b/wp27
+-	agg_topn_chunk	300000	picked	default	instr_m	52.2	10	bench case agg_topn_chunk, records in program-scale/realq42b/wp27
+-	agg_topn_chunk	300000	native	default	exec_ms	108	25	bench case agg_topn_chunk, native plan, records in program-scale/realq42b/wp27
+-	agg_topn_chunk	300000	native	default	instr_m	1505	10	bench case agg_topn_chunk, native plan, records in program-scale/realq42b/wp27
