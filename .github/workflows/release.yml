@@ -207,6 +207,6 @@ jobs:
           # one checksum file for every asset (the build jobs' own are not uploaded or are rewritten here)
           (cd dist && rm -f SHA256SUMS && sha256sum -- *.deb *.rpm *.tar.gz > SHA256SUMS && cat SHA256SUMS)
           title="pg_sift ${TAG#v}"
-          if gh release view "$TAG" >/dev/null 2>&1; then gh release edit "$TAG" --title "$title" --notes-file "$notes"
-          else gh release create "$TAG" --verify-tag --title "$title" --notes-file "$notes"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then gh release edit "$TAG" --title "$title" --notes-file "$notes" --latest=false
+          else gh release create "$TAG" --verify-tag --latest=false --title "$title" --notes-file "$notes"; fi
           gh release upload "$TAG" dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS --clobber

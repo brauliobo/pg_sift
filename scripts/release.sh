@@ -20,6 +20,7 @@
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # --skip-ci leaves out the ci check only, for a release whose CI the person releasing accepts as it is (no full-scope run, or a lighter one): it prints
 #   ci: SKIPPED by --skip-ci (no green full-scope run required), records it in the manifest (--resume and the last line show it), and every other check runs.
+# RELEASE_TAG_ONLY=1: a patch release of an older line from its own branch: the tag is pushed, main never (the GitHub release is not marked latest by the workflow).
 # Environment: NEUTRAL_VOCAB_FILE or NEUTRAL_VOCAB (the wording vocabulary, required), RELEASE_TMP (scratch, default /dev/shm), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail
 
@@ -118,9 +119,9 @@ preflight() {
 	[[ -z $(g status --porcelain) ]] || { g status --short; die "the tree is not clean"; }
 	g fetch -q --tags origin main
 	g rev-parse -q --verify "refs/tags/$TAG" >/dev/null && [[ -z $RESUME ]] && die "$TAG exists"
-	[[ $(g rev-parse --abbrev-ref HEAD) == main ]] || soft "not on main"
+	[[ -n ${RELEASE_TAG_ONLY:-} ]] || [[ $(g rev-parse --abbrev-ref HEAD) == main ]] || soft "not on main"
 	# HEAD is origin/main; a resumed release may be one commit ahead (the bump) or already pushed
-	[[ -n $RESUME ]] || [[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || soft "HEAD is not origin/main: push or pull first"
+	[[ -n $RESUME || -n ${RELEASE_TAG_ONLY:-} ]] || [[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || soft "HEAD is not origin/main: push or pull first"
 	[[ -f $R/$notes ]] || soft "write $notes first (copy the notes of a previous release)"
 	! grep -qsE 'X\.Y\.Z|<one line|<feature>' "$R/$notes" || soft "$notes still has template text"
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
@@ -289,7 +290,7 @@ publish() {
 	if [[ -n $DRY ]]; then g tag -f -a "$TAG" -m "pg_sift $VERSION"; echo "dry run: $(g rev-parse --short HEAD) would be pushed to main and tagged $TAG"; return 0; fi
 	[[ -z $(g ls-remote origin "refs/tags/$TAG") ]] || return 0
 	g rev-parse -q --verify "refs/tags/$TAG" >/dev/null || g tag -a "$TAG" -m "pg_sift $VERSION"
-	g push -q --atomic origin HEAD:refs/heads/main "refs/tags/$TAG"
+	if [[ -n ${RELEASE_TAG_ONLY:-} ]]; then g push -q origin "refs/tags/$TAG"; else g push -q --atomic origin HEAD:refs/heads/main "refs/tags/$TAG"; fi
 }
 workflow() {
 	local id n
