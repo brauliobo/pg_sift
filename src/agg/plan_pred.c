@@ -691,10 +691,13 @@ negate_existential(SiftAggPred *p)
 	return true;
 }
 
+static SiftAggPred *compile_not_true(AggCtx *c, SiftAggPred *p);
+
 /*
- * NOT (a && k), NOT (a @> k), NOT (a <@ k) of an array column that may be NULL: the test is NULL for a NULL array, and NOT of it keeps no row, so the rows
- * are those of a IS NOT NULL whose elements fail the test (a NULL element never matches, so the test is never NULL for another array). NULL: the index has
- * no way to tell a NULL array (neither its image nor the lengths), or the test is not one of the three.
+ * NOT (a && k), NOT (a @> k), NOT (a <@ k) of an array column that may be NULL, NOT (doc @> k) of a jsonb column that may be NULL: the test is NULL for a
+ * NULL document, and NOT of it keeps no row, so the rows are those of a IS NOT NULL whose elements fail the test (a NULL element never matches, so the
+ * test is never NULL for another array; a document is never NULL otherwise). NULL: the index has no way to tell a NULL document (neither the lengths
+ * of an array nor the leaf of option document_present), or the test is not an existential one.
  */
 static SiftAggPred *
 compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
@@ -703,14 +706,17 @@ compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
 	SiftAggPred *nn,
 			   *both;
 
-	if (!OidIsValid(get_element_type(exprType(target))) || p->level > 1)
+	if ((!OidIsValid(get_element_type(exprType(target))) && present_leaf(c, target) < 0) || p->level > 1)
 		return NULL;
 	nt = makeNode(NullTest);
 	nt->arg = (Expr *) target;
 	nt->nulltesttype = IS_NOT_NULL;
-	if ((nn = compile_pred(c, (Node *) nt)) == NULL || nn->level > 1 || !negate_existential(p))
+	if ((nn = compile_pred(c, (Node *) nt)) == NULL || nn->level > 1)
 		return NULL;
-	p->desc = psprintf("NOT %s", p->desc);
+	if (negate_existential(p))
+		p->desc = psprintf("NOT %s", p->desc);
+	else if ((p = compile_not_true(c, compile_existential(c, strip_relabel(linitial(b->args)), &target))) == NULL)	/* p is half flipped: the test again, whose complement is the rows that fail it */
+		return NULL;
 	both = new_junction(c, SAP_AND, 2);
 	both->child[0] = nn;
 	both->child[1] = p;
@@ -719,7 +725,7 @@ compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
 }
 
 /* the kinds whose bitmap is exactly the rows they keep (the executor or the source evaluates them), so that the complement is the rows they do not keep */
-#define BITMAP_KINDS ((1 << SAP_TRUE) | (1 << SAP_FALSE) | (1 << SAP_CMP) | (1 << SAP_IN) | (1 << SAP_NULL) | (1 << SAP_LUT) | (1 << SAP_NCMP) | (1 << SAP_LEAFCMP) | (1 << SAP_WIDE) | (1 << SAP_ANY_ELEM))
+#define BITMAP_KINDS ((1 << SAP_TRUE) | (1 << SAP_FALSE) | (1 << SAP_CMP) | (1 << SAP_IN) | (1 << SAP_NULL) | (1 << SAP_LUT) | (1 << SAP_NCMP) | (1 << SAP_LEAFCMP) | (1 << SAP_WIDE) | (1 << SAP_ANY_ELEM) | (1 << SAP_NOT_TRUE))
 
 static bool
 complementable(const SiftAggPred *p)
@@ -961,7 +967,8 @@ compile_pred(AggCtx *c, Node *n)
 		}
 		not_true = p;
 	}
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0)
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow &&
+		((leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0 || (leaf = present_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0))
 	{
 		p = make_leaf_pred(c, SAP_NULL, leaf);
 		p->op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL;

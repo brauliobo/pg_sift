@@ -1,18 +1,39 @@
 -- document_present: a jsonb column of an index keeps a boolean leaf of its own, NULL where the document is SQL NULL. CREATE INDEX writes it (auto is on);
 -- document_present = off is the index of a release before the option, which has no leaf and is read as before. The leaf is checked against the heap by
--- col_verify after the build, an insert, a promotion, a merge and a REINDEX, and a table without a jsonb column gets none.
+-- col_verify after the build, an insert, a promotion, a merge and a REINDEX, and a table without a jsonb column gets none. The rows the leaf holds are read back
+-- through the scan after each step (a NULL document, {}, a document of undeclared keys, a JSON null, an array) and compared with the normal plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
 
 CREATE TABLE dp (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 CREATE FUNCTION dp_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE i % 7 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN '{"zz": 1}' WHEN 3 THEN '{"b": "x", "n": 3}' WHEN 4 THEN 'null' WHEN 5 THEN '[1, 2]' ELSE '{"b": null, "n": 4}' END::jsonb $$;
 INSERT INTO dp SELECT i, i % 5, dp_doc(i) FROM generate_series(1, 3500) i;
+-- dq: objects only (a leaf can hold them all), so that the scan reads the member leaves too
+CREATE TABLE dq (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
+CREATE FUNCTION dq_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 6 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN '{"zz": 1}' WHEN 3 THEN '{"b": "x", "n": 3}' WHEN 4 THEN '{"b": "y"}' ELSE '{"b": "x"}' END::jsonb $$;
+INSERT INTO dq SELECT i, i % 5, dq_doc(i) FROM generate_series(1, 3500) i;
+CREATE INDEX dq_on ON dq USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
 CREATE INDEX dp_on ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
 CREATE INDEX dp_off ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4', document_present = off);
 CREATE INDEX dp_plain ON dp USING sift_col (id, g) WITH (key_cut = g);
 VACUUM (FREEZE, ANALYZE) dp;
+VACUUM (FREEZE, ANALYZE) dq;
+CREATE TABLE qs (n serial, q text);
+INSERT INTO qs (q) VALUES
+	('SELECT count(*), sum(id) FROM dq WHERE doc IS NULL'),
+	('SELECT g, count(*) FROM dq WHERE doc IS NOT NULL GROUP BY g'),
+	($$SELECT count(*), sum(id) FROM dq WHERE NOT (doc @> '{"b": "x"}')$$),
+	($$SELECT count(*), sum(id) FROM dq WHERE (doc @> '{"b": "x"}') IS FALSE$$),
+	($$SELECT g, count(*) FILTER (WHERE NOT (doc @> '{"b": "x"}')) AS other, count(*) FILTER (WHERE doc IS NULL) AS no_doc FROM dq GROUP BY g$$),
+	($$SELECT g, sum(CASE WHEN NOT (doc @> '{"b": "y"}') THEN id ELSE 0 END) FROM dq GROUP BY g$$),
+	('SELECT count(*), sum(id) FROM dp WHERE doc IS NULL'),
+	('SELECT count(*), sum(id) FROM dp WHERE doc IS NOT NULL AND g = 2');
+CREATE FUNCTION dp_reads() RETURNS TABLE (n int, outcome text) LANGUAGE sql AS $$ SELECT n, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n $$;
 
 CREATE FUNCTION dp_state() RETURNS TABLE (idx text, option text, leaves int, present_leaves int, verified bool) LANGUAGE sql AS $$
 	SELECT c.relname::text,
@@ -20,26 +41,39 @@ CREATE FUNCTION dp_state() RETURNS TABLE (idx text, option text, leaves int, pre
 		(SELECT count(*)::int FROM sift.col_leaves(c.oid::regclass)),
 		(SELECT count(*)::int FROM sift.col_leaves(c.oid::regclass) WHERE path = 'doc#present' AND type = 'boolean'),
 		sift.col_verify(c.oid::regclass, true)::text = ''
-	FROM pg_class c WHERE c.relname LIKE 'dp\_%' AND c.relkind = 'i' ORDER BY 1 $$;
+	FROM pg_class c WHERE c.relname ~ '^d[pq]_' AND c.relkind = 'i' ORDER BY 1 $$;
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 
 -- the indexes after an insert (the write buffer), its promotion, a merge and a REINDEX
 INSERT INTO dp SELECT 3500 + i, i % 5, dp_doc(i) FROM generate_series(1, 700) i;
+INSERT INTO dq SELECT 3500 + i, i % 5, dq_doc(i) FROM generate_series(1, 700) i;
 SELECT * FROM dp_state();
-SELECT sift.col_promote('dp_on'), sift.col_promote('dp_off');
+SELECT * FROM dp_reads();
+SELECT sift.col_promote('dp_on'), sift.col_promote('dp_off'), sift.col_promote('dq_on');
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 INSERT INTO dp SELECT 4200 + i, i % 5, dp_doc(i + 3) FROM generate_series(1, 700) i;
-SELECT sift.col_promote('dp_on'), sift.col_promote('dp_off');
-SELECT sift.col_merge('dp_on', true), sift.col_merge('dp_off', true);
+INSERT INTO dq SELECT 4200 + i, i % 5, dq_doc(i + 3) FROM generate_series(1, 700) i;
+SELECT sift.col_promote('dp_on'), sift.col_promote('dp_off'), sift.col_promote('dq_on');
+SELECT sift.col_merge('dp_on', true), sift.col_merge('dp_off', true), sift.col_merge('dq_on', true);
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 UPDATE dp SET doc = NULL WHERE id % 11 = 0;
 UPDATE dp SET doc = '{"b": "y"}' WHERE id % 13 = 0 AND doc IS NULL;
 DELETE FROM dp WHERE id % 17 = 0;
-VACUUM dp;
+UPDATE dq SET doc = NULL WHERE id % 11 = 0;
+UPDATE dq SET doc = '{"b": "y"}' WHERE id % 13 = 0 AND doc IS NULL;
+DELETE FROM dq WHERE id % 17 = 0;
+SELECT * FROM dp_reads();
+VACUUM dp, dq;
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 REINDEX INDEX dp_on;
 REINDEX INDEX dp_off;
+REINDEX INDEX dq_on;
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 
 -- the option changed on an index: the layout changes with the next REINDEX
 ALTER INDEX dp_off SET (document_present = on);
@@ -52,6 +86,7 @@ SELECT * FROM dp_state();
 CREATE INDEX dp_auto ON dp USING sift_col (id, g, doc) WITH (key_cut = g);
 SELECT * FROM dp_state();
 
-DROP TABLE dp;
-DROP FUNCTION dp_doc(int), dp_state();
+DROP TABLE dp, dq, qs;
+DROP FUNCTION dp_doc(int), dq_doc(int), dp_state(), dp_reads();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

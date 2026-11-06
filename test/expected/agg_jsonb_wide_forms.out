@@ -2,8 +2,8 @@
 -- of CASE WHEN c THEN x ELSE y END is a FILTER on c and one on `c IS NOT TRUE`), FILTER, OR and AND with another condition, a key. Every statement runs with sift
 -- on and off and the rows are compared (md5 of the sorted rows); `engaged` says the scan ran. jw holds a NULL document, a JSON null, empty and nested objects,
 -- numbers in different spellings, arrays of scalars, unicode keys, a number as the document, two long documents, and in jd the values a leaf cannot store (overflow rows); jn is the same with a NOT NULL document. A NULL document makes the containment NULL: NOT of it keeps no row, IS NOT TRUE of it
--- keeps the row, and the index cannot tell such a document from one without the member, so the forms that need it (NOT and IS FALSE on a nullable column) stay
--- with PostgreSQL.
+-- keeps the row: NOT and IS FALSE on the nullable column read the leaf of option document_present (true, NULL for a NULL document), which the index of a release
+-- before the option does not have (agg_jsonb_not_exist keeps that index on the normal plan).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -86,15 +86,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   n  |                     label                     | agg_check_outcome 
 -----+-----------------------------------------------+-------------------
    1 | jw: string, where                             | scan same
-   2 | jw: string, where not                         | plain same
+   2 | jw: string, where not                         | scan same
    3 | jw: string, where is not true                 | scan same
-   4 | jw: string, where is false                    | plain same
+   4 | jw: string, where is false                    | scan same
    5 | jw: string, where or                          | scan same
-   6 | jw: string, where not or                      | plain same
+   6 | jw: string, where not or                      | scan same
    7 | jw: string, where is not true and             | scan same
    8 | jw: string, where is not true or              | scan same
    9 | jw: string, filter                            | scan same
-  10 | jw: string, filter not                        | plain same
+  10 | jw: string, filter not                        | scan same
   11 | jw: string, filter is not true                | scan same
   12 | jw: string, case else 0                       | scan same
   13 | jw: string, case else value                   | plain same
@@ -103,15 +103,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   16 | jw: string, case in key                       | plain same
   17 | jw: string, case with filter                  | scan same
   18 | jw: string and integer, where                 | scan same
-  19 | jw: string and integer, where not             | plain same
+  19 | jw: string and integer, where not             | scan same
   20 | jw: string and integer, where is not true     | scan same
-  21 | jw: string and integer, where is false        | plain same
+  21 | jw: string and integer, where is false        | scan same
   22 | jw: string and integer, where or              | scan same
-  23 | jw: string and integer, where not or          | plain same
+  23 | jw: string and integer, where not or          | scan same
   24 | jw: string and integer, where is not true and | scan same
   25 | jw: string and integer, where is not true or  | scan same
   26 | jw: string and integer, filter                | scan same
-  27 | jw: string and integer, filter not            | plain same
+  27 | jw: string and integer, filter not            | scan same
   28 | jw: string and integer, filter is not true    | scan same
   29 | jw: string and integer, case else 0           | scan same
   30 | jw: string and integer, case else value       | plain same
@@ -137,15 +137,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   50 | jw: number member, case in key                | plain same
   51 | jw: number member, case with filter           | plain same
   52 | jw: nested, where                             | scan same
-  53 | jw: nested, where not                         | plain same
+  53 | jw: nested, where not                         | scan same
   54 | jw: nested, where is not true                 | scan same
-  55 | jw: nested, where is false                    | plain same
+  55 | jw: nested, where is false                    | scan same
   56 | jw: nested, where or                          | scan same
-  57 | jw: nested, where not or                      | plain same
+  57 | jw: nested, where not or                      | scan same
   58 | jw: nested, where is not true and             | scan same
   59 | jw: nested, where is not true or              | scan same
   60 | jw: nested, filter                            | scan same
-  61 | jw: nested, filter not                        | plain same
+  61 | jw: nested, filter not                        | scan same
   62 | jw: nested, filter is not true                | scan same
   63 | jw: nested, case else 0                       | scan same
   64 | jw: nested, case else value                   | plain same
@@ -154,15 +154,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   67 | jw: nested, case in key                       | plain same
   68 | jw: nested, case with filter                  | scan same
   69 | jw: short text leaf, where                    | scan same
-  70 | jw: short text leaf, where not                | plain same
+  70 | jw: short text leaf, where not                | scan same
   71 | jw: short text leaf, where is not true        | scan same
-  72 | jw: short text leaf, where is false           | plain same
+  72 | jw: short text leaf, where is false           | scan same
   73 | jw: short text leaf, where or                 | scan same
-  74 | jw: short text leaf, where not or             | plain same
+  74 | jw: short text leaf, where not or             | scan same
   75 | jw: short text leaf, where is not true and    | scan same
   76 | jw: short text leaf, where is not true or     | scan same
   77 | jw: short text leaf, filter                   | scan same
-  78 | jw: short text leaf, filter not               | plain same
+  78 | jw: short text leaf, filter not               | scan same
   79 | jw: short text leaf, filter is not true       | scan same
   80 | jw: short text leaf, case else 0              | scan same
   81 | jw: short text leaf, case else value          | plain same
@@ -171,15 +171,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   84 | jw: short text leaf, case in key              | plain same
   85 | jw: short text leaf, case with filter         | scan same
   86 | jw: array element, where                      | scan same
-  87 | jw: array element, where not                  | plain same
+  87 | jw: array element, where not                  | scan same
   88 | jw: array element, where is not true          | scan same
-  89 | jw: array element, where is false             | plain same
+  89 | jw: array element, where is false             | scan same
   90 | jw: array element, where or                   | scan same
-  91 | jw: array element, where not or               | plain same
+  91 | jw: array element, where not or               | scan same
   92 | jw: array element, where is not true and      | scan same
   93 | jw: array element, where is not true or       | scan same
   94 | jw: array element, filter                     | scan same
-  95 | jw: array element, filter not                 | plain same
+  95 | jw: array element, filter not                 | scan same
   96 | jw: array element, filter is not true         | scan same
   97 | jw: array element, case else 0                | scan same
   98 | jw: array element, case else value            | plain same
@@ -188,15 +188,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  101 | jw: array element, case in key                | plain same
  102 | jw: array element, case with filter           | scan same
  103 | jw: unicode, where                            | scan same
- 104 | jw: unicode, where not                        | plain same
+ 104 | jw: unicode, where not                        | scan same
  105 | jw: unicode, where is not true                | scan same
- 106 | jw: unicode, where is false                   | plain same
+ 106 | jw: unicode, where is false                   | scan same
  107 | jw: unicode, where or                         | scan same
- 108 | jw: unicode, where not or                     | plain same
+ 108 | jw: unicode, where not or                     | scan same
  109 | jw: unicode, where is not true and            | scan same
  110 | jw: unicode, where is not true or             | scan same
  111 | jw: unicode, filter                           | scan same
- 112 | jw: unicode, filter not                       | plain same
+ 112 | jw: unicode, filter not                       | scan same
  113 | jw: unicode, filter is not true               | scan same
  114 | jw: unicode, case else 0                      | scan same
  115 | jw: unicode, case else value                  | plain same
@@ -205,15 +205,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  118 | jw: unicode, case in key                      | plain same
  119 | jw: unicode, case with filter                 | scan same
  120 | jw: contained by, where                       | scan same
- 121 | jw: contained by, where not                   | plain same
+ 121 | jw: contained by, where not                   | scan same
  122 | jw: contained by, where is not true           | scan same
- 123 | jw: contained by, where is false              | plain same
+ 123 | jw: contained by, where is false              | scan same
  124 | jw: contained by, where or                    | scan same
- 125 | jw: contained by, where not or                | plain same
+ 125 | jw: contained by, where not or                | scan same
  126 | jw: contained by, where is not true and       | scan same
  127 | jw: contained by, where is not true or        | scan same
  128 | jw: contained by, filter                      | scan same
- 129 | jw: contained by, filter not                  | plain same
+ 129 | jw: contained by, filter not                  | scan same
  130 | jw: contained by, filter is not true          | scan same
  131 | jw: contained by, case else 0                 | scan same
  132 | jw: contained by, case else value             | plain same
@@ -222,15 +222,15 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  135 | jw: contained by, case in key                 | plain same
  136 | jw: contained by, case with filter            | scan same
  137 | jw: decimal spelling, where                   | scan same
- 138 | jw: decimal spelling, where not               | plain same
+ 138 | jw: decimal spelling, where not               | scan same
  139 | jw: decimal spelling, where is not true       | scan same
- 140 | jw: decimal spelling, where is false          | plain same
+ 140 | jw: decimal spelling, where is false          | scan same
  141 | jw: decimal spelling, where or                | scan same
- 142 | jw: decimal spelling, where not or            | plain same
+ 142 | jw: decimal spelling, where not or            | scan same
  143 | jw: decimal spelling, where is not true and   | scan same
  144 | jw: decimal spelling, where is not true or    | scan same
  145 | jw: decimal spelling, filter                  | scan same
- 146 | jw: decimal spelling, filter not              | plain same
+ 146 | jw: decimal spelling, filter not              | scan same
  147 | jw: decimal spelling, filter is not true      | scan same
  148 | jw: decimal spelling, case else 0             | scan same
  149 | jw: decimal spelling, case else value         | plain same

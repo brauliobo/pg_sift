@@ -1,7 +1,8 @@
 -- NOT of an existential test (containment, key existence, a path, an array overlap or inclusion) of a column with a NOT NULL constraint: the rows of the scan
 -- are the rows the normal plan gives. The negation flipped a test it did not know (the equality of a text leaf is a lookup table whose operator no flag
 -- reverses) and returned the rows that match: on 6000 documents `NOT (doc @> '{"b": "x"}')` gave the 2668 rows that match where the normal plan gives the 3332 that do not. A column that may be
--- NULL keeps the normal plan for the jsonb tests (the index cannot tell a NULL document from one without the member).
+-- NULL is read from the leaf of option document_present (true, NULL where the document is SQL NULL): a NULL document, '{}' and a document of undeclared keys are
+-- three different rows. The index with document_present = off is the index of a release before the option: the same answers from the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -20,11 +21,18 @@ INSERT INTO jx SELECT x, x % 7, CASE x % 9
   ELSE '{"o": {"p": "x"}, "n": 3}' END::jsonb,
   CASE x % 5 WHEN 0 THEN '{}' WHEN 1 THEN ARRAY[3] WHEN 2 THEN ARRAY[3, 4] ELSE ARRAY[x % 10, 3] END::int4[]
 FROM generate_series(1, 6000) x;
-CREATE TABLE jy AS SELECT id, g, CASE WHEN id % 9 = 0 THEN NULL ELSE doc END AS doc, tags FROM jx;
+CREATE TABLE jy AS SELECT id, g, CASE WHEN id % 9 = 0 AND id % 2 = 0 THEN NULL WHEN id % 9 = 3 AND id % 2 = 0 THEN '{"zz": 1}' WHEN id % 9 = 6 AND id % 4 = 0 THEN NULL ELSE doc END AS doc,
+  CASE WHEN id % 13 = 0 THEN NULL ELSE tags END AS tags FROM jx;
+CREATE TABLE jo AS SELECT * FROM jy;
+CREATE TABLE jd AS SELECT id, g, CASE id % 6 WHEN 0 THEN NULL WHEN 1 THEN '[1, 2]' WHEN 2 THEN '"s"' WHEN 3 THEN 'null' WHEN 4 THEN '{"b": "x", "n": 3}' ELSE '{}' END::jsonb AS doc, tags FROM jx;
 CREATE INDEX jx_col ON jx USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
 CREATE INDEX jy_col ON jy USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
+CREATE INDEX jo_col ON jo USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)', document_present = off);
+CREATE INDEX jd_col ON jd USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
 VACUUM ANALYZE jx;
 VACUUM ANALYZE jy;
+VACUUM ANALYZE jo;
+VACUUM ANALYZE jd;
 CREATE TABLE tests (ord serial, name text, cond text);
 INSERT INTO tests (name, cond) VALUES
   ('text leaf',           $q$doc @> '{"b": "x"}'$q$),
@@ -39,12 +47,16 @@ INSERT INTO tests (name, cond) VALUES
   ('array overlap',       $q$tags && ARRAY[3]$q$),
   ('array contains',      $q$tags @> ARRAY[3, 4]$q$),
   ('array contained',     $q$tags <@ ARRAY[3, 4, 5]$q$),
-  ('array equal',         $q$tags = ARRAY[3]$q$);
+  ('array equal',         $q$tags = ARRAY[3]$q$),
+  ('document is null',    $q$doc IS NULL$q$),
+  ('document not null',   $q$doc IS NOT NULL$q$);
 CREATE TABLE forms (ord serial, name text, tmpl text);
 INSERT INTO forms (name, tmpl) VALUES
   ('not',          'SELECT count(*), sum(id) FROM %1$s WHERE NOT (%2$s)'),
   ('not and',      'SELECT g, count(*) FROM %1$s WHERE NOT (%2$s) AND g < 5 GROUP BY g'),
-  ('filter not',   'SELECT g, count(*) FILTER (WHERE NOT (%2$s)), sum(id) FILTER (WHERE NOT (%2$s)) FROM %1$s GROUP BY g');
+  ('filter not',   'SELECT g, count(*) FILTER (WHERE NOT (%2$s)), sum(id) FILTER (WHERE NOT (%2$s)) FROM %1$s GROUP BY g'),
+  ('is false',     'SELECT count(*), sum(id) FROM %1$s WHERE (%2$s) IS FALSE'),
+  ('case else 0',  'SELECT g, sum(CASE WHEN NOT (%2$s) THEN id ELSE 0 END), count(*) FILTER (WHERE NOT (%2$s)) FROM %1$s GROUP BY g');
 -- the headline: 2668 documents have b = x, so 3332 do not
 SELECT count(*) FROM jx WHERE NOT (doc @> '{"b": "x"}');
  count 
@@ -53,91 +65,314 @@ SELECT count(*) FROM jx WHERE NOT (doc @> '{"b": "x"}');
 (1 row)
 
 CREATE TABLE qs AS SELECT row_number() OVER (ORDER BY tb.ord, t.ord, f.ord) AS n, tb.name || ': ' || t.name || ', ' || f.name AS label, format(f.tmpl, tb.name, t.cond) AS q
-FROM tests t, forms f, (VALUES (1, 'jx'), (2, 'jy')) tb(ord, name);
--- jx: the column has a NOT NULL constraint; jy: it may be NULL
+FROM tests t, forms f, (VALUES (1, 'jx'), (2, 'jy'), (3, 'jo'), (4, 'jd')) tb(ord, name);
+-- jx: the column has a NOT NULL constraint; jy: it may be NULL (NULL, {} and a document of undeclared keys among the rows); jo: jy with the index of a release before
+-- document_present; jd: documents that are not objects (an array, a string, a JSON null) beside the NULL ones, which the index holds as overflow
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
- n  |               label                | agg_check_outcome 
-----+------------------------------------+-------------------
-  1 | jx: text leaf, not                 | scan same
-  2 | jx: text leaf, not and             | scan same
-  3 | jx: text leaf, filter not          | scan same
-  4 | jx: integer leaf, not              | scan same
-  5 | jx: integer leaf, not and          | scan same
-  6 | jx: integer leaf, filter not       | scan same
-  7 | jx: nested text leaf, not          | scan same
-  8 | jx: nested text leaf, not and      | scan same
-  9 | jx: nested text leaf, filter not   | scan same
- 10 | jx: two keys, not                  | scan same
- 11 | jx: two keys, not and              | scan same
- 12 | jx: two keys, filter not           | scan same
- 13 | jx: contained by, not              | scan same
- 14 | jx: contained by, not and          | scan same
- 15 | jx: contained by, filter not       | scan same
- 16 | jx: array element, not             | scan same
- 17 | jx: array element, not and         | scan same
- 18 | jx: array element, filter not      | scan same
- 19 | jx: key exists, not                | plain same
- 20 | jx: key exists, not and            | plain same
- 21 | jx: key exists, filter not         | plain same
- 22 | jx: path exists, not               | plain same
- 23 | jx: path exists, not and           | plain same
- 24 | jx: path exists, filter not        | plain same
- 25 | jx: path exists member, not        | plain same
- 26 | jx: path exists member, not and    | plain same
- 27 | jx: path exists member, filter not | plain same
- 28 | jx: array overlap, not             | scan same
- 29 | jx: array overlap, not and         | scan same
- 30 | jx: array overlap, filter not      | scan same
- 31 | jx: array contains, not            | scan same
- 32 | jx: array contains, not and        | scan same
- 33 | jx: array contains, filter not     | scan same
- 34 | jx: array contained, not           | scan same
- 35 | jx: array contained, not and       | scan same
- 36 | jx: array contained, filter not    | scan same
- 37 | jx: array equal, not               | scan same
- 38 | jx: array equal, not and           | scan same
- 39 | jx: array equal, filter not        | scan same
- 40 | jy: text leaf, not                 | plain same
- 41 | jy: text leaf, not and             | plain same
- 42 | jy: text leaf, filter not          | plain same
- 43 | jy: integer leaf, not              | plain same
- 44 | jy: integer leaf, not and          | plain same
- 45 | jy: integer leaf, filter not       | plain same
- 46 | jy: nested text leaf, not          | plain same
- 47 | jy: nested text leaf, not and      | plain same
- 48 | jy: nested text leaf, filter not   | plain same
- 49 | jy: two keys, not                  | plain same
- 50 | jy: two keys, not and              | plain same
- 51 | jy: two keys, filter not           | plain same
- 52 | jy: contained by, not              | plain same
- 53 | jy: contained by, not and          | plain same
- 54 | jy: contained by, filter not       | plain same
- 55 | jy: array element, not             | plain same
- 56 | jy: array element, not and         | plain same
- 57 | jy: array element, filter not      | plain same
- 58 | jy: key exists, not                | plain same
- 59 | jy: key exists, not and            | plain same
- 60 | jy: key exists, filter not         | plain same
- 61 | jy: path exists, not               | plain same
- 62 | jy: path exists, not and           | plain same
- 63 | jy: path exists, filter not        | plain same
- 64 | jy: path exists member, not        | plain same
- 65 | jy: path exists member, not and    | plain same
- 66 | jy: path exists member, filter not | plain same
- 67 | jy: array overlap, not             | scan same
- 68 | jy: array overlap, not and         | scan same
- 69 | jy: array overlap, filter not      | scan same
- 70 | jy: array contains, not            | scan same
- 71 | jy: array contains, not and        | scan same
- 72 | jy: array contains, filter not     | scan same
- 73 | jy: array contained, not           | scan same
- 74 | jy: array contained, not and       | scan same
- 75 | jy: array contained, filter not    | scan same
- 76 | jy: array equal, not               | scan same
- 77 | jy: array equal, not and           | scan same
- 78 | jy: array equal, filter not        | scan same
-(78 rows)
+  n  |                label                | agg_check_outcome 
+-----+-------------------------------------+-------------------
+   1 | jx: text leaf, not                  | scan same
+   2 | jx: text leaf, not and              | scan same
+   3 | jx: text leaf, filter not           | scan same
+   4 | jx: text leaf, is false             | scan same
+   5 | jx: text leaf, case else 0          | scan same
+   6 | jx: integer leaf, not               | scan same
+   7 | jx: integer leaf, not and           | scan same
+   8 | jx: integer leaf, filter not        | scan same
+   9 | jx: integer leaf, is false          | scan same
+  10 | jx: integer leaf, case else 0       | scan same
+  11 | jx: nested text leaf, not           | scan same
+  12 | jx: nested text leaf, not and       | scan same
+  13 | jx: nested text leaf, filter not    | scan same
+  14 | jx: nested text leaf, is false      | scan same
+  15 | jx: nested text leaf, case else 0   | scan same
+  16 | jx: two keys, not                   | scan same
+  17 | jx: two keys, not and               | scan same
+  18 | jx: two keys, filter not            | scan same
+  19 | jx: two keys, is false              | scan same
+  20 | jx: two keys, case else 0           | scan same
+  21 | jx: contained by, not               | scan same
+  22 | jx: contained by, not and           | scan same
+  23 | jx: contained by, filter not        | scan same
+  24 | jx: contained by, is false          | scan same
+  25 | jx: contained by, case else 0       | scan same
+  26 | jx: array element, not              | scan same
+  27 | jx: array element, not and          | scan same
+  28 | jx: array element, filter not       | scan same
+  29 | jx: array element, is false         | scan same
+  30 | jx: array element, case else 0      | scan same
+  31 | jx: key exists, not                 | plain same
+  32 | jx: key exists, not and             | plain same
+  33 | jx: key exists, filter not          | plain same
+  34 | jx: key exists, is false            | plain same
+  35 | jx: key exists, case else 0         | plain same
+  36 | jx: path exists, not                | plain same
+  37 | jx: path exists, not and            | plain same
+  38 | jx: path exists, filter not         | plain same
+  39 | jx: path exists, is false           | plain same
+  40 | jx: path exists, case else 0        | plain same
+  41 | jx: path exists member, not         | plain same
+  42 | jx: path exists member, not and     | plain same
+  43 | jx: path exists member, filter not  | plain same
+  44 | jx: path exists member, is false    | plain same
+  45 | jx: path exists member, case else 0 | plain same
+  46 | jx: array overlap, not              | scan same
+  47 | jx: array overlap, not and          | scan same
+  48 | jx: array overlap, filter not       | scan same
+  49 | jx: array overlap, is false         | scan same
+  50 | jx: array overlap, case else 0      | scan same
+  51 | jx: array contains, not             | scan same
+  52 | jx: array contains, not and         | scan same
+  53 | jx: array contains, filter not      | scan same
+  54 | jx: array contains, is false        | scan same
+  55 | jx: array contains, case else 0     | scan same
+  56 | jx: array contained, not            | scan same
+  57 | jx: array contained, not and        | scan same
+  58 | jx: array contained, filter not     | scan same
+  59 | jx: array contained, is false       | scan same
+  60 | jx: array contained, case else 0    | scan same
+  61 | jx: array equal, not                | scan same
+  62 | jx: array equal, not and            | scan same
+  63 | jx: array equal, filter not         | scan same
+  64 | jx: array equal, is false           | scan same
+  65 | jx: array equal, case else 0        | scan same
+  66 | jx: document is null, not           | scan same
+  67 | jx: document is null, not and       | scan same
+  68 | jx: document is null, filter not    | scan same
+  69 | jx: document is null, is false      | plain same
+  70 | jx: document is null, case else 0   | scan same
+  71 | jx: document not null, not          | scan same
+  72 | jx: document not null, not and      | scan same
+  73 | jx: document not null, filter not   | scan same
+  74 | jx: document not null, is false     | plain same
+  75 | jx: document not null, case else 0  | scan same
+  76 | jy: text leaf, not                  | scan same
+  77 | jy: text leaf, not and              | scan same
+  78 | jy: text leaf, filter not           | scan same
+  79 | jy: text leaf, is false             | scan same
+  80 | jy: text leaf, case else 0          | scan same
+  81 | jy: integer leaf, not               | scan same
+  82 | jy: integer leaf, not and           | scan same
+  83 | jy: integer leaf, filter not        | scan same
+  84 | jy: integer leaf, is false          | scan same
+  85 | jy: integer leaf, case else 0       | scan same
+  86 | jy: nested text leaf, not           | scan same
+  87 | jy: nested text leaf, not and       | scan same
+  88 | jy: nested text leaf, filter not    | scan same
+  89 | jy: nested text leaf, is false      | scan same
+  90 | jy: nested text leaf, case else 0   | scan same
+  91 | jy: two keys, not                   | scan same
+  92 | jy: two keys, not and               | scan same
+  93 | jy: two keys, filter not            | scan same
+  94 | jy: two keys, is false              | scan same
+  95 | jy: two keys, case else 0           | scan same
+  96 | jy: contained by, not               | scan same
+  97 | jy: contained by, not and           | scan same
+  98 | jy: contained by, filter not        | scan same
+  99 | jy: contained by, is false          | scan same
+ 100 | jy: contained by, case else 0       | scan same
+ 101 | jy: array element, not              | scan same
+ 102 | jy: array element, not and          | scan same
+ 103 | jy: array element, filter not       | scan same
+ 104 | jy: array element, is false         | scan same
+ 105 | jy: array element, case else 0      | scan same
+ 106 | jy: key exists, not                 | plain same
+ 107 | jy: key exists, not and             | plain same
+ 108 | jy: key exists, filter not          | plain same
+ 109 | jy: key exists, is false            | plain same
+ 110 | jy: key exists, case else 0         | plain same
+ 111 | jy: path exists, not                | plain same
+ 112 | jy: path exists, not and            | plain same
+ 113 | jy: path exists, filter not         | plain same
+ 114 | jy: path exists, is false           | plain same
+ 115 | jy: path exists, case else 0        | plain same
+ 116 | jy: path exists member, not         | plain same
+ 117 | jy: path exists member, not and     | plain same
+ 118 | jy: path exists member, filter not  | plain same
+ 119 | jy: path exists member, is false    | plain same
+ 120 | jy: path exists member, case else 0 | plain same
+ 121 | jy: array overlap, not              | scan same
+ 122 | jy: array overlap, not and          | scan same
+ 123 | jy: array overlap, filter not       | scan same
+ 124 | jy: array overlap, is false         | scan same
+ 125 | jy: array overlap, case else 0      | scan same
+ 126 | jy: array contains, not             | scan same
+ 127 | jy: array contains, not and         | scan same
+ 128 | jy: array contains, filter not      | scan same
+ 129 | jy: array contains, is false        | scan same
+ 130 | jy: array contains, case else 0     | scan same
+ 131 | jy: array contained, not            | scan same
+ 132 | jy: array contained, not and        | scan same
+ 133 | jy: array contained, filter not     | scan same
+ 134 | jy: array contained, is false       | scan same
+ 135 | jy: array contained, case else 0    | scan same
+ 136 | jy: array equal, not                | scan same
+ 137 | jy: array equal, not and            | scan same
+ 138 | jy: array equal, filter not         | scan same
+ 139 | jy: array equal, is false           | scan same
+ 140 | jy: array equal, case else 0        | scan same
+ 141 | jy: document is null, not           | scan same
+ 142 | jy: document is null, not and       | scan same
+ 143 | jy: document is null, filter not    | scan same
+ 144 | jy: document is null, is false      | plain same
+ 145 | jy: document is null, case else 0   | scan same
+ 146 | jy: document not null, not          | scan same
+ 147 | jy: document not null, not and      | scan same
+ 148 | jy: document not null, filter not   | scan same
+ 149 | jy: document not null, is false     | plain same
+ 150 | jy: document not null, case else 0  | scan same
+ 151 | jo: text leaf, not                  | plain same
+ 152 | jo: text leaf, not and              | plain same
+ 153 | jo: text leaf, filter not           | plain same
+ 154 | jo: text leaf, is false             | plain same
+ 155 | jo: text leaf, case else 0          | plain same
+ 156 | jo: integer leaf, not               | plain same
+ 157 | jo: integer leaf, not and           | plain same
+ 158 | jo: integer leaf, filter not        | plain same
+ 159 | jo: integer leaf, is false          | plain same
+ 160 | jo: integer leaf, case else 0       | plain same
+ 161 | jo: nested text leaf, not           | plain same
+ 162 | jo: nested text leaf, not and       | plain same
+ 163 | jo: nested text leaf, filter not    | plain same
+ 164 | jo: nested text leaf, is false      | plain same
+ 165 | jo: nested text leaf, case else 0   | plain same
+ 166 | jo: two keys, not                   | plain same
+ 167 | jo: two keys, not and               | plain same
+ 168 | jo: two keys, filter not            | plain same
+ 169 | jo: two keys, is false              | plain same
+ 170 | jo: two keys, case else 0           | plain same
+ 171 | jo: contained by, not               | plain same
+ 172 | jo: contained by, not and           | plain same
+ 173 | jo: contained by, filter not        | plain same
+ 174 | jo: contained by, is false          | plain same
+ 175 | jo: contained by, case else 0       | plain same
+ 176 | jo: array element, not              | plain same
+ 177 | jo: array element, not and          | plain same
+ 178 | jo: array element, filter not       | plain same
+ 179 | jo: array element, is false         | plain same
+ 180 | jo: array element, case else 0      | plain same
+ 181 | jo: key exists, not                 | plain same
+ 182 | jo: key exists, not and             | plain same
+ 183 | jo: key exists, filter not          | plain same
+ 184 | jo: key exists, is false            | plain same
+ 185 | jo: key exists, case else 0         | plain same
+ 186 | jo: path exists, not                | plain same
+ 187 | jo: path exists, not and            | plain same
+ 188 | jo: path exists, filter not         | plain same
+ 189 | jo: path exists, is false           | plain same
+ 190 | jo: path exists, case else 0        | plain same
+ 191 | jo: path exists member, not         | plain same
+ 192 | jo: path exists member, not and     | plain same
+ 193 | jo: path exists member, filter not  | plain same
+ 194 | jo: path exists member, is false    | plain same
+ 195 | jo: path exists member, case else 0 | plain same
+ 196 | jo: array overlap, not              | scan same
+ 197 | jo: array overlap, not and          | scan same
+ 198 | jo: array overlap, filter not       | scan same
+ 199 | jo: array overlap, is false         | scan same
+ 200 | jo: array overlap, case else 0      | scan same
+ 201 | jo: array contains, not             | scan same
+ 202 | jo: array contains, not and         | scan same
+ 203 | jo: array contains, filter not      | scan same
+ 204 | jo: array contains, is false        | scan same
+ 205 | jo: array contains, case else 0     | scan same
+ 206 | jo: array contained, not            | scan same
+ 207 | jo: array contained, not and        | scan same
+ 208 | jo: array contained, filter not     | scan same
+ 209 | jo: array contained, is false       | scan same
+ 210 | jo: array contained, case else 0    | scan same
+ 211 | jo: array equal, not                | scan same
+ 212 | jo: array equal, not and            | scan same
+ 213 | jo: array equal, filter not         | scan same
+ 214 | jo: array equal, is false           | scan same
+ 215 | jo: array equal, case else 0        | scan same
+ 216 | jo: document is null, not           | plain same
+ 217 | jo: document is null, not and       | plain same
+ 218 | jo: document is null, filter not    | plain same
+ 219 | jo: document is null, is false      | plain same
+ 220 | jo: document is null, case else 0   | plain same
+ 221 | jo: document not null, not          | plain same
+ 222 | jo: document not null, not and      | plain same
+ 223 | jo: document not null, filter not   | plain same
+ 224 | jo: document not null, is false     | plain same
+ 225 | jo: document not null, case else 0  | plain same
+ 226 | jd: text leaf, not                  | plain same
+ 227 | jd: text leaf, not and              | plain same
+ 228 | jd: text leaf, filter not           | plain same
+ 229 | jd: text leaf, is false             | plain same
+ 230 | jd: text leaf, case else 0          | plain same
+ 231 | jd: integer leaf, not               | plain same
+ 232 | jd: integer leaf, not and           | plain same
+ 233 | jd: integer leaf, filter not        | plain same
+ 234 | jd: integer leaf, is false          | plain same
+ 235 | jd: integer leaf, case else 0       | plain same
+ 236 | jd: nested text leaf, not           | plain same
+ 237 | jd: nested text leaf, not and       | plain same
+ 238 | jd: nested text leaf, filter not    | plain same
+ 239 | jd: nested text leaf, is false      | plain same
+ 240 | jd: nested text leaf, case else 0   | plain same
+ 241 | jd: two keys, not                   | plain same
+ 242 | jd: two keys, not and               | plain same
+ 243 | jd: two keys, filter not            | plain same
+ 244 | jd: two keys, is false              | plain same
+ 245 | jd: two keys, case else 0           | plain same
+ 246 | jd: contained by, not               | plain same
+ 247 | jd: contained by, not and           | plain same
+ 248 | jd: contained by, filter not        | plain same
+ 249 | jd: contained by, is false          | plain same
+ 250 | jd: contained by, case else 0       | plain same
+ 251 | jd: array element, not              | plain same
+ 252 | jd: array element, not and          | plain same
+ 253 | jd: array element, filter not       | plain same
+ 254 | jd: array element, is false         | plain same
+ 255 | jd: array element, case else 0      | plain same
+ 256 | jd: key exists, not                 | plain same
+ 257 | jd: key exists, not and             | plain same
+ 258 | jd: key exists, filter not          | plain same
+ 259 | jd: key exists, is false            | plain same
+ 260 | jd: key exists, case else 0         | plain same
+ 261 | jd: path exists, not                | plain same
+ 262 | jd: path exists, not and            | plain same
+ 263 | jd: path exists, filter not         | plain same
+ 264 | jd: path exists, is false           | plain same
+ 265 | jd: path exists, case else 0        | plain same
+ 266 | jd: path exists member, not         | plain same
+ 267 | jd: path exists member, not and     | plain same
+ 268 | jd: path exists member, filter not  | plain same
+ 269 | jd: path exists member, is false    | plain same
+ 270 | jd: path exists member, case else 0 | plain same
+ 271 | jd: array overlap, not              | scan same
+ 272 | jd: array overlap, not and          | scan same
+ 273 | jd: array overlap, filter not       | scan same
+ 274 | jd: array overlap, is false         | scan same
+ 275 | jd: array overlap, case else 0      | scan same
+ 276 | jd: array contains, not             | scan same
+ 277 | jd: array contains, not and         | scan same
+ 278 | jd: array contains, filter not      | scan same
+ 279 | jd: array contains, is false        | scan same
+ 280 | jd: array contains, case else 0     | scan same
+ 281 | jd: array contained, not            | scan same
+ 282 | jd: array contained, not and        | scan same
+ 283 | jd: array contained, filter not     | scan same
+ 284 | jd: array contained, is false       | scan same
+ 285 | jd: array contained, case else 0    | scan same
+ 286 | jd: array equal, not                | scan same
+ 287 | jd: array equal, not and            | scan same
+ 288 | jd: array equal, filter not         | scan same
+ 289 | jd: array equal, is false           | scan same
+ 290 | jd: array equal, case else 0        | scan same
+ 291 | jd: document is null, not           | scan same
+ 292 | jd: document is null, not and       | scan same
+ 293 | jd: document is null, filter not    | scan same
+ 294 | jd: document is null, is false      | plain same
+ 295 | jd: document is null, case else 0   | scan same
+ 296 | jd: document not null, not          | scan same
+ 297 | jd: document not null, not and      | scan same
+ 298 | jd: document not null, filter not   | scan same
+ 299 | jd: document not null, is false     | plain same
+ 300 | jd: document not null, case else 0  | scan same
+(300 rows)
 
-DROP TABLE qs, tests, forms, jx, jy;
+DROP TABLE qs, tests, forms, jx, jy, jo, jd;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -96,7 +96,7 @@ SELECT * FROM hk_run('hk');
  10 read too            | same {"count": 1800} normal
  11 any                 | same {"count": 2600} normal
  12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 1} normal
+ 13 no document         | same {"count": 1} pushed
  14 all                 | same {"count": 600} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 520} pushed
@@ -117,7 +117,7 @@ SELECT * FROM hk_run('ho');
  10 read too            | same {"count": 1800} normal
  11 any                 | same {"count": 2600} normal
  12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 600} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 520} pushed
@@ -138,7 +138,7 @@ SELECT * FROM hk_run('hm');
  10 read too            | same {"count": 1800} normal
  11 any                 | same {"count": 2600} normal
  12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 600} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 520} pushed
@@ -159,7 +159,7 @@ SELECT * FROM hk_run('hc');
  10 read too            | same {"count": 2000} normal
  11 any                 | same {"count": 2600} normal
  12 type test           | same {"count": 2000} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 600} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 520} pushed
@@ -204,7 +204,7 @@ SELECT * FROM hk_run('hk');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 1} normal
+ 13 no document         | same {"count": 1} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -225,7 +225,7 @@ SELECT * FROM hk_run('ho');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -246,7 +246,7 @@ SELECT * FROM hk_run('hm');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -267,7 +267,7 @@ SELECT * FROM hk_run('hc');
  10 read too            | same {"count": 1908} normal
  11 any                 | same {"count": 2480} normal
  12 type test           | same {"count": 1908} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 576} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 492} pushed
@@ -305,7 +305,7 @@ SELECT * FROM hk_run('hk');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 1} normal
+ 13 no document         | same {"count": 1} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -326,7 +326,7 @@ SELECT * FROM hk_run('ho');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -347,7 +347,7 @@ SELECT * FROM hk_run('hm');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2597} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 517} pushed
@@ -368,7 +368,7 @@ SELECT * FROM hk_run('hc');
  10 read too            | same {"count": 1908} normal
  11 any                 | same {"count": 2480} normal
  12 type test           | same {"count": 1908} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 576} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 492} pushed
@@ -400,7 +400,7 @@ SELECT * FROM hk_run('ho');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2406} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 477} pushed
@@ -421,7 +421,7 @@ SELECT * FROM hk_run('hm');
  10 read too            | same {"count": 1805} normal
  11 any                 | same {"count": 2406} normal
  12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} normal
+ 13 no document         | same {"count": 0} pushed
  14 all                 | same {"count": 604} pushed
  15 all, one undeclared | same {"count": 0} normal
  2 filter               | same {"count": 477} pushed

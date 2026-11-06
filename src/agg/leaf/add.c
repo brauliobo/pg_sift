@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type.h"
 #include "utils/fmgroids.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
@@ -20,6 +21,23 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 			l->typid == typid)
 			return i;
 	}
+	return -1;
+}
+
+/* The leaf that is NULL where the jsonb document e is SQL NULL (option document_present), -1 for another expression or an index without it */
+int
+present_leaf(AggCtx *c, Node *e)
+{
+	int			att = attr_of_expr(c, strip_relabel(e));
+
+	if (att > 0 && exprType(e) == JSONBOID)
+		for (int i = 0; i < c->lay->nleaves; i++)
+		{
+			SiftSrcLeaf *l = leaf_of(c, i);
+
+			if (l->attno == att && l->parent < 0 && strcmp(l->name, "#present") == 0)
+				return i;
+		}
 	return -1;
 }
 
