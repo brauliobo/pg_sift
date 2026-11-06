@@ -9,8 +9,8 @@
    `list` prints all cases). Each case runs in a fresh backend, base and candidate interleaved, 1 discarded + 9 measured runs, on two clusters copied from one
    data template (the same bytes), max_parallel_workers_per_gather = 0 on both sides; instructions and cycles are those of the whole process tree.
 4. Reading the table: `instr base -> cand` and `d%` are instructions:u (minimum of the runs; deterministic, the primary signal), `cycles d%` the same for cycles:u
-   with `noise%` = the spread of the runs (information only; the cycles verdict needs > max(2%, 1.5 x the stored min-vs-min noise of the case, 8% machine floor in baselines/noise.json); statements under 5 M cycles are judged on instructions only),
-   `hit+read` shared-buffer hits + reads of the backend, `wal` WAL bytes of the statement, `ms b/c` elapsed. Verdict per case PASS / FAIL with the reasons.
+   with `noise%` = the spread of the runs (information only; the cycles verdict needs > max(2%, 1.5 x the stored min-vs-min noise of the case, 8% machine floor in baselines/noise.json); statements under 20 M cycles are judged on instructions only: their cycles vary by up to 16% between runs of identical code),
+   `hit+read` shared-buffer hits + reads of the backend, `wal` WAL bytes of the statement (without the 8 kB page headers it crosses), `ms b/c` elapsed. Verdict per case PASS / FAIL with the reasons.
 5. FAIL when: instructions > +0.5% (and > 20,000 more), cycles > that threshold after up to 2 automatic re-measurements, hits / reads differ at all, WAL bytes differ by more than twice the stored base-vs-base noise (0 for almost every case),
    result rows (md5 of the sorted rows) or the EXPLAIN (COSTS OFF) plan differ, binary text grows by more than 0.1% in a commit that adds more src lines than it
    removes. All limits are options (`--max-instr-pct`, `--max-cycles-pct`, `--instr-abs`, `--blocks-tol`, `--wal-tol`, `--max-size-pct`, `--min-cycles`, `--runs`).

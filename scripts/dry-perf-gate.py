@@ -227,7 +227,9 @@ class Cluster:
 
     def start(self):
         self.sock.mkdir(parents=True, exist_ok=True)
-        opts = (f"-c port={self.port} -c listen_addresses='' -c unix_socket_directories={self.sock} -c extension_control_path='{self.sharedir}:$system' "
+        # synchronous_commit on: with it off, whether the walwriter has flushed before a statement scans rows written just before decides if their hint bits are set,
+        # which moved the instructions of a DELETE by 6% and the WAL by one record between two runs of the same code (fsync stays off, so it costs nothing)
+        opts = (f"-c port={self.port} -c listen_addresses='' -c synchronous_commit=on -c unix_socket_directories={self.sock} -c extension_control_path='{self.sharedir}:$system' "
                 f"-c dynamic_library_path='{self.libdir}:$libdir'")
         sh(['pg_ctl', '-D', str(self.data), '-l', str(self.data) + '.log', '-w', '-o', opts, 'start'], env=self.env())
         self.pm = int((self.data / 'postmaster.pid').read_text().split()[0])
@@ -365,6 +367,12 @@ def script(case, ctl, warm=True):
     return '\n'.join(L) + '\n'
 
 
+def wal_bytes(a, b):
+    """WAL between two insert positions without the page headers inside: one more 8 kB page crossed adds 24 B (40 B at a 16 MB segment start) to the raw difference, which moved
+    the same statement by 24 B between two runs depending on where the previous statement left the position."""
+    return b - a - 24 * ((b >> 13) - (a >> 13)) - 16 * ((b >> 24) - (a >> 24))
+
+
 def lsn(s):
     hi, lo = s.split('/')
     return (int(hi, 16) << 32) + int(lo, 16)
@@ -434,7 +442,7 @@ def run_once(cl, case, rundir, tag):
         return r
     d = [int(b) - int(a) for a, b in zip(s0.groups()[:4], s1.groups()[:4])]
     r.update(instr=vals['instructions'], cycles=vals['cycles'], ms=float(ms.group(1)), hits=d[0], reads=d[1], writes=d[2], extends=d[3],
-             wal=lsn(s1.group(5)) - lsn(s0.group(5)), rows=hashlib.md5('\n'.join(rows).encode()).hexdigest()[:12], nrows=len(rows))
+             wal=wal_bytes(lsn(s0.group(5)), lsn(s1.group(5))), rows=hashlib.md5('\n'.join(rows).encode()).hexdigest()[:12], nrows=len(rows))
     return r
 
 
@@ -445,6 +453,10 @@ def plan_of(cl, case, rundir):
     if case.expect and not re.search(case.expect, out):
         return 'MISSING:' + case.expect
     return hashlib.md5(out.encode()).hexdigest()[:12]
+
+
+# below this many cycles in the base the run-to-run spread of cycles (up to 16% in the self-compare of all cases) is larger than any layout effect: instructions decide
+MIN_CYCLES = 20_000_000
 
 
 # --- statistics and verdicts ---------------------------------------------------------------------------------------------------------------------------------
@@ -473,7 +485,7 @@ def judge(b, c, cfg, noise, par=False):
     di = (c['instr'] - b['instr']) / b['instr'] * 100
     dc = (c['cycles'] - b['cycles']) / b['cycles'] * 100
     abs_ok = c['instr'] - b['instr'] <= cfg.instr_abs
-    thr_c = max(cfg.max_cycles_pct, 1.5 * noise.get('cycles', 0))
+    thr_c = max(cfg.max_cycles_pct, 1.5 * noise.get('cycles', 0), noise.get('floor', 0))
     if b['rows'] != c['rows'] or len(c['rows']) > 1 or len(b['rows']) > 1:
         why.append('rows differ')
     max_instr = max(cfg.max_instr_pct, cfg.par_instr_pct) if par else cfg.max_instr_pct
@@ -581,7 +593,7 @@ def main():
     ap.add_argument('--max-instr-pct', type=float, default=0.5)
     ap.add_argument('--instr-abs', type=int, default=20000, help='ignore an instruction increase below this many (default 20000)')
     ap.add_argument('--max-cycles-pct', type=float, default=2.0)
-    ap.add_argument('--min-cycles', type=int, default=5_000_000, help='cycles are judged only above this many in the base (shorter statements: instructions decide)')
+    ap.add_argument('--min-cycles', type=int, default=MIN_CYCLES, help='cycles are judged only above this many in the base (shorter statements: instructions decide)')
     ap.add_argument('--layout-instr-pct', type=float, default=0.1, help='a cycles excess with instructions within this percent is a WARN (code layout), not a FAIL (default 0.1)')
     ap.add_argument('--layout-cycles-pct', type=float, default=15.0, help='...unless the cycles excess is above this (default 15)')
     ap.add_argument('--par-instr-pct', type=float, default=1.0, help='instruction limit of the parallel (workers) cases (default 1.0)')
@@ -770,7 +782,8 @@ def host_info():
 
 
 def case_noise(noise, cid):
-    return noise.get(cid) or noise.get('_machine') or {'cycles': 8.0}
+    floor = noise.get('_machine', {}).get('cycles', 8.0)
+    return {**noise.get(cid, {}), 'floor': floor}
 
 
 def load_noise(key):
@@ -786,14 +799,14 @@ def save_baseline(key, out, partial=False):
     for cid, v in out['res'].items():
         b, c = v['sides']['base'], v['sides']['cand']
         if 'error' not in b and 'error' not in c:
-            noise[cid] = dict(cycles=round(abs(c['cycles'] - b['cycles']) / b['cycles'] * 100, 3), wal=abs(c['wal'] - b['wal']),
+            noise[cid] = dict(cycles=round(abs(c['cycles'] - b['cycles']) / b['cycles'] * 100, 3), wal=max(abs(c['wal'] - b['wal']), b['wal_spread'], c['wal_spread']),
                               instr_pct=round(abs(c['instr'] - b['instr']) / b['instr'] * 100, 4))
     old = json.loads((d / 'noise.json').read_text()) if (d / 'noise.json').exists() else {}
-    big = sorted(v['cycles'] for cid, v in noise.items() if out['res'][cid]['sides']['base']['cycles'] >= 5_000_000)
+    big = sorted(v['cycles'] for cid, v in noise.items() if out['res'][cid]['sides']['base']['cycles'] >= MIN_CYCLES)
     if partial:
         noise = {**old, **noise}      # a few cases re-measured: the other floors stay
     else:
-        noise['_machine'] = dict(cycles=big[int(0.9 * len(big))] if big else 8.0, wal=0, instr_pct=0)
+        noise['_machine'] = dict(cycles=max(big[int(0.9 * len(big))], 4.0) if big else 8.0, wal=0, instr_pct=0)
     (d / 'noise.json').write_text(json.dumps(noise, indent=1, sort_keys=True))
     if partial:
         return
