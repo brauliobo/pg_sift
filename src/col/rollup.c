@@ -355,12 +355,10 @@ PG_FUNCTION_INFO_V1(sift_col_rollup_refresh);
 Datum
 sift_col_rollup_refresh(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	RollupReq	r;
 	int			n = 0;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	sift_check_maintain(index);
 	if (RecoveryInProgress())
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),
@@ -644,9 +642,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
 	if (limit < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));
-	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
+	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	sift_check_maintain(index);
 	if (RecoveryInProgress())
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),

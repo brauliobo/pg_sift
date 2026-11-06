@@ -115,6 +115,12 @@ const SiftMaintOps maint_col_ops = {
 	.vacuum_done = maint_rewrite_request,
 };
 
+Relation
+sift_col_open_index(Oid indexoid, LOCKMODE lock)
+{
+	return sift_mops_open(&maint_col_ops, indexoid, lock);
+}
+
 /*
  * After a parallel build. The segments of its participants overlap (each holds some rows of every key and of every superblock), so the first VACUUM
  * rewrote them, and the rewrite left the index twice its size in the file: its output goes after the segments it replaced, and the free blocks in front of it

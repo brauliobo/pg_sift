@@ -752,13 +752,11 @@ Datum
 sift_col_index_choices(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	Relation	index = index_open(relid, AccessShareLock);
+	Relation	index = sift_col_open_index(relid, AccessShareLock);
 	Relation	heap;
 	ListCell   *lc;
 	const char *name;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	InitMaterializedSRF(fcinfo, 0);
 	name = quote_identifier(RelationGetRelationName(index));

@@ -80,6 +80,12 @@ extern Oid	sift_col_def_typid(TupleDesc desc, const SiftColDef *def);
 /* Is relam the sift_col access method (the catalog lookup is cached) */
 extern bool sift_col_is_index(Relation index);
 extern Oid	sift_col_am_oid(void);
+/*
+ * The index of an SQL function that is given its oid, with its table locked first in the same mode (the lock order of the statements: DROP TABLE and
+ * ALTER TABLE lock the table and then its indexes, so a function that held the index and asked for the table would deadlock with them); an error where it
+ * is no sift_col index
+ */
+extern Relation sift_col_open_index(Oid indexoid, LOCKMODE lock);
 
 extern PGDLLIMPORT bool sift_enable_col;
 extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */

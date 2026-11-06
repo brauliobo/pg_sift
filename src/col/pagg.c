@@ -614,9 +614,7 @@ typedef struct PaggScan
 static void
 pagg_open(PaggScan *ps, Oid indexoid)
 {
-	ps->index = index_open(indexoid, AccessShareLock);
-	if (!sift_col_is_index(ps->index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ps->index))));
+	ps->index = sift_col_open_index(indexoid, AccessShareLock);
 	ps->heap = table_open(ps->index->rd_index->indrelid, AccessShareLock);
 	ps->src = sift_col_open(ps->heap, ps->index, GetActiveSnapshot(), CurrentMemoryContext, 0);
 	sift_col_begin(ps->src, NULL, 0, 0, PG_UINT32_MAX);

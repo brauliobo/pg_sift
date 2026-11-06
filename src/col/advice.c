@@ -194,7 +194,7 @@ Datum
 sift_col_index_advice(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap;
 	const SiftColRel *rel;
 	const SiftColSchema *sc;
@@ -213,9 +213,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 	bool	   *nulls;
 	uint32		histo[SIFT_COL_MAX_COLS] = {0};
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	InitMaterializedSRF(fcinfo, 0);
+	SIFT_COL_OPEN_GATE();
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	sc = rel->schema;

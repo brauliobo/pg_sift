@@ -611,14 +611,12 @@ Datum
 sift_col_key_cut_decision(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	Relation	index = index_open(relid, AccessShareLock);
+	Relation	index = sift_col_open_index(relid, AccessShareLock);
 	Relation	heap;
 	CutVerdict	v;
 	Datum		vals[8];
 	bool		nulls[8] = {false};
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	decide(heap, index, true, &v);
 	vals[0] = v.leaf[0] ? CStringGetTextDatum(v.leaf) : (Datum) 0;

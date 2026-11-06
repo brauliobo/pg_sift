@@ -209,7 +209,7 @@ Datum
 sift_col_clustering(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	double		width = PG_GETARG_FLOAT8(1) / 100.0;
 	const SiftColSchema *sc;
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
@@ -217,8 +217,6 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 	int			nseg = 0;
 	int64		units = 0;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	if (width < 0 || width > 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("width_pct must be between 0 and 100")));
 	sc = sift_col_rel(index)->schema;

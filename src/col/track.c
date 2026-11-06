@@ -885,7 +885,7 @@ sift_col_track_incomplete(Relation index)
 Datum
 sift_col_tracking(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap;
 	TupleDesc	desc;
 	Datum		v[4];
@@ -895,8 +895,7 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("function returning record called in context that cannot accept type record"),
 						errhint("Call it in the FROM clause: SELECT * FROM sift.col_tracking(index).")));
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
+	SIFT_COL_OPEN_GATE();
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	log = sift_col_track_on(index) ? sift_col_log(index) : NULL;
 	v[0] = BoolGetDatum(sift_col_track_on(index));
@@ -912,11 +911,9 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 Datum
 sift_col_stamps(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	InitMaterializedSRF(fcinfo, 0);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)

@@ -205,9 +205,7 @@ have:	;
 void
 ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 {
-	ts->index = index_open(indexoid, AccessShareLock);
-	if (!sift_col_is_index(ts->index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
+	ts->index = sift_col_open_index(indexoid, AccessShareLock);
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
 							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0));
