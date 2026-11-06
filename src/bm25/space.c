@@ -130,29 +130,33 @@ cut_lock(Relation rel)
 	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisready ? ExclusiveLock : AccessExclusiveLock;
 }
 
-#define CUT_LOCK_TRIES		100
-#define CUT_LOCK_NAP_US		50000
+#define CUT_LOCK_WAIT_MS	5000
+#define CUT_LOCK_NAP_MS		50
 
 /*
- * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a writer holds a RowExclusiveLock on it for the length of its
- * statement: under a steady stream of writes the lock is rarely free at one instant. The new index has no other user, so the cut asks again for a few seconds (the
- * writers wait behind the request only that long). The AccessExclusiveLock of a ready index is asked once: its holders are scans and steps that may run for minutes.
+ * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a reader or a writer holds a lock on a ready one for the length of
+ * its statement: on a busy table the lock is rarely free at one instant. Like the truncation of a heap (VACUUM_TRUNCATE_LOCK_TIMEOUT) the cut asks again every 50 ms for
+ * 5 seconds, conditionally, so that nobody queues behind the request; lock_timeout, when set and shorter, ends the wait, and a cancel ends it at once. The background
+ * worker asks once: it holds the maintenance lock between its steps and the next step asks again.
  */
 static bool
 cut_lock_try(Relation rel)
 {
 	LOCKMODE	mode = cut_lock(rel);
+	int			wait_ms = LockTimeout > 0 ? Min(LockTimeout, CUT_LOCK_WAIT_MS) : CUT_LOCK_WAIT_MS;
 
-	for (int i = 0; i < CUT_LOCK_TRIES; i++)
+	if (mode == AccessExclusiveLock && MyBackendType == B_BG_WORKER)
+		wait_ms = 0;
+
+	for (int waited = 0;; waited += CUT_LOCK_NAP_MS)
 	{
 		if (ConditionalLockRelation(rel, mode))
 			return true;
-		if (mode == AccessExclusiveLock)
-			break;
+		if (waited >= wait_ms)
+			return false;
 		CHECK_FOR_INTERRUPTS();
-		pg_usleep(CUT_LOCK_NAP_US);
+		pg_usleep(CUT_LOCK_NAP_MS * 1000L);
 	}
-	return false;
 }
 
 /* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
