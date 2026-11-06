@@ -23,62 +23,18 @@
 #include "utils/syscache.h"
 #include "executor/tuptable.h"
 #include "utils/lsyscache.h"
-#include "utils/inval.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
 #include "col/am.h"
 #include "core/compat.h"
 #include "core/tomb.h"
-#include "core/eval.h"
 
 #ifdef SIFT_TESTING
 bool sift_test_no_supersede = false;
 bool sift_test_tombs_at_once = false;
 bool sift_test_supersede_scan = false;
 #endif
-
-/* Transaction-local hints cannot outlive the horizon that prevents reuse of their heap addresses. */
-typedef struct LatestHint
-{
-	Oid index;
-	uint32 hash;
-	ItemPointerData tid;
-} LatestHint;
-
-#define LATEST_HINT_SLOTS 1024
-static LatestHint latest[LATEST_HINT_SLOTS];
-static bool latest_registered;
-StaticAssertDecl(sizeof(latest) <= 16384, "latest candidate hints use at most 16 KiB per backend");
-
-static void
-latest_invalidate(Datum arg, Oid relid)
-{
-	memset(latest, 0, sizeof(latest));
-}
-
-static void
-latest_xact(XactEvent event, void *arg)
-{
-	memset(latest, 0, sizeof(latest));
-}
-
-static LatestHint *
-latest_slot(Relation index, TypeCacheEntry *tc, Oid coll, Datum key)
-{
-	uint32 hash;
-
-	if (!sift_eval_on(SIFT_EVAL_LATEST_HINT) || !OidIsValid(tc->hash_proc_finfo.fn_oid))
-		return NULL;
-	if (!latest_registered)
-	{
-		CacheRegisterRelcacheCallback(latest_invalidate, (Datum)0);
-		RegisterXactCallback(latest_xact, NULL);
-		latest_registered = true;
-	}
-	hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, coll, key));
-	return &latest[(hash ^ RelationGetRelid(index)) % LATEST_HINT_SLOTS];
-}
 
 /*
  * Is the version at newtid a speculative insertion (INSERT .. ON CONFLICT before it is confirmed)? It may be killed when the conflict is found, and the row it
@@ -307,12 +263,10 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	AttrNumber hatt = index->rd_index->indkey.values[attno - 1];
 	Datum key = values[attno - 1];
 	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(heap), hatt - 1);
-	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO | (sift_eval_on(SIFT_EVAL_LATEST_HINT) ? TYPECACHE_HASH_PROC_FINFO : 0));
+	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
 	Snapshot snap;
 	Oid uoid;
 	uint64 succ = sift_key_from_tid(newtid);
-	LatestHint *hint;
-	uint32 hash = 0;
 
 #ifdef SIFT_TESTING
 	if (sift_test_no_supersede)
@@ -331,24 +285,6 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	uoid = sift_col_row_key_unique(heap, hatt);
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	snap->curcid = sift_col_stmt_cid();
-	hint = OidIsValid(uoid) ? latest_slot(index, tc, att->attcollation, key) : NULL;
-	if (hint != NULL)
-	{
-		hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, att->attcollation, key));
-		if (hint->index == RelationGetRelid(index) && hint->hash == hash && !ItemPointerEquals(&hint->tid, newtid))
-		{
-			IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
-			TupleTableSlot *slot = table_slot_create(heap, NULL);
-			ItemPointerData tid = hint->tid;
-			bool again = false, dead = false, found;
-
-			found = table_index_fetch_tuple(fetch, &tid, snap, slot, &again, &dead) && tomb_replaced(index, slot, hatt, att, tc, key, &hint->tid, succ);
-			table_index_fetch_end(fetch);
-			ExecDropSingleTupleTableSlot(slot);
-			if (found)
-				goto done;
-		}
-	}
 #ifdef SIFT_TESTING
 	if (sift_test_supersede_scan)
 		uoid = InvalidOid;
@@ -358,9 +294,6 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 		supersede_by_unique(index, heap, uoid, snap, hatt, att, tc, key, newtid, succ);
 	else
 		supersede_by_scan(index, heap, snap, attno, hatt, att, tc, key, newtid, succ);
-done:
-	if (hint != NULL)
-		*hint = (LatestHint){RelationGetRelid(index), hash, *newtid};
 	UnregisterSnapshot(snap);
 	probed.heap = RelationGetRelid(heap);
 	probed.att = hatt;

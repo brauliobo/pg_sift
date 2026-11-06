@@ -1,8 +1,8 @@
--- sift.eval_methods names the methods under evaluation that are on: a comma separated list, a name that is none of the three is an
--- error and leaves the setting as it was. skip_trigger_lookup, the method that was on by default, is always on, and snapshot_masks, which had no code, was removed: neither is a name.
+-- sift.eval_methods names the methods under evaluation that are on: a comma separated list, a name that is none of the two is an
+-- error and leaves the setting as it was. skip_trigger_lookup, the method that was on by default, is always on, snapshot_masks, which had no code, and latest_hint, which won nothing, were removed: none of the three is a name.
 CREATE EXTENSION pg_sift;
 SHOW sift.eval_methods;
-SET sift.eval_methods = 'penalty_maintenance, latest_hint';
+SET sift.eval_methods = 'penalty_maintenance, unit_rewrite';
 SHOW sift.eval_methods;
 SET sift.eval_methods = 'penalty_maintenance,unit_rewrite';
 SHOW sift.eval_methods;
@@ -19,7 +19,7 @@ SHOW sift.eval_methods;
 SET sift.eval_methods = 'penalty_maintenance';
 SELECT name || '=' || current_setting(name) AS in_the_settings_hash FROM pg_settings WHERE (source NOT IN ('default', 'override') OR name = 'sift.eval_methods') AND name = 'sift.eval_methods';
 RESET sift.eval_methods;
--- Every method is available explicitly.
+-- Every method is available explicitly; the name of a removed one is an error.
 SET sift.eval_methods = 'latest_hint';
 SET sift.eval_methods = 'unit_rewrite';
 SHOW sift.eval_methods;
