@@ -96,6 +96,7 @@ typedef struct ColMem
 	uint32		id;
 	bool		lane;			/* read from the write buffer when the source began */
 	TransactionId xstamp;		/* a lane batch: the xid before which every transaction that inserted a row of it committed (SIFT_SEG_XSTAMP), none when not known */
+	bool		roots;			/* its documents were shredded with a string root flagged (SIFT_SEG_ROOTS of its lane; a batch made here always is) */
 } ColMem;
 
 /* The element structure of one group leaf in the current unit */
@@ -163,6 +164,7 @@ typedef struct ColUnit
 	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	TransactionId xstamp;		/* ... and the xid before which every transaction that inserted a row of it committed, none when not known */
+	bool		roots;			/* a batch of memory: ColMem.roots (a stored unit says it with its segment, sift_col_unit_roots) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
 	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */

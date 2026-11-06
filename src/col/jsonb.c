@@ -374,6 +374,7 @@ shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, 
 		sift_shred_recheck_begin(rc);
 	sift_shred_begin(sh);
 	sift_shred_enter(sh, false);
+	sift_shred_in_row(sh);
 	for (int i = 1; i <= a->natts; i++)
 	{
 		SiftShredKey k;

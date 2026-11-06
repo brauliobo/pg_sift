@@ -512,6 +512,7 @@ typedef struct MergeOut
 	SiftSegEntry neu[MAX_PARTS];
 	int			nneu;
 	TransactionId xstamp;		/* of the segments merged: all of them said so, else InvalidTransactionId */
+	bool		roots;			/* every segment merged has SIFT_SEG_ROOTS */
 } MergeOut;
 
 /* The latest of the stamps of the segments, none when one has no stamp: a row of it may have an inserter that did not commit */
@@ -530,6 +531,16 @@ merge_stamp(const SiftSegEntry *in, int n)
 			top = x;
 	}
 	return top;
+}
+
+/* Do all the segments say their string roots are flagged: a merge copies the values as they were stored, so one that does not say it cannot be made to */
+static bool
+merge_roots(const SiftSegEntry *in, int n)
+{
+	for (int i = 0; i < n; i++)
+		if (!(in[i].flags & SIFT_SEG_ROOTS))
+			return false;
+	return true;
 }
 
 static void
@@ -556,6 +567,8 @@ static void
 out_finish(MergeOut *o)
 {
 	sift_colw_finish(o->w, &o->neu[o->nneu]);
+	if (o->roots)
+		o->neu[o->nneu].flags |= SIFT_SEG_ROOTS;
 	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
 	o->w = NULL;
@@ -613,7 +626,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? merge_stamp(in, n) : InvalidTransactionId};
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? merge_stamp(in, n) : InvalidTransactionId, .roots = sift_col_is_index(index) && merge_roots(in, n)};
 	uint64		live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();

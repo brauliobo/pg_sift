@@ -331,7 +331,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	for (;;)
 	{
 		if (h->gen == 0)
-			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 		wbuf_flag_overflow(index, h, ovf, jnull);
 		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;

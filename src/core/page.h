@@ -97,6 +97,9 @@ typedef enum SiftSegKind
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
+#define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
+extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
+#define SIFT_SEG_ROOTS_NOW (sift_test_no_roots ? 0 : SIFT_SEG_ROOTS)
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/seg/net.c); no format minor: a reader that does not know the flag does not look there */

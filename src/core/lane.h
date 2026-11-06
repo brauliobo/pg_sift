@@ -39,19 +39,19 @@ extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbu
 
 /*
  * The active segment's header block, generation and lane tails, creating the segment when there is none (make_room: called when the
- * directory is full; false when nothing can be merged). format is the owner's directory format for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
+ * directory is full; false when nothing can be merged). format and flags are the owner's directory format and entry flags for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
  */
-extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, bool (*make_room) (Relation),
+extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 							  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail);
 
 /*
  * Seals the active segment, when it has records (has_records) and, unless force, has limit pages; opens a fresh one. Returns the sealed
  * gen or 0.
  */
-extern uint64 sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *));
+extern uint64 sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint16 flags, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *));
 
 /* Seals the active segment whatever it holds, so that a promotion frees its pages: a buffer in the way of a shrink */
-extern uint64 sift_lane_rotate(Relation index, Size hdrsize, uint16 format);
+extern uint64 sift_lane_rotate(Relation index, Size hdrsize, uint16 format, uint16 flags);
 
 /* Sets the sealed flag on the true tail of every lane */
 extern void sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry);

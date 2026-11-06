@@ -256,7 +256,7 @@ sift_col_counters(const SiftColSource *src)
 }
 
 static void
-add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp)
+add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots)
 {
 	if (src->nmem == src->capmem)
 	{
@@ -265,7 +265,7 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp)
 	}
 	uint32		id = ++src->nmem;
 
-	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp};
+	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp, roots};
 }
 
 void
@@ -274,7 +274,7 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 	src->wtok = NULL;
 	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
-		add_mem(src, batches[i], false, InvalidTransactionId);
+		add_mem(src, batches[i], false, InvalidTransactionId, !sift_test_no_roots);
 }
 
 void
@@ -304,7 +304,7 @@ scan_load_wbuf(SiftColSource *src)
 		 */
 		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
 		for (int j = 0; j < n; j++)
-			add_mem(src, bs[j], true, stamp);
+			add_mem(src, bs[j], true, stamp, (src->dir.segs[i].flags & SIFT_SEG_ROOTS) != 0);
 	}
 	src->mem_loaded = true;
 }
@@ -668,6 +668,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->memid = m->id;
 	cu->lane = m->lane;
 	cu->xstamp = m->xstamp;
+	cu->roots = m->roots;
 	cu->clean = cu->clean_ready = true;
 }
 

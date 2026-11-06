@@ -75,12 +75,12 @@ FROM kinds k, LATERAL t_q(format('id = %s', k.id)) q ORDER BY k.id;
 SELECT i, pushed(q) AS pushed, reread(q) AS reread, same(q) AS dirty FROM unnest(t_q('true')) WITH ORDINALITY u(q, i) ORDER BY i;
  i | pushed | reread | dirty 
 ---+--------+--------+-------
- 1 | t      |      5 | same
- 2 | t      |      5 | same
- 3 | t      |      5 | same
- 4 | t      |      5 | same
- 5 | t      |      5 | same
- 6 | t      |      5 | same
+ 1 | t      |      6 | same
+ 2 | t      |      6 | same
+ 3 | t      |      6 | same
+ 4 | t      |      6 | same
+ 5 | t      |      6 | same
+ 6 | t      |      6 | same
 (6 rows)
 
 SELECT same('SELECT doc ->> $$k$$ AS k, count(*), sum(n) FROM t WHERE id > 100 GROUP BY 1') AS filtered, same('SELECT grp, doc ->> $$k$$ AS k, count(*) FROM t WHERE id < 4 OR id > 9000 GROUP BY 1, 2') AS few_rows;

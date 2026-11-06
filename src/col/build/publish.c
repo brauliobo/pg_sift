@@ -48,6 +48,8 @@ sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped)
 
 	if (nsegs == 0)
 		return;
+	for (int i = 0; i < nsegs; i++)
+		segs[i].flags |= SIFT_SEG_ROOTS_NOW;
 	if (stamped)
 	{
 		TransactionId next = ReadNextTransactionId();

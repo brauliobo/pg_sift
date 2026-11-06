@@ -16,6 +16,7 @@
 #include "bm25/analyze.h"
 #include "col/kern.h"
 #include "core/limits.h"
+#include "core/page.h"
 #include "col/shred_int.h"
 
 #define IS_NUMERIC(t)	((t) >= SIFT_SHRED_INT2 && (t) <= SIFT_SHRED_FLOAT8)
@@ -331,6 +332,7 @@ sift_shred_begin(SiftShred *sh)
 	sh->doc.nelems = 0;
 	sh->nframes = 0;
 	sh->root_done = false;
+	sh->docdepth = 0;
 	open_element(sh, 0, 0);
 }
 
@@ -592,6 +594,35 @@ sift_shred_value_f64(SiftShred *sh, double v)
 	leaf_set(sh, t, SIFT_SHRED_VALUE, 0, SIFT_COLTAG_UNKNOWN);
 }
 
+/* the row object is entered: the value that follows a key is a document */
+void
+sift_shred_in_row(SiftShred *sh)
+{
+	sh->docdepth = 1;
+}
+
+bool		sift_test_no_roots = false;
+
+bool
+sift_shred_at_root(const SiftShred *sh)
+{
+	return sh->nframes == sh->docdepth && (sh->docdepth > 0 || !sh->root_done);
+}
+
+void
+sift_shred_root_has(SiftShred *sh, const char *key, int len)
+{
+	NodeP		root = peek_target(sh),
+				m;
+	const Member *mem;
+
+	if (root == NULL || root->kind != N_OBJ || (mem = find_member(root, key, len, NULL)) == NULL)
+		return;
+	m = mem->node;
+	if (m->kind == N_LEAF)
+		leaf_set(sh, m, SIFT_SHRED_NULL, 0, SIFT_COLTAG_JNULL);
+}
+
 void
 sift_shred_poison(SiftShred *sh)
 {
@@ -693,8 +724,15 @@ sift_shred_string(SiftShred *sh, const char *s, int len)
 	sh->evtag = SIFT_COLTAG_STRING;
 	t = take_target(sh);
 
-	if (t == NULL || t->kind == N_OBJ)
+	if (t == NULL)
 		return;
+	/* a document that is a string says "has the key" of itself (doc ? 'k'): like an array, it is no object, and a stored NULL would tell it from nothing */
+	if (t->kind == N_OBJ)
+	{
+		if (!sift_test_no_roots && sift_shred_at_root(sh))
+			mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, SIFT_COLTAG_NONE);
+		return;
+	}
 	if (t->kind != N_LEAF)
 		scalar_in_container(sh, t, false);
 	else

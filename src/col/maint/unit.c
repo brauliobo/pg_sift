@@ -38,7 +38,7 @@ write_unit(Relation index, SiftColSegment *seg, uint32 u, SiftSegEntry *out)
 		sift_colw_finish(w, out);
 		(void) sift_seg_xstamp(&seg->entry, &stamp);
 		sift_seg_set_xstamp(out, stamp);
-		out->flags |= SIFT_SEG_UNIT;
+		out->flags |= SIFT_SEG_UNIT | (seg->entry.flags & SIFT_SEG_ROOTS);
 		sift_wt_finish(wt);
 	}
 	MemoryContextSwitchTo(old);

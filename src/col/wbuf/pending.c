@@ -186,7 +186,7 @@ pend_flush(Relation index, PendIndex *p)
 		for (;;)
 		{
 			if (h.gen == 0)
-				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
+				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
 			if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h.gen, h.tail, SIFT_LANES, &lane)))
 				break;
 			h.gen = 0;
@@ -300,7 +300,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		pend_used++;
 	}
 	if (h->gen == 0)
-		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 	wbuf_flag_overflow(index, h, ovf, jnull);
 	enlargeStringInfo(&p->buf, PEND_HEAD + len);
 	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
@@ -344,14 +344,14 @@ uint64
 sift_cwbuf_seal(Relation index, bool force)
 {
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, wbuf_limit_pages(index), has_rows);
+	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, wbuf_limit_pages(index), has_rows);
 }
 
 uint64
 sift_cwbuf_rotate(Relation index)
 {
 	wbuf_flush_for_read(index);
-	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS);
+	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW);
 }
 
 /* A quarter of a unit: rows this few are not worth a segment of their own for a reader of the units, but a buffer that holds them is read row by row by every probe */
@@ -371,8 +371,8 @@ sift_cwbuf_seal_vacuum(Relation index)
 	uint64		gen;
 
 	wbuf_flush_for_read(index);
-	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
-	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, 0, quarter_unit);
+	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, 0, quarter_unit);
 }
 
 void

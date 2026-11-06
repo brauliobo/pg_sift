@@ -69,7 +69,7 @@ sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
 uint64
 sift_wbuf_seal(Relation index, bool force)
 {
-	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), 0, limit_pages(index), has_docs);
+	return sift_lane_seal(index, force, sizeof(SiftWbufPageHeaderData), 0, 0, limit_pages(index), has_docs);
 }
 
 /*
@@ -81,7 +81,7 @@ sift_wbuf_seal(Relation index, bool force)
 uint64
 sift_wbuf_seal_vacuum(Relation index)
 {
-	return sift_lane_seal(index, false, sizeof(SiftWbufPageHeaderData), 0, Max(limit_pages(index) / 4, 2 * SIFT_LANES), has_docs);
+	return sift_lane_seal(index, false, sizeof(SiftWbufPageHeaderData), 0, 0, Max(limit_pages(index) / 4, 2 * SIFT_LANES), has_docs);
 }
 
 /* Cached per relation: the active segment and the lane tails last seen */
@@ -103,7 +103,7 @@ get_hint(Relation index)
 static void
 refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 {
-	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftWbufPageHeaderData), 0, sift_maint_make_room,
+	sift_lane_refresh(index, analyzer_hash, "analyzer options", sizeof(SiftWbufPageHeaderData), 0, 0, sift_maint_make_room,
 					  &h->gen, &h->hdr, h->tail);
 }
 

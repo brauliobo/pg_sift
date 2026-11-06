@@ -95,11 +95,17 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_SEG_POSITIONS` | 0x0002 | written with word positions |
 | `SIFT_TBL_SEG_WBUF` | 0x0100 | `sift_table` write buffer |
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
+| `SIFT_SEG_ROOTS` | 0x0004 | column segment whose documents were shredded with a string root stored as the overflow of every column below it (below) |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
 | `SIFT_SEG_NET` | 0x2000 | column segment with the pre-aggregates of its dirty units net of their dead rows, in whole pages at the end of the stream (below) |
 
 - `SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of leaves holding a JSON null; 3.2 only.
 - `SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment and the smallest xid when `SIFT_SEG_VERS` is set.
+- `SIFT_SEG_ROOTS` (4.2) needs no column format minor either (a segment entry flag, as `SIFT_SEG_NET` and `SIFT_SEG_LSTATS`). The segment's documents were shredded with a document that is a JSON string stored as the overflow of every column
+  declared below it (shape, JSON type none), as a document that is an array always was; before, such a document left every column absent, which is what a missing key leaves, so no read could tell `'"k"'::jsonb ? 'k'` from `'{}'::jsonb ? 'k'`.
+  The bytes are the same, so a build that does not know the flag reads the segment as before (a string document is a missing key, the overflow stays a value its reads give as NULL), and a merge or rewrite by it drops the flag. A merge keeps the flag
+  only when every segment it reads has it; a write buffer (lane) carries it from the first row. The segments written before have no flag: a read that needs it (`doc ? 'k'`) reads all their NULL slots from the heap, and VACUUM sets the flag
+  on every unflagged segment when it finds no version of any row, dead or alive, whose document in a `jsonb` column of the index is a string (`src/col/maint/roots.c`; the entries are the only thing it writes).
 - `SIFT_SEG_NET` (4.0) needs no column format minor, as the leaf statistics (`SIFT_SEG_LSTATS`) needed none: a build that does not know the flag lists the pages in the header's extents like any others and never looks in them, so it reads the
   segment as written and a rewrite or merge by it drops the sidecar with the segment. The sidecar starts at a page boundary after the segment's own stream (and its leaf statistics); the last 16 bytes of the stream are
   `{magic 0x5445474e, offset of the sidecar}`. The sidecar is `NetHeader`, `NetUnit[nsb]` (the dead rows the unit had when it was made, the lengths of its cube and rollup blobs), `NetAgg[ncols][nsb]` (the zone and exact

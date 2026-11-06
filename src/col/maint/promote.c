@@ -124,6 +124,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
+		neu.flags |= sealed->flags & SIFT_SEG_ROOTS;
 		if (r->track)
 			sift_seg_set_xstamp(&neu, xstamp);
 		sift_wt_finish(wt);

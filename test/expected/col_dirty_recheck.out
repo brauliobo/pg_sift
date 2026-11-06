@@ -39,7 +39,7 @@ VACUUM ANALYZE d_t;
 SELECT pushed(rec_q('o.c, count(*), avg(o.score)')) AS pushed, reread(rec_q('o.c, count(*), avg(o.score)')) AS reread;
  pushed | reread 
 --------+--------
- t      |     60
+ t      |     90
 (1 row)
 
 SELECT same(rec_q('o.c, count(*), avg(o.score), sum(o.n), count(o.ok)')) AS all_leaves;

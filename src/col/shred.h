@@ -179,6 +179,7 @@ typedef struct SiftShred
 	int			nframes;
 	int			maxframes;
 	bool		root_done;
+	int			docdepth;		/* the frames above a document: 1 for the row of the index (each jsonb column is a member of it), else 0 */
 	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, col/shred_recheck.c): no LENGTH overflow */
 	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 } SiftShred;
@@ -212,6 +213,10 @@ typedef enum SiftShredTarget
 } SiftShredTarget;
 
 extern SiftShredTarget sift_shred_target(const SiftShred *sh, int *id);
+/* The next event is the whole document, and the key is a member of its root: the leaf of the key holds a JSON null where the document, no object, "has the key" (a string equal to it, an array holding that string): jsonb ? as SQL tells it */
+extern bool sift_shred_at_root(const SiftShred *sh);
+extern void sift_shred_in_row(SiftShred *sh);
+extern void sift_shred_root_has(SiftShred *sh, const char *key, int len);
 /* The value the next event stands for is already of the leaf's type: a bool, integer or float leaf takes it as it is (no parsing, no overflow) */
 extern void sift_shred_value_i64(SiftShred *sh, int64 v);
 extern void sift_shred_value_f64(SiftShred *sh, double v);
