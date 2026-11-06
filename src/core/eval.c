@@ -6,9 +6,8 @@
 #include "utils/varlena.h"
 
 static char *methods;
-#define EVAL_DEFAULT (1U << SIFT_EVAL_SKIP_TRIGGER_LOOKUP)
-static unsigned enabled = EVAL_DEFAULT;
-static const char *const names[] = {"skip_trigger_lookup", "penalty_maintenance", "snapshot_masks", "unit_rewrite", "latest_hint"};
+static unsigned enabled;
+static const char *const names[] = {"penalty_maintenance", "snapshot_masks", "unit_rewrite", "latest_hint"};
 
 static bool
 check_methods(char **value, void **extra, GucSource source)
@@ -16,28 +15,24 @@ check_methods(char **value, void **extra, GucSource source)
 	char *raw = pstrdup(*value);
 	List *items = NIL;
 	ListCell *lc;
-	unsigned bits = EVAL_DEFAULT;
+	unsigned bits = 0;
 	bool ok = SplitIdentifierString(raw, ',', &items);
 
 	if (ok)
 		foreach (lc, items)
 		{
 			const char *item = lfirst(lc);
-			bool		off = item[0] == '-';
 			unsigned i;
 			for (i = 0; i < lengthof(names); i++)
-				if (strcmp(item + off, names[i]) == 0)
+				if (strcmp(item, names[i]) == 0)
 					break;
 			if (i == lengthof(names))
 			{
-				GUC_check_errdetail("Unknown evaluation method: %s", item + off);
+				GUC_check_errdetail("Unknown evaluation method: %s", item);
 				ok = false;
 				break;
 			}
-			if (off)
-				bits &= ~(1U << i);
-			else
-				bits |= 1U << i;
+			bits |= 1U << i;
 		}
 	list_free(items);
 	pfree(raw);
@@ -65,6 +60,6 @@ sift_eval_on(SiftEvalMethod method)
 void
 sift_eval_init(void)
 {
-	DefineCustomStringVariable("sift.eval_methods", "Comma-separated developer evaluation methods that are on; a name with a minus sign turns a default one off.", NULL, &methods, "", PGC_SUSET,
+	DefineCustomStringVariable("sift.eval_methods", "Comma-separated developer evaluation methods that are on.", NULL, &methods, "", PGC_SUSET,
 							   GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE, check_methods, assign_methods, NULL);
 }

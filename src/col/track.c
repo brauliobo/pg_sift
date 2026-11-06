@@ -47,7 +47,6 @@
 
 #include "agg/stats.h"
 #include "bm25/maint.h"
-#include "core/eval.h"
 #include "col/am.h"
 #include "core/tomb.h"
 
@@ -857,8 +856,7 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 	 * index is partial: a version outside its predicate gets no entry, so no replacement, and the entry of the version before it is the trigger's to tombstone.
 	 */
 	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && td->tg_updatedcols != NULL && !bms_is_member(hatt - FirstLowInvalidHeapAttributeNumber, td->tg_updatedcols) &&
-		(heap->trigdesc == NULL || !heap->trigdesc->trig_update_before_row) && RelationGetIndexPredicate(index) == NIL && sift_col_updates_supersede() &&
-		sift_eval_on(SIFT_EVAL_SKIP_TRIGGER_LOOKUP)
+		(heap->trigdesc == NULL || !heap->trigdesc->trig_update_before_row) && RelationGetIndexPredicate(index) == NIL && sift_col_updates_supersede()
 #ifdef SIFT_TESTING
 		&& !sift_test_no_supersede
 #endif
