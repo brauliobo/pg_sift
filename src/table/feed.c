@@ -174,7 +174,7 @@ path_wbuf(SiftTblRel *st, const SiftTblSeg *seg)
 		if (c->pwb[i].gen == seg->gen)
 			return &c->pwb[i];
 	old = MemoryContextSwitchTo(st->cxt);
-	c->pwb = c->pwb ? repalloc(c->pwb, (c->npwb + 1) * sizeof(PathWbuf)) : palloc((c->npwb + 1) * sizeof(PathWbuf));
+	SIFT_REGROW(c->pwb, (c->npwb + 1) * sizeof(PathWbuf));
 	c->pwb[c->npwb] = (PathWbuf) {.gen = seg->gen,.seen = palloc(SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16))};
 	memset(c->pwb[c->npwb].seen, 0xFF, SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16));
 	MemoryContextSwitchTo(old);

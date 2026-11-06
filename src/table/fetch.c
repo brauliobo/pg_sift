@@ -466,8 +466,7 @@ bitmap_add(SiftTblScan *s, HeapTuple tup)
 	if (s->nbrows == s->nbcap)
 	{
 		s->nbcap = Max(64, s->nbcap * 2);
-		s->brows = s->brows ? repalloc(s->brows, s->nbcap * sizeof(HeapTuple)) :
-			MemoryContextAlloc(GetMemoryChunkContext(s), s->nbcap * sizeof(HeapTuple));
+		SIFT_REGROW_IN(GetMemoryChunkContext(s), s->brows, s->nbcap * sizeof(HeapTuple));
 	}
 	s->brows[s->nbrows++] = tup;
 }

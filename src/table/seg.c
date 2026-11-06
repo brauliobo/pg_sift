@@ -585,7 +585,7 @@ schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	if (c->n == c->cap)
 	{
 		c->cap = Max(8, c->cap * 2);
-		c->ent = c->ent ? repalloc(c->ent, c->cap * sizeof(SchemaEnt)) : MemoryContextAlloc(st->cxt, c->cap * sizeof(SchemaEnt));
+		SIFT_REGROW_IN(st->cxt, c->ent, c->cap * sizeof(SchemaEnt));
 	}
 	c->ent[c->n++] = (SchemaEnt) {e->gen, schema};
 	return schema;

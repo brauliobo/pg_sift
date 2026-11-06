@@ -90,7 +90,7 @@ own(SiftTblSlot *ss, TupleTableSlot *slot, void *p)
 	if (ss->nowned == ss->capowned)
 	{
 		ss->capowned = Max(8, ss->capowned * 2);
-		ss->owned = ss->owned ? repalloc(ss->owned, ss->capowned * sizeof(void *)) : MemoryContextAlloc(slot->tts_mcxt, ss->capowned * sizeof(void *));
+		SIFT_REGROW_IN(slot->tts_mcxt, ss->owned, ss->capowned * sizeof(void *));
 	}
 	ss->owned[ss->nowned++] = p;
 }

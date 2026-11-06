@@ -58,7 +58,7 @@ ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift_table versions", ALLOCSET_SMALL_SIZES);
 	seg = sift_cseg_open(rel, e, tmp);
 	old = MemoryContextSwitchTo(st->cxt);
-	c->vg = c->vg ? repalloc(c->vg, (c->nvg + 1) * sizeof(VerGroup)) : palloc((c->nvg + 1) * sizeof(VerGroup));
+	SIFT_REGROW(c->vg, (c->nvg + 1) * sizeof(VerGroup));
 	g = &c->vg[c->nvg++];
 	*g = (VerGroup) {.gen = e->gen,.nsb = seg->nsb,.sb = palloc(seg->nsb * sizeof(uint32)),.sum = palloc(seg->nsb * sizeof(SiftColVerSum))};
 	MemoryContextSwitchTo(old);
@@ -195,8 +195,8 @@ vers_unit(SiftTblVers *v, int g, uint32 u)
 	if (v->seg->sbdir[u].nrows > v->cap)
 	{
 		v->cap = v->seg->sbdir[u].nrows;
-		v->xm = v->xm ? repalloc(v->xm, v->cap * sizeof(uint32)) : MemoryContextAlloc(v->cxt, v->cap * sizeof(uint32));
-		v->cm = v->cm ? repalloc(v->cm, v->cap * sizeof(uint32)) : MemoryContextAlloc(v->cxt, v->cap * sizeof(uint32));
+		SIFT_REGROW_IN(v->cxt, v->xm, v->cap * sizeof(uint32));
+		SIFT_REGROW_IN(v->cxt, v->cm, v->cap * sizeof(uint32));
 	}
 	sift_cseg_ver_unit(v->seg, u, v->xm, v->cm);
 	sift_cseg_close(v->seg);
