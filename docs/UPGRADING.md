@@ -69,6 +69,15 @@ scripts/upgrade-check.sh app
 files are not rewritten: an older index stays in its format until a merge, `VACUUM` or `REINDEX` writes it again, and the preflight and the update tell which
 `REINDEX` is worth it. A `sift_table` cannot be reindexed; it follows `sift.col_format_minor` on its next write.
 
+**The extension version of a patch release.** From 4.2 a patch release `X.Y.N` has the extension version `X.Y.N`, and `sift.version()` (the loaded library) returns the same string, so
+`ALTER EXTENSION pg_sift UPDATE` after installing the files moves the database to it and the two queries of step 4 agree. The step from one patch release to the next changes no object. A database at
+any `X.Y.N` reaches the next minor with the one script of that minor, because every patch release also ships an empty script back to `X.Y`. The releases before 4.2 kept the extension version of
+their minor (4.1.1 to 4.1.4 are 4.1, 4.0.4 and 4.0.5 are 4.0.3), so on them `ALTER EXTENSION pg_sift UPDATE` has nothing to do and PostgreSQL prints its own notice, `version "4.1" of extension "pg_sift" is
+already installed`: it is harmless, the library files are the ones that changed. `sift.version()` of those releases is the minor too (`4.1`); the release that runs is in
+`SELECT version FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'` (PostgreSQL 18 and later: `4.1.4+` and the commit), after a restart or a reconnect, as an open session keeps the library it loaded.
+If `sift.version()` is older than `extversion`, the library files are older than the extension scripts: install the release or a newer one
+(`scripts/upgrade-check.sh` reports it as a blocker).
+
 The last step of an update to 3.3 (from any older version) prints what is left to do, as warnings with the commands (the first 20 of each, then the count of the rest), or a
 notice that nothing is (PostgreSQL shows only warnings from an extension script). `SELECT * FROM sift.upgrade_commands()` lists the same later, for the indexes and tables the role owns or may maintain (every one for a superuser):
 one row per command (`kind` `reindex` or `rewrite`, the `object`, the `reason`, the `command`), the cheapest first.
