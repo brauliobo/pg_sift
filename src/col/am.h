@@ -95,7 +95,9 @@ extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_deafened(Oid relid);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
-extern bool sift_col_track_own(const struct SiftTombLog *log);
+extern bool sift_col_track_rebaseline(Relation index, Relation heap);
+extern void sift_col_track_ask(Relation index);
+extern PGDLLEXPORT void sift_col_track_worker_main(Datum main_arg);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
 extern bool sift_col_updates_supersede(void);
 extern bool sift_col_writing(void);
@@ -116,7 +118,6 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 #endif
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
-extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool
@@ -354,7 +355,6 @@ extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
@@ -382,7 +382,6 @@ extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, 
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
 extern void sift_col_vacuum_note_insert(Relation index, Relation heap);
 extern bool sift_col_rewrite_tick(Relation index, double owed);
-extern bool sift_col_promote_tick(Relation index);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_once_worker_main(Datum main_arg);

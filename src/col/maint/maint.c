@@ -4,7 +4,10 @@
  * the files next to it hold what they run
  */
 #include "postgres.h"
+#include "access/table.h"
+#include "catalog/index.h"
 #include "core/ops.h"
+#include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "utils/timestamp.h"
 #include "col/maint/maint_int.h"
@@ -103,7 +106,6 @@ const SiftMaintOps maint_col_ops = {
 	.bulkdelete_wbuf = maint_bulkdelete_wbuf,
 	.bulkdelete_tomb = maint_bulkdelete_tomb,
 	.vacuum_net = maint_net_refresh,
-	.vacuum_heap = maint_roots_verify,
 	.vacuum_log = maint_vacuum_log,
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
@@ -203,9 +205,61 @@ worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 	FreeErrorData(err);
 }
 
-/* seal: the open write buffer is sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
+/*
+ * The re-baseline of a log written before the fix (sift_col_track_rebaseline), in a transaction of its own: it holds ShareUpdateExclusiveLock on the table, which keeps VACUUM
+ * and the autovacuum worker waiting or skipping for as long as the transaction lasts, and the merges of the worker are longer. A table that is busy with a VACUUM is left to it (it re-baselines too).
+ */
 static void
-maint_worker(Datum main_arg, bool seal)
+rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
+{
+	Oid			heapoid;
+	Relation	index;
+	Relation	heap;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	heapoid = IndexGetRelation(indexoid, true);
+	if (OidIsValid(heapoid) && !RecoveryInProgress() && ConditionalLockRelationOid(heapoid, ShareUpdateExclusiveLock) &&
+		(index = try_index_open(indexoid, RowExclusiveLock)) != NULL)
+	{
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		if (sift_col_is_index(index))
+		{
+			TimestampTz start = GetCurrentTimestamp();
+
+			heap = table_open(heapoid, NoLock);
+			if (sift_col_track_rebaseline(index, heap))
+				sift_log_maint(index, "column track re-baseline finished", start, -1, -1);
+			table_close(heap, NoLock);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
+/* The re-baseline that a read of a log written before the fix asked for (sift_col_track_ask) */
+void
+sift_col_track_worker_main(Datum main_arg)
+{
+	ErrorContextCallback errctx;
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
+
+	PG_TRY();
+	{
+		rebaseline_step(indexoid, cx, &name);
+	}
+	PG_CATCH();
+	{
+		worker_failed(indexoid, name, cx);
+	}
+	PG_END_TRY();
+}
+
+void
+sift_col_maint_worker_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
@@ -217,15 +271,15 @@ maint_worker(Datum main_arg, bool seal)
 	{
 		Relation	index;
 
+		rebaseline_step(indexoid, cx, &name);
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		index = sift_try_open_index(indexoid, RowExclusiveLock);
+		sift_lock_table_of_index(indexoid, RowExclusiveLock);
+		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
-			if (seal && maint_wbuf_read_due(index))
-				sift_cwbuf_seal(index, true);
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
 				CHECK_FOR_INTERRUPTS();
@@ -242,18 +296,6 @@ maint_worker(Datum main_arg, bool seal)
 		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
-}
-
-void
-sift_col_maint_worker_main(Datum main_arg)
-{
-	maint_worker(main_arg, false);
-}
-
-void
-sift_col_read_promote_worker_main(Datum main_arg)
-{
-	maint_worker(main_arg, true);
 }
 
 /*
@@ -293,7 +335,8 @@ sift_col_rewrite_worker_main(Datum main_arg)
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		index = sift_try_open_index(indexoid, RowExclusiveLock);
+		sift_lock_table_of_index(indexoid, RowExclusiveLock);
+		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));

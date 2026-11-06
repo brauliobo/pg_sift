@@ -23,6 +23,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_log_append);
 PG_FUNCTION_INFO_V1(sift_test_col_log_entries);
 PG_FUNCTION_INFO_V1(sift_test_col_log_cache);
 PG_FUNCTION_INFO_V1(sift_test_tomb_header);
+PG_FUNCTION_INFO_V1(sift_test_log_chan);
 PG_FUNCTION_INFO_V1(sift_test_col_log_hidden);
 PG_FUNCTION_INFO_V1(sift_test_hf_taken);
 PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
@@ -299,6 +300,38 @@ sift_test_tomb_header(PG_FUNCTION_ARGS)
 	v[1] = Int64GetDatum((int64) SIFT_TOMB_HDR(page)->chan.flags);
 	UnlockReleaseBuffer(buf);
 	relation_close(rel, NoLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+/*
+ * sift._test_log_chan(index, flags int8, base_xid xid, OUT flags int8, OUT base_xid xid): the completeness record of the log of a column index, set first to the arguments that are
+ * not NULL: the log of an earlier library (flags 1), or of a re-baseline that began and aborted (flags 3 and the xid of a transaction that rolled back).
+ */
+Datum
+sift_test_log_chan(PG_FUNCTION_ARGS)
+{
+	Relation	index = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	SiftTombLog *log;
+	SiftTombChan chan;
+	TupleDesc	desc;
+	Datum		v[2];
+	bool		nulls[2] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("function returning record called in context that cannot accept type record"),
+						errhint("Call it in the FROM clause.")));
+	if (!sift_col_is_index(index) || (log = sift_col_log(index)) == NULL)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("relation \"%s\" is not a column index with a tombstone log", RelationGetRelationName(index))));
+	chan = log->chan;
+	if (!PG_ARGISNULL(1))
+		chan.flags = (uint32) PG_GETARG_INT64(1);
+	if (!PG_ARGISNULL(2))
+		chan.base_xid = PG_GETARG_TRANSACTIONID(2);
+	if (!PG_ARGISNULL(1) || !PG_ARGISNULL(2))
+		sift_tomb_set_chan(index, log, &chan);
+	v[0] = Int64GetDatum(log->chan.flags);
+	v[1] = TransactionIdGetDatum(log->chan.base_xid);
+	relation_close(index, RowExclusiveLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 #endif							/* SIFT_TESTING */
