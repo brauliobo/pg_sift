@@ -14,11 +14,12 @@
  *    CASE WHEN count(*) FILTER (WHERE p IS NOT TRUE) > 0 THEN least(min(x) FILTER (WHERE p), k) ELSE min(x) FILTER (WHERE p) END (greatest and max alike; least and greatest skip the
  *    NULL of a group that has no x and order a NaN as min and max do). Not a numeric: two equal values of a numeric that differ in scale (0.00 and 0) tie, and which one the aggregate
  *    returns depends on the order of the rows. A float tie is a tie of bits, but for the sign of a zero, which a leaf does not keep either.
- *  - avg of an integer or a numeric x with ELSE k, k a whole number (the zeros count as rows): CASE WHEN n > 0 THEN (coalesce(sum(x) FILTER (WHERE p), 0)::numeric + k * count(*) FILTER (WHERE p IS NOT TRUE)) / n::numeric END with
- *    n = count(x) FILTER (WHERE p) + count(*) FILTER (WHERE p IS NOT TRUE), the same numeric_div of the same sum and count as the final function of avg (NULL when n is 0); a whole k adds no scale.
- *    avg of a float8 x with ELSE 0: the same with the sum of float8 and a float8 division: avg adds in float8 as sum does, and a zero changes no sum (k other than 0 does: k * n is no sum of k).
- *    Not a float4: avg(float4) adds in float8 where sum(float4) adds in float4. For int2 and int4 the sum is a bigint, as the state of avg is: both
- *    leave the range of a bigint only after more than 2^32 rows of the largest values. *
+ *  - avg of an integer or a numeric x with ELSE k (the k rows count): CASE WHEN n > 0 THEN (coalesce(sum(x) FILTER (WHERE p), 0)::numeric + k * count(*) FILTER (WHERE p IS NOT TRUE)) / n::numeric END with
+ *    n = count(x) FILTER (WHERE p) + count(*) FILTER (WHERE p IS NOT TRUE), the same numeric_div of the same sum and count as the final function of avg (NULL when n is 0). A whole k adds no scale; a k with
+ *    decimals is added only when a row gives it (the sum of avg has the largest scale of the values it added, k among them when a row adds it).
+ *    avg of a float8 x with ELSE 0: the same with the sum of float8 and a float8 division: avg adds in float8 as sum does, and a zero changes no sum (k other than 0 does: k * n is no sum of k,
+ *    the rounding of the sum depends on where the k rows sit). avg of a float4 x with ELSE 0: sum(x::float8), as float4_accum adds the values in float8. For int2 and int4 the sum is a bigint,
+ *    as the state of avg is: both leave the range of a bigint only after more than 2^32 rows of the largest values.
  * A condition or a value that holds a sub-select, a volatile function or a set-returning function stays as written, and so do DISTINCT, ORDER BY and the aggregates of other functions.
  */
 #include "postgres.h"
@@ -103,9 +104,8 @@ static bool
 whole(Const *k)
 {
 	if (k->consttype == NUMERICOID)
-		return !numeric_is_nan(DatumGetNumeric(k->constvalue)) && !numeric_is_inf(DatumGetNumeric(k->constvalue)) &&
-			DatumGetInt32(DirectFunctionCall1(numeric_scale, k->constvalue)) == 0;
-	return k->consttype == INT2OID || k->consttype == INT4OID || k->consttype == INT8OID;
+		return DatumGetInt32(DirectFunctionCall1(numeric_scale, k->constvalue)) == 0;
+	return true;
 }
 
 /* the aggregates whose result with ELSE k is made of the aggregates of the rows that hold the condition and the number of rows that do not (the header) */
@@ -120,7 +120,8 @@ else_exact(const char *name, Aggref *a, Node *value, Const *k)
 	if (strcmp(name, "sum") == 0)
 		return is_zero(k) && (a->aggtype == INT8OID || a->aggtype == NUMERICOID || a->aggtype == FLOAT4OID || a->aggtype == FLOAT8OID);
 	if (strcmp(name, "avg") == 0)
-		return ((integer || t == NUMERICOID) && whole(k)) || (t == FLOAT8OID && is_zero(k));
+		return integer || (t == NUMERICOID && !numeric_is_nan(DatumGetNumeric(k->constvalue)) && !numeric_is_inf(DatumGetNumeric(k->constvalue))) ||
+			((t == FLOAT4OID || t == FLOAT8OID) && is_zero(k));
 	if (strcmp(name, "min") != 0 && strcmp(name, "max") != 0)
 		return false;
 	if (t == FLOAT4OID || t == FLOAT8OID)
@@ -311,13 +312,16 @@ rewrite_zero_stat(Aggref *a, const char *name, Node *cond, Node *value, Const *z
 		m->location = -1;
 		return case_when(t, some, (Node *) m, (Node *) copyObject(held));
 	}
-	if (t == FLOAT8OID)
+	if (t == FLOAT8OID || t == FLOAT4OID)
 	{
 		Aggref	   *sum = copyObject(held),
 				   *values = copyObject(held);
 		CoalesceExpr *co = makeNode(CoalesceExpr);
 		Node	   *n;
 
+		/* avg(float4) adds the values as float8 (float4_accum), which is sum(x::float8) */
+		if (t == FLOAT4OID)
+			linitial_node(TargetEntry, sum->args)->expr = (Expr *) makeFuncExpr(F_FLOAT8_FLOAT4, FLOAT8OID, list_make1(copyObject(value)), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST);
 		sum->aggfnoid = F_SUM_FLOAT8;
 		sum->aggtype = FLOAT8OID;
 		sum->aggtranstype = InvalidOid;
@@ -325,10 +329,10 @@ rewrite_zero_stat(Aggref *a, const char *name, Node *cond, Node *value, Const *z
 		values->aggfnoid = F_COUNT_ANY;
 		values->aggtype = INT8OID;
 		values->aggtranstype = InvalidOid;
-		values->aggargtypes = list_make1_oid(FLOAT8OID);
+		values->aggargtypes = list_make1_oid(t);
 		n = bigint_op("+", INT8OID, INT8OID, (Node *) values, (Node *) copyObject(others));
 		co->coalescetype = FLOAT8OID;
-		co->args = list_make2(sum, zero_of(FLOAT8OID, zero));
+		co->args = list_make2(sum, zero_of(FLOAT8OID, NULL));
 		co->location = -1;
 		return case_when(FLOAT8OID, some_rows(n), bigint_op("/", FLOAT8OID, FLOAT8OID, (Node *) co, (Node *) makeFuncExpr(F_FLOAT8_INT8, FLOAT8OID, list_make1(copyObject(n)), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST)),
 						 (Node *) makeNullConst(FLOAT8OID, -1, InvalidOid));
@@ -358,13 +362,16 @@ rewrite_zero_stat(Aggref *a, const char *name, Node *cond, Node *value, Const *z
 		total = sum_int8 ? (Node *) makeFuncExpr(F_NUMERIC_INT8, NUMERICOID, list_make1(co), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST) : (Node *) co;
 		if (!is_zero(zero))
 		{
-			/* every row where p is not true adds k, a whole number: the scale of the sum stays what the values give it */
+			/* every row where p is not true adds k. A whole k leaves the scale of the sum what the values give it; a k with decimals sets it (the sum of the aggregate has the largest scale
+			 * of the values it added), and only when a row adds it: no k * 0 for a group where p always holds */
 			Node	   *k = zero->consttype == NUMERICOID ? (Node *) copyObject(zero) :
 				(Node *) makeConst(NUMERICOID, -1, InvalidOid, -1, DirectFunctionCall1(int8_numeric, Int64GetDatum(zero->consttype == INT2OID ? DatumGetInt16(zero->constvalue) :
 								   zero->consttype == INT4OID ? DatumGetInt32(zero->constvalue) : DatumGetInt64(zero->constvalue))), false, false);
 			Node	   *others_n = (Node *) makeFuncExpr(F_NUMERIC_INT8, NUMERICOID, list_make1(copyObject(others)), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST);
 
-			total = bigint_op("+", NUMERICOID, NUMERICOID, total, bigint_op("*", NUMERICOID, NUMERICOID, k, others_n));
+			Node	   *added = bigint_op("+", NUMERICOID, NUMERICOID, total, bigint_op("*", NUMERICOID, NUMERICOID, k, others_n));
+
+			total = whole(zero) ? added : case_when(NUMERICOID, some, added, copyObject(total));
 		}
 		count = (Node *) makeFuncExpr(F_NUMERIC_INT8, NUMERICOID, list_make1(copyObject(n)), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST);
 		return case_when(NUMERICOID, some_rows(n), bigint_op("/", NUMERICOID, NUMERICOID, total, count), (Node *) makeNullConst(NUMERICOID, -1, InvalidOid));
