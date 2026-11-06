@@ -90,6 +90,7 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 		take[idx[a]] = true;
 		ev->n++;
 		ev->rows += v->imm[idx[a]].ndocs;
+		ev->units += seg->nsb;
 		for (uint32 u = 0; u < seg->nsb; u++)
 		{
 			SiftCZone	z;

@@ -30,6 +30,9 @@ bool		maint_read_asked = false;
  */
 #define UNIT_PRICE	46000.0
 
+/* What a row of a unit costs a read of one key in it, which scans the rows of the unit to find the key's (0.15 M instructions for a unit of 7,400 rows: 20 a row, the lowest of the statements measured) */
+#define UNIT_ROW_PRICE	20.0
+
 /* What a segment costs a read that lists it, in instructions, even when every unit of it is pruned (15,600 measured) */
 #define SEG_PRICE	15600.0
 
@@ -46,14 +49,16 @@ index_scans(Relation index)
  * with the others: the units spared for a request of a key the overlays hold are the widths of their key ranges added, less the width of them together, over the width of them together.
  * The requests of an index follow its data: the keys that get new rows (the overlays) are the ones asked for, so that a key outside them is not counted as one that is. The requests are the scans the statistics count
  * for the index (the aggregate scan counts one too) since they were reset, and the merge is due when what they paid comes to half of what the rewrite of the overlays costs (as
- * the reads of sift_col_vacuum_tick do): an index no one reads, or overlays that hold few keys, are left alone.
+ * the reads of sift_col_vacuum_tick do). A unit costs a read to open and, when it holds more rows than the key has, to scan them: the overlays of a promotion are as wide as the units of the index, so that
+ * a unit spared is worth its rows (7,400 of them: 0.15 M instructions, not 46,000): an index no one reads, or overlays that hold few keys, are left alone.
  */
 static bool
 overlay_worth(Relation index, const OverlayEv *ev)
 {
-	double		spared = (ev->sum - ev->cover) / Max(ev->cover, 1.0);
+	double		spared = (ev->sum - ev->cover) / Max(ev->cover, 1.0),
+				unit = UNIT_PRICE + UNIT_ROW_PRICE * (double) ev->rows / Max(ev->units, 1);
 
-	return spared > 0 && index_scans(index) * (spared * UNIT_PRICE + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
+	return spared > 0 && index_scans(index) * (spared * unit + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
 }
 
 /* Do the reads of this backend owe the rewrite of the index? The rows are the directory's: no unit is read */

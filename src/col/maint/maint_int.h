@@ -71,6 +71,7 @@ typedef struct OverlayEv
 {
 	int			n;				/* the overlays taken */
 	uint64		rows;			/* their rows: what the merge rewrites */
+	uint64		units;			/* their units: the rows of one is what a read of a key in it scans */
 	double		sum;			/* the width of the key ranges of their units, each overlay's added: the units a read of a random key opens in them */
 	double		cover;			/* the width of the key ranges of their units in all: the units it would open in the merged one */
 } OverlayEv;
