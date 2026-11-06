@@ -678,7 +678,7 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
  * arguments (the one the trigger was made for) names an index that is gone afterwards.
  */
 static Oid
-trigger_index(Trigger *trig)
+depends_index(Oid trigger)
 {
 	Relation	drel = table_open(DependRelationId, AccessShareLock);
 	ScanKeyData key[2];
@@ -687,7 +687,7 @@ trigger_index(Trigger *trig)
 	Oid			index = InvalidOid;
 
 	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(TriggerRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(trig->tgoid));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(trigger));
 	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
 	while (!OidIsValid(index) && HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
@@ -698,7 +698,35 @@ trigger_index(Trigger *trig)
 	}
 	systable_endscan(scan);
 	table_close(drel, AccessShareLock);
+	return index;
+}
+
+static Oid
+trigger_index(Trigger *trig)
+{
+	Oid			index = depends_index(trig->tgoid);
+
 	return OidIsValid(index) ? index : atooid(trig->tgargs[0]);
+}
+
+/*
+ * DROP INDEX CONCURRENTLY of an index that has its triggers: they go with the index, which assigns the transaction an xid, and the command refuses that at the end ("must be first
+ * action in transaction"). Called for each trigger it drops, with nothing changed yet, to say what to do instead.
+ */
+void
+sift_col_track_drop_concurrently(Oid trigger)
+{
+	Oid			oid = depends_index(trigger);
+	Relation	index;
+
+	if (!OidIsValid(oid))
+		return;
+	index = relation_open(oid, NoLock);
+	if (sift_col_is_index(index))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("DROP INDEX CONCURRENTLY cannot drop the sift_col index \"%s\" that tracks its changes", RelationGetRelationName(index)),
+						errdetail("The two triggers of track_changes go with the index, and dropping them needs a transaction id that DROP INDEX CONCURRENTLY does not allow."),
+						errhint("ALTER INDEX %s SET (track_changes = 'off') first, or DROP INDEX %s without CONCURRENTLY.", RelationGetRelationName(index), RelationGetRelationName(index))));
+	relation_close(index, NoLock);
 }
 
 /*
