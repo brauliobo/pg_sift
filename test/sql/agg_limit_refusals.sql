@@ -89,6 +89,11 @@ SELECT answer(spine_q(), '') = :'small_budget' AS spine_same_rows;
 
 -- the registry names the slug for what the limit does
 SELECT slug, class FROM sift.refusal_slugs() WHERE slug IN ('shape_width', 'too_many_keys', 'spine_rows', 'where') ORDER BY slug;
+-- and what to change: every slug has a line, and a refusal of explain_why joins to it on the slug
+SELECT count(*) = count(*) FILTER (WHERE action <> '' AND action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs();
+SET sift.agg_lookup_max_kb = 1;
+SELECT w.slug, r.class, r.action <> '' AS has_action FROM sift.explain_why(spine_q()) w JOIN sift.refusal_slugs() r ON r.slug = w.slug WHERE w.arm = 'two_level';
+RESET sift.agg_lookup_max_kb;
 
 RESET client_min_messages;
 DROP TABLE limits, events, dims, ticks, parted;

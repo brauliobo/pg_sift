@@ -94,3 +94,11 @@ COMMENT ON FUNCTION sift._table_option_stored(regclass, text) IS 'The option as 
 COMMENT ON FUNCTION sift.table_option_values_trg() IS 'Trigger of sift.table_option_values: skips the row of a table the database does not have and replaces the entry of the table in the cache of every backend.';
 COMMENT ON FUNCTION sift.tblref_in(cstring) IS 'Input of sift.tblref: the qualified name of a table, read as its OID here (0 for a table that is not there).';
 COMMENT ON FUNCTION sift.tblref_out(sift.tblref) IS 'Output of sift.tblref: the qualified name of the table.';
+
+-- What to change for each slug that sift.explain_why and sift.stats() name: the statement, the index or a setting (the HINT of the notice of sift.explain_refusals).
+-- The result of a function cannot gain a column in place.
+DROP FUNCTION sift.refusal_slugs();
+CREATE FUNCTION sift.refusal_slugs(OUT slug text, OUT class text, OUT reason text, OUT action text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_agg_refusal_slugs' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.refusal_slugs() IS 'The slugs that sift.explain_why and sift.stats() name, with their class (limit: the query has more of something than a fixed limit of the extension allows; semantic: otherwise), the reason and what to change (join it to explain_why on slug).';

@@ -877,9 +877,9 @@ sift_agg_refusal_slugs(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
 	{
-		Datum		v[3] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
-							CStringGetTextDatum(refusals[i].text)};
-		bool		n[3] = {false, false, false};
+		Datum		v[4] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
+							CStringGetTextDatum(refusals[i].text), CStringGetTextDatum(refusals[i].action)};
+		bool		n[4] = {false, false, false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
 	}

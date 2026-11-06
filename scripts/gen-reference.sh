@@ -189,6 +189,10 @@ def scan(*paths):
     """-> objects {(kind, name): dict}, comments {(kind, name): text}, of the statements of the scripts in order"""
     objs, comments = {}, {}
     for s in [s for path in paths for s in statements(read(path))]:
+        m = re.match(r'DROP\s+FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
+        if m:
+            objs.pop(('function', m.group(1)), None)    # dropped to be created again with another result
+            continue
         m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             o = function(s, m.group(1), m.end() - 1)
