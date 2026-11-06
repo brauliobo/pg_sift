@@ -34,9 +34,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 123 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 14 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 38 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
 
@@ -560,20 +560,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on (the planner costs both plans). force pushes the bitmap down whenever one exists, to test a plan; off keeps the post-filter plan. A filter keeping a tenth of the rows stays after the ranker.
 - **Sources:** [USAGE](USAGE.md#filter-pushdown)
 
-#### sift.prefetch
-
-`BM25` · default · since 1.0 · default on
-
-- **What it does:** switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead
-- **Gain:** none with a warm cache: 4.41 ms off, 4.49 ms on (100,000 documents, unordered scan); the read-ahead is for a cold heap, which this host cannot make (the page cache cannot be dropped)
-- **Impact:** index size: -; build, merge and writes: -; other: none; off gives the plan PostgreSQL has without them
-- **When:** Unordered sift scans of a heap table: reads ahead the heap pages about to be visited. Not ranked scans, not a sift_table. A cold heap gains; a warm cache does not (4.41 ms off, 4.49 ms on).
-- **Default:** on — On: the read-ahead is for a cold heap, which the benchmark host cannot make (page cache cannot be dropped); with a warm cache it measured no difference, so the default rests on design, not on a figure.
-- **Turn off:** SET sift.prefetch = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf), only to compare plans; RESET returns on.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Reads ahead the heap pages an unordered scan is about to visit; set off only to compare plans.
-- **Sources:** benchmark as `sift.enable_scan`; [USAGE](USAGE.md#filter-pushdown)
-
 #### sift.async_maintenance
 
 `all` · default · since 1.0 · default on
@@ -615,20 +601,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on: with the b-trees the planner keeps them; without them a point, range or IN lookup reads the index instead of the table. Turn it off to keep the planner from bitmap scans of a sift_col index.
 - **Sources:** benchmark `col_scan_default`; [COL-SCAN](COL-SCAN.md#how-it-works)
-
-#### sift.vis_page_cache
-
-`sift_col` · default · since 3.4 · default on
-
-- **What it does:** the rows of a heap page that a scan reads twice (the units of a key-cut index list rows of the same page) are checked for visibility once
-- **Gain:** none at 100,000 rows: a key-cut range query 0.20 ms off, 0.23 ms on (within noise)
-- **Impact:** index size: about 48 bytes for each heap page the scan visits (at most 1,048,576 pages), freed with the scan; build, merge and writes: n/a: a read-side cache of one scan; it writes nothing; other: about 48 bytes for each heap page the scan visits (at most 1,048,576 pages), freed with the scan; off checks the page again each time
-- **When:** Scans of an index with key_cut, whose units list rows of the same heap page: the visibility of a page read twice is kept for the rest of the scan. Other scans read each page once.
-- **Default:** on — On: it costs about 48 bytes for each heap page visited (at most 1,048,576 pages) and writes nothing; at 100,000 rows a key-cut range query showed 0.20 ms off, 0.23 ms on (within noise).
-- **Turn off:** SET sift.vis_page_cache = off (session, ALTER ROLE/DATABASE, postgresql.conf): the page is checked again each time. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on: a heap page the scan reads twice (the units of a key-cut index list rows of one page) is checked for visibility once. Turn it off only to compare.
-- **Sources:** benchmark `options-evidence`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift.col_rollup_on_demand
 
@@ -771,76 +743,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Off gives the plan PostgreSQL has without sift (to compare, or to isolate a wrong result); it also stops the top-N scan. Set it per statement, role or session.
 - **Sources:** benchmark `grouping_sets_report`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
-#### sift.agg_left_lateral
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns
-- **Gain:** LEFT JOIN LATERAL over a row's list, three corpus queries: lateral part 27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms (small data, median of 3)
-- **Impact:** index size: -; build, merge and writes: -; other: none; off keeps the normal plan of such a query (the way to compare it and to isolate a wrong result)
-- **When:** LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row; a WHERE above the join that sees the NULL element tuple, or a lateral condition that may raise, keeps the normal plan.
-- **Default:** on — On: lateral part 2.7x to 4.9x faster on three corpus queries (27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms); the pushdown is checked by test agg_left_lateral.
-- **Turn off:** SET sift.agg_left_lateral = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the statement then keeps the normal plan. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off keeps the normal plan for a LEFT JOIN LATERAL over a row's list (to compare, or to isolate a wrong result). A WHERE that sees the NULL element tuple keeps the normal plan anyway.
-- **Sources:** benchmark `test:agg_left_lateral`; [AGG](AGG.md)
-
-#### sift.agg_probe_direct
-
-`sift_col`, `sift_table` · default · since 4.1 · default on
-
-- **What it does:** the keys of a correlated LIMIT 1 child (LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree, an Index Scan or an Index Only Scan) are probed in the child's btree by the aggregate scan, a sorted batch of keys at a time, instead of running the child's plan once for each key
-- **Gain:** lateral_probe_direct (120,000 events, 1,000 entities): 1,657 M to 606 M instructions, btree buffer hits 177,454 to 66,897; cold reads 7,429 to 7,430 btree blocks
-- **Impact:** index size: -; build, merge and writes: -; other: none; a child the probe does not take (a parameter in its filter, a sub-plan, a non-btree index, an inequality key, a serializable transaction) keeps its plan for every key
-- **When:** a correlated LIMIT 1 child whose key is an equality of the index column's own type on a btree; the rows are those of the child's index scan
-- **Default:** on — On: 1,657 M to 606 M instructions on the bench case; see the CHANGELOG.
-- **Turn off:** SET sift.agg_probe_direct = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the child then runs for every key. No REINDEX.
-- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
-- **Advice:** Leave on. Off runs the child's plan for every key (to compare, or to isolate a wrong result).
-- **Sources:** benchmark `lateral_probe_direct`; [AGG](AGG.md)
-
-#### sift.agg_float_step
-
-`sift_col`, `sift_table` · default · since 4.1 · default on
-
-- **What it does:** a key, an aggregate argument or a filter of a float column that reads it only through floor, ceil, trunc, round or an integer cast of the column, of the column divided by a constant or of the column times a constant is evaluated by PostgreSQL once for each bucket of the values, not for each distinct value; the bucket numbers of a chunk come from the vector kernels of the scan (AVX2, AVX-512, NEON)
-- **Gain:** float_step_buckets (1,000,000 rows, a distinct value in almost every row, 200 buckets): 624 M to 107.5 M instructions; the same blocks
-- **Impact:** index size: -; build, merge and writes: -; other: none; a value with no bucket number (NULL, NaN, an infinity, a quotient or product that overflows or underflows, a result outside int32, a negative zero) keeps the id of its value, and a statement that reads the column another way as well keeps the ids of its values
-- **When:** a float8 (or float4) column whose every read in the key, the aggregates and the filters of the combo is the one step floor, ceil, trunc, round or an integer cast of x, x / c or x * c with c a constant other than 0; the rows are PostgreSQL's
-- **Default:** on — On: 624 M to 107.5 M instructions on the bench case; see the CHANGELOG.
-- **Turn off:** SET sift.agg_float_step = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the expression then runs for every distinct value. No REINDEX.
-- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
-- **Advice:** Leave on. Off evaluates the expression for every distinct value (to compare, or to isolate a wrong result).
-- **Sources:** benchmark `float_step_buckets`; [AGG](AGG.md)
-
-#### sift.agg_preagg
-
-`sift_col`, `sift_table` · default · since 3.0 · default on
-
-- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
-- **Gain:** 1,000,000 rows, preagg off to on: min/max per group 7.4 to 0.20 ms, month totals 7.7 to 0.74 ms; 3,000,000 rows month totals 12.7 to 0.65 ms
-- **Impact:** index size: +1.1% to +1.2% of the index (cube, 2.4 kB per unit; 300,000 and 3,000,000 rows); build, merge and writes: serial build +3.9% CPU (3,000,000 rows, quiet window); with 2 workers inside the +-5% noise; other: none on the index; off scans every unit
-- **When:** Units of a sift_col index whose rows are all visible, for count/sum/min/max, and groups of units through their superunit summary; units with invisible rows are scanned, and an index built with preagg = 'off' has no cube.
-- **Default:** on — On by the 3.3 rule: min/max per group 7.4 to 0.20 ms (over 5%) at +1.1% to +1.2% of the index (under 3%) and +3.9% serial build CPU (under 5%).
-- **Turn off:** SET sift.agg_preagg = off (session, role, database or postgresql.conf): every unit is scanned, the stored cube stays. ALTER INDEX .. SET (preagg = 'off') plus REINDEX stops storing it.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off scans every unit (comparison). The scan skips the rollup read after 3 units whose rollups do not pay. The reloption preagg = 'off' stops storing the cube.
-- **Sources:** benchmark `cube_minmax_groupby`; [COL-PREAGG 4](COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer)
-
-#### sift.agg_preagg_distinct
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
-- **Gain:** count(DISTINCT) of an 8-value column, 25,000-200,000 rows: 0.25-1.47 ms to 0.10-0.52 ms; a 40,000-value key, 1,000,000 rows: 6.6 ms, 4.8 ms with preagg off
-- **Impact:** index size: as `sift.agg_preagg`; build, merge and writes: as `sift.agg_preagg`; other: none on the index; off scans every unit
-- **When:** count(DISTINCT col) of a 32-bit or text column with a cube histogram, over units whose rows are all visible (others are scanned into the same set); needs sift.agg_preagg. Tens of thousands of values gain nothing.
-- **Default:** on — On since 3.3: 8-value column 0.25-1.47 to 0.10-0.52 ms; the measured exception is a 40,000-value key (6.6 ms against 4.8 ms with preagg off), named in bench case count_distinct_hist.
-- **Turn off:** SET sift.agg_preagg_distinct = off (session, role, database or postgresql.conf): distinct values are counted from the rows of every unit. No REINDEX; the stored histograms stay.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off counts distinct values from the rows of every unit. A key with tens of thousands of values gains nothing from the histograms (see the bench case); measure it with agg_preagg off.
-- **Sources:** benchmark `count_distinct_hist`; [COL-PREAGG 4](COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer)
-
 #### sift.agg_dead_delta
 
 `sift_col` · default · since 3.4 · default 15
@@ -854,20 +756,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 15. Raise it only for a table whose dead rows are few and spread evenly; above about 17% dead a unit is cheaper to scan. 0 scans every dirty unit, as 3.3 does. A lone segment above dead_rewrite_pct (10) dead is rewritten by VACUUM before it gets there.
 - **Sources:** [COL-PREAGG 12](COL-PREAGG.md#12-dirty-units-net-of-their-dead-rows-siftagg_dead_delta-no-format-change)
-
-#### sift.agg_super
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
-- **Gain:** GROUP BY a 20-value key, count and sum, 400,000 rows (391 units, groups of 64): 3.09 ms from the units to 0.22 ms from the superunit summaries
-- **Impact:** index size: +1.0% of the index at the default superunit = 16 (200,000 rows, 53 units); +0.8% at 64, +1.3% to +1.5% at 4 to 8; build, merge and writes: insert, promotion, merge, UPDATE and VACUUM CPU inside the noise (reloption superunit); other: none on the index; off scans every unit
-- **When:** Groups of exact units that have a superunit summary, which only units written with reloption superunit > 0 (default 16 since 3.3) have; older units and groups cut by a predicate read each unit.
-- **Default:** on — On: 400,000 rows grouped by a 20-value key 3.09 to 0.22 ms at +1.0% of the index (under 3%) and insert, merge and VACUUM CPU inside the noise: the 3.3 rule.
-- **Turn off:** SET sift.agg_super = off (session, role, database or postgresql.conf) reads each unit's own pre-aggregate. ALTER INDEX .. SET (superunit = 0) stops writing summaries; a merge or REINDEX applies it to older units.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off reads each unit's own pre-aggregate. Summaries exist only for units written with the reloption superunit > 0 (default 16 since 3.3); REINDEX or a merge writes them for older units.
-- **Sources:** benchmark `superunit_total`; [COL-PREAGG 10](COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16)
 
 #### sift.enable_topn
 
@@ -883,105 +771,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on; the planner compares it with an ordered btree by cost. Off gives the normal plan for ORDER BY .. LIMIT n. Needs sift.enable_agg.
 - **Sources:** benchmark `topn_page_totals`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
 
-#### sift.topn_walk
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
-- **Gain:** ORDER BY key LIMIT 10 or 1000, key in blocks of 3,000 to 12,000 rows, 3,996,000 rows: 2.3 to 6.4x faster; a random key LIMIT 10: 3.1 to 3.4x faster
-- **Impact:** index size: as `sift.enable_topn`; build, merge and writes: as `sift.enable_topn`; other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
-- **When:** Top-N without a search whose sort column does not follow the table (blocks of values in no order, random). A column that follows the table (clustered, serial id) is not walked by zones, it stops early on them.
-- **Default:** on — On: 2.3x to 6.4x on keys in blocks of 3,000-12,000 rows (3,996,000 rows) and 3.1x to 3.4x on a random key; a key that follows the table or has many ties reads the same units, so nothing is lost.
-- **Turn off:** SET sift.topn_walk = off (session, role, database or postgresql.conf): the units are visited in table order. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. A key that follows the table, or has many ties and NULLs, reads the same units either way. Off visits the units in table order (comparison).
-- **Sources:** benchmark `topn_walk_order_kept`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
-
-#### sift.topn_zone_keys
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
-- **Gain:** ORDER BY g DESC, id DESC LIMIT 10, 25,000 to 200,000 rows: units read 20 to 157 down to 1 to 2; 1,000,000 rows, 5 statuses: 5.7 ms vs 5.5 ms off (no time gain)
-- **Impact:** index size: as `sift.enable_topn`; build, merge and writes: as `sift.enable_topn`; other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
-- **When:** Top-N walk with several sort keys where the first key ties between units (few distinct values, ORDER BY status, id LIMIT 10), decided by the next integer key's zone; a first key that separates units is unaffected.
-- **Default:** on — On: units read fall from 20-157 to 1-2 (25,000-200,000 rows) with no index or write cost; at 1,000,000 rows with 5 statuses there is no time gain (5.7 against 5.5 ms off).
-- **Turn off:** SET sift.topn_zone_keys = off (session, role, database or postgresql.conf): only the first key bounds the units, every unit that ties with the n-th row is read. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. It decides a tie of the first sort key between units by the zones of the later keys (a few distinct values in the first key). Off to compare.
-- **Sources:** benchmark `topn_zone_keys`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
-
-#### sift.topn_runs
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
-- **Gain:** ORDER BY k LIMIT 100 with order_columns, 1,000,000 rows: 3.5 to 1.4 ms (runs off, on); 2x to 4x up to n of a few thousand, a btree 5x to 14x faster at n = 1000
-- **Impact:** index size: +50.8% of a ten-column index with order_columns on every column (1,000,000 rows); heads +0.6% (three columns, 800,000 rows); build, merge and writes: heads vs runs only: serial build 1.61 vs 1.63 s (800,000 rows), merge of 500,000 rows 0.74 vs 0.66 s (+-10% noise); other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
-- **When:** ORDER BY k LIMIT n where k is in the order_columns reloption, on units written after it was set; n up to a few thousand (b-tree 5x-14x faster at 1000). A removing WHERE and write buffers are read as before.
-- **Default:** on — On, and costs nothing without the option: it acts only on an index with order_columns (default none; the opt-in costs the bytes). With it, LIMIT 100 on 1,000,000 rows 3.5 to 1.4 ms.
-- **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. ALTER INDEX .. RESET (order_columns) plus REINDEX drops them.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on; it acts only on an index with the reloption order_columns (default none). Name only columns sorted with LIMIT: an unordered column costs 2 bytes a row. Off reads whole units.
-- **Sources:** benchmark `topn_sorted_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
-
-#### sift.agg_lookup_pushdown
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
-- **Gain:** semi join of a group of 1,000 keys, 3,000,000 rows: generic lookup join 70.8 to 22.9 ms, byte table 24.8 to 5.5 ms; keyed by a dependent lookup (a CTE of ids joined to the table of their rows, 90,000 rows, 1,500,000 events): 1 key 83.6 to 1.1 ms, 1,000 keys 101.8 to 30.5 ms, 12,000 keys unchanged
-- **Impact:** index size: -; build, merge and writes: -; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
-- **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
-- **Default:** on — On: group of 1,000 keys over 3,000,000 rows, generic lookup join 70.8 to 22.9 ms and byte table 24.8 to 5.5 ms; the worst case is a tie (100,000 keys 30.4 against 31.3 ms).
-- **Turn off:** SET sift.agg_lookup_pushdown = off (session, role, database or postgresql.conf): the whole joined table is loaded. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off loads the whole joined table. Gains need a btree on the table's equality columns or a selective condition; a set that is most of the table gains nothing (100,000 keys: 30.4 vs 31.3 ms).
-- **Sources:** benchmark [docs/SET-FILTERS.md](SET-FILTERS.md); [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
-
-#### sift.agg_lookup_columns
-
-`sift_col`, `sift_table` · default · since 3.4 · default on
-
-- **What it does:** the rows of a lookup table are read from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap
-- **Gain:** a table of 200,000 rows loaded by the query (1,000,000 orders): 33.5 to 23.3 ms; the load of the fact-first `tpch_shipping_priority` case at 400,000 lineitem rows: 102 M to 41 M instructions
-- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: none: the same memory as the load from the heap
-- **When:** A joined table with a sift_col index that holds its join columns (integer, date, timestamp, text, numeric of up to 18 digits) and no value its leaves cannot store; the first query after a write to the table, or any query when the lookup cache is off. A table cached from an earlier query is not loaded again.
-- **Default:** on — On: the heap is read a tuple at a time (about 160 ns a row read); the leaves are decoded a unit at a time, and the conditions `column <op> constant` of the table are tested on them before a tuple is made. The result is the same rows.
-- **Turn off:** SET sift.agg_lookup_columns = off (session, role, database or postgresql.conf): the heap is read. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Turn it off to load every lookup table from the heap.
-- **Sources:** benchmark `lookup_columns`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
-
-#### sift.agg_probe_rewrite
-
-`sift_col`, `sift_table` · default · since 4.1 · default on
-
-- **What it does:** a join to a large btree table (JOIN, comma join), EXISTS, NOT EXISTS, IN and NOT IN over one is also planned as a probe of the table's btree for each key the scan meets, and kept where that costs less
-- **Gain:** on a key range of 60 keys of 300,000 events joined to a 1,000,000-row table: inner join 344.5 M instructions, comma join 344.7 M, left join 171.9 M, with the probes 14.9 M, 15.0 M and 15.5 M; a NOT IN 549.8 M, with the probes 57.0 M; an EXISTS over the columns of an index on every key 701 M, with the probes 48 M
-- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: planning only: one more plan made for a statement that joins a large table by a btree column
-- **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
-- **Default:** on — the plan with the probes is priced by what a probe takes (the entries it examines in the btree), against the table read whole and the ordinary plan, so the rewrite does not lose where the probes are many and wide
-- **Turn off:** SET sift.agg_probe_rewrite = off (session, role, database or postgresql.conf): a join or sub-select is planned as written. Planning only, no REINDEX.
-- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement
-- **Advice:** Leave on. It costs one more plan for the statements it applies to and is kept only where the plan with the probes is priced lower than the others.
-- **Sources:** benchmark `test:agg_probe_rewrite`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
-
-#### sift.agg_case_filter
-
-`sift_col`, `sift_table` · default · since 4.2 · default on
-
-- **What it does:** sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, sum over CASE WHEN p THEN x ELSE 0 END, count with any ELSE that is not NULL, and min, max (integers) and avg (integers, numerics) with ELSE 0, run as the aggregates of x with a filter on p: the kernels of x under a test of p, not the CASE for every row
-- **Gain:** a pivot of two sums over CASE WHEN status = .. THEN amount ELSE 0 END, grouped, 300,000 events, one backend, warm: 221.8 M instructions and 31.1 ms with the setting off, 43.7 M and 3.6 ms on; the same rows
-- **Gain and cost:** 5.10x fewer instructions (178000k saved a query), index +0.0%, build +0.0%, automatic
-- **Impact:** index size: -; build, merge and writes: -; other: planning only: a walk of the statement for aggregates of that shape; the statement is planned once more as written when the rewritten one does not run in the scan
-- **When:** sift_col and sift_table statements that aggregate over CASE WHEN p THEN x [ELSE NULL | 0]: a pivot, a share of rows by condition. It does not apply where the statement is not run by the scan (it keeps the plan of the CASE as written) or where the CASE has several branches.
-- **Default:** on — the rewrite is exact for the shapes it takes (a sum with ELSE 0 keeps 0 for a group where the condition never holds, NULL for an empty input) and costs one walk of the statement; min, max and avg of a float or of a numeric (min and max) with ELSE 0, an ELSE that is not a zero of the type, DISTINCT, several WHEN branches and sub-selects stay as written.
-- **Turn off:** SET sift.agg_case_filter = off (session, role, database or postgresql.conf): the CASE is evaluated for every row as written. Planning only, no REINDEX.
-- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement.
-- **Advice:** Leave on. It changes the text the scan computes, not the rows: the result of every shape is checked against the plan without the scan.
-- **Sources:** benchmark `agg_case_filter`; [AGG](AGG.md#aggregates-over-case)
-
 #### sift.verdict_cache_kb
 
 `sift_col`, `sift_table` · default · since 3.4 · default 256 kB
@@ -995,34 +784,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at the default. 0 turns the sharing off (each backend then plans every statement in full once); more room helps only a server with more than about 2,000 statements that read a shared CTE.
 - **Sources:** benchmark `test:agg_cte_verdict_cache`; [USAGE](USAGE.md#the-choice-for-a-shared-cte-is-kept-per-backend)
-
-#### sift.agg_share_lookups
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
-- **Gain:** as `sift.agg_lookup_pushdown`
-- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
-- **When:** UNION ALL arms of one statement that join the same table with the same columns and conditions; arms with other tables or conditions load their own, and nothing is kept between statements (that is agg_lookup_cache_kb).
-- **Default:** on — On: the table loads once instead of once per arm, and nothing outlives the statement; the switch alone has no timing recorded (case cte_series_arms).
-- **Turn off:** SET sift.agg_share_lookups = off (session, role, database or postgresql.conf): each arm loads the table itself. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. UNION ALL arms of one statement that join the same table with the same columns and conditions load it once; nothing is kept between statements. Off loads it per arm.
-- **Sources:** benchmark `cte_series_arms`; [AGG](AGG.md#join-key-filters-and-shared-lookups)
-
-#### sift.agg_semi_lut
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer or date leaf is answered from a byte table over the keys of the joined table
-- **Gain:** IN or EXISTS over a group of 1,000 keys, 3,000,000 rows: 66.0 ms normal plan, 27.0 generic lookup join, 6.0 byte table; NOT EXISTS 85.2 to 10.4 ms
-- **Impact:** index size: -; build, merge and writes: -; other: memory of that table, 4096 kB by default per scan and per worker; keys that span more keep the generic join
-- **When:** Semi and anti joins (IN, EXISTS, NOT EXISTS) on an integer or date leaf whose key range fits sift.agg_semi_lut_size; NOT IN (SELECT ..) stays on the hashed subplan, other key types use the generic lookup join.
-- **Default:** on — On: 1,000 keys over 3,000,000 rows 6.0 ms against 27.0 (generic lookup join) and 66.0 (normal plan); NOT EXISTS 85.2 to 10.4 ms; no index growth or write cost.
-- **Turn off:** SET sift.agg_semi_lut = off (session, role, database or postgresql.conf): the generic lookup join runs, 3.5x-4.5x slower for 100-5,000 keys. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Off uses the generic lookup join, 3.5x to 4.5x slower for groups of 100 to 5,000 keys. It applies to integer or date join keys whose range fits sift.agg_semi_lut_size.
-- **Sources:** benchmark [docs/SET-FILTERS.md](SET-FILTERS.md); [SET-FILTERS 3](SET-FILTERS.md#3-the-set-as-a-table-in-select--exists-not-exists-siftagg_semi_lut)
 
 #### sift.agg_param_set_size
 
@@ -1052,20 +813,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Default 80,000 rows. 0 starts the workers for any scan the plan asks them for.
 - **Sources:** benchmark `test:agg_workers_few_units`; [AGG](AGG.md)
 
-#### sift.agg_key_skew
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** the probes of a lookup join are priced by the rows of the most common keys, not the mean
-- **Gain:** counted lookup join of 5 heavy keys that hold a third of 200,000 rows: normal plan 34 ms, scan 8.6 ms; a rare list takes the scan and is 5 to 8 ms slower
-- **Impact:** index size: -; build, merge and writes: -; other: none; planning only
-- **When:** Normal-plan pricing of lookup joins PostgreSQL can count (IN (SELECT ..), join on a list table) when the column is more than twice as uneven as a flat one; flat columns are priced by the mean. Planning only.
-- **Default:** on — On: 5 heavy keys holding a third of 200,000 rows run 8.6 ms on the scan against 34 ms; the measured cost is a rare list that takes the scan and is 5 to 8 ms slower.
-- **Turn off:** SET sift.agg_key_skew = off (session, role, database or postgresql.conf): probes are priced by the mean rows of a key. Planning only, no REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. It prices the normal plan by the most common keys when the column is more than twice as uneven as a flat one. Off prices by the mean rows of a key.
-- **Sources:** benchmark `test:agg_key_skew`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
-
 #### sift.agg_rollup_cost
 
 `sift_col`, `sift_table` · default · since 3.2 · default 1
@@ -1079,90 +826,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave at 1 (the cost of a rollup tuple against an element scan). 0 always answers from the rollup (tests), large values never do. EXPLAIN ANALYZE shows Units Scanned By Cost.
 - **Sources:** benchmark `rollup`; [COL-PREAGG 6](COL-PREAGG.md#6-consumption-in-siftagg-built)
-
-#### sift.agg_dense
-
-`sift_col`, `sift_table` · default · since 3.1 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** count(*) FILTER per flag over 387,593 elements: 34.0M to 10.9M instructions; GROUP BY kind with count and avg: 41.1M to 26.9M
-- **Impact:** index size: -; build, merge and writes: -; other: none on the index; off gives the generic path with the same rows
-- **When:** count, sum and avg (with or without FILTER, ungrouped or grouped by text columns) of integer or float columns or of array-of-object elements; other aggregates and shapes take the tuple path.
-- **Default:** on — On: 34.0M to 10.9M instructions (count FILTER per flag, 387,593 elements) and 41.1M to 26.9M (count and avg); sums add in the same order, so rows do not change.
-- **Turn off:** SET sift.agg_dense = off (session, role, database or postgresql.conf): the tuple path runs with the same rows. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on; the sums add in the same order, so the rows do not change. Off runs the tuple path (to compare, or to isolate a wrong result). EXPLAIN ANALYZE shows Dense Chunks.
-- **Sources:** benchmark `cte_series_arms`; [COL-PLAN](COL-PLAN.md#executor)
-
-#### sift.agg_two_level
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** UNION ALL arms grouped by a row id, 1,000,000 rows: 428 ms normal plan, 90 ms with the scan (case two_level_spend; the switch alone is not isolated)
-- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** An aggregate over per-row aggregates (UNION ALL arms grouped by a row id), also with joined VALUES lists, sub-selects or LIMIT 1 lookups; other statements are unaffected.
-- **Default:** on — On: 1,000,000 rows 428 ms normal plan to 90 ms with the scan (case two_level_spend); the switch alone is not isolated.
-- **Turn off:** SET sift.agg_two_level = off (session, role, database or postgresql.conf): each arm keeps its own scan and the outer aggregate runs above them. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. The arms and the outer aggregate run in one scan of the index. Off keeps each arm's own scan (to compare, or to isolate a wrong result).
-- **Sources:** benchmark `two_level_spend`; [COL-PLAN](COL-PLAN.md#executor)
-
-#### sift.agg_dist_stream
-
-`sift_col`, `sift_table` · default · since 3.3 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** as `sift.agg_dense`
-- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** count(DISTINCT x) of an integer column whose superblocks hold little-overlapping ranges of x, on a source that gives zones; otherwise, or when the group table would spill, the plain scan runs.
-- **Default:** on — On: the answer is the same, the sets stay within hash_mem where the plain scan would spill or sort, and a scan that does not pay costs one pass over the zone arrays; no timing recorded.
-- **Turn off:** SET sift.agg_dist_stream = off (session, role, database or postgresql.conf) restores the plain scan. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on; the scan decides at run time from the zones, else it is the plain scan after one pass over the zone arrays. Off restores the plain scan (comparison, or a way out).
-- **Sources:** benchmark `count_distinct_unique`; [AGG](AGG.md#counting-distinct-values-over-the-rows-of-a-scan)
-
-#### sift.agg_fuse
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** three UNION ALL arms over a lookup join, 100,000 rows: 18.7 ms arm by arm, 8.6 ms in one pass
-- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** UNION ALL arms that read the same rows and join the same lookup table, also with different WHERE or aggregates; arms that join no lookup, or that the pre-aggregates answer, stay apart.
-- **Default:** on — On: three arms over a lookup join, 100,000 rows, 18.7 ms arm by arm against 8.6 ms in one pass (2.2x); results are the same.
-- **Turn off:** SET sift.agg_fuse = off (session, role, database or postgresql.conf): each arm runs alone. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. Arms that read the same rows run in one pass; arms that join no lookup, or that the pre-aggregates answer, stay apart. Off runs each arm alone.
-- **Sources:** benchmark as `sift.agg_dense`; [COL-PLAN](COL-PLAN.md#one-pass-for-the-arms)
-
-#### sift.agg_join_filter
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** as `sift.agg_dense`
-- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** Inner and semi lookup joins on an integer or date key leaf, or on a scalar text leaf or a text field of array elements, with keys up to a sixteenth of the table's rows (a source test on the encoded form: units without a key are not read, inline strings of other rows are not hashed); other key types are not tested against the loaded keys before tuples are made.
-- **Default:** on — On: units outside the keys' range are not read and the other rows are tested as a set, not through the combo cache (case keys_join_500k); no figure recorded for the switch.
-- **Turn off:** SET sift.agg_join_filter = off (session, role, database or postgresql.conf): the join resolves through the combo cache (no Join Key Filters in EXPLAIN ANALYZE). No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. An inner or semi lookup join on an integer or date key tests the key against the loaded table's keys before tuples are made (zone pruning). Off to compare.
-- **Sources:** benchmark `keys_join_500k`; [AGG](AGG.md#join-key-filters-and-shared-lookups)
-
-#### sift.agg_rows
-
-`sift_col`, `sift_table` · default · since 3.2 · default on
-
-- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
-- **Gain:** count(DISTINCT id) over per-row aggregates joined to a spine, 109,000 rows, work_mem 4MB: 753 ms (sort and GroupAggregate) to 444 ms
-- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
-- **When:** A grouped plan that reads SiftAgg nodes with an exact count(DISTINCT) of integers (outer count(DISTINCT id) over per-row aggregates joined to a spine); no GROUP BY, DISTINCT ON or aggregates: not used.
-- **Default:** on — On: 109,000 rows at work_mem 4MB 753 to 444 ms; the set spills to a sort of narrow tuples past hash_mem. Float sum and avg add in arrival order.
-- **Turn off:** SET sift.agg_rows = off (session, role, database or postgresql.conf) restores PostgreSQL's sort and GroupAggregate. No REINDEX.
-- **Upgrade from 3.7:** unchanged
-- **Advice:** Leave on. It counts distinct integers of a SiftAgg plan's rows in a node of its own, spilling to a sort of narrow tuples past hash_mem. Off restores the sort; float sums add in arrival order.
-- **Sources:** benchmark as `sift.agg_dense`; [AGG](AGG.md#counting-distinct-values-over-the-rows-of-a-scan)
 
 #### sift.table_write_buffer_limit
 
@@ -2128,6 +1791,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Off plans count(*) without the index pushdown, to compare plans; see sift.enable_scan.
 - **Sources:** benchmark as `sift.enable_scan`; [USAGE](USAGE.md#filter-pushdown)
 
+#### sift.prefetch
+
+`BM25` · diagnostic · since 1.0 · default on
+
+- **What it does:** switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead
+- **Gain:** none with a warm cache: 4.41 ms off, 4.49 ms on (100,000 documents, unordered scan); the read-ahead is for a cold heap, which this host cannot make (the page cache cannot be dropped)
+- **Impact:** index size: -; build, merge and writes: -; other: none; off gives the plan PostgreSQL has without them
+- **When:** Unordered sift scans of a heap table: reads ahead the heap pages about to be visited. Not ranked scans, not a sift_table. A cold heap gains; a warm cache does not (4.41 ms off, 4.49 ms on).
+- **Default:** on — On: the read-ahead is for a cold heap, which the benchmark host cannot make (page cache cannot be dropped); with a warm cache it measured no difference, so the default rests on design, not on a figure.
+- **Turn off:** SET sift.prefetch = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf), only to compare plans; RESET returns on.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Reads ahead the heap pages an unordered scan is about to visit; set off only to compare plans.
+- **Sources:** benchmark as `sift.enable_scan`; [USAGE](USAGE.md#filter-pushdown)
+
 #### sift.log_min_duration
 
 `all` · diagnostic · since 2.0 · default 1000 ms
@@ -2170,6 +1847,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. SET it off for one statement to see the plan PostgreSQL has without sift_col indexes, or to compare answers and times.
 - **Sources:** benchmark `cube_minmax_groupby`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
+#### sift.vis_page_cache
+
+`sift_col` · diagnostic · since 3.4 · default on
+
+- **What it does:** the rows of a heap page that a scan reads twice (the units of a key-cut index list rows of the same page) are checked for visibility once
+- **Gain:** none at 100,000 rows: a key-cut range query 0.20 ms off, 0.23 ms on (within noise)
+- **Impact:** index size: about 48 bytes for each heap page the scan visits (at most 1,048,576 pages), freed with the scan; build, merge and writes: n/a: a read-side cache of one scan; it writes nothing; other: about 48 bytes for each heap page the scan visits (at most 1,048,576 pages), freed with the scan; off checks the page again each time
+- **When:** Scans of an index with key_cut, whose units list rows of the same heap page: the visibility of a page read twice is kept for the rest of the scan. Other scans read each page once.
+- **Default:** on — On: it costs about 48 bytes for each heap page visited (at most 1,048,576 pages) and writes nothing; at 100,000 rows a key-cut range query showed 0.20 ms off, 0.23 ms on (within noise).
+- **Turn off:** SET sift.vis_page_cache = off (session, ALTER ROLE/DATABASE, postgresql.conf): the page is checked again each time. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on: a heap page the scan reads twice (the units of a key-cut index list rows of one page) is checked for visibility once. Turn it off only to compare.
+- **Sources:** benchmark `options-evidence`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
+
 #### sift.cluster_advice
 
 `sift_col` · diagnostic · since 3.3 · default on
@@ -2184,6 +1875,189 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on: sift.cluster_advice() recommends a physical order or key_cut and CREATE INDEX may print the advice. Off answers not recommended and prints nothing; the index option switches one index.
 - **Sources:** [USAGE](USAGE.md#is-the-index-clustered-and-what-did-the-scans-do)
 
+#### sift.agg_left_lateral
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns
+- **Gain:** LEFT JOIN LATERAL over a row's list, three corpus queries: lateral part 27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms (small data, median of 3)
+- **Impact:** index size: -; build, merge and writes: -; other: none; off keeps the normal plan of such a query (the way to compare it and to isolate a wrong result)
+- **When:** LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row; a WHERE above the join that sees the NULL element tuple, or a lateral condition that may raise, keeps the normal plan.
+- **Default:** on — On: lateral part 2.7x to 4.9x faster on three corpus queries (27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms); the pushdown is checked by test agg_left_lateral.
+- **Turn off:** SET sift.agg_left_lateral = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the statement then keeps the normal plan. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off keeps the normal plan for a LEFT JOIN LATERAL over a row's list (to compare, or to isolate a wrong result). A WHERE that sees the NULL element tuple keeps the normal plan anyway.
+- **Sources:** benchmark `test:agg_left_lateral`; [AGG](AGG.md)
+
+#### sift.agg_probe_direct
+
+`sift_col`, `sift_table` · diagnostic · since 4.1 · default on
+
+- **What it does:** the keys of a correlated LIMIT 1 child (LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree, an Index Scan or an Index Only Scan) are probed in the child's btree by the aggregate scan, a sorted batch of keys at a time, instead of running the child's plan once for each key
+- **Gain:** lateral_probe_direct (120,000 events, 1,000 entities): 1,657 M to 606 M instructions, btree buffer hits 177,454 to 66,897; cold reads 7,429 to 7,430 btree blocks
+- **Impact:** index size: -; build, merge and writes: -; other: none; a child the probe does not take (a parameter in its filter, a sub-plan, a non-btree index, an inequality key, a serializable transaction) keeps its plan for every key
+- **When:** a correlated LIMIT 1 child whose key is an equality of the index column's own type on a btree; the rows are those of the child's index scan
+- **Default:** on — On: 1,657 M to 606 M instructions on the bench case; see the CHANGELOG.
+- **Turn off:** SET sift.agg_probe_direct = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the child then runs for every key. No REINDEX.
+- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
+- **Advice:** Leave on. Off runs the child's plan for every key (to compare, or to isolate a wrong result).
+- **Sources:** benchmark `lateral_probe_direct`; [AGG](AGG.md)
+
+#### sift.agg_float_step
+
+`sift_col`, `sift_table` · diagnostic · since 4.1 · default on
+
+- **What it does:** a key, an aggregate argument or a filter of a float column that reads it only through floor, ceil, trunc, round or an integer cast of the column, of the column divided by a constant or of the column times a constant is evaluated by PostgreSQL once for each bucket of the values, not for each distinct value; the bucket numbers of a chunk come from the vector kernels of the scan (AVX2, AVX-512, NEON)
+- **Gain:** float_step_buckets (1,000,000 rows, a distinct value in almost every row, 200 buckets): 624 M to 107.5 M instructions; the same blocks
+- **Impact:** index size: -; build, merge and writes: -; other: none; a value with no bucket number (NULL, NaN, an infinity, a quotient or product that overflows or underflows, a result outside int32, a negative zero) keeps the id of its value, and a statement that reads the column another way as well keeps the ids of its values
+- **When:** a float8 (or float4) column whose every read in the key, the aggregates and the filters of the combo is the one step floor, ceil, trunc, round or an integer cast of x, x / c or x * c with c a constant other than 0; the rows are PostgreSQL's
+- **Default:** on — On: 624 M to 107.5 M instructions on the bench case; see the CHANGELOG.
+- **Turn off:** SET sift.agg_float_step = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the expression then runs for every distinct value. No REINDEX.
+- **Upgrade from 3.7:** On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX.
+- **Advice:** Leave on. Off evaluates the expression for every distinct value (to compare, or to isolate a wrong result).
+- **Sources:** benchmark `float_step_buckets`; [AGG](AGG.md)
+
+#### sift.agg_preagg
+
+`sift_col`, `sift_table` · diagnostic · since 3.0 · default on
+
+- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
+- **Gain:** 1,000,000 rows, preagg off to on: min/max per group 7.4 to 0.20 ms, month totals 7.7 to 0.74 ms; 3,000,000 rows month totals 12.7 to 0.65 ms
+- **Impact:** index size: +1.1% to +1.2% of the index (cube, 2.4 kB per unit; 300,000 and 3,000,000 rows); build, merge and writes: serial build +3.9% CPU (3,000,000 rows, quiet window); with 2 workers inside the +-5% noise; other: none on the index; off scans every unit
+- **When:** Units of a sift_col index whose rows are all visible, for count/sum/min/max, and groups of units through their superunit summary; units with invisible rows are scanned, and an index built with preagg = 'off' has no cube.
+- **Default:** on — On by the 3.3 rule: min/max per group 7.4 to 0.20 ms (over 5%) at +1.1% to +1.2% of the index (under 3%) and +3.9% serial build CPU (under 5%).
+- **Turn off:** SET sift.agg_preagg = off (session, role, database or postgresql.conf): every unit is scanned, the stored cube stays. ALTER INDEX .. SET (preagg = 'off') plus REINDEX stops storing it.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off scans every unit (comparison). The scan skips the rollup read after 3 units whose rollups do not pay. The reloption preagg = 'off' stops storing the cube.
+- **Sources:** benchmark `cube_minmax_groupby`; [COL-PREAGG 4](COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer)
+
+#### sift.agg_preagg_distinct
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
+- **Gain:** count(DISTINCT) of an 8-value column, 25,000-200,000 rows: 0.25-1.47 ms to 0.10-0.52 ms; a 40,000-value key, 1,000,000 rows: 6.6 ms, 4.8 ms with preagg off
+- **Impact:** index size: as `sift.agg_preagg`; build, merge and writes: as `sift.agg_preagg`; other: none on the index; off scans every unit
+- **When:** count(DISTINCT col) of a 32-bit or text column with a cube histogram, over units whose rows are all visible (others are scanned into the same set); needs sift.agg_preagg. Tens of thousands of values gain nothing.
+- **Default:** on — On since 3.3: 8-value column 0.25-1.47 to 0.10-0.52 ms; the measured exception is a 40,000-value key (6.6 ms against 4.8 ms with preagg off), named in bench case count_distinct_hist.
+- **Turn off:** SET sift.agg_preagg_distinct = off (session, role, database or postgresql.conf): distinct values are counted from the rows of every unit. No REINDEX; the stored histograms stay.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off counts distinct values from the rows of every unit. A key with tens of thousands of values gains nothing from the histograms (see the bench case); measure it with agg_preagg off.
+- **Sources:** benchmark `count_distinct_hist`; [COL-PREAGG 4](COL-PREAGG.md#4-when-a-units-pre-aggregate-may-answer)
+
+#### sift.agg_super
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary
+- **Gain:** GROUP BY a 20-value key, count and sum, 400,000 rows (391 units, groups of 64): 3.09 ms from the units to 0.22 ms from the superunit summaries
+- **Impact:** index size: +1.0% of the index at the default superunit = 16 (200,000 rows, 53 units); +0.8% at 64, +1.3% to +1.5% at 4 to 8; build, merge and writes: insert, promotion, merge, UPDATE and VACUUM CPU inside the noise (reloption superunit); other: none on the index; off scans every unit
+- **When:** Groups of exact units that have a superunit summary, which only units written with reloption superunit > 0 (default 16 since 3.3) have; older units and groups cut by a predicate read each unit.
+- **Default:** on — On: 400,000 rows grouped by a 20-value key 3.09 to 0.22 ms at +1.0% of the index (under 3%) and insert, merge and VACUUM CPU inside the noise: the 3.3 rule.
+- **Turn off:** SET sift.agg_super = off (session, role, database or postgresql.conf) reads each unit's own pre-aggregate. ALTER INDEX .. SET (superunit = 0) stops writing summaries; a merge or REINDEX applies it to older units.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off reads each unit's own pre-aggregate. Summaries exist only for units written with the reloption superunit > 0 (default 16 since 3.3); REINDEX or a merge writes them for older units.
+- **Sources:** benchmark `superunit_total`; [COL-PREAGG 10](COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16)
+
+#### sift.topn_walk
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
+- **Gain:** ORDER BY key LIMIT 10 or 1000, key in blocks of 3,000 to 12,000 rows, 3,996,000 rows: 2.3 to 6.4x faster; a random key LIMIT 10: 3.1 to 3.4x faster
+- **Impact:** index size: as `sift.enable_topn`; build, merge and writes: as `sift.enable_topn`; other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
+- **When:** Top-N without a search whose sort column does not follow the table (blocks of values in no order, random). A column that follows the table (clustered, serial id) is not walked by zones, it stops early on them.
+- **Default:** on — On: 2.3x to 6.4x on keys in blocks of 3,000-12,000 rows (3,996,000 rows) and 3.1x to 3.4x on a random key; a key that follows the table or has many ties reads the same units, so nothing is lost.
+- **Turn off:** SET sift.topn_walk = off (session, role, database or postgresql.conf): the units are visited in table order. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. A key that follows the table, or has many ties and NULLs, reads the same units either way. Off visits the units in table order (comparison).
+- **Sources:** benchmark `topn_walk_order_kept`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
+
+#### sift.topn_zone_keys
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
+- **Gain:** ORDER BY g DESC, id DESC LIMIT 10, 25,000 to 200,000 rows: units read 20 to 157 down to 1 to 2; 1,000,000 rows, 5 statuses: 5.7 ms vs 5.5 ms off (no time gain)
+- **Impact:** index size: as `sift.enable_topn`; build, merge and writes: as `sift.enable_topn`; other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
+- **When:** Top-N walk with several sort keys where the first key ties between units (few distinct values, ORDER BY status, id LIMIT 10), decided by the next integer key's zone; a first key that separates units is unaffected.
+- **Default:** on — On: units read fall from 20-157 to 1-2 (25,000-200,000 rows) with no index or write cost; at 1,000,000 rows with 5 statuses there is no time gain (5.7 against 5.5 ms off).
+- **Turn off:** SET sift.topn_zone_keys = off (session, role, database or postgresql.conf): only the first key bounds the units, every unit that ties with the n-th row is read. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. It decides a tie of the first sort key between units by the zones of the later keys (a few distinct values in the first key). Off to compare.
+- **Sources:** benchmark `topn_zone_keys`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
+
+#### sift.topn_runs
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
+- **Gain:** ORDER BY k LIMIT 100 with order_columns, 1,000,000 rows: 3.5 to 1.4 ms (runs off, on); 2x to 4x up to n of a few thousand, a btree 5x to 14x faster at n = 1000
+- **Impact:** index size: +50.8% of a ten-column index with order_columns on every column (1,000,000 rows); heads +0.6% (three columns, 800,000 rows); build, merge and writes: heads vs runs only: serial build 1.61 vs 1.63 s (800,000 rows), merge of 500,000 rows 0.74 vs 0.66 s (+-10% noise); other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
+- **When:** ORDER BY k LIMIT n where k is in the order_columns reloption, on units written after it was set; n up to a few thousand (b-tree 5x-14x faster at 1000). A removing WHERE and write buffers are read as before.
+- **Default:** on — On, and costs nothing without the option: it acts only on an index with order_columns (default none; the opt-in costs the bytes). With it, LIMIT 100 on 1,000,000 rows 3.5 to 1.4 ms.
+- **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. ALTER INDEX .. RESET (order_columns) plus REINDEX drops them.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on; it acts only on an index with the reloption order_columns (default none). Name only columns sorted with LIMIT: an unordered column costs 2 bytes a row. Off reads whole units.
+- **Sources:** benchmark `topn_sorted_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
+
+#### sift.agg_lookup_pushdown
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
+- **Gain:** semi join of a group of 1,000 keys, 3,000,000 rows: generic lookup join 70.8 to 22.9 ms, byte table 24.8 to 5.5 ms; keyed by a dependent lookup (a CTE of ids joined to the table of their rows, 90,000 rows, 1,500,000 events): 1 key 83.6 to 1.1 ms, 1,000 keys 101.8 to 30.5 ms, 12,000 keys unchanged
+- **Impact:** index size: -; build, merge and writes: -; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
+- **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
+- **Default:** on — On: group of 1,000 keys over 3,000,000 rows, generic lookup join 70.8 to 22.9 ms and byte table 24.8 to 5.5 ms; the worst case is a tie (100,000 keys 30.4 against 31.3 ms).
+- **Turn off:** SET sift.agg_lookup_pushdown = off (session, role, database or postgresql.conf): the whole joined table is loaded. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off loads the whole joined table. Gains need a btree on the table's equality columns or a selective condition; a set that is most of the table gains nothing (100,000 keys: 30.4 vs 31.3 ms).
+- **Sources:** benchmark [docs/SET-FILTERS.md](SET-FILTERS.md); [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
+#### sift.agg_lookup_columns
+
+`sift_col`, `sift_table` · diagnostic · since 3.4 · default on
+
+- **What it does:** the rows of a lookup table are read from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap
+- **Gain:** a table of 200,000 rows loaded by the query (1,000,000 orders): 33.5 to 23.3 ms; the load of the fact-first `tpch_shipping_priority` case at 400,000 lineitem rows: 102 M to 41 M instructions
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: none: the same memory as the load from the heap
+- **When:** A joined table with a sift_col index that holds its join columns (integer, date, timestamp, text, numeric of up to 18 digits) and no value its leaves cannot store; the first query after a write to the table, or any query when the lookup cache is off. A table cached from an earlier query is not loaded again.
+- **Default:** on — On: the heap is read a tuple at a time (about 160 ns a row read); the leaves are decoded a unit at a time, and the conditions `column <op> constant` of the table are tested on them before a tuple is made. The result is the same rows.
+- **Turn off:** SET sift.agg_lookup_columns = off (session, role, database or postgresql.conf): the heap is read. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Turn it off to load every lookup table from the heap.
+- **Sources:** benchmark `lookup_columns`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
+#### sift.agg_probe_rewrite
+
+`sift_col`, `sift_table` · diagnostic · since 4.1 · default on
+
+- **What it does:** a join to a large btree table (JOIN, comma join), EXISTS, NOT EXISTS, IN and NOT IN over one is also planned as a probe of the table's btree for each key the scan meets, and kept where that costs less
+- **Gain:** on a key range of 60 keys of 300,000 events joined to a 1,000,000-row table: inner join 344.5 M instructions, comma join 344.7 M, left join 171.9 M, with the probes 14.9 M, 15.0 M and 15.5 M; a NOT IN 549.8 M, with the probes 57.0 M; an EXISTS over the columns of an index on every key 701 M, with the probes 48 M
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: planning only: one more plan made for a statement that joins a large table by a btree column
+- **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
+- **Default:** on — the plan with the probes is priced by what a probe takes (the entries it examines in the btree), against the table read whole and the ordinary plan, so the rewrite does not lose where the probes are many and wide
+- **Turn off:** SET sift.agg_probe_rewrite = off (session, role, database or postgresql.conf): a join or sub-select is planned as written. Planning only, no REINDEX.
+- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement
+- **Advice:** Leave on. It costs one more plan for the statements it applies to and is kept only where the plan with the probes is priced lower than the others.
+- **Sources:** benchmark `test:agg_probe_rewrite`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
+#### sift.agg_case_filter
+
+`sift_col`, `sift_table` · diagnostic · since 4.2 · default on
+
+- **What it does:** sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, sum over CASE WHEN p THEN x ELSE 0 END, count with any ELSE that is not NULL, and min, max (integers) and avg (integers, numerics) with ELSE 0, run as the aggregates of x with a filter on p: the kernels of x under a test of p, not the CASE for every row
+- **Gain:** a pivot of two sums over CASE WHEN status = .. THEN amount ELSE 0 END, grouped, 300,000 events, one backend, warm: 221.8 M instructions and 31.1 ms with the setting off, 43.7 M and 3.6 ms on; the same rows
+- **Gain and cost:** 5.10x fewer instructions (178000k saved a query), index +0.0%, build +0.0%, automatic
+- **Impact:** index size: -; build, merge and writes: -; other: planning only: a walk of the statement for aggregates of that shape; the statement is planned once more as written when the rewritten one does not run in the scan
+- **When:** sift_col and sift_table statements that aggregate over CASE WHEN p THEN x [ELSE NULL | 0]: a pivot, a share of rows by condition. It does not apply where the statement is not run by the scan (it keeps the plan of the CASE as written) or where the CASE has several branches.
+- **Default:** on — the rewrite is exact for the shapes it takes (a sum with ELSE 0 keeps 0 for a group where the condition never holds, NULL for an empty input) and costs one walk of the statement; min, max and avg of a float or of a numeric (min and max) with ELSE 0, an ELSE that is not a zero of the type, DISTINCT, several WHEN branches and sub-selects stay as written.
+- **Turn off:** SET sift.agg_case_filter = off (session, role, database or postgresql.conf): the CASE is evaluated for every row as written. Planning only, no REINDEX.
+- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement.
+- **Advice:** Leave on. It changes the text the scan computes, not the rows: the result of every shape is checked against the plan without the scan.
+- **Sources:** benchmark `agg_case_filter`; [AGG](AGG.md#aggregates-over-case)
+
 #### sift.agg_verdict_cache
 
 `sift_col`, `sift_table` · diagnostic · since 3.5 · default on
@@ -2197,6 +2071,132 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave on. Turn it off to get the same plan for a statement whatever ran before it (a support case, a benchmark, a comparison of two plans); it costs the planning of the choice for every statement.
 - **Sources:** benchmark `test:agg_cte_verdict_cache`; [AGG](AGG.md#plans-that-depend-on-what-ran-before)
+
+#### sift.agg_share_lookups
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory)
+- **Gain:** as `sift.agg_lookup_pushdown`
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
+- **When:** UNION ALL arms of one statement that join the same table with the same columns and conditions; arms with other tables or conditions load their own, and nothing is kept between statements (that is agg_lookup_cache_kb).
+- **Default:** on — On: the table loads once instead of once per arm, and nothing outlives the statement; the switch alone has no timing recorded (case cte_series_arms).
+- **Turn off:** SET sift.agg_share_lookups = off (session, role, database or postgresql.conf): each arm loads the table itself. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. UNION ALL arms of one statement that join the same table with the same columns and conditions load it once; nothing is kept between statements. Off loads it per arm.
+- **Sources:** benchmark `cte_series_arms`; [AGG](AGG.md#join-key-filters-and-shared-lookups)
+
+#### sift.agg_semi_lut
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer or date leaf is answered from a byte table over the keys of the joined table
+- **Gain:** IN or EXISTS over a group of 1,000 keys, 3,000,000 rows: 66.0 ms normal plan, 27.0 generic lookup join, 6.0 byte table; NOT EXISTS 85.2 to 10.4 ms
+- **Impact:** index size: -; build, merge and writes: -; other: memory of that table, 4096 kB by default per scan and per worker; keys that span more keep the generic join
+- **When:** Semi and anti joins (IN, EXISTS, NOT EXISTS) on an integer or date leaf whose key range fits sift.agg_semi_lut_size; NOT IN (SELECT ..) stays on the hashed subplan, other key types use the generic lookup join.
+- **Default:** on — On: 1,000 keys over 3,000,000 rows 6.0 ms against 27.0 (generic lookup join) and 66.0 (normal plan); NOT EXISTS 85.2 to 10.4 ms; no index growth or write cost.
+- **Turn off:** SET sift.agg_semi_lut = off (session, role, database or postgresql.conf): the generic lookup join runs, 3.5x-4.5x slower for 100-5,000 keys. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Off uses the generic lookup join, 3.5x to 4.5x slower for groups of 100 to 5,000 keys. It applies to integer or date join keys whose range fits sift.agg_semi_lut_size.
+- **Sources:** benchmark [docs/SET-FILTERS.md](SET-FILTERS.md); [SET-FILTERS 3](SET-FILTERS.md#3-the-set-as-a-table-in-select--exists-not-exists-siftagg_semi_lut)
+
+#### sift.agg_key_skew
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** the probes of a lookup join are priced by the rows of the most common keys, not the mean
+- **Gain:** counted lookup join of 5 heavy keys that hold a third of 200,000 rows: normal plan 34 ms, scan 8.6 ms; a rare list takes the scan and is 5 to 8 ms slower
+- **Impact:** index size: -; build, merge and writes: -; other: none; planning only
+- **When:** Normal-plan pricing of lookup joins PostgreSQL can count (IN (SELECT ..), join on a list table) when the column is more than twice as uneven as a flat one; flat columns are priced by the mean. Planning only.
+- **Default:** on — On: 5 heavy keys holding a third of 200,000 rows run 8.6 ms on the scan against 34 ms; the measured cost is a rare list that takes the scan and is 5 to 8 ms slower.
+- **Turn off:** SET sift.agg_key_skew = off (session, role, database or postgresql.conf): probes are priced by the mean rows of a key. Planning only, no REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. It prices the normal plan by the most common keys when the column is more than twice as uneven as a flat one. Off prices by the mean rows of a key.
+- **Sources:** benchmark `test:agg_key_skew`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
+#### sift.agg_dense
+
+`sift_col`, `sift_table` · diagnostic · since 3.1 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** count(*) FILTER per flag over 387,593 elements: 34.0M to 10.9M instructions; GROUP BY kind with count and avg: 41.1M to 26.9M
+- **Impact:** index size: -; build, merge and writes: -; other: none on the index; off gives the generic path with the same rows
+- **When:** count, sum and avg (with or without FILTER, ungrouped or grouped by text columns) of integer or float columns or of array-of-object elements; other aggregates and shapes take the tuple path.
+- **Default:** on — On: 34.0M to 10.9M instructions (count FILTER per flag, 387,593 elements) and 41.1M to 26.9M (count and avg); sums add in the same order, so rows do not change.
+- **Turn off:** SET sift.agg_dense = off (session, role, database or postgresql.conf): the tuple path runs with the same rows. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on; the sums add in the same order, so the rows do not change. Off runs the tuple path (to compare, or to isolate a wrong result). EXPLAIN ANALYZE shows Dense Chunks.
+- **Sources:** benchmark `cte_series_arms`; [COL-PLAN](COL-PLAN.md#executor)
+
+#### sift.agg_two_level
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** UNION ALL arms grouped by a row id, 1,000,000 rows: 428 ms normal plan, 90 ms with the scan (case two_level_spend; the switch alone is not isolated)
+- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
+- **When:** An aggregate over per-row aggregates (UNION ALL arms grouped by a row id), also with joined VALUES lists, sub-selects or LIMIT 1 lookups; other statements are unaffected.
+- **Default:** on — On: 1,000,000 rows 428 ms normal plan to 90 ms with the scan (case two_level_spend); the switch alone is not isolated.
+- **Turn off:** SET sift.agg_two_level = off (session, role, database or postgresql.conf): each arm keeps its own scan and the outer aggregate runs above them. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. The arms and the outer aggregate run in one scan of the index. Off keeps each arm's own scan (to compare, or to isolate a wrong result).
+- **Sources:** benchmark `two_level_spend`; [COL-PLAN](COL-PLAN.md#executor)
+
+#### sift.agg_dist_stream
+
+`sift_col`, `sift_table` · diagnostic · since 3.3 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** as `sift.agg_dense`
+- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
+- **When:** count(DISTINCT x) of an integer column whose superblocks hold little-overlapping ranges of x, on a source that gives zones; otherwise, or when the group table would spill, the plain scan runs.
+- **Default:** on — On: the answer is the same, the sets stay within hash_mem where the plain scan would spill or sort, and a scan that does not pay costs one pass over the zone arrays; no timing recorded.
+- **Turn off:** SET sift.agg_dist_stream = off (session, role, database or postgresql.conf) restores the plain scan. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on; the scan decides at run time from the zones, else it is the plain scan after one pass over the zone arrays. Off restores the plain scan (comparison, or a way out).
+- **Sources:** benchmark `count_distinct_unique`; [AGG](AGG.md#counting-distinct-values-over-the-rows-of-a-scan)
+
+#### sift.agg_fuse
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** three UNION ALL arms over a lookup join, 100,000 rows: 18.7 ms arm by arm, 8.6 ms in one pass
+- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
+- **When:** UNION ALL arms that read the same rows and join the same lookup table, also with different WHERE or aggregates; arms that join no lookup, or that the pre-aggregates answer, stay apart.
+- **Default:** on — On: three arms over a lookup join, 100,000 rows, 18.7 ms arm by arm against 8.6 ms in one pass (2.2x); results are the same.
+- **Turn off:** SET sift.agg_fuse = off (session, role, database or postgresql.conf): each arm runs alone. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. Arms that read the same rows run in one pass; arms that join no lookup, or that the pre-aggregates answer, stay apart. Off runs each arm alone.
+- **Sources:** benchmark as `sift.agg_dense`; [COL-PLAN](COL-PLAN.md#one-pass-for-the-arms)
+
+#### sift.agg_join_filter
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** as `sift.agg_dense`
+- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
+- **When:** Inner and semi lookup joins on an integer or date key leaf, or on a scalar text leaf or a text field of array elements, with keys up to a sixteenth of the table's rows (a source test on the encoded form: units without a key are not read, inline strings of other rows are not hashed); other key types are not tested against the loaded keys before tuples are made.
+- **Default:** on — On: units outside the keys' range are not read and the other rows are tested as a set, not through the combo cache (case keys_join_500k); no figure recorded for the switch.
+- **Turn off:** SET sift.agg_join_filter = off (session, role, database or postgresql.conf): the join resolves through the combo cache (no Join Key Filters in EXPLAIN ANALYZE). No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. An inner or semi lookup join on an integer or date key tests the key against the loaded table's keys before tuples are made (zone pruning). Off to compare.
+- **Sources:** benchmark `keys_join_500k`; [AGG](AGG.md#join-key-filters-and-shared-lookups)
+
+#### sift.agg_rows
+
+`sift_col`, `sift_table` · diagnostic · since 3.2 · default on
+
+- **What it does:** one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort
+- **Gain:** count(DISTINCT id) over per-row aggregates joined to a spine, 109,000 rows, work_mem 4MB: 753 ms (sort and GroupAggregate) to 444 ms
+- **Impact:** index size: as `sift.agg_dense`; build, merge and writes: as `sift.agg_dense`; other: none on the index; off gives the generic path with the same rows
+- **When:** A grouped plan that reads SiftAgg nodes with an exact count(DISTINCT) of integers (outer count(DISTINCT id) over per-row aggregates joined to a spine); no GROUP BY, DISTINCT ON or aggregates: not used.
+- **Default:** on — On: 109,000 rows at work_mem 4MB 753 to 444 ms; the set spills to a sort of narrow tuples past hash_mem. Float sum and avg add in arrival order.
+- **Turn off:** SET sift.agg_rows = off (session, role, database or postgresql.conf) restores PostgreSQL's sort and GroupAggregate. No REINDEX.
+- **Upgrade from 3.7:** unchanged
+- **Advice:** Leave on. It counts distinct integers of a SiftAgg plan's rows in a node of its own, spilling to a sort of narrow tuples past hash_mem. Off restores the sort; float sums add in arrival order.
+- **Sources:** benchmark as `sift.agg_dense`; [AGG](AGG.md#counting-distinct-values-over-the-rows-of-a-scan)
 
 #### sift.explain_refusals
 
