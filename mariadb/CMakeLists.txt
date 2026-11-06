@@ -40,19 +40,10 @@ set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(SRC ${ROOT}/src)
 # the sources include each other by their path from src/ (src/agg and src/compat: see src/areas.mk)
 set(SIFT_INCDIRS ${SRC})
-set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
-file(MAKE_DIRECTORY ${GEN})
 
-# the portable core: the .c files of the list every host shares (bm25/bitmap.c is compiled from a copy, see below)
+# the portable core: the .c files of the list every host shares
 file(STRINGS ${SRC}/portable.list portable REGEX "^[^#].*\\.c$")
-list(REMOVE_ITEM portable bm25/bitmap.c)
 list(TRANSFORM portable PREPEND ${SRC}/)
-
-# src/bm25/bitmap.c with its seek limit per thread (a global that a query sets while it seeks)
-add_custom_command(OUTPUT ${GEN}/bitmap.c
-  COMMAND sed "s/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /" ${SRC}/bm25/bitmap.c > ${GEN}/bitmap.c
-  COMMAND grep -q "_Thread_local uint32_t seek_limit" ${GEN}/bitmap.c
-  DEPENDS ${SRC}/bm25/bitmap.c VERBATIM)
 
 # the host: the C library vocabulary of sqlite/host (its host.c as it is), the matcher, the mapped store and the glue
 set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/container.c ${ROOT}/sqlite/host/mb.c ${ROOT}/sqlite/host/spool.c ${ROOT}/sqlite/host/host_stubs.c
@@ -60,7 +51,7 @@ set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/container.c ${ROOT}/sqli
 set(GLUE engine.c docs.c persist.c query.c feed.c merge.c)
 set(UDF udf.c udf_host.c udf_query.c udf_drain.c)
 
-add_library(sift_engine OBJECT ${portable} ${GEN}/bitmap.c ${HOST} ${GLUE})
+add_library(sift_engine OBJECT ${portable} ${HOST} ${GLUE})
 target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_INCDIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"

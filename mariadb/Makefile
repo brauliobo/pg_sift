@@ -38,7 +38,7 @@ OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLU
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
 
-PORTOBJS := $(filter-out $(OUT)/bm25/bitmap.o,$(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE))))
+PORTOBJS := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE)))
 $(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -54,15 +54,7 @@ $(addsuffix .o,$(SQHOSTOBJS)): $(OUT)/%.o: $(SQHOST)/%.c | $(OUT)
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the seek limit of the bitmap cursors is a global of src/bm25/bitmap.c that a query sets while it seeks: per thread here
-$(OUT)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(OUT)/gen
-	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< >$@
-	grep -q '_Thread_local uint32_t seek_limit' $@
-$(OUT)/bm25/bitmap.o: $(OUT)/gen/bitmap.c | $(OUT)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(OUT) $(OUT)/gen:
+$(OUT):
 	mkdir -p $@
 
 $(OUT)/sift_cli: $(OUT)/cli.o $(OBJS)

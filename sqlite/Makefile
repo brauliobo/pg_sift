@@ -10,8 +10,7 @@
 #                                make SIMD=none B=build-scalar span-test with the vector-free flags
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
-# only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: bm25/bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
-# $(B)/gen, src/ is untouched) and bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
+# only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except one mechanical change: bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
 SRC := ../src
 include $(SRC)/areas.mk
 B ?= build
@@ -50,12 +49,7 @@ all: $(B)/sift.so
 $(B)/sift.so: $(OBJS)
 	$(CC) -shared $(EXTRA) -o $@ $(OBJS) $(LDLIBS)
 
-# bm25/bitmap.c: the scan limit of sift_seek_eq is a global written during scans; one per thread
-$(B)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(B)/gen
-	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< > $@
-	grep -q '_Thread_local uint32_t seek_limit' $@
-
-$(B)/bm25/bitmap.o: $(B)/gen/bitmap.c | $(B)
+$(B)/bm25/bitmap.o: $(SRC)/bm25/bitmap.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 

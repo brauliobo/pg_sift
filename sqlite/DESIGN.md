@@ -37,8 +37,8 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   (tests inject a fault and `_exit` in the middle of the write). Merging purges deleted documents from df/N/avgdl, so
   ranked scores of a table with deletes move at the merge, not before (as in pg_sift until vacuum).
 - **Threads.** The shim's allocation and error state is thread-local; the engine's two process-global mutable objects are
-  made safe by the build (the scan limit of `bm25/bitmap.c` becomes `_Thread_local` through a `sed` copy in `build/gen`,
-  the wide-prefix cache of `bm25/prefix.c` is behind a mutex), `src/` is not touched. Each connection has its own
+  made safe (the scan limit of `bm25/bitmap.c` is `_Thread_local` when the build defines `SIFT_HOST_SQLITE` or `SIFT_HOST_MARIADB`,
+  the wide-prefix cache of `bm25/prefix.c` is behind a mutex that the build adds around its entry point). Each connection has its own
   tables, cache and statements, so threads with their own connections, and one connection shared by threads in
   serialized mode, work (stress test, below). The loader sets `sqlite3_api` once under a lock.
 - **Parallel scans** (`parallel=N`, default off). A ranked top-k or a count of a phrase runs on N participants: the

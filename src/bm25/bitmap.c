@@ -529,8 +529,13 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf)
  * leapfrog all kids to a common gid >= *target whose page bitmaps intersect into m; once the
  * intersection is empty the remaining kids are not sought for that gid
  */
-/* gids above this are not wanted (sift_seek_eq): operators stop looking for them and stay usable */
-static uint32_t seek_limit = UINT32_MAX;
+/* gids above this are not wanted (sift_seek_eq): operators stop looking for them and stay usable; a query sets it while it seeks, so one per thread where queries run on many */
+#if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
+#define SEEK_TLS _Thread_local
+#else
+#define SEEK_TLS
+#endif
+static SEEK_TLS uint32_t seek_limit = UINT32_MAX;
 
 int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4])
 {
