@@ -15,7 +15,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 | 4.1.1 to 4.1.2 | library only: the extension SQL stays at 4.1, no format changes; the log of a `sift_col` index with `track_changes` that an earlier release wrote is re-checked and re-baselined on its own | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`, no `ALTER INDEX` (after `pg_upgrade`, once for each index: see the section below); going back to 4.1.1 needs nothing first ([notes](releases/v4.1.2.md)) |
 | 4.1.2 to 4.1.3 | library only: the extension SQL stays at 4.1, no format changes; `REINDEX INDEX CONCURRENTLY` of a `sift_col` index with `track_changes` no longer takes ACCESS EXCLUSIVE on the table | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back to 4.1.2 needs nothing first ([notes](releases/v4.1.3.md)) |
 | 4.1.3 to 4.1.4 | library only: the extension SQL stays at 4.1, no format changes; two wrong answers of the aggregate scan are fixed | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back needs nothing first ([notes](releases/v4.1.4.md)) |
-| a newer pg_sift from 4.1 to 4.2 | six changes of files, plans and one new SQL function | [what 4.2 changes](#what-42-changes) |
+| a newer pg_sift from 4.1 to 4.2 | seven changes of files, plans, a setting and one new SQL function | [what 4.2 changes](#what-42-changes) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -95,7 +95,7 @@ metapages and cannot fail the update; when it cannot answer (a relation locked b
 
 ## What 4.2 changes
 
-Six changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+Seven changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
 runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
 
 1. **A presence leaf for the `jsonb` columns that may be NULL (option `document_present`).** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
@@ -143,6 +143,19 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
 6. **`sift.refusal_actions()` returns what to change for each refusal slug** (the statement, the index or a setting, the hint of the notice of `sift.explain_refusals`): `sift.explain_why(q) w JOIN sift.refusal_actions() a USING (slug)`.
    It is a new function; `sift.refusal_slugs()` keeps its three columns, and `pg_sift--4.1--4.2.sql` drops or replaces no function, so a view, a default or a function of yours that reads the objects of 4.1 does not
    make `ALTER EXTENSION pg_sift UPDATE` fail (`test/t/extension_lifecycle.sh` updates a database that has a view over `sift.refusal_slugs()`). *Files, `REINDEX`, off:* not applicable.
+
+7. **`sift.eval_methods` no longer takes `latest_hint`, `snapshot_masks`, `unit_rewrite` and `skip_trigger_lookup`** (nor the `-name` form of them); `penalty_maintenance` is the only name left. `skip_trigger_lookup` is now always on (the statement trigger of
+   `track_changes` leaves out the look at an UPDATE that kept the key), `latest_hint` and `snapshot_masks` had nothing behind them, and the writer of `unit_rewrite` is gone (segments an earlier release wrote with it stay readable).
+   What happens to a setting that names one (tried on this tree): with the library loaded, a `SET`, `ALTER ROLE .. SET`, `ALTER DATABASE .. SET` and `ALTER SYSTEM SET` fail with `ERROR: invalid value for parameter "sift.eval_methods": "NAME"` and
+   `DETAIL: Unknown evaluation method: NAME`, so a script that runs one breaks; a value already stored (`postgresql.conf`, `postgresql.auto.conf`, a role or database setting) does not stop the server or a login, but every session that loads the library
+   and the log of the server say the same text as a WARNING, and the setting is ignored. Remove them before updating:
+   ```sql
+   SELECT coalesce(r.rolname, '(all roles)') AS role, coalesce(d.datname, '(all databases)') AS database, c AS setting
+   FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase, unnest(s.setconfig) c
+   WHERE c LIKE 'sift.eval_methods=%';                                        -- ALTER ROLE r [IN DATABASE d] RESET sift.eval_methods; or ALTER DATABASE d RESET sift.eval_methods
+   SELECT name, setting, sourcefile, sourceline FROM pg_file_settings WHERE name = 'sift.eval_methods';   -- superuser; remove the line, or ALTER SYSTEM RESET sift.eval_methods, then SELECT pg_reload_conf()
+   ```
+   `scripts/upgrade-check.sh` lists each of them as a blocker with the command (any release of the library, so it can run before the update). *Files, `REINDEX`:* no. *Off:* the names are gone; leave the setting empty.
 
 ## 3. A newer PostgreSQL major
 
