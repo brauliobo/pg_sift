@@ -215,79 +215,47 @@ absmax_f64_avx512(const double *v, const uint64 *mask, int n, double *mx)
 	return mask ? absmax_f64_t(v, mask, n, mx, true) : absmax_f64_t(v, mask, n, mx, false);
 }
 
-K5 bool
-minmax_i32_t(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n, const bool masked)
-{
-	__m512i		lo = _mm512_set1_epi32(INT32_MAX),
-				hi = _mm512_set1_epi32(INT32_MIN);
-	uint32		any = 0;
-	int			i = 0;
-
-	for (; !masked && i + 16 <= n; i += 16)
-	{
-		const __m512i x = L5(v + i);
-
-		lo = _mm512_min_epi32(lo, x);
-		hi = _mm512_max_epi32(hi, x);
-	}
-	for (; i < n; i += 16)
-	{
-		const __mmask16 k = masked ? SEL16(mask, i) : (__mmask16) AGK_LANES(n - i, 16);
-		const __m512i x = L5(v + i);
-
-		any |= k;
-		lo = _mm512_mask_min_epi32(lo, k, lo, x);
-		hi = _mm512_mask_max_epi32(hi, k, hi, x);
-	}
-	if (!masked ? n == 0 : !any)
-		return false;
-	*mn = _mm512_reduce_min_epi32(lo);
-	*mx = _mm512_reduce_max_epi32(hi);
-	return true;
+/* the minimum and maximum of the selected rows of integers: N the name's suffix, T the type, SUF the intrinsics' suffix, LN the lanes of a register, MK the mask type, SEL its reader */
+#define MINMAX_INT(N, T, SUF, LN, MK, SEL, VMAX, VMIN) \
+K5 bool \
+minmax_##N##_t(T *mn, T *mx, const T *v, const uint64 *mask, int n, const bool masked) \
+{ \
+	__m512i		lo = _mm512_set1_##SUF(VMAX), \
+				hi = _mm512_set1_##SUF(VMIN); \
+	uint32		any = 0; \
+	int			i = 0; \
+ \
+	for (; !masked && i + LN <= n; i += LN) \
+	{ \
+		const __m512i x = L5(v + i); \
+ \
+		lo = _mm512_min_##SUF(lo, x); \
+		hi = _mm512_max_##SUF(hi, x); \
+	} \
+	for (; i < n; i += LN) \
+	{ \
+		const MK k = masked ? SEL(mask, i) : (MK) AGK_LANES(n - i, LN); \
+		const __m512i x = L5(v + i); \
+ \
+		any |= k; \
+		lo = _mm512_mask_min_##SUF(lo, k, lo, x); \
+		hi = _mm512_mask_max_##SUF(hi, k, hi, x); \
+	} \
+	if (!masked ? n == 0 : !any) \
+		return false; \
+	*mn = _mm512_reduce_min_##SUF(lo); \
+	*mx = _mm512_reduce_max_##SUF(hi); \
+	return true; \
+} \
+ \
+F5 bool \
+minmax_##N##_avx512(T *mn, T *mx, const T *v, const uint64 *mask, int n) \
+{ \
+	return mask ? minmax_##N##_t(mn, mx, v, mask, n, true) : minmax_##N##_t(mn, mx, v, mask, n, false); \
 }
 
-F5 bool
-minmax_i32_avx512(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n)
-{
-	return mask ? minmax_i32_t(mn, mx, v, mask, n, true) : minmax_i32_t(mn, mx, v, mask, n, false);
-}
-
-K5 bool
-minmax_i64_t(int64 *mn, int64 *mx, const int64 *v, const uint64 *mask, int n, const bool masked)
-{
-	__m512i		lo = _mm512_set1_epi64(INT64_MAX),
-				hi = _mm512_set1_epi64(INT64_MIN);
-	uint32		any = 0;
-	int			i = 0;
-
-	for (; !masked && i + 8 <= n; i += 8)
-	{
-		const __m512i x = L5(v + i);
-
-		lo = _mm512_min_epi64(lo, x);
-		hi = _mm512_max_epi64(hi, x);
-	}
-	for (; i < n; i += 8)
-	{
-		const __mmask8 k = masked ? SEL8(mask, i) : (__mmask8) AGK_LANES(n - i, 8);
-		const __m512i x = L5(v + i);
-
-		any |= k;
-		lo = _mm512_mask_min_epi64(lo, k, lo, x);
-		hi = _mm512_mask_max_epi64(hi, k, hi, x);
-	}
-	if (!masked ? n == 0 : !any)
-		return false;
-	*mn = _mm512_reduce_min_epi64(lo);
-	*mx = _mm512_reduce_max_epi64(hi);
-	return true;
-}
-
-F5 bool
-minmax_i64_avx512(int64 *mn, int64 *mx, const int64 *v, const uint64 *mask, int n)
-{
-	return mask ? minmax_i64_t(mn, mx, v, mask, n, true) : minmax_i64_t(mn, mx, v, mask, n, false);
-}
+MINMAX_INT(i32, int32, epi32, 16, __mmask16, SEL16, INT32_MAX, INT32_MIN)
+MINMAX_INT(i64, int64, epi64, 8, __mmask8, SEL8, INT64_MAX, INT64_MIN)
 
 /*
  * VMINPD / VMAXPD return their second operand when the first is a NaN, so with the running value second a NaN never enters
