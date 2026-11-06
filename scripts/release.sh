@@ -3,6 +3,7 @@
 #
 #   scripts/release.sh VERSION [--dry-run] [--resume] [--skip-ci]
 #   scripts/release.sh VERSION --ext-version
+#   scripts/release.sh VERSION --notes
 #   scripts/release.sh --selftest
 #
 # A patch release of 4.2 or later moves the extension version with it (pg_sift.control, SIFT_MODULE_VERSION, an empty update script into it and an empty one back to the minor, so that
@@ -27,9 +28,9 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-VERSION='' DRY='' RESUME='' SKIPCI='' SELFTEST='' EXTVER=''
+VERSION='' DRY='' RESUME='' SKIPCI='' SELFTEST='' EXTVER='' NOTES=''
 for a in "$@"; do
-	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; --selftest) SELFTEST=1 ;; --ext-version) EXTVER=1 ;; -h|--help) sed -n '2,20p' "$0"; exit 0 ;; -*) sed -n '2,20p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
+	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; --selftest) SELFTEST=1 ;; --ext-version) EXTVER=1 ;; --notes) NOTES=1 ;; -h|--help) sed -n '2,20p' "$0"; exit 0 ;; -*) sed -n '2,20p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
 done
 die() { echo "release: $*" >&2; exit 1; }
 # A tag is never cut without the wording gate: a vocabulary that is not readable stops the release (a dry run too: one that passes is one that can be released), and the lint of
@@ -42,6 +43,16 @@ ext_version_ok() {
 	(( $3 == 0 )) && { [[ $1 == "$2" ]]; return; }
 	before_42 "$2" && { [[ $1 == "$2" || $1 == "$2".[0-9]* ]]; return; }
 	[[ $1 == "$2.$3" ]]
+}
+# the sections of the notes that read the same in every patch release (Packages, SQLite extension, MariaDB extension): one template (scripts/release-components.tmpl), the version filled in;
+# --notes appends them to docs/releases/vVERSION.md, which then holds only what is about that release (the sections of a published release stay as they were)
+components() { sed "s/@VERSION@/$1/g" "$REPO/scripts/release-components.tmpl"; }
+notes_components() {
+	local f=$REPO/docs/releases/v$VERSION.md
+	[[ -f $f ]] || die "write the part of the notes that is about $VERSION first: $f"
+	! grep -q '^## Packages' "$f" || die "$f has the Packages, SQLite and MariaDB sections already"
+	{ echo; components "$VERSION"; } >>"$f"
+	echo "release: the Packages, SQLite extension and MariaDB extension sections of $VERSION are appended to docs/releases/v$VERSION.md"
 }
 # the commit of --ext-version: the update script from the control's version into VERSION, the one back to MAJOR.MINOR, the control and the library's version string
 ext_bump() {
@@ -130,13 +141,15 @@ selftest() {
 	printf '# reasons\nfigure A line\twhy\nORDER BY offset\tcase x\nfigure B line\twhy\ncommit abc\tgate\n' >"$t/allow"
 	drop_figure_waivers "$t/allow"
 	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"
+	chk pass "the template renders the sections of 4.1.1 to 4.1.4 byte for byte" env REPO="$REPO" bash -c "$(declare -f components)"'; for v in 4.1.1 4.1.2 4.1.3 4.1.4; do [[ $(components $v) == "$(sed -n "/^## Packages/,\$p" "$REPO/docs/releases/v$v.md")" ]] || exit 1; done'
 	((! bad)) || exit 1
-	echo "release: selftest ok (the vocabulary is required for a release and its lint, the bump drops the figure waivers, the extension version of a patch release)"
+	echo "release: selftest ok (the notes sections, the vocabulary is required for a release and its lint, the bump drops the figure waivers, the extension version of a patch release)"
 }
 [[ -z $SELFTEST ]] || { selftest; exit; }
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
 MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} PATCH=${BASH_REMATCH[3]}
 [[ -z $EXTVER ]] || { ext_bump; exit; }
+[[ -z $NOTES ]] || { notes_components; exit; }
 vocabulary || { echo "release: no wording vocabulary: set NEUTRAL_VOCAB_FILE to a readable file (or NEUTRAL_VOCAB to its text); a release is never cut, nor a dry run passed, without the gate that reads it" >&2; exit 1; }
 TAG=v$VERSION
 # the whole run in 2 cores and 12 GB, whatever the caller did
@@ -185,6 +198,7 @@ preflight() {
 	[[ -n $RESUME ]] || [[ $(g rev-parse HEAD) == "$(g rev-parse origin/main)" ]] || soft "HEAD is not origin/main: push or pull first"
 	[[ -f $R/$notes ]] || soft "write $notes first (copy the notes of a previous release)"
 	! grep -qsE 'X\.Y\.Z|<one line|<feature>' "$R/$notes" || soft "$notes still has template text"
+	[[ ! -f $R/$notes ]] || grep -q '^## Packages' "$R/$notes" || soft "$notes has no Packages section: scripts/release.sh $VERSION --notes appends it with the SQLite and MariaDB sections"
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	ext=$(control_version)

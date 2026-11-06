@@ -12,8 +12,8 @@ name: release
 #     files, LICENSE, NOTICE, README, BUILD-INFO), each library built in the stock mariadb:<series> image against that server's headers and
 #     loaded into a server of that image (scripts/package-mariadb.sh). The version is the tag and must equal mariadb/VERSION. A tag without
 #     mariadb/VERSION has no MariaDB asset.
-# The text of the release is docs/releases/<tag>.md: write it before tagging, from the notes of a previous release (a PostgreSQL part and, when the
-# SQLite or the MariaDB tarball is attached, a "## SQLite extension" or "## MariaDB extension" part; the publish job refuses a missing file or section).
+# The text of the release is docs/releases/<tag>.md: write it before tagging (a PostgreSQL part; scripts/release.sh VERSION --notes appends the Packages part and, for the
+# SQLite or the MariaDB tarball, the "## SQLite extension" or "## MariaDB extension" part; the publish job refuses a missing file or section).
 # workflow_dispatch rebuilds and republishes the assets of an existing tag with the recipes of the selected ref.
 # Dry run: a pull request or a push to main builds and tests the assets of its commit and publishes nothing; it builds only the assets whose recipes
 # it touches (packaging/, scripts/package*.sh, sqlite/, mariadb/, this file): a push of anything else ends after the first job.

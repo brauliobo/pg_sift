@@ -89,6 +89,6 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Releasing
 
-Write `docs/releases/vX.Y.Z.md` from the notes of the previous release (`docs/releases/v4.0.2.md` has the sections the release workflow checks), keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
+Write `docs/releases/vX.Y.Z.md` with what is about the release (the sections up to Compatibility, from the notes of the previous release), run `scripts/release.sh X.Y.Z --notes` to append the Packages, SQLite extension and MariaDB extension sections that the release workflow checks (`scripts/release-components.tmpl`: the same text in every patch release, the version filled in; edit the file after for a release that changes them), keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
 `scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`. It takes the green full CI run of the commit, checks the upgrade from the previous release and
 `AUR_SSH_KEY`).
