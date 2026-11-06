@@ -69,6 +69,8 @@ if [[ $MODE == full ]]; then
 	job plan-gate-planning plan-gate-planning 1 "$S/plangate.sh" --planning --rows 30000
 	# the instructions of 20 statement classes (the reads, the writes) at 300000 orders against their ceilings (test/plan/execution.tsv); skipped without perf
 	once_on_18 && job exec-budget exec-budget 1 "$S/exec-budget.sh"   # recorded on PostgreSQL 18: a count differs a little on another major
+	# 174 statements, each in a new backend, sift off against on (rows equal) and the plan slug of each pinned (test/corpus/README.md); a second on every major
+	job corpus corpus 1 "$S/corpus.sh"
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)
