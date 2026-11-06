@@ -37,6 +37,13 @@
 #include "core/store.h"
 #include "core/tomb.h"
 
+/* A merge or a defrag replaced the rows the statement was reading: it fails with a serialization failure and is retried (the arguments are errmsg's) */
+#define SIFT_TBL_RETRY(...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), \
+			 errmsg(__VA_ARGS__), \
+			 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")))
+
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
 #if PG_VERSION_NUM >= 180000
 #define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull, 0)

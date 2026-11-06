@@ -396,10 +396,7 @@ log_old_row(Relation rel, SiftTblRel *st, SiftTblOp op, ItemPointer otid, Minima
 	SiftTblRowVer rv;
 
 	if (!sift_tbl_fetch_row(rel, st, otid, &rv))
-		ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel)),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+		SIFT_TBL_RETRY("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel));
 	sift_tbl_log_change(rel, op, newrow, rv.tuple);
 	heap_freetuple(rv.tuple);
 }
@@ -570,10 +567,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 			sift_tomb_append(rel, &st->tomb, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TOMB_LOCK, 0, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
-			ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel)),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+			SIFT_TBL_RETRY("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
 		sift_tbl_store(slot, rv.tuple);
 		return TM_Ok;
 	}
