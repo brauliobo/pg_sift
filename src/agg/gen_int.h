@@ -88,6 +88,7 @@ typedef struct GenSt
 	bool		sint_ok;
 	int			fma;			/* the float steps are the fused ones (1) or the plain ones (0), as the server's transition function does them */
 	int			smode[2];		/* ... and how each is read (GEN_STAT_*) */
+	struct GenMode *mode;		/* mode() WITHIN GROUP counts its values (gen_mode.c) until the counts outgrow work_mem */
 	bool		inplace;		/* every argument the best row holds is by-value: a better row overwrites it */
 	/* DISTINCT ON by one key of a plain column: the best row of each group within a chunk, found before any value of it is copied (gen_first_chunk) */
 	uint32		ccap;			/* groups the three arrays cover */
@@ -119,6 +120,7 @@ typedef struct GenIn
 /* gen.c */
 void gen_sort_begin(GenSt *st);
 void gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *nulls);
+void gen_sort_put_sid(GenSt *st, uint32 sid, const Datum *args, const bool *nulls);
 void gen_open(AggExec *ex);
 void gen_close(AggExec *ex);
 void gen_merge_hll(AggExec *ex, int ai, const uint8 *blob);
@@ -130,6 +132,12 @@ void gen_state_init(GenSt *st, AggAcc *acc, uint32 g);
 void gen_stat_pick(AggExec *ex, GenSt *st);
 bool gen_stat_eligible(Oid fn, const SiftAggGen *g, const SiftSrcLeaf *(*leaf) (void *arg, int id), void *arg, int *smode, Oid *sint);
 void gen_stat_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint64 *ok, int nsel);
+/* gen_mode.c */
+bool gen_mode_pick(AggExec *ex, GenSt *st);
+void gen_mode_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 gid, Datum v);
+bool gen_mode_spill_due(const GenSt *st);
+void gen_mode_spill(AggExec *ex, GenSt *st);
+void gen_mode_flush(AggExec *ex, int ai);
 void gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
 void gen_state_merge(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const char **cur);
 void gen_final(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g);

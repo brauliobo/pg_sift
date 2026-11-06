@@ -429,7 +429,9 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		else if (g->ordered)
 		{
 			/* percentile_*, mode(): the transition function leaves NULLs out; a hypothetical-set aggregate counts them */
-			if (g->hyp || !nulls[0])
+			if (st->mode && !nulls[0])
+				gen_mode_put(ex, st, acc, gid, args[0]);
+			else if (g->hyp || !nulls[0])
 				gen_sort_put(st, acc, gid, args, nulls);
 		}
 		else if (g->distinct)
@@ -454,6 +456,8 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		ResetExprContext(ex->lutcx);
 	}
 	MemoryContextSwitchTo(old);
+	if (gen_mode_spill_due(st))
+		gen_mode_spill(ex, st);
 	if (g->distinct && !g->sorted && !st->spilled && gen_hash_bytes(&ex->dset[ai], &ex->aot[ai]) > (uint64) work_mem * 1024)
 		gen_spill(ex, ai);
 }
@@ -626,6 +630,8 @@ gen_flush(AggExec *ex)
 	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
 		if (ex->gst[ai] && ex->gst[ai]->g->first)
 			gen_flush_first(ex, ai);
+		else if (ex->gst[ai] && ex->gst[ai]->mode)
+			gen_mode_flush(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->tmode)
 			gen_flush_ordered(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->g->distinct)

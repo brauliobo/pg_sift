@@ -157,8 +157,15 @@ gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *
 {
 	if (acc->i[gid] == 0)
 		acc->i[gid] = ++st->nsid;
+	gen_sort_put_sid(st, acc->i[gid] - 1, args, nulls);
+}
+
+/* ... and an input of the group numbered sid */
+void
+gen_sort_put_sid(GenSt *st, uint32 sid, const Datum *args, const bool *nulls)
+{
 	ExecClearTuple(st->put);
-	st->put->tts_values[0] = Int32GetDatum((int32) (acc->i[gid] - 1));
+	st->put->tts_values[0] = Int32GetDatum((int32) sid);
 	st->put->tts_isnull[0] = false;
 	for (int k = 0; k < st->g->nargs; k++)
 		if (st->vcol[k] >= 0)
@@ -322,7 +329,7 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		st->cmp = &tc->cmp_proc_finfo;
 		st->eq = &tc->eq_opr_finfo;
 	}
-	if (g->sorted || g->ordered)
+	if (!(g->ordered && gen_mode_pick(ex, st)) && (g->sorted || g->ordered))
 		gen_sort_begin(st);
 	if (g->first)
 	{
