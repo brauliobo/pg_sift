@@ -26,7 +26,7 @@ DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l ~ '(Bitmap Heap Scan|Filter:|Recheck Cond:|BitmapOr)' THEN
-			node := regexp_replace(trim(l), '''\d+''::oid', '''index''::oid');
+			node := regexp_replace(trim(l), '''\d+''::oid', '''index''::oid', 'g');
 			RETURN NEXT;
 		END IF;
 	END LOOP;
@@ -100,6 +100,82 @@ FROM (VALUES
  10 | 1050 3143100 | t          | t
 (10 rows)
 
+-- the same match twice, a match and its negation, an AND of three
+SELECT * FROM bm_plan('SELECT count(*) FROM bm WHERE body @@> ''run'' AND body @@> ''run'' AND tenant < 20');
+                                                                 node                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------
+ ->  Bitmap Heap Scan on bm
+ Recheck Cond: ((tenant < 20) AND sift.match_idx(body, 'run'::text, 'index'::oid) AND sift.match_idx(body, 'run'::text, 'index'::oid))
+(2 rows)
+
+SELECT n, bm_bitmap(q) AS bitmap, bm_bitmap(q) = bm_lossy(q) AS lossy_same, bm_bitmap(q) = bm_eval(q) AS eval_same
+FROM (VALUES
+	(11, 'SELECT id FROM bm WHERE body @@> ''run'' AND body @@> ''run'' AND tenant < 20'),
+	(12, 'SELECT id FROM bm WHERE body @@> ''run'' AND NOT body @@> ''dog'' AND tenant < 20'),
+	(13, 'SELECT id FROM bm WHERE body @@> ''run'' AND body @@> ''dog'' AND id > 100 AND tenant < 20')
+) t(n, q) ORDER BY n;
+ n  |    bitmap    | lossy_same | eval_same 
+----+--------------+------------+-----------
+ 11 | 1650 4938150 | t          | t
+ 12 | 825 2469217  | t          | t
+ 13 | 811 2468423  | t          | t
+(3 rows)
+
+-- workers share the bitmap (a parallel bitmap heap scan, lossy too): the same rows
+CREATE FUNCTION bm_par(q text) RETURNS text LANGUAGE sql SET max_parallel_workers_per_gather = 2 SET parallel_setup_cost = 0 SET parallel_tuple_cost = 0
+	SET min_parallel_table_scan_size = 0 SET min_parallel_index_scan_size = 0 SET debug_parallel_query = off RETURN bm_run(q);
+CREATE FUNCTION bm_par_lossy(q text) RETURNS text LANGUAGE sql SET max_parallel_workers_per_gather = 2 SET parallel_setup_cost = 0 SET parallel_tuple_cost = 0
+	SET min_parallel_table_scan_size = 0 SET min_parallel_index_scan_size = 0 SET work_mem = '64kB' RETURN bm_run(q);
+SELECT n, bm_bitmap(q) = bm_par(q) AS par_same, bm_bitmap(q) = bm_par_lossy(q) AS par_lossy_same
+FROM (VALUES
+	(1, 'SELECT id FROM bm WHERE body @@> ''run'' AND tenant < 30'),
+	(2, 'SELECT id FROM bm WHERE body @@> ''running dog'' AND tenant < 30')
+) t(n, q) ORDER BY n;
+ n | par_same | par_lossy_same 
+---+----------+----------------
+ 1 | t        | t
+ 2 | t        | t
+(2 rows)
+
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM bm_plan('SELECT count(*) FROM bm WHERE body @@> ''run'' AND tenant < 30');
+                                       node                                        
+-----------------------------------------------------------------------------------
+ ->  Parallel Bitmap Heap Scan on bm
+ Recheck Cond: ((tenant < 30) AND sift.match_idx(body, 'run'::text, 'index'::oid))
+(2 rows)
+
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+-- two indexes on the key that answer differently (a stemmer and none): the match is the call of the analyzer the query was written for, the index of the other one does not serve it
+CREATE TABLE bm_two (id int, tenant int, body text);
+INSERT INTO bm_two SELECT id, tenant, body FROM bm;
+CREATE INDEX bm_two_stem ON bm_two USING sift (body) WITH (stemmer = 'english');
+CREATE INDEX bm_two_plain ON bm_two USING sift (body) WITH (stemmer = 'simple');
+CREATE INDEX bm_two_tenant ON bm_two (tenant);
+ANALYZE bm_two;
+SELECT * FROM bm_plan('SELECT count(*) FROM bm_two WHERE body @@> ''run'' AND tenant < 20');
+                                       node                                        
+-----------------------------------------------------------------------------------
+ ->  Bitmap Heap Scan on bm_two
+ Recheck Cond: ((tenant < 20) AND sift.match_idx(body, 'run'::text, 'index'::oid))
+(2 rows)
+
+SELECT bm_bitmap('SELECT id FROM bm_two WHERE body @@> ''run'' AND tenant < 20') AS bitmap,
+	bm_bitmap('SELECT id FROM bm_two WHERE body @@> ''run'' AND tenant < 20') = bm_lossy('SELECT id FROM bm_two WHERE body @@> ''run'' AND tenant < 20') AS lossy_same,
+	bm_bitmap('SELECT id FROM bm_two WHERE body @@> ''run'' AND tenant < 20') = bm_eval('SELECT id FROM bm_two WHERE body @@> ''run'' AND tenant < 20') AS eval_same;
+    bitmap    | lossy_same | eval_same 
+--------------+------------+-----------
+ 1650 4938150 | t          | t
+(1 row)
+
 -- a bitmap heap scan in a correlated sub-select, with the parameter in the match
 SELECT t, (SELECT count(*) FROM bm WHERE body @@> t.w AND tenant < 30) AS n
 FROM (VALUES (1, 'run'), (2, 'jump'), (3, 'cat'), (4, 'nothing')) t(t, w) ORDER BY t;
@@ -111,6 +187,6 @@ FROM (VALUES (1, 'run'), (2, 'jump'), (3, 'cat'), (4, 'nothing')) t(t, w) ORDER 
  4 |  600
 (4 rows)
 
-DROP FUNCTION bm_plan(text), bm_bitmap(text), bm_lossy(text), bm_eval(text), bm_run(text);
-DROP TABLE bm, bm_plain;
+DROP FUNCTION bm_plan(text), bm_bitmap(text), bm_lossy(text), bm_eval(text), bm_par(text), bm_par_lossy(text), bm_run(text);
+DROP TABLE bm, bm_plain, bm_two;
 DROP EXTENSION pg_sift;
