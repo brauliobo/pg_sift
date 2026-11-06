@@ -61,6 +61,14 @@ sift.table_auto_defrag = off
 """
 
 
+class InfraError(Exception):
+    """The gate's own machinery failed (a torn data directory, a library that is not the expected one, a tool that did not run): no verdict on the commit, exit 2, run it again."""
+
+
+class BuildFailed(Exception):
+    """The candidate does not compile: a verdict on the commit, exit 3."""
+
+
 def log(*a):
     print('gate:', *a, file=sys.stderr, flush=True)
 
@@ -68,7 +76,7 @@ def log(*a):
 def sh(cmd, cwd=None, env=None, check=True, **kw):
     r = subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True, **kw)
     if check and r.returncode:
-        raise SystemExit(f'gate: failed ({r.returncode}): {" ".join(map(str, cmd))[:300]}\n{(r.stdout + r.stderr)[-2500:]}')
+        raise InfraError(f'failed ({r.returncode}): {" ".join(map(str, cmd))[:300]}\n{(r.stdout + r.stderr)[-2500:]}')
     return r.stdout
 
 
@@ -81,7 +89,7 @@ def require_tmpfs(p):
         if str(p.resolve()).startswith(mnt[1]) and len(mnt[1]) >= len(best):
             best, fs = mnt[1], mnt[2]
     if fs != 'tmpfs':
-        raise SystemExit(f'gate: {p} is on {fs}, scratch must be tmpfs (/dev/shm or /tmp)')
+        raise InfraError(f'{p} is on {fs}, scratch must be tmpfs (/dev/shm or /tmp)')
 
 
 class Lock:
@@ -125,6 +133,7 @@ class Build:
     def __init__(self, repo, sha, patch=None, label=''):
         self.repo, self.sha, self.patch, self.label = repo, sha, patch, label
         self.key = sha[:12] + ('-' + hashlib.sha256(patch.encode()).hexdigest()[:8] if patch else '')
+        (W / 'builds').mkdir(parents=True, exist_ok=True)
         self.dir = W / 'builds' / self.key
         self.tree = self.dir / 'src'
         self.root = self.dir / 'root'
@@ -133,6 +142,7 @@ class Build:
     def ensure(self):
         with Lock('lock-builds'):
             marker = self.dir / 'done.json'
+            self.pin()
             if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE:
                 self.info = json.loads(marker.read_text())
                 self.touch()
@@ -149,7 +159,12 @@ class Build:
                 sh(['git', 'apply', '--whitespace=nowarn', str(self.dir / 'cand.patch')], cwd=self.tree)
             env = {**os.environ, 'CCACHE_BASEDIR': str(self.tree)}
             t0 = time.time()
-            sh(MAKE + ['-j4'], cwd=self.tree, env=env)
+            try:
+                sh(MAKE + ['-j4'], cwd=self.tree, env=env)
+            except InfraError as e:
+                if self.label == 'candidate':
+                    raise BuildFailed(str(e)) from None
+                raise
             sh(MAKE + [f'DESTDIR={self.root}', 'install'], cwd=self.tree, env=env)
             self.info = dict(objects=self.hash_objects(), text=self.text_size(), build_s=round(time.time() - t0, 1), recipe=RECIPE)
             marker.write_text(json.dumps(self.info))
@@ -158,6 +173,11 @@ class Build:
 
     def touch(self):
         os.utime(self.dir)
+
+    def pin(self):
+        """A shared lock on the build for the life of this process: another gate's eviction skips a build in use."""
+        self.pinned = open(W / 'builds' / (self.key + '.use'), 'w')
+        fcntl.flock(self.pinned, fcntl.LOCK_SH)
 
     def text_size(self):
         out = sh(['size', str(self.tree / 'pg_sift.so')]).splitlines()[1].split()
@@ -183,8 +203,16 @@ class Build:
     def evict_old(self, keep=4):
         dirs = sorted((d for d in (W / 'builds').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)
         for d in dirs[keep:]:
+            use = open(W / 'builds' / (d.name + '.use'), 'a')
+            try:
+                fcntl.flock(use, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                use.close()
+                continue                      # a gate that is running uses it
             self.repo.git('worktree', 'remove', '--force', str(d / 'src'))
             shutil.rmtree(d)
+            (W / 'builds' / (d.name + '.use')).unlink(missing_ok=True)
+            use.close()
 
 
 # --- clusters -------------------------------------------------------------------------------------------------------------------------------------------------
@@ -203,6 +231,21 @@ class Cluster:
                 f"-c dynamic_library_path='{self.libdir}:$libdir'")
         sh(['pg_ctl', '-D', str(self.data), '-l', str(self.data) + '.log', '-w', '-o', opts, 'start'], env=self.env())
         self.pm = int((self.data / 'postmaster.pid').read_text().split()[0])
+        self.check_library()
+
+    def check_library(self):
+        """The backend maps exactly the pg_sift.so of this side's root (a data directory is never read with another build's library)."""
+        p = subprocess.Popen(['psql', '-X', '-q', '-A', '-t', '-d', 'postgres'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=self.env())
+        try:
+            p.stdin.write("LOAD 'pg_sift';\nSELECT pg_backend_pid();\n")
+            p.stdin.flush()
+            pid = int(p.stdout.readline())
+            libs = {l.split(None, 5)[-1].strip() for l in Path(f'/proc/{pid}/maps').read_text().splitlines() if 'pg_sift.so' in l}
+        finally:
+            p.stdin.close()
+            p.wait(timeout=30)
+        if libs != {self.libdir + '/pg_sift.so'}:
+            raise InfraError(f'cluster {self.name} maps {sorted(libs) or "no pg_sift.so"}, expected {self.libdir}/pg_sift.so')
 
     def stop(self):
         if (self.data / 'postmaster.pid').exists():
@@ -212,6 +255,23 @@ class Cluster:
         cmd = ['psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-d', db, *args]
         cmd += ['-f', str(file)] if file else ['-c', sql]
         return sh(cmd, env=self.env())
+
+
+def manifest(d):
+    """relative path -> size of every file of a data directory: a copy that differs from the template is torn."""
+    d = Path(d)
+    return {str(p.relative_to(d)): p.stat().st_size for p in sorted(d.rglob('*')) if p.is_file() and p.name not in ('gate.complete', 'postmaster.pid', 'postmaster.opts')}
+
+
+def template_ok(tpl):
+    try:
+        text = (tpl / 'gate.complete').read_text()
+        if text.strip() == 'ok':          # a template made before the manifest existed: adopt it
+            (tpl / 'gate.complete').write_text(json.dumps(manifest(tpl)))
+            return True
+        return json.loads(text) == manifest(tpl)
+    except (OSError, ValueError):
+        return False
 
 
 def make_template(base, rows, tpl, lab_tree):
@@ -234,7 +294,7 @@ def make_template(base, rows, tpl, lab_tree):
         c.stop()
     for f in ('postmaster.opts', 'postmaster.pid'):
         (tpl / f).unlink(missing_ok=True)
-    (tpl / 'gate.complete').write_text('ok\n')
+    (tpl / 'gate.complete').write_text(json.dumps(manifest(tpl)))
 
 
 # --- registry ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -321,11 +381,11 @@ def wait_ready(perf, ctl, ack):
                 break
             except OSError:
                 if perf.poll() is not None or time.time() > deadline:
-                    raise SystemExit('gate: perf stat did not start: ' + (perf.stderr.read() if perf.poll() is not None else 'timeout'))
+                    raise InfraError('perf stat did not start: ' + (perf.stderr.read() if perf.poll() is not None else 'timeout'))
                 time.sleep(0.01)
         os.write(fd_ctl, b'ping\n')
         if not select.select([fd_ack], [], [], 15)[0]:
-            raise SystemExit('gate: perf stat did not acknowledge the control ping')
+            raise InfraError('perf stat did not acknowledge the control ping')
         os.read(fd_ack, 64)
         os.close(fd_ctl)
     finally:
@@ -611,26 +671,37 @@ def main():
     for f in sorted(base.tree.glob('sql/pg_sift--*.sql')) + [base.tree / 'pg_sift.control', HERE / 'fixture-gate.sql', base.tree / 'test/corpus/lab.sql']:
         fp.update(f.read_bytes())
     tpl = W / 'data' / f'tpl-{fp.hexdigest()[:12]}-r{a.rows}'
-    with Lock('lock-template'):
-        if not (tpl / 'gate.complete').exists():
-            make_template(base, a.rows, tpl, reg_tree)
-        os.utime(tpl)
-        olds = sorted((p for p in (W / 'data').iterdir() if p.name.startswith('tpl-') and p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in olds[3:]:
-            shutil.rmtree(old)
-            Path(str(old) + '.log').unlink(missing_ok=True)
     rundir = W / 'run' / f'{os.getpid()}'
     shutil.rmtree(rundir, ignore_errors=True)
     rundir.mkdir(parents=True)
     sides = {'base': Cluster('base', rundir / 'data-base', rundir / 'sock-b', 57810, base.root), 'cand': Cluster('cand', rundir / 'data-cand', rundir / 'sock-c', 57811, cand.root)}
     try:
+        # creation, eviction and the copies of the template happen under one lock: no other gate removes or rebuilds a template while it is copied, and a copy that does
+        # not match the manifest written with the template is an infrastructure error, never a measurement
+        with Lock('lock-template'):
+            if not template_ok(tpl):
+                make_template(base, a.rows, tpl, reg_tree)
+            os.utime(tpl)
+            olds = sorted((p for p in (W / 'data').iterdir() if p.name.startswith('tpl-') and p.is_dir() and p != tpl), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in olds[2:]:
+                shutil.rmtree(old)
+                Path(str(old) + '.log').unlink(missing_ok=True)
+            for s in sides.values():
+                shutil.copytree(tpl, s.data, symlinks=True)
+                if manifest(s.data) != json.loads((tpl / 'gate.complete').read_text()):
+                    raise InfraError(f'the copy {s.data} differs from the template {tpl.name}')
         for s in sides.values():
-            shutil.copytree(tpl, s.data, symlinks=True)
             s.start()
         t0 = time.time()
         noise = load_noise(base.key)
         cfg = a
         res = measure_cases(selected, sides, a.runs, rundir, True, cfg, noise)
+        damaged = re.compile(r'segment of column format|invalid page|could not read block|checksum|corrupt|unexpected data beyond|this build reads|not a valid')
+        for cid, r in res.items():
+            for side, sm in r['sides'].items():
+                if 'error' in sm and damaged.search(sm['error']):
+                    raise InfraError(f'case {cid}, {side}: {sm["error"]}: a damaged data directory or a library that does not match the data; run it again '
+                                     f'(if it repeats on the candidate only, it is a finding of the commit)')
         verdicts = {}
         for c in selected:
             r = res[c.id]
@@ -738,4 +809,11 @@ def save_baseline(key, out, partial=False):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except InfraError as e:
+        print(f'gate: INFRASTRUCTURE ERROR, not a verdict on the commit (exit 2): {e}', file=sys.stderr)
+        sys.exit(2)
+    except BuildFailed as e:
+        print(f'gate: the candidate does not build (exit 3): {e}', file=sys.stderr)
+        sys.exit(3)

@@ -14,7 +14,7 @@
 5. FAIL when: instructions > +0.5% (and > 20,000 more), cycles > that threshold after up to 2 automatic re-measurements, hits / reads differ at all, WAL bytes differ by more than twice the stored base-vs-base noise (0 for almost every case),
    result rows (md5 of the sorted rows) or the EXPLAIN (COSTS OFF) plan differ, binary text grows by more than 0.1% in a commit that adds more src lines than it
    removes. All limits are options (`--max-instr-pct`, `--max-cycles-pct`, `--instr-abs`, `--blocks-tol`, `--wal-tol`, `--max-size-pct`, `--min-cycles`, `--runs`).
-   Exit status: 0 PASS / PASS-IDENTICAL, 1 FAIL. `--json FILE` keeps every run.
+   Exit status: 0 PASS / PASS-IDENTICAL, 1 FAIL, 2 infrastructure error (`gate: INFRASTRUCTURE ERROR`: no verdict on the commit, run it again; a repeat on the candidate only is a finding), 3 the candidate does not build. `--json FILE` keeps every run.
 5b. WARN (exit 0, listed in the evidence line): cycles above the threshold while instructions are within 0.1% (`--layout-instr-pct`) and the excess is at most 15%
    (`--layout-cycles-pct`). Equal work with moved machine code (a deleted function shifts everything linked after it) changes cycles by a few percent and flips sign when
    the two commits are swapped; confirm with `scripts/dry-perf-gate.sh run --src . HEAD HEAD~1` if in doubt and say so in the commit message. Above 15% it is a FAIL.
