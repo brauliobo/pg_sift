@@ -31,6 +31,20 @@ typedef struct TestScan
 #endif							/* SIFT_TESTING */
 
 #ifdef SIFT_TESTING
+/* sift._test_*(reset bool): the value of a counter, which the argument true starts again from zero */
+#define SIFT_TEST_COUNTER_FN(fn, counter) \
+Datum \
+fn(PG_FUNCTION_ARGS) \
+{ \
+	int64		n = (int64) (counter); \
+\
+	if (PG_GETARG_BOOL(0)) \
+		(counter) = 0; \
+	PG_RETURN_INT64(n); \
+}
+#endif							/* SIFT_TESTING */
+
+#ifdef SIFT_TESTING
 extern void	ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags);
 
 extern void	ctest_scan_close(TestScan *ts);

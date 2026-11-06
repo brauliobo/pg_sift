@@ -276,37 +276,13 @@ sift_test_eq_sel(PG_FUNCTION_ARGS)
 }
 
 /* the calls since the last read; the argument true resets the count */
-Datum
-sift_test_eq_sel_calls(PG_FUNCTION_ARGS)
-{
-	int64		n = eq_sel_calls;
-
-	if (PG_GETARG_BOOL(0))
-		eq_sel_calls = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_eq_sel_calls, eq_sel_calls)
 
 /* the row offsets decoded to vet rows against the heap since the last read; the argument true resets the count */
-Datum
-sift_test_vet_offsets(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_vet_offsets;
-
-	if (PG_GETARG_BOOL(0))
-		sift_col_vet_offsets = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_vet_offsets, sift_col_vet_offsets)
 
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
-Datum
-sift_test_key_sorts(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_key_sorts;
-
-	if (PG_GETARG_BOOL(0))
-		sift_col_key_sorts = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)
 
 /* {the questions, the walks made to answer them} about references to a query above that the planner asked since the last read; the argument true resets the counts */
 Datum
@@ -364,46 +340,14 @@ sift_test_vis_counts(PG_FUNCTION_ARGS)
 }
 
 /* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
-Datum
-sift_test_agg_plan_passes(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_agg_plan_passes;
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_plan_passes = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_agg_plan_passes, sift_agg_plan_passes)
 
 /* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
-Datum
-sift_test_agg_key_lists(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_agg_key_lists;
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_key_lists = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_agg_key_lists, sift_agg_key_lists)
 
 /* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */
-Datum
-sift_test_source_lookups(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_source_lookups;
-
-	if (PG_GETARG_BOOL(0))
-		sift_source_lookups = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_source_lookups, sift_source_lookups)
 
 /* the nodes the passes that rewrite a query before planning visited since the last read; the argument true resets the count */
-Datum
-sift_test_prepass_nodes(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_prepass_nodes;
-
-	if (PG_GETARG_BOOL(0))
-		sift_prepass_nodes = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_prepass_nodes, sift_prepass_nodes)
 #endif							/* SIFT_TESTING */

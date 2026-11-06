@@ -10,6 +10,7 @@
 #include "utils/snapmgr.h"
 #include "col/pagg.h"
 #include "col/seg.h"
+#include "col/test/test_int.h"
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "funcapi.h"
@@ -123,37 +124,13 @@ sift_test_col_log_cache(PG_FUNCTION_ARGS)
 }
 
 /* sift._test_col_log_hidden(reset bool): the entries the scans of this backend left out because the log hid them; reset starts the count again */
-Datum
-sift_test_col_log_hidden(PG_FUNCTION_ARGS)
-{
-	uint64		n = sift_test_col_log_hidden_count;
-
-	if (PG_GETARG_BOOL(0))
-		sift_test_col_log_hidden_count = 0;
-	PG_RETURN_INT64((int64) n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_col_log_hidden, sift_test_col_log_hidden_count)
 
 /* sift._test_hf_taken(reset bool): the masks, ranges and blocks of the scans of this backend that the tombstone log made all-visible where the visibility map did not */
-Datum
-sift_test_hf_taken(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_hf_taken;
-
-	if (PG_GETARG_BOOL(0))
-		sift_col_hf_taken = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_hf_taken, sift_col_hf_taken)
 
 /* sift._test_hf_block_hits(reset bool): the asks about a heap block that the scans of this backend answered from what the scan kept of the log, not from the log */
-Datum
-sift_test_hf_block_hits(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_hf_block_hits;
-
-	if (PG_GETARG_BOOL(0))
-		sift_col_hf_block_hits = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_hf_block_hits, sift_col_hf_block_hits)
 
 /* Adds to *any the entries of the sorted array a on the heap page that starts at lo (not the frozen ones, which no snapshot sees) and to *own those of a row in offmask */
 static void
