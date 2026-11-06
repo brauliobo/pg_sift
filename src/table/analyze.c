@@ -27,6 +27,7 @@
 #include "optimizer/optimizer.h"
 #include "col/kern.h"
 #include "table/table.h"
+#include "core/hash.h"
 #include "core/visibility.h"
 #include "table/scan_int.h"
 
@@ -125,7 +126,7 @@ analyze_load_vblock(SiftTblScan *s)
 	{
 		memset(s->an_mask, 0, sizeof(s->an_mask));
 		for (uint32 o = 0; o < SIFT_TBL_MAX_OFF; o++)
-			if ((((o + 1) * UINT64CONST(2654435761) + vblock * UINT64CONST(40503)) * UINT64CONST(0x9E3779B97F4A7C15) >> 40) % s->an_keep == 0)
+			if ((sift_fib64((o + 1) * UINT64CONST(2654435761) + vblock * UINT64CONST(40503)) >> 40) % s->an_keep == 0)
 				sift_col_bit_set(s->an_mask, o);
 		keep = s->an_mask;
 	}

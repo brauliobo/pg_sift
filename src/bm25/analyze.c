@@ -5,6 +5,7 @@
  * analysis cannot diverge (the scanner is bm25/analyze_scan.h, included where it stood).
  */
 #include "core/host.h"
+#include "core/hash.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
@@ -145,11 +146,7 @@ hash64(const char *term, int len)
 		h = mix(h, load_le(term, 8));
 	if (len > 0)
 		h = mix(h, load_tail(term, len));
-	h ^= h >> 33;
-	h *= UINT64CONST(0xFF51AFD7ED558CCD);
-	h ^= h >> 33;
-	h *= UINT64CONST(0xC4CEB9FE1A85EC53);
-	return h ^ (h >> 33);
+	return sift_fmix64(h);
 }
 
 uint64

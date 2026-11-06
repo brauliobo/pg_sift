@@ -6,6 +6,7 @@
  */
 #include "api.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 #define BATCH			1024
 
@@ -123,8 +124,7 @@ sq_inv_postings(const SqInv *inv)
 static inline uint32
 key_hash(SiftKey k)
 {
-	k *= 0x9E3779B97F4A7C15ULL;
-	return (uint32) (k >> 32);
+	return (uint32) (sift_fib64(k) >> 32);
 }
 
 static void

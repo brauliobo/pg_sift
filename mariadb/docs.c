@@ -12,6 +12,7 @@
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "core/cpu.h"
 #include "bm25/kernels.h"
 #include "bm25/prefix.h"
@@ -45,7 +46,7 @@ is_dead(const SiftIdx *ix, int64 docid)
 static size_t
 slot_hash(int64 pk)
 {
-	return ((uint64) pk * 0x9E3779B97F4A7C15ULL) >> 20;
+	return sift_fib64((uint64) pk) >> 20;
 }
 
 static void
