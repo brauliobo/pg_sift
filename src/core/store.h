@@ -376,6 +376,16 @@ sift_extlist_init(SiftExtentList *l)
 	l->ext = palloc(l->cap * sizeof(SiftExtent));
 }
 
+/* Appends the run of nblocks from start to ext[0..*n), joining the last run when it ends at start (ext has room for one more) */
+static inline void
+sift_extent_push(SiftExtent *ext, int *n, BlockNumber start, uint32 nblocks)
+{
+	if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == start)
+		ext[*n - 1].nblocks += nblocks;
+	else
+		ext[(*n)++] = (SiftExtent) {start, nblocks};
+}
+
 /* The next page of the stream is block blk: it extends the last extent when it follows it */
 static inline void
 sift_extlist_add(SiftExtentList *l, BlockNumber blk)

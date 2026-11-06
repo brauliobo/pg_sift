@@ -625,10 +625,7 @@ sift_lane_extents(Relation index, const SiftSegEntry *entry, int *n)
 	sift_sort_u32(blks, nb);
 	*n = 0;
 	for (int i = 0; i < nb; i++)
-		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == blks[i])
-			ext[*n - 1].nblocks++;
-		else
-			ext[(*n)++] = (SiftExtent) {blks[i], 1};
+		sift_extent_push(ext, n, blks[i], 1);
 	pfree(blks);
 	return ext;
 }

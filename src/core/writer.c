@@ -156,18 +156,6 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 		wt->meta.format_minor = SIFT_FORMAT_MINOR_CONFIG;
 }
 
-/* The blocks taken from the store, in the order of the target: adjacent runs are one */
-static void
-wt_note_taken(SiftWriteTarget *wt, BlockNumber start, uint32 got)
-{
-	SiftExtent *last = wt->ntaken > 0 ? &wt->taken[wt->ntaken - 1] : NULL;
-
-	if (last && last->start + last->nblocks == start)
-		last->nblocks += got;
-	else
-		wt->taken[wt->ntaken++] = (SiftExtent) {start, got};
-}
-
 /* Takes want blocks (at least min): spare runs first, then fresh ones */
 static BlockNumber
 wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
@@ -215,7 +203,8 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 	metabuf = lock_meta(wt->index, BUFFER_LOCK_EXCLUSIVE);
 	start = alloc_blocks(wt->index, metabuf, want, min, got);
 	UnlockReleaseBuffer(metabuf);
-	wt_note_taken(wt, start, *got);
+	/* the blocks taken from the store, in the order of the target: adjacent runs are one */
+	sift_extent_push(wt->taken, &wt->ntaken, start, *got);
 #ifdef SIFT_TESTING
 	/* another backend allocating in between: the next run is not adjacent to this one */
 	if (sift_test_run_gap)
@@ -236,7 +225,7 @@ sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber 
 	start = alloc_blocks_below(wt->index, metabuf, want, min, limit, got);
 	UnlockReleaseBuffer(metabuf);
 	if (BlockNumberIsValid(start))
-		wt_note_taken(wt, start, *got);
+		sift_extent_push(wt->taken, &wt->ntaken, start, *got);
 	return start;
 }
 

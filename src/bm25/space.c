@@ -50,12 +50,7 @@ bitmap_extents(Bitmapset *set, int *n)
 
 	*n = 0;
 	while ((x = bms_next_member(set, x)) >= 0)
-	{
-		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == (BlockNumber) x)
-			ext[*n - 1].nblocks++;
-		else
-			ext[(*n)++] = (SiftExtent) {x, 1};
-	}
+		sift_extent_push(ext, n, x, 1);
 	return ext;
 }
 

@@ -463,10 +463,7 @@ sweep(Relation index)
 	rel = palloc(Max(bms_num_members(orphans), 1) * sizeof(SiftExtent));
 	while ((b = bms_next_member(orphans, b)) >= 0)
 	{
-		if (n > 0 && rel[n - 1].start + rel[n - 1].nblocks == (BlockNumber) b)
-			rel[n - 1].nblocks++;
-		else
-			rel[n++] = (SiftExtent) {b, 1};
+		sift_extent_push(rel, &n, b, 1);
 		blocks++;
 	}
 	if (n > 0)

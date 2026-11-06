@@ -319,12 +319,7 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 			list[nlist++] = (SiftExtent) {old.start, stays};
 		for (int i = 0; i < nparts; i++)
 			if (part[i].ext == e)
-			{
-				if (nlist > 0 && list[nlist - 1].start + list[nlist - 1].nblocks == part[i].dst)
-					list[nlist - 1].nblocks += part[i].src.nblocks;
-				else
-					list[nlist++] = (SiftExtent) {part[i].dst, part[i].src.nblocks};
-			}
+				sift_extent_push(list, &nlist, part[i].dst, part[i].src.nblocks);
 	}
 	for (int i = 0; i < nparts; i++)
 		if (part[i].ext < 0)
