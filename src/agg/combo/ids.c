@@ -9,6 +9,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/numeric.h"
 
+#include "agg/agg.h"
 #include "agg/combo/int.h"
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
@@ -91,11 +92,7 @@ id64_init(Id64 *m)
 static uint32
 id64_new(Id64 *m, int64 k)
 {
-	if (m->n == m->cap)
-	{
-		m->cap *= 2;
-		m->val = repalloc(m->val, m->cap * sizeof(int64));
-	}
+	SIFT_GROW(m->val, m->n, m->cap);
 	m->val[m->n] = k;
 	return ++m->n;
 }

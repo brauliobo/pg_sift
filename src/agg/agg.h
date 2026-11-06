@@ -44,6 +44,16 @@ sift_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
+/* the array arr of cap elements, grown to twice that when its n elements fill it */
+#define SIFT_GROW(arr, n, cap) \
+	do { \
+		if ((n) == (cap)) \
+		{ \
+			(cap) *= 2; \
+			(arr) = repalloc((arr), (cap) * sizeof(*(arr))); \
+		} \
+	} while (0)
+
 #ifdef SIFT_TESTING
 extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_prepass_nodes */
 #define SIFT_SKIP_CONST_LIST(n, ret) \

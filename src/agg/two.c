@@ -283,11 +283,7 @@ cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
 	{
 		memset(&a->cell[ai][g], 0, sizeof(Cell));
 	}
-	if (ex->ntouch == ex->captouch)
-	{
-		ex->captouch *= 2;
-		ex->touched = repalloc(ex->touched, ex->captouch * sizeof(Touch));
-	}
+	SIFT_GROW(ex->touched, ex->ntouch, ex->captouch);
 	ex->touched[ex->ntouch].arm = k;
 	ex->touched[ex->ntouch++].g = g;
 }

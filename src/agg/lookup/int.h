@@ -8,6 +8,7 @@
 
 #include "common/hashfn.h"
 
+#include "agg/agg.h"
 #include "agg/agg_int.h"
 
 /* the order columns of the rows of a first-row lookup: the value of each (NULL: 0 and isnull) */
@@ -87,11 +88,7 @@ kd_int(KeyDict *d, int64 v, MemoryContext cxt)
 	}
 	if ((id = kd_int_find(d, v, &h)) != 0)
 		return id;
-	if (d->n == d->cap)
-	{
-		d->cap *= 2;
-		d->ival = repalloc(d->ival, d->cap * sizeof(int64));
-	}
+	SIFT_GROW(d->ival, d->n, d->cap);
 	d->ival[d->n] = v;
 	d->slot[h] = ++d->n;
 	if (d->n * 2 > d->nslot)

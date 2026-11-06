@@ -209,11 +209,7 @@ ot_id(OutTable *t, Datum d)
 
 		if (id > t->n)
 		{
-			if (t->n == t->cap)
-			{
-				t->cap *= 2;
-				t->val = repalloc(t->val, t->cap * sizeof(Datum));
-			}
+			SIFT_GROW(t->val, t->n, t->cap);
 			t->val[t->n++] = d;
 		}
 		return id;
@@ -743,11 +739,7 @@ idmap_small(sift_i128 v)
 static uint32
 idmap_add(IdMap *m, sift_i128 v)
 {
-	if (m->n == m->cap)
-	{
-		m->cap *= 2;
-		m->val = repalloc(m->val, m->cap * sizeof(sift_i128));
-	}
+	SIFT_GROW(m->val, m->n, m->cap);
 	m->val[m->n] = v;
 	return ++m->n;
 }

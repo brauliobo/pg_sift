@@ -11,6 +11,7 @@
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
+#include "agg/agg.h"
 #include "agg/gord.h"
 #include "agg/topn/int.h"
 
@@ -166,11 +167,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 		ItemPointerData tid = g->tid[i],
 					entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
 
-		if (t->gqn == t->gqroom)
-		{
-			t->gqroom *= 2;
-			t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
-		}
+		SIFT_GROW(t->gq, t->gqn, t->gqroom);
 		r = &t->gq[t->gqn];
 		/* the entries the units decided are tried too, so that the pass rate the budget extrapolates is the walk's, not that of the dirty pages the heap was asked about */
 		if (t->gbudget > 0 && gord_giveup(t))
