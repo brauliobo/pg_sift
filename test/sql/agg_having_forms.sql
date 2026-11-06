@@ -1,0 +1,136 @@
+-- The HAVING forms that are conditions of the ROWS, not of the groups. Every row of a group has the group's key, so on a plain GROUP BY a HAVING condition that reads only
+-- keys (and a sub-select that reads no aggregate) holds for a group exactly when it holds for each of its rows: it can be tested before the rows are grouped, as a WHERE. PostgreSQL does
+-- that itself for a condition without a sub-select; the planner hook of sift does it for a sub-select too and keeps the cheaper plan of the two forms. Each pair sets the HAVING
+-- statement against the WHERE statement written by hand: both with the scan on (a_vs_b, as_expected) and the HAVING one against sift off (a_same_off) return the same rows.
+-- What must stay on the groups: a condition that reads an aggregate (alone or in its sub-select), grouping sets (a key is NULL in the rows of a super-aggregate, and the condition
+-- tests the NULL; a WHERE would first drop the rows and so change the totals), and no GROUP BY (the one group is there when no row is). For those the two forms differ BY DESIGN
+-- (a_vs_b is differs, as_expected t) and the HAVING statement is the same as the fenced form that groups first and filters after.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+\ir test/agg_having_helpers.sql
+
+CREATE TABLE pairs (ord serial, idea text, name text, a text, b text, expect text DEFAULT 'same');
+INSERT INTO pairs (idea, name, a, b) VALUES
+  -- (d1) a sub-select on the key
+  ('sub-select = WHERE', 'IN',
+   $q$SELECT tenant_id, count(*) AS c, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE active)$q$,
+   $q$SELECT tenant_id, count(*) AS c, sum(counter_a) AS s FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE active) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'NOT IN',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id NOT IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id NOT IN (SELECT id FROM hv_tenants WHERE tier = 1) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'NOT IN a list with a NULL: no group',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id NOT IN (SELECT tier FROM hv_tenants)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id NOT IN (SELECT tier FROM hv_tenants) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'EXISTS tied to the key',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_tenants t WHERE t.id = hv_events.tenant_id AND t.active)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE EXISTS (SELECT 1 FROM hv_tenants t WHERE t.id = hv_events.tenant_id AND t.active) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'NOT EXISTS tied to the key',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING NOT EXISTS (SELECT 1 FROM hv_tenants t WHERE t.id = hv_events.tenant_id AND t.active)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE NOT EXISTS (SELECT 1 FROM hv_tenants t WHERE t.id = hv_events.tenant_id AND t.active) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a scalar sub-select compared with the key',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id > (SELECT avg(id) FROM hv_tenants)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id > (SELECT avg(id) FROM hv_tenants) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a scalar sub-select of the key',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING (SELECT t.tier FROM hv_tenants t WHERE t.id = hv_events.tenant_id) = 1$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE (SELECT t.tier FROM hv_tenants t WHERE t.id = hv_events.tenant_id) = 1 GROUP BY 1$q$),
+  ('sub-select = WHERE', 'two keys, a sub-select each',
+   $q$SELECT tenant_id, category_id, count(*) AS c FROM hv_events GROUP BY 1, 2 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 2) AND category_id IN (SELECT id FROM hv_tenants WHERE id < 4)$q$,
+   $q$SELECT tenant_id, category_id, count(*) AS c FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 2) AND category_id IN (SELECT id FROM hv_tenants WHERE id < 4) GROUP BY 1, 2$q$),
+  ('sub-select = WHERE', 'OR with the NULL key',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IS NULL OR tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 0)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IS NULL OR tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 0) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a key expression',
+   $q$SELECT tenant_id % 3 AS m, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id % 3 IN (SELECT tier FROM hv_tenants WHERE tier IS NOT NULL AND id > 12)$q$,
+   $q$SELECT tenant_id % 3 AS m, count(*) AS c FROM hv_events WHERE tenant_id % 3 IN (SELECT tier FROM hv_tenants WHERE tier IS NOT NULL AND id > 12) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a text key',
+   $q$SELECT kind, count(*) AS c FROM hv_events GROUP BY 1 HAVING kind IN (SELECT 'k' || id FROM hv_tenants WHERE id < 4)$q$,
+   $q$SELECT kind, count(*) AS c FROM hv_events WHERE kind IN (SELECT 'k' || id FROM hv_tenants WHERE id < 4) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a date key',
+   $q$SELECT event_date, count(*) AS c FROM hv_events GROUP BY 1 HAVING event_date IN (SELECT DATE '2026-01-01' + id FROM hv_tenants WHERE id < 5)$q$,
+   $q$SELECT event_date, count(*) AS c FROM hv_events WHERE event_date IN (SELECT DATE '2026-01-01' + id FROM hv_tenants WHERE id < 5) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'an empty sub-select',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE id > 100)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE id > 100) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'an empty table',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_empty GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_empty WHERE tenant_id IN (SELECT id FROM hv_tenants) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a lookup join key',
+   $q$SELECT t.tier, count(*) AS c, sum(e.counter_a) AS s FROM hv_events e JOIN hv_tenants t ON t.id = e.tenant_id GROUP BY 1 HAVING t.tier IN (SELECT tier FROM hv_tenants WHERE id > 8)$q$,
+   $q$SELECT t.tier, count(*) AS c, sum(e.counter_a) AS s FROM hv_events e JOIN hv_tenants t ON t.id = e.tenant_id WHERE t.tier IN (SELECT tier FROM hv_tenants WHERE id > 8) GROUP BY 1$q$),
+  ('sub-select = WHERE', 'as a join to the list (the list has unique ids)',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE active)$q$,
+   $q$SELECT e.tenant_id, count(*) AS c FROM hv_events e JOIN (SELECT id FROM hv_tenants WHERE active) a ON a.id = e.tenant_id GROUP BY 1$q$),
+  ('sub-select = WHERE', 'a volatile function in the sub-select',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE random() < 2)$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE random() < 2) GROUP BY 1$q$),
+  -- (d2) a condition of the key without a sub-select: PostgreSQL moves it to the WHERE
+  ('key = WHERE', 'greater than',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id > 8$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id > 8 GROUP BY 1$q$),
+  ('key = WHERE', 'IS NULL',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IS NULL$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IS NULL GROUP BY 1$q$),
+  ('key = WHERE', 'IS NOT NULL on a text',
+   $q$SELECT kind, count(*) AS c FROM hv_events GROUP BY 1 HAVING kind IS NOT NULL$q$,
+   $q$SELECT kind, count(*) AS c FROM hv_events WHERE kind IS NOT NULL GROUP BY 1$q$),
+  ('key = WHERE', 'LIKE on a text',
+   $q$SELECT kind, count(*) AS c FROM hv_events GROUP BY 1 HAVING kind LIKE 'k_' AND kind <> 'k2'$q$,
+   $q$SELECT kind, count(*) AS c FROM hv_events WHERE kind LIKE 'k_' AND kind <> 'k2' GROUP BY 1$q$),
+  ('key = WHERE', 'a range of dates',
+   $q$SELECT event_date, count(*) AS c FROM hv_events GROUP BY 1 HAVING event_date BETWEEN DATE '2026-01-10' AND DATE '2026-01-20'$q$,
+   $q$SELECT event_date, count(*) AS c FROM hv_events WHERE event_date BETWEEN DATE '2026-01-10' AND DATE '2026-01-20' GROUP BY 1$q$),
+  ('key = WHERE', 'two keys',
+   $q$SELECT tenant_id, category_id, count(*) AS c FROM hv_events GROUP BY 1, 2 HAVING tenant_id = 1 AND category_id > 2$q$,
+   $q$SELECT tenant_id, category_id, count(*) AS c FROM hv_events WHERE tenant_id = 1 AND category_id > 2 GROUP BY 1, 2$q$),
+  ('key = WHERE', 'a key expression',
+   $q$SELECT coalesce(kind, 'none') AS k, count(*) AS c FROM hv_events GROUP BY 1 HAVING coalesce(kind, 'none') <> 'k1'$q$,
+   $q$SELECT coalesce(kind, 'none') AS k, count(*) AS c FROM hv_events WHERE coalesce(kind, 'none') <> 'k1' GROUP BY 1$q$),
+  -- (d3) a key condition with an aggregate condition: the first moves, the second stays on the groups
+  ('split', 'a sub-select on the key and a count',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE active) AND count(*) > 1000$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE active) GROUP BY 1 HAVING count(*) > 1000$q$),
+  ('split', 'a key, a sub-select and a sum',
+   $q$SELECT tenant_id, sum(counter_b) AS s FROM hv_events GROUP BY 1 HAVING tenant_id > 5 AND tenant_id IN (SELECT id FROM hv_tenants WHERE tier < 2) AND sum(counter_b) > 4000$q$,
+   $q$SELECT tenant_id, sum(counter_b) AS s FROM hv_events WHERE tenant_id > 5 AND tenant_id IN (SELECT id FROM hv_tenants WHERE tier < 2) GROUP BY 1 HAVING sum(counter_b) > 4000$q$),
+  ('split', 'with a WHERE of its own',
+   $q$SELECT tenant_id, sum(amount) AS s FROM hv_events WHERE counter_b > 2 GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE active)$q$,
+   $q$SELECT tenant_id, sum(amount) AS s FROM hv_events WHERE counter_b > 2 AND tenant_id IN (SELECT id FROM hv_tenants WHERE active) GROUP BY 1$q$),
+  ('split', 'ORDER BY and LIMIT above it',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE active) ORDER BY c DESC, 1 LIMIT 3$q$,
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE active) GROUP BY 1 ORDER BY c DESC, 1 LIMIT 3$q$),
+  -- (d4) what stays on the groups: the HAVING statement is the fenced form (group first, filter after)
+  ('stays on the groups', 'a sub-select that reads an aggregate',
+   $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING (SELECT count(*) FROM hv_tenants WHERE id <= sum(counter_a) / 100) > 2$q$,
+   $q$SELECT g.tenant_id, g.s FROM (SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 OFFSET 0) g WHERE (SELECT count(*) FROM hv_tenants WHERE id <= g.s / 100) > 2$q$),
+  ('stays on the groups', 'an aggregate of the query compared with a sub-select',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) > (SELECT count(*) / 14 FROM hv_events)$q$,
+   $q$SELECT * FROM (SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 OFFSET 0) g WHERE c > (SELECT count(*) / 14 FROM hv_events)$q$),
+  ('stays on the groups', 'a sub-select list and an aggregate in one OR',
+   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 1) OR count(*) > 2500$q$,
+   $q$SELECT * FROM (SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 OFFSET 0) g WHERE tenant_id IN (SELECT id FROM hv_tenants WHERE tier = 1) OR c > 2500$q$),
+  ('stays on the groups', 'grouping sets: the super-aggregates have a NULL key',
+   $q$SELECT category_id, kind, count(*) AS c FROM hv_events GROUP BY ROLLUP (category_id, kind) HAVING category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$,
+   $q$SELECT * FROM (SELECT category_id, kind, count(*) AS c FROM hv_events GROUP BY ROLLUP (category_id, kind) OFFSET 0) g WHERE category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$),
+  ('stays on the groups', 'grouping sets, a NULL key kept',
+   $q$SELECT category_id, kind, count(*) AS c FROM hv_events GROUP BY GROUPING SETS ((category_id), (kind), ()) HAVING category_id IS NULL OR category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$,
+   $q$SELECT * FROM (SELECT category_id, kind, count(*) AS c FROM hv_events GROUP BY GROUPING SETS ((category_id), (kind), ()) OFFSET 0) g WHERE category_id IS NULL OR category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$),
+  ('stays on the groups', 'no GROUP BY, the condition fails',
+   $q$SELECT count(*) AS c, sum(counter_a) AS s FROM hv_events HAVING 1 IN (SELECT id FROM hv_tenants WHERE id > 100)$q$,
+   $q$SELECT * FROM (SELECT count(*) AS c, sum(counter_a) AS s FROM hv_events OFFSET 0) g WHERE 1 IN (SELECT id FROM hv_tenants WHERE id > 100)$q$),
+  ('stays on the groups', 'no GROUP BY, the condition holds',
+   $q$SELECT count(*) AS c, sum(counter_a) AS s FROM hv_events HAVING 1 IN (SELECT id FROM hv_tenants WHERE id < 100)$q$,
+   $q$SELECT * FROM (SELECT count(*) AS c, sum(counter_a) AS s FROM hv_events OFFSET 0) g WHERE 1 IN (SELECT id FROM hv_tenants WHERE id < 100)$q$),
+  -- (d5) the forms that differ BY DESIGN: the WHERE statement is NOT the HAVING statement (a_vs_b = differs), and sift keeps the meaning of the HAVING one (a_same_off = t)
+  ('differs by design', 'ROLLUP: a WHERE first changes the totals',
+   $q$SELECT category_id, kind, count(*) AS c FROM hv_events GROUP BY ROLLUP (category_id, kind) HAVING category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)$q$,
+   $q$SELECT category_id, kind, count(*) AS c FROM hv_events WHERE category_id IN (SELECT id FROM hv_tenants WHERE tier = 1) GROUP BY ROLLUP (category_id, kind)$q$),
+  ('differs by design', 'no GROUP BY: a WHERE that drops every row still gives one group',
+   $q$SELECT count(*) AS c FROM hv_events HAVING 1 IN (SELECT id FROM hv_tenants WHERE id > 100)$q$,
+   $q$SELECT count(*) AS c FROM hv_events WHERE 1 IN (SELECT id FROM hv_tenants WHERE id > 100)$q$);
+UPDATE pairs SET expect = 'differs' WHERE idea = 'differs by design';
+SELECT p.idea, p.name, c.* FROM pairs p, LATERAL having_same(p.a, p.b, p.expect) c ORDER BY p.ord;
+
+DROP TABLE pairs, hv_events, hv_tenants, hv_empty;
+DROP FUNCTION having_plan(text), having_rows(text, bool, bool), having_run(text, bool), having_same(text, text, text);
+DROP EXTENSION pg_sift;
