@@ -32,6 +32,7 @@
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
+#include "core/cmp.h"
 #include "core/compat.h"
 #include "core/explain.h"
 
@@ -90,15 +91,6 @@ init_attrs(SiftScanState *ss, List *flat)
 }
 
 /* The most keys of a table the scan tests the join column against: more is left to the join */
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
 
 /*
  * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
@@ -161,7 +153,7 @@ load_semi(SiftScanState *ss)
 		table_close(dim, AccessShareLock);
 		if (over)
 			continue;
-		qsort(set, nset, sizeof(int64), cmp_i64);
+		qsort(set, nset, sizeof(int64), sift_cmp_i64);
 		{
 			int			m = 0;
 
