@@ -141,6 +141,7 @@ SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FILTER (WHERE grp > 1 AND (doc ->> 'v')::float8 > 3) AS c FROM f_t GROUP BY grp;
 NOTICE:  SiftAgg not used: dirty_units: some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does (doc.v: the FILTER of an aggregate tests the cast in a way that is none of a comparison with a constant, an IN list of integers and a NULL test)
 DETAIL:  arm: single
+HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX.
          QUERY PLAN          
 -----------------------------
  GroupAggregate

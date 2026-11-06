@@ -118,6 +118,7 @@ SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, avg((p ->> 'score')::float8) FROM e_t, jsonb_array_elements(doc -> 'parts') p WHERE p ->> 'c' = 'a' GROUP BY grp;
 NOTICE:  SiftAgg not used: dirty_units: some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does (doc.parts[].score: a condition on the elements of the list may drop the element whose value raises: the error of an element is kept for its row)
 DETAIL:  arm: single
+HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX.
                               QUERY PLAN                               
 -----------------------------------------------------------------------
  GroupAggregate

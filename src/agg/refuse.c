@@ -20,6 +20,14 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "commands/defrem.h"
+#include "commands/prepare.h"
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "parser/parse_coerce.h"
+#include "parser/parse_collate.h"
+#include "parser/parse_expr.h"
+#include "parser/parse_node.h"
+#include "utils/plancache.h"
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -43,14 +51,15 @@ static bool notice_refusals = false;
 static bool count_refusals = false;
 const char *agg_variant = NULL;
 
-#define AGG_REFUSAL_ROW(id, slug, text, limit, by_design) {slug, text, limit, by_design},
+#define AGG_REFUSAL_ROW(id, slug, text, limit, by_design, action) {slug, text, limit, by_design, action},
 static const struct
 {
 	const char *slug;
 	const char *text;
 	bool		limit;
 	bool		by_design;
-}			refusals[] = {{NULL, NULL, false, false}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
+	const char *action;
+}			refusals[] = {{NULL, NULL, false, false, NULL}, SIFT_AGG_REFUSALS(AGG_REFUSAL_ROW)};
 
 /* the ids of core/limits.h: the name sift.stats counts a refusal by a limit under */
 static const char *const limit_names[] = {
@@ -316,6 +325,7 @@ static void
 emit(const ArmNote *a)
 {
 	const char *slug = refusals[a->why].slug;
+	const char *action = refusals[a->why].action;
 	const char *reason = a->why == AGG_REFUSE_NONE ? NULL :
 		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
 
@@ -333,7 +343,7 @@ emit(const ArmNote *a)
 		tuplestore_putvalues(why_store, why_desc, v, n);
 	}
 	else if (!a->used && notice_refusals)
-		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name)));
+		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name), errhint("%s", action)));
 }
 
 static void
@@ -664,7 +674,7 @@ tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
  * none means the table has no such index (no_source) or no condition of the statement is one the index answers (where).
  */
 static void
-why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps)
+why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *ptypes, int nparams, ParamListInfo params)
 {
 	Oid			amoid = get_am_oid("sift_col", true);
 	int			nest;
@@ -686,7 +696,7 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps)
 	PG_TRY();
 	{
 		(void) set_config_option("enable_seqscan", "off", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
-		foreach_ptr(PlannedStmt, p2, pg_plan_queries(pg_analyze_and_rewrite_fixedparams(copyObject(raw), sql, NULL, 0, NULL), sql, CURSOR_OPT_PARALLEL_OK, NULL))
+		foreach_ptr(PlannedStmt, p2, pg_plan_queries(pg_analyze_and_rewrite_fixedparams(copyObject(raw), sql, ptypes, nparams, NULL), sql, CURSOR_OPT_PARALLEL_OK, params))
 			if (p2->commandType == CMD_SELECT)
 				again = p2;
 	}
@@ -701,6 +711,93 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps)
 		agg_report("index", AGG_REFUSE_WHERE, NULL, false, 0, -1);
 }
 
+/* The values of the EXECUTE for the parameters of the prepared statement, as commands/prepare.c evaluates them (that function is not exported) */
+static ParamListInfo
+why_params(ParseState *pstate, const PreparedStatement *entry, List *given, EState *estate)
+{
+	const Oid  *types = entry->plansource->param_types;
+	List	   *exprs = copyObject(given);
+	ParamListInfo params;
+	ExprContext *econtext;
+	int			i = 0;
+	ListCell   *lc;
+
+	if (list_length(exprs) != entry->plansource->num_params)
+		ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR), errmsg("wrong number of parameters for prepared statement \"%s\"", entry->stmt_name),
+						errdetail("Expected %d parameters but got %d.", entry->plansource->num_params, list_length(exprs))));
+	params = makeParamList(entry->plansource->num_params);
+	foreach(lc, exprs)
+	{
+		Node	   *expr = transformExpr(pstate, lfirst(lc), EXPR_KIND_EXECUTE_PARAMETER);
+		Oid			given_type = exprType(expr);
+
+		expr = coerce_to_target_type(pstate, expr, given_type, types[i], -1, COERCION_ASSIGNMENT, COERCE_IMPLICIT_CAST, -1);
+		if (expr == NULL)
+			ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("parameter $%d of type %s cannot be coerced to the expected type %s", i + 1,
+							format_type_be(given_type), format_type_be(types[i])), parser_errposition(pstate, exprLocation(lfirst(lc)))));
+		assign_expr_collations(pstate, expr);
+		lfirst(lc) = ExecPrepareExpr((Expr *) expr, estate);
+		i++;
+	}
+	econtext = GetPerTupleExprContext(estate);
+	i = 0;
+	foreach(lc, exprs)
+	{
+		bool		isnull;
+
+		params->params[i].value = ExecEvalExprSwitchContext((ExprState *) lfirst(lc), econtext, &isnull);
+		params->params[i].isnull = isnull;
+		params->params[i].pflags = PARAM_FLAG_CONST;
+		params->params[i].ptype = types[i];
+		i++;
+	}
+	return params;
+}
+
+/*
+ * EXECUTE of a prepared SELECT: planned for the values it is given (a custom plan, so that the planner runs and the reasons are recorded, whatever plan_cache_mode says), the way the
+ * statement runs on its next execution.
+ */
+static void
+why_execute(const ExecuteStmt *es, const char *sql)
+{
+	PreparedStatement *entry = FetchPreparedStatement(es->name, true);
+	CachedPlanSource *psrc = entry->plansource;
+	ParseState *pstate = make_parsestate(NULL);
+	EState	   *estate = CreateExecutorState();
+	ParamListInfo params = NULL;
+	CachedPlan *cplan;
+	int			nest;
+
+	if (psrc->commandTag != CMDTAG_SELECT)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes the EXECUTE of a prepared SELECT"),
+						errhint("The prepared statement \"%s\" is not a SELECT.", es->name)));
+	pstate->p_sourcetext = sql;
+	if (psrc->num_params > 0 || es->params != NIL)
+		params = why_params(pstate, entry, es->params, estate);
+	nest = NewGUCNestLevel();
+	PG_TRY();
+	{
+		(void) set_config_option("plan_cache_mode", "force_custom_plan", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
+		sift_explain_refusals = true;
+		cplan = GetCachedPlan(psrc, params, CurrentResourceOwner, NULL);
+		foreach_ptr(PlannedStmt, ps, cplan->stmt_list)
+			if (ps->commandType == CMD_SELECT)
+			{
+				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+				if (tuplestore_tuple_count(why_store) == 0)
+					why_index_arm(copyObject(psrc->raw_parse_tree), psrc->query_string, ps, psrc->param_types, psrc->num_params, params);
+			}
+		ReleaseCachedPlan(cplan, CurrentResourceOwner);
+	}
+	PG_FINALLY();
+	{
+		AtEOXact_GUC(false, nest);
+	}
+	PG_END_TRY();
+	FreeExecutorState(estate);
+}
+
 Datum
 sift_agg_explain_why(PG_FUNCTION_ARGS)
 {
@@ -712,24 +809,29 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	RawStmt    *raw,
 			   *again_raw;
 
-	if (list_length(trees) != 1 || !IsA((raw = linitial_node(RawStmt, trees))->stmt, SelectStmt))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement"),
+	if (list_length(trees) != 1 || !(IsA((raw = linitial_node(RawStmt, trees))->stmt, SelectStmt) || IsA(raw->stmt, ExecuteStmt)))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement or the EXECUTE of a prepared one"),
 						errhint("Pass the text of a single SELECT, without a second statement.")));
 	InitMaterializedSRF(fcinfo, 0);
-	again_raw = copyObject(raw);	/* analysis rewrites the sub-selects of the tree in place */
-	queries = pg_analyze_and_rewrite_fixedparams(raw, sql, NULL, 0, NULL);
 	PG_TRY();
 	{
 		why_store = rsi->setResult;
 		why_desc = rsi->setDesc;
 		sift_explain_refusals = true;
-		foreach_ptr(PlannedStmt, ps, pg_plan_queries(queries, sql, CURSOR_OPT_PARALLEL_OK, NULL))
-			if (ps->commandType == CMD_SELECT)
-			{
-				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
-				if (tuplestore_tuple_count(why_store) == 0)
-					why_index_arm(again_raw, sql, ps);
-			}
+		if (IsA(raw->stmt, ExecuteStmt))
+			why_execute((const ExecuteStmt *) raw->stmt, sql);
+		else
+		{
+			again_raw = copyObject(raw);	/* analysis rewrites the sub-selects of the tree in place */
+			queries = pg_analyze_and_rewrite_fixedparams(raw, sql, NULL, 0, NULL);
+			foreach_ptr(PlannedStmt, ps, pg_plan_queries(queries, sql, CURSOR_OPT_PARALLEL_OK, NULL))
+				if (ps->commandType == CMD_SELECT)
+				{
+					ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+					if (tuplestore_tuple_count(why_store) == 0)
+						why_index_arm(again_raw, sql, ps, NULL, 0, NULL);
+				}
+		}
 	}
 	PG_FINALLY();
 	{

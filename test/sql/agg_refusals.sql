@@ -180,6 +180,23 @@ RESET sift.enable_agg;
 RESET sift.explain_refusals;
 RESET client_min_messages;
 DROP TABLE minmax_leftover;
+-- the EXECUTE of a prepared SELECT is planned for its values and answers as the statement does
+SELECT slug, reason ~ 'volatile function' AS reason_kept
+FROM sift.explain_why($q$SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1$q$);
+-- the notice of a refusal says what to do about it
+SET sift.explain_refusals = on;
+EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1;
+RESET sift.explain_refusals;
+PREPARE ex_volatile(float8) AS SELECT kind, count(*) FROM events WHERE random() < $1 GROUP BY 1;
+SELECT slug, reason ~ 'volatile function' AS reason_kept FROM sift.explain_why('EXECUTE ex_volatile(0.5)');
+PREPARE ex_used(int) AS SELECT kind, count(*) FROM events WHERE parent_id = $1 GROUP BY 1;
+SELECT arm, used, slug FROM sift.explain_why('EXECUTE ex_used(7)');
+SELECT * FROM sift.explain_why('EXECUTE ex_missing(1)');
+SELECT * FROM sift.explain_why('EXECUTE ex_used(1, 2)');
+SELECT * FROM sift.explain_why('EXECUTE ex_used(''x'')');
+PREPARE ex_delete(int) AS DELETE FROM plain WHERE id = $1;
+SELECT * FROM sift.explain_why('EXECUTE ex_delete(1)');
+DEALLOCATE ALL;
 DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift_helpers;

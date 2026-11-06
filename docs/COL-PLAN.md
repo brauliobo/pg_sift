@@ -405,46 +405,46 @@ What the planner refuses among the joins, the per-order form and a few jsonb tes
 Every refusal has a slug, `sift.explain_refusals` and `sift.explain_why` name it, and `sift.stats()` counts it (`refused.<slug>`, and `limit.<id>` for a refusal by a fixed limit of [LIMITS.md](LIMITS.md)). The table is generated from `src/agg/refuse.h`; a `limit` is a query with more of something than the scan holds, `semantic` a shape the scan does not prove.
 
 <!-- refusals:start -->
-| slug | class | by design | the query kept the normal plan because |
-|---|---|---|---|
-| `other` | semantic |  | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded |
-| `disabled` | semantic | yes | sift.enable_agg is off |
-| `query_kind` | semantic | yes | the query has a set-returning function in the select list, row locks or a recursive CTE |
-| `from_shape` | semantic |  | the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads |
-| `table_kind` | semantic | yes | the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table |
-| `no_source` | semantic | yes | no sift_col index or sift_table covers the table |
-| `partition_source` | semantic |  | a partition has no column index the plan can use, or the partitions do not share a layout |
-| `partition_count` | limit |  | the table has more partitions left by PostgreSQL's pruning than a scan reads |
-| `join_child` | semantic |  | a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child |
-| `outer_join` | semantic |  | an outer join of the scanned table keeps rows the scan cannot reproduce |
-| `unnest_leaf` | semantic |  | the array or object a lateral function unnests is not a leaf of the column index |
-| `where` | semantic |  | a condition of the WHERE or ON clause is not one the scan can test |
-| `join_condition` | semantic |  | a join condition is not an equality or filter the scan can look up |
-| `group_key` | semantic |  | a group key is not a leaf, or an expression of one, that the scan reads |
-| `too_many_keys` | limit |  | the query groups by more columns than the scan holds |
-| `error_parity` | semantic |  | the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read) |
-| `output_expr` | semantic |  | the select list or HAVING reads something besides group keys and the aggregates the scan computes |
-| `aggregate` | semantic |  | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes |
-| `distinct_on` | semantic | yes | DISTINCT ON keeps a row the scan cannot pick: more than four sort columns after the ON columns, a sort or select-list column of a joined table, or a volatile select list |
-| `grouping_sets` | semantic |  | the arm does not group by grouping sets |
-| `dirty_units` | semantic |  | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does |
-| `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too |
-| `volatile` | semantic | yes | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce |
-| `first_memory` | limit |  | the first rows of the groups would not fit in the memory of a hash aggregate |
-| `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill |
-| `lateral_limit` | semantic |  | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
-| `distinct_set` | semantic |  | count(DISTINCT x) keeps the distinct values of each group: x is not a NOT NULL column of the scanned table under a unique single-column index, so its rows cannot be counted in its place |
-| `two_arms` | semantic |  | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
-| `two_keys` | semantic |  | a key of the two level aggregate is not one every arm groups by |
-| `two_aggs` | semantic |  | an aggregate over the arms is not one the two level scan computes |
-| `spine_shape` | semantic |  | the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms |
-| `shape_width` | limit |  | the query has more joined tables, value combinations, leaves, arms or columns than the scan holds: the detail names the limit and its value |
-| `spine_rows` | limit |  | the rows of the spine are estimated above sift.agg_lookup_max_kb |
-| `rows_shape` | semantic |  | the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group |
-| `topn_shape` | semantic |  | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests |
-| `window_first` | semantic |  | the first rows of each group, asked with a window function (rn = 1, rn <= N), are not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else, over a table with a column index for N > 1 |
-| `cost` | semantic | yes | the normal plan is estimated cheaper than the scan |
-| `cte_cost` | semantic | yes | the shared CTE plan is estimated cheaper than the plan with the CTE inlined |
+| slug | class | by design | the query kept the normal plan because | what to do |
+|---|---|---|---|---|
+| `other` | semantic |  | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded | Try a simpler form of the statement (one table, a plain GROUP BY) to find the part that is refused, and report the statement if it should be accepted. |
+| `disabled` | semantic | yes | sift.enable_agg is off | SET sift.enable_agg = on (it is off in this session, role or database). |
+| `query_kind` | semantic | yes | the query has a set-returning function in the select list, row locks or a recursive CTE | None needed, the normal plan is the answer; take the set-returning function, FOR UPDATE or the recursive CTE out of the statement to get the scan. |
+| `from_shape` | semantic |  | the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads | Write the FROM list as one table with inner or left joins and lateral functions, or move the other sources into a sub-select the scan can read. |
+| `table_kind` | semantic | yes | the table is inherited, sampled, row-secured or not a plain, materialized or partitioned table | None needed, the normal plan is the answer; the scan reads plain, materialized and partitioned tables that are not inherited, sampled or row-secured. |
+| `no_source` | semantic | yes | no sift_col index or sift_table covers the table | CREATE INDEX .. USING sift_col on the table; sift.index_choices shows what it would hold. |
+| `partition_source` | semantic |  | a partition has no column index the plan can use, or the partitions do not share a layout | Create the same sift_col index (same columns and options) on every partition, as CREATE INDEX on the parent does. |
+| `partition_count` | limit |  | the table has more partitions left by PostgreSQL's pruning than a scan reads | Filter on the partition key so that fewer partitions are left, or query the partitions that matter. |
+| `join_child` | semantic |  | a joined sub-select, VALUES list, CTE or function is not one the scan can read or run as a child | Join a table the scan reads, or write the sub-select, VALUES list or CTE as a single-table SELECT with a WHERE; the detail names the child. |
+| `outer_join` | semantic |  | an outer join of the scanned table keeps rows the scan cannot reproduce | Use an inner join if the unmatched rows are not needed, or aggregate the joined table in a sub-select first. |
+| `unnest_leaf` | semantic |  | the array or object a lateral function unnests is not a leaf of the column index | Add the array or object path to the paths option of the sift_col index (WITH (paths = '..')) and REINDEX. |
+| `where` | semantic |  | a condition of the WHERE or ON clause is not one the scan can test | Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index. |
+| `join_condition` | semantic |  | a join condition is not an equality or filter the scan can look up | Join on an equality of columns of the scanned table and the other side, or an IN list, and filter the rest in the WHERE. |
+| `group_key` | semantic |  | a group key is not a leaf, or an expression of one, that the scan reads | Add the column the key reads to the sift_col index, or group by the column itself. |
+| `too_many_keys` | limit |  | the query groups by more columns than the scan holds | Group by fewer columns; the detail names the limit. |
+| `error_parity` | semantic |  | the scan could raise, or not raise, an error for a value where the normal plan does the other (a cast of a JSON null before PostgreSQL 18, a guard of jsonb_typeof around a read) | None needed, the normal plan keeps SQL's errors; guard the cast so that it returns NULL, or use PostgreSQL 18, to get the scan. |
+| `output_expr` | semantic |  | the select list or HAVING reads something besides group keys and the aggregates the scan computes | Select the group keys and the aggregates only, and compute the expression over them in an outer query. |
+| `aggregate` | semantic |  | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes | Use aggregates the scan computes (the list in USAGE) without the clause that is refused, or compute the rest in an outer query. |
+| `distinct_on` | semantic | yes | DISTINCT ON keeps a row the scan cannot pick: more than four sort columns after the ON columns, a sort or select-list column of a joined table, or a volatile select list | None needed, the normal plan is the answer; keep the sort columns after the ON columns to four and the select list on the scanned table to get the scan. |
+| `grouping_sets` | semantic |  | the arm does not group by grouping sets | Use a plain GROUP BY for this arm; the single-scan arm answers ROLLUP, CUBE and GROUPING SETS. |
+| `dirty_units` | semantic |  | some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does | Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX. |
+| `dirty_order` | semantic | yes | a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too | None needed, PostgreSQL's order of the conditions decides; put the guard in a CASE or a sub-select so that it runs first. |
+| `volatile` | semantic | yes | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce | None needed, the normal plan is the answer; compute the volatile function outside the statement or in an outer query to get the scan. |
+| `first_memory` | limit |  | the first rows of the groups would not fit in the memory of a hash aggregate | Raise work_mem or group by fewer values; the detail names the limit. |
+| `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill | Raise work_mem so that the groups fit a hash aggregate, or leave the normal plan, which spills them. |
+| `lateral_limit` | semantic |  | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties | Add a unique index on the key of the LATERAL sub-select, or an ORDER BY that makes its LIMIT 1 unique. |
+| `distinct_set` | semantic |  | count(DISTINCT x) keeps the distinct values of each group: x is not a NOT NULL column of the scanned table under a unique single-column index, so its rows cannot be counted in its place | Count DISTINCT over a NOT NULL column under a unique single-column index, or leave the normal plan. |
+| `two_arms` | semantic |  | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id | Write the arms as UNION ALL branches of aggregates over one scan, each grouped by a unique row id. |
+| `two_keys` | semantic |  | a key of the two level aggregate is not one every arm groups by | Group every arm by the keys the outer aggregate groups by. |
+| `two_aggs` | semantic |  | an aggregate over the arms is not one the two level scan computes | Use sum, count, min or max over the arms, or compute the other aggregate in an outer query. |
+| `spine_shape` | semantic |  | the join of the arms to a spine is not an equality of their keys, or the WHERE reads the arms | Join the arms to the spine on an equality of their keys, and keep the WHERE off the arms. |
+| `shape_width` | limit |  | the query has more joined tables, value combinations, leaves, arms or columns than the scan holds: the detail names the limit and its value | Reduce the joined tables, value combinations, leaves, arms or columns below the limit the detail names. |
+| `spine_rows` | limit |  | the rows of the spine are estimated above sift.agg_lookup_max_kb | Raise sift.agg_lookup_max_kb, or filter the spine to fewer rows. |
+| `rows_shape` | semantic |  | the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group | Group by integer keys with aggregates the scan computes (count(DISTINCT) of integers), or leave the normal plan. |
+| `topn_shape` | semantic |  | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests | ORDER BY columns of the scanned table, with a WHERE the scan tests, then LIMIT. |
+| `window_first` | semantic |  | the first rows of each group, asked with a window function (rn = 1, rn <= N), are not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else, over a table with a column index for N > 1 | Write the first rows of each group as a lone row_number() OVER (PARTITION BY .. ORDER BY ..) in a sub-select that does nothing else, kept with rn = 1 or rn <= N. |
+| `cost` | semantic | yes | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper; ANALYZE the table if the estimates look wrong, and compare with sift.agg_force = on (the row shows both costs). |
+| `cte_cost` | semantic | yes | the shared CTE plan is estimated cheaper than the plan with the CTE inlined | None needed, the cheaper form was chosen; MATERIALIZED or NOT MATERIALIZED on the CTE picks the other. |
 <!-- refusals:end -->
 
 The shapes with a fixture:
