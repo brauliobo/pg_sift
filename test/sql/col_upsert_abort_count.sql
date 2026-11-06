@@ -1,0 +1,39 @@
+-- An INSERT .. ON CONFLICT that rolls back leaves records of the write buffer with no inserter; they lie before the rows of a statement that commits after it,
+-- and the scan must not count them (the heap-free read took the set for stamped: every inserter committed before an xid). Plain SQL, the default options: the
+-- scan and the heap plan give the same rows.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ev (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO ev SELECT i, i % 10, i FROM generate_series(1, 20000) i;
+CREATE INDEX ev_c ON ev USING sift_col (id, tenant_id, counter_a);
+VACUUM ev;
+
+CREATE FUNCTION is_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+BEGIN;
+INSERT INTO ev SELECT i, i % 10, i FROM generate_series(60001, 60040) i ON CONFLICT DO NOTHING;
+ROLLBACK;
+INSERT INTO ev SELECT i, i % 10, i FROM generate_series(60101, 60140) i;
+
+SET sift.enable_agg = off;
+SELECT 'heap' AS plan, count(*), sum(counter_a) FROM ev;
+SET sift.enable_agg = on;
+SET sift.agg_force = on;
+SELECT is_scan('SELECT count(*), sum(counter_a) FROM ev') AS scan_plan;
+SELECT 'scan' AS plan, count(*), sum(counter_a) FROM ev;
+-- by tenant, too
+SELECT tenant_id, count(*) FROM ev GROUP BY 1 ORDER BY 1;
+RESET sift.agg_force;
+RESET sift.enable_agg;
+
+DROP FUNCTION is_scan(text);
+DROP TABLE ev;
+DROP EXTENSION pg_sift;
