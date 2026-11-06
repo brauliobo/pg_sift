@@ -97,21 +97,13 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 Datum
 sift_col_promote(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_promote(&maint_col_ops, index);
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_promote(&maint_col_ops, fcinfo);
 }
 
 Datum
 sift_col_merge(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_merge(&maint_col_ops, index, PG_NARGS() > 1 && PG_GETARG_BOOL(1));
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_merge(&maint_col_ops, fcinfo);
 }
 
 Datum

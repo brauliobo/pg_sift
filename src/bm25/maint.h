@@ -161,14 +161,14 @@ extern bool sift_maint_make_room(Relation index);
 extern bool sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait);
 extern void sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index);
 
-/* The VACUUM callbacks, and the SQL functions promote and merge (the lock and the index are the caller's: sift_mops_open_maintain) */
+/* The VACUUM callbacks, and the bodies of the SQL functions promote and merge */
 extern IndexBulkDeleteResult *sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 												   IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
 extern Relation sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock);
 extern Relation sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid);
-extern int	sift_mops_sql_promote(const SiftMaintOps *ops, Relation index);
-extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force);
+extern Datum sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
+extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
 
 /*
  * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges what the kind's

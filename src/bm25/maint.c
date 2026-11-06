@@ -543,21 +543,25 @@ sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 	cut_free_end(ops, index, false);
 }
 
-int
-sift_mops_sql_promote(const SiftMaintOps *ops, Relation index)
+Datum
+sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
 {
+	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
 	int			n;
 
 	sift_maint_lock(index, true);
 	n = promote_locked(ops, index, true, true);
 	sift_maint_unlock(index);
-	return n;
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_INT32(n);
 }
 
 /* Runs merge steps until the policy asks for none; force merges all immutable segments into one (and, if the kind says so, those of the open write buffer too) */
-int
-sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
+Datum
+sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
 {
+	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
+	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
 	uint64		busy = 0;
 	int			n = 0;
 
@@ -571,7 +575,8 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 	sift_maint_unlock(index);
 	/* also when no merge was due: the end a merge left is cut by the first call that finds the lock free, however many calls the busy ones were */
 	cut_free_end(ops, index, false);
-	return n;
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_INT32(n);
 }
 
 int
@@ -941,19 +946,11 @@ sift_read_promote_worker_main(Datum main_arg)
 Datum
 sift_promote(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&bm25_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_promote(&bm25_ops, index);
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_promote(&bm25_ops, fcinfo);
 }
 
 Datum
 sift_merge(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&bm25_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_merge(&bm25_ops, index, PG_NARGS() > 1 && PG_GETARG_BOOL(1));
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_merge(&bm25_ops, fcinfo);
 }
