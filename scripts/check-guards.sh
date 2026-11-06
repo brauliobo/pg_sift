@@ -4,6 +4,7 @@
 #
 #   scripts/check-guards.sh            every tracked header
 #   scripts/check-guards.sh --selftest
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 duplicates() {
