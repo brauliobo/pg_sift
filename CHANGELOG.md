@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a BM25 query that runs the scan again for each row of an outer query (a correlated subquery, a lateral join) and rechecks phrases (`body @@> '"dog and cat"'`) could write into memory that was not its own: the scan rescan deleted the context that the recheck of the next row worked in, and the context the backend made next took its place, so the recheck reset it. The recheck context is now a child of the query's context and ends with the scan node. Present in 4.0.0 to 4.0.3 (the code is the same in all four); 4.1.0 and 4.1.1 crashed in the first statement of a backend through the stem memo of a text search configuration, which 4.0.x does not have.
 ## 4.0.3 - 2026-11-04
 
 - Fixed: sift_table: a `COPY` into a `sift_table` with parallel workers (`max_parallel_maintenance_workers` above 0, the PostgreSQL default is 2) could fail with `ERROR: invalid memory alloc request size 1879048192` after about a second, when its workers had written every group the backend handed over before the backend looked at them (the backend is descheduled for a moment: a loaded host, a busy runner; rare on an idle machine; since 4.0.0). The statement was aborted and nothing of it committed (the blocks it had written are freed by the next `VACUUM`), and the same load run again usually worked. The backend takes the groups it handed over and no more.

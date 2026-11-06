@@ -1,0 +1,38 @@
+-- The recheck context of a BM25 scan survives the rescan of the scan: a correlated subquery runs the scan once for each outer row, and a rescan resets
+-- the context of the scan, which deletes the contexts made inside it. The recheck context stood in it, and the next recheck (the phrase of the second row)
+-- worked in a context that was gone, which whichever context the backend made next took the place of. The scan asserts that the context stands in the
+-- query's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE pd (id int PRIMARY KEY, body text);
+INSERT INTO pd
+SELECT i, s[1 + i % 5] || ' ' || s[1 + (i * 3) % 5]
+FROM generate_series(1, 300) i, (SELECT ARRAY['the dog and cat', 'cat the street', 'children run over the streets', 'the weather was bad yesterday', 'house houses nice'] s) x;
+CREATE INDEX pd_idx ON pd USING sift (body) WITH (stemmer = 'en');
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE qs AS SELECT q FROM unnest(ARRAY['"dog and cat"', '"cat the street"', 'house', '"children run"', '"dog and cat"']) q;
+-- one row of the outer query for each phrase and word: every one runs the scan again
+SET enable_seqscan = off;
+SELECT q, (SELECT count(*) FROM pd WHERE body @@> q) AS n FROM qs;
+        q         |  n  
+------------------+-----
+ "dog and cat"    |  60
+ "cat the street" | 120
+ house            | 120
+ "children run"   | 120
+ "dog and cat"    |  60
+(5 rows)
+
+-- the answers are the heap's
+CREATE TABLE ans AS SELECT q, (SELECT count(*) FROM pd WHERE body @@> q) AS n FROM qs;
+RESET enable_seqscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS queries, count(*) FILTER (WHERE (SELECT count(*) FROM pd WHERE body @@> q) = n) AS same FROM ans;
+ queries | same 
+---------+------
+       5 |    5
+(1 row)
+
+DROP TABLE pd, qs, ans;
+DROP EXTENSION pg_sift;
