@@ -207,15 +207,17 @@ worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 }
 
 /*
- * The re-baseline of a log written before the fix (sift_col_track_rebaseline), in a transaction of its own: it holds ShareUpdateExclusiveLock on the table, which keeps VACUUM
+ * The re-baseline of a log that is due for it (sift_col_track_rebaseline), in a transaction of its own: it holds ShareUpdateExclusiveLock on the table, which keeps VACUUM
  * and the autovacuum worker waiting or skipping for as long as the transaction lasts, and the merges of the worker are longer. A table that is busy with a VACUUM is left to it (it re-baselines too).
+ * Triggers that ENABLE TRIGGER left enabled for the origin only are enabled for all again first (sift_col_track_rearm), in a transaction of its own, which returns true for the caller to run the step again.
  */
-static void
+static bool
 rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 {
 	Oid			heapoid;
 	Relation	index;
 	Relation	heap;
+	bool		rearmed = false;
 
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -229,7 +231,14 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 			TimestampTz start = GetCurrentTimestamp();
 
 			heap = table_open(heapoid, NoLock);
-			if (sift_col_track_rebaseline(index, heap))
+			/* triggers enabled for the origin only: the lock that ENABLE TRIGGER takes, if it is free this instant (held for a catalog row, never waited for), and the re-baseline in the next transaction */
+			if (sift_col_track_rearmable(index, heap) && ConditionalLockRelationOid(heapoid, ShareRowExclusiveLock))
+			{
+				rearmed = sift_col_track_rearm(index, heap);
+				if (rearmed)
+					sift_log_maint(index, "column track triggers enabled again", start, -1, -1);
+			}
+			else if (sift_col_track_rebaseline(index, heap))
 				sift_log_maint(index, "column track re-baseline finished", start, -1, -1);
 			table_close(heap, NoLock);
 		}
@@ -237,9 +246,10 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 	}
 	PopActiveSnapshot();
 	CommitTransactionCommand();
+	return rearmed;
 }
 
-/* The re-baseline that a read of a log written before the fix asked for (sift_col_track_ask) */
+/* The re-baseline that a read of a log asked for (sift_col_track_ask) */
 void
 sift_col_track_worker_main(Datum main_arg)
 {
@@ -250,7 +260,8 @@ sift_col_track_worker_main(Datum main_arg)
 
 	PG_TRY();
 	{
-		rebaseline_step(indexoid, cx, &name);
+		if (rebaseline_step(indexoid, cx, &name))
+			rebaseline_step(indexoid, cx, &name);
 	}
 	PG_CATCH();
 	{
@@ -273,7 +284,8 @@ maint_worker(Datum main_arg, bool seal)
 	{
 		Relation	index;
 
-		rebaseline_step(indexoid, cx, &name);
+		if (rebaseline_step(indexoid, cx, &name))
+			rebaseline_step(indexoid, cx, &name);
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 		index = sift_try_open_index(indexoid, RowExclusiveLock);

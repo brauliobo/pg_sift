@@ -206,9 +206,9 @@ hf_on(SiftColSource *src)
 	if (src->hf == 0)
 	{
 		src->hf = sift_col_track_ok(src->index, src->heap, src->snap) ? 1 : -1;
-		/* the heap is checked for a log written before the fix, which the worker re-baselines (it asks only for such a log) */
+		/* the heap is checked for a log that the worker may re-baseline (it asks only for such a log) */
 		if (src->hf < 0)
-			sift_col_track_ask(src->index);
+			sift_col_track_ask(src->index, src->heap);
 	}
 	return src->hf > 0 && src->hflog->gen == src->hfgen;
 }

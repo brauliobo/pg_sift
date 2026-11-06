@@ -304,8 +304,9 @@ sift_test_tomb_header(PG_FUNCTION_ARGS)
 }
 
 /*
- * sift._test_log_chan(index, flags int8, base_xid xid, OUT flags int8, OUT base_xid xid): the completeness record of the log of a column index, set first to the arguments that are
- * not NULL: the log of an earlier library (flags 1), or of a re-baseline that began and aborted (flags 3 and the xid of a transaction that rolled back).
+ * sift._test_log_chan(index, flags int8, base_xid xid, other_triggers bool, OUT flags int8, OUT base_xid xid): the completeness record of the log of a column index, set first to the arguments
+ * that are not NULL: the log of an earlier library (flags 1), of a re-baseline that began and aborted (flags 3 and the xid of a transaction that rolled back), or of triggers that were made
+ * again (other_triggers: the identities the log names are not those of the triggers any more, as after pg_upgrade).
  */
 Datum
 sift_test_log_chan(PG_FUNCTION_ARGS)
@@ -327,7 +328,10 @@ sift_test_log_chan(PG_FUNCTION_ARGS)
 		chan.flags = (uint32) PG_GETARG_INT64(1);
 	if (!PG_ARGISNULL(2))
 		chan.base_xid = PG_GETARG_TRANSACTIONID(2);
-	if (!PG_ARGISNULL(1) || !PG_ARGISNULL(2))
+	if (!PG_ARGISNULL(3) && PG_GETARG_BOOL(3))
+		for (int i = 0; i < 2; i++)
+			chan.witness[i] ^= 1;
+	if (!PG_ARGISNULL(1) || !PG_ARGISNULL(2) || !PG_ARGISNULL(3))
 		sift_tomb_set_chan(index, log, &chan);
 	v[0] = Int64GetDatum(log->chan.flags);
 	v[1] = TransactionIdGetDatum(log->chan.base_xid);

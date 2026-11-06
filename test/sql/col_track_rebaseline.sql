@@ -80,11 +80,46 @@ VACUUM t;
 SELECT * FROM report();
 SELECT pg_xact_status(cur_base_xid::text::xid8) FROM sift._test_log_chan('t_c');
 
--- a log that the triggers no longer vouch for is not re-baselined (it is another repair: REINDEX): flags 0 stays 0
+-- a log made while the triggers were not there (flags 0: a concurrent build, a table that was a partition) is re-baselined as well, the triggers being the option's now
 SELECT cur_flags FROM sift._test_log_chan('t_c', 0);
 VACUUM t;
 SELECT cur_flags FROM sift._test_log_chan('t_c');
 REINDEX INDEX t_c;
+SELECT * FROM report();
+
+-- the triggers made again (pg_upgrade, a restore: CREATE INDEX makes them as the option does, and the log is the file of the old cluster) are not the ones the log names, so no read takes it for
+-- complete until it is re-baselined; a version that a statement ended meanwhile (the mutants) is missing from it
+SELECT cur_flags FROM sift._test_log_chan('t_c', NULL, NULL, true);
+SELECT triggers, complete, heap_free FROM sift.col_tracking('t_c');
+SET sift.test_no_supersede = on;
+SET sift.test_no_track = on;
+UPDATE t SET v = v + 1000000 WHERE id IN (2, 8000, 16000);
+RESET sift.test_no_supersede;
+RESET sift.test_no_track;
+SELECT * FROM report();
+-- the next VACUUM re-baselines it, also when it skips the indexes, and the log names the triggers as they are
+VACUUM t;
+SELECT * FROM report();
+SELECT * FROM sift.col_tracking('t_c');
+SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c') \gset
+VACUUM t;
+SELECT count(*) = :entries AS log_unchanged FROM sift._test_col_log_entries('t_c');
+
+-- triggers that are disabled are not the option's: the writes meanwhile are heard by no one, the reads check the heap, and no VACUUM re-baselines the log
+ALTER TABLE t DISABLE TRIGGER ALL;
+UPDATE t SET v = v + 1 WHERE id IN (3, 9000, 17000);
+SELECT * FROM report();
+VACUUM t;
+SELECT * FROM report();
+-- enabled again they fire for the origin only (a session with session_replication_role = replica writes unheard): not the option's either, and the answers stay the heap's; VACUUM does not
+-- hold the lock that enabling them for all takes (the worker does: col_track_revouch.sh)
+ALTER TABLE t ENABLE TRIGGER ALL;
+UPDATE t SET v = v + 1 WHERE id IN (4, 9001, 17001);
+VACUUM t;
+SELECT * FROM report();
+SELECT string_agg(tgenabled::text, ',') AS tgenabled FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_%';
+-- ALTER INDEX makes them the option's again, with a new baseline
+ALTER INDEX t_c SET (track_changes = 'id');
 SELECT * FROM report();
 
 DROP TABLE t;

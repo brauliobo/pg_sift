@@ -70,7 +70,9 @@ bool		sift_test_no_chain_root = false;
 typedef struct HearTrig
 {
 	Oid			oid;
+	NameData	name;
 	bool		ok;
+	bool		origin;			/* what ok says, but enabled for the origin only (ENABLE TRIGGER) */
 	uint32		witness;
 	int			n;
 } HearTrig;
@@ -104,11 +106,15 @@ read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2], bool row)
 
 		if (h != NULL)
 		{
+			bool		shape = tg->tgrelid == heapoid && tg->tgfoid == funcoid && !tg->tgdeferrable &&
+				(tg->tgtype & (TRIGGER_TYPE_BEFORE | TRIGGER_TYPE_INSTEAD)) == 0 && ((tg->tgtype & TRIGGER_TYPE_ROW) != 0) == row && tg->tgattr.dim1 == 0;
+
 			h->oid = toid;
+			h->name = tg->tgname;
 			h->n++;
 			h->witness = HeapTupleHeaderGetRawXmin(tp->t_data);
-			h->ok = tg->tgrelid == heapoid && tg->tgfoid == funcoid && tg->tgenabled == TRIGGER_FIRES_ALWAYS && !tg->tgdeferrable &&
-				(tg->tgtype & (TRIGGER_TYPE_BEFORE | TRIGGER_TYPE_INSTEAD)) == 0 && ((tg->tgtype & TRIGGER_TYPE_ROW) != 0) == row && tg->tgattr.dim1 == 0;
+			h->ok = shape && tg->tgenabled == TRIGGER_FIRES_ALWAYS;
+			h->origin = shape && tg->tgenabled == TRIGGER_FIRES_ON_ORIGIN;
 		}
 	}
 	systable_endscan(scan);
@@ -159,6 +165,7 @@ channel_read(Relation heap, Relation index, bool present[2], bool ok[2], uint32 
 }
 
 static bool subscribed(Oid heapoid);
+static bool trackable(Relation heap, Relation index);
 
 /*
  * Why a statement trigger of the table cannot hear what happens to its rows, NULL when it can (a statement on the parent fires no trigger of a child; the apply worker of a
@@ -412,7 +419,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	if (concurrent)
 	{
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes log is not complete after a concurrent build", sift_col_final_name(index)),
-						 errhint("Run REINDEX INDEX %s without CONCURRENTLY to make the log complete.", sift_col_final_name(index))));
+						 errhint("The next VACUUM completes the log; REINDEX INDEX %s without CONCURRENTLY does it now.", sift_col_final_name(index))));
 		return;
 	}
 	baseline(index, heap, log);
@@ -424,24 +431,34 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 }
 
 /*
- * A log written before the fix (flags COMPLETE alone: 4.0.0 to 4.1.1), or one whose re-baseline began and aborted (it is set in place, the transaction is not: the log then names a
- * transaction that never committed, and no read could take it for complete again).
+ * Is the log due for the re-baseline: the triggers do what the option asks and the log is not current for them. That is a log written before the fix (flags COMPLETE alone: 4.0.0 to 4.1.1),
+ * one made while the triggers were not there (a concurrent build, a table that was a partition) or not these (pg_upgrade and a restore make the triggers again, as CREATE INDEX does, and the log
+ * names the identities of the old ones), and one whose re-baseline began and aborted (the flags are set in place, the transaction is not: the log then names a transaction that never
+ * committed). The identities the triggers have now are returned in witness. Triggers that are disabled, or enabled for the origin only, do not do what the option asks: that log waits for
+ * ALTER INDEX or REINDEX.
  */
 static bool
-rebaseline_due(const SiftTombLog *log)
+rebaseline_due(Relation heap, Relation index, const SiftTombLog *log, uint32 witness[2])
 {
-	return log->chan.flags == SIFT_TOMB_COMPLETE ||
-		(log->chan.flags == SIFT_TOMB_CURRENT && TransactionIdIsNormal(log->chan.base_xid) && sift_xid_state(log->chan.base_xid) == SIFT_XID_ABORTED);
+	bool		present[2],
+				ok[2];
+
+	channel_read(heap, index, present, ok, witness);
+	if (!ok[0] || !ok[1])
+		return false;
+	return log->chan.flags != SIFT_TOMB_CURRENT || witness[0] != log->chan.witness[0] || witness[1] != log->chan.witness[1] ||
+		(TransactionIdIsNormal(log->chan.base_xid) && sift_xid_state(log->chan.base_xid) == SIFT_XID_ABORTED);
 }
 
 /*
- * The repair of the log of an index that a library before the fix wrote: its statements that moved the command id left row versions without a tombstone (every release since 4.0.0,
- * docs/releases/v4.1.1.md), and the reads that take the log for complete count them. The baseline of the install does what is needed, with the triggers as they are: a tombstone for every
- * address of the table that no version is live for, then the log is complete from this transaction on. The caller holds ShareUpdateExclusiveLock on the table, which keeps a VACUUM
- * out (it frees an address that a new row then takes, and the tombstone of the baseline would hide that row) and lets the writers go on: a version a writer ends meanwhile gets its
- * tombstone from the trigger, and the readers whose snapshot does not see this transaction check the heap (sift_col_track_ok). 71 ms (a vacuumed table) to 119 ms (30,000 rows each updated, deleted and
+ * The repair of a log that cannot be taken for complete (rebaseline_due): the statements of a library before the fix that moved the command id left row versions without a tombstone (every
+ * release since 4.0.0, docs/releases/v4.1.1.md), and statements that ran while the triggers were not there or not these (a concurrent build, a restore, pg_upgrade) may have too. The baseline of
+ * the install does what is needed, with the triggers as they are: a tombstone for every address of the table that no version is live for, then the log is complete from this transaction on and
+ * names the triggers as they are. The caller holds ShareUpdateExclusiveLock on the table, which keeps a VACUUM out (it frees an address that a new row then takes, and the tombstone of the
+ * baseline would hide that row), keeps the triggers as they are (every change to one takes a stronger lock), and lets the writers go on: a version a writer ends meanwhile gets its tombstone
+ * from the trigger, and the readers whose snapshot does not see this transaction check the heap (sift_col_track_ok). 71 ms (a vacuumed table) to 119 ms (30,000 rows each updated, deleted and
  * inserted since the VACUUM) for 600,000 rows, 3 kB to 14 MB of WAL. Not on a standby, which has the result by replication, and reads the heap until then.
- * Returns whether it ran: not for a log that is current, one the triggers no longer vouch for (the install or a REINDEX makes that one complete), or an index that does not track.
+ * Returns whether it ran: not for a log that is current, an index that does not track, or triggers that are not what the option made (the install or a REINDEX makes that one complete).
  */
 bool
 sift_col_track_rebaseline(Relation index, Relation heap)
@@ -450,10 +467,9 @@ sift_col_track_rebaseline(Relation index, Relation heap)
 	SiftTombChan chan;
 
 	Assert(CheckRelationLockedByMe(heap, ShareUpdateExclusiveLock, true));
-	if (RecoveryInProgress() || !sift_col_track_on(index) || (log = sift_col_log(index)) == NULL || !rebaseline_due(log) || !channel_vouched(heap, index, log))
+	if (RecoveryInProgress() || !trackable(heap, index) || (log = sift_col_log(index)) == NULL || !rebaseline_due(heap, index, log, chan.witness))
 		return false;
 	baseline(index, heap, log);
-	chan = log->chan;
 	chan.flags = SIFT_TOMB_CURRENT;
 	chan.base_xid = GetCurrentTransactionId();
 	sift_tomb_set_chan(index, log, &chan);
@@ -461,26 +477,62 @@ sift_col_track_rebaseline(Relation index, Relation heap)
 }
 
 /*
- * A read that takes the heap for a log that is due for the re-baseline asks the worker for it, once per naptime for an index in this backend and under the backoff of the index
+ * Triggers that are the option's but for being enabled for the origin only: what ENABLE TRIGGER makes of them after DISABLE TRIGGER ALL (pg_restore --disable-triggers does both). They fire
+ * for a session with the usual session_replication_role and not for one with replica (a data loader), which writes unheard, so the log is not taken for complete; a trigger that is disabled is
+ * the user's decision and stays so.
+ */
+bool
+sift_col_track_rearmable(Relation index, Relation heap)
+{
+	HearTrig	t[2];
+
+	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
+	return t[0].n == 1 && t[1].n == 1 && (t[0].ok || t[0].origin) && (t[1].ok || t[1].origin) && (t[0].origin || t[1].origin);
+}
+
+/*
+ * Enables them for every session again, as ALTER INDEX does by making them: the catalog change of ENABLE ALWAYS TRIGGER, which takes the ShareRowExclusiveLock of the table that the caller
+ * holds (and keeps the writers out of it until it commits: a catalog row or two). The log is not complete for them yet: the re-baseline follows, under the lock that lets writers in.
+ */
+bool
+sift_col_track_rearm(Relation index, Relation heap)
+{
+	HearTrig	t[2];
+
+	Assert(CheckRelationLockedByMe(heap, ShareRowExclusiveLock, true));
+	if (RecoveryInProgress() || !trackable(heap, index) || !sift_col_track_rearmable(index, heap))
+		return false;
+	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
+	for (int i = 0; i < 2; i++)
+		if (t[i].origin)
+			EnableDisableTrigger(heap, NameStr(t[i].name), InvalidOid, TRIGGER_FIRES_ALWAYS, false, false, ShareRowExclusiveLock);
+	CommandCounterIncrement();
+	return true;
+}
+
+/*
+ * A read that takes the heap for a log that may be due for the re-baseline asks the worker for it, once per naptime for an index in this backend and under the backoff of the index
  * (the table may be one nobody writes or vacuums). The maintenance worker and VACUUM re-baseline it as well, whichever comes first; sift.col_auto_merge = off leaves it to VACUUM.
  */
 void
-sift_col_track_ask(Relation index)
+sift_col_track_ask(Relation index, Relation heap)
 {
 	static Oid	asked = InvalidOid;
 	static TimestampTz asked_at = 0;
 	SiftTombLog *log;
 	TimestampTz now;
+	uint32		witness[2];
 
 	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() ||
-		index->rd_rel->relpersistence == RELPERSISTENCE_TEMP || !sift_col_track_on(index) || (log = sift_col_log(index)) == NULL || !rebaseline_due(log))
+		index->rd_rel->relpersistence == RELPERSISTENCE_TEMP || !sift_col_track_on(index))
 		return;
 	now = GetCurrentTimestamp();
 	if (asked == RelationGetRelid(index) && now - asked_at < (int64) sift_maintenance_naptime * 1000)
 		return;
 	asked = RelationGetRelid(index);
 	asked_at = now;
-	if (sift_maint_request_worker(index, "sift_col_track_worker_main"))
+	if ((log = sift_col_log(index)) != NULL && (rebaseline_due(heap, index, log, witness) || sift_col_track_rearmable(index, heap)) &&
+		sift_maint_request_worker(index, "sift_col_track_worker_main"))
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 }
 
@@ -571,6 +623,18 @@ sift_col_track_own(const SiftTombLog *log)
 	return log->chan.flags == SIFT_TOMB_CURRENT && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
 }
 
+/* The index tracks, the table still has its unique index on the key, and a statement on it fires its triggers: what a log needs to be complete, whoever made it so */
+static bool
+trackable(Relation heap, Relation index)
+{
+	SiftColRel *r;
+
+	if (!sift_col_track_on(index))
+		return false;
+	r = sift_col_rel(index);
+	return !(r->rowkey && !OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1]))) && sift_col_track_deaf(heap) == NULL;
+}
+
 /*
  * May a read take the log for the whole truth about which entries are live: the log was made complete, the triggers are the ones that did it, and the table still has its unique index on the key. With a snapshot, also that it is an MVCC one that sees the transaction that made the log complete.
  */
@@ -581,12 +645,8 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 				ok[2];
 	uint32		witness[2];
 	SiftTombLog *log;
-	SiftColRel *r;
 
-	if (!sift_col_track_on(index))
-		return false;
-	r = sift_col_rel(index);
-	if ((r->rowkey && !OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1]))) || sift_col_track_deaf(heap) != NULL)
+	if (!trackable(heap, index))
 		return false;
 	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_CURRENT)
 		return false;

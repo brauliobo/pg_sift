@@ -103,7 +103,10 @@ make USE_PGXS=1 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config && sudo make USE_
 Afterwards: copy the `sift.*` lines of the old `postgresql.conf` (`pg_upgrade` carries settings stored in the catalogs, `ALTER DATABASE` and `ALTER ROLE`, not the file), start the new
 cluster, run `vacuumdb --all --analyze-in-stages`, and check as in section 2 (`sift.verify`, `sift.col_verify`, `scripts/upgrade-check.sh --all`). BM25 results and scores, column aggregates and `sift_table` contents
 are the same as before, and writes, `VACUUM` and merges work on what the old cluster wrote
-(`test/t/pg_upgrade.sh`: PostgreSQL 17 to 18 when both are installed, otherwise 18 to 18).
+(`test/t/pg_upgrade.sh`: PostgreSQL 17 to 18 when both are installed, otherwise 18 to 18). The triggers of a `sift_col` index that tracks its changes are made again by the restore, so until the
+log is re-baselined (the first `VACUUM` of the table, which the step above runs, or the maintenance worker that a read or a write of the table asks for) its reads check the heap: the answers are right, and the
+instructions of a statement over rows that were not vacuumed rise (`sift.col_tracking(index)` shows `triggers` false). Nothing to run by hand
+(`test/t/col_track_revouch.sh`: a cluster written by 4.1.0, PostgreSQL 17 to 18).
 
 ## 4. An older release
 
@@ -294,7 +297,7 @@ Installing 4.1.1 stopped new wrong counts; it did not take away the old versions
 SELECT c.oid::regclass AS index FROM pg_class c JOIN pg_am a ON a.oid = c.relam, LATERAL sift.col_tracking(c.oid) t WHERE a.amname = 'sift_col' AND t.track_changes AND NOT t.heap_free;
 ```
 
-An automatic repair for this case is planned for 4.2.
+From 4.2 on the maintenance worker, `VACUUM` or a read that has to check the heap repairs it by itself (see the pg_upgrade section above): nothing to run.
 
 ## What is tested
 
